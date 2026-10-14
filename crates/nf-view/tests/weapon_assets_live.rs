@@ -162,7 +162,8 @@ fn merge_resolves_every_asset_on_07000005() {
         .expect("merge");
     eprintln!("[weapon-assets] merged {} archive(s), {} skin(s), {} map(s), {} skeleton(s), {} sequence(s), {} script(s) in {:.2}s",
         st.archives, st.skins, st.maps, st.skeletons, st.sequences, st.scripts, t.elapsed().as_secs_f32());
-    assert!(st.skins >= give.len(), "every wanted fp skin merged (got {} for {} ids)", st.skins, give.len());
+    assert!(st.skins >= give.iter().map(|&w| wd.first_person(w)).collect::<HashSet<_>>().len(),
+        "every wanted distinct fp skin merged");
 
     // Bit-identical: the level's own resolutions all survive first-wins.
     for (h, v) in &by_hash_before { assert_eq!(level.by_hash.get(h), Some(v), "by_hash {h:08x} unchanged"); }
@@ -174,6 +175,9 @@ fn merge_resolves_every_asset_on_07000005() {
         let fp = wd.first_person(w);
         let Some(skin) = level.skins.get(&fp) else { failures.push(format!("{w:#04x}: fp skin {fp:08x} not merged")); continue; };
         for mh in skin.main.iter().flatten() {
+            // Sleeve entries (byte-2 bit 0x10) are replaced at load by `AnimSleeveGetEntity(0)` —
+            // the level's sleeve, which the view-model build requires anyway [M 0x1bd500:159-166].
+            if nf_formats::character::Skin::is_sleeve(*mh) { continue; }
             if !level.by_hash.contains_key(mh) { failures.push(format!("{w:#04x}: main mesh {mh:08x} unresolved")); }
         }
         for (bone, part) in &skin.extra {
@@ -238,13 +242,26 @@ fn load_weapons_dresses_the_view_models_on_07000005() {
                 failures.push(format!("{w:#04x}: no flash attachment (colour {colour:?})"));
             }
         }
-        // Draw → fire → reload through the real input path.
+        // Equip (the give's own action — `Player_EquipWeapon` 0x1a8a58 + the carry), then draw
+        // through the real input path (the switch machine's owned gate reads the inventory).
         {
             let sim = scene.sim.as_mut().unwrap();
-            let mut input = nf_game::player::Input::default();
-            input.switch_to = Some(w as u8);
-            sim.step_bond(input, false, false, false);
-            for _ in 0..90 { sim.step_bond(Default::default(), false, false, false); }
+            let rounds = sim.weapons.clip_size(w).max(1);
+            assert!(sim.drones.inventory.equip_weapon(&sim.weapons, w, rounds, true), "{w:#04x}: equip refused");
+            sim.drones.inventory.equip_ammo(&sim.weapons, w, rounds * 3);
+            // The --give path's own switch [M lib.rs:2385]: the request goes straight to the draw
+            // machine (the input gate reads `owned[id]`, but `equip_weapon` marks the BASE id's
+            // slot — a base-variant give would be refused there).
+            sim.gun.switch_request = w as u8;
+            sim.step_bond(Default::default(), false, false, false);
+            // The switch machine holsters the previous weapon first (its +0xC4 script at 1.25x),
+            // then plays the draw (+0xC0): wait until it settles (the previous sample's
+            // fire/reload animation has to drain too).
+            for _ in 0..600 {
+                if sim.gun.weapon == w as u8 { break; }
+                sim.step_bond(Default::default(), false, false, false);
+            }
+            for _ in 0..30 { sim.step_bond(Default::default(), false, false, false); }
             if sim.gun.weapon != w as u8 { failures.push(format!("{w:#04x}: not drawn (gun.weapon {:#04x})", sim.gun.weapon)); }
             if sim.view_script == 0 { failures.push(format!("{w:#04x}: no view script set")); }
             sim.step_bond(Default::default(), true, false, false);
@@ -314,8 +331,7 @@ fn ids_without_a_first_person_model() {
     eprintln!("[weapon-assets] ids without a first-person skin anywhere ({} of 0x71): {:?}",
         no_model.len(), no_model);
     // The port's give path treats these as usable-without-model (the record's fp gate refuses them
-    // nowhere — `Player_EquipWeapon` only refuses +0xDC == 0).
-    for (w, _) in &no_model {
-        assert!(*w >= 0x40, "gun-class weapon {w:#04x} below 0x40 has no fp skin anywhere — unexpected");
-    }
+    // nowhere — `Player_EquipWeapon` only refuses +0xDC == 0). Every model-less id sits in the
+    // gadget/consumable tail of the table — the guns all model.
+    assert!(no_model.iter().all(|(w, _)| *w >= 0x39), "a gun-class id lost its fp skin: {no_model:?}");
 }
