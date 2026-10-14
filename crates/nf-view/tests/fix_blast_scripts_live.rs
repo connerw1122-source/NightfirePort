@@ -109,11 +109,17 @@ fn the_samurai_bolt_plays_the_cyan_blast_script() {
     assert_eq!(ex.len(), 1, "exactly one blast");
     assert!((ex[0].1 - 8.0).abs() < 1e-3, "the bolt blast radius is weapon_data+0x08 = 8.0 [L 0x32], got {}", ex[0].1);
     assert!((ex[0].2 - 256.0).abs() < 1e-3, "the bolt blast damage is weapon_data+0x0C = 256.0 [L 0x32], got {}", ex[0].2);
-    // The blast plays the game's script 0x060007c4, scale = the radius [M 0x17cbd0:84-106].
+    // The blast plays the game's script 0x060007c4, scale = the game's f12 = 1.0 [M disasm
+    // 0x12d0ec-0x12d0f0 (lui $at, 0x3f80; mtc1 $at, $f12) + 0x12d118 (lwc1 $f13, 8($t2))]: the
+    // bolt's 0x100000 arm passes Explode_Create(scale f12 = 1.0, radius f13 = +0x08 = 8.0,
+    // damage f14 = +0x0C) — the script scale is 1.0 while the blast radius stays 8.0. (The 0x4
+    // arms pass f12 = +0x08 — scale = radius — which is why the frag/rocket sisters below pin 8.0.)
     let cyan = blast_players(&scene, 0x0600_07c4);
     assert_eq!(cyan.len(), 1, "exactly one 0x060007c4 one-shot player (the bolt's cyan blast)");
-    assert!((cyan[0] - 8.0).abs() < 1e-3, "the blast player's scale is the radius 8.0, got {}", cyan[0]);
-    // Sister: the generic blast script is NOT what the bolt spawned (the old hardcoded one-shot).
+    assert!((cyan[0] - 1.0).abs() < 1e-3, "the blast player's scale is the game's f12 = 1.0 [M 0x12d0ec-0x12d0f0], got {}", cyan[0]);
+    // Sister: the generic blast script is NOT what the bolt spawned (the old hardcoded one-shot;
+    // the fire-modes3-shaped first world arm caught the bolt bits and pushed 0x06000052 — this is
+    // the assert that fails on the pre-fix merged tree).
     assert!(blast_players(&scene, 0x0600_0052).is_empty(), "the bolt must not play the generic 0x06000052");
 }
 
