@@ -10039,3 +10039,39 @@ Stage Summary:
 - Files: matrix.rs (new), tests/weapon_matrix_live.rs (new), nf-extract main.rs + Cargo.toml (the command), dev.rs (the row), lib.rs (pub mod matrix + the 2-line test-weapon hook). drone.rs/scene.rs/player.rs untouched.
 - Report: docs/reports/weapon-matrix.md (the mark table, the numbers, the live checks for the main agent).
 - Open: re-run with 100a-c merged; the intro input-lock F/D cells; the variant back-chain B cells (100c).
+
+### fix-head-look2 — outcome (06:35 UTC)
+
+**The two 07000001 failures were NOT the head look's RNG or AI wiring — they were (1) the game's own
+hit-box coupling plus (2) a real port bug in the stun-loop gate.** Bisect: both tests pass on
+facial3+master (bisect branch 53f1b1b), so the mover is the head-look code commit bd8d2c5 — the only
+code commit between them. The mechanism chain, all decompile-checked:
+
+- The game's head turn is presentation-only: `AnimObjectHeadTrack` 0x1bf618 has **no Rand calls** and
+  its only caller is `psiBuildMatrixPalette` 0x111498 (draw palette). The game's head look does not
+  read RNG and does not feed the AI — the port's matches (head_yaw/head_pitch have no sim readers).
+- BUT the game's **collision boxes include the head rotation**: `AnimGetCollData` 0x1c4ac8 itself
+  calls `psiBuildMatrixPalette` and reads its palette; the HeadTrack call inside is gated on the
+  +0xC8 0x30 flags only, not on the caller's mode arg. So the corrected head box (world premultiply +
+  geometric wants + the 3.0 gate) legitimately changes which part absorbs a bullet — the raptor/walk
+  fights diverge onto the game-correct timeline. On my tree a raptor died in a pose whose gun drop
+  landed inside Bond's touch bounds: the game's own `Pickup_Handler` touch took it (ledger-recorded)
+  and the test's walked-up take loop never saw it. Test re-pins: the raptor loop drains the take
+  ledger for the kill window before walking to the rest (fix_pickups_trace_live); the walker's
+  `follow` returns at its cap instead of panicking and the walk's round loop walks past a wedged lead
+  (the real player's move) — walkreal_07000001_live + tests/common/walker.rs.
+- The divergence then exposed a **real port bug** [M]: `NDrone2_DSTATE_StunGrenadeLoop` 0x1631c0 case
+  0xc calls `DroneFunc_AnyoneNear` 0x14a718 with radius **2.0** (0x40000000); AnyoneNear's
+  glb_players loop tests SqDist3D < (2·r)² = 16 — the player keeps the stunned drone down within
+  **4.0** (|dy| <= 3.0 arm left; the port's 3D `dist` bounds it) — and falls to
+  `NDrone2_DroneNearPos` 2.0 over the drones (left: the port's only near-peer is the player). The
+  port held the drone down while Bond was within **8.0** — twice the game's radius — so the escort
+  followed at the walker's 4-5 band sat in STUN_GRENADE_LOOP (0x4e) forever; a guard's stun grenade
+  (the diverged fight) parked the contact permanently. Fixed in drone.rs `handle_stun` (gate
+  `stun_kept_down` = `dist < 4.0`, re-arm 300 = 5·FRAME_RATE_INT kept); unit test
+  `stun_loop_recovers_when_the_player_is_beyond_the_games_4_band` pins the 3.9/4.0/4.1 boundary.
+
+Result: walkreal_07000001_live 2/2 and fix_pickups_trace_live 2/2 on the merged tree (d6575e4), the
+head-look and facial fixes and their tests kept. Shared-file touches (all minimal, listed):
+drone.rs (the stun gate + the unit test), tests/common/walker.rs (follow cap returns),
+the two test files. Live checks and the full account: docs/reports/fix-head-look2.md.
