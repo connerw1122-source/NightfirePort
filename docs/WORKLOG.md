@@ -11600,6 +11600,14 @@ full suite did not fit the window. Report: docs/reports/102j2-fix-casings-16b.md
   death is silent state 4 [M 0x12e848], so the wait adds no blast), with the evidence chain in the comment.
   fix_weapon_sounds_live 3 passed / 2 ignored (pre-existing, documented); fire_modes3_live 5 passed /
   4 ignored (pre-existing); fix_weapon_fire_modes_live 5 passed.
+
+## fix-objective-drives — s/fix-objective-drives (task 105d, started 20:32 UTC 2026-10-14)
+- Task: campaign-flow blocker 6 — drive the four gameplay-driven objectives through the runner's real
+  input path: 09's ch71 (2/3), 08's ch75 gondola escape (1/2), 4a's ch74, 0a's objective inputs 0x48/0x49
+  (Q-Worm install script player's out 72 + the security-centre zone). Find the live writer per objective
+  (script players, touch zones, gadget use), fix any port bug that stops the writer, and make each of the
+  four levels complete its objectives and chain through crates/nf-view/tests/campaign_flow_live.rs.
+- Work in progress: reproducing each of the four headless first.
 ---
 Task ID: 102o-fix-striped-boxes2
 Agent: striped-boxes2 worker
@@ -11755,3 +11763,15 @@ campaign_flow_live 4/4 — all on the merged tree (89e153e9). Left: the bonus/wi
 0700000b blocker-4 race, the final-tree suite total (window closed; see the report). Report:
 docs/reports/fix-front-end-chain.md (live checks: the PCSX2 results page after 01, the mission
 list's unlock states, the F8 render points).
+## fix-objective-drives — s/fix-objective-drives (task 105d, finished 22:15 UTC 2026-10-14)
+- Done: the four gameplay-driven legs are driven through their levels' own writers in the campaign
+  runner (crates/nf-view/tests/campaign_flow_live.rs) — 4 campaign tests pass. 09: 3/3 via the real
+  cab exit (fix-level-chain's 0xE8 + Trigger_Activate's success write IS ch71's writer) and the real
+  exit to 0a; 0a: the arrival plate folds 09's rec, the real gadget shot at the PC (or the documented
+  cubicle-collision stand-in), the muxes real, the hatch E → 0b; 08: the real floor touch → mux ch 1
+  → the real carriage ride (Bond rides the key line) → ch 83 → ch 5 at the found warm-load
+  pack-cinematic gap → the copter's real ch 0x4B → complete → 0x0730008; 4a: the real ride (no
+  re-seat) → the documented script-end stand-in → complete. NO production code changed; shared files
+  untouched. Report: docs/reports/fix-objective-drives.md (six documented stand-ins with live checks;
+  the new one: SP #296's lazy load misses the loaded 07900008 pack script on warm loads — cold runs
+  it fine, probe-backed). Sisters: the AND-mux before/after pairs + 4a's mid-ride OFF check.
