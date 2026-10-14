@@ -10441,3 +10441,6 @@ Work Log:
 
 ## fix-movies-tests
 - Started: fix movies-feature test build (menu_movies.rs:282 E0614 u32 deref), run all movies-gated tests with --features movies, fix failures, note in docs/tools/test-suite.md.
+
+## fix-movies-tests (outcome)
+- menu_movies.rs:282 E0614 fixed (present returns (u32,u32,&[u8]) by value [M movie.rs:226]); all 203 nf-view+nf-formats test binaries build with --features nf-view/movies; 202 run: 201 ok + disc_golden's 3 allowed slim-ISO fails; PSS-data tests skip on the slim stub image by contract; docs/tools/test-suite.md gained the movies-feature note; weapon_matrix_live (>600 s with or without movies — pre-existing) flagged for the suite gate. No shared source files touched.
