@@ -130,3 +130,29 @@ step: read part 4's live `m[3]` at fire time and aim exactly there (`first_box_h
 return Some, and the health must drop through the real msg-8 path). The full-input-path test
 (`the_0c_sniper_takes_damage_when_shot`) still fails for the same reason plus the documented
 aim-mode pitch drift; both harnesses are on the branch ready for that step.
+
+## Verdict (10:40 UTC): the sniper's damage path is SOUND — the user's bug is upstream in the aim
+
+With the probe re-aimed at the LIVE torso box centre (part 4's `m[3]` read at fire time), the
+deterministic bullet lands: **health 10.0 → 4.75 at the crossing tick** — exactly the P2K's 3.5
+torso damage × the Agent-difficulty 1.5 ([M `NDrone2_HitDamage` 0x145558's difficulty factor]) —
+and the sniper's state machine takes the hit state (0x58). The probe is now a pinned regression
+(`assert!(hp < 9.99)`).
+
+So the full chain — boxes → `Collide_Jointy` ray test → broadphase gates → msg 8 →
+`NDrone2_HitDamage` → health — works end to end on the rooftop sniper. The user's "shooting him
+did nothing" must come from the player's shots never reaching the boxes. The two candidates this
+session measured (both in the harness logs above):
+
+1. **The aim-mode pitch drift**: while AIM is held, the sim pulls `bond.pitch` toward ≈0.187
+   normalised regardless of the setup-set value (0.162) — the aim loop could not hold a high
+   target; the shots' plane passed 0.4 ABOVE the head box. If the game's aim pitch holds where the
+   stick leaves it, the port's look handling in aim mode is the bug.
+2. **The L1 aim-assist**: the port auto-aims only while NOT aiming (`auto_aim && !aiming`,
+   scene.rs:2155). The PS2 game's aim assist snaps the crosshair to the target's boxes — on a
+   rooftop target 20 units up, that vertical snap is exactly what makes the shot land. The next
+   session should check the game's `Check_Target`/aim-assist vertical behaviour [M the
+   Check_Target 0x1a7810 family] against the port's.
+
+The live checks at the bottom of this report cover both (the PCSX2 shot-effect check and the
+nf-view vantage render).

@@ -140,7 +140,22 @@ fn probe_sniper_direct_bullet() {
     let ch = scene.sim.as_ref().unwrap().drones.list[si].switch_channel;
     scene.sim.as_mut().unwrap().drones.set_channel(ch);
     for _ in 0..60 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
-    let (from, chest) = ([46.0f32, 15.7, -182.0], [43.77f32, 21.84, -205.13]);
+    let (from, _) = ([46.0f32, 15.7, -182.0], [43.77f32, 21.84, -205.13]);
+    // Aim at the LIVE torso box centre (part 4's m[3] at fire time) — the settle-time centre went
+    // stale (the drone shifts with his idle anim).
+    let chest = {
+        let sim = scene.sim.as_ref().unwrap();
+        let data = nf_game::drone::Data {
+            tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons,
+            world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins,
+            skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
+            hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
+            surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
+        };
+        let boxes = sim.drones.list[si].hit_boxes(&data);
+        let torso = boxes.iter().find(|b| b.part == 4).expect("the torso box");
+        [torso.m[3][0], torso.m[3][1], torso.m[3][2]]
+    };
     let d = [chest[0]-from[0], chest[1]-from[1], chest[2]-from[2]];
     let l = (d[0]*d[0] + d[1]*d[1] + d[2]*d[2]).sqrt();
     let dir = [d[0]/l, d[1]/l, d[2]/l];
@@ -214,6 +229,10 @@ fn probe_sniper_direct_bullet() {
         }
         if hp < 10.0 { eprintln!("[direct] t{t}: DAMAGE LANDED (hp {hp})"); break; }
     }
+    let hp = scene.sim.as_ref().unwrap().drones.list[si].health;
+    // The damage path works END TO END when the bullet is aimed at the live box centre: the P2K's
+    // 3.5 torso × the Agent 1.5 difficulty = 5.25 → health 4.75, the state machine's hit state.
+    assert!(hp < 9.99, "the sniper's damage path stopped working: health {hp} after the live-centre shot");
 }
 
 /// 0700000c: the rooftop sniper shoots Bond (the user "heard sniper shots") but Bond's shots do
