@@ -10655,3 +10655,11 @@ on it. Suite on the final tree: nf-game 143/143; the swim/ladder/walkreal famili
 walkreal_probe3_live 2/2 + the nf-view bucket 35/35). The full four-crate run did not fit the window
 (suite.py cannot survive the background in this sandbox — third session running); the remaining families
 are listed in the report. NO RNG draws added; no wall-clock in Sim.
+## fix-script-objects (started)
+
+Branch `s/fix-script-objects` (from origin/master c5b17c0). Task 289: GAPS G-031's remainder after
+fix-script-commands — script-created objects: AI volumes / pickups / breakables from `Script_CreateEntity`
+0x1d8968's other arms, the `SP_Hit` bullet and object flags (07000007's urn break, mask 2), `Corona_2` glow
+drawing, drones riding moving objects, the players' place in the object list order. Plan: census the disc
+scripts by created kind, port in order of level usage, one NF_ISO test per arm. Files: nis.rs, drone.rs
+(riders), the draw hooks; shared files additive only.
