@@ -161,6 +161,31 @@ pub struct Objects {
     /// game emits this only on the CREATE path (an existing same-class stream object is re-pointed
     /// without a new pickup [M 0x1d8a68-0x1d8a80]). The sim drains it after the scripts tick.
     pub pending_pickups: Vec<PendingPickup>,
+    /// `Script_CreateEntity` 0x1d8968's obj_type 0xF5 arm: `Drone_AIVolume_Create` (0x1376c0) —
+    /// created at the scratch origin with the identity scales and keyed from the script from the
+    /// same tick on [M 0x1d8a58 + Script_EntityStart's `Script_Interp` tail]; the caller drains it
+    /// into the level's volume list (the game's `LList_Add` 0x2706c8 registration [M 0x1376c0:119]).
+    /// 07000005's truck script 0x06000A22 stream 2 (glist 0x0200040C, params [0]) is the disc's
+    /// only script-created volume [D the 289 census].
+    pub pending_volumes: Vec<PendingVolume>,
+}
+
+/// One queued `Drone_AIVolume_Create` (0x1376c0) from a script's Entity command obj_type 0xF5 —
+/// see `Objects::pending_volumes`.
+#[derive(Clone, Debug)]
+pub struct PendingVolume {
+    pub script: u32,
+    pub stream: u8,
+    /// The Entity command's glist hashcode — the half-extents come from its map-object bounds
+    /// (|max − min| / 2 [M 0x1376c0:84-92: `glist+0x20` min, `+0x30` max, ×0.5 × the scale triple]).
+    pub hash: u32,
+    /// The stream's posed matrix at the creation tick (the game creates at the scratch origin
+    /// 0x2d6200 [L (0,0,0)] with the identity scale triple {1,1,1} [M 0x1d8a58], and the object
+    /// matrix is keyed from the script from the same tick on).
+    pub matrix: Mat4,
+    /// The Entity command's parameters: [0] × 0.01 is the visibility factor (+0x20, `level+0x2c`),
+    /// [1] the kind selector (+0x24, `level+0x30`: 0 → 0, 1 → 2, 2 → 1, 4 → 3 [M 0x1376c0:100-116]).
+    pub params: Vec<u32>,
 }
 
 /// One queued `Pickup_Create` from a script's Entity command (see `Objects::pending_pickups`).
@@ -189,6 +214,10 @@ pub trait World {
     fn anim_ops1(&self, script: u32, from: i32, to: i32) -> Vec<u32> { let _ = (script, from, to); Vec::new() }
     /// The running level (fix-finale-blockers: the 0700004a lift stand-in keys on it).
     fn level(&self) -> u32 { 0 }
+    /// fix-script-objects: a glist's LOCAL bounding sphere (the map object's centre and radius —
+    /// `Control_BuildWorldSph` 0x133070 transforms the centre by the object matrix into obj+0x80,
+    /// obj+0x8C carries the radius). `None` = the hash resolves to nothing above nf-game.
+    fn glist_sphere(&self, hash: u32) -> Option<([f32; 3], f32)> { let _ = hash; None }
 }
 
 const IDENT: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
@@ -558,6 +587,19 @@ impl Script {
                     script: self.nis.hashcode, stream: i as u8, hash,
                     kind: p(0) as u16, id: p(1) as u16, rounds: p(2) as u16 as i16,
                     switch_ch: p(3) as u16, sound: p(4), matrix: *matrix,
+                });
+            }
+        }
+        // `Script_CreateEntity` 0x1d8968's 0xF5 arm (→ class 0x3E): `Drone_AIVolume_Create` 0x1376c0.
+        // The create path only (a same-class stream object is re-pointed at the gfx without a new
+        // volume [M 0x1d8a68-0x1d8a80]); the caller resolves the glist's bounds and registers the
+        // volume with the level's list. The disc's only instance: 07000005's truck script
+        // 0x06000A22 stream 2 (glist 0x0200040C, params [0]) [D the 289 census].
+        if obj_type == 0xF5 && fresh {
+            let pos = match self.streams[i].obj { Some(p) => p, None => 0 };
+            if let Some(Some(Obj::Entity { matrix, .. })) = objs.list.get(pos) {
+                objs.pending_volumes.push(PendingVolume {
+                    script: self.nis.hashcode, stream: i as u8, hash, matrix: *matrix, params: params.clone(),
                 });
             }
         }
@@ -1004,6 +1046,37 @@ impl Player {
         }
         let mut flags = 0u16;
         if self.countdown == 0 && self.out != 0 && ch.on(self.out as u32) { flags |= 1; }
+        // `SP_Hit` 0x1dc470's bit 0x2 — a class-5 object (an explosion) in one of the current
+        // script's stream objects' +0xD0 hit chains, while the countdown byte is 0 [M 0x1dbda8:66
+        // gates the SP_Hit call on the countdown]. The game's chain carries the HITDATA the
+        // explosion objects appended; the port's analog is the alive-blast list reaching the
+        // stream object's own sphere (obj+0x80 centre = `Control_BuildWorldSph` of the glist's
+        // local centre +0x10, obj+0x8C radius [M 0x133070:36-40]) — the same sphere shape
+        // `Explode_Propagate` 0x17c518 sweeps with [M 0x17c620]. Mask 2 SPs are exactly the ones
+        // gated on this bit (07000007's urn SP #312 [D levels.md §5.3]); the mask == 2 arming
+        // `Collide_FilterBullets(obj+0xD0, 0x106)` 0x1dc524-0x1dc534 has no port-side chain to
+        // arm (the port models no per-object bullet chains) — a listed deviation.
+        if self.countdown == 0 && !gate.blasts.is_empty() {
+            if let Some(s) = self.info[self.cur].as_ref() {
+                'outer: for st in &s.streams {
+                    if st.kind != 1 { continue; }
+                    let Some(Some(Obj::Entity { hash, matrix, .. })) = st.obj.and_then(|o| objs.list.get(o)) else { continue };
+                    let (centre, radius) = match w.glist_sphere(*hash) {
+                        Some((c, r)) => ([
+                            matrix[0][0] * c[0] + matrix[1][0] * c[1] + matrix[2][0] * c[2] + matrix[3][0],
+                            matrix[0][1] * c[0] + matrix[1][1] * c[1] + matrix[2][1] * c[2] + matrix[3][1],
+                            matrix[0][2] * c[0] + matrix[1][2] * c[1] + matrix[2][2] * c[2] + matrix[3][2]], r),
+                        // No model above: the matrix translation, radius 0 (only a blast AT the
+                        // object's origin touches) [S].
+                        None => ([matrix[3][0], matrix[3][1], matrix[3][2]], 0.0),
+                    };
+                    for &(bp, br) in &gate.blasts {
+                        let d = ((bp[0] - centre[0]).powi(2) + (bp[1] - centre[1]).powi(2) + (bp[2] - centre[2]).powi(2)).sqrt();
+                        if d - radius <= br { flags |= 2; break 'outer; }
+                    }
+                }
+            }
+        }
         let mut value = self.out != 0 && ch.on(self.out as u32);
         if self.countdown != 0 { self.countdown -= 1; }
         if self.activated && self.countdown == 0 { flags |= 4; }
@@ -1097,11 +1170,17 @@ impl Player {
 /// (0x114e70, from `SFXUpdate` 0x1156c0 in `Game_Run`'s pre/post passes 0x1c9790) clears the
 /// EventList once per frame, so a post made later in the object walk survives into the next
 /// walk — the port passes the LAST walk's event here (`Drones::prev_event2`).
-#[derive(Clone, Copy, Debug, Default)]
+#[derive(Clone, Debug, Default)]
 pub struct SpStart {
     pub health_ok: bool,
     pub mission: u32,
     pub music2: u32,
+    /// fix-script-objects (`SP_Hit` 0x1dc470): the alive blasts of the PREVIOUS tick's end —
+    /// (centre, radius). The game's SP_Hit reads the +0xD0 hit chains the explosion objects
+    /// filled; the port passes the `Drones::explosions` records instead (same tick order: the
+    /// blast spawns at tick T's end, the SP pass reads it at T+1 [M 0x1dbda8:66 — SP_Hit runs
+    /// while the countdown byte is 0]). Empty on most ticks.
+    pub blasts: Vec<([f32; 3], f32)>,
 }
 
 /// The level's script players, their scripts and the objects they made.
@@ -1121,6 +1200,16 @@ pub struct Scripts {
 }
 
 impl Scripts {
+    /// fix-script-objects: the live entity matrix of `src` (script hash, stream) — the
+    /// script-created AI volumes' per-tick refresh reads it (the game keys obj+0x90 from the
+    /// stream every `Script_Interp` 0x1d9a08:106-133). Read-only.
+    pub fn entity_matrix(&self, src: (u32, u8)) -> Option<Mat4> {
+        self.objects.list.iter().flatten().rev().find_map(|o| match o {
+            Obj::Entity { matrix, src: s, .. } if *s == src => Some(*matrix),
+            _ => None,
+        })
+    }
+
     /// The scripts (`lib`) and the players placed on the main map.
     pub fn new(lib: HashMap<u32, Arc<Nis>>, placements: &[Placement]) -> Scripts {
         let mut players = placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9).filter_map(|(i, p)| Player::from_placement(i, p)).collect::<Vec<_>>();
