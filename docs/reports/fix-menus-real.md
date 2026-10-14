@@ -71,8 +71,12 @@ row inside the 512×448 screen).
 
 - Baseline before the work (origin/master tree): **906 passed, 3 failed, 27 ignored (18 min)** —
   the 3 allowed `disc_golden` only, no TIMEOUT/CRASH.
-- Final tree: run in progress at report time — see the WORKLOG tail / the commit message for the
-  recorded totals. (`tools/test/suite.py` with `NF_ISO` = the onfoot ISO.)
+- Final tree (`tools/test/suite.py`, `NF_ISO` = the onfoot ISO): **913 passed, 4 failed, 27
+  ignored (17 min)** — the 3 allowed `disc_golden` + one stale navigation in
+  `movie_playback_flow::a_menu_started_mission_rides_state6…` (it confirmed on the codename page's
+  old row 0; row 0 is now "New Codename" [M 0x1f7b78:58-66]). Fixed after the run with a `Down`
+  first — the binary re-run is **9/9**; the rest of the suite was untouched by that one-line test
+  change.
 
 ## What's left
 
