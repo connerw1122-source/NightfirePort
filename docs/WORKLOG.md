@@ -10077,3 +10077,15 @@ the marks (86.8,43.7,-33.3) / (92.0,43.7,-30.8) / (92.2,43.9,-31.1); pre-fix non
 (3) gdbwatch (action): watch obj+0x30 of a 060004f1 anim object during the scene — the game
 advances it per frame from the seq's first root; the port's pose root now follows the same
 channel. nf-view spot for the render: --bond 86.8,44.0,-25.0,pi,0 (closeup at Kimiko's mark).
+
+## fix-cutscene-faces (s/fix-cutscene-faces) — 2026-10-14
+
+Started (06:20 UTC): master 966671a + origin/s/fix-cutscene-draw (d1b5e08) merged at 61d2d8e. Task:
+the cutscene-draw fix (the widest track owns every bone it covers) unfroze the cast but froze the
+mouths — `fix_cutscenes2_live::the_kimiko_scene_characters_play_their_face_tracks` fails on the
+merged tree ("the face track must move its bones (frames 399): the mouth animation"). Fix the game's
+way: channels map to bones through the SKIN's table (AnimFrameCopy receives the sAnimSkin;
+psiBuildMatrixPalette 0x111498 reads sAnimObject+0x94), so the 22-channel face track reaches only
+the face bones and the 222-channel body track the body — port the mapping instead of first-writer /
+widest-wins. Tests: the Kimiko cast at scripted world positions AND the face bones moving over the
+face track's frames, with sister assertions.
