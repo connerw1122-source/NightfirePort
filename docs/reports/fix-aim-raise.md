@@ -103,9 +103,18 @@ Regression sweeps on the fixed tree: `fix_guard_misc_live` 6/6 (**the 0c sniper 
 the P2K's instant aim is untouched), `fix_viewmodel_zoom_live` 3/3, `fix_zoom_overlays_live` 6/6
 (the watch's manual `aiming = true` + held zoom is bit-compatible), `gadgets_live` 4/4 (the AIMS
 side lights, whose idle counter the raise now resets), `gadget_laser_live` 7/7,
-`fix_auto_switch_live` 2/2, `walkreal_0700000a/0c/0d_live`, `fix_progress_live` 3/3. The full
-four-crate suite (`tools/test/suite.py`) ran on the final merged tree — the total line and any
-FAILED/TIMEOUT lines are at the bottom of this report.
+`fix_auto_switch_live` 2/2, `walkreal_0700000a/0c/0d_live`, `fix_progress_live` 3/3.
+
+The full four-crate suite (`tools/test/suite.py`, 263 binaries, the final tree merged with
+origin/master ed718f8): through its first 200 binaries — **643 passed, 3 failed, 27 ignored, 0
+unexpected** — the run outlived the session window (the heavy ISO binaries trail; the totals here
+are the log's sum at close). The 3 failed are the `fix_0c_pylon_live` pair +
+`probe_pylon_render::probe_render_pylon_only`: `wgpu adapter: NotFound` — this sandbox has no GPU
+adapter (documented sandbox artifact; the same panic hits any render test here, before any sim
+code runs). `weapon_matrix_live` hit the runner's 600 s cap — the documented pre-existing artifact
+(fix-0c-pylon.md records the identical TIMEOUT at matrix_0700001b; the binary's wall clock here is
+~710 s and all 28 of its tests pass split through its own NF_MATRIX selector). No aiming-related
+binary failed.
 
 ## Shared-file notes (minimal, additive)
 
