@@ -11668,3 +11668,51 @@ Task: the no-exit-trigger levels must chain like the game does — 06→07, 11�
   5/5, fix_searchlight_alarm_live 2/2, spawner_kill_live 5+1 pre-existing ignore, fix_npcs_live
   4/4. Shared files additive only (sound.rs new type; drone.rs field-on-own-line + two hooks).
   Report: docs/reports/fix-06-alarm.md.
+Task ID: 103i-fix-reload-hang
+Agent: reload-hang worker
+Task: reload-hang — the reload state machine hangs (state 6, clip 0): empty silenced twin 0x03's auto-reload sticks in rel=6 forever and every later switch is refused [M Player_WeaponChange 0x1a6f80:33-47]; the AT-420 0x2D's 5/6/7 machine never returns either. Find the game's reload loop and its exits (Player_WeaponFiring 0x1a5460, the reload restart gate, the view-script queue +0xA4/+0xA8/+0xAC), port the exits for every reload kind (magazine, per-shell, rockets), test through the real input path, re-run nf-extract weapon-matrix on 27 levels, put the new red counts next to weapon-matrix2's.
+
+Work Log:
+- (14:04 UTC) Branch s/fix-reload-hang created from origin/master 088bdf4 (weapon-matrix2 already merged). Setup reused (repo, work/, ISO, nf-queue). Pushing the checkpoint, then: suite baseline in background, reproduce first.
+
+- (14:04-15:05 UTC) Reproduce round: 4 NF_ISO tests (fix_reload_hang_live.rs) through the real input
+  path on 07000005. The direct empty-0x03 auto-reload PASSES on master (reload → idle, clip refilled)
+  — the rel=6 hang does not reproduce headlessly. The matrix re-run on 07000005 (nf-extract
+  weapon-matrix) shows the SAME red row as weapon-matrix2's; instrumented runs (NF_MATRIX_DBG +
+  dbg2 mc/dis/death/menu) pin the D-block (0x2d+): **death=true** — Bond died during the 0x2c
+  guided-Sentinel cell and `step_bond` zeroes every input while the death is active (scene.rs 1625),
+  so every later cell's draws/switches are silently eaten. A harness artifact, not the reload
+  machine. The R cells = the reload pulse lost to the fire script (the 100d window artifact). The
+  twin-refusal D (0x18/0x2d): switch_to cannot select a twin record (the game's own refusal — the
+  player reaches twins with the mode button) and mode_to bounces 0x02↔0x03.
+- REAL port bug found [M Player_ReloadAmmoType 0x1a1988:18-22]: twins (+0x05 set, same ammo type)
+  read/write the BASE's clip slot; the port's runtime boundary (scene.rs 2158 read, 2674 write-back,
+  the swap paths) uses the twin's own per-weapon slot — so every 0x02↔0x03 mode hop zeroes the
+  magazine (clip[0x03] is a never-filled slot) and fires a spurious auto-reload. The give path
+  (pickup.rs clip_slot) already models the base unification; the runtime does not. Fix next.
+- (15:05-15:45 UTC) FIX: `Sim::clip_slot` in scene.rs — the twin families' runtime clip boundary
+  now uses the game's shared base slot [M 0x1a1988:18-22] at the per-tick read, both swap reads and
+  the write-back. The reload exits needed no change (Gun::reload_tick already matches case 5/6/7).
+  5 tests in fix_reload_hang_live.rs all green (magazine 0x02/0x03, rockets 0x2d, per-shell 0x1c +
+  the fire interrupt, the mid-reload switch refusal-then-land, the twin shared magazine). The
+  matrix's D/M/R mass decomposed: Bond's death mid-sweep eats every input below the killing cell
+  (dbg2 death=true), the guided-missile camera eats the reload/switch phases (07000002's rocket R
+  cells), the reload pulse is lost to the fire script, and twins are unreachable via switch_to by
+  the game's own model (mode_to bounces). rocket_hit_applies_the_blast_exactly_once needed its
+  clip poke moved to the game's base slot (clip[0x2c]) — the fixed boundary reads the shared
+  magazine; binary 5/5 green after. Suite on this tree: build ok 258; disc_golden x3 (allowance),
+  weapon_matrix_live 600 s TIMEOUT (the suite runs the full 16-min matrix against the cap —
+  pre-existing), pylon render flakes under the concurrent matrix run (green in isolation).
+  Report: docs/reports/fix-reload-hang.md. Files: scene.rs (clip_slot + 4 sites), matrix.rs (dbg
+  vs/vt), fix_reload_hang_live.rs (new), fix_weapon_fire_modes_live.rs (the poke, noted), two
+  probe examples. Next window: the runner's death/menu + twin-reach + pulse-window fixes, then the
+  full 27-level sweep for the new red counts.
+
+---
+Task ID: 103i2-fix-reload-hang2
+Agent: reload-hang2 worker
+Task: fix-reload-hang2 — the merge of s/fix-reload-hang with master HELDs: fix_weapon_sounds_live::every_weapon_on_07000005_draws_fires_and_reloads_with_sounds fails ("0x4c/0x4f/0x51/0x52/0x53/0x56/0x57/0x58/0x59: draw sound 0x281 never played"). The change is Sim::clip_slot (the base-unification predicate [M Player_ReloadAmmoType 0x1a1988:18-22]) in scene.rs. Narrow it to what the game unifies; keep twin_hop green.
+
+Work Log:
+- (18:11-18:15) Branch s/103i2-fix-reload-hang2 created from origin/s/fix-reload-hang, origin/master merged (WORKLOG conflict resolved keeping both).
+- (18:11-20:03) Branch from origin/s/fix-reload-hang + origin/master merged. Repro: the sweep's full failure list is 16 "draw sound 0x281 never played" (the gadgets) + 5 "none of its missing sounds" — the driver quoted the first 9. NF_SOUNDLOG: the switch machine's log STOPS at 0x38's draw ("1→3 draw 0600072c (weapon 0x38)") — state 3 never completes, every later switch refused, and the gadgets were pure downstream (0x4a/0x4b/0x4d... equips were refused by the 100a asset gap, so the first EQUIPPED gadget 0x4c was the first checked). Minimal repro (0x37 drained → equip 0x38): sw=3 forever. Root cause [M]: clip_slot(0x38) = base 0x37 (share set, ammo equal — the legit unification), and the switch sites fed the CLIP SLOT into draw_script/idle_script — the game reads the draw script from the weapon's OWN record [M Player_SetWeaponAnimObj 0x1a2e38 case 3: weapon_data[cur·0x10c+0xc0]; only the clip array routes to the base, Player_ReloadAmmoType 0x1a1988:18-22]. The base's draw (0x0600072c) played for 0x38 while the state-3 wait measured 0x38's own (0x060004ee) — the wait never finished. Fix: the 4 script lookups use the weapon's own id; clip/spare keeps the unified slot. Post-fix: the wedge repro draws at t=42 (was forever), fix_weapon_sounds sweep's 16 draw-sound failures all gone, twin_hop + the whole fix_reload_hang_live file green. New regression test the_twins_draw_completes_and_the_machine_stays_alive (fails pre-fix, 6/6 post-fix). Residual (documented, not solved): the sweep still fails on 4 "none of its missing sounds ever played" (0x3a [1093,1094], 0x41 [639], 0x42 [1051,1481], 0x43 [1486-8]) — post-fix those records DRAW (log) but never FIRE: a focused probe (0x3a alone AND after 0x37→0x38) shows clip stays 1, timer=-1 through 25 fire ticks; the same probe under master's scene.rs was inconclusive (output not captured). Next window: why the fire gate never opens for 0x3a/0x41/0x42/0x43.
