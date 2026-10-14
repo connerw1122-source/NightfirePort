@@ -9633,3 +9633,17 @@ Work Log:
   Files: dev.rs, panel.rs (doc), lib.rs (hooks), tests/dev_menu_flow.rs (new),
   tests/menu_live.rs, tests/dev_tools_live.rs (signature/width updates). No shared-file surprises:
   drone.rs/scene.rs/player.rs untouched.
+
+---
+
+## fix-qclaw (s/fix-qclaw) — started 2026-10-14 02:28 UTC
+
+Task 101f: the Q-Claw (grapple gadget) draws no hook model and firing within range of a grapple
+point makes a bullet impact instead of the grapple (playtest 1013-1758, level 07000005 at
+`--bond 16.5,29.6,58.6,0,0.25 --give 0x50`, beside grapple point #282 (13.75, 32.29, 57.3)).
+Plan: settle the real weapon id (the panel/`--give` used 0x50; another note says 0x4a) from the
+weapon table + the game's equip code in the decompile; find the first-person model; wire the
+grapple fire path (latch on a grapple point within range, reel in, hang while held; no bullet);
+fix so `--give <qclaw id>` draws the claw and firing at #282 from that spot latches and reels.
+Tests through the real input path at that spot: fire held -> Bond travels to the point and hangs;
+0 bullet decals; the view model is the claw's mesh; sister assertions.
