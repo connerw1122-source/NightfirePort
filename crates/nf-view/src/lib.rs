@@ -2467,6 +2467,11 @@ pub fn run() -> Result<()> {
             };
             // Without `--cam`, Bond stands at the start and the camera is his eye (the first-person gun shows).
             let walk = !args.iter().any(|a| a == "--cam");
+            // `--zoom-hold`: hold aim + the zoom key every tick, so the headless --shot renders can show the
+            // zoom overlays (the overlay draws only while the key is held; `Player_Zoom` 0x1a1a70 raises the
+            // zoom on the held input — the same path the fix-zoom-overlays tests drive).
+            let zoom_hold = args.iter().any(|a| a == "--zoom-hold");
+            let shot_input = nf_game::player::Input { aiming: zoom_hold, zoom: zoom_hold, ..Default::default() };
             // `--channels`: every switch channel on first (as K).
             if args.iter().any(|a| a == "--channels") { for c in 1..=255 { sim.drones.set_channel(c) } }
             // `--bond x,y,z`: Bond starts exactly there (in the air he falls), instead of the level start.
@@ -2478,14 +2483,14 @@ pub fn run() -> Result<()> {
             let skip_cuts = args.iter().any(|a| a == "--skip-cutscenes");
             for t in 1..=time as u32 {
                 if skip_cuts && sim.disabled { sim.drones.scripts.skip_request = true; }
-                if walk { sim.step_bond(Default::default(), pulls.contains(&t), false, false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
+                if walk { sim.step_bond(shot_input, pulls.contains(&t), false, false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
             }
             // With `--skip-cutscenes`, a skipped cut-scene's hand-back moves Bond: put him back on the `--bond` spot (and
             // let one tick settle) so the image pair matches the real game's placement.
             if skip_cuts {
                 if let Some(i) = args.iter().position(|a| a == "--bond") {
                     let v: Vec<f32> = args.get(i + 1).map(|s| s.split(',').filter_map(|t| t.parse().ok()).collect()).unwrap_or_default();
-                    if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } sim.step_bond(Default::default(), false, false, false); }
+                    if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } sim.step_bond(shot_input, false, false, false); }
                 }
             }
             if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV }; }

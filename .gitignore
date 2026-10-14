@@ -18,3 +18,5 @@ nf_*.log
 s1.log
 s3.log
 suite*.log
+# probe output (disc textures) from crates/nf-view/tests/ctx2_probe*.rs
+/crates/ctx2-dump/

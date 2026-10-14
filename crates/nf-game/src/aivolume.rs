@@ -18,6 +18,10 @@ pub struct AiVolume {
     /// 4 → 3, other values leave 0.
     pub kind: u16,
     pub placement: usize,
+    /// fix-script-objects: a SCRIPT-created volume's owner (script hash, stream) — its matrix
+    /// refreshes from the live `Obj::Entity` every tick (the game keys obj+0x90 from the script
+    /// stream from the creation tick on [M Script_Interp 0x1d9a08:106-133]). `None` = a placement.
+    pub src: Option<(u32, u8)>,
 }
 
 /// The main map's AI volumes. On 07000005 (and for parameter 1 = 4) the creator negates the rotation's z and lifts the
@@ -39,7 +43,7 @@ pub fn build(level: &Level, level_id: u32) -> Vec<AiVolume> {
         }
         let half = [0, 1, 2].map(|k| ((obj.max[k] - obj.min[k]) * 0.5).abs() * scale[k]);
         let kind = match param(1) { 0 => 0, 1 => 2, 2 => 1, 4 => 3, _ => 0 };
-        out.push(AiVolume { m: matrix(rot, pos), half, factor: nf_formats::ps2float::mul(param(0) as f32, 0.01), kind, placement: i });
+        out.push(AiVolume { m: matrix(rot, pos), half, factor: nf_formats::ps2float::mul(param(0) as f32, 0.01), kind, placement: i, src: None });
     }
     out
 }

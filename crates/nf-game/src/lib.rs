@@ -41,6 +41,7 @@ pub mod props;
 pub mod pickup;
 pub mod player;
 pub mod progress;
+pub mod profile;
 pub mod ps2math;
 pub mod searchlight;
 pub mod sky;
