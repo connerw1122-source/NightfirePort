@@ -32,3 +32,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox3 at 2026-10-14T09:38Z
+
+---
+## Report (done, 2026-10-14T11:15Z)
+
+Closed by the driver: the report is on `s/fix-striped-boxes` (docs/reports/fix-striped-boxes.md); the worker didn't run finish.sh.
