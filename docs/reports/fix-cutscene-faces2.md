@@ -62,9 +62,12 @@ count (fix-facial3's stand-in probe), and keep master's exact-math code paths.
     without morphs is still facial3's open item).
   - `07000002 --bond -82.30,5.30,32.05,1.570,-0.100 --frame 170` → renders/faces2_02_f170.png —
     both actors present and lit dark (Bond in the doorway, the doctor at the monitor desk).
-- **Full suite** (`tools/test/suite.py`, 270 test binaries, NF_SILENT, slim ISO, foreground
-  chunks — the nohup background run dies between tool calls in this sandbox, the 102c/100f
-  precedent): **1074 passed, 3 failed, 35 ignored, 1 TIMEOUT**. The 3 failures are exactly the
+- **Full suite on the FINAL tree** (`tools/test/suite.py`, 270 test binaries, NF_SILENT, slim
+  ISO, foreground chunks — the nohup background run dies between tool calls in this sandbox, the
+  102c/100f precedent; re-run after merge 2 landed eb52fb56): **1079 passed, 3 failed, 35
+  ignored, 1 TIMEOUT**. (The first full run, on the merge-1 tree, was 1074/3/35 + the same
+  TIMEOUT; it also missed walk_07000006_live's 2 tests in the tally — both undercounts are
+  corrected here; merge 2 added 3 net tests, all passing.) The 3 failures are exactly the
   allowed `disc_golden` trio (slim-ISO golden dumps). The TIMEOUT is `weapon_matrix_live` at its
   600 s cap — the base branch's final run carried the identical TIMEOUT as its open item; the
   binary contains zero references to the facial/pose classifiers this task touched (grep: 0
