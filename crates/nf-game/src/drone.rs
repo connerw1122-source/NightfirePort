@@ -4825,7 +4825,42 @@ pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelle
     /// `BU+0x40`: the current heat-seek target — an index into `Drones::list` (`Bullet_homing`'s
     /// `*(int*)(BU+0x40)` object pointer; none = re-scan, and the scan re-runs when the target
     /// dies [M 0x12f3b4: the `+0xfe & 1` clear-and-rescan]).
-    pub target: Option<usize> }
+    pub target: Option<usize>,
+    /// fix-weapon-fire-modes: the weapon record's `+0x6C` carries the 0x4 GUIDED-CAMERA bit —
+    /// `Bullet_init` 0x12c5a0:234-254 hands the view to the projectile: `Player_ChangeSubState
+    /// (owner, 10)`, `BLData+0x878 = the bullet obj`, `Player_SetCamMode(BLData, 0xc)`,
+    /// `BLData+0x944 = 0`. Only the AT-420 Sentinel 'Guided' record 0x2C (+0x6C = 0x12204 [L
+    /// ee_start_05.bin]) sets it — the 'Unguided' 0x2D (0x1a200) and the Torpedo 'Guided' 0x30
+    /// (0x20200, homing only) do not [L], matching the PCSX2 pass (only 0x2C puts the view on the
+    /// rocket).
+    pub guided_cam: bool }
+
+/// fix-weapon-fire-modes: the guided missile's look-input steering (`Bullet_update` 0x12e7b0:177-244,
+/// run while the owner rides the camera in substate 10): the look analog floats (the game's
+/// `Input_Actionf(slot, 0, 1)` yaw and `(slot, 5, 1)` pitch — the port's `Input.turn` / `Input.look`)
+/// scale by 0.024543693 (π/128) radians per input unit per tick [M :185-189], the yaw rotates about
+/// the world up and the pitch about the missile's right, and the pole clamp keeps the direction
+/// inside ±0.995 of vertical [M :191-202's `±0.995` spherical gates — a steering input that would
+/// push past the pole is dropped]. The game also banks a roll value (`BU+0x58`, decayed ×0.965 per
+/// tick [M :210-216]) that only feeds the HUD ring's rotation — the port's flight needs no roll.
+/// No RNG draws (determinism).
+pub fn steer_missile(dir: &mut V3, yaw_in: f32, pitch_in: f32) {
+    const K: f32 = 0.024_543_693; // π/128 [M 0x12e7b0:185]
+    const POLE: f32 = 0.995;      // [M 0x12e7b0:191-202]
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
+    let (x, y, z) = (dir[0] / len, dir[1] / len, dir[2] / len);
+    let pole_lim = POLE.asin(); // 1.4706 rad
+    let pitch = (y.clamp(-POLE, POLE)).asin();
+    // The pole gate: an input that would drive past ±0.995 of vertical is dropped [M :191-202].
+    let dp = (-pitch_in * K).clamp(-pole_lim - pitch, pole_lim - pitch);
+    let p2 = pitch + dp;
+    let yaw = x.atan2(z) - yaw_in * K;
+    let (sp, cp) = p2.sin_cos();
+    let (sy, cy) = yaw.sin_cos();
+    *dir = [cp * sy, sp, cp * cy];
+    let nl = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
+    *dir = [dir[0] / nl, dir[1] / nl, dir[2] / nl];
+}
 
 /// What one of Bond's bullets hit: a drone (index, part) or the world, and where.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -5460,6 +5495,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
                 homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
                 target: None,
+                // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:234-254]: `+0x6C & 4` rides the camera.
+                guided_cam: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x4 != 0,
             });
         }
         // `Bullet_init_casing` 0x12fde0 (Player_WeaponInitBullet 0x1a4bf0:306, right after the
@@ -5656,8 +5693,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // and this contact is not a ricochet re-entry (`bnel $s4` at 0x12d07c), the bullet is
                     // destroyed with `Explode_Create(radius = weapon_data+0x08, damage = +0x0C, script
                     // 0x6000052, attacker = BU+0x30)` at the hit point. The disc records: the AT-420
-                    // Sentinel 0x2c/0x2d (radius 8 / damage 100) and the MGL's 'Grenade' twin 0x2a (6/75)
-                    // carry the bit; the plain guns (0x70 = 0x12) do not [L ee_start_05.bin @ 0x2bf150].
+                    // Sentinel 0x2c/0x2d (radius 8 / damage 100), the MGL's 'Grenade' twin 0x2a (6/75)
+                    // and the Scorpion 0x2e/0x2f carry the bit [L ee_start_05.bin @ 0x2bf150]; the
+                    // plain guns (0x70 = 0x12) do not.
                     // The exploding round does NOT continue as a ricochet — the handler runs the effects
                     // first (Effect_Create at 0x12d060), then the explode gate.
                     if flags70 & 4 != 0 && b.bounces == 0 {
@@ -7402,6 +7440,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         let flags70 = d.weapons.records.get(weapon_type as usize)
                             .map(|r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()))
                             .unwrap_or(0);
+                        // fix-weapon-fire-modes (folded from s/fix-weapon-fire-modes): only `+0x70 &
+                        // 0x200` records tick a fuse at all (`Bullet_DoTrails` 0x12d890:262-281 — the
+                        // fuse gate), so a no-fuse record's expiry here is the RANGE-OUT arm, and that
+                        // is a SILENT state-4 death — no `Explode_Create` [M Bullet_update
+                        // 0x12e7b0:158-162]. The MGL 'Grenade' 0x2A / AIMS-20 0x1B (+0x70 = 0x4 [L
+                        // ee_start_05.bin]) never fuse-explode: their deaths are the contact blast
+                        // (the Bounce arm above) or this quiet removal.
+                        if flags70 & 0x200 == 0 {
+                            break;
+                        }
                         if flags70 & 0x2000 != 0 {
                         // The FLASH branch (the stun grenade 0x35): `Bullet_DoTrails` 0x12d890 [M
                         // 0x12df58-0x12e130] — `Gas_Init(0.5, 1.68, …, fx 0x200001f, 0xB)`, `Camera_Shake(2.0)`,

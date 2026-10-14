@@ -10133,3 +10133,56 @@ Work Log:
 - Final suite on the master-merged tree (origin/master 966671a fix-08-walls merged; 223 binaries, tools/test/suite.py): 959 passed, 3 failed, 29 ignored — the 3 are exactly the allowed disc_golden slim-ISO set. Neighbours re-run green on the merged tree: grapple_hook_live 3, models_misc_live 10, fix_ladder2_live 4, fix_objects_live 6, fix_08_walls_live 4, qclaw_live, gadget_grapple_live, gadget_grapple_user_spot, gadget_select_live.
 - Independent audit (subagent): PASS — decompile/[L] claims re-verified, add_instance RNG-free and deterministic, the scene.rs diff removes only the stale comment, no other test asserts total counts; strengthened: every 0x3A placement on all 16 levels lacks 0x8000/0x2000 and glist 0x8/0x4 bits (the static draw is exact everywhere); citation fix: control_funcs row 0x51 is [L 0x26fa94..0x26fc68] (wire-grapple.md:7's shorter range is one row short).
 - Report: docs/reports/fix-grapple-hook.md. Files: crates/nf-view/src/scene.rs (additive sweep + counter + corrected comments), crates/nf-view/tests/grapple_hook_live.rs (new), crates/nf-view/tests/models_misc_live.rs (comment/message text only).
+## fix-weapon-fire-modes (s/fix-weapon-fire-modes) — 2026-10-14
+
+Task 100f: every weapon's fire modes — the guided-missile camera (0x2C), the MGL impact/delay
+pair (0x2A/0x2B), the full modes table (docs/systems/weapons.md), the rest the table turns up.
+Ground truth: docs/live/2026-10-13-weapon-modes-pcsx2.md. Work starting.
+
+Task 100f outcome (same session): the sandbox was WIPED ~04:20 UTC (rebuilt: clone, work-slim,
+the ISO, rustup, cargo fetch — ~40 min lost). Found and ported: the MGL's impact/delay pair is
+the records' +0x70 flags (0x2A = 0x4 impact explode [L], 0x2B = 0x280 bounce+fuse 210 [L],
+the fuse lives in Bullet_DoTrails 0x12d890:262-281 [M]); the guided missile camera is +0x6C & 4
+(Bullet_init 0x12c5a0:234-254 ChangeSubState(10)+BLData+0x878+SetCamMode(0xc) [M], the view =
+the missile's matrix [M PositionCamera case 0xc], the look steers via Bullet_update 0x12e7b0:177-244
+[M], the 15-tick static restore via Bullet_Delete +0x944=0xf + Player_Update case 10 [M]) — only
+the Sentinel 0x2C carries the bit [L]. Grenade.explode_on_impact + PlayerBullet.guided_cam +
+steer_missile + blast_at (the rockets' impact blast) + Sim.missile_cam/view_override + the fuse
+gating. docs/systems/weapons.md: the full modes table. cargo check clean; the NF_ISO test run was
+still compiling at the deadline (fresh-sandbox rebuild) — the next session runs the suite first.
+Report: docs/reports/fix-weapon-fire-modes.md. Files: grenade.rs, drone.rs, scene.rs, the new
+weapons.md + the test file (+ the mechanical explode_on_impact:false in the older tests).
+
+Task 100f addendum: the build finished — fix_weapon_fire_modes_live 4/4 (the MGL impact/delay
+pair through the real B press and fire path; the Sentinel cam ride/steer/restore vs the unguided
+sister), nf-game 34/34 binaries, and 33 tests across 9 neighbour weapon/grenade binaries green.
+The full suite.py sweep is the next session's first job.
+
+Task 100f final: the FULL suite equivalent is green — nf-game 34/34 binaries, nf-view 135 binaries
+505 passed / 0 failed / 13 ignored, nf-formats+nf-audio 87 passed; the only 3 failures are the
+allowed disc_golden trio on the slim ISO. Done.
+
+## fix-fire-modes2 (s/fix-fire-modes2) — 2026-10-14
+
+Task 100l: land 100f's fire modes on master's explosion path — no double blasts. Taking over
+s/fix-weapon-fire-modes (guided camera, steering, HUD overlay, modes table, weapons.md all stay),
+merging origin/master, deleting `blast_at` and `Grenade.explode_on_impact` and using master's
+`pending_blasts`/`spawn_blast` plus the `GrenadeEvent::Bounce` arm for every impact blast.
+Work starting.
+
+Task 100l outcome (same session): merged origin/master twice (a4164b9 + 66651ba; the second
+merge auto-resolved drone.rs/scene.rs, WORKLOG union only). The duplicates are gone:
+`blast_at` deleted — master's `pending_blasts` → `spawn_blast` drain is the only bullet
+world-hit blast [M Bullet_CollisionHandler 0x12d068-0x12d0bc]; `Grenade::explode_on_impact`
+deleted — the `GrenadeEvent::Bounce` arm's `+0x70 & 4` read is the only grenade contact blast.
+Folded into master's path with citations: the SILENT range-out (the Sim's Explode arm breaks
+for `+0x70 & 0x200 == 0` records [M Bullet_update 0x12e7b0:158-162 + the DoTrails fuse gate
+0x12d890:262-281; L record sweep ee_start_05.bin @ 0x2bf150: every fuse-death record carries
+0x200, no impact record does]) and the view's no-fuse fuse model ((+0x1C / speed) ticks). The
+guided camera, the steering, the HUD overlay, the mode table and the B-key mapping all stay.
+fix_weapon_fire_modes_live reworked to 5 tests pinning exactly ONE explosion entry and ONE
+damage application per impact (the rocket's homing `+0x6C & 0x20000` was measured curving a
+spawn-shot 37.8 units to a guard — the tests aim at the floor by the real look input instead).
+Failing-first: the naive-merge double-blast state reconstructed (uncommitted) — the rocket test
+FAILED with TWO damage applications, the inline explosion entry wiped by `explosions.clear()`.
+Report: docs/reports/fix-fire-modes2.md.

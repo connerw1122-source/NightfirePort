@@ -102,6 +102,10 @@ impl Grenade {
         self.travelled += 1.0;
         if self.travelled > self.range {
             self.state = 2;
+            // fix-weapon-fire-modes [M Bullet_update 0x12e7b0:158-162]: for a no-fuse record this
+            // expiry is the RANGE-OUT arm — a SILENT state-4 death. The Sim's Explode arm gates on
+            // `+0x70 & 0x200` (the `Bullet_DoTrails` fuse gate 0x12d890:262-281) and removes the
+            // grenade quietly; a fuse grenade (0x2B, 0x34…) explodes here as before.
             return Some(GrenadeEvent::Explode { pos: self.pos, radius: self.radius, damage: self.damage, owner: self.owner, weapon_type: self.weapon_type });
         }
         // First tick: half-speed (the game's `Rand_FRand(0.5) + 0.5` step [M 0x12e7c0]).
@@ -122,6 +126,10 @@ impl Grenade {
         if speed2 > 1e-12 {
             if let Some((t, normal, mat)) = world.segment_surface(self.pos, end, false) {
                 let hit = [self.pos[0] + (end[0] - self.pos[0]) * t, self.pos[1] + (end[1] - self.pos[1]) * t, self.pos[2] + (end[2] - self.pos[2]) * t];
+                // fix-weapon-fire-modes [M Bullet_CollisionHandler 0x12ce80:194-206]: a `+0x70 & 0x4`
+                // record's round detonates at the contact — the Bounce event carries it to the Sim's
+                // Bounce arm, which reads the record's flags and blasts instead of bouncing (the MGL's
+                // 'Grenade' 0x2A [L ee_start_05.bin]; its 'Delay' twin 0x2B bounces to the fuse).
                 // Bounce: reflect the velocity by the surface normal, × the material coefficient [L 0x3037dc].
                 let v = self.velocity;
                 let dot = v[0] * normal[0] + v[1] * normal[1] + v[2] * normal[2];
