@@ -346,8 +346,18 @@ impl Searchlights {
                 let spot = &mut self.parts[sp];
                 spot.pos = [hit[0] + n[0] * 0.01, hit[1] + n[1] * 0.01, hit[2] + n[2] * 0.01];
                 spot.drawn = true;
-                let a = atan2_approx(n[2], (n[0] * n[0] + n[2] * n[2]).sqrt());
-                spot.matrix = object_matrix([a, crate::trig::HALF_PI - a, atan2_approx(n[0], n[2])], spot.pos);
+                // The game's spot orientation [M 0x1cb900 hit branch, disasm 0x1cbe78–0x1cbea8]: the hit
+                // normal (HITDATA +0x10/14/18) becomes the object's ANGLES — pitch(+0x50) =
+                // π/2 − ATAN2_APPROX(n.y, |n.xz|), yaw(+0x54) = ATAN2_APPROX(n.x, n.z), roll(+0x58) = 0 —
+                // and the framework rebuilds obj+0x90 with `View_RotTransMatrix` (Control_GetObjMatrix
+                // 0x134210 → 0x1e5168; the spot's +0xFA bits 0x20/0x4 leave the RotTrans path live).
+                // aivolume::matrix is that builder (verified against the live volume matrix). The old
+                // reading put atan2(n.z, |n.xz|) in the pitch slot of the PLACEMENT-Euler object_matrix
+                // with the yaw in the roll slot — on wall/slope/Bond-sphere normals the disc's plane
+                // folded onto its edge (the user's "it will flip on its side").
+                let pitch = crate::trig::HALF_PI - atan2_approx(n[1], (n[0] * n[0] + n[2] * n[2]).sqrt());
+                let yaw = atan2_approx(n[0], n[2]);
+                spot.matrix = crate::aivolume::matrix([pitch, yaw, 0.0], spot.pos);
             } else {
                 self.parts[sp].drawn = false;
             }
@@ -544,5 +554,34 @@ mod tests {
         assert!(!seg_box([-5.0, 2.0, 0.0], [5.0, 2.0, 0.0], min, max));
         assert!(seg_box([0.5, 0.5, 0.5], [3.0, 3.0, 3.0], min, max), "starts inside");
         assert!(!seg_box([2.0, 0.0, 0.0], [3.0, 0.0, 0.0], min, max), "past it");
+    }
+
+    /// The spot disc's orientation [M 0x1cb900 hit branch + 0x134210/0x1e5168]: the disc mesh lies in
+    /// its local XZ plane (bbox y = 0 [D 'Searchlight1']), so its world normal is the matrix's ROW 1 —
+    /// it must equal the hit normal. The old placement-Euler reading folded it onto its edge on
+    /// vertical normals (the user's "flip on its side").
+    #[test]
+    fn the_spot_disc_faces_the_hit_normal() {
+        let nrm = |n: V3| {
+            let pitch = crate::trig::HALF_PI - atan2_approx(n[1], (n[0] * n[0] + n[2] * n[2]).sqrt());
+            let yaw = atan2_approx(n[0], n[2]);
+            crate::aivolume::matrix([pitch, yaw, 0.0], [0.0; 3])
+        };
+        for n in [[0.0, 1.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, -1.0], [0.6, 0.8, 0.0], [-0.7, 0.0, -0.7141428]] {
+            let m = nrm(n);
+            let row1 = [m[1][0], m[1][1], m[1][2]];
+            let d = (row1[0] - n[0]).abs() + (row1[1] - n[1]).abs() + (row1[2] - n[2]).abs();
+            assert!(d < 0.01, "disc normal {row1:?} != hit normal {n:?}");
+        }
+        // The flat ground pose is the identity rotation (pitch 0, yaw 0, roll 0).
+        let m = nrm([0.0, 1.0, 0.0]);
+        assert!((m[0][0] - 1.0).abs() < 1e-6 && (m[2][2] - 1.0).abs() < 1e-6 && m[0][2].abs() < 1e-6);
+        // Sister: the old reading (atan2(n.z, |n.xz|) in the placement-Euler pitch slot, the yaw in the
+        // roll slot) does NOT face the wall normal — row 1 misses (−1,0,0) by far.
+        let n = [-1.0f32, 0.0, 0.0];
+        let a = atan2_approx(n[2], (n[0] * n[0] + n[2] * n[2]).sqrt());
+        let old = object_matrix([a, crate::trig::HALF_PI - a, atan2_approx(n[0], n[2])], [0.0; 3]);
+        let d = (old[1][0] - n[0]).abs() + (old[1][1] - n[1]).abs() + (old[1][2] - n[2]).abs();
+        assert!(d > 0.5, "sister: the old reading should miss the wall normal ({d})");
     }
 }
