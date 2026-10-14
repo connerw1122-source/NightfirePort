@@ -11334,3 +11334,12 @@ Work Log:
   none touched.
 - 20:46: merged origin/s/weapon-matrix3 (6171f2a8) — matrix.rs resolved to matrix4's harness evolution + matrix3's `no_target`/stunner field (the gadget test's escape hatch, Player_WeaponInitBullet 0x1a4bf0:169-200); WORKLOG append-only.
 - 20:55: weapon_matrix_live.rs restructured — the in-suite sample (05/0c/1b) + 24 sweep levels #[ignore]d with the reason (NF_MATRIX=all or a list re-selects with -- --ignored; nf-extract weapon-matrix covers the sweep), the three 07000005 consumers share one row via OnceLock; matrix3's gadget-cell test kept, every check intact. Builds clean.
+- 22:22 UTC: the three harness gaps closed. (1) scene.rs watch arm: the game enters the mode
+  block on action12|action9 [M 0x1a24c8 `bVar5 |= Input_Action(slot,9,4)`] — the old outer
+  `if input.mode_switch` made the OR arm dead code; the fail-first probe (probe_watch, style b)
+  showed "no swap" pre-fix, "SWAP landed 0x54→0x55" post-fix. (2) matrix.rs step() now carries the
+  real input path's own invariant (lib.rs feeds `fire: self.trigger` into Input AND the trigger arg)
+  so the OR's edge reaches the port on every fire press. (3) the guided-camera ride-out before the
+  reload/mode/away phases [M Bullet_Delete 0x12e660:27-29 +0x944=0xf; Player_Update 0x193600 case
+  10] — 0x2c on 07000005: W (and the M under it, the 4.5 press eaten the same way) → clean.
+  0.05 row: 3 reds (0x32 F target-gated, 0x38 F mine) 0 panics. Checkpoint push next.
