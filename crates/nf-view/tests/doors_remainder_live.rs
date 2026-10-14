@@ -37,11 +37,11 @@ fn aim_and_use(w: &mut Walker, pos: [f32; 3], target: [f32; 3], ticks: u32) {
     }
 }
 
-/// The first door the mesh pick can act on: a loaded shape, a swing leaf, unlocked, no approach gate.
+/// The first door the mesh pick can act on: a loaded shape, unlocked, no approach gate (07000001's doors are all kind-2 slides).
 fn pickable_door(w: &Walker) -> Option<usize> {
     let sim = w.scene.sim.as_ref().unwrap();
     sim.drones.doors.list.iter().position(|d| {
-        d.glist != 0 && d.kind == 0 && d.ch_lock == 0 && d.approach == 0
+        d.glist != 0 && d.ch_lock == 0 && d.approach == 0
             && sim.world.has_shape(d.glist)
     })
 }
@@ -55,14 +55,14 @@ fn the_use_pick_respects_the_leaf_mesh() {
     let mut w = Walker::new(nf_view::load(&iso(), "07000001.bin", false).unwrap());
     w.wait_enabled(3000, "level start");
     w.wait(30);
-    let di = pickable_door(&w).expect("07000001 has a shape-backed swing door");
-    let (pos, nrm) = {
+    let di = pickable_door(&w).expect("07000001 has a shape-backed door");
+    let (centre, nrm) = {
         let sim = w.scene.sim.as_ref().unwrap();
         let d = &sim.drones.doors.list[di];
-        (d.pos, [d.matrix[0][0], d.matrix[0][1], d.matrix[0][2]])
+        (d.sph.0, [d.matrix[0][0], d.matrix[0][1], d.matrix[0][2]])
     };
     let n = norm_h(nrm);
-    let centre = [pos[0], pos[1] + 1.0, pos[2]];
+    let pos = centre;
 
     // 2.3 out: the sphere (r 1 at head+1) stays 0.3 short of the leaf. The old stand-in (2.5
     // placement distance) opened the door here — the assertion that fails pre-fix.
@@ -85,14 +85,14 @@ fn door_labels_fire_per_the_decompile_rules() {
     let mut w = Walker::new(nf_view::load(&iso(), "07000001.bin", false).unwrap());
     w.wait_enabled(3000, "level start");
     w.wait(30);
-    let di = pickable_door(&w).expect("a shape-backed swing door");
-    let (pos, nrm) = {
+    let di = pickable_door(&w).expect("a shape-backed door");
+    let (centre, nrm) = {
         let sim = w.scene.sim.as_ref().unwrap();
         let d = &sim.drones.doors.list[di];
-        (d.pos, [d.matrix[0][0], d.matrix[0][1], d.matrix[0][2]])
+        (d.sph.0, [d.matrix[0][0], d.matrix[0][1], d.matrix[0][2]])
     };
     let n = norm_h(nrm);
-    let centre = [pos[0], pos[1] + 1.0, pos[2]];
+    let pos = centre;
     let hint = w.scene.sim.as_ref().unwrap().lang.as_ref().unwrap().bind(0x2000_000b).unwrap_or("").trim().to_string();
     assert!(!hint.is_empty(), "0x200000b binds in USATxt.dat");
 
@@ -111,8 +111,7 @@ fn door_labels_fire_per_the_decompile_rules() {
         let sim = w.scene.sim.as_ref().unwrap();
         (0..sim.drones.doors.list.len())
             .position(|j| j != di && sim.drones.doors.list[j].glist != 0
-                && sim.drones.doors.list[j].kind == 0
-                && sim.drones.doors.list[j].ch_lock == 0
+                                && sim.drones.doors.list[j].ch_lock == 0
                 && sim.world.has_shape(sim.drones.doors.list[j].glist))
     }.expect("a second shape-backed door");
     let (pos2, nrm2) = {
@@ -147,14 +146,14 @@ fn a_closing_door_reverses_off_bond() {
     let mut w = Walker::new(nf_view::load(&iso(), "07000001.bin", false).unwrap());
     w.wait_enabled(3000, "level start");
     w.wait(30);
-    let di = pickable_door(&w).expect("a shape-backed swing door");
-    let (pos, nrm) = {
+    let di = pickable_door(&w).expect("a shape-backed door");
+    let (centre, nrm) = {
         let sim = w.scene.sim.as_ref().unwrap();
         let d = &sim.drones.doors.list[di];
-        (d.pos, [d.matrix[0][0], d.matrix[0][1], d.matrix[0][2]])
+        (d.sph.0, [d.matrix[0][0], d.matrix[0][1], d.matrix[0][2]])
     };
     let n = norm_h(nrm);
-    let centre = [pos[0], pos[1] + 1.0, pos[2]];
+    let pos = centre;
 
     // Open it, then step back out of the blocking zone so the 360-tick auto-close fires.
     aim_and_use(&mut w, [pos[0] + n[0] * 1.2, pos[1], pos[2] + n[2] * 1.2], centre, 30);
@@ -194,7 +193,7 @@ fn census_every_door_opens_at_its_approach() {
         let doors: Vec<(usize, [f32; 3], [f32; 3])> = {
             let sim = w.scene.sim.as_ref().unwrap();
             sim.drones.doors.list.iter().enumerate()
-                .filter(|(_, d)| d.glist != 0 && sim.world.has_shape(d.glist) && d.kind == 0 && d.ch_lock == 0 && d.locked_flag == 0 && d.approach == 0)
+                .filter(|(_, d)| d.glist != 0 && sim.world.has_shape(d.glist) && d.ch_lock == 0 && d.locked_flag == 0 && d.approach == 0)
                 .map(|(i, d)| (i, d.pos, [d.matrix[0][0], d.matrix[0][1], d.matrix[0][2]]))
                 .collect()
         };

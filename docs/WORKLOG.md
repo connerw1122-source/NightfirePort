@@ -9145,3 +9145,13 @@ collision mesh (port uses a bounding-sphere stand-in), door labels 0x2000003/0x2
 messages), and Door_ReactToHit's exact proxy-list path (from Collide_Update, not Door_Update);
 census first over the 27 levels, then port what fails. Door->portal links NOT touched (portal work
 owns those). Baseline suite starting in the background now.
+
+**fix-doors-remainder (01:15 UTC, sandbox window ended)**: the mesh use pick, both door labels and
+the Collide_Update proxy path are IN and compiling (see docs/reports/fix-doors-remainder.md for the
+addresses and the exact hooks). Verified: the T1 negative case (E at 2.3 from the leaf refused —
+pre-fix stand-in opened). Not verified in the window: the T1 sister (1.2 opens — through-axis
+per-door helper needed), T2's string resolution (0x2000003/0x200000b do not bind from USATxt.dat),
+T3 + the 27-level census (written, unrun), and the full four-crate suite (two background runs died
+to the full disk / mid-edit tree). Shared files: drone.rs (d.world into player_use + the
+collide_update call after set_dynamic), scene.rs (per-tick aim_msg + the label_msgs drain),
+lib.rs (the GameState gate flags at load). Report: docs/reports/fix-doors-remainder.md.
