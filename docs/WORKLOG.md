@@ -10489,3 +10489,89 @@ report; the FMV stills need a retail image (none in this sandbox).
 Suite on the final tree (origin/master 6cbe522 merged): see docs/reports/fix-menus-real2.md.
 Files: crates/nf-view/src/{menu,hud}.rs, crates/nf-view/tests/{menus_flow,menu_movies}.rs, plus
 the shared-file hooks listed in the report (nf-formats/src/hud.rs font_header, lib.rs call sites).
+
+
+## fix-08-collision (s/fix-08-collision) — 2026-10-14
+
+Task 100j, 07000008: the invisible wall inside the safe room's missile room — the playtest's
+"the wall is still there but invisible" at `--bond 155.19,43.12,-113.38,1.57,0` with culling ON.
+The exterior `Room_Outside_3` (cell 15) slabs (fix-08-walls named them: tris across the whole
+`Room_Guardhouse_F2` interior) cull visually at master but their COLLISION still blocks Bond:
+the port collides movement against a shared world, while the game collides Bond only against
+his own cel's object lists (build_FindCel 0x1c8cb0 finding from fix-portal-sweep: per-cel lists).
+Plan: give the port's movement collision the game's per-cel attribution (building on
+fix-portal-eyecel's attribute_scope chain buckets), so walls from other rooms don't block.
+Status: branch created, reproduction + fix in progress.
+
+fix-08-collision DONE (08:0x UTC): the missile room's invisible wall is out of Bond's collision.
+Root cause pinned: the port's movement pass tested the ONE SHARED WORLD (flat `capsule_push` +
+`segment_hit` in `physics_tick`/`physics_tick_climb`), while the game scopes the whole pass to the
+actor's own cel — [M] `Player_Collision` 0x194df0's first store `*(BLData+0x7c0) = *(obj+0x20)`
+(the relinked cel pointer into the BLData+0x740 HITTEST's start-cel field; the capsule points are
+the same HITTEST's +0x760/+0x770), [M] `Collide_Pick` 0x1eb320 walks `Collide_StraddleCels`
+0x1eac98's result and tests each straddled cel's OWN list (`*(cel + 0x18)`), [M]
+`Player_CollisionHandler` 0x1949a8 runs the floor test (`Player_FeetOnPoint`) off the same
+HITTEST. The port already had the per-cel machinery (the straddle walk + fix-portal-eyecel's
+`attribute_scope` chain-owner buckets) — the player now uses it: `capsule_push_scoped(self.cel)`
++ `segment_hit_scoped(self.cel)` in both passes, `self.cel` = obj+0x20 (the Sim's per-tick
+`cel_at`→`room_cell` relink). The exterior slabs (cell 15, `Room_Outside_3`, the z −118.0 west
+face 64 tris inside the guardhouse box [D probe]) stop blocking the missile room; the room's own
+walls stay in cell 48's bucket and still block (`debug_bucket_owners` introspection added to
+world.rs: the north-wall band runs live in cells 15/40/48, the room floor in 15/48). Deviation
+[S]: a flat redo when the scoped pass finds neither push nor floor — the game's
+`build_FindCel` 0x1c8cb0 relink always carries the geometry under the actor, the port's buckets
+are coarser (07000002's ladder head: the garden-floor rim sits in a bucket the straddle doesn't
+keep — fix_ladder_live caught Bond falling down the shaft he had just climbed); on the ground the
+room's own floor is always in the bucket, so the redo never fires there and the slab band keeps
+its wall out. A try at porting the FindCel relink for bond.cel (find_cell_raycast at feet height)
+resolved the user's spot to cell 45 (the floor below's chain holds the room floor) whose straddle
+set doesn't keep cell 48's north wall — reverted; bond.cel keeps the `cel_at`+`room_cell` mapping,
+the deeper FindCel port is a follow-up. Fail-first: the_missile_room_walk_across_the_slab_band_
+meets_no_wall panicked at the crossing tick on master (z −117.70, y 44.03 — the flat pass stopped
+Bond at the face and squeezed him UP it); post-fix the crossing rides the level floor (z −118.16,
+max y 43.748) and the real north wall still stops the walk (z −121.78). Sisters: the room's
+west/east walls still block; the scoped-vs-flat mechanism pin at the slab face. Regression set
+green on the fixed tree: 08-collision 4, 08-walls 4, safe08 4 (the fusebox floor holds), ladder
+3+1 ign, ladder2 5, swim-vent5 2, wire2 3. Suite on the final tree: see
+docs/reports/fix-08-collision.md. Files: crates/nf-game/src/player.rs, crates/nf-game/src/world.rs,
+crates/nf-view/tests/fix_08_collision_live.rs (new); crates/nf-view/src/scene.rs SHARED — comments
+only (the bond.cel note), no behaviour change.
+
+fix-08-collision2 (100m, started 2026-10-14): 100j's scoped collision (origin/s/fix-08-collision
+4023ba9 merged with master ccae18) breaks the 01 escort walk — walkreal_07000001_live::
+walk_from_the_spawn_to_the_exit_with_the_contact settles the contact at (-5.2, 6.3, 14.1) while
+the LoadPointActivator plate is at (-33.1, 2.3, 15.4); the log shows `world seg to (-1.0,+0.0):
+hip None hip+0.5 None feet None` around there. The contact waits for Bond (the escort logic), so
+the suspect is Bond's scoped collision: a spot on the 01 route where Bond is stopped, falls or
+snags (a floor or step outside the straddle set — the 09 stairwell class). Plan: reproduce on the
+merged tree, log both trees' Bond positions per 60 ticks to find the divergence, fix it the game's
+way (the straddle set's cels: a missing portal crossing, a floor attribution), keep the 08 safe
+room (no invisible wall) and the 09 stairwell. Files: crates/nf-game/src/{player,world}.rs,
+crates/nf-view/src/scene.rs. Work log continues below.
+
+fix-08-collision2 (100m, 2026-10-14): the scoped collision's 01 escort breakage fixed the game's way.
+- Reproduce: walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact failed on
+  the 4023ba9+ccae18 merge (the contact stuck at (-5.2,6.3,14.1), the plate at (-33.1,2.3,15.4));
+  the trace showed west-room guard 16 unkillable (no-damage shots at dist 1.2-10, then Bond out
+  of ammo) -> AllyLeadHide forever.
+- Divergence (the driver's method): env-gated NF_WALK_TRACE per-60-tick positions on the merged
+  tree and a master worktree — the walks agree to t2460, then a 3 cm path shift at the spawn
+  corridor's seam (cel 60, owners [(6,7),(60,5)]); the scoped vs flat push differs by the
+  straddle ROOT's test order.
+- Fix (both halves [M]): (1) bond.cel's per-tick relink is build_FindCel 0x1c8cb0's two-ray
+  tie-break through build_LinkToRoom 0x1c9680:35-40 (the port had the raycast — find_cell_raycast
+  — the movement pass just never used it); (2) the capsule portal test projects the segment
+  against the portal's STORED CENTRE (build_alloc_portal 0x1c8928's +0x70 = the 4 corners'
+  average), not corner 0 [M Intersect_Portal 0x1ea7b8's 0x800 path]. ScopePortal gained centre;
+  debug_straddle added. The void-redo fallback stays.
+- Verified: the 01 walk passes (failed pre-fix and with the portal half alone — the root is
+  operative); fix_08_collision2_live 2/2 (the seam equality + the floor-carries sister);
+  the collision-adjacent set green (08 collision 4, 09 stairwell 2, ladders 8, wire 1, swim 2,
+  walls 3, safe08 6, qclaw/grapple 6, the walkreal sweeps 01-4a); suite on the final tree in
+  foreground chunks (background jobs die here): 233 binaries 975 passed / 3 failed / 31 ignored
+  — the 3 exactly the allowed disc_golden trio; weapon_matrix_live hit the 240 s cap (spot
+  check 4/4 green; the full 28 left for the next window with the ~40-binary tail).
+- Report: docs/reports/fix-08-collision2.md. Files: crates/nf-game/src/world.rs,
+  crates/nf-view/src/scene.rs (the two shared-file hooks), crates/nf-view/tests/common/walker.rs
+  (the env-gated trace), crates/nf-view/tests/fix_08_collision2_live.rs (new);
+  crates/nf-game/src/player.rs ended unchanged.
