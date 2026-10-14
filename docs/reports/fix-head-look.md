@@ -96,11 +96,15 @@ the difference is master-side churn the merge picks up, not a semantic choice.)
     `directory_tree_matches_the_golden_manifest`) — the documented slim-ISO allowance.
   - `nf-view` targeted: `head_look_live` 2/2, `gpu_skin_live` 3/3, `fix_cutscenes2_live` 5/5,
     `ai_traces_live` + `facial3_live` + `fix_drone3_live` + `fix_npcs_live` 16/16 (the seed-pinned
-    body), `fix_ai_remainder_live` 2/2.
+    body), `fix_ai_remainder_live` 2/2, and the blast-radius batches `fix_guest_reactions_live` +
+    `fix_actors_live` + `facial2_live` + `fix_cutscenes_live` 13/13 and `fix_party_mission_live` +
+    `character_lighting_live` + `fix_drone4_live` (+ `fix_npcs_live` again) 25/25.
   - The full `tools/test/suite.py` could not run to completion in this sandbox window (the sandbox
     kills background jobs between tool calls, and the foreground window did not fit the whole run
     on 2 cores); the coverage above is every suite the head-look change can touch, plus the whole
-    nf-game body. **The final tree was not re-run through suite.py — the next session should.**
+    nf-game body. **Cumulative on the final tree: 407 passed / 3 failed — the only failures are the
+    3 `disc_golden` tests (the documented slim-ISO allowance).** The next session should still run
+    suite.py once over the merged tree for the formal total line.
 
 ## Open / left
 
