@@ -37,3 +37,7 @@ claimed-by: sandbox4 at 2026-10-14T05:36Z
 ## Report (done, 2026-10-14T06:24Z)
 
 Closed by the driver: the report is on `s/fix-grapple-hook` (docs/reports/fix-grapple-hook.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-14T06:51Z)
+
