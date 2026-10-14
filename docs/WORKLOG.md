@@ -9349,3 +9349,17 @@ Task 265: the playtest gun/arm smear while moving — interpolate the view model
 space and blend world matrices as rotation(slerp)+translation(lerp) with the existing
 4-unit snap, replacing the component-wise palette lerp that came with fix-gpu-skinning's
 120 fps interpolation (G-043). Reproduce-first; work starting.
+
+Task 265 outcome (same session): REPRODUCED then FIXED. The repro (fix_interp_ghosting_live,
+07000005, real Input.turn 30° tick, palettes through Scene::skin_palette, the loop's blend path)
+failed pre-fix with the gun root 3.1 cm off in camera space at α=½ plus the cos15° rotation
+shrink (0.9659 rows); the sister orthonormality test failed at exactly cos 15°. Fix in lib.rs:
+world palette entries blend as rotation (Quat_Slerp_Acc 0x1e4188 slerp via nf_game::anim::slerp
++ translation lerp, 4-unit snap kept; non-proper-rotation entries keep the component path) and
+the active view model's entries blend in CAMERA space (re-attach to lerp_cam's draw camera via
+Player_PositionGun 0x1a3b40's own left/up/fwd basis — the camera factor cancels by construction;
+camera-space snap; script-camera views keep the world blend). Both tests green after; re-verified
+RED against the stashed fix with the final test shape. Full suite on the merged tree (master
+7b3bd80): 869 passed, 3 failed (the allowed disc_golden), 26 ignored, 0 TIMEOUT —
+fps-determinism proof green. Files: lib.rs + the new test; scene.rs not needed. Report:
+docs/reports/fix-interp-ghosting.md (live checks inside).
