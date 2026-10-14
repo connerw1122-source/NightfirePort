@@ -1014,14 +1014,15 @@ impl Bond {
         // The game's pass never lands over a void: `build_FindCel` 0x1c8cb0 relinks obj+0x20 by
         // tie-break rays against each candidate's own chain geometry, so the actor's cel always
         // carries the geometry under him. The port's buckets are coarser than the game's cels [S]:
-        // over 07000002's ladder head the scoped pass sees nothing (the garden-floor rim sits in a
-        // bucket the straddle walk doesn't keep) and Bond fell down the shaft he had just climbed
-        // (fix_ladder_live). When the scoped pass finds neither a push nor a floor — the actor is
-        // over a void in his own cel's world — redo the tick against the flat world, the stand-in
-        // for that relink. On the ground the scoped pass always finds the room's own floor, so the
-        // redo never fires there: across the fix-08-collision slab band the floor stays in the
-        // room's bucket while the exterior wall stays out of it.
-        if push == [0.0; 3] && !walkable && floor.is_none() {
+        // over 07000002's ladder head the scoped pass sees no floor at all (the garden-floor rim
+        // sits in a bucket the straddle walk doesn't keep) and Bond fell down the shaft he had
+        // just climbed (fix_ladder_live); on 07000009 the car-park stairwell steps hung outside
+        // the straddle set too (walkreal_07000009_live) — a wall push in the set does not put a
+        // floor under Bond, so the redo fires on the missing floor alone. On the ground the
+        // scoped pass always finds the room's own floor, so the redo never fires there: across
+        // the fix-08-collision slab band the floor stays in the room's bucket while the exterior
+        // wall stays out of it.
+        if floor.is_none() {
             let (fp, fw) = world.capsule_push(a, b, RADIUS);
             push = fp;
             walkable = fw;
