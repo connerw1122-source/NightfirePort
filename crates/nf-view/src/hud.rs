@@ -12,7 +12,10 @@ const SH: f32 = 448.0;
 
 /// HUD textures the overlay uses (indices + 1 in `HudFrame` runs). `fix-hud` added the crouch icons
 /// (0x03000173/74), the air bar (0x0300017F) and its bubble icon (0x0300017D) [M AirSprInfo/HealthSprInfo].
-pub const TEXTURES: [u32; 17] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141];
+/// fix-context-hints added the third-icon context textures [M 0x2FC168 = 0x03000064+ctx; only 0x66
+/// (winch, ctx 2), 0x67 (hanging man, ctx 3) and 0x6A (figure, ctx 6) exist on the disc [D tex-list] —
+/// the table's other four ids never resolve in `hashtable_set_sprite` and the icon stays hidden].
+pub const TEXTURES: [u32; 20] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141, 0x0300_0066, 0x0300_0067, 0x0300_006a];
 const CROSS_TEX: u32 = 0x0300_0026;
 const FONT_TEX: u32 = 0x0300_0003;
 /// SightPane textures [D 07000005.bin entries 71 + 56]: 0x03000034 = the scope overlay (256×256, the circular
@@ -22,11 +25,13 @@ const SCOPE_STRIP_TEX: u32 = 0x0300_0002;
 
 /// Which zoom overlay a weapon draws [M `HUD_UpdateCrossHair` 0x19e6d0:106-147]: in aim mode a scoped
 /// weapon (flags +0x68 & 0x40 [L weapon_data 0x2bf150]) enables its own zoom pane — the switch runs on
-/// `wid − 0x1a`: 0/1 (0x1a/0x1b, the OICW twins) → pane 17; 0x18/0x19 (0x32/0x33, the Ronin twins) →
-/// pane 19; 0x3a/0x3b (0x54/0x55, the watch; 0x55 is rewritten to 0x54 by the game itself) → pane 11;
-/// the default (any other scoped weapon — the sniper 0x24, zoom 10 [L]) → pane 6, the scope. The
-/// micro camera 0x52 / briefcase 0x53 are not scoped (their zoom is the mission layer's, unported)
-/// but map to the Camera pane — the user's "micro camera ... camera overlay, not the sniper scope".
+/// `wid − 0x1a` and has exactly the cases 0/1 (0x1a/0x1b, the AIMS-20 twins) → pane 17; 0x18/0x19
+/// (0x32/0x33, the Phoenix Samurai twins) → pane 19; 0x3a/0x3b (0x54/0x55, the Micro-Camera; 0x55 is
+/// rewritten to 0x54 by the game itself) → pane 11; and the default (any other scoped weapon — the
+/// Winter Tactical Sniper 0x1e, the Delta Repeater 0x11, the Winter Covert Sniper 0x24) → pane 6, the
+/// scope. There is no case 0x38/0x39, so the Phoenix Ronin twins (0x52/0x53 — [L ee_start_05/07000001/
+/// 0700000a weapon_data+0x38 over USATxt.dat: "Phoenix Ronin"; the Micro-Camera is 0x54/0x55]) fall to
+/// the default scope like any other scoped weapon.
 #[derive(Clone, Copy, PartialEq, Debug)]
 pub enum ZoomOverlay { Sight, Oicw, Laser, Camera }
 
@@ -34,7 +39,7 @@ pub fn zoom_overlay(weapon: u8) -> ZoomOverlay {
     match weapon {
         0x1a | 0x1b => ZoomOverlay::Oicw,
         0x32 | 0x33 => ZoomOverlay::Laser,
-        0x52 | 0x53 | 0x54 | 0x55 => ZoomOverlay::Camera,
+        0x54 | 0x55 => ZoomOverlay::Camera,
         _ => ZoomOverlay::Sight,
     }
 }
@@ -121,6 +126,44 @@ impl Hud<'_> {
         self.quads.push(Quad { layer, tex: ti + 1, blend, v });
     }
 
+    /// A sprite with the game's mirror-tile flag, drawn the way `View_DrawSprites` 0x1e5290:52-162 draws
+    /// it [M]: flag 0x400 splits the sprite into `tiles_x = (du+1)/texW × tiles_y = (dv+1)/texH` tiles
+    /// (integer division on the sprite's UV extents against the texture's pixel size), each tile
+    /// `w/tiles_x × h/tiles_y` screen px sampling `(u, v, du>>tiles_x−1, dv>>tiles_y−1)` of `tex`, with
+    /// the U flip alternating per X tile (the start parity from the sprite's 0x40 bit) and the V flip per
+    /// Y tile (0x80) — the mirror repeat that builds one frame out of a quarter design. The zoom
+    /// overlays' textures are quarters [D 07000005.bin / 07000016.bin: the viewfinder 0x03000055 is
+    /// 128×64, the OICW circle 0x03000141 is 64×64, the scope 0x03000034 is 256×256], so without the
+    /// mirroring the sprite's UV extents wrap the texture — an unmirrored 2×2 repeat (the user's grid).
+    /// Without 0x400: one quad. `flags` is the SpriteInfo flags word (blend/flip bits included).
+    #[allow(clippy::too_many_arguments)]
+    fn tiled_quad(&mut self, anchor: Anchor, layer: i32, tex: u32, x: f32, y: f32, w: f32, h: f32, uv: [f32; 4], flags: u16, c: [f32; 4]) {
+        let blend = if flags & 0x100 != 0 { 1 } else if flags & 0x200 != 0 { 2 } else { 0 };
+        let (mut tiles_x, mut tiles_y) = (1u32, 1u32);
+        if flags & 0x400 != 0 {
+            let (tw, th) = self.tex_dims(tex);
+            if tw > 0.0 && th > 0.0 {
+                // (du+1)/texW, (dv+1)/texH — the game's integer division [M 0x1e5290:56-58]; clamped,
+                // which the game's byte counters bound instead.
+                tiles_x = (((uv[2] as i32 + 1) / tw as i32).max(1).min(16)) as u32;
+                tiles_y = (((uv[3] as i32 + 1) / th as i32).max(1).min(16)) as u32;
+            }
+        }
+        // Per-tile UV extents: du >> (tiles_x−1) [M 0x1e5290:63-68, 126-133].
+        let du = (uv[2] as i32 >> (tiles_x - 1)) as f32;
+        let dv = (uv[3] as i32 >> (tiles_y - 1)) as f32;
+        let (tw_tile, th_tile) = (w / tiles_x as f32, h / tiles_y as f32);
+        let mut flip_u = flags & 0x40 != 0;
+        for ix in 0..tiles_x {
+            let mut flip_v = flags & 0x80 != 0;
+            for iy in 0..tiles_y {
+                self.quad(anchor, layer, tex, blend, x + ix as f32 * tw_tile, y + iy as f32 * th_tile, tw_tile, th_tile, [uv[0], uv[1], du, dv], (flip_u, flip_v), c);
+                flip_v = !flip_v;
+            }
+            flip_u = !flip_u;
+        }
+    }
+
     /// A `SpriteInfo` sprite at the pane origin with colour `c`.
     fn sprite(&mut self, anchor: Anchor, at: (f32, f32), s: &SpriteInfo, c: [f32; 4]) {
         let uv = s.uv.map(|k| k as f32);
@@ -147,6 +190,14 @@ impl Hud<'_> {
     /// space rows to fit the taller glyphs. The shadow offset scales too.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn text_scaled(&mut self, anchor: Anchor, font: &nf_formats::hud::Font, layer: i32, s: &str, x: f32, y: f32, right: bool, c: [f32; 4], shadow: bool, scale: f32) {
+        self.text_scaled_tex(anchor, font, layer, FONT_TEX, s, x, y, right, c, shadow, scale);
+    }
+
+    /// `text_scaled` with the font's own texture — the header font is a second face with its own
+    /// atlas (`FontTable` 0x2dd8b0[0] = {tex 0x03000005, FONTNFont2 0x305a58}; `Font_ParseFormat`
+    /// 0x1ee3e0 case 5 loads the selected font's texture per `\xff` code) [M].
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) fn text_scaled_tex(&mut self, anchor: Anchor, font: &nf_formats::hud::Font, layer: i32, tex: u32, s: &str, x: f32, y: f32, right: bool, c: [f32; 4], shadow: bool, scale: f32) {
         if scale <= 0.0 || c[3] <= 0.0 { return; }
         let (placed, native_w) = font.layout(s, 0.0, y);
         let width = native_w * scale;
@@ -162,7 +213,7 @@ impl Hud<'_> {
                 let gx = x0 + p.x * scale + dx;
                 let gw = g.w as f32 * scale;
                 let gh = g.h as f32 * scale;
-                self.quad(anchor, layer, FONT_TEX, 0, gx, p.y + dx, gw, gh, [g.u as f32, g.v as f32, g.w as f32, g.h as f32], (false, false), col);
+                self.quad(anchor, layer, tex, 0, gx, p.y + dx, gw, gh, [g.u as f32, g.v as f32, g.w as f32, g.h as f32], (false, false), col);
             }
         }
     }
@@ -350,6 +401,54 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             bar(&mut h, s.hud.bar_close);
         }
     }
+    // The info / hint bar (pane 4, `MsgInfoStatusPane` 0x319810 + `InfoStatusSprInfo` 0x319730
+    // [L ee_start_05.bin] — fix-context-hints): the bar the Hint markers (placement 0x33) and
+    // `ThirdIcon_Update`'s type-6 "Press Action" fill through TXTMSG type 1. The same
+    // `HUD_UpdateStatusPane` 0x19c310 machine as the pickup bar: the middle is a 1-texel column
+    // of 0x0300007A (u 190, v 0..56) stretched to 480×26, the caps 5-texel columns (u 185 / 191)
+    // riding its ends [M 0x19c310:342-347]; all colour 0x7F7F7F alpha 0x8D, layer 30. The text is
+    // the centre-justify style 0x30cdb0 sprite (template (128, 16) + the pane x 128 = 256 [L], so
+    // centred) in font 2, colour 0x7D6D59, black shadow, layer 29, wrapping at
+    // TextMsgFormats[1]'s maxWidth 480 [L 0x2BF110+4], fading over the last 15 ticks (alpha =
+    // time·17); the bar closes 16 px per tick around its centre (the CREATE's slide 0x10 [L
+    // 0x319810+0x14]).
+    //
+    // The bar's Y (fix-context-hints2, the user's y≈100/448 playtest): the CREATE tag's own rect is
+    // x=128, y=113 [L ee_start_05.bin 0x319810], and `HUD_CreateDefault` adds the pane x/y to every
+    // sprite's runtime position at create [M 0x199b70:45-52 — `sh … 0x24(spr)` with the pane x].
+    // The status update rewrites only the bar sprites' X (case 1/4 re-pin x = templateX +
+    // (templateW − w)/2 from the TEMPLATE x 16 [M 0x19c310:105-109,331-336] — so the bar's x span
+    // stays 16..496 like the objective's) and the caps' x [M 0x19c310:342-347]; the Y is NEVER
+    // written — the bar keeps its created template y 0 + pane y 113 = **113** (the caps too), and
+    // the text (never repositioned) keeps 16 + 113 = **129**. The port used to draw y 0/16 — the
+    // top edge.
+    {
+        let (bw, bh, bx, by) = (480.0f32, 26.0f32, 16.0f32, 113.0f32);
+        let bar = |h: &mut Hud, w: f32| {
+            let x = bx + (bw - w) / 2.0;
+            let c = gs(0x7f7f7f, 0x8d);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x, by, w, bh, [190.0, 0.0, 1.0, 56.0], (false, false), c);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x - 5.0, by, 5.0, bh, [185.0, 0.0, 5.0, 56.0], (false, false), c);
+            h.quad(Anchor::Centre, 30, 0x0300_007a, 0, x + w, by, 5.0, bh, [191.0, 0.0, 5.0, 56.0], (false, false), c);
+        };
+        if s.drones.hud_frozen {
+            // The pane cannot open while the viewer's +0x2a HUD gate is off [M 0x1b11d8:16-18].
+        } else if let Some(msg) = s.hud.info_msgs.front() {
+            let a = (msg.time * 17.0).min(255.0) as u32;
+            bar(&mut h, bw);
+            let wrapped = t.font.word_wrap(&msg.text, 480.0);
+            let lines: Vec<&str> = wrapped.split('\n').collect();
+            let mut maxw = 0.0f32;
+            for l in &lines { maxw = maxw.max(t.font.layout(l, 0.0, 0.0).1); }
+            let x0 = SW / 2.0 - maxw / 2.0;
+            let lh = t.font.line_height();
+            for (k, l) in lines.iter().enumerate() {
+                h.text(Anchor::Centre, &t.font, 29, l, x0, 129.0 + k as f32 * lh, false, gs(0x7d6d59, a), true);
+            }
+        } else if s.hud.info_close > 0.0 {
+            bar(&mut h, s.hud.info_close);
+        }
+    }
     // The objective banner (pane 3, `MsgObjectiveStatusPane` 0x319710 + `ObjectiveStatusSprInfo`
     // 0x319608 [L ee_start_05.bin], `HUD_UpdateStatusPane` 0x19c310): the middle is a 1-texel column
     // of the HUD sheet 0x0300007A (u 190, v 0..56) stretched to 480×56 — template (16, 0) + the pane
@@ -495,6 +594,34 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             h.quad(Anchor::Left, 29, tex, 0, 48.0 - tw / 2.0, 48.0 - th / 2.0, tw, th, [0.0, 0.0, tw, th], (false, false), gs(0x7f7f7f, a));
         }
     }
+    // The context icon (health pane sprite 18, `HUD_UpdateHealthPane` 0x19b9c8:273-303 —
+    // fix-context-hints). While `BLData+0x95F != 0xFF` the sprite's texture is the 0x2FC168
+    // table's entry for the context id (0x03000064+ctx — `hashtable_set_sprite` fills w/h and
+    // uv with the texture's own size [M 0x1ca3d8:36-46]), the runtime position is (400, 48)
+    // [M disasm 0x19c124-0x19c14c — the same runtime x/y override the crouch icon uses], layer
+    // 29, colour 0x7f7f7fff, and `ThirdIconTimer` = FRAME_RATE·0.5 = 30; on 0xFF the icon fades
+    // out over that timer (alpha = timer·255/30, colour 0x7f7f7f00|alpha [M 0x19c160-0x19c1d4]).
+    // Only ctx 2/3/6 resolve to a disc texture (0x66 winch / 0x67 hanging man / 0x6A figure
+    // [D tex-list]); the others leave the sprite hidden exactly like the game's failed lookup.
+    {
+        let timer = s.hud.context_icon_timer;
+        // The shown texture: the current context id, or — through the fade — the last one the
+        // icon showed (the game's runtime sprite keeps its texture from the last successful
+        // `hashtable_set_sprite`).
+        let ctx = if s.bond.icon_ctx != 0xff { s.bond.icon_ctx } else { s.hud.last_icon_ctx };
+        let (tex, a) = if s.bond.icon_ctx != 0xff {
+            (0x0300_0064u32 + ctx as u32, 0xFFu32)
+        } else if timer > 0 {
+            // alpha = timer·255/30 [M 0x19c190-0x19c1cc: (timer·0x100 − timer)/(FRAME_RATE·0.5)].
+            (0x0300_0064u32 + ctx as u32, (timer as u32 * 255 / 30) as u32)
+        } else { (0u32, 0) };
+        if tex != 0 && a > 0 {
+            let (tw, th) = h.tex_dims(tex);
+            if tw > 0.0 {
+                h.quad(Anchor::Left, 29, tex, 0, 400.0, 48.0, tw, th, [0.0, 0.0, tw, th], (false, false), gs(0x7f7f7f, a));
+            }
+        }
+    }
     // Scope overlay (the SightPane, `HUD_UpdateCrossHair` 0x19e6d0 pane[6]): 3 sprites at layer 39 [D].
     // Sprite 0: the scope texture (0x03000034, 256×256) centered at x=32, y=0, w=448, h=448, UV 0..511.
     //   Flag 0x0600 = subtractive blend (0x200) + tile+mirror (0x400). The texture is one quadrant of the
@@ -509,51 +636,216 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     // drops the instant the button is released. Using the interpolated zoom would delay the overlay's
     // disappearance by ~40 ticks (the zoom-out interpolation time).
     if s.zoom_target > 1.0 {
+        // The game's overlay covers its whole 4:3 screen. On a window wider than 4:3 the sprites keep
+        // the game's pixel shapes, centred (`Anchor::Centre` — identical mapping at 4:3), and the sides
+        // go black: the port's model of the game's 4:3 screen in a wider window [S — the game ran
+        // 4:3 or a stretched 16:9 of the same 512×448 space; nothing outside it was shown].
+        let bar = (1.0 - 4.0 / 3.0 / h.aspect).max(0.0) * SW / 2.0;
+        if bar > 0.5 {
+            let black = [0.0, 0.0, 0.0, 1.0];
+            h.quad(Anchor::Stretch, 45, SCOPE_STRIP_TEX, 0, 0.0, 0.0, bar, SH, [0.0, 0.0, 31.0, 31.0], (false, false), black);
+            h.quad(Anchor::Stretch, 45, SCOPE_STRIP_TEX, 0, SW - bar, 0.0, bar, SH, [0.0, 0.0, 31.0, 31.0], (false, false), black);
+        }
         match zoom_overlay(s.gun.weapon) {
-            // SightPane 6 [L SightSprInfo 0x2bd558]: the scope — 4 mirrored tiles of 0x03000034 + the two
-            // subtractive side strips [M View_DrawSprites 0x1e5290 tiles the quadrant texture 2×2].
+            // SightPane 6 [L SightSprInfo 0x2bd558] — the scope: sprite 0 (32,0) 448×448, uv
+            // (0,0,511,511), flags 0x0600 — the scope quarter texture 0x03000034 (256×256 [D
+            // 07000005.bin]) mirror-tiled 2×2 by View_DrawSprites 0x1e5290 into one oval. Sprites 1/2:
+            // the subtractive side strips (0/479, 33 wide). Geometry unchanged from the port's verified
+            // draw (the main agent's 0700000c match); now through the game's tiler.
             ZoomOverlay::Sight => {
                 let scope_col = gs(0x7f7f7f, 0xff);
-                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2,  32.0,   0.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (false, false), scope_col);
-                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2,  32.0, 224.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (false, true),  scope_col);
-                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2, 256.0,   0.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (true,  false), scope_col);
-                h.quad(Anchor::Stretch, 39, SCOPE_TEX, 2, 256.0, 224.0, 224.0, 224.0, [0.0, 0.0, 255.0, 255.0], (true,  true),  scope_col);
-                h.quad(Anchor::Stretch, 39, SCOPE_STRIP_TEX, 2, 0.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
-                h.quad(Anchor::Stretch, 39, SCOPE_STRIP_TEX, 2, 479.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
+                h.tiled_quad(Anchor::Centre, 39, SCOPE_TEX, 32.0, 0.0, 448.0, 448.0, [0.0, 0.0, 511.0, 511.0], 0x0600, scope_col);
+                h.quad(Anchor::Centre, 39, SCOPE_STRIP_TEX, 2, 0.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
+                h.quad(Anchor::Centre, 39, SCOPE_STRIP_TEX, 2, 479.0, 0.0, 33.0, 448.0, [0.0, 0.0, 31.0, 31.0], (false, false), scope_col);
             }
-            // CameraPane 11 [L CameraSprInfo 0x2bd600] — the watch's (0x54/0x55) and the micro camera's
-            // (0x52/0x53) viewfinder: the frame texture over the whole screen + four corner brackets
-            // (sprite 3 h-flipped by flag 0x40). Sprite 0 is the photo flash, hidden at rest and shown
-            // by `HUD_UpdateCameraPane` 0x1a12d8 only during its post-shot countdown; sprite 8 (flags
-            // 0x900) is 3D-positioned — neither is drawn here.
+            // CameraPane 11 [L CameraSprInfo 0x2bd600] — the Micro-Camera's (0x54/0x55) viewfinder.
+            // Sprite 1 (0,0) 512×448, uv (0,0,255,127), flags 0x0600 [L]: the frame quarter texture
+            // 0x03000055 (128×64 [D 07000005.bin]) mirror-tiled 2×2 — ONE full-screen frame (rounded
+            // corners at the screen corners, scale marks both sides, the mid brackets, the centre
+            // circle). Drawn whole, it wrapped: the user's 2×2 grid. Sprites 2-7: the mid-height
+            // brackets 0x03000056 (sprite 3 h-flipped by flag 0x40) and 0x03000057. Sprite 0 is the
+            // photo flash (shown only during `HUD_UpdateCameraPane` 0x1a12d8's post-shot countdown —
+            // hidden at rest) and sprite 8 (flags 0x900) is 3D-positioned; neither is drawn.
             ZoomOverlay::Camera => {
                 let c = gs(0x7f7f7f, 0xff);
                 let (tw56, th56) = h.tex_dims(0x0300_0056);
                 let (tw57, th57) = h.tex_dims(0x0300_0057);
-                h.quad(Anchor::Stretch, 39, 0x0300_0055, 2, 0.0, 0.0, SW, SH, [0.0, 0.0, 255.0, 127.0], (false, false), c);
-                h.quad(Anchor::Stretch, 39, 0x0300_0056, 1, 48.0, 192.0, tw56, th56, [0.0, 0.0, tw56, th56], (false, false), c);
-                h.quad(Anchor::Stretch, 39, 0x0300_0056, 1, 336.0, 192.0, tw56, th56, [0.0, 0.0, tw56, th56], (true, false), c);
+                h.tiled_quad(Anchor::Centre, 39, 0x0300_0055, 0.0, 0.0, SW, SH, [0.0, 0.0, 255.0, 127.0], 0x0600, c);
+                h.quad(Anchor::Centre, 39, 0x0300_0056, 1, 48.0, 192.0, tw56, th56, [0.0, 0.0, tw56, th56], (false, false), c);
+                h.quad(Anchor::Centre, 39, 0x0300_0056, 1, 336.0, 192.0, tw56, th56, [0.0, 0.0, tw56, th56], (true, false), c);
                 for (x, y) in [(48.0, 120.0), (432.0, 120.0), (48.0, 256.0), (432.0, 256.0)] {
-                    h.quad(Anchor::Stretch, 39, 0x0300_0057, 1, x, y, tw57, th57, [0.0, 0.0, tw57, th57], (false, false), c);
+                    h.quad(Anchor::Centre, 39, 0x0300_0057, 1, x, y, tw57, th57, [0.0, 0.0, tw57, th57], (false, false), c);
                 }
             }
-            // LaserPane 19 [L LaserSprInfo 0x2be288] — the Ronin's (0x32/0x33) frame: six solid-texture
-            // strips (top/bottom bars + four centre ticks), blend 1, colour 0x7f7f7f alpha 0x78.
+            // LaserPane 19 [L LaserSprInfo 0x2be288] — the Phoenix Samurai's (0x32/0x33) frame: six
+            // solid-texture strips (top/bottom bars + four centre ticks), blend 1, colour 0x7f7f7f
+            // alpha 0x78. Flags 0x0100 — no 0x400, no tiling [L].
             ZoomOverlay::Laser => {
                 let c = gs(0x7f7f7f, 0x78);
                 for (x, y, w, hh2, layer) in [(140.0, 64.0, 232.0, 4.0, 40), (140.0, 384.0, 232.0, 4.0, 34), (192.0, 223.0, 40.0, 2.0, 40), (280.0, 223.0, 40.0, 2.0, 40), (255.0, 160.0, 2.0, 40.0, 40), (255.0, 248.0, 2.0, 40.0, 40)] {
-                    h.quad(Anchor::Stretch, layer, SCOPE_STRIP_TEX, 1, x, y, w, hh2, [0.0, 0.0, 31.0, 31.0], (false, false), c);
+                    h.quad(Anchor::Centre, layer, SCOPE_STRIP_TEX, 1, x, y, w, hh2, [0.0, 0.0, 31.0, 31.0], (false, false), c);
                 }
             }
-            // OICWPane 17 [L OICWSprInfo 0x2be008] — the OICW twins' (0x1a/0x1b) digital zoom: a
-            // subtractive cyan full-screen tint (sprite 0, col 0x00ffffff) + the dim scope circle
-            // 0x03000141 (sprite 1, alpha 0x40). Sprites 2–6 are text sprites (the zoom readout) — the
-            // port has no reader for their text yet (the live check).
+            // OICWPane 17 [L OICWSprInfo 0x2be008] — the AIMS-20's (0x1a/0x1b) digital zoom. Sprite 0:
+            // the subtractive cyan full-screen tint (flags 0x0200, one quad). Sprite 1 (192,160)
+            // 128×128, uv (1,1,127,127), flags 0x0500 [L]: the reticle quarter texture 0x03000141
+            // (64×64 [D 07000016.bin]) mirror-tiled 2×2 into ONE circle — drawn whole it wrapped into
+            // the user's grid. Sprites 2–6 are text sprites (the zoom readout) — the port has no
+            // reader for their text yet (the live check).
             ZoomOverlay::Oicw => {
-                h.quad(Anchor::Stretch, 40, SCOPE_STRIP_TEX, 2, 0.0, 0.0, SW, SH, [0.0, 0.0, 31.0, 31.0], (false, false), gs(0x00ffff, 0xff));
-                h.quad(Anchor::Stretch, 39, 0x0300_0141, 1, 192.0, 160.0, 128.0, 128.0, [1.0, 1.0, 127.0, 127.0], (false, false), gs(0x7f7f7f, 0x40));
+                h.quad(Anchor::Centre, 40, SCOPE_STRIP_TEX, 2, 0.0, 0.0, SW, SH, [0.0, 0.0, 31.0, 31.0], (false, false), gs(0x00ffff, 0xff));
+                h.tiled_quad(Anchor::Centre, 39, 0x0300_0141, 192.0, 160.0, 128.0, 128.0, [1.0, 1.0, 127.0, 127.0], 0x0500, gs(0x7f7f7f, 0x40));
             }
         }
     }
     h.finish()
+}
+
+// ─── The multiplayer radar (MPPaneList slot 14) ─────────────────────────────────────────────
+// `HUD_CreateRadar` 0x19f4e8 / `HUD_RadarUpdate` 0x19f6e8 / `MP_GetRadarObjects` 0x189840. The
+// radar exists ONLY in the MP pane list (`MPPaneList[14]` = RadarPane, RadarSprInfo 1·24 [L
+// docs/fields/hud-panes.md]); the SP `PaneList` slots 13/14 are NULL and `HUD_Init` 0x199e88:32-37
+// walks PaneList whenever MPSettings+0x384 == 0 [L ee_start_05.bin @0x2a47a0+0x384 = 0], so a
+// single-player level never creates the pane — the bottom-left ring of the SP HUD is the health
+// pane's sprite 15 (drawn above), not a radar. The projection is ported here for the MP milestone;
+// the SP draw path never calls it (the Sim has no MPGame/MPSettings), so `overlay` is unchanged.
+
+/// One `RObj` record (@0x318e70, stride 0x20) [M 0x189840]: the blip's world position (from
+/// obj+0xc0..cc), its sprite ARGB (+0x10: 0x7f7f7fff in a no-team game, 0xd22d35ff vs 0x2d61d2ff
+/// per team [M 0x189840:54-63]) and the uv-table kind (+0x14: 0 = a player, 1 = a CTF flag,
+/// 2 = an uplink, 3 = demolition/protection, 4 = a GoldenEye star, 6/7 = the blueprint/espionage
+/// bases [M 0x189840:53,118,137,157,171,189,205,219]).
+pub struct RadarObj {
+    pub pos: [f32; 3],
+    pub argb: u32,
+    pub kind: u16,
+}
+
+/// The radar blip sheet 0x0300016f [M 0x19f4e8:52] and `TexUV.291` @0x2becf0 (stride 0x14), kind →
+/// {u, v, w, h} — the four u16s the update reads at +0/+4/+8/+0xc [M 0x19f6e8:137-150, disasm
+/// 0x19f9c0-0x19fa4c] [L ee_start_05.bin @0x2becf0]. Kind 0 (the players) is 4×4, the objectives 8×8.
+const RADAR_TEX: u32 = 0x0300_016f;
+const RADAR_BLIP_UV: [[f32; 4]; 8] = [
+    [0.0, 0.0, 4.0, 4.0],
+    [0.0, 0.0, 8.0, 8.0],
+    [0.0, 0.0, 8.0, 8.0],
+    [0.0, 0.0, 8.0, 8.0],
+    [0.0, 0.0, 8.0, 8.0],
+    [8.0, 0.0, 8.0, 8.0], // never written by 0x189840 (no kind 5)
+    [0.0, 0.0, 8.0, 8.0],
+    [0.0, 0.0, 8.0, 8.0],
+];
+
+/// One projected blip — the exact numbers the update writes into the blip sprite. x/y is the
+/// CENTRE: the blips carry flag 0x800 [M 0x19f4e8:58] and `View_DrawSprites` 0x1e5290:60-75
+/// centres a sprite on (+0x24, +0x26) when that flag is set.
+pub struct RadarBlip {
+    pub x: f32,
+    pub y: f32,
+    pub u: f32,
+    pub v: f32,
+    pub w: f32,
+    pub h: f32,
+    pub argb: u32,
+    pub layer: i32,
+}
+
+/// The radar projection, `HUD_RadarUpdate` 0x19f6e8:108-153 (checked against the disassembly
+/// 0x19f758-0x19fa60 — the decompiler's scratch-vec aliases are wrong there).
+///
+/// * `view_rot` / `cam`: the viewer's +0x120 matrix, rows and translation [L ee_start_05.bin
+///   viewer+0x120]. `Mat_Inverse` 0x1e3578 builds {Rᵀ, −t} and `RotPreTransVec` 0x1e49e8 forms
+///   R·(p − t) — the world→view rotation, view.x = row0·d, view.y = row1·d, view.z = row2·d.
+/// * The update negates the view x and z [M disasm 0x19f888-0x19f8b0: `neg.s` + `swc1` back to
+///   0x319570 / 0x319578].
+/// * The HEIGHT CUE — clamp((obj.y − bond_y)·0.125, ±1) [M disasm 0x19f88c-0x19f8d4 → 0x319574] —
+///   is a DEAD STORE: the position formulas read 0x319570 (x) and 0x319578 (z) only
+///   (0x19f904/0x19f974), and nothing in ACTION.ELF reads 0x319574. The retail radar puts no
+///   height cue on the ring; the cue is computed here and dropped, as the game does.
+/// * The range scale: len·0.02 clamped to 1 — the ring's edge at 50 units [M 0x19f6e8:122-125].
+/// * The blip cap: the pane CREATE+0x16 = 24 [M 0x19f6e8:108,153].
+pub fn radar_project(
+    view_rot: [[f32; 3]; 3],
+    cam: [f32; 3],
+    bond_y: f32,
+    ring: (f32, f32, f32, f32),
+    objs: &[RadarObj],
+) -> Vec<RadarBlip> {
+    let mut out = Vec::new();
+    for o in objs.iter().take(24) {
+        let d = [o.pos[0] - cam[0], o.pos[1] - cam[1], o.pos[2] - cam[2]];
+        let vx = view_rot[0][0] * d[0] + view_rot[0][1] * d[1] + view_rot[0][2] * d[2];
+        let vy = view_rot[1][0] * d[0] + view_rot[1][1] * d[1] + view_rot[1][2] * d[2];
+        let vz = view_rot[2][0] * d[0] + view_rot[2][1] * d[1] + view_rot[2][2] * d[2];
+        // `Vec_NormaliseLen` 0x1e2f88 normalises the vec IN PLACE and returns the pre-normalisation
+        // 3D length — the position formula multiplies the UNIT direction by min(len·0.02, 1)
+        // [M 0x19f6e8:113,130-136].
+        let len = (vx * vx + vy * vy + vz * vz).sqrt();
+        let inv = if len > 0.0 { 1.0 / len } else { 0.0 }; // the game divides unguarded; a blip at the exact player position cannot occur (0x189840 skips the player themself) [S]
+        let (ux, uz) = (vx * inv, vz * inv);
+        // The height cue: computed, clamped, stored to the scratch vec's y slot — never read.
+        let height_cue = ((o.pos[1] - bond_y) * 0.125).clamp(-1.0, 1.0);
+        let _ = height_cue;
+        let scale = (len * 0.02).min(1.0);
+        let uv = RADAR_BLIP_UV[(o.kind as usize).min(7)];
+        out.push(RadarBlip {
+            x: -ux * scale * (ring.2 * 0.45) + ring.0 + 0.5 + ring.2 * 0.5,
+            y: -uz * scale * (ring.3 * 0.45) + ring.1 + 0.5 + ring.3 * 0.5,
+            u: uv[0],
+            v: uv[1],
+            w: uv[2],
+            h: uv[3],
+            argb: o.argb,
+            layer: 0x1c, // the blip sprites' layer [M 0x19f6e8:152]
+        });
+    }
+    out
+}
+
+/// The ring sprite's layer each frame [M 0x19f6e8:102-105]: hidden (0xff) unless this player's
+/// radar flag (`MPSettings + player·0x30 + 0x28`, the same record the MP menus' "Radar" toggle
+/// writes) is set, then 0x1e (draw layer 30).
+pub fn radar_ring_layer(radar_on: bool) -> i32 {
+    if radar_on { 0x1e } else { 0xff }
+}
+
+/// The ring sprite's runtime rect: created at the template (512, 0) with the texture's own size
+/// [L RadarSprInfo[0] @0x2bdd60: x 512 y 0 w 0 h 0 — 0 → the texture's size], then `HUD_FixMP`
+/// 0x19b110:73-92 clamps it into the viewer's rect (viewer+0xf0/0xf4/0xf8/0xfc = left/right/top/
+/// bottom [L ee_start_05 viewer+0xf0..fc = 0, 512, 0, 448; the +0xf0/+0xf8 offsets are the
+/// viewer's screen x/y per `HUD_ValidateXY` 0x19a250's 0x80/0x100 arms]). For the full-screen
+/// viewer the ring lands at (512 − w, 0) — the TOP-RIGHT corner, not the bottom-left.
+pub fn radar_ring_rect(tex_w: f32, tex_h: f32, viewer: (f32, f32, f32, f32)) -> (f32, f32, f32, f32) {
+    let mut x = 512.0f32.max(viewer.0);
+    let mut y = 0.0f32.max(viewer.2);
+    if viewer.1 < x + tex_w { x = viewer.1 - tex_w; }
+    if viewer.3 < y + tex_h { y = viewer.3 - tex_h; }
+    (x, y, tex_w, tex_h)
+}
+
+/// The radar pane's quads for one frame (the `HUD_CreateRadar` + `HUD_RadarUpdate` pair): the ring
+/// sprite (tex 0x03000088 [L RadarSprInfo[0]], layer per `radar_ring_layer`) plus the projected
+/// blips (tex `RADAR_TEX`, layer 28, centred, flag 0x900 [M 0x19f4e8:51-58]). Not called by
+/// `overlay` — the Sim has no MP match state; this is the MP-milestone draw, unit-tested below.
+pub fn radar_frame(
+    view_rot: [[f32; 3]; 3],
+    cam: [f32; 3],
+    bond_y: f32,
+    ring_tex: (f32, f32),
+    viewer: (f32, f32, f32, f32),
+    radar_on: bool,
+    objs: &[RadarObj],
+) -> Vec<(i32, u32, [f32; 4], f32, f32, f32, f32, [f32; 4])> {
+    let mut quads = Vec::new();
+    let ring = radar_ring_rect(ring_tex.0, ring_tex.1, viewer);
+    let layer = radar_ring_layer(radar_on);
+    if layer != 0xff {
+        // The ring sprite: RadarSprInfo[0] colour 0x7f7f7fff, full texture [L 0x2bdd60].
+        let ring_col: [f32; 4] = [0x7f as f32, 0x7f as f32, 0x7f as f32, 0xff as f32];
+        quads.push((layer, 0x0300_0088, ring_col, ring.0, ring.1, ring.2, ring.3, [0.0, 0.0, 0.0, 0.0]));
+    }
+    for b in radar_project(view_rot, cam, bond_y, ring, objs) {
+        quads.push((b.layer, RADAR_TEX, gs(b.argb >> 8, b.argb & 0xff), b.x - b.w * 0.5, b.y - b.h * 0.5, b.w, b.h, [b.u, b.v, b.w, b.h]));
+    }
+    quads
 }

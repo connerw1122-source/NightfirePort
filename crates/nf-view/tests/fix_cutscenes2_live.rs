@@ -209,6 +209,10 @@ fn the_kimiko_scene_characters_play_their_face_tracks() {
     let together = nf_game::anim::script_pose_together(&sim.scripts, &sim.seqs, &char.skeleton, &char.skin, script, frame)
         .expect("the joined pose must resolve");
     assert_eq!(body_only.len(), together.len(), "both poses cover the skeleton");
+    // fix-cutscene-faces2: the classifier is the game's own flags bit 0x8 (asserted above), not the
+    // channel count — the count matches by construction (asserted above too). The facial window
+    // must not move bones: the joined pose is the body pose on every bone (fix-facial3's per-bone
+    // loop, kept as the equality — same assertion), and the root stands at the scripted position.
     assert_eq!(body_only, together, "the facial window must not move bones — the body track owns the pose");
     let root = together[0].0;
     let root_len = (root[0] * root[0] + root[1] * root[1] + root[2] * root[2]).sqrt();

@@ -398,9 +398,20 @@ impl Mission {
         }
     }
 
+    /// The warm-transition carry: restore the mission layer's `.data` objective records.
+    ///
+    /// The game's level load never restores the layer's globals: `ResetMap_GameInit` (0x1d5080:53)
+    /// runs `Mission_Init(GameState._12_4_, IsWarmReset)`, which re-arms the layer (InternalState 1,
+    /// MissionState 1, FailLabel 0, LevelToEndTo 0x07000048 [M 0x182270:20-28]) and resets the
+    /// current + future parts' records in place — the past parts' records are the live `.data` the
+    /// load finds, and `LS_LoadMission` (0x1cd880) is the SAVE-FILE path, not a level load [M
+    /// docs/systems/mission.md §3]. Restoring the carried internal/state here froze the next
+    /// level's monitor whenever the previous level ended inside a post-banner arm (InternalState 5
+    /// — case 4 sets it after both the complete and the fail/menu arms): the objective monitor
+    /// (`Mission_Update` case 5 [M 0x182c60:83-84] is a bare break) never ran again, no objective
+    /// could fold and the level could never end (campaign-flow: 07000007/08/0a arrived frozen).
+    /// The save-file path (210-fix-progress' LS_LoadMission) will need the globals variant.
     pub fn restore(&mut self, s: &MissionSave) {
-        self.base_map = s.base_map; self.order = s.order; self.internal = s.internal; self.state = s.state;
-        self.fail_label = s.fail_label; self.to_end = s.to_end;
         let mut it = s.states.iter();
         for row in self.states.iter_mut() { for v in row.iter_mut() { *v = it.next().copied().unwrap_or(0); } }
     }

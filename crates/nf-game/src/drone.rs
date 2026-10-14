@@ -807,6 +807,19 @@ pub struct Drone {
     /// `comm+0x73c`'s stand-in for `BOT_handlePain` (0x125ed8): the handle of the currently playing
     /// pain grunt, stopped before the next pool play (`Sound_Stop_Ref` 0x1de370) [M 0x126168-0x1261a0].
     pub pain_grunt: Option<u32>,
+    /// fix-facial3: `AnimFacialUpdate`'s state byte (sub+0x99: low 7 bits = the state, bit 0x80 =
+    /// the female double-blink flag) and its u16 frame timer (sub+0x92).
+    pub facial_state: u8,
+    pub facial_timer: u16,
+    /// The talk-state re-append flag (the alert-status [0x51E] changed byte for the facial path).
+    pub facial_reappend: bool,
+    /// The facial script slots (markers 0xe0000000 idle / 0xe0000001 blink): (script hash, start
+    /// tick) — `AnimScriptAppend` 0x1c7000's appends, sampled by the weights path
+    /// (`Scene::facial_weights_at`) through `AnimFacialBlend`'s slot semantics.
+    pub facial_idle: Option<(u32, u32)>,
+    pub facial_blink: Option<(u32, u32)>,
+    /// The tick this drone last ran (the facial slots' clock; `Drones::tick`'s frame stamped per drone).
+    pub last_tick: u32,
     /// `Drone+0x31C`: `DroneMove_NoBunching`'s (0x150ad0) obstacle flags, rebuilt every tick by
     /// `Drones::tick` from `NDrone2_Steer`'s (0x14eba8) nearest-obstacle scan (`Drone+0x314`,
     /// the nearest drone or the player within 3.0 — `EvaluateObstacle` 0x14e6f0's sqDist < 9 gate):
@@ -952,6 +965,8 @@ impl Drone {
             kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
             // fix-room-sound: the foley one-shot outbox + the pain-grunt handle (own lines — merge lesson 4).
             foley_reqs: Vec::new(), pain_grunt: None,
+            // fix-facial3: the blink driver state + the facial script slots (own line — merge lesson 4).
+            facial_state: 0, facial_timer: 0, facial_reappend: false, facial_idle: None, facial_blink: None, last_tick: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
             // fix-cover-remainder: the scary-object flee family (fields on their own lines — merge lesson 4).
             scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
@@ -1249,7 +1264,10 @@ impl Drone {
         if flags & 2 != 0 {
             if next_door {
                 self.door_node = Some(node);
-                self.door_return = self.state;
+                // +0x5A6 (the return state) is saved only when the current state is not already
+                // 0x81 — re-entering through the pair's second node must not clobber the saved
+                // state with 0x81 [M 0x153358:157-160].
+                if self.state != state::OPEN_DOOR { self.door_return = self.state; }
                 self.set_state(state::OPEN_DOOR);
                 return true;
             }
@@ -1638,9 +1656,21 @@ impl Drone {
 
     /// The sequence and frame the playing script shows. The LAST-started opcode-0 window covering the
     /// script time owns the root bone (`AnimProcessScriptCmds` 0x1c1b38 starts every window; the later
-    /// one overwrites — [L] the 07000006 driver's face track, started after his body track, pins his
-    /// root to its all-zero track so he holds position while the body's root runs 0.57; the free
-    /// `anim::script_frame` is last-wins the same way, fix-drone2).
+    /// one overwrites — fix-drone2, pinned on the live traces). fix-facial3: face-track windows
+    /// (channel count == the skin's facial count) are excluded — their channels are the morph
+    /// weights (`AnimFacialBlend` 0x1be648), not translations; the disc refutes the old "all-zero
+    /// face root" premise (07000006's 04000065 channels 0..2 reach ~1.0, and the body track's root
+    /// runs 0.57 un-zeroed over all 880 frames — the driver's stillness under the game's own trace
+    /// is the sit state + the collision probe, with the hip following the BODY track's ch1, y span
+    /// 0.119 ≈ the body's 0.129). The free `anim::script_frame` is last-wins the same way,
+    /// fix-drone2).
+    /// The skin's facial channel count (`Skin+0x12`): a started window whose channel count equals
+    /// it is a face track — morph weights, never a bone/root pose (fix-facial3, `AnimFacialBlend`
+    /// 0x1be648; docs/formats/character.md "Facial morphs").
+    fn facial_count(&self, d: &Data) -> usize {
+        d.skins.get(&self.skin).map_or(0, |s| s.facial as usize)
+    }
+
     pub fn script_frame(&self, d: &Data) -> Option<(u32, f32)> {
         let script = d.scripts.get(&self.anim.script?)?;
         // The window follows the integer tick (the game pins the seq slots when its commands run); the frame keeps
@@ -1648,7 +1678,12 @@ impl Drone {
         // this is the old integer frame exactly; at a fractional speed (Drone_AnimInfo +0x14, e.g. lean-out 176 at
         // 1.5) the root motion now samples the same f/f+1 blend the pose does.
         let t = (1 + self.anim.time) as u16;
-        let (a, _, q) = script.sequences().filter(|(a, b, _)| *a <= t && t <= *b).last().or_else(|| script.sequences().next())?;
+        let face = self.facial_count(d);
+        let (a, _, q) = script.sequences()
+            .filter(|(a, b, q)| *a <= t && t <= *b && !(face != 0 && d.sequences.get(q).is_some_and(|s| s.channels.len() == face)))
+            .last()
+            .or_else(|| script.sequences()
+                .find(|(_, _, q)| !(face != 0 && d.sequences.get(q).is_some_and(|s| s.channels.len() == face))))?;
         Some((q, (1.0 + self.anim.ftime - a as f32 + 1.0).max(1.0)))
     }
 
@@ -1658,7 +1693,12 @@ impl Drone {
     fn root_value_at(&self, d: &Data, time: u32) -> Option<V3> {
         let script = d.scripts.get(&self.anim.script?)?;
         let t = (1 + time) as u16;
-        let (a, _, q) = script.sequences().filter(|(a, b, _)| *a <= t && t <= *b).last().or_else(|| script.sequences().next())?;
+        let face = self.facial_count(d);
+        let (a, _, q) = script.sequences()
+            .filter(|(a, b, q)| *a <= t && t <= *b && !(face != 0 && d.sequences.get(q).is_some_and(|s| s.channels.len() == face)))
+            .last()
+            .or_else(|| script.sequences()
+                .find(|(_, _, q)| !(face != 0 && d.sequences.get(q).is_some_and(|s| s.channels.len() == face))))?;
         let f = (1.0 + time as f32 - a as f32 + 1.0).max(1.0);
         let s = d.sequences.get(&q).filter(|s| s.channels.len() >= 3)?;
         Some(crate::anim::root_translation_at(s, f))
@@ -2265,6 +2305,13 @@ impl Drone {
     /// the head's right axis, premultiplied `q_yaw ⊗ q_pitch ⊗ q_bone`; *approximation*: the port's axes are the
     /// model's), and the hip height. Drawing and hit boxes both use it.
     pub fn object_pose(&self, d: &Data) -> Option<(Vec<nf_formats::anim::Mat4>, f32)> {
+        self.object_pose_inner(d, true)
+    }
+
+    /// `track = false` gives the pose WITHOUT the head-track rotation — the palette the game's
+    /// `AnimObjectHeadTrack` 0x1bf618 itself receives (psiBuildMatrixPalette rebuilds it from the
+    /// anim every tick, so the stored rotation is never in the axes it measures from).
+    fn object_pose_inner(&self, d: &Data, track: bool) -> Option<(Vec<nf_formats::anim::Mat4>, f32)> {
         let skin = d.skins.get(&self.skin)?;
         let mut local = self.local_pose(d)?;
         let hip = local.first().map_or(0.0, |r| r.0[1]);
@@ -2293,21 +2340,88 @@ impl Drone {
             }
         }
         let (hy, hp) = (self.head_yaw, self.head_pitch);
-        if (hy.abs() > 1e-4 || hp.abs() > 1e-4) && world.len() > 5 {
-            // Bone 5 only (HeadTrack rewrites just that bone's quaternion; the head carries no children).
-            let pivot = world[5][3];
-            let (sn, cs) = (hy.sin(), hy.cos());
-            let rot_y: nf_formats::anim::Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
-            let th = self.yaw + hy;
-            let rp = axis_angle_mat([th.cos(), 0.0, -th.sin()], -hp);
-            let rot = nf_formats::anim::mul(&rot_y, &rp);
-            let mut w = world[5];
-            for k in 0..3 { w[3][k] -= pivot[k]; }
-            let mut r = nf_formats::anim::mul(&w, &rot);
-            for k in 0..3 { r[3][k] += pivot[k]; }
-            world[5] = r;
+        if track && (hy.abs() > 1e-4 || hp.abs() > 1e-4) && world.len() > 5 {
+            // `AnimObjectHeadTrack` 0x1bf618 composes `q_yaw ⊗ q_pitch ⊗ q_world_head` in WORLD
+            // axes and premultiplies the head bone's world rotation (Quat_QuatToMat writes bone
+            // 5's palette rows; the head carries no children). The axes come from the palette
+            // itself: the yaw axis = the NECK axis (normalize(palette[5].pos − palette[2].pos),
+            // the +0x30 translation slots; bone 2 = the neck base), the pitch axis = the side
+            // normalize(cross(neck, row2)) (row2 = the head's world +z/forward row). The port's
+            // head_pitch is positive up; the game's computed pitch is positive DOWN about the side
+            // axis, so the applied pitch is −hp. Row-vector matrices (v·M applies Mᵀ to v), so
+            // the world-frame application is `world5 · R_pitch_row · R_yaw_row` with the row forms
+            // axis_angle(side, hp) and axis_angle(neck, −hy) — each the transpose of the
+            // column-form rotation the game's quaternion encodes; the product order matches
+            // M(q_yaw ⊗ q_pitch ⊗ q_bone) = M_bone · M_pitch · M_yaw.
+            let head = [world[5][3][0], world[5][3][1], world[5][3][2]];
+            let neckv = [head[0] - world[2][3][0], head[1] - world[2][3][1], head[2] - world[2][3][2]];
+            let fwd = [world[5][2][0], world[5][2][1], world[5][2][2]];
+            let side = [neckv[1] * fwd[2] - neckv[2] * fwd[1], neckv[2] * fwd[0] - neckv[0] * fwd[2], neckv[0] * fwd[1] - neckv[1] * fwd[0]];
+            let (nl, sl) = ((neckv[0] * neckv[0] + neckv[1] * neckv[1] + neckv[2] * neckv[2]).sqrt(),
+                            (side[0] * side[0] + side[1] * side[1] + side[2] * side[2]).sqrt());
+            if nl > 1e-6 && sl > 1e-6 {
+                let neck = [neckv[0] / nl, neckv[1] / nl, neckv[2] / nl];
+                let side = [side[0] / sl, side[1] / sl, side[2] / sl];
+                let mp = axis_angle_mat(side, hp);
+                let my = axis_angle_mat(neck, -hy);
+                let m = nf_formats::anim::mul(&world[5], &mp);
+                world[5] = nf_formats::anim::mul(&m, &my);
+            }
         }
         Some((world, hip))
+    }
+
+    /// `AnimObjectHeadTrack` 0x1bf618's geometric ease targets, measured the way the game measures
+    /// them: from the FRESH anim pose's head axes (the palette `psiBuildMatrixPalette` 0x111498
+    /// hands HeadTrack carries no stored rotation — it is rebuilt from the anim every tick), so
+    /// easing the stored angle toward these never double-counts the anim's own head pose (the
+    /// playtest's "head tips UP well past the camera"). Yaw: the angle from the head's forward to
+    /// the target in the (forward, side) plane, signed about the neck axis — positive right, the
+    /// port's stored convention. Pitch: the angle in the (forward, neck) plane, signed about the
+    /// side axis in the GAME's convention (positive down) — the clamps ±1.1 / 0-beyond-2.6 (yaw)
+    /// and [-1.0, +0.6] (pitch) apply in that convention (0x1bf618: the two acos blocks), then it
+    /// is negated into the port's positive-up. The target = the opponent's tracked bone world
+    /// position (sAnimObject+0x104 = 5 [docs/fields/animobject.md [L-read]]; the port stands in
+    /// the AI's player eye snapshot).
+    fn head_track_want(&self, d: &Data, target: [f32; 3]) -> Option<(f32, f32)> {
+        let (world, hip) = self.object_pose_inner(d, false)?;
+        if world.len() <= 5 { return None; }
+        // The port's pose is OBJECT-space (the game's palette is world; the port factors the
+        // placement into palette()'s object matrix) — take the tracked point into the same frame:
+        // bearing(object) = bearing(world − object origin) − yaw.
+        let rel = [target[0] - self.pos[0], target[1] - self.draw_y(hip), target[2] - self.pos[2]];
+        let (sn, cs) = (self.yaw.sin(), self.yaw.cos());
+        let target = [rel[0] * cs - rel[2] * sn, rel[1], rel[0] * sn + rel[2] * cs];
+        let head = [world[5][3][0], world[5][3][1], world[5][3][2]];
+        let tv = [target[0] - head[0], target[1] - head[1], target[2] - head[2]];
+        if tv[0] * tv[0] + tv[1] * tv[1] + tv[2] * tv[2] < 0.25 { return Some((0.0, 0.0)); } // the game's 0.5 plane-projection gate
+        let neckv = [head[0] - world[2][3][0], head[1] - world[2][3][1], head[2] - world[2][3][2]];
+        let nl = (neckv[0] * neckv[0] + neckv[1] * neckv[1] + neckv[2] * neckv[2]).sqrt();
+        if nl < 1e-6 { return None; }
+        let neck = [neckv[0] / nl, neckv[1] / nl, neckv[2] / nl];
+        let fwd = [world[5][2][0], world[5][2][1], world[5][2][2]];
+        let side = [neck[1] * fwd[2] - neck[2] * fwd[1], neck[2] * fwd[0] - neck[0] * fwd[2], neck[0] * fwd[1] - neck[1] * fwd[0]];
+        let sl = (side[0] * side[0] + side[1] * side[1] + side[2] * side[2]).sqrt();
+        if sl < 1e-6 { return None; }
+        let side = [side[0] / sl, side[1] / sl, side[2] / sl];
+        let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
+        let unit = |a: [f32; 3]| { let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt(); if l < 1e-9 { None } else { Some([a[0] / l, a[1] / l, a[2] / l]) } };
+        // Yaw: project the target onto the (side, forward) plane — remove the neck component.
+        let dn = tv[0] * neck[0] + tv[1] * neck[1] + tv[2] * neck[2];
+        let to_y = unit([tv[0] - neck[0] * dn, tv[1] - neck[1] * dn, tv[2] - neck[2] * dn])?;
+        let fu = unit(fwd)?;
+        let mut yaw = (fu[0] * to_y[0] + fu[1] * to_y[1] + fu[2] * to_y[2]).clamp(-1.0, 1.0).acos();
+        let cf = cross(fu, to_y);
+        if cf[0] * neck[0] + cf[1] * neck[1] + cf[2] * neck[2] < 0.0 { yaw = -yaw; }
+        // Pitch: remove the side component (the (neck, forward) plane); the game's sign: positive down.
+        let ds = tv[0] * side[0] + tv[1] * side[1] + tv[2] * side[2];
+        let to_p = unit([tv[0] - side[0] * ds, tv[1] - side[1] * ds, tv[2] - side[2] * ds])?;
+        let mut pitch = (fu[0] * to_p[0] + fu[1] * to_p[1] + fu[2] * to_p[2]).clamp(-1.0, 1.0).acos();
+        let cp = cross(fu, to_p);
+        if cp[0] * side[0] + cp[1] * side[1] + cp[2] * side[2] < 0.0 { pitch = -pitch; }
+        let yaw = if yaw.abs() > 2.6 { 0.0 } else { yaw.clamp(-1.1, 1.1) };
+        let pitch = pitch.clamp(-1.0, 0.6);
+        Some((yaw, -pitch))
     }
 
     /// `DroneWeap_DropWeapon` (0x17a2a0, docs/systems/pickups.md): once — the weapon byte (`anim+0x62`) is cleared. At
@@ -3065,9 +3179,12 @@ impl Drone {
             }
             (STUN_GRENADE_LOOP, msg::ENTER) => { self.vision_on = false; self.firing = false; self.timer_c = Some(self.stun_until); true }
             (STUN_GRENADE_LOOP, msg::TIMER_C) => {
-                // Case 0xC: anyone within 8.0 keeps him down (re-arm frame + 5·FRAME_RATE_INT = 300).
-                let near = self.opp_dist() <= 8.0;
-                if near { self.timer_c = Some(frame + 300); true } else { self.set_state(STUN_GRENADE_RECOVER); true }
+                // Case 0xC [M NDrone2_DSTATE_StunGrenadeLoop 0x1631c0 case 0xc]: near re-arms the
+                // timer at frame + 5·FRAME_RATE_INT = 300; clear falls through to
+                // StunGrenadeRecover. The port held the drone down while Bond was within 8.0 —
+                // twice the game's player radius — so the 07000001 escort followed at the 4-5 band
+                // sat in STUN_GRENADE_LOOP forever (the walkreal stall).
+                if self.stun_kept_down() { self.timer_c = Some(frame + 300); true } else { self.set_state(STUN_GRENADE_RECOVER); true }
             }
             (STUN_GRENADE_RECOVER, msg::ENTER) => {
                 self.timer_c = None;
@@ -3078,9 +3195,14 @@ impl Drone {
         })
     }
 
-    /// The drone's distance to Bond (`DroneFunc_AnyoneNear`'s 8.0 test target in single player [*suggested*:
-    /// the game checks every DCVars peer; the port's `dist` field is the maintained Bond distance]).
-    fn opp_dist(&self) -> f32 { self.dist }
+    /// `DroneFunc_AnyoneNear` 0x14a718's player half at the stun loop's radius 2.0 (0x40000000) [M
+    /// NDrone2_DSTATE_StunGrenadeLoop 0x1631c0 case 0xc]: the glb_players loop tests
+    /// SqDist3D(player+0x30, dcv+0x30) < (2·r)² = 16 — dist < 4.0 — with a separate |dy| <= 3.0
+    /// arm (matters only across floors; the port's `dist` is the maintained 3D player distance
+    /// from `opponent_info`, which bounds |dy| < 4.0 — the strict dy gate is left, no test covers
+    /// a stunned drone under a balcony). With no player near the game falls to
+    /// `NDrone2_DroneNearPos` 2.0 over the drones — left: the port's only near-peer is the player.
+    fn stun_kept_down(&self) -> bool { self.dist < 4.0 }
 
     // ---- state machine -----------------------------------------------------------------------------------------
 
@@ -3753,12 +3875,18 @@ impl Drone {
             // leaving on a mission path in the traces) → 0x34; only a running mission path would take
             // 0x35. The driver steps into TruckDriverIdle ("hands behind back", the user's C1).
             (TRUCK_DRIVER_INIT, msg::ANIM_DONE) => { self.set_state(TRUCK_DRIVER_IDLE); true }
-            (TRUCK_DRIVER_INIT, msg::SOUND | msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
+            // fix-06-driver: the game's arm is msgs 0x11/0x12/0x13/0x16/0x1e → 0x33 [M 0x160bd0:97-105] —
+            // msg 0x14 (SOUND, DroneFunc_HandleSoundAlerts' dispatch) has NO arm (default → unhandled):
+            // the driver never reacts to heard gunfire. The port's SOUND half sent him into the guard
+            // heard-noise chain (0xa2-0xa5) whose ATTACK arm drew him a weapon (+0x66 → weapon 6, anim set 4)
+            // — the playtest's "shoot the driver, he flies back like a guard with the guard death sound".
+            (TRUCK_DRIVER_INIT, msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
             (TRUCK_DRIVER_INIT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, TRUCK_DRIVER_INIT_ALERT, false), // HandleImpact(0x33, 0)
             // TruckDriverInitAlert (0x160d98): anim done → CivilianScared (0x12); bullets/noise HandleImpact(0, …).
             (TRUCK_DRIVER_INIT_ALERT, msg::ANIM_DONE) => { self.set_state(CIVILIAN_SCARED); true }
             (TRUCK_DRIVER_INIT_ALERT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, 0, false),
-            (TRUCK_DRIVER_INIT_ALERT, msg::SOUND) => self.on_bullet_resume(d, rng, frame, 0, true),
+            // fix-06-driver: InitAlert 0x160d98 handles NO sound messages (its cases: 0/1/2/5/6/7/9/0x17/
+            // 0x18/0x19/8 → HandleImpact, 0x21 → ConsiderExplosive) — the port's SOUND arm is dropped.
             // TruckDriverIdle (0x160ed0): stand idle; NearArmedPerson (0x1787c8 — the 8.0 arg is dead)
             // → CivilianScared (`|= 0x8000000`).
             (TRUCK_DRIVER_IDLE, msg::ENTER) => { self.vision_on = true; self.set_stand_idle(d, rng, frame, true); true }
@@ -3767,7 +3895,11 @@ impl Drone {
                 true
             }
             (TRUCK_DRIVER_IDLE, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
-            (TRUCK_DRIVER_IDLE, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
+            // fix-06-driver: TruckDriverIdle 0x160ed0 routes msgs 0x11/0x12/0x15/0x16/0x1e to EnemyAlerts
+            // [M 0x160ed0:95-103] — msg 0x14 (SOUND) has no arm (default → 0, unhandled): gunfire sounds
+            // never move him. The port's SOUND half ran the guard heard-noise chain (0xa3 → DrawWeapon 0x66,
+            // anim set 12 → 4) — the playtest's guard-death symptom. The scare path is NearArmedBond (case 3).
+            (TRUCK_DRIVER_IDLE, msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
             (TRUCK_DRIVER_IDLE, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
             // PartyGirlInit (0x1728c0) ENTER: prop 0x1d → AssignAIPath(8) — with a route → CivilianMission
             // (0x16, the walkers); else the prop clears and PartyGirl (0x2f) [M 0x1728c0:17-25]. The game's NIS
@@ -4457,10 +4589,22 @@ impl Drone {
         route.remaining = route.distance(d.nav, feet);
         if route.remaining < 2.0 { return 3; }
         if !follow { return 0; }
-        let (mut code, _) = route.follow(d.nav, feet);
-        if route.nodes.is_empty() && code == 0 { code = 2 }
-        if let Some(used) = self.links_used.get_mut(route.path) { route.mark_used(used) }
-        let t = route.target;
+        let (mut code, reached) = route.follow(d.nav, feet);
+        // `LinkCreep_Handler` (0x15a2c8) dispatches `NDrone2_ReachedDestNode` for the combat route
+        // too: `NDrone2_MoveToObject` 0x151618:65 → `NDrone2_FollowRoute` 0x155be0:43 →
+        // `AINetwork_FollowRoute` 0x15b110:21 → `LinkCreep_Handler` — a chasing guard reaching a
+        // door-flagged node pair enters DSTATE_OpenDoor (0x81) as the call's side effect (the
+        // game's return mapping sends 10 → 0, "moving"; the state change carries the door).
+        // fix-guard-misc2: the port dropped `reached` here, so a pursuing guard could never open a
+        // door on the chase path (only the 0x63/patrol/mission routes dispatched).
+        let rpath = route.path;
+        let next = reached.and_then(|n| route.nodes.iter().position(|&x| x == n)).and_then(|i| route.nodes.get(i + 1)).copied();
+        drop(route);
+        self.route_reached_special(d, rpath, reached, next);
+        let (is_empty, rpath2) = (self.croute.as_ref().unwrap().nodes.is_empty(), self.croute.as_ref().unwrap().path);
+        if is_empty && code == 0 { code = 2 }
+        if let Some(used) = self.links_used.get_mut(rpath2) { self.croute.as_mut().unwrap().mark_used(used) }
+        let t = self.croute.as_ref().unwrap().target;
         self.desired_yaw = atan2_approx(t[0] - self.pos[0], t[2] - self.pos[2]);
         match code { 0 | 1 => 0, 2 | 3 | 0xc => code, _ => 0 }
     }
@@ -4624,7 +4768,8 @@ impl Drone {
         Some(crate::grenade::Grenade {
             pos: origin, velocity: [dir[0] * speed, dir[1] * speed, dir[2] * speed], speed,
             travelled: 0.0, range, damage, radius, weapon_type, mesh: d.weapons.projectile_mesh(self.weapon as usize),
-            owner, state: 0, bounces: 0, smoke_popped: false,
+            owner, state: 0, bounces: 0, smoke_popped: false, resting: false,
+            stuck: false, seek_target: None,
         })
     }
 
@@ -4825,7 +4970,42 @@ pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelle
     /// `BU+0x40`: the current heat-seek target — an index into `Drones::list` (`Bullet_homing`'s
     /// `*(int*)(BU+0x40)` object pointer; none = re-scan, and the scan re-runs when the target
     /// dies [M 0x12f3b4: the `+0xfe & 1` clear-and-rescan]).
-    pub target: Option<usize> }
+    pub target: Option<usize>,
+    /// fix-weapon-fire-modes: the weapon record's `+0x6C` carries the 0x4 GUIDED-CAMERA bit —
+    /// `Bullet_init` 0x12c5a0:234-254 hands the view to the projectile: `Player_ChangeSubState
+    /// (owner, 10)`, `BLData+0x878 = the bullet obj`, `Player_SetCamMode(BLData, 0xc)`,
+    /// `BLData+0x944 = 0`. Only the AT-420 Sentinel 'Guided' record 0x2C (+0x6C = 0x12204 [L
+    /// ee_start_05.bin]) sets it — the 'Unguided' 0x2D (0x1a200) and the Torpedo 'Guided' 0x30
+    /// (0x20200, homing only) do not [L], matching the PCSX2 pass (only 0x2C puts the view on the
+    /// rocket).
+    pub guided_cam: bool }
+
+/// fix-weapon-fire-modes: the guided missile's look-input steering (`Bullet_update` 0x12e7b0:177-244,
+/// run while the owner rides the camera in substate 10): the look analog floats (the game's
+/// `Input_Actionf(slot, 0, 1)` yaw and `(slot, 5, 1)` pitch — the port's `Input.turn` / `Input.look`)
+/// scale by 0.024543693 (π/128) radians per input unit per tick [M :185-189], the yaw rotates about
+/// the world up and the pitch about the missile's right, and the pole clamp keeps the direction
+/// inside ±0.995 of vertical [M :191-202's `±0.995` spherical gates — a steering input that would
+/// push past the pole is dropped]. The game also banks a roll value (`BU+0x58`, decayed ×0.965 per
+/// tick [M :210-216]) that only feeds the HUD ring's rotation — the port's flight needs no roll.
+/// No RNG draws (determinism).
+pub fn steer_missile(dir: &mut V3, yaw_in: f32, pitch_in: f32) {
+    const K: f32 = 0.024_543_693; // π/128 [M 0x12e7b0:185]
+    const POLE: f32 = 0.995;      // [M 0x12e7b0:191-202]
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
+    let (x, y, z) = (dir[0] / len, dir[1] / len, dir[2] / len);
+    let pole_lim = POLE.asin(); // 1.4706 rad
+    let pitch = (y.clamp(-POLE, POLE)).asin();
+    // The pole gate: an input that would drive past ±0.995 of vertical is dropped [M :191-202].
+    let dp = (-pitch_in * K).clamp(-pole_lim - pitch, pole_lim - pitch);
+    let p2 = pitch + dp;
+    let yaw = x.atan2(z) - yaw_in * K;
+    let (sp, cp) = p2.sin_cos();
+    let (sy, cy) = yaw.sin_cos();
+    *dir = [cp * sy, sp, cp * cy];
+    let nl = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
+    *dir = [dir[0] / nl, dir[1] / nl, dir[2] / nl];
+}
 
 /// What one of Bond's bullets hit: a drone (index, part) or the world, and where.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -4975,6 +5155,10 @@ pub struct Drones {
     /// writes it each frame; the music update at the tick's end consumes it (fix-party-mission item 4 —
     /// the game's `UpdateMusicalEvents` runs every frame whether or not an output device exists).
     pub iop_section: i32,
+    /// fix-grenade-throw: the smoke grenade's occluder clouds (`Occlude_Create(pos, 1200, 1)` 0x17ea80,
+    /// mesh 0x2000273, `Occlude_Update` 0x17eba0's 1200-tick countdown). Fields on their own lines
+    /// (merge lesson 4).
+    pub smoke_clouds: Vec<crate::grenade::SmokeCloud>,
     /// `DAT_0029aa86` — the interrogate latch: 0 while the party is calm, 1 once an interrogation began
     /// (`DroneVision_BeginInterogate` 0x1782a8; `EndInterogate` 0x1782c8 never clears it on 07000007).
     /// Gates `DroneFunc_DoForcedAttack` 0x148c60's forced attacks on 07000007 (playtest item 3: one punch
@@ -5037,6 +5221,10 @@ pub struct Drones {
     /// fix-death-restart: this tick's action 25 (✕ / Start, player 0 [L input.md style 0]) —
     /// `Sim::step_bond`'s fire button, the death sequence's skip gate [M 0x190bb0:30].
     pub bond_fire: bool,
+    /// fix-gadgets-live: the AIMS-20's idle ticks — the game's `BLData+0x93a` (`Player_SetWeaponAnimObj`
+    /// 0x1a2e38:41-57 increments it while the view state is idle and resets on any anim/fire). Gates the
+    /// view model's side lights (blink > 15, off > 45 [M Player_WeaponFiring 0x1a5460:264, 348]).
+    pub aims_idle: u16,
     /// fix-death-restart: the pre-menu auto-restart. While 180-fix-menus has no drawing, the port
     /// answers the 0x40000042 menu with Restart immediately (`fail_choose_restart`); the flag turns
     /// that off so the view can answer instead.
@@ -5169,6 +5357,11 @@ pub fn voice_type(skin: u32) -> u16 {
 impl crate::nis::World for Data<'_> {
     fn anim_length(&self, script: u32) -> Option<u16> { self.scripts.get(&script).map(|s| s.length) }
     fn level(&self) -> u32 { self.level }
+    /// fix-script-objects: the glist's local bounding sphere from the level's model table (the
+    /// map object's centre and radius — `Control_BuildWorldSph` 0x133070's inputs).
+    fn glist_sphere(&self, hash: u32) -> Option<([f32; 3], f32)> {
+        self.models.get(&hash).map(|m| (m.centre, m.radius))
+    }
     fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<nf_formats::anim::Mat4> {
         self.discrete_parts(skin, script, frame).into_iter().next().map(|p| p.1)
     }
@@ -5219,7 +5412,7 @@ impl Drones {
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
             letterbox: false, view_fade: None, script_msgs: Vec::new(),
-            death: Default::default(), bond_fire: false, auto_restart: true, level_exit_cold: false,
+            death: Default::default(), bond_fire: false, aims_idle: 0, auto_restart: true, level_exit_cold: false,
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
             pending_blasts: Vec::new(),
@@ -5242,6 +5435,8 @@ impl Drones {
             difficulty: 2, // [M bootup 0x1c7e78:25 GameState._40_4_ = 2]
             // fix-cover-remainder: the HandleExplosives queue (own line — merge lesson 4).
             explosive_queue: Vec::new(),
+            // fix-grenade-throw: the smoke grenade's occluder clouds (`Occlude_Create` 0x17ea80).
+            smoke_clouds: Vec::new(),
     };
         drones
     }
@@ -5460,6 +5655,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 pos: from, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
                 homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
                 target: None,
+                // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:234-254]: `+0x6C & 4` rides the camera.
+                guided_cam: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x4 != 0,
             });
         }
         // `Bullet_init_casing` 0x12fde0 (Player_WeaponInitBullet 0x1a4bf0:306, right after the
@@ -5507,7 +5704,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         let mut bm = [[0.0f32; 4]; 4];
         bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
-        self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius * 0.0666_6667);
+        // The blast script plays at scale = SCRIPTINFO+0x94 = param_1 = f12 = the radius [M disasm
+        // 0x12ce1c-0x12ce2c f12 = weapon_data+0x08; 0x17cbd0 stores param_1 into SCRIPTINFO+0x94;
+        // Script_GetInterp 0x1da158:117 multiplies the key scales by it]. fix-grenade-throw: the
+        // port used radius·0.0667 (obj+0xE8 — a collision-sphere field, read by nothing visual) —
+        // 15× too small: the user's "The explosion is very small and not accurate to the game."
+        self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius);
         // `Camera_Shake(pos, radius)` only from radius 0.5 [M 0x17cc28].
         if radius >= 0.5 { self.shake = self.shake.max(radius); }
         self.explosions.push((pos, radius, damage, owner, weapon_type));
@@ -5656,8 +5858,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // and this contact is not a ricochet re-entry (`bnel $s4` at 0x12d07c), the bullet is
                     // destroyed with `Explode_Create(radius = weapon_data+0x08, damage = +0x0C, script
                     // 0x6000052, attacker = BU+0x30)` at the hit point. The disc records: the AT-420
-                    // Sentinel 0x2c/0x2d (radius 8 / damage 100) and the MGL's 'Grenade' twin 0x2a (6/75)
-                    // carry the bit; the plain guns (0x70 = 0x12) do not [L ee_start_05.bin @ 0x2bf150].
+                    // Sentinel 0x2c/0x2d (radius 8 / damage 100), the MGL's 'Grenade' twin 0x2a (6/75)
+                    // and the Scorpion 0x2e/0x2f carry the bit [L ee_start_05.bin @ 0x2bf150]; the
+                    // plain guns (0x70 = 0x12) do not.
                     // The exploding round does NOT continue as a ricochet — the handler runs the effects
                     // first (Effect_Create at 0x12d060), then the explode gate.
                     if flags70 & 4 != 0 && b.bounces == 0 {
@@ -6189,6 +6392,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         // The gas puffs (`gases_smoke` 0x1ab2d0 runs in the object handler every frame).
         self.gas.update();
+        // fix-grenade-throw: the smoke clouds' lifetime countdown (`Occlude_Update` 0x17eba0:
+        // obj+0xF4 − 1 per tick, 0 → dead).
+        for c in &mut self.smoke_clouds { c.ticks -= 1; }
+        self.smoke_clouds.retain(|c| c.ticks > 0);
         // fix-impacts: `Debris_Update` 0x1aac00 — debris physics (gravity, spin, fade, life).
         self.effects.update();
         // fix-impacts: `Bullet_casing_update` 0x12faa0 — casings fly, land (the material sound via
@@ -6850,6 +7057,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     health_ok: self.health.health > 0.0, // BLData+0x894 > 0 [D; the port's health tracker]
                     mission: self.mission.status(),
                     music2: self.prev_event2,
+                    // fix-script-objects (`SP_Hit` 0x1dc470): the blasts of the last tick's end are
+                    // still in `explosions` here (the per-tick clear runs later, in the grenade
+                    // section) — the game's SP_Hit reads the chains those explosions filled.
+                    blasts: self.explosions.iter().map(|(p, r, ..)| (*p, *r)).collect(),
                 };
                 self.scripts.update_player(index, &mut self.channels, d, frame, script_skip, sp_gate);
                 self.drain_script_requests(d);
@@ -6953,7 +7164,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // binding now (`Drones` owns the doors; the state machine cannot) — `ReachedDestNode`
             // stood the door in +0xBA8 before `DSTATE_OpenDoor`'s ENTER ran [M 0x153358].
             if let Some(node) = dr.door_node.take() {
-                if let Some(path) = dr.route.as_ref().map(|r| r.path) {
+                // The route may be the patrol/mission one (`route`) or the combat/repositioning one
+                // (`croute` — GoToGoalPosition 0x63 and the MoveToObject chase, both served by
+                // `LinkCreep_Handler`) — the kick resolution below makes the same split
+                // [M 0x15a2c8 serves every followed route; fix-guard-misc2: the door binding on the
+                // `croute` used to resolve to None, so OPEN_DOOR's UPDATE immediately restored the
+                // return state without ever activating the door].
+                if let Some(path) = dr.route.as_ref().map(|r| r.path).or_else(|| dr.croute.as_ref().map(|r| r.path)) {
                     dr.hit_door = self.node_doors.as_ref().and_then(|m| m.get(&(path, node))).copied();
                     if let Some(i) = dr.hit_door { dr.hit_door_open = self.doors.list[i].state == crate::door::OPEN; }
                 }
@@ -7094,10 +7311,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 } else if frame >= dr.track_recheck {
                     dr.track_recheck = frame + rng.rand(5) as u32 + 2;
                 }
-                let dy = player.eye[1] - (dr.pos[1] + 1.55);
-                let want_y = angle_difference(dr.yaw, dr.yaw_to_opp);
-                let want_y = if want_y.abs() > 2.6 { 0.0 } else { want_y.clamp(-1.1, 1.1) };
-                let want_p = (dy / dr.dist.max(0.001)).atan().clamp(-1.0, 0.6);
+                // The ease targets: `AnimObjectHeadTrack` 0x1bf618 measures the want angles
+                // geometrically from the fresh anim pose's head axes toward the tracked point
+                // (sAnimObject+0x104 = 5 [L-read]; the port stands in the AI's player eye), and
+                // only within the head-track range² (SetHeadTracking's 3.0², docs/fields/
+                // animobject.md +0xE8 = 9.0 [L-read]) — beyond it (or closer than 0.5) the angles
+                // ease back to 0, exactly as the game's skipped angle block leaves them.
+                let (want_y, want_p) = if dr.dist <= 3.0 {
+                    dr.head_track_want(d, player.eye).unwrap_or((0.0, 0.0))
+                } else {
+                    (0.0, 0.0)
+                };
                 let sp = if dr.alert > 0.66 { 0.14 } else { 0.07 };
                 dr.head_yaw = rotate_to_bearing(dr.head_yaw, want_y, sp, crate::trig::PI);
                 dr.head_pitch = rotate_to_bearing(dr.head_pitch, want_p, sp, crate::trig::PI);
@@ -7365,9 +7589,125 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // the mine 0x37 (8/100), the satchel family 0x3b-0x40 (8/2000). fix-explosions routed the flash on
         // id 0x36 — the disc labels name 0x35 'Stun Grenade' and 0x36 'Smoke Grenade' [L USATxt.dat].
         self.explosions.clear();
+        // fix-gadgets-live: Oddjob's hat (0x45) kills on CONTACT. The game's hat is a gravity bullet
+        // whose hit takes the standard bullet path: `Bullet_CollisionHandler` 0x12ce80's 0x45 arm sets
+        // the post-hit lifetime (BU+0xc = 1500.0) + the 0x4a7 clang [M 0x12ce80:311-316] and the hit
+        // flows to `Drone_BulletHit` → msg 8 → the record's damage 100.0 [L weapon_data[0x45]+0x0C] —
+        // a guard's health is below that, so one touch kills. The port threw the hat into the grenade
+        // path (`+0x6C & 0x8` gravity), whose only damage was the FUSE blast — "it acts like a
+        // grenade". The contact test runs per tick at the hat's position (its speed 0.7 [L +0x20]
+        // keeps the per-tick displacement under the 1.05 contact sphere, so a point test doesn't
+        // tunnel); the hat keeps flying after a kill (the game's post-hit lifetime) and the fuse
+        // death is silent (the arm above).
+        // fix-oddjob-hat: the stuck hat kills nobody — the game's stuck bullet (obj+0xF4 = 3)
+        // skips the collision handler entirely [M 0x12ce80:102] so its contact pass never runs;
+        // only the flying hat (state 1, not stuck) takes the 1.05-sphere touch.
+        let hat_out = self.grenades.iter().any(|g| g.weapon_type == 0x45 && g.state < 2 && !g.stuck);
+        let hat_kills: Vec<(usize, f32)> = if hat_out {
+            let dp: Vec<(V3, bool)> = self.list.iter().map(|x| (x.pos, x.present && !x.corpse && x.enabled)).collect();
+            let mut out = Vec::new();
+            for g in self.grenades.iter().filter(|g| g.weapon_type == 0x45 && g.state < 2 && !g.stuck) {
+                for (i, (p, live)) in dp.iter().enumerate() {
+                    if !live { continue; }
+                    let dx = p[0] - g.pos[0]; let dy = p[1] - g.pos[1]; let dz = p[2] - g.pos[2];
+                    if dx * dx + dy * dy + dz * dz <= 1.05 * 1.05 { out.push((i, g.damage)); }
+                }
+            }
+            out
+        } else { Vec::new() };
         for g in &mut self.grenades {
+            // fix-oddjob-hat: the hat's homing — `Bullet_update` 0x12e7b0:476-478 runs
+            // `Bullet_homing` 0x12f358 after every flying tick for bullets whose `+0x6C` carries
+            // 0x20000. The hat's record does — +0x6C = 0x20C08, the only 0x20000 carrier among the
+            // thrown projectiles [L ee_start_05.bin @0x2c398c + the record sweep]. The port's
+            // grenade path had no homing: the hat flew dead straight and the thrown hat missed
+            // every guard the aim ray didn't already cover — the user's "should be a one-shot
+            // kill but it acts like a grenade". Same shape as the port's bullet homing (drone.rs
+            // `Bullet_homing` block): keep the target while it stays seekable, else acquire the
+            // nearest seekable guard within 1000 units inside the 0.66-dot cone of the velocity
+            // direction with a clear line of sight [M 0x12f358:64-104 — `Bullet_heatseekable`
+            // 0x12f248 gates the candidates; the owner obj is skipped :72 and the port's hats are
+            // always player-thrown, so the drones-only scan is the owner-safe subset], then steer
+            // the unit direction by `clamp((to_target − dir)·0.0333, ±0.01)` per axis and
+            // re-normalise, the speed preserved [M 0x12f358:126-166]. No RNG draws (determinism).
+            // A stuck hat does nothing (the game's state-3 gate, 0x12ce80:102).
+            if g.weapon_type == 0x45 && !g.stuck
+                && d.weapons.records.get(g.weapon_type as usize)
+                    .map_or(false, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0) {
+                let speed = (g.velocity[0] * g.velocity[0] + g.velocity[1] * g.velocity[1] + g.velocity[2] * g.velocity[2]).sqrt();
+                if speed > 1e-6 {
+                    let seekable = |dr: &Drone| dr.drawn && dr.health > 0.0 && dr.state != state::WAIT_SWITCH;
+                    let mut target = g.seek_target;
+                    if let Some(ti) = target {
+                        if !seekable(&self.list[ti]) { target = None; }
+                    }
+                    if target.is_none() {
+                        let dir = [g.velocity[0] / speed, g.velocity[1] / speed, g.velocity[2] / speed];
+                        let mut best: Option<(usize, f32)> = None;
+                        for (i, dr) in self.list.iter().enumerate() {
+                            if !seekable(dr) { continue; }
+                            let to = [dr.pos[0] - g.pos[0], dr.pos[1] - g.pos[1], dr.pos[2] - g.pos[2]];
+                            let dist = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                            if dist <= 0.0 || dist > 1000.0 { continue; }
+                            if best.is_some_and(|(_, bd)| dist >= bd) { continue; }
+                            let n = [to[0] / dist, to[1] / dist, to[2] / dist];
+                            let dot = n[0] * dir[0] + n[1] * dir[1] + n[2] * dir[2];
+                            if dot <= 0.66 { continue; }
+                            if d.world.segment(g.pos, dr.pos).is_some() { continue; }
+                            best = Some((i, dist));
+                        }
+                        target = best.map(|(i, _)| i);
+                    }
+                    g.seek_target = target;
+                    if let Some(ti) = target {
+                        let tp = self.list[ti].pos;
+                        let to = [tp[0] - g.pos[0], tp[1] - g.pos[1], tp[2] - g.pos[2]];
+                        let l = (to[0] * to[0] + to[1] * to[1] + to[2] * to[2]).sqrt();
+                        if l > 0.0 {
+                            let dir = [g.velocity[0] / speed, g.velocity[1] / speed, g.velocity[2] / speed];
+                            let steer = |c: f32, dirc: f32| ((c - dirc) * 0.0333).clamp(-0.01, 0.01);
+                            let dx = dir[0] + steer(to[0] / l, dir[0]);
+                            let dy = dir[1] + steer(to[1] / l, dir[1]);
+                            let dz = dir[2] + steer(to[2] / l, dir[2]);
+                            let m = (dx * dx + dy * dy + dz * dz).sqrt();
+                            if m > 0.0 {
+                                g.velocity = [dx / m * speed, dy / m * speed, dz / m * speed];
+                            }
+                        }
+                    }
+                }
+            }
+            // The projectile trails (`Bullet_DoTrails` 0x12d890, from `Bullet_update` 0x12e7b0:375/475
+            // — every flying bullet's tick): the smoke trail behind the AR-GL / stun rounds (weapon
+            // `+0x6C` bit 0x2 → `Bullet_trail_effect_smoke` 0x12cba8, every 4th tick) and the MGL
+            // rounds' exhaust puffs (bit 0x20, every 3rd tick, decomp :152-166). The records [L
+            // ee_start_05.bin @ 0x2bf150 sweep]: 0x1b/0x36/0x69 carry 0x2, 0x2a/0x2b carry 0x20 —
+            // all gravity bullets (+0x6C & 8), so the port's Grenade path covers them. The
+            // MPSettings trail-detail gate (word 384) is 0 on this build [L .bss]. The bit-0x10000
+            // Swoosh ribbon (the Sentinel/Scorpion rocket flame) is NOT ported — `Swoosh_Create`
+            // 0x1a4e40 is a new system (the report documents it).
+            if let Some(r) = d.weapons.records.get(g.weapon_type as usize) {
+                let f6c = u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap());
+                let rng = &mut self.rng;
+                if f6c & 0x2 != 0 && self.frame & 3 == 0 {
+                    self.gas.init_trail_smoke(rng, g.pos);
+                }
+                if f6c & 0x20 != 0 && self.frame % 3 == 0 {
+                    self.gas.init_exhaust_puff(rng, g.pos);
+                }
+            }
             while let Some(ev) = g.update(d.world, &mut self.rng) {
                 match ev {
+                    crate::grenade::GrenadeEvent::Stick(p) => {
+                        // fix-oddjob-hat: the +0x100 arm's contact clang — `Sound_Play3D(0x4a7)`
+                        // with the shared (96.0, −1.0, −1.0) volume pair [M 0x12ce80:316-317; the
+                        // same call shape as the 0x51c bounce]. The hat keeps existing: no bounce
+                        // sound (the 0x51c gate never runs for a world stick), no explosive
+                        // broadcast (HandleExplosives classifies grenades by id and has no 0x45
+                        // arm [M 0x138b10 — the port's cls match]), no blast.
+                        if let Some(t) = d.sfx { let h = t.get(0x4a7); self.audio.play3d(h.id, p, None); }
+                        break;
+                    }
                     crate::grenade::GrenadeEvent::Bounce(p) => {
                         // fix-weapon-effects: the impact explode — `Bullet_CollisionHandler` 0x12d068-0x12d0bc
                         // [M, disassembled]: when the weapon's `+0x70` carries bit 2 (0x4) and the contact is
@@ -7390,7 +7730,26 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             g.state = 2; // the object is destroyed by the blast
                             break;
                         }
-                        if let Some(t) = d.sfx { let h = t.get(0x51c); self.audio.play3d(h.id, p, None); }
+                        if let Some(t) = d.sfx {
+                            // The bounce sound's gate [M Bullet_CollisionHandler 0x12ce80 — the block at
+                            // LAB_0012d4bc]: the flash (`+0x70 & 0x2000`) plays 0x15 and the smoke
+                            // (`& 0x20000`) plays 0x13 on the FIRST bounce only (counter == 0); every
+                            // other weapon plays 0x51c when the bounce counter is EVEN and < 0xF —
+                            // counters 0,2,4,…,14, 8 sounds max. The game reads the counter BEFORE its
+                            // own increment; the port's `bounces` is already post-increment here, so
+                            // the gate reads bounces − 1. fix-grenade-throw: the port played a sound
+                            // on EVERY impact — the rested grenade's per-tick micro-collisions made it
+                            // rapid (the user's playtest).
+                            let flags70b = d.weapons.records.get(g.weapon_type as usize)
+                                .map(|r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()))
+                                .unwrap_or(0);
+                            let n = g.bounces.wrapping_sub(1); // the game's pre-increment counter
+                            let id = if flags70b & 0x2000 != 0 { (n == 0).then_some(0x15) }
+                                else if flags70b & 0x20000 != 0 { (n == 0).then_some(0x13) }
+                                else if n & 1 == 0 && n < 0xf { Some(0x51c) }
+                                else { None };
+                            if let Some(sid) = id { let h = t.get(sid); self.audio.play3d(h.id, p, None); }
+                        }
                         // `DroneFunc_HandleExplosives` (0x1435f0): the kind-2 explosive entries — a guard with the
                         // fear props within the entry's radius that sees the object sends itself msg 0x21
                         // [M 0x1435f0:30-52]. The port triggers once at the bounce (the game rescans every frame
@@ -7402,6 +7761,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         let flags70 = d.weapons.records.get(weapon_type as usize)
                             .map(|r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()))
                             .unwrap_or(0);
+                        // fix-weapon-fire-modes (folded from s/fix-weapon-fire-modes): only `+0x70 &
+                        // 0x200` records tick a fuse at all (`Bullet_DoTrails` 0x12d890:262-281 — the
+                        // fuse gate), so a no-fuse record's expiry here is the RANGE-OUT arm, and that
+                        // is a SILENT state-4 death — no `Explode_Create` [M Bullet_update
+                        // 0x12e7b0:158-162]. The MGL 'Grenade' 0x2A / AIMS-20 0x1B (+0x70 = 0x4 [L
+                        // ee_start_05.bin]) never fuse-explode: their deaths are the contact blast
+                        // (the Bounce arm above) or this quiet removal.
+                        if flags70 & 0x200 == 0 {
+                            break;
+                        }
                         if flags70 & 0x2000 != 0 {
                         // The FLASH branch (the stun grenade 0x35): `Bullet_DoTrails` 0x12d890 [M
                         // 0x12df58-0x12e130] — `Gas_Init(0.5, 1.68, …, fx 0x200001f, 0xB)`, `Camera_Shake(2.0)`,
@@ -7436,20 +7805,30 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // re-arms to 1200 ticks (0x44960000; 3600 for the 0x69 family), `Occlude_Create(pos,
                         // 1200, 1)` is the cloud and `Sound_Play3D(0x14)` pops it [M 0x12e114-0x12e1b4]; the
                         // second expiry falls through to the death [M 0x12e118 `bnel +0xF6, 0 → 0x12e1fc`].
-                        // No damage, no whiteout, no script. The port has no occluder system — the cloud
-                        // visual is missing (live-check item); the pop and the re-arm are the Sim half.
+                        // No damage, no whiteout, no script.
                             if !g.smoke_popped {
                                 g.smoke_popped = true;
                                 g.state = 1;
                                 g.range += 1200.0;
                                 if let Some(t) = d.sfx { let h = t.get(0x14); self.audio.play3d(h.id, pos, None); }
+                                // `Occlude_Create(pos, 1200, 1)` [M 0x12e114-0x12e1b4]: the cloud
+                                // visual — mesh 0x2000273, a 1200-tick countdown (Occlude_Update
+                                // 0x17eba0). fix-grenade-throw: the port played the pop but spawned
+                                // no cloud — the user's "Smoke grenade didn't work."
+                                self.smoke_clouds.push(crate::grenade::SmokeCloud { pos, mesh: 0x0200_0273, ticks: 1200 });
                             }
                             break;
                         }
                         // fix-weapon-effects: the blast body moved to `spawn_blast` (shared with the bullet
                         // impact explode [M 0x12d0bc]); the loop borrows `self.grenades`, so the blast runs
                         // from the queue after the loop.
-                        self.pending_blasts.push((pos, radius, damage, owner, weapon_type));
+                        // fix-gadgets-live: Oddjob's hat (0x45) NEVER explodes — its fuse arm only sets the
+                        // post-hit lifetime (BU+0xc counts down to the delete flag [M 0x12e7b0:368-373]) and
+                        // `Bullet_Delete`'s effect kind (+0x70 & 7 = 0 [L the hat's +0x70 = 0x100]) spawns
+                        // nothing; the kill is the CONTACT path below.
+                        if weapon_type != 0x45 {
+                            self.pending_blasts.push((pos, radius, damage, owner, weapon_type));
+                        }
                         break;
                     }
                 }
@@ -7457,6 +7836,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         // The queued blasts (`Explode_Create` 0x17cbd0): the full blast — propagate, the 0x6000052
         // visual at scale radius·0.0667 [M 0x17cbd0:84-106], the camera shake [M 0x17cc28].
+        // The hat's contact kills first: the standard bullet hit (msg 8's damage arm), NOT the
+        // explosive msg 9 — a guard below 100 health dies on the touch.
+        for (di, hdmg) in hat_kills {
+            if let Some(dr) = self.list.get_mut(di) {
+                if !dr.present || dr.corpse || dr.health <= 0.0 { continue; }
+                dr.last_damage = hdmg;
+                dr.hit_by_player = true; // the player's throw [M +0x2B4 = the thrower]
+                dr.health -= hdmg * dr.damage_taken;
+                if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
+                else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
+            }
+        }
         let blasts = std::mem::take(&mut self.pending_blasts);
         for (pos, radius, damage, owner, weapon_type) in blasts {
             self.spawn_blast(d, pos, radius, damage, owner, weapon_type, player.pos, frame);
@@ -7582,6 +7973,8 @@ mod tests {
             foley_reqs: Vec::new(), pain_grunt: None,
             // fix-anim-events: the EventFunc outboxes (own lines — merge lesson 4).
             weapon_swap: 0, pending_melee: None, pending_weapon_swap: false, recoil_weapon: false,
+            // fix-facial3: the blink driver state + the facial script slots (own line — merge lesson 4).
+            facial_state: 0, facial_timer: 0, facial_reappend: false, facial_idle: None, facial_blink: None, last_tick: 0,
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
             // fix-cover-remainder: the scary-object flee family (own line — merge lesson 4).
             scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
@@ -7608,6 +8001,25 @@ mod tests {
         assert!((dr.pos[1] - 1.0).abs() < 1e-5, "snaps to floor+hip: {}", dr.pos[1]);
         assert!(dr.on_surface && !dr.in_air);
         assert!(dr.velocity[1].abs() < 1e-9);
+    }
+
+    #[test]
+    fn stun_loop_recovers_when_the_player_is_beyond_the_games_4_band() {
+        // `DroneFunc_AnyoneNear` 0x14a718 at the stun loop's radius 2.0 [M NDrone2_DSTATE_StunGrenadeLoop
+        // 0x1631c0 case 0xc]: the player keeps the drone down within 2·r = 4.0 (SqDist < 16), beyond it the
+        // timer expires into StunGrenadeRecover. The port gated at 8.0 — twice the game's radius — so the
+        // 07000001 escort followed at the walker's 4-5 band sat in STUN_GRENADE_LOOP forever (the walkreal
+        // stall this branch fixes). Sister pair: both sides of the 4.0 boundary.
+        let mut near = drone_at([0.0, 1.0, 0.0]);
+        near.dist = 3.9;
+        assert!(near.stun_kept_down(), "Bond at 3.9 keeps the stunned drone down");
+        let mut far = drone_at([0.0, 1.0, 0.0]);
+        far.dist = 4.1;
+        assert!(!far.stun_kept_down(), "Bond at 4.1 lets the stunned drone recover (the port's old 8.0 gate held him)");
+        // The exact boundary is the game's strict SqDist < 16: dist 4.0 is NOT near.
+        let mut at = drone_at([0.0, 1.0, 0.0]);
+        at.dist = 4.0;
+        assert!(!at.stun_kept_down(), "dist == 4.0 is outside the game's strict SqDist < 16");
     }
 
     #[test]

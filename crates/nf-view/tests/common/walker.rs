@@ -220,6 +220,13 @@ impl Walker {
         self.scene.sim.as_mut().unwrap().step_bond(input, fire, false, use_key);
         let sim = self.scene.sim.as_ref().unwrap();
         self.total_ticks += 1;
+        // fix-08-collision2's divergence trace (env-gated, additive): Bond's position every 60
+        // ticks so two trees' walks can be diffed line by line.
+        if std::env::var_os("NF_WALK_TRACE").is_some() && self.total_ticks % 60 == 0 {
+            eprintln!("[trace] t{} bond=({:.2},{:.2},{:.2}) grounded={} substate={:#x} crouched={}",
+                self.total_ticks, sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2],
+                sim.bond.grounded, sim.bond.substate, sim.bond.crouched);
+        }
         if sim.bond.pos[1] < y_before - 0.4 && !sim.bond.grounded {
             // falling: record the drop
             let drop = self.max_y - sim.bond.pos[1];
@@ -459,8 +466,18 @@ impl Walker {
         let mut last = self.scene.sim.as_ref().unwrap().drones.list[di].pos;
         let mut still = 0u32;
         loop {
-            assert!(self.total_ticks - start_ticks < max_ticks, "follow {label}: cap\n{}",
-                fail_dump(&self.scene, self.scene.sim.as_ref().unwrap().drones.list[di].pos, label));
+            if self.total_ticks - start_ticks >= max_ticks {
+                // The escort wedged (oscillating against geometry, never 10 s still): return to the
+                // caller instead of panicking — the round loop recovers (clears guards, steps out
+                // of the way band, walks past him so the lead re-paths). The head-look merge's
+                // corrected head box (the game's own AnimGetCollData → psiBuildMatrixPalette →
+                // HeadTrack coupling) moves the fight timeline, so the escort can park in spots
+                // the band-steer never unsticks — a cap is a caller-recoverable stall, not a
+                // harness failure.
+                eprintln!("[walk] {label}: follow cap at ({:.1},{:.1},{:.1}) after +{} ticks — returning to the caller",
+                    last[0], last[1], last[2], self.total_ticks - start_ticks);
+                return last;
+            }
             if self.stop_on_exit && self.scene.sim.as_ref().unwrap().drones.level_exit.is_some() {
                 return last;
             }

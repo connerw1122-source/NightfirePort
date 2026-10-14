@@ -179,6 +179,19 @@ impl Dev {
                 if self.no_reload && cs > 0 {
                     if let Some(c) = sim.drones.inventory.clip.get_mut(wi) { *c = (*c).max(cs); }
                 }
+                // fix-silencer-modes: with infinite ammo the CURRENT weapon's clip stays at its
+                // `weapon_data+0x92` size EVERY tick (both the live `gun.clip` and the inventory slot).
+                // The 30-frame inventory top alone left the live magazine drained between tops — the
+                // user's "the reserves filled, but the magazine didn't stay full" — and for the 5-round
+                // sniper (0x24, clip 5 [L weapon_data]) the drained magazine kept triggering the
+                // auto-reload, which is the "semi-auto doesn't shoot fast enough on the SSG" half: with
+                // the clip pinned the refire is the table's +0x40 (120 frames) with no reload gap. The
+                // clip size is the record's own; the spares keep the trace-cheat's best-seen shape (no
+                // ammo cap touched, so pickups still take).
+                if self.infinite_ammo && cs > 0 {
+                    if let Some(c) = sim.drones.inventory.clip.get_mut(wi) { *c = (*c).max(cs); }
+                    sim.gun.clip = sim.gun.clip.max(cs as u32);
+                }
                 // Keep the gun's HUD copies in step with the refilled inventory (the HUD and the title read
                 // `gun.clip`/`gun.spare`; `Sim::run` re-reads them from the inventory next tick anyway).
                 if let (Some(&c), Some(&n)) = (sim.drones.inventory.clip.get(wi), sim.drones.inventory.carried.get(sim.weapons.ammo_type(wi))) {

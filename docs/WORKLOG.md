@@ -8781,6 +8781,47 @@ Stage Summary:
   and the ammo-id remaps are new port behaviour with game citations.
 - Left: the auto-switch drain re-open (live checks 1-2 in the report), moving-platform landings,
   the drop push-out, the AR set's second pile, the +0x888 kind-5 field, the shop's Upgrades byte.
+
+## fix-exact-math-swap (s/fix-exact-math-swap) — 2026-10-13
+
+Task: GAPS G-017/G-024 — switch the sim to the bit-exact `anim::sinf` and the EE-FPU
+`Quat_QuatToMat`, root-cause the 07000001 contact-escort damage flip (guard 5 dies a round
+early, repro in docs/reports/verify-bitexact.md), then swap `placement::object_matrix` and the
+palette path to the exact models and re-pin the moved seed/trace tests with trace evidence.
+
+Work Log:
+- The swap (from s/verify-bitexact e246658, re-applied on master): placement::object_matrix = RotMatrix
+  0x1e2368 op-for-op (the two PS2Sinf3 calls via anim::sinf, the nine products/sums on the EE FPU);
+  anim::quat_trans_to_mat = Quat_QuatTransToMat 0x1e3fa8 on the EE FPU; anim::mul = psiBuildMatrixPalette
+  0x111498 on the VU0 (chopped products, guard-bit sum). Unit tests pin the game's non-exact identity
+  (0-rotation diagonal 0x3F800002). The functions live in nf-formats (the task's file list said
+  nf-game/src/{anim,placement}.rs — they are not there).
+- Side-by-side (scratch replay of the 01-doors trace, Bond per frame from the recording, per-tick dump
+  of state+pos/health bits, host vs exact): first divergence tick 28 = Bond's y by 1 ulp (host
+  0x40cf2bfd vs exact 0x40cf2c00); bisected to object_matrix alone (palette-only stays host). Mechanism:
+  CollisionWorld::build_scoped bakes every placed object's collision triangles through the placement's
+  object_matrix, so the game's RotMatrix (cos = PS2Sinf(a+π/2), PS2Sinf(π/2) = 0x3F800001) puts the
+  walkway under Bond's start a few ulps higher — floor_below 5.3394012 (host) vs 5.3394027 (exact);
+  the floor snap rides it. First AI-visible divergence tick 835: drone 13's x by 1 ulp (807 ticks of
+  identical AI before it).
+- Game agreement: ai_traces_live 01-doors/01-raptor full replays give IDENTICAL per-drone first
+  divergences on both maths (15→75/63, 16→76/64, kinds and states identical), pins hold; the exact path
+  is the game's arithmetic by construction (PS2Sinf 40/40, Quat_QuatToMat 40/40, palette world-0.0);
+  the escort walk passes (level_exit tick 63143). Decision: the game agrees with the exact path.
+- verify-bitexact's repro (the escort stall, guard 5 dead at round 0) no longer reproduces on master +
+  the swap — the fight it lived in changed with master's merges.
+- Re-pins: none in nf-game (no new RNG draws; the seed-pinned suites green). One nf-view test moved:
+  fix_input_kbd_trace's goldens (host-math bits) — the floor under 07000005's start moved the same few
+  ulps; re-pinned t29–t179 position components; yaw/pitch/local/vel/cc bit-identical, so the keyboard
+  path the test guards is untouched.
+- Suite: nf-game+nf-formats+nf-audio 326/0 + 3 sanctioned disc_golden; nf-view 477/0 after the re-pin.
+  Report: docs/reports/fix-exact-math-swap.md.
+
+Stage Summary:
+- G-017/G-024 closed: the sim runs the game's exact sine/RotMatrix/Quat_QuatTransToMat/palette path.
+  The flip the swap used to cause is root-caused (the game's RotMatrix shifts placed collision by ulps;
+  Bond's floor snap rides it; ulp-wide AI margins decide the fights — the game has them too). Live
+  checks 1-2 in the report (the floor query under Bond in PCSX2; the walkway instance's identity).
 ---
 Task: fix-viewmodel-zoom (branch s/fix-viewmodel-zoom)
 Agent: fix-viewmodel-zoom worker
@@ -9417,6 +9458,89 @@ state never lets the shot come due — needs a state whose UPDATE leaves firing/
 Left (censused + decompile-cited in docs/systems/anim-engine.md): op-4 kinds 1/6/7, EventFunc 0xE
 (partner messaging), the other 53 ChangeWeapon entries, footprint decals, the +0x45 setup read.
 Shared files: drone.rs only (fields on their own lines, merge lesson 4).
+## fix-facial3 (s/fix-facial3) — 2026-10-14
+Task: the facial remainder after fix-facial2 (the morph buffer + the CPU vertex half are merged) —
+(1) the idle/blink driver AnimFacialUpdate 0x1be310 (state byte +0x99, timer +0x92, the male/female
+state tables already banked in anim.rs, its Rand_Rand draws in order) wired into the drones' anim
+loop; the draws move seed-pinned tests (re-pick by WORKLOG 0072). (2) The face tracks' consumer:
+script_pose_drone poses BONES from the 22-channel tracks today; the decode says they're morph
+weights — re-point to the weights, keeping the 07000006 truck driver's immobility and ai_traces
+green (the immobility must then come from the body track's root: check the data first). (3) The GPU
+skinning path: apply the morphs in the vertex shader or upload the morphed positions for faces;
+keep the GPU vs CPU palette oracle green. Tests: eyelids close/reopen on the blink cycle; a
+dialogue mouth moves at frame 767 of the 07000005 ledge track; sister assertions. Files:
+crates/nf-game/src/{anim,drone}.rs, crates/nf-view/src/{scene,gpu}.rs.
+Started 22:56 UTC, sandbox expires ~00:54 UTC (stop new work 00:34 UTC). Branch cut from
+origin/master (5017f15 — facial2 + viewmodel-zoom merged). Setup all in place from the prior
+session (repo, work/, ISO, nf-queue, rustup, user-prefix ALSA).
+
+**fix-facial3 outcome (00:05 UTC)**: item 2 landed — the face tracks re-pointed to the morph
+weights: the disc refutes the all-zero-face-root premise (04000065's channels 0..2 reach ~1.0; the
+body 04000064's root runs 0.57 un-zeroed on all 880 frames; the game holds the seated driver to
+x 0.024/z 0.063 with the hip on the BODY ch1 — the suppression is the sit state, not a zeroed
+track). script_pose_drone/together + the drone root-motion window pickers exclude facial-count
+windows; facial_weights_at gives drone-backed characters the weights source (pre-fix None) and
+blends the facial slots via facial_blend. facial3_live 3/3 (the driver bones failing-first, the
+weights source, the ledge mouth at frame 767 [D]); the Kimiko test updated to the corrected
+semantics; ai_traces/fix_drone3/fix_truck green. Item 1 banked unwired: facial_update (0x1be310's
+pure state machine + the unit test, 135/0) — the wiring moved ai_05_truck's pins EARLIER (4-10:
+2168→885) because AnimObjectIsClose's LOD-byte gate has no port counterpart (over-drawing); wiring
++ the gate + the 0072 re-pin is the next session's first item. Item 3 (the GPU morphs) designed
+and scoped in the report (SkinAttr morph/wslot, the 248 KB static targets buffer + the per-frame
+weights, the shader term before the palette skinning), nothing partial committed. No Rand_* draws
+landed; seed-pinned tests unaffected on the pushed tree. Report: docs/reports/fix-facial3.md.
+
+## fix-head-look (s/fix-head-look) — 2026-10-14
+Task: the playtest 1013-1758 head-look bugs (07000007): the guard's head ROLLS sideways toward the
+camera (real game: upright, yaw only), the guest's head tips UP well past the camera, the left
+guest looks over Bond's head; cut-scene heads (Kimiko) turn oddly. Find the game's head-look (the
+drone head-track used by fix-heads / guest reactions): the axis order, the yaw/pitch clamps, the
+bone, the target point (the player's eye), and the script/cut-scene gating (must NOT override a
+scene's own animation). Plus take over s/fix-facial3 (101c): merge it, make
+fix_cutscenes2_live::the_kimiko_scene_characters_play_their_face_tracks and
+gpu_skin_live::gpu_palette_matches_the_cpu_pose_on_07000005_06_07 pass for the right reason, keep
+the face work. Files: crates/nf-game/src/{anim,drone}.rs, crates/nf-view/src/scene.rs.
+Started 01:17 UTC, sandbox expires ~03:16 UTC (stop new work 02:56 UTC). Setup all in place from
+the prior session (repo, work/, ISO, nf-queue, cargo, ALSA prefix re-extracted to /home/z/alsa).
+Branch cut from origin/master 8144bd6; origin/s/fix-facial3 (9947360) merged at 16606c1 (drone.rs
++ WORKLOG additive conflicts resolved: both sides kept). Full suite started 01:21 UTC on the
+merged tree (baseline).
+
+**fix-head-look outcome (02:25 UTC)**: the head-look system re-derived from the decompile and the
+port fixed — AnimObjectHeadTrack 0x1bf618 (called from psiBuildMatrixPalette 0x111498 on bone 5
+under the +0xC8 0x30 flags; sAnimObject = *(obj+0xDC)+0x70, which resolves every offset: range² 9.0
+at +0xE8 [L], the tracked bone 5 at +0x104 [L], the stored angles at +0xF0/+0xF8, speed 0.07/0.14 at
++0xE0). Fixes in drone.rs: (1) the composition is now the game's WORLD-frame premultiply
+q_yaw ⊗ q_pitch ⊗ q_world_head — yaw about the neck axis normalize(head−bone2), pitch about
+cross(neck,row2), row-vector transposes axis_angle(side,hp)·axis_angle(neck,−hy) — the port used to
+post-multiply model axes in the head bone's animated local frame (the playtest's roll);
+(2) the ease targets are now the game's geometric plane-acos wants measured from the FRESH anim pose
+(head_track_want, object_pose_inner(d,false)) instead of body-relative atan over a fixed +1.55
+stand-in (the double-counted anim head pitch — the "tips up past the camera"); (3) the 3.0
+head-track range gate from SetHeadTracking's 0x40400000 (want = 0 beyond, draw structure unchanged —
+no RNG shift). Tests: head_look_live 2/2 (upright 0.9978 + on-target 0.215 rad at 2.4 units; no
+swivel at 6 units), fix_ai_remainder_live re-pinned to the game semantics 2/2 (the delta check pins
+the premultiply), nf-game 256/0, formats+audio 85/3 (the 3 disc_golden, the slim-ISO allowance),
+nf-view targeted seed-sensitive 16/16 + kimiko 5/5 + gpu oracle 3/3 — the facial3 takeover green on
+the merged branch (16606c1, additive conflicts both-kept). The headless roll repro did NOT
+reproduce (the first enabled drones' anims hold the head frame near identity — documented in the
+report with the exact sampling attempted); the visible symptom is the main agent's live-check list
+(the playtest --bond spots + the +0x110..113 gate-byte trace). Open: the ScriptCam==0 gate bytes,
+the +0x106 snap-delay draw (omitted — would shift the RNG stream), suite.py full-run deferred to
+the next session (background jobs die between tool calls here). Report:
+docs/reports/fix-head-look.md. Branch s/fix-head-look.
+
+## fix-head-look2 (s/fix-head-look2) — 2026-10-14
+
+Started (05:07 UTC): takeover of s/fix-head-look (6c6cf74). Symptom: the head-look merge with master
+fails two 07000001 runs — walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact and
+fix_pickups_trace_live::with_dev_god_and_infinite_ammo_every_raptor_drop_is_taken_and_the_spare_matches_the_trace —
+both pass on master 4aaadac. Plan: confirm the failures on my master-merged tree, bisect the branch's
+commits against the two tests, make the head look a pure presentation change where the game's is one
+(decompile: does the game's head turn read RNG or feed the AI?); if the game really changes AI timing,
+re-pin per WORKLOG 0072's seed procedure with evidence. Prime suspects from the branch diffs: the
+drone.rs head-track wiring (bd8d2c5/35e6ded) and facial3's root-motion window picker change (51a8d8e,
+"the drone root-motion window pickers exclude facial-count windows").
 
 ## fix-interp-ghosting (s/fix-interp-ghosting) — 2026-10-14
 
@@ -9994,6 +10118,15 @@ Full suite on the final tree (origin/master 810c109 merged): **909 passed, 3 fai
   projectile, by_hash unchanged), draw→fire→reload through step_bond, native-carry identical
   numbers, the 18 no-model ids listed. Suite: 752 passed, 3 failed (the allowed disc_golden
   slim-ISO set), 27 ignored. Report: docs/reports/fix-weapon-assets.md.
+
+### fix-pause-menu2 — start (2026-10-14)
+
+Branch s/fix-pause-menu2 from origin/master 6a118b8. Task: the pause page fixes — the figure
+(the orange silhouette CLUT/blend), the MISSION cursor, the OBJECTIVES tab contents, the CONTROLS
+tab (button glyphs), the SCORE table (Category/Current/Target from the medal data), the HUD
+under the pause page, the footer glyphs. Files: crates/nf-view/src/{menu,hud}.rs,
+crates/nf-view/tests/menus_flow.rs. Report: docs/reports/fix-pause-menu2.md.
+
 ## weapon-matrix (worker, branch s/weapon-matrix) — 2026-10-14
 
 Task 100d: the all-weapons × all-levels matrix. A headless test (`crates/nf-view/tests/weapon_matrix_live.rs`)
@@ -10040,6 +10173,12 @@ set). Suites on the merged tree: nf-game 256/0 (33 binaries, twice), nf-view 318
 portal tests 12/0; the suite.py wrapper can't run here (background jobs die between tool calls,
 the single run exceeds the 10-min tool limit after the 05:08 UTC sandbox reset — per-binary runs
 executed directly instead). Report: docs/reports/fix-portal-eyecel.md.
+## fix-silencer-modes (s/fix-silencer-modes) — 2026-10-14
+
+Task 102b, playtest 1013-1825 (07000006/07000005): the P2K silencer (twin 0x02 'Semi' <-> 0x03
+'Silenced') — the attach anim plays but the silencer vanishes from the view model while bullets
+stay silenced; equip → swap away → swap back loses the silenced variant; dev infinite ammo fills
+the reserves but not the magazine; the SSG's semi-auto refires too slowly. Work in progress.
 ---
 Task ID: 100g-fix-grapple-hook
 Agent: fix-grapple-hook worker
@@ -10171,6 +10310,27 @@ weights-as-bones misread; the fix keeps the cast AND unfreezes the mouths, the g
 - Green: fix_cutscenes2_live 5/5, cutscene_draw_live 2/2, cutscene_models_live 4/4, facial2_live
   2/2, nf-game lib 140/0. `script_pose_drone` (the drone path, seed-pinned) untouched — the flag
   agrees with its channel-count pickers everywhere measured.
+
+## fix-context-hints (s/fix-context-hints) — 2026-10-14
+
+Task 100h, branch start. The two PCSX2 symptoms from the main agent (2026-10-13): standing at a
+usable thing, (1) the hint bar at the top ("Hint: Use Watch Laser" at the 07000008 safe,
+--bond 155.19,43.12,-113.38,1.57,0) and (2) the context indicator icon (the port shows neither).
+Work log:
+- Traced the context system in the decompile: `ThirdIcon_Update` 0x196e80 writes the icon's
+  context type into the player's `BLData+0x95F` (already ported by fix-wire2/fix-08-walls in
+  scene.rs) and posts the type-6 generic hint "Press Action" (label 0x1000291) through
+  `Text_AddMsg(0,0,1,…,0,0xb4)` on a 4-tick per-icon cooldown while the player is not creeping;
+  `Hint_Create` 0x1b3248 / `Hint_Update` 0x1b3380 (placement kind 0x33, class 0x43) are the
+  one-shot hint markers: param 0 = the label (0x1000336 = "Hint: Use Watch Laser" [D USATxt.dat]),
+  param 1 = the sound, param 3/4 = the on/off channels; firing = the player in the marker's
+  obj+0xD0 chain, once (obj+0xFE bit 0 deletes it). `HUD_UpdateHealthPane` 0x19b9c8:273-303 is the
+  context icon (health-pane sprite 18): texture table 0x2FC168[ctx] = 0x03000064+ctx (only
+  0x66/0x67/0x6A exist on the disc [D tex-list] — winch/hanging-man/figure), screen (400,48),
+  layer 29, colour 0x7f7f7fff, fade-out over ThirdIconTimer 30; the type-1 TXTMSG draws on the
+  INFO pane 4 (MsgInfoStatusPane 0x319810 [L], InfoStatusSprInfo 0x319730: bar 480×26 at (16,0),
+  text centred (256,16), the 0x19c310 state machine the pickup pane already ports).
+
 fix-menus-real (101k, started 2026-10-14): the front end must match the real pages
 (1013-1825 playtest + the main agent's 2026-10-13 PCSX2 drive). Every page is missing its
 backdrop, the header font, the footer PS2 glyphs, the centred description and the rolling
@@ -10209,6 +10369,101 @@ measured per-quad from the frame, plates excluded), the main-row colours, the co
 previews, the dossier wheel + Records page, the prompt colour, and the pre-existing flows (the
 codename navigation gained a Down — row 0 is now New Codename). Suite on the final tree: see the
 report. Files: crates/nf-view/src/menu.rs, crates/nf-view/tests/menus_flow.rs (no shared files).
+### fix-pause-menu2 — result (2026-10-14)
+
+The pause page's seven reported gaps fixed from the page data + the game's draw code
+(crates/nf-view/src/menu.rs; lib.rs hooks listed in the report):
+- The FIGURE: 0x030000db's figure texels are ALL index 0x43 whose palette entry is pure white
+  [L pal[067]=ffffff80 + a flat run of 987 0x4343 words in the figure's bbox]; the blob card is the
+  texture's LEFT half, the control's uv samples the right half only, and the control's msg-0x6c=0x100
+  flags [M P_PAUSE_Handler 0x203c28:91 → Label_Update 0x218cb8:173] select psiDrawSprites' ALPHA_1=0x48
+  additive (Cs·As + Cd) [M 0x120e68:56-68] — the black background adds nothing, the white figure takes
+  the orange. The port draws uv 64..128 × 0..128, blend 1, orange [S tint, live check].
+- The MISSION tab's yellow row cursor (a triangle stand-in [S], moves with the selection).
+- The OBJECTIVES tab: one row per objective with the ~J (done, state 4) / ~I markers [M 0x204408:251-271;
+  L .data 0x30d2e0/0x30d2e8]; the host fills fe.pause_objectives from Mission.states (lib.rs hook).
+- The CONTROLS tab: the style name + the 6×2 "<glyph> <label>" rows [M Menu_DisplayControllerStyleList
+  0x1f44d8 case 0; the glyph strings ~A..~V are ACTION.ELF .data 0x30d1c8-0x30d228 [L]]; labels bind
+  from USATxt (0x84-0x90); the Y-Axis line shows the boot value "Normal" [M 0x204408:512-517].
+- The SCORE tab: the Category/Current/Target header + the game's 8 rows [M 0x204408:447-498] with the
+  per-level TARGETS from ACTION.ELF's static score records (0x2bc658 pointer table → 9×0x14 slots
+  [M PlrStats_SetupScoreTable 0x1990e0]), cross-checked: campaign row 1 = 07000005 = [2,30,3,3,…,540,7]
+  = the capture's numbers [L]. Current shows the port's tracked stats (time/accuracy); the counters the
+  Sim does not track yet render 0 (reported).
+- The HUD (radar ring, ammo, fire mode) stays visible under the pause page: the host appends the HUD
+  frame under the menu overlay instead of replacing it (lib.rs).
+- The footers: the per-tab hint ids are the game's own (0x201/0x202/0x204/0x205 [M 0x204408]). The
+  "tiny dots" finding: the glyph atlas 0x03000075 was NEVER missing (already in MENU_TEXTURES; identical
+  SHA-1 in every mission archive [L]) — not reproduced headlessly (no GPU); the live check lists the
+  next probe.
+- 5 new headless tests in menus_flow.rs (23 in the file, all green): the cursor + its movement, the
+  objectives' ~J glyph uv, the CONTROLS' 12 glyph quads, the SCORE targets + row mapping, (NF_ISO) the
+  figure's white silhouette in the texture's right half.
+- Full suite on the final tree (origin/master 69c0104 merged), run in foreground chunks (background
+  processes do not survive between tool calls in this sandbox): 885 passed, 3 failed (the 3 allowed
+  disc_golden on the slim ISO), 20 ignored; zero failures outside the allowed set. Files: menu.rs,
+  lib.rs (2 additive hooks), scene.rs (comment-only), tests/menus_flow.rs. Report:
+  docs/reports/fix-pause-menu2.md.
+### fix-head-look2 — outcome (06:35 UTC)
+
+**The two 07000001 failures were NOT the head look's RNG or AI wiring — they were (1) the game's own
+hit-box coupling plus (2) a real port bug in the stun-loop gate.** Bisect: both tests pass on
+facial3+master (bisect branch 53f1b1b), so the mover is the head-look code commit bd8d2c5 — the only
+code commit between them. The mechanism chain, all decompile-checked:
+
+- The game's head turn is presentation-only: `AnimObjectHeadTrack` 0x1bf618 has **no Rand calls** and
+  its only caller is `psiBuildMatrixPalette` 0x111498 (draw palette). The game's head look does not
+  read RNG and does not feed the AI — the port's matches (head_yaw/head_pitch have no sim readers).
+- BUT the game's **collision boxes include the head rotation**: `AnimGetCollData` 0x1c4ac8 itself
+  calls `psiBuildMatrixPalette` and reads its palette; the HeadTrack call inside is gated on the
+  +0xC8 0x30 flags only, not on the caller's mode arg. So the corrected head box (world premultiply +
+  geometric wants + the 3.0 gate) legitimately changes which part absorbs a bullet — the raptor/walk
+  fights diverge onto the game-correct timeline. On my tree a raptor died in a pose whose gun drop
+  landed inside Bond's touch bounds: the game's own `Pickup_Handler` touch took it (ledger-recorded)
+  and the test's walked-up take loop never saw it. Test re-pins: the raptor loop drains the take
+  ledger for the kill window before walking to the rest (fix_pickups_trace_live); the walker's
+  `follow` returns at its cap instead of panicking and the walk's round loop walks past a wedged lead
+  (the real player's move) — walkreal_07000001_live + tests/common/walker.rs.
+- The divergence then exposed a **real port bug** [M]: `NDrone2_DSTATE_StunGrenadeLoop` 0x1631c0 case
+  0xc calls `DroneFunc_AnyoneNear` 0x14a718 with radius **2.0** (0x40000000); AnyoneNear's
+  glb_players loop tests SqDist3D < (2·r)² = 16 — the player keeps the stunned drone down within
+  **4.0** (|dy| <= 3.0 arm left; the port's 3D `dist` bounds it) — and falls to
+  `NDrone2_DroneNearPos` 2.0 over the drones (left: the port's only near-peer is the player). The
+  port held the drone down while Bond was within **8.0** — twice the game's radius — so the escort
+  followed at the walker's 4-5 band sat in STUN_GRENADE_LOOP (0x4e) forever; a guard's stun grenade
+  (the diverged fight) parked the contact permanently. Fixed in drone.rs `handle_stun` (gate
+  `stun_kept_down` = `dist < 4.0`, re-arm 300 = 5·FRAME_RATE_INT kept); unit test
+  `stun_loop_recovers_when_the_player_is_beyond_the_games_4_band` pins the 3.9/4.0/4.1 boundary.
+
+Result: walkreal_07000001_live 2/2 and fix_pickups_trace_live 2/2 on the merged tree (d6575e4), the
+head-look and facial fixes and their tests kept. Shared-file touches (all minimal, listed):
+drone.rs (the stun gate + the unit test), tests/common/walker.rs (follow cap returns),
+the two test files. Live checks and the full account: docs/reports/fix-head-look2.md.
+## fix-silencer-modes (s/fix-silencer-modes) — 2026-10-14
+
+Task 102b, playtest 1013-1825. **(1) the swap memory**: the game keeps the equipped twin in
+`BLData+0x1BC + base·0xC` (`Player_WeaponSelect` 0x1a2cc0:15-16/27-28) and `Player_WeaponChange`
+0x1a6f80:179-198 hands the TWIN back on the next cycle to the family (the toggle-back +0x930
+gates on the BASE's selectable/owned — the twins share the slot per EquipWeapon 0x1a8a58:39-41 —
+and restores the remembered id verbatim, line 113). The port landed on the bare 0x02 every time.
+Fixed: Gun::twin_skip + the cycle's twin step (with the dry-twin fallback + the marker clear) +
+the toggle-back re-gated through base_of; scene.rs writes the marker on every same-base request.
+Test: fix_silencer_modes_live (attach → cycle away → cycle back = 0x03, the marker 1; the
+fire-mode toggle back clears it). **(2) the silencer's FP visual**: the twins share the FP skin
+0x05000088/idle 0x06000825/fire 0x06000823 and differ in the +0xC8 pair (0x06000828 attach /
+0x06000829 detach) + the muzzle-flash/world-model records [L ee_start_05 @ 0x2bf150]; the part
+bones' poses: bone 43 (the suppressor) runs (0.29, 0.33, −1.60) stowed in the shared idle vs
+(0.00, 0.09, 0.14) mounted at the attach's hold [L port pose code] — the game keeps it mounted
+through the idle (case 8 re-queues +0xA0, 0x1a2e38:389-403), so the persistent visibility is a
+draw-side gate not decoded this session; live checks in the report (gdbwatch on the view
+AnimObject's part/fade bytes across an attach/detach). **(3)+(4) the dev clip + the SSG's pace =
+one bug**: the 30-frame inventory top left the live magazine drained and the 5-round sniper
+(0x24: clip 5, refire +0x40 = 120 [L]) kept tripping the auto-reload. Fixed: dev infinite ammo
+pins the current weapon's clip to weapon_data+0x92 every tick (dev only). Test: the sniper's
+min clip 5, zero reload ticks, the tapped gaps 118-135 over 900 ticks. Suite: baseline 959/3/29
+(the allowed disc_golden); nf-game lib 140/140, the silencer + vent5 suites green on the merged
+tree (origin/master merged 89fbf2d with the fix-08-walls lineage). Report:
+docs/reports/fix-silencer-modes.md.
 
 ## fix-0c-hatch (s/fix-0c-hatch) — 2026-10-14
 
@@ -10273,3 +10528,1012 @@ Task: fix-cutscene-faces2 — merge origin/master into s/fix-cutscene-faces, set
 
 Work Log:
 - (started 20:13 UTC) branch s/fix-cutscene-faces2 created from origin/s/fix-cutscene-faces (316c759a); this entry. Merge of origin/master (62c17571) in progress.
+
+## fix-weapon-fire-modes (s/fix-weapon-fire-modes) — 2026-10-14
+
+Task 100f: every weapon's fire modes — the guided-missile camera (0x2C), the MGL impact/delay
+pair (0x2A/0x2B), the full modes table (docs/systems/weapons.md), the rest the table turns up.
+Ground truth: docs/live/2026-10-13-weapon-modes-pcsx2.md. Work starting.
+
+Task 100f outcome (same session): the sandbox was WIPED ~04:20 UTC (rebuilt: clone, work-slim,
+the ISO, rustup, cargo fetch — ~40 min lost). Found and ported: the MGL's impact/delay pair is
+the records' +0x70 flags (0x2A = 0x4 impact explode [L], 0x2B = 0x280 bounce+fuse 210 [L],
+the fuse lives in Bullet_DoTrails 0x12d890:262-281 [M]); the guided missile camera is +0x6C & 4
+(Bullet_init 0x12c5a0:234-254 ChangeSubState(10)+BLData+0x878+SetCamMode(0xc) [M], the view =
+the missile's matrix [M PositionCamera case 0xc], the look steers via Bullet_update 0x12e7b0:177-244
+[M], the 15-tick static restore via Bullet_Delete +0x944=0xf + Player_Update case 10 [M]) — only
+the Sentinel 0x2C carries the bit [L]. Grenade.explode_on_impact + PlayerBullet.guided_cam +
+steer_missile + blast_at (the rockets' impact blast) + Sim.missile_cam/view_override + the fuse
+gating. docs/systems/weapons.md: the full modes table. cargo check clean; the NF_ISO test run was
+still compiling at the deadline (fresh-sandbox rebuild) — the next session runs the suite first.
+Report: docs/reports/fix-weapon-fire-modes.md. Files: grenade.rs, drone.rs, scene.rs, the new
+weapons.md + the test file (+ the mechanical explode_on_impact:false in the older tests).
+
+Task 100f addendum: the build finished — fix_weapon_fire_modes_live 4/4 (the MGL impact/delay
+pair through the real B press and fire path; the Sentinel cam ride/steer/restore vs the unguided
+sister), nf-game 34/34 binaries, and 33 tests across 9 neighbour weapon/grenade binaries green.
+The full suite.py sweep is the next session's first job.
+
+Task 100f final: the FULL suite equivalent is green — nf-game 34/34 binaries, nf-view 135 binaries
+505 passed / 0 failed / 13 ignored, nf-formats+nf-audio 87 passed; the only 3 failures are the
+allowed disc_golden trio on the slim ISO. Done.
+
+## fix-fire-modes2 (s/fix-fire-modes2) — 2026-10-14
+
+Task 100l: land 100f's fire modes on master's explosion path — no double blasts. Taking over
+s/fix-weapon-fire-modes (guided camera, steering, HUD overlay, modes table, weapons.md all stay),
+merging origin/master, deleting `blast_at` and `Grenade.explode_on_impact` and using master's
+`pending_blasts`/`spawn_blast` plus the `GrenadeEvent::Bounce` arm for every impact blast.
+Work starting.
+
+Task 100l outcome (same session): merged origin/master twice (a4164b9 + 66651ba; the second
+merge auto-resolved drone.rs/scene.rs, WORKLOG union only). The duplicates are gone:
+`blast_at` deleted — master's `pending_blasts` → `spawn_blast` drain is the only bullet
+world-hit blast [M Bullet_CollisionHandler 0x12d068-0x12d0bc]; `Grenade::explode_on_impact`
+deleted — the `GrenadeEvent::Bounce` arm's `+0x70 & 4` read is the only grenade contact blast.
+Folded into master's path with citations: the SILENT range-out (the Sim's Explode arm breaks
+for `+0x70 & 0x200 == 0` records [M Bullet_update 0x12e7b0:158-162 + the DoTrails fuse gate
+0x12d890:262-281; L record sweep ee_start_05.bin @ 0x2bf150: every fuse-death record carries
+0x200, no impact record does]) and the view's no-fuse fuse model ((+0x1C / speed) ticks). The
+guided camera, the steering, the HUD overlay, the mode table and the B-key mapping all stay.
+fix_weapon_fire_modes_live reworked to 5 tests pinning exactly ONE explosion entry and ONE
+damage application per impact (the rocket's homing `+0x6C & 0x20000` was measured curving a
+spawn-shot 37.8 units to a guard — the tests aim at the floor by the real look input instead).
+Failing-first: the naive-merge double-blast state reconstructed (uncommitted) — the rocket test
+FAILED with TWO damage applications, the inline explosion entry wiped by `explosions.clear()`.
+Report: docs/reports/fix-fire-modes2.md.
+---
+Task ID: 102c-fix-grenade-throw
+Agent: grenade-throw worker
+Task: fix-grenade-throw — grenade throw timing (release on the anim event, refire interval), explosion size/scale + damage radius, the settle bounce-sound rule, smoke grenade 0x36.
+
+Work Log:
+- (started 05:31 UTC) Branch s/fix-grenade-throw created from origin/master 69c0104; setup reused from the previous session (repo, work/, ISO, nf-queue). Research + NF_ISO repro tests next.
+
+---
+Task ID: 102c-fix-grenade-throw
+Agent: grenade-throw worker
+Task: fix-grenade-throw — grenade throw timing (release frame, refire), the explosion size/scale, the settle bounce-sound rule, smoke grenade 0x36.
+
+Work Log:
+- Branch s/fix-grenade-throw from origin/master 69c0104 (05:31 UTC); setup reused.
+- Evidence: the release frame +0x44 = 26 with the obj+0x95C latch [M 0x1a2e38:416-420], the pin sound 0x1e4 at the fire script's frame 16 [D 07000026.bin], no op-4.7 in the grenade view scripts, refire +0x40 = 63 + the state-9 0x8000 block [M 0x1a5460]; the blast scale SCRIPTINFO+0x94 = f12 = weapon+0x08 [M 0x12ce1c-0x12ce2c + 0x17cbd0 + 0x1da158:117] with Mat_Scale3f keeping the translation [M 0x1e35f0]; the bounce gate (even counters < 0xF, first-bounce flash 0x15 / smoke 0x13) [M 0x12ce80 LAB_0012d4bc]; the rest (zero speed → no re-collision) [M 0x12ce80 tail + 0x12f020-0x12f030]; the smoke cloud Occlude_Create(pos,1200,1) mesh 0x2000273 [M 0x17ea80/0x17eba0].
+- Fixes: spawn_blast scale = radius; nis.rs keys() stops scaling translations; the bounce gate (pre-increment counter); the rest latch (Grenade.resting); the smoke cloud (SmokeCloud + drone.rs push/tick + the scene.rs Effect pool, kind 3, mesh 0x2000273).
+- Repro first: 4 headless tests (fix_grenade_throw_live) failed pre-fix — on 07000005 the panel-given frag NEVER spawned (the view scripts absent from the archive; 07000015 carries them), the blast scale was 0.533, 9+ bounce sounds across the settle, no cloud. Post-fix: pin 15 → spawn 25, held gap 71, bounce sounds [35,141,166] then silence, blast 8.0/100 at scale 8.0, the cloud at 1200 ticks, no smoke damage.
+- Final tree (merged origin/master e169958): nf-game+nf-formats+nf-audio 352 passed / 3 failed (the allowed disc_golden trio) / 2 ignored; nf-view 326 passed / 0 failed / 7 ignored (levels_sweep 3/3, weapon_matrix 28/28 re-run). suite.py's nohup could not survive this sandbox (backgrounds die between tool calls) — the same binaries ran in foreground --test-threads=1 chunks.
+
+Stage Summary:
+- Files: grenade.rs (resting + SmokeCloud), drone.rs (the scale, the gate, the cloud push/tick + the field), nis.rs (keys() translation), scene.rs (the cloud pool + draw arm), tests/fix_grenade_throw_live.rs (new), the Grenade constructors' resting:false in the hand-built tests.
+- Report: docs/reports/fix-grenade-throw.md (the evidence, the numbers, the live checks).
+- Open: nothing for this task; the satchel/sticky bounce branches and the mine's detonator are other systems' scope.
+
+---
+Task ID: 102h-fix-swim
+Agent: swim worker
+Task: fix-swim — swimming barely works (02 garden pond: entering water by walking in, swim speed, crouch dive / jump surface, no footsteps while swimming — swim stroke sounds instead) and the water ladder under the hut (grab + climb from the water).
+
+Work Log:
+- (started 08:37 UTC) Branch s/fix-swim created from origin/master ccaea18. Setup in progress (downloads next). Research in work/decomp after.
+
+---
+Task ID: 100k-fix-gadgets-live
+Agent: fix-gadgets-live worker
+Task: the laser/stunner/AIMS-20/Oddjob findings on 2026-10-13's master — (1) the laser 0x4e's beam, wall light and HUD charge bar + regen are missing (PCSX2 shows a short red beam, a red glow light, a vertical charge bar 31..0 at ~1/tick, regen after); (2) the stunner 0x4a "doesn't work" — the class-2/3 ray, Draw_TaserBeam 0x1a46a8 and the stunned reaction; (3) the AIMS-20 0x1a's side lights unlit (emissive/anim material); (4) Oddjob's hat 0x45 should be a one-shot kill, not a grenade.
+
+Work Log:
+- 06:53 UTC: branch s/fix-gadgets-live from origin/master (a4164b9); suite starting in background.
+- Root causes: (1) the gadget burn/beam ran on the RAW trigger at the top of the tick, not the shot tick — so it beamed through the draw/switch cycle, never stopped at clip 0, and the HUD charge sat still while firing was gated elsewhere; the game's whole visible shot rides the refire that spent a round (RoundToFire 0x1a18e0 → InitBullet 0x1a4bf0 → the +0x95b latch → MuzzleFlash 0x1a4298). (2) The stunner's miss arm REGENS +0x91 [M 0x1a4bf0:193-199] — the aimed-off hold is free; the port spent unconditionally. (3) The AIMS-20's lights are AnimDatumSetEntity(0x2000132, bones 8..0xB) per tick [M 0x1a5460:256-360] — never attached. (4) The hat 0x45 kills on contact (damage 100 through the standard bullet hit [M 0x12ce80:311-316 → msg 8]) and never explodes (the fuse arm only sets the post-hit lifetime [M 0x12e7b0:368-373]) — the port's grenade path fuse-blasted it.
+- Fixes: scene.rs — the beam/burn/target block moved into the release branch (the clip gate = RoundToFire's; the beam stops at 0), the light on every gadget shot tick, the beam draws the game's own sprites (lazer 0x2000131 / taser 0x200026d / uv_lazer 0x20006c1 — all resolve in every archive [D probe]; the old "unresolvable" [S] claim was wrong) anchored at the view-model root, the AIMS-20's four 0x2000132 light attachments (bones 8..0xB) with the blink/off arms off a new Drones::aims_idle (BLData+0x93a's stand-in); drone.rs — the hat's contact-kill pass + the silent fuse death for 0x45.
+- Tests (crates/nf-view/tests/gadgets_live.rs, 4/4, failing-first via the deleted scratch probes: the clip never drained and no beam parked pre-fix): the laser's drain/light/stop-at-0; the stunner's spend-on-target + free aimed-off hold; the AIMS lights attach + the idle timer; the hat's contact kill + no explosion. Neighbours green: gadget_laser_live 7, fix_level_0c_live 4, fix_fusebox_cut, qclaw_live, gadget_grapple_live, explode_live, fix_weapon_effects_live, fix_weapon_sounds_live.
+- Shared hooks: drone.rs (aims_idle on its own line + the hat pass), scene.rs (the restructure + the new slots; nothing removed but the replaced stale comment). grenade.rs/player.rs/lib.rs/gun.rs/gadget.rs/bullet.rs untouched.
+- Left: the taser's msg-7 stun state machine; the laser's battery-station recharge (0x1a5460:575-598); the AIMS bone-9/10/11 gates (+0x93e/+0x2f0/+0x2fc); the hat's return/clang; the pause-menu stop hook. All in the report with the live checks.
+
+## fix-cutscene-brightness (s/fix-cutscene-brightness) — 2026-10-14
+
+Task 102g, the 07000002 intro playtest (results 1013-1825): "the models in the game during the
+cutscene are extremely bright" — the port's cut-scene actors are near-white at
+`--bond -82.30,5.30,32.05` frame 170 while PCSX2's 02 intro lights Bond and the man at the
+computer darkly to match the room. Plan: find what the game lights cut-scene actors with (the
+character room light / the scene's own light set; the in-game character room light is
+290-fix-character-room-light's pending work — check whether cut-scene actors take a different
+path in the port: no cel light, or a default full-bright ambient). Reproduce first, then fix in
+scene.rs / nis.rs with numbers from the decompile.
+Status: branch created, reproduction + fix in progress.
+
+fix-cutscene-brightness DONE (09:3x UTC): the 02 intro's cut-scene actors take the room's ambient
+instead of the full-bright sentinel. Two broken links in `Sim::characters_script_pos` (the ramp's
+position source for script characters): (1) the strict `nf_formats::anim::fits` sequence filter —
+the intro's actors play shared human tracks (record skeleton 0) on skeleton-N skins, every
+candidate was rejected, the position was None and the ramp's target None, so obj+0x100..0x102
+stayed the 0xff,ff,ff sentinel of `control_init_object` 0x134630 — the playtest's "the models in
+the game during the cutscene are extremely bright"; the relaxed filter (the skeleton-id match
+dropped, the channel-count guard kept) already exists in `nf_game::anim::script_pose` (the same
+strictness bug recorded there for 07000004's seated target) — `characters_script_pos` now calls
+it. (2) the raw root translation resolved near the world origin ([0.0, 0.038, 0.958] at frame
+200) where no cel exists (`ambient_at` None): [M] `Script_AnimStart` 0x1d8f40 creates the anim
+object at `control_create_object(0, 0x2d6200, 0x2d6200, 0)` — the script's scratch base matrix
+(the port's `Player::live_matrix = mul(stream_pose, script.matrix)`) — and composes the root via
+`AnimGetFirstTrans`, ending with the position cel link (`build_LinkToRoom`). The sequence roots
+are LOCAL offsets (char[79]'s seq root@1 [0,0,0] … root@200 [0, 0.04, 0.96]); the fix composes
+`Sim::script_base_matrix(src.0)` (new — the placed NIS player's live_matrix) with the root in
+`characters_script_pos` AND in the render's script-branch object matrix (the actors drew at the
+origin before). Result: char[79] obj+0x100..0x102 = [20, 30, 20] — the bunker cel's ambient, the
+draw multiplier dark; the actor stands in the set beside Bond ([-27.06, 1.45, 33.46] vs Bond
+[-27.17, 1.05, 29.80]). Fail-first: fix_cutscene_brightness_live's
+the_02_intro_actors_take_the_rooms_ambient_not_full_bright panicked `got [255, 255, 255]` on the
+unfixed tree (after the strict-filter `pos None` panic). Sisters: the drone characters' ramp and
+the view-model branch untouched. Regression set green: cutscenes 5+4, objects (the truck) 5+6,
+facial 2+3. Suite on the final tree: see docs/reports/fix-cutscene-brightness.md. Files:
+crates/nf-view/src/scene.rs, crates/nf-view/tests/fix_cutscene_brightness_live.rs (new);
+crates/nf-game/src/nis.rs read-only.
+
+## fix-cutscene-brightness2 (s/fix-cutscene-brightness2) — 2026-10-14
+
+Task: 102g's held fix (0cbfbf8) makes the 07000002 intro's cut-scene actors VANISH — the main
+agent's render at the user's spot (`--bond -82.30,5.30,32.05,1.570,-0.100 --frame 170`): master
+draws Bond and the man at the computer desk (too bright), master + the branch draws the same room
+with NO characters.
+
+fix-cutscene-brightness2 DONE (09:4x UTC). The live probe (tests/fix_cutscene_brightness2_live.rs,
+run on the held tree) pinned both halves:
+- The vanish: the held fix substituted `Player::live_matrix` for the script actors' render object
+  matrix — but `live_matrix` is stream 0's object ∘ the script matrix (`Script_Interp` 0x1d9a08
+  keys the SP object's obj+0x90 from stream 0 [M nis.rs]), and the intro's stream 0 is the CAMERA:
+  obj[0] Camera trans [-27.25, 1.41, 34.39] == player[1] live trans [L probe]. The actors were
+  drawn inside the camera. The premise was wrong too: VECTOR 0x2d6200 is the ORIGIN vector
+  [L ACTION.ELF, nis.rs's Light doc], so `Script_AnimStart` 0x1d8f40's
+  `control_create_object(0, 0x2d6200, 0x2d6200, 0)` creates the anim object AT THE ORIGIN — the
+  object matrix is identity and the pose's root carries the actor in world space [M Obj::Anim doc;
+  AnimSeqTick 0x1c28d0 takes the root motion as the object's movement]. Fix: frame_state's script
+  branch draws with `c.matrix` again (the render-verified model — master's own render places both
+  actors correctly).
+- The ramp sample: the held `script_pose` resolves `script_frame`'s LAST covering window — on the
+  intro that is the zero-root overlay track (char[79] windows (1,1541,0x04000296)/(1,1540,
+  0x04000224); the last one's root [0,0,0] at frame 170) — and its base composition multiplied
+  that by the camera matrix, so the ambient sampled the camera's cel (the right bytes by luck).
+  Fix: `characters_script_pos` resolves the position the renderer draws — `script_pose_together`'s
+  world root (char[79] [-25.51, 1.13, 30.14], char[80] [-27.18, 1.13, 30.99], both beside Bond
+  [-27.17, 1.05, 29.80] [L probe]) — no base. ambient_at(root) = the bunker cel [20,30,20]: the
+  same dark multiplier the held test pins, sampled where the actor stands.
+- Fail-first: both tests in tests/fix_cutscene_brightness2_live.rs panic on the held tree (the
+  object-matrix assert and the ramp-sample assert), green on the fix. Sisters kept green: the held
+  fix_cutscene_brightness_live 3, render2_live 8 (the 01 cut-scene's [L] (40,30,26) courtyard
+  pin), fix_objects_live 6 + fix_objects2_live 5 (the 05 truck's script characters),
+  fix_cutscenes_live 4, fix_cutscenes2_live 5, facial2_live 2, facial3_live 3.
+- Files: crates/nf-view/src/scene.rs (characters_script_pos; the render's script-branch object
+  matrix; script_base_matrix removed — it existed only for the wrong reading). No shared-file
+  hooks; nis.rs untouched.
+- Suite on the final tree: docs/reports/fix-cutscene-brightness2.md.
+Task ID: 102e-fix-missing-objects
+Agent: missing-objects worker
+Task: fix-missing-objects — furniture, the fountain and the 0c pylon aren't drawn; census every on-foot level for placements whose mesh the port doesn't draw, with the skip reason per class; draw what the game draws.
+
+Work Log:
+- (started 08:08 UTC) Branch s/fix-missing-objects created from origin/master c9e1582; setup reused from the previous session (repo, work/, ISO, nf-queue). Spots given: 07000006 courtyard fountain (21.12,39.04,-0.48,8.683), guard room (33.50,41.13,-17.90,9.158) and lockers/fusebox (31.94,41.13,-17.36,10.756); 0700000c pylon (14.22,16.28,-139.54,0.986). Repro tests + decompile evidence next.
+
+---
+Task ID: 102e-fix-missing-objects
+Agent: missing-objects worker
+Task: fix-missing-objects — the fountain, the guard-room furniture, the lockers and the 0c pylon aren't drawn; census every on-foot level.
+
+Work Log:
+- Branch s/fix-missing-objects from origin/master c9e1582 (08:08 UTC); setup reused.
+- Repro first (probes kept): the named objects are kind-0x19 world-baked cel placements at translation (0,0,0); the fountain/bench/locker nodes were UNCHAINED generics — owner None at the user's spots, node_vis false, 0/N materials kept by the game mask (the renderer's World cull drops unchained 0x8019 nodes; View_AddCels draws generics only from their owner room's +0x18 chain, fix-portal5 §1).
+- Root cause 1: build_scoped's smallest-volume-containing-bbox attribution put the guard-room floor under the table's bbox and the courtyard floor under the fountain's — every candidate room's scoped bucket read empty at build_chains time. The game's HITDATA+0x54 carries the object's own placement cel (parsemap_block_map_data_static 0x1d1998: one runtime cel per placement, glist = the placement's object); the k-th pushed instance IS the k-th cell. Fix: build_scoped keys obj_cell by the pushed ordinal [M 0x1d1998 + fix-portal5 §4].
+- Root cause 2: link_owner_room dropped candidates with an empty bucket, but the game's read is "everything else reads 1e8" — the candidate stays and strict < keeps the first in parse order. Fix: unwrap_or(1e8) [M fix-portal5 §4's 0x1c9150 reading].
+- Fixes verified fail-first: pre-fix probes show owner None/node_vis false/0 materials; post-fix the fountain (room 27, 96/96 batches), the guard-room furniture (room 7) and the locker (15/15) draw at the user's spots. Disc-wide effect: the 0700000a office furniture, 07 books, 09 lights were the same orphans.
+- Census (fix_missing_objects_live): Scene::build's exact sequence per on-foot archive — 0 unchained meshed generics, 0 no-draw-path placements on all 21 (06: 322 generics, 0c: 273, 12: 438, …); explained skips = glist bits 0x10/0x1000 + the documented no-draw classes. FOUND GAP: 0xea/0xeb trigger meshes the game draws (0a lasers, 12 lift switches; Trigger_Create 0x1b1720:95 sets obj+0xF0 = glist+0x44) — no port draw path yet.
+- The 0c pylon: NOT reproducible on this tree — the real stand_at+head camera at the user spot resolves eye cell 91, all four pylon parts + shadow ride owner room 77, in_view true, 14/14 materials kept (probe_missing_pylon.rs, kept); pinned by a regression test, live re-render requested.
+- Green on the fixed tree: the whole portal chain (portal_live/eyecel/2/3/4/5/6/sweep/walkreal), nf-game units (world.rs scope tests), the new 3 tests. suite.py could not run in background (nohup dies between tool calls — same as the last two sessions); foreground chunks covered nf-game+nf-formats+the portal/object/census nf-view files; the levels_sweep re-run is left for the next session.
+- Report: docs/reports/fix-missing-objects.md. Files: crates/nf-game/src/world.rs (obj_cell rule + doc), crates/nf-view/src/scene.rs (scope_graph pub + the 1e8 owner pick + doc), crates/nf-view/tests/fix_missing_objects_live.rs (new) + 6 probe files (kept).
+
+fix-menus-real2 (101q, 2026-10-14): the front end's second pass — the main panel art, the title
+font, the footer button glyphs, the Dossier row list, the backdrop. Started from a4164b9.
+
+fix-menus-real2 (101q, 2026-10-14): the front end's second pass, against the playtest's five
+symptoms. (1) THE DOSSIER "adds Weapons" was not page data at all: the wheel's range is
+unconditionally [0,3] (C_SBDOSSIER 0x216eb0:40-43), the four rows of table 0x2dfcd0 with all four
+unlock flags = 1 [L ee_snapshot 0x2dfd18+0x10] and no code reads or writes the Weapons flag byte
+[L an ELF-wide lui/ADDU scan finds only 0x216f38 + the adjacent SBBOTS references]. The real game
+shows three rows because Menu_UpdateWheel 0x1f8388:148-168 centres a 5-slot window on the cursor —
+at cursor 0 slots 0/1 are blank and Weapons (row 3) is one Down away; P_DOSSIER_Handler 0x216de0:9-16
+resets the wheel to 0 (msg 0x2e param 0) whenever the page opens from missions/results/stats, and
+Scroll_Update 0x2221b20:186-210 clamps (the wrap needs the msg-0x69 flag nothing sends). The port
+entered the Dossier with the missions cursor (menu.rs MissionSelect Side) and wrapped Up/Down with %
+— fixed: cursor=0 on entry + saturating clamps that return false at the ends [M 0x222810:98-106].
+Test shown failing on the pre-fix code (cursor 3 rode in; Up teleported Records→Weapons), then
+passing; sister: the window at cursor 0 yields rows [0,1,2] only. (2) THE HEADERS' bold-italic
+face: the engine has no italic flag — __Font_DrawText 0x1ee598 draws axis-aligned quads; the look
+is a SECOND FONT. Every label defaults to SerpLight (Label_Init 0x218638 stamps DAT_003096c0 =
+ff 02 fe 03 … [L ee_snapshot 0x3096c0]), but the page-def NAME tag (−8) carries a per-control
+format string sent as msg 0x23 [M MenuManager_Create 0x21b908:255-274; Label_SendMessage
+0x218890:100-104 sprintf's it over the default], and the header controls' strings are
+"\xff\x01" = font select 1 [L the re-walked menu-def (tag stream from 08000002 @ 07000048.bin
++494208, 56 pages/891 NAME strings): header CTRL (50,40,376×17) name 0x10000001 → NAME bytes
+ff 00 01 00 … (UTF-16, compacted by 0x21b908's walk); Font_ParseFormat 0x1ee3e0 stops at the first
+NUL so the effective format is the font select]. FontTable[0] = {tex 0x03000005, FONTNFont2
+0x305a58} [L ee_snapshot 0x2dd8b0; the pristine-ELF bytes there are pre-init — runtime data only
+in the snapshots], and 0x03000005's atlas is the bold-italic face [D tex-export 07000048.bin entry
+3 sub 2]. nf-formats now parses FONTNFont2/FontDataNFont2 as HudTables.font_header (same layout as
+the SerpLight parse), hud.rs text_scaled grew a texture-aware sibling (text_scaled_tex; Font
+_ParseFormat 0x1ee3e0 case 5 loads the selected font's own texture), and page_header draws the
+headers through 0x03000005. Tests: the two faces parse and differ; the headers' quads ride the
+0x03000005 atlas. (3) THE FOOTER GLYPHS are already correct in the port — the pinned table matches
+the RUNTIME specialchar exactly [L ee_snapshot 0x2dd8d8, 17 entries, letter tokens 'A'-'Y', all
+texture 0x03000075; the pristine ELF bytes there are pre-init garbage — both research reads off
+the ELF were wrong], the atlas carries the glyphs at the table's uv rects [D crops: (235,1) blue ✕,
+(235,21) green △, (235,41) orange ○, (235,61) pink □], quad() normalises by the texture's real
+dims [M hud.rs quad]. The "tiny dots" symptom is the OLD 0x03000042 64×64 guess (uv 235 clamps to
+the corner pixel of a 64-wide texture — dots). Fixed the port's only wrong numbers: the test fake
+gave 0x03000075 a 256×256 pitch (real 256×128 [L tex-list]) so the icon uv normalised wrong in
+tests; real pitch now pinned, plus the pause-objectives ~J marker uv (57/128). (4) THE BACKDROP:
+the panel/Bond/007-ring art is IN the aux FMVs (0x07330048 main, 0x07350048 lists [L the PAGE
+records' aux field; Manager_SendMessage 0x21c858:331-341 plays them looping]) and the port's movie
+plane is correct; the near-black renders were (a) the shipped binary built without `movies`
+[nf-formats gates oxideav behind the opt-in feature], (b) frame 0 = the fade-in, (c) a real bug:
+the --shot still path read the movies off NF_ISO (the on-foot image's 22 PSS entries are 0-byte
+stubs [D ISO9660 parse]) instead of NF_MOVIE_ISO like the live loop — fixed (one line, lib.rs)
+and --movie-frame now defaults to 12 (past the first GOP). Render commands + live checks in the
+report; the FMV stills need a retail image (none in this sandbox).
+Suite on the final tree (origin/master 6cbe522 merged): see docs/reports/fix-menus-real2.md.
+Files: crates/nf-view/src/{menu,hud}.rs, crates/nf-view/tests/{menus_flow,menu_movies}.rs, plus
+the shared-file hooks listed in the report (nf-formats/src/hud.rs font_header, lib.rs call sites).
+
+
+## fix-08-collision (s/fix-08-collision) — 2026-10-14
+
+Task 100j, 07000008: the invisible wall inside the safe room's missile room — the playtest's
+"the wall is still there but invisible" at `--bond 155.19,43.12,-113.38,1.57,0` with culling ON.
+The exterior `Room_Outside_3` (cell 15) slabs (fix-08-walls named them: tris across the whole
+`Room_Guardhouse_F2` interior) cull visually at master but their COLLISION still blocks Bond:
+the port collides movement against a shared world, while the game collides Bond only against
+his own cel's object lists (build_FindCel 0x1c8cb0 finding from fix-portal-sweep: per-cel lists).
+Plan: give the port's movement collision the game's per-cel attribution (building on
+fix-portal-eyecel's attribute_scope chain buckets), so walls from other rooms don't block.
+Status: branch created, reproduction + fix in progress.
+
+fix-08-collision DONE (08:0x UTC): the missile room's invisible wall is out of Bond's collision.
+Root cause pinned: the port's movement pass tested the ONE SHARED WORLD (flat `capsule_push` +
+`segment_hit` in `physics_tick`/`physics_tick_climb`), while the game scopes the whole pass to the
+actor's own cel — [M] `Player_Collision` 0x194df0's first store `*(BLData+0x7c0) = *(obj+0x20)`
+(the relinked cel pointer into the BLData+0x740 HITTEST's start-cel field; the capsule points are
+the same HITTEST's +0x760/+0x770), [M] `Collide_Pick` 0x1eb320 walks `Collide_StraddleCels`
+0x1eac98's result and tests each straddled cel's OWN list (`*(cel + 0x18)`), [M]
+`Player_CollisionHandler` 0x1949a8 runs the floor test (`Player_FeetOnPoint`) off the same
+HITTEST. The port already had the per-cel machinery (the straddle walk + fix-portal-eyecel's
+`attribute_scope` chain-owner buckets) — the player now uses it: `capsule_push_scoped(self.cel)`
++ `segment_hit_scoped(self.cel)` in both passes, `self.cel` = obj+0x20 (the Sim's per-tick
+`cel_at`→`room_cell` relink). The exterior slabs (cell 15, `Room_Outside_3`, the z −118.0 west
+face 64 tris inside the guardhouse box [D probe]) stop blocking the missile room; the room's own
+walls stay in cell 48's bucket and still block (`debug_bucket_owners` introspection added to
+world.rs: the north-wall band runs live in cells 15/40/48, the room floor in 15/48). Deviation
+[S]: a flat redo when the scoped pass finds neither push nor floor — the game's
+`build_FindCel` 0x1c8cb0 relink always carries the geometry under the actor, the port's buckets
+are coarser (07000002's ladder head: the garden-floor rim sits in a bucket the straddle doesn't
+keep — fix_ladder_live caught Bond falling down the shaft he had just climbed); on the ground the
+room's own floor is always in the bucket, so the redo never fires there and the slab band keeps
+its wall out. A try at porting the FindCel relink for bond.cel (find_cell_raycast at feet height)
+resolved the user's spot to cell 45 (the floor below's chain holds the room floor) whose straddle
+set doesn't keep cell 48's north wall — reverted; bond.cel keeps the `cel_at`+`room_cell` mapping,
+the deeper FindCel port is a follow-up. Fail-first: the_missile_room_walk_across_the_slab_band_
+meets_no_wall panicked at the crossing tick on master (z −117.70, y 44.03 — the flat pass stopped
+Bond at the face and squeezed him UP it); post-fix the crossing rides the level floor (z −118.16,
+max y 43.748) and the real north wall still stops the walk (z −121.78). Sisters: the room's
+west/east walls still block; the scoped-vs-flat mechanism pin at the slab face. Regression set
+green on the fixed tree: 08-collision 4, 08-walls 4, safe08 4 (the fusebox floor holds), ladder
+3+1 ign, ladder2 5, swim-vent5 2, wire2 3. Suite on the final tree: see
+docs/reports/fix-08-collision.md. Files: crates/nf-game/src/player.rs, crates/nf-game/src/world.rs,
+crates/nf-view/tests/fix_08_collision_live.rs (new); crates/nf-view/src/scene.rs SHARED — comments
+only (the bond.cel note), no behaviour change.
+
+fix-08-collision2 (100m, started 2026-10-14): 100j's scoped collision (origin/s/fix-08-collision
+4023ba9 merged with master ccae18) breaks the 01 escort walk — walkreal_07000001_live::
+walk_from_the_spawn_to_the_exit_with_the_contact settles the contact at (-5.2, 6.3, 14.1) while
+the LoadPointActivator plate is at (-33.1, 2.3, 15.4); the log shows `world seg to (-1.0,+0.0):
+hip None hip+0.5 None feet None` around there. The contact waits for Bond (the escort logic), so
+the suspect is Bond's scoped collision: a spot on the 01 route where Bond is stopped, falls or
+snags (a floor or step outside the straddle set — the 09 stairwell class). Plan: reproduce on the
+merged tree, log both trees' Bond positions per 60 ticks to find the divergence, fix it the game's
+way (the straddle set's cels: a missing portal crossing, a floor attribution), keep the 08 safe
+room (no invisible wall) and the 09 stairwell. Files: crates/nf-game/src/{player,world}.rs,
+crates/nf-view/src/scene.rs. Work log continues below.
+
+fix-08-collision2 (100m, 2026-10-14): the scoped collision's 01 escort breakage fixed the game's way.
+- Reproduce: walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact failed on
+  the 4023ba9+ccae18 merge (the contact stuck at (-5.2,6.3,14.1), the plate at (-33.1,2.3,15.4));
+  the trace showed west-room guard 16 unkillable (no-damage shots at dist 1.2-10, then Bond out
+  of ammo) -> AllyLeadHide forever.
+- Divergence (the driver's method): env-gated NF_WALK_TRACE per-60-tick positions on the merged
+  tree and a master worktree — the walks agree to t2460, then a 3 cm path shift at the spawn
+  corridor's seam (cel 60, owners [(6,7),(60,5)]); the scoped vs flat push differs by the
+  straddle ROOT's test order.
+- Fix (both halves [M]): (1) bond.cel's per-tick relink is build_FindCel 0x1c8cb0's two-ray
+  tie-break through build_LinkToRoom 0x1c9680:35-40 (the port had the raycast — find_cell_raycast
+  — the movement pass just never used it); (2) the capsule portal test projects the segment
+  against the portal's STORED CENTRE (build_alloc_portal 0x1c8928's +0x70 = the 4 corners'
+  average), not corner 0 [M Intersect_Portal 0x1ea7b8's 0x800 path]. ScopePortal gained centre;
+  debug_straddle added. The void-redo fallback stays.
+- Verified: the 01 walk passes (failed pre-fix and with the portal half alone — the root is
+  operative); fix_08_collision2_live 2/2 (the seam equality + the floor-carries sister);
+  the collision-adjacent set green (08 collision 4, 09 stairwell 2, ladders 8, wire 1, swim 2,
+  walls 3, safe08 6, qclaw/grapple 6, the walkreal sweeps 01-4a); suite on the final tree in
+  foreground chunks (background jobs die here): 233 binaries 975 passed / 3 failed / 31 ignored
+  — the 3 exactly the allowed disc_golden trio; weapon_matrix_live hit the 240 s cap (spot
+  check 4/4 green; the full 28 left for the next window with the ~40-binary tail).
+- Report: docs/reports/fix-08-collision2.md. Files: crates/nf-game/src/world.rs,
+  crates/nf-view/src/scene.rs (the two shared-file hooks), crates/nf-view/tests/common/walker.rs
+  (the env-gated trace), crates/nf-view/tests/fix_08_collision2_live.rs (new);
+  crates/nf-game/src/player.rs ended unchanged.
+---
+Task ID: 102l-fix-0c-pylon
+Agent: 0c-pylon worker
+Task: fix-0c-pylon — the 0c pylon is in the drawn set (per 102e's pin) but not on screen: nf-view at --bond 14.22,16.28,-139.54,0.986,-0.269 shows roof/crates/its baked shadow, empty sky/sea where PCSX2 shows the steel lattice pylon (parts pylon/pylon_back/pylon_left/pylon_right, placements 160-163). Follow the draws: alpha test/blend on the material, texel alpha, depth/near-far, world-baked transform (double transform?), cel visibility on the frame. Replace the drawn-set pin with a rendered-frame/draw-list test; sister assertions; render before/after.
+
+Work Log:
+- (10:35 UTC) Branch s/fix-0c-pylon created from origin/master b65d6f7; setup reused (repo, work/, ISO, nf-queue). Repro render + decompile evidence next.
+
+
+---
+Task ID: 102l-fix-0c-pylon
+Agent: 0c-pylon worker
+Task: fix-0c-pylon — the 0c pylon is in the drawn set but not on screen; replace 102e's drawn-set pin with a rendered-frame test.
+
+Work Log:
+- (10:35-11:58 UTC) Branch s/fix-0c-pylon from origin/master b65d6f7; setup reused. The symptom reproduced byte-exact at the user spot; NF_NOCELCULL (2113 extra draws) changed nothing.
+- The pylon's draws were never the problem (probe_pylon_draws): 12 materials, pass 3 / blend 0 / zwrite off / atest 1 / fog 2, textures resolve with a real alpha-tested lattice (45:93: 1017/4096 opaque), vert alpha 128, on-screen NDC, depth 0.999. In-process subset renders (probe_pylon_render, the exact shot() path + framebuffer readback): pylon-only RENDERS, pylon+list0 RENDERS, pylon+pass3 RENDERS, pylon+sky/chars/effects GONE, full GONE — the killer is the pass-4 sky.
+- Root cause [M]: the port sorted the frame by dc.pass*2, drawing the post-fog sky (pass 4) AFTER the alpha list (pass 3). Game_Draw 0x1e6f50 draws sky group 0 (View_DrawSky v,0 0x1e5ad0, GfxList+0x4a == 0) between psiPostSolid 0x121630 (= psiDrawFogPass 0x10b960) and View_DrawObjList(v,1) — the alpha list comes AFTER the sky. The sky pipeline is far-plane-pinned + LessEqual + no depth write, so over pixels where only no-depth-write alpha draws landed (the pylon: ZBUF_1 zwrite off) the depth is still the cleared 1.0 and the sky repainted it. The shadow (zwrite on) wrote depth and survived — the exact observed split. docs/systems/render.md §Sky remainder already pinned group 0 = "after psiPostSolid / before the alpha list"; the code contradicted it.
+- Fix: gpu.rs slot map `match dc.pass { 4 => 3, p => p * 2 }` — sky group 0 now draws after list 0, before the alpha list; nothing else moved. scene.rs: #[derive(Clone)] on Material (test support).
+- Tests (fix_0c_pylon_live, fail-first on the stashed fix): user-spot lattice band 1628 → FAIL pre-fix, 5180 → PASS post-fix; close-up 75 → FAIL, 4229 → PASS; sisters: sky stays bright (75000), the shadow still draws (40113). Rendered before/after PNGs at the user spot and pitch 0.
+- origin/master 6691ef9 merged (WORKLOG conflict: both entries kept). Report: docs/reports/fix-0c-pylon.md. Files: crates/nf-view/src/{gpu,scene}.rs, tests/fix_0c_pylon_live.rs + 2 probes.
+## fix-movies-tests
+- Started: fix movies-feature test build (menu_movies.rs:282 E0614 u32 deref), run all movies-gated tests with --features movies, fix failures, note in docs/tools/test-suite.md.
+
+## fix-movies-tests (outcome)
+- menu_movies.rs:282 E0614 fixed (present returns (u32,u32,&[u8]) by value [M movie.rs:226]); all 203 nf-view+nf-formats test binaries build with --features nf-view/movies; 202 run: 201 ok + disc_golden's 3 allowed slim-ISO fails; PSS-data tests skip on the slim stub image by contract; docs/tools/test-suite.md gained the movies-feature note; weapon_matrix_live (>600 s with or without movies — pre-existing) flagged for the suite gate. No shared source files touched.
+- Post-merge (origin/master 6691ef9 = fix-menus-real2, whose menu_movies copy still carried the (*w,*h) bug): merged, rebuilt menu_movies/menus_flow/movie_playback_flow with movies on the final tree — 7/7, 34/34, 10/10 ok; suite restarted on the merged tree (see report).
+
+## fix-save-profile
+- Started 12:32 UTC. Branch s/fix-save-profile from origin/master 1496b80. Task: port the game's memory-card profile save (unlocked missions, difficulty per mission, high scores/medals = Dossier Records, Bond moves, options, controller style) to one file per codename next to the port's config; hooks in nf-view menu.rs; tests: round trip, unlock after completing a mission, sister assertions. Layout must come from the game's save code in the decompile.
+## fix-swim-entry (started)
+
+Branch `s/fix-swim-entry` (from origin/master 6691ef9). Task 103d: the swim ENTRY depth off the 07000002 bank
+(`--bond -82.3,5.3,32.05,1.57`) — the port enters the swim only when Bond's feet are 0.62 under (pos 3.747 vs
+surface 3.7675) because the stateless smallest-bbox `find_cel` keeps the bank's land cel until he's deep. Reading
+the game's cel pick: `Player_InWater` 0x195e50 reads the player's RUNTIME cel (`*(obj+0x20)+0x90`), and obj+0x20
+is maintained per tick by `control_handle_cel_change` 0x133288 (move segment portal-cross `Cel_ObjectLeftCel`
+0x1e0d58 → `build_point_in_bounding_box` 0x1c9500 keep → `build_LinkToRoom` 0x1c9680 → `build_FindCel` 0x1c8cb0
+at the world-sphere centre obj+0x80 with the raycast tie-break) — stateful, unlike the port's per-tick
+smallest-bbox lookup. Probing the pond cels next, then porting the relink.
+
+## fix-swim-entry (outcome)
+
+Files: crates/nf-game/src/{world,player}.rs; shared hooks: crates/nf-view/src/scene.rs (3 small, additive).
+Tests: crates/nf-view/tests/fix_swim_entry_live.rs (NF_ISO, 2/2); probe kept: examples/probe_swim_entry.rs.
+
+The game's player cel (obj+0x20) is STATEFUL, maintained per tick by the movement handler's moved pass
+(`control_handle_cel_change` 0x133288, run AFTER `Player_Update` [M 0x1336f8:147-236, so the cel
+`Player_InWater` 0x195e50 reads this tick was linked from the previous tick's move segment], then
+`obj+0x40 ← obj+0x30` 0x1336f8:212): the move segment's portal cross (`Cel_ObjectLeftCel` 0x1e0d58: two
+`Collide_RayTriangle` per portal quad of the CURRENT cel, crossing wins even inside the old bbox) → the
+bbox keep (`build_point_in_bounding_box` 0x1c9500 at obj+0x30) → `build_LinkToRoom` 0x1c9680 →
+`build_FindCel` 0x1c8cb0 AT THE WORLD-SPHERE CENTRE (obj+0x80, `Control_BuildWorldSph` 0x133070; local
+centre (−0.1347, −0.1267, 0.2402) [L ee_start_05 M_CONTROL+0x80]) with the raycast tie-break (up ray len
+256→best-so-far, down ray min(up,len), both scoped to the candidate's own geometry, nearest hit wins, no
+hits → the first candidate [M 0x1c8cb0:163-232]), room-cel candidates only (cel+0x3c & 0x40000, cap 0x40),
+a miss leaves the object unlinked. The port had a stateless smallest-containing-bbox lookup at pos every
+tick (`cel_at`), which is none of those rules.
+
+Ported (nf-game/world.rs): `ScopeGraph.room` (new field, own line), `cel_portal_dest`, `cel_contains`,
+`find_cel` (the tie-break), `player_cel_relink`. (player.rs): `Bond::prev_pos` (obj+0x40, own line). Hooks
+(scene.rs): scope_graph fills `room`; Sim::run replaces the two `cel_at` reads with one relink before
+tick_ctx (water = the relinked cel's room cel's +0x90; bond.cel = the relink) and copies prev_pos after.
+
+VERIFICATION — and an honest negative: the reported symptom numbers reproduce (the bank walk enters SS_SWIM
+at tick 1621, pos.y 3.725 vs surface 3.7675 — the root well under), but on every path I could construct the
+OLD rule and the game's rule COINCIDE: (1) the bank fall — the move segment crosses the pond-top portal
+(91↔184, the plane y 3.7649 [D probe]) and the position leaves the land cel's bbox in the SAME tick, so the
+entry tick is 1621 both ways; (2) the wade band (pos between the water cel's bbox top 3.7675 and the land
+cel's box bottom) — the position lookup also reads the land cel there (the water bbox top excludes the
+POSITION while the centre sits inside it), so the spawns agree; (3) the sphere-centre spawn band — the
+game's tie-break hands the {land, water} candidate pair to the LAND cel (the water cel's mat-14 surface
+plane is up-facing, an up-ray cannot hit it one-sided [M 0x10a8c8], and its scope has no plane under the
+slope column), and the position lookup reads the land cel too. The fail-first run on a stashed pre-fix
+tree: both new tests PASS there — no behavioral divergence found. The fix stays because it IS the game's
+mechanism (every rule above is cited), it removes the divergence class wholesale (stateful keep vs stateless
+snap, portal crossings, the sphere-centre FindCel, the tie-break), and the driver's next measurement rides
+on it. Suite on the final tree: nf-game 143/143; the swim/ladder/walkreal families 47/47 (fix_ladder2_live
+4/4 incl. the 1621/3.725 repro, fix_swim_entry_live 2/2, fix_swim_vent_live 2/2, fix_swim_vent5_live 2/2,
+walkreal_probe3_live 2/2 + the nf-view bucket 35/35). The full four-crate run did not fit the window
+(suite.py cannot survive the background in this sandbox — third session running); the remaining families
+are listed in the report. NO RNG draws added; no wall-clock in Sim.
+## fix-script-objects (started)
+
+Branch `s/fix-script-objects` (from origin/master c5b17c0). Task 289: GAPS G-031's remainder after
+fix-script-commands — script-created objects: AI volumes / pickups / breakables from `Script_CreateEntity`
+0x1d8968's other arms, the `SP_Hit` bullet and object flags (07000007's urn break, mask 2), `Corona_2` glow
+drawing, drones riding moving objects, the players' place in the object list order. Plan: census the disc
+scripts by created kind, port in order of level usage, one NF_ISO test per arm. Files: nis.rs, drone.rs
+(riders), the draw hooks; shared files additive only.
+
+
+---
+Task ID: 102h-fix-swim
+Agent: swim worker
+Task: fix-swim — the 07000002 pond swim (look-directed dive/surface, swim speed, no footsteps while swimming) and the water ladder under the hut (grab from the swim + climb out).
+Work Log:
+- (08:37-09:53 UTC) Branch s/fix-swim from origin/master ccaea18, merged master b65d6f7 mid-task (WORKLOG both-entries resolution). Setup: work/ + slim ISO, NF_ISO, nf-queue, LIBRARY_PATH for the user-prefix ALSA link.
+- Evidence: Player_InWater 0x195e50 (cel+0x90 > pos.y−0.3 → substate 3), the swim case 3 inline in Player_Update 0x193600:181-222 (Player_Move(1.0) + the surface−0.3 rise clamp + the grounded exit), Player_Move 0x191dd0:149-165 (the swim branch rides RotMatrixX(obj+0x50 − BL+0x8a8·π/2) — dive = look down + forward; NO crouch/jump input in case 3; Player_HandleJump only from SSWalk), Player_CollLadder 0x196118:16-17 (the grab gate excludes ONLY substates 1/2), Collide_PickObj 0x1eae80:152-168 (the capsule-segment vs sphere×1.5+0.55 pick) + the y-snap lift 0x196118:23-31, Effect_Create 0x1ce688:63 (no ground hit in swim → no footstep), Player_MonitorAir 0x191a70:101-143 (the 0x27 dive loop / 0x60c gasp / 0x60b drown).
+- Fixes: player.rs (the look-directed swim wish + k=1.0 always + the ±2.4 [S] block deleted + the strafe-smoother clear on entry + the grab gate), ladder.rs (capsule_hits = the game's pick shape), sound.rs (Sounds.swim_prev_under), scene.rs (the swim footstep gate + the MonitorAir sound hooks).
+- Tests failing-first: the two nf-game unit tests replayed against a HEAD player.rs (both FAILED there, PASS after); fix_swim_live 4/4 (entry+speed pin, dive/surface/clamp, no 129/0x27/0x60c in a surface swim, the hut ladder grabs FROM THE SWIM at +52 and climbs out to 7.118 over top 7.102). Sisters: fix_ladder2 4/4, fix_ladder 3/3+1, fix_swim_vent 2/2, walkreal_probe3 2/2, nf-game lib 145/145.
+- Report: docs/reports/fix-swim.md (the entry-depth live check, the sink-through-bed gap, the unported mesh refine + sound-group scrub).
+Stage Summary:
+- Files: player.rs, ladder.rs, sound.rs, scene.rs (shared, 2 hooks), tests/fix_swim_live.rs (new), the report. LadderCtx.sink now unread (field kept).
+- Open: the full suite did not fit the window (the sisters + libs above are the verified set); the pond-bed sink-through and the build_FindCel entry depth are the main agent's live checks.
+
+---
+Task ID: 102m-fix-swim2
+Agent: swim2 worker
+Task: fix-swim2 — the swim branch's ladder-top exit regression on land ladders (102h-fix-swim dc59866 breaks walkreal_0700000c_live::walk_start_to_the_st1_plate_and_the_photograph: Bond leaves the ladder top CROUCHED and ungrounded and the walk to the walkway's south end sticks at bond=(9.03,11.74,-189.99)). Fix the exit so land ladders behave as on master (the game's ladder-top dismount, Player_CollLadder 0x196118 / the climb substate's exit) while the pond ladder still grabs from the water; keep the swim fixes; full suite green on the merged tree.
+
+Work Log:
+- (11:58 UTC) Branch s/fix-swim2 from origin/s/fix-swim dc59866, merged origin/master (WORKLOG both-entries resolution). Setup reused (work/, slim ISO, nf-queue).
+- (11:58-13:26 UTC) Repro first: walkreal_0700000c_live fails on the merged tree exactly as driven (STUCK crouched/ungrounded at (9.03,11.74,-189.99), segment_to_target 0.029). A per-tick probe replay showed the top exit itself fine (lunge at 12.148, land 11.736) but a RE-GRAB at regrab expiry 43 ticks later (substate 1, snapped back to the axis) — a climb/walk limit cycle.
+- Root cause: 102h's bare ×1.5 pick sphere [M 0x1eae80:152-168] is not the whole filter — the game narrows past the sphere (straddled-cel scoping Collide_Pick 0x1eb320:125-134/318-328 + the glist mesh refine Collide_Intersect 0x1ebaa8, both unported); a tall ladder's bounds sphere is its half-height (0c yard ladder r 5.75), reach ~9.2 sideways, so the dismounted walker 2.9 off-axis at walkway height still "picked". Player_CollLadder 0x196118 read in full — no extra gate there; the y window passes at 11.736 < top 12.15.
+- Fix (ladder.rs only; every 102h swim change kept): capsule_hits = stage 1 the game's ×1.5 sphere vs the capsule segment (the pond deep-water grab) AND stage 2 the master axis-column horizontal bound min(r,1)+capsule [S, the stand-in for the unported cel/mesh filter]. Doc comment cites both stages.
+- Fail-first shown: walkreal_0700000c (the driven STUCK dump + the +1912-tick ladder-base leg). Post-fix: walked out 2691 ticks, stuck 0, falls 0. Sisters: ladder unit test rewritten (2-side flips to no-hit, pond-deep keeps hit, the exact 0c yard geometry pins both), nf-game lib 145/145, fix_swim_live 4/4 (the pond grab survives), fix_ladder 3/3+1, fix_ladder2 4/4, fix_swim_vent5 2/2, walkreal 01/02/09/0b/0c/0d/12 green, nf-game+nf-formats+nf-audio green except the 3 allowed disc_golden. walkreal 05/0a ignored-gated on the slim ISO.
+- Not run (window): the remaining walkreal levels + the portal/scene suites — next session runs tools/test/suite.py on this tree. The stuck dump's crouched=true is NOT the regression (the test's single crouch press toggles on when Bond lands un-crouched; identical code on master — no diff touches crouch).
+- Report: docs/reports/fix-swim2.md (the live checks: the 0c ladder top dismount, the walk-back-into re-grab, the 02 pond deep-water grab; nf-view spots for all three).
+---
+Task ID: 101r-fix-menu-backdrop
+Agent: fix-menu-backdrop worker
+Task: fix-menu-backdrop — the front-end pages' aux FMV (07330048 main page, 07350048 list pages) never decodes a frame ("no frame N in the first chunk"), so every page draws the dark plate; also the headless still path reads NF_ISO instead of the ISO argument.
+
+Work Log:
+- (started 10:54 UTC) Branch s/fix-menu-backdrop created from origin/master b65d6f7; fresh sandbox: repo cloned, ISO already present from an earlier session, work/ to download next.
+- Root cause: gop_chunks' leading-open-GOP guard also fired when the FIRST GOP is CLOSED (it is on
+  every Nightfire movie: first GOP right after the 145-byte sequence header), so chunk 0 was (0,145)
+  — the sequence header alone, zero decoded frames [L probe: whole-ES decode gives 1280/1800/1800
+  pictures matching golden] — and movie_still read chunks.first(): "no frame N in the first chunk"
+  at every N, every page the dark plate. The live loop was NOT broken (the worker skips the empty
+  chunk; the pre-fix windowed-loop test already passed). Second bug: the still read the bare NF_ISO
+  env, not the ISO argument — fixed via movie_iso_name (NF_MOVIE_ISO over the ISO argument, the
+  live loop's precedence); fix-menus-real2 landed the env half independently mid-task, the merge
+  kept the argument fallback.
+- Fixes: movie.rs gop_chunks (prepend 0 only when open GOPs precede the first closed one) +
+  movie_still walks whole closed-GOP chunks until n is covered (frame 12 rides chunk 1; 10-picture
+  GOPs); lib.rs movie_iso_name + front_end_menu takes the resolved ISO path. menu_movies.rs test
+  compile fixes (present()'s owned w/h; the 7-digit "0x7100001" name form never resolved).
+- Retail bytes: range-fetched 07100001/07330048/07350048/07370048/07380048 from the file host's
+  retail image into a mini ISO (not committed); demux counts match golden exactly (bytes exact).
+- Tests (fail-first): the three backdrop-still tests printed the user's exact symptom pre-fix, then
+  5/5 green post-fix; frame 12's SHA-1 = the 1f1fe7b0… whole-ES pin (one decoder truth). Neighbours
+  green on the merged tree: menu_movies 7/7, movie_playback_flow 10/10, menus_flow 34/34, lib 10/10.
+- Suite on the final tree (origin/master 6691ef9 merged, chunked foreground — background jobs die
+  between tool calls): 874 passed / 3 failed / 27+ ignored; the 3 are the permitted disc_golden set.
+  weapon_matrix_live TIMEOUT'd at my 180/240 s chunk limits (slow asset sweep, progresses level by
+  level, unrelated files) — needs the driver's default-limit pass to re-classify.
+- Report: docs/reports/fix-menu-backdrop.md (live checks: the --page main/missions --movie-frame
+  renders against PCSX2, the windowed-loop restart rule).
+Stage Summary:
+- Files: crates/nf-view/src/{movie,lib}.rs, crates/nf-view/tests/{menu_backdrop_still.rs (new),
+  menu_movies.rs (compile fixes)}. No shared files beyond lib.rs (a task-named file here).
+- Open: the cpal .play() audio bug (pre-existing, fix-menu-movies2 flagged it, still silent);
+  pss_movies_live's full-22-movie sweep wants the full retail image.
+
+## fix-armour-ring
+- Started: the orange 007 ring bottom-left in PCSX2 captures may be the health pane's armour state (the captures' god-cheat wrote armour 50 BLData+0x8B0 every frame); check HUD_UpdateHealthPane 0x19b9c8's armour branch, port it, test armour 0 vs 50.
+
+## fix-armour-ring (outcome)
+- The armour branch was already ported and is game-faithful [M HUD_UpdateHealthPane 0x19b9c8:139-158]: armour 0 → HealthSprInfo[0..8] hidden (+0x38 = 0xFF); armour > 0 → the 8 bronze-tinted (0x7d6d59) orange-art segments with alpha 1.0 (k=0) / 0.75 (k < armour·0.16) / 0.35. No separate 007-logo sprite: HealthSprInfo[15] is the 87×86 hollow circle outline tinted by the health colour; the captures' "orange 007 ring" = this pane at the god-cheat's armour 50 (cheats.py writes health 100 + armour 50 every frame). All BLData+0x8b0 readers agree (Pickup_Handler 0x18e650:221-224 take, Player_HandlePain 0x1902c8:100-104 absorb, RamSave/Load, the pane).
+- Tests (fix_armour_ring_live): hide-at-0 + the green ring unchanged; the real take path (kind-3 pickup → step_bond → armour 50) lights exactly 8 segments with alphas {255, 191×7} and segment 0 at (48,367); value tracking 25 → {255, 191×3, 89×4}, 0 → hidden. Green on the final merged tree (1496b80). Shared file: lib.rs gained the 4-line `--armour <n>` shot hook (reported).
+
+## fix-exact-math-swap2 (started)
+- Started: land/repair the exact sine/matrix path on current master. Two red suite tests to resolve from the
+  game's own math (the exact path is the game's): walkreal_07000001_live walk-with-contact (regressed again on
+  master — bisect which merged change brings it back, find the first exact-vs-host divergence at the failing
+  tick), and ai_live grenade_bounce_scares_the_guard_into_the_flee_family (guard never enters RunAwayFromObject
+  0x86 with exact matrices — find which value moves). Report: docs/reports/fix-exact-math-swap2.md.
+## fix-exact-math-swap2 (progress: the grenade scare root-caused and fixed)
+- The ai_live grenade scare reproduced exactly (log [(1, 4), (1, 4)]). Instrumented the broadcast: the
+  grenade bounced 3.2 units from the guard, fear props set, but `line_of_sight` = false — the port's
+  segment test reported the hit AT t=1.0, the ray's ENDPOINT: the bounce had snapped the grenade exactly
+  ON the floor triangle (`self.pos = hit`), so every sight ray to it grazes the surface at its end.
+- Game evidence: `Bullet_CollisionHandler` (0x12ce80) stores the bounce position as
+  `BU+0x30 = *(HITDATA+0x40) + *(HITDATA+0x10)·uVar13` — the hit point offset ALONG the hit normal,
+  uVar13 = uVar12 = 0x3d23d70a = 0.04 (0x12ce80:257-258; the contact-detonation arm uses 0x3b03126f =
+  0.002, folded — 0.038 on a ≥ 4.0 blast radius). The game's grenade never rests on the triangle.
+- Fix: grenade.rs applies the 0.04 normal offset to the bounce position (and the Bounce event payload,
+  which feeds the explosive_queue broadcast, the bounce sound and the fuse Explode position). The
+  HandleExplosives broadcast then sees the object the game's Collide_LineOfSight sees.
+- Verified: the scare test passes (0x86 → 0x87/0x88 → back to attack, the 20+-unit sister silent);
+  ai_live 35/35, grenade_live 2/2, stun_grenade_live 1/1, fix_grenade_throw_live 4/4,
+  fix_weapon_effects_live 6/6, fix_weapon_fire_modes_live 5/5, explode_live 2/2. Shared files: grenade.rs
+  (the 7-line offset), noted per the task rules.
+- walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact does NOT fail on this tree
+  (2/2 green, run twice): the driver's master snapshot predates fix-08-collision2, whose FindCel relink
+  own commit message records "the 01 escort walk passes again" — that merge is the repair.
+
+## fix-exact-math-swap2 (outcome)
+- The exact path survives current master unchanged (placement.rs/anim.rs/ps2math.rs needed nothing); both
+  red tests resolved from the game. The grenade scare was a port bug: the port's bounce snapped the grenade
+  exactly ON the collision triangle, so every sight ray to it hit at the ray's endpoint (t = 1.0, inclusive
+  in the port's Collide_Intersect analogue) and the HandleExplosives visibility gate failed. The game rests
+  the bullet 0.04 above the surface: Bullet_CollisionHandler 0x12ce80 stores BU+0x30 = *(HITDATA+0x40) +
+  *(HITDATA+0x10)·uVar13 with uVar13 = 0x3d23d70a = 0.04 (0x12ce80:257-258; the contact-detonation arm's
+  0x3b03126f = 0.002 folded — 0.038 on ≥ 4.0 blast radii). Fix in grenade.rs (7 lines, shared-file hook):
+  bounce position + Bounce payload = hit + normal·0.04. The scare then runs the full flee family and the
+  weapon/grenade suites stay green.
+- walkreal_07000001_live's walk-with-contact does NOT fail on the final tree (3 green runs); the driver's
+  snapshot predates fix-08-collision2 (bf2f6bd), whose relink own commit message records the walk repaired
+  ("the 01 escort walk passes again"). The bisect had no live subject; documented in the report.
+- Suite (final tree, timed chunks, suite.py limits): 1004 passed, 6 failed, 31 ignored over the binaries
+  that ran — the 3 sanctioned disc_golden + the 3 pre-existing pylon failures fix-armour-ring.md already
+  reported for the main agent; weapon_matrix_live recorded incomplete (its documented >600 s condition
+  exceeds this sandbox's foreground window; pre-existing, not a test failure). Report:
+  docs/reports/fix-exact-math-swap2.md.
+fix-context-hints (100k, 2026-10-14): the two symptoms implemented, verified and reported.
+- Implementation (commit 5247021): the Hint markers (placement 0x33, Hint_Create 0x1b3248 /
+  Hint_Update 0x1b3380 — one-shot type-1 INFO messages with the marker's label, sound and
+  on/off channels, resolved through the map object's world sphere like wire::icons), the
+  type-6 "Press Action" post (label 0x1000291) on ThirdIcon_Update's 4-tick instance timer
+  while not creeping, the INFO pane 4 draw (MsgInfoStatusPane 0x319810: the 480x26 top bar +
+  caps, centred text, the fade + 16 px/tick close), and the context icon (health-pane sprite
+  18, table 0x2FC168[ctx], runtime (400,48), layer 29, the 30-tick fade) — full citations in
+  docs/systems/hud.md and the report.
+- Merged origin/master twice (the second merge needed the WORKLOG append resolution and two
+  one-line `label: 0` fixes in the master-side Msg literals — fix_objective_banner_live,
+  fix_objective_messages_live).
+- Tests: crates/nf-view/tests/fix_context_hints_live.rs 5/5 — the safe fires 0x0200000A once
+  (life 0xB4) with no icon (07000008's only icon is the zipline's ctx-3 in cell 12); the
+  control-panel marker (0x010001E9) stays silent from the safe spot; the 05 grapple spot reads
+  ctx 6, posts 0x1000291, draws 0x0300006A, and clears to 0xFF with the fade within 30 ticks
+  on leaving; away from everything nothing shows. Numbers/label ids only, never the strings.
+- Suite on the final tree (e511da5): the sandbox kills background jobs (the nohup'd runner
+  died twice), so it ran in foreground chunks (tools/test/suite_chunk.py, the suite.py loop
+  resuming from suite.log): 226 binaries, 948 passed / 3 failed / 31 ignored logged — the 3
+  are exactly the allowed disc_golden trio; weapon_matrix_live hit the 300 s per-binary cap
+  (not a failure) and passed 28/28 re-run separately. Grand total 976 passed / 3 allowed
+  failed / 31 ignored.
+- OPEN (in the report + live checks): the driver's "orange 007 at the bottom-left ring" is
+  NOT the 0x95F system — the ctx sprite draws at (400,48) (the x/y order pinned by the
+  disasm 0x19c148/0x19c14c, the ammo bullet column and HUD_FixMP's x-clamp) and the three
+  disc ctx textures are tan badges (winch/hanging man/figure — dumped from the ISO and
+  inspected). The live checks (gdbwatch the sprite x/y + 0x95F writes at both spots, poke
+  0x95F at the safe) settle whether a second, script-driven indicator exists.
+- Report: docs/reports/fix-context-hints.md. Files: crates/nf-view/src/hud.rs,
+  crates/nf-view/src/scene.rs (additive), crates/nf-game/src/player.rs (additive: Hint +
+  hints()), crates/nf-view/tests/fix_context_hints_live.rs (new), the two Msg-literal
+  one-liners, docs/systems/hud.md.
+
+---
+Task ID: 102a-fix-zoom-overlays
+Agent: zoom-overlays worker
+Task: zoom overlays (Micro-Camera 0x54, AMES 20, crossbow 0x11, sniper 0x1e, ...) draw as a 2x2 grid instead of one frame; draw each overlay the way the game does (quadrant mirroring, sprite size/placement).
+
+Work Log:
+- (started 05:40 UTC 2026-10-14) Branch s/fix-zoom-overlays created from origin/master 69c0104. Reading the decompile (Player_Zoom 0x1a1a70), fix-viewmodel-zoom report, and hud.rs overlay draw next.
+- (06:23 UTC) Fix pushed (a74b214): View_DrawSprites 0x1e5290's flag-0x400 mirror tiling ported as hud.rs::tiled_quad; the scope/viewfinder/AIMS-20 circle route through it; zoom_overlay: 0x52/0x53 fall to the default Sight pane (no case 0x38/0x39 in the 0x19e6d0 switch; name table [L ee_start_05 weapon_data+0x38 over Txt_BindLabel 0x1cad60]: 0x52/0x53 'Phoenix Ronin', 0x54/0x55 'Micro-Camera', 0x1a/0x1b 'AIMS-20'); wide-window black side bars; Anchor::Centre. Tests fix_zoom_overlays_live.rs (6; 4 failed pre-fix) + the fix-viewmodel-zoom selection test updated.
+- (07:40-08:50 UTC) Continued after the sandbox reset: merged origin/master 66651ba (WORKLOG conflict resolved append-only, both sides kept), rebuilt (ALSA headers re-extracted into ~/alsa-prefix after the reset — libasound2-dev + libasound2t64 1.2.14-1+deb13u1 from deb.debian.org, PKG_CONFIG_PATH + RUSTFLAGS -L pointed at it), ran the full suite in foreground per-binary batches (background jobs die between tool calls here; nohup suite.py died twice with empty output).
+
+Stage Summary:
+- DONE. Root causes: (1) the 0x400 mirror-tiling flag unported — the port drew each overlay sprite once with full UV extents, the renderer wrapped it into the user's unmirrored 2x2 grid; the game mirror-tiles quarter textures [M 0x1e5290:52-162; D 07000005.bin/07000016.bin texture sizes] into ONE frame. (2) 0x52/0x53 mapped to the Camera pane on a wrong id belief — the switch at 0x19e6d0:106-147 has only cases 0/1, 0x18/0x19, 0x3a/0x3b + default; [L] name resolution via the game's own Txt_BindLabel 0x1cad60 (FixupTable 0x1f9b200, Bank 0x1f9b230) settles 0x1a/0x1b 'AIMS-20', 0x52/0x53 'Phoenix Ronin', 0x54/0x55 'Micro-Camera'.
+- Suite on the merged tree (227 binaries, --test-threads=1 per binary): 923 passed, 3 failed, 31 ignored — the 3 are exactly the allowed slim-ISO disc_golden set; pss_movies_live 3/0. weapon_matrix_live's single-binary wall clock (~710 s here, two NF_MATRIX halves of 355 s) exceeds the runner's 600 s cap on this sandbox → a strict run flags TIMEOUT; all 28 of its tests pass split through its own NF_MATRIX selector (zero panics; the test only fails on panics) — slowdown from the sandbox resets/merged scene work, not this branch (the overlay adds 9 quads on zoomed cells). My tests on the merged tree: fix_zoom_overlays_live 6/0, fix_viewmodel_zoom_live 3/0.
+- Shared-file hook (additive): lib.rs --zoom-hold for the headless --shot renders (holds aim+zoom every tick; without the flag nothing changes). drone.rs/scene.rs/player.rs untouched.
+- Report: docs/reports/fix-zoom-overlays.md (evidence, suite line, the live checks and the --zoom-hold --shot spots for the main agent).
+Work Log:
+- (started 08:08 UTC) Branch s/fix-missing-objects created from origin/master c9e1582; setup reused from the previous session (repo, work/, ISO, nf-queue). Spots given: 07000006 courtyard fountain (21.12,39.04,-0.48,8.683), guard room (33.50,41.13,-17.90,9.158) and lockers/fusebox (31.94,41.13,-17.36,10.756); 0700000c pylon (14.22,16.28,-139.54,0.986). Repro tests + decompile evidence next.
+
+---
+Task ID: 102e-fix-missing-objects
+Agent: missing-objects worker
+Task: fix-missing-objects — the fountain, the guard-room furniture, the lockers and the 0c pylon aren't drawn; census every on-foot level.
+
+Work Log:
+- Branch s/fix-missing-objects from origin/master c9e1582 (08:08 UTC); setup reused.
+- Repro first (probes kept): the named objects are kind-0x19 world-baked cel placements at translation (0,0,0); the fountain/bench/locker nodes were UNCHAINED generics — owner None at the user's spots, node_vis false, 0/N materials kept by the game mask (the renderer's World cull drops unchained 0x8019 nodes; View_AddCels draws generics only from their owner room's +0x18 chain, fix-portal5 §1).
+- Root cause 1: build_scoped's smallest-volume-containing-bbox attribution put the guard-room floor under the table's bbox and the courtyard floor under the fountain's — every candidate room's scoped bucket read empty at build_chains time. The game's HITDATA+0x54 carries the object's own placement cel (parsemap_block_map_data_static 0x1d1998: one runtime cel per placement, glist = the placement's object); the k-th pushed instance IS the k-th cell. Fix: build_scoped keys obj_cell by the pushed ordinal [M 0x1d1998 + fix-portal5 §4].
+- Root cause 2: link_owner_room dropped candidates with an empty bucket, but the game's read is "everything else reads 1e8" — the candidate stays and strict < keeps the first in parse order. Fix: unwrap_or(1e8) [M fix-portal5 §4's 0x1c9150 reading].
+- Fixes verified fail-first: pre-fix probes show owner None/node_vis false/0 materials; post-fix the fountain (room 27, 96/96 batches), the guard-room furniture (room 7) and the locker (15/15) draw at the user's spots. Disc-wide effect: the 0700000a office furniture, 07 books, 09 lights were the same orphans.
+- Census (fix_missing_objects_live): Scene::build's exact sequence per on-foot archive — 0 unchained meshed generics, 0 no-draw-path placements on all 21 (06: 322 generics, 0c: 273, 12: 438, …); explained skips = glist bits 0x10/0x1000 + the documented no-draw classes. FOUND GAP: 0xea/0xeb trigger meshes the game draws (0a lasers, 12 lift switches; Trigger_Create 0x1b1720:95 sets obj+0xF0 = glist+0x44) — no port draw path yet.
+- The 0c pylon: NOT reproducible on this tree — the real stand_at+head camera at the user spot resolves eye cell 91, all four pylon parts + shadow ride owner room 77, in_view true, 14/14 materials kept (probe_missing_pylon.rs, kept); pinned by a regression test, live re-render requested.
+- Green on the fixed tree: the whole portal chain (portal_live/eyecel/2/3/4/5/6/sweep/walkreal), nf-game units (world.rs scope tests), the new 3 tests. suite.py could not run in background (nohup dies between tool calls — same as the last two sessions); foreground chunks covered nf-game+nf-formats+the portal/object/census nf-view files; the levels_sweep re-run is left for the next session.
+- Report: docs/reports/fix-missing-objects.md. Files: crates/nf-game/src/world.rs (obj_cell rule + doc), crates/nf-view/src/scene.rs (scope_graph pub + the 1e8 owner pick + doc), crates/nf-view/tests/fix_missing_objects_live.rs (new) + 6 probe files (kept).
+
+fix-context-hints (100k, 2026-10-14): the two symptoms implemented, verified and reported.
+- Implementation (commit 5247021): the Hint markers (placement 0x33, Hint_Create 0x1b3248 /
+  Hint_Update 0x1b3380 — one-shot type-1 INFO messages with the marker's label, sound and
+  on/off channels, resolved through the map object's world sphere like wire::icons), the
+  type-6 "Press Action" post (label 0x1000291) on ThirdIcon_Update's 4-tick instance timer
+  while not creeping, the INFO pane 4 draw (MsgInfoStatusPane 0x319810: the 480x26 top bar +
+  caps, centred text, the fade + 16 px/tick close), and the context icon (health-pane sprite
+  18, table 0x2FC168[ctx], runtime (400,48), layer 29, the 30-tick fade) — full citations in
+  docs/systems/hud.md and the report.
+- Merged origin/master twice (the second merge needed the WORKLOG append resolution and two
+  one-line `label: 0` fixes in the master-side Msg literals — fix_objective_banner_live,
+  fix_objective_messages_live).
+- Tests: crates/nf-view/tests/fix_context_hints_live.rs 5/5 — the safe fires 0x0200000A once
+  (life 0xB4) with no icon (07000008's only icon is the zipline's ctx-3 in cell 12); the
+  control-panel marker (0x010001E9) stays silent from the safe spot; the 05 grapple spot reads
+  ctx 6, posts 0x1000291, draws 0x0300006A, and clears to 0xFF with the fade within 30 ticks
+  on leaving; away from everything nothing shows. Numbers/label ids only, never the strings.
+- Suite on the final tree (e511da5): the sandbox kills background jobs (the nohup'd runner
+  died twice), so it ran in foreground chunks (tools/test/suite_chunk.py, the suite.py loop
+  resuming from suite.log): 226 binaries, 948 passed / 3 failed / 31 ignored logged — the 3
+  are exactly the allowed disc_golden trio; weapon_matrix_live hit the 300 s per-binary cap
+  (not a failure) and passed 28/28 re-run separately. Grand total 976 passed / 3 allowed
+  failed / 31 ignored.
+- OPEN (in the report + live checks): the driver's "orange 007 at the bottom-left ring" is
+  NOT the 0x95F system — the ctx sprite draws at (400,48) (the x/y order pinned by the
+  disasm 0x19c148/0x19c14c, the ammo bullet column and HUD_FixMP's x-clamp) and the three
+  disc ctx textures are tan badges (winch/hanging man/figure — dumped from the ISO and
+  inspected). The live checks (gdbwatch the sprite x/y + 0x95F writes at both spots, poke
+  0x95F at the safe) settle whether a second, script-driven indicator exists.
+- Report: docs/reports/fix-context-hints.md. Files: crates/nf-view/src/hud.rs,
+  crates/nf-view/src/scene.rs (additive), crates/nf-game/src/player.rs (additive: Hint +
+  hints()), crates/nf-view/tests/fix_context_hints_live.rs (new), the two Msg-literal
+  one-liners, docs/systems/hud.md.
+
+---
+Task ID: 100n-fix-context-hints2
+Agent: context-hints2 worker
+Task: fix-context-hints2 — hint bar position (y~100/448, not top edge), the orange 007 ring swap (both spots), and no "Press Action" prompt at the 05 grapple point.
+
+Work Log:
+- (started 09:55 UTC) Branch s/fix-context-hints2 created from origin/master b65d6f7; sandbox was reset, setup in progress (work/, ISO).
+
+
+---
+Task ID: 100n-fix-context-hints2
+Agent: context-hints2 worker
+Task: fix-context-hints2 — the hint bar's position (y≈100/448, not the top edge), the orange 007 ring swap (both spots), and no "Press Action" prompt at the 05 grapple point.
+
+Work Log:
+- (10:52 UTC fetch) Sandbox was reset; setup from scratch. Found 100h-fix-context-hints NOT in origin/master (only s/fix-context-hints) — merged it into s/fix-context-hints2 to have the hint bar at all.
+- Item 1: the INFO pane's CREATE tag MsgInfoStatusPane 0x319810 is x=128 y=113 [L ee_start_05.bin]; HUD_CreateDefault 0x199b70:45-52 adds the pane x/y to every sprite at create; HUD_UpdateStatusPane 0x19c310 rewrites only the bar's X (templateX + (templateW−w)/2, caps following, :105-109/:331-336/:342-347) — the Y is never written, so the bar rides template y 0 + pane y 113 = 113 (text 129). Port drew 0/16. Fixed in hud.rs.
+- Item 3: the grapple spot (16.5,29.6,58.6) sits in ctx-6 icon[3]'s port cel 15, 8.17 away (its own sphere r 2.276 [D probe]); the game shows NO prompt there [L PCSX2 2026-10-14] while the vent crawl still reads 6 at 3.9 [L 2026-10-13]. The [S] arm window 12.0 → 6.0 (scene.rs), the grapple test flipped to the no-prompt pin with a positive sister beside the icon.
+- Item 2 (OPEN, not guessed): the only 007 path in the ELF is health-pane sprite 16, texture 0x0300005b (the gold 007 logo, dumped from 07000005 map 4), driven by BL+0x948 ← PlrStat_DoneBondMoment 0x199448 ← Trigger_Calc — a Bond-Moment zoom at (256,80) CENTRED, top-centre, not the bottom-left ring. The bottom-left ring is HealthSprInfo[15] (sheet uv 102,113,85,86, health-tinted [M 0x19b9c8:205-207]); nothing in the ELF retextures it; the ctx table's textures are the tan badges (0x64/65/68/69 not on the archives [D probe]). Probes kept: ctx2_probe.rs / ctx2_probe2.rs (the EE-table dump ran from an untracked scratch script); live checks in the report settle sprite 16 vs a script sprite.
+- Tests: fix_context_hints_live 6/6 (the new bar-rect test fails on the pre-fix tree), swim-vent5/08-walls/grapple/qclaw/gadgets green, the HUD-adjacent chunk 9/9 binaries; the full no-fail-fast run covered 142 binaries + the allowed disc_golden trio before the 570 s wall (the nohup runner dies in this sandbox, foreground chunks).
+- Report: docs/reports/fix-context-hints2.md. Files: hud.rs (task), scene.rs (shared, the window constant + comment), fix_context_hints_live.rs; player.rs untouched.
+
+Stage Summary:
+- The hint bar now draws at the pane rect y 113..139; the grapple spot shows no prompt/ctx/icon; the 007 ring item is evidenced to the Bond-Moment zoom sprite 16 + live checks, awaiting the main agent's gdbwatch/screenshot.
+weapon-matrix2 (103b, 2026-10-14): re-ran the weapon matrix on today's master (b65d6f7) and worked the red cells.
+- Re-ran the full matrix on master b65d6f7: 27 levels × 98 ids, 0 panics; both tables parsed with
+  the same rules (old .630/B126/D286/I1203/R43 vs new .617/B129/D292/I1207/R35, 46 cells moved).
+- The runner now runs the REAL give path: load_weapons (100a's merge) with the whole catalog +
+  per-cell inventory reset — the old `.` wall was the harness filling the shared ammo banks across
+  99 gives (Player_EquipWeapon 0x1a8a58's owned branch). New per-cell checks: the mode twin byte
+  (+0x05)/mode count (+0x2e) press with both labels (HUD_UpdateAmmoPane 0x19a7f0), the 0x2C guided
+  camera (Sim::missile_cam), the MGL impact-vs-delay blast gap (impact records blast on contact,
+  the fused ones at 210/300/420 [M Bullet_DoTrails 0x12d890]) — marks M/G/X.
+- Verified on 07000005 (sister test green): 0x2a/0x2c/0x34 vm1 where the old runner printed I/`-`,
+  0x2a gap 2-4 ticks, 0x2c gcam1, 0x02's mode press lands the 0x03 twin with a label.
+- The real bug the re-run found: the away switch lands on the silenced twin 0x03 (twin_skip first-
+  offer [M 0x1a6f80:179-198]); with its clip reset to 0 the next draw tick starts the auto-reload
+  and the 0x03 shell loop hangs in state 6 (clip stays 0, carried 4) — every later switch refused
+  [M 0x1a6f80:33-47] — the D-block from 0x2e. Probe: examples/probe_matrix_draw.rs. Fix + the
+  gadget-cycle fallback for the watch gadgets + the upgraded runner's full sweep = next window.
+- Report: docs/reports/weapon-matrix2.md (the re-run table + a pointer live in
+  docs/reports/weapon-matrix.md). Files: crates/nf-view/src/matrix.rs,
+  crates/nf-view/tests/weapon_matrix_live.rs, crates/nf-view/examples/probe_matrix_draw.rs. No
+  shared files touched. Work log continues below.
+
+weapon-matrix2 addendum (11:59): the upgraded runner's full sweep ran (3 chunks, 27 × 98, 0 panics) —
+the red mass (D 1278 / M 152 / R 226) is the silenced-twin reload hang reaching the draw now that the
+give path works; 0x2a impact 19/27 clean, 0x2c's guided camera rode its clean cells, no X marks. The
+table + analysis are appended to docs/reports/weapon-matrix2.md.
+---
+Task ID: 103e-campaign-flow
+Agent: campaign-flow worker
+Task: campaign-flow — play every single-player mission's levels in order from the front end's mission start, headless: walkreal walkers / scripted routes where they exist, dev teleport + objective triggers where they don't; through the transitions and end-of-mission flow (outro, results, next mission unlocked). Per level: reached exit / which objective blocked / crashes / stuck script / missing trigger. docs/reports/campaign-flow.md table; fix the first pinnable blockers with tests; list the rest as follow-ups.
+
+Work Log:
+- (11:59 UTC) Branch s/campaign-flow created from origin/master bf2f6bd; setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; campaign-flow research next.
+
+---
+Task ID: 103e-campaign-flow
+Agent: campaign-flow worker
+Task: campaign-flow — play every mission end to end headless; the blockers map; fix the first pinnable blockers.
+
+Work Log:
+- (11:59-12:48 UTC) Branch s/campaign-flow from origin/master bf2f6bd. The runner (campaign_flow_live.rs): the story order = ResetMap_LevelCode2Img's cases [M 0x1d5258], the mission grouping = the MissionData `mission` field (BaseMap [M 0x182270]); the drive = the objectives' own condition/enable channels + the E-use exit path (Trigger_Activate 0x1b2318); the transitions = load_with_carry warm (the game's ResetMap_LevelToLoad(next,1,0) + RamSave [M 0x1b2318:111-116]); the mission end = case 6's LevelToEndTo (driving codes skipped, 0x07000048 = the front end [M 0x182c60:85-135]).
+- Every story level parses and spawns; the exit E-path chains 02→03→04, 05→06, 07→08, 0c→0d, 14→15→16 warm with the carry; the mission-final driving arms land (04/08/0b/0d/16/1b).
+- FIXED (failing-first): the warm-transition mission freeze — `Mission::restore` overwrote the re-armed globals with the carried internal 5 (the post-banner state [M 0x182c60:65-84]); the monitor (case 5 = a bare break) never ran again and the level could not end. The game re-arms via Mission_Init and keeps only the .data records (LS_LoadMission is the save path). Test: the_mission_layer_re_arms_on_a_warm_transition (left: 5 / right: 1 pre-fix).
+- Blockers mapped (the report has the live checks): 01's escort-extraction exit (the ch16 TOUCH filter needs the Mayhew drone; the walkreal-a stall); 06/11/4a have NO exit trigger in the data (06's 0xE9s are Drone_AIPoint [M 0x1d04f0 case 0xe9]) — forced completes land the front end; 09/0a's exit triggers self-loop (next = own hash [D]); 0a's real exit needs the trigger-volume work; the gameplay-driven objective channels ride the per-mission walkthrough tasks.
+- Non-story records 0700000e/f/10: no FILES.BIN archive [D] — cut MissionData records.
+- Report: docs/reports/campaign-flow.md. Files: crates/nf-view/tests/campaign_flow_live.rs (new), crates/nf-game/src/mission.rs (the restore fix), crates/nf-view/tests/probe_campaign06.rs (kept probe). Shared files untouched.
+
+---
+Task ID: 102i-fix-guard-misc
+Agent: guard-misc worker
+Task: fix-guard-misc — the 0c sniper takes no damage; 06 guards can't open doors (NDrone2_ReachedDestNode door case); 06 first-frame crazy models (drones unposed at tick 0). Files: crates/nf-game/src/{drone,door,damage}.rs.
+
+Work Log:
+- (started 09:16 UTC) Branch s/fix-guard-misc created from origin/master 6cbe522; setup reused (repo, work/, ISO, nf-queue). Repro tests next; fast suite to follow.
+- Harnesses for all three symptoms in crates/nf-view/tests/fix_guard_misc_live.rs (new, real input path): doors + sniper FAIL (reproduced), pose PASSES (no repro headlessly).
+- Census facts: 06 guards all route-less posts (state 1) with door-flagged node pairs on paths 3 (n11-n14 → door #4) and 7 (n0-n1 → door #1) — the user's door bug must live in the chase path (GoToGoalPosition/LinkCreep dispatch); the rooftop sniper is drone #17 (weapon 0x1E, y 21.43, WAIT_SWITCH ch 1), has 73-matrix palette + 16 hit boxes, is enabled by set_channel(1), and takes no damage from a scanned clear-LOS vantage with the clip draining (repro, cause narrowed to the ray/hit path, aim drift documented).
+- Report: docs/reports/fix-guard-misc.md. Blocked at the sandbox deadline before the fixes; next session continues from the branch.
+
+Stage Summary:
+- Files: crates/nf-view/tests/fix_guard_misc_live.rs (new), docs/reports/fix-guard-misc.md, docs/WORKLOG.md. No production code touched.
+- nf-game lib 143/0 on the final tree; the full suite left for the next session (backgrounds die in this sandbox).
+- Addendum: probe_sniper_direct_bullet pushed the exact bullet through player_bullets — at the crossing tick the 16 live boxes are placed on the body (torso part 4 at (44.02,21.82,−205.04) half [0.2,0.25,0.15]), first_box_hit = None is geometrically RIGHT (the drone shifted 0.2 after the settle probe; the stale aim centre passes 0.04 outside the torso slab); row- AND column-axis variants miss identically (not a convention bug). Next step: aim at part 4's live m[3] at fire time, then the msg-8 damage path is exercised end to end.
+- VERDICT: the sniper damage path is SOUND end to end — with the live part-4 box centre as the aim, the deterministic bullet lands (health 10.0→4.75 = the P2K 3.5 × Agent 1.5; the state machine's hit state 0x58); probe pinned as a regression assert. The user's symptom is upstream: the aim-mode pitch drift (the sim pulls bond.pitch to ≈0.187 normalised while AIM is held) and/or the missing L1 vertical aim-assist (the port auto-aims only while NOT aiming, scene.rs:2155; the game's Check_Target 0x1a7810 family snaps vertically). Next session: Check_Target's vertical snap vs the port + the aim-pitch hold.
+## fix-guard-misc2 (s/fix-guard-misc2) — 2026-10-14
+
+Task 102n, session started 11:24 UTC. Continuing 102i-fix-guard-misc (branch origin/s/fix-guard-misc,
+report docs/reports/fix-guard-misc.md): three guard bugs — 0c rooftop sniper takes no damage (aim/pitch),
+06 guards never open doors, 06 start "crazy models" needs renders. Plan: merge origin/s/fix-guard-misc
+for its harnesses, repro each through nf_view::load + Sim::step_bond, fix with decompile evidence.
+(Entry appended at branch creation; will be updated as work lands.)
+Continued (fix-guard-misc2, same session, ~2h): the 0c sniper repro was the HARNESS's setup pitch
+(computed from `v[1]+1.5` while stand_at puts the eye at floor+1.1+1.5 = 1.0 higher — aimed 0.4 over the
+head box; the "aim-mode pitch drift" theory is dead, pitch only moves via input.look and the harness sent
+0). Port fix for the aim: while AIMING the port dropped the auto-aim lock/offsets; the game's Player_AutoAim
+0x1a7c98 keeps the lock and eases the offsets toward the manual offsets (0.5/tick) and the bullet consumes
+them through Player_GetAimingPoint 0x1a4a98 (InitBullet 0x1a4bf0:152-164) — scene.rs's aim-mode dir now
+eases aim_offset toward the cursor projection (x flipped, object-frame angles) and builds the ray from it.
+Doors: NDrone_InitDoorNodes 0x139a70 binds the nearest class-0x1C door to flag-0x2 nodes; LinkCreep_Handler
+0x15a2c8 dispatches ReachedDestNode 0x153358 for EVERY followed route including the chase (MoveToObject
+0x151618:65 → FollowRoute 0x155be0 → AINetwork_FollowRoute 0x15b110). The port's move_to_object dropped the
+reached node (dispatch never ran on the chase) and Drones::tick resolved door_node via dr.route only (a
+croute door resolved None → OPEN_DOOR's UPDATE insta-restored without opening). Both fixed (+ the
+door_return ≠0x81 guard [M 0x153358:157-160]); test the_06_guard_driven_through_a_door_pair_opens_it_and_
+crosses fails-first (stash-verified), now OPEN_DOOR +30, door #1 open +38, crossed; the passive 06 test
+flipped to the game-true idle contract (post guards open nothing idle). Suite: build OK 241 binaries; the
+chunked run hit the sandbox wall (backgrounds die here) — everything that ran green; weapon_matrix_live
+just exceeds any per-binary limit here (26 level loads; its 0c/06 matrices pass directly, 80.9s).
+Neighbours: ai_traces 4, doors_live 2, doors_01 2, drone_portcheck 5, fix_drone3 5, fix_drone4 2,
+fix_searchlights_guards 2, fix_npcs 4, fix_ai_remainder 1, weapon_effects 6, fire_modes 5, weapons_all 4,
+gadgets 4, fix_level_0c 4, fix_0c_hatch 2. Renders for "crazy models" need the main agent (no GPU here);
+commands + watch list in docs/reports/fix-guard-misc2.md. Files: drone.rs, scene.rs (aim branch — the
+shared-file hook), tests/fix_guard_misc_live.rs.
+## fix-script-objects (outcome)
+
+Files: crates/nf-game/src/{nis,drone,aivolume}.rs; shared hooks: crates/nf-view/src/scene.rs
+(3 additive: the Sim `glist_bounds` field + the pending-volume drain/matrix refresh after
+`drones.tick`, both additive blocks). Tests: crates/nf-view/tests/fix_script_objects_live.rs
+(NF_ISO, 3/3); probes kept: examples/census_script_entities.rs (the disc census),
+probe_urn_sp.rs, probe_script_objects.rs.
+
+CENSUS first (the driver's "census which scripts create which kinds"): 4,985 op-7 Entity commands
+across every FILES.BIN archive — generic (the `Script_CreateEntity` 0x1d8968 default arm)
+4,907 in **all 31 levels**; destroy (0xE1) 26 in 3 levels; break (0x20) 34 in 2; pickup (0xF0)
+9 in 2 (already ported by fix-safe08's `pending_pickups`); trigger (0xEB) 4 in 2 +
+trigger_once (0xEA) 4 in 3; AI volume (0xF5) **1** in 1. No ladder (0x22), switch (0x29) or
+emitter (0xF2) command exists anywhere on the disc. Corona_2's glow is two generic-arm commands
+(raw type 0x31, glist 0x02000426) on 07000005's truck script 0x06000A22 streams 4/5 — already
+drawn by fix-render2's script-entity attachments.
+
+PORTED (in census order, one test per port):
+1. **SP_Hit 0x1dc470's bit 0x2** (the mask-2 flag; the port modelled only bits 1/4): the flag
+   byte now ORs 0x2 when an alive blast reaches one of the CURRENT script's stream objects'
+   glist spheres (obj+0x80 = `Control_BuildWorldSph` 0x133070 of the glist local centre +0x10,
+   obj+0x8C the radius [M]; the sphere shape `Explode_Propagate` 0x17c518 sweeps [M 0x17c620]),
+   while the countdown byte is 0 [M 0x1dbda8:66]. The blasts travel in `SpStart.blasts` from
+   `Drones::explosions` (drone.rs, 1 additive line) — the game's +0xD0 HITDATA chains do not
+   exist port-side, and the mask==2 `Collide_FilterBullets(obj+0xD0, 0x106)` arming
+   (0x1dc524-0x1dc534) therefore has nothing to arm: a listed deviation. Disc case:
+   07000007's urn SP #312 (0x0600007A, mode 64, mask 2) — the mode-64 prime leaves it in state
+   1 with the Wait(0) streams' shard entities created; the blast replays the shatter (state 2,
+   playing, 10 shards, the tick-1 Sound(1523)).
+2. **Script-created AI volumes** (the 0xF5 arm → `Drone_AIVolume_Create` 0x1376c0): the
+   create-path entity pushes `Objects::pending_volumes` (the pending_pickups pattern); the sim
+   drains them into `Sim::volumes` with half-extents |max−min|/2 from the glist bounds
+   [M 0x1376c0:84-92], factor param0×0.01, kind param1 (0→0/1→2/2→1/4→3 [M 0x1376c0:100-116]),
+   and the matrix refreshes from the live stream entity every tick (the game keys obj+0x90 per
+   `Script_Interp`). The create-time z-negate/+1.5y lift is NOT applied: the script arm's
+   object matrix is overwritten by the same tick's interp [S, documented]. Disc case:
+   07000005's truck script stream 2 (glist 0x0200040C, params [0]) — the disc's only instance.
+
+VERIFICATION: fail-first = the pre-fix tree does not compile the test file (no
+`Scripts::entity_matrix`, no `AiVolume.src`, no `SpStart.blasts`) — the passes above cannot
+happen there. Suite on the merged tree (origin/master c606b5f): fix_script_objects_live 3/3,
+fix_script_commands_live 4/4, fix_truck_live 2/2, nf-game lib 145/145. The four-crate sweep did
+not fit the window (14:43 deadline); the remaining families are listed in the report. NO RNG
+draws added; no wall-clock in Sim.
+## fix-save-profile
+- The game's profile save ported: the six-block chain PLRS/MSSN/MPSG/GSET/CHET/BNUS [M SaveIFFBlocks 0x2c74d8 static init; L the table + the game's own 1022-byte chain in ee_snapshot InBufData 0x3416e0] with every field cited (PLRS = PlayerSetting[slot] 0x2a38c8 stride 0x158, 12 fields in LS_MakePlrSettings 0x1cd418's push order, the decode matches Input_Init 0x17edd8's defaults; GSET 905 B incl. the 219 zero dwords + the version tag 4; MPSG radar/health; CHET 3 bits; the file name IS the codename [M Menu_UpdateMessageBox 0x1f7de8]). crates/nf-game/src/profile.rs (new) + the menu hooks: the card rows after the two defaults, create/load codename, the mission_ended(Complete) save, the Records page reading the active profile. Tests: 5 module (the game's own chain decodes field-for-field) + 4 NF_ISO flow (create, the chain through the page, unlock-after-mission via nf_view::load + step_bond + mission_ended, the corrupt-file refusal); 4/4 + 5/5 on the merged tree (c606b5f). Difficulty is NOT in the save [M none of the six make fns reads GameState+0x40] — the brief's "difficulty per mission" resolves to the MSSN best scores. progress.rs: 4 fns pub(crate) + Clone (additive). Report: docs/reports/fix-save-profile.md (Live checks inside: the save chain in gdbwatch, the Records third value, the style-7 template question).
+
+> fix-hud-radar DONE (14:55 UTC): the SP HUD has no radar — panes 13/14 absent in the SP snapshots
+> [L], PaneList 13/14 NULL [L], MPSettings+0x384 = 0 [L]; the bottom-left ring is the health pane's
+> sprite 15 and the port already matched it. The MP radar (pane 14) is now ported + number-pinned:
+> the projection disasm-checked (the unit-dir x/z negation, min(len·0.02,1) = the 50-unit range,
+> the height cue = a DEAD STORE — 0x319574 has no reader), the radar-on layer gate, the HUD_FixMP
+> top-right clamp, TexUV.291. hud.rs additive only (overlay untouched — zero SP visual delta);
+> 73 neighbour tests green in foreground chunks; report: docs/reports/fix-hud-radar.md.
+
+## fix-hud-radar — s/fix-hud-radar (task 103h, 13:55-14:47 UTC)
+- The SP HUD has NO radar: [L ee_start_05.bin + ee_snapshot.bin @HUD 0x16c8630 — panes 13/14 never created;
+  MPSettings 0x2a47a0+0x384 = 0 → PaneList [M 0x199e88:32-37]; PaneList 13,14 = NULL [L docs/fields/hud-panes.md];
+  MPGame slots all NULL, radar flag +0x452 = 0 [L]. The bottom-left ring is the health pane's sprite 15
+  [M 0x19b9c8:205-207; L HealthSprInfo[15] @0x2bd050+15·0x2c — (4,4) 87×86 uv (102,113,85,86) layer 9, the
+  health tint, alpha 140], and the port already drew exactly that. The main agent's "radar stays" live note
+  (docs/live/2026-10-13) was an MP Arena match — the radar is MP pane 14 only.
+- Ported (hud.rs, additive; overlay untouched): RadarObj (RObj @0x318e70 [M 0x189840]), radar_project
+  (HUD_RadarUpdate 0x19f6e8:108-153, DISASM-CHECKED 0x19f758-0x19fa60: the unit view-dir x/z negated
+  [M 0x19f888-0x19f8b0], scale = min(len·0.02, 1) — the 50-unit ring edge, x/y = −dir·scale·(ring·0.45) +
+  ring centre + 0.5, cap 24, layer 0x1c, TexUV.291 @0x2becf0 [L]); the height cue (dy·0.125 clamp ±1) is a
+  DEAD STORE — 0x319574 has no reader [M disasm 0x19f88c-0x19f8d4 vs the reads at 0x19f904/0x19f974]; the
+  radar-on layer gate (MPSettings+player·0x30+0x28) [M 0x19f6e8:102-105]; radar_ring_rect (created (512,0) +
+  HUD_FixMP 0x19b110:73-92 → the viewer's TOP-RIGHT corner [L viewer+0xf0..fc = 0,512,0,448]).
+- Tests: crates/nf-view/tests/hud_radar_live.rs 4/4 (the SP pins on 05 at the grapple spot + 06, the
+  projection numbers, the gate/clamp sisters). Neighbours in foreground chunks: fix_context_hints 6/6,
+  fix_hud 6/6, hud_playtest 5/5, menus_flow 34/34, nf-view lib 8/8, devwin 1/1, dev_menu 5/5, pickup 4/4 —
+  73 tests, 0 failures. The four-crate sweep did not fit the window (background jobs die between tool calls
+  in this sandbox — sessions 4 and 5). Report: docs/reports/fix-hud-radar.md (live checks inside: the SP
+  no-blip confirmation, the MP ring position/size/blip reading, the pending 100n 007 item).
+weapon-matrix2 (103b, 2026-10-14): re-ran the weapon matrix on today's master (b65d6f7) and worked the red cells.
+- Re-ran the full matrix on master b65d6f7: 27 levels × 98 ids, 0 panics; both tables parsed with
+  the same rules (old .630/B126/D286/I1203/R43 vs new .617/B129/D292/I1207/R35, 46 cells moved).
+- The runner now runs the REAL give path: load_weapons (100a's merge) with the whole catalog +
+  per-cell inventory reset — the old `.` wall was the harness filling the shared ammo banks across
+  99 gives (Player_EquipWeapon 0x1a8a58's owned branch). New per-cell checks: the mode twin byte
+  (+0x05)/mode count (+0x2e) press with both labels (HUD_UpdateAmmoPane 0x19a7f0), the 0x2C guided
+  camera (Sim::missile_cam), the MGL impact-vs-delay blast gap (impact records blast on contact,
+  the fused ones at 210/300/420 [M Bullet_DoTrails 0x12d890]) — marks M/G/X.
+- Verified on 07000005 (sister test green): 0x2a/0x2c/0x34 vm1 where the old runner printed I/`-`,
+  0x2a gap 2-4 ticks, 0x2c gcam1, 0x02's mode press lands the 0x03 twin with a label.
+- The real bug the re-run found: the away switch lands on the silenced twin 0x03 (twin_skip first-
+  offer [M 0x1a6f80:179-198]); with its clip reset to 0 the next draw tick starts the auto-reload
+  and the 0x03 shell loop hangs in state 6 (clip stays 0, carried 4) — every later switch refused
+  [M 0x1a6f80:33-47] — the D-block from 0x2e. Probe: examples/probe_matrix_draw.rs. Fix + the
+  gadget-cycle fallback for the watch gadgets + the upgraded runner's full sweep = next window.
+- Report: docs/reports/weapon-matrix2.md (the re-run table + a pointer live in
+  docs/reports/weapon-matrix.md). Files: crates/nf-view/src/matrix.rs,
+  crates/nf-view/tests/weapon_matrix_live.rs, crates/nf-view/examples/probe_matrix_draw.rs. No
+  shared files touched. Work log continues below.
+
+weapon-matrix2 addendum (11:59): the upgraded runner's full sweep ran (3 chunks, 27 × 98, 0 panics) —
+the red mass (D 1278 / M 152 / R 226) is the silenced-twin reload hang reaching the draw now that the
+give path works; 0x2a impact 19/27 clean, 0x2c's guided camera rode its clean cells, no X marks. The
+table + analysis are appended to docs/reports/weapon-matrix2.md.
+
+fix-weapon-anims (103k, 2026-10-14): per-weapon view-model animations — the game's anim ids, lengths,
+rates, events and blends for draw/holster/idle(+fidgets)/fire per mode/dry fire/reload per kind/mode
+switch/bob/zoom, compared against the port, mismatches fixed, with NF_ISO tests on 6 weapons covering
+each reload kind (P2K, Frinesi, AT-420, MGL, sniper, Samurai). Branch starts from master b27fb1e with
+s/weapon-matrix2 merged in (not on master yet) per the task brief. Work continues below.
+
+fix-weapon-anims (103k, 2026-10-14): the per-weapon view-model animations — the census (all 115
+records' 15 script fields with lengths, off 07000029.bin via a probe example), the decompile round
+(SetWeaponAnimObj's case table; +0xB8/+0xBC are the AIM raise/lower, not "draw-at-1.25x"; the +0xCC
+fidget's 20-tick cycle; the +0xD0/D4/D8 PP7-family path), and four fixes: the idle fidget +0xCC
+(67 records), the aim raise/lower +0xB8/+0xBC with the reverse lower, the +0x93a idle-counter reset
+semantics (the game resets it in every non-idle state), and a real port bug the test exposed — the
+switching double-advance made every holster/draw/var-swap play ~2x fast. Report:
+docs/reports/fix-weapon-anims.md. Tests: crates/nf-view/tests/weapon_anims_live.rs 7/7 green on
+NF_ISO (six weapons x draw/fire/reload/mode-switch/holster numbers + the fidget + the raise; the
+fidget/raise tests demonstrated failing on the pre-fix tree). Suite on the mid-task tree: 1009
+passed / 7 failed (the 3 allowed disc_golden, the 0c-pylon family, the weapon_matrix TIMEOUT — all
+pre-documented); the FINAL tree's suite re-run is the next session's first item. Left: the PP7-family
++0xD0/+0xD4/+0xD8 path (needs the threat-scan stand-in), the 0x32 Samurai reachability, the +0xEC
+MP-grip doc correction. No shared files touched.
+
+## fix-exact-math-swap3 (started)
+- Started: base s/fix-exact-math-swap2, origin/master merged (ecf408b). Task: the NIS camera on the
+  exact-math branch sits consistently further right/closer at every frame of the 07000002 intro vs master
+  (and the 07000007 hall guard is out of frame with --skip-cutscenes at frame 170) — dump the frame-170
+  NIS camera matrix (and one actor's) on both sides element by element, find the first function whose
+  output diverges > 1e-5, and settle master vs branch from the decompile (RotMatrix 0x1e2368,
+  Quat_QuatTransToMat 0x1e3fa8, psiBuildMatrixPalette 0x111498). Keep the grenade-bounce 0.04 fix
+  (Bullet_CollisionHandler 0x12ce80). Report: docs/reports/fix-exact-math-swap3.md.
+
+## fix-exact-math-swap3 (outcome)
+- The hold does not reproduce on the current trees: at the hold's exact spots the branch (swap2 +
+  master @ 7785582) and the same tree with master's host math in anim.rs/placement.rs render
+  PIXEL-IDENTICAL images (4 pairs, 0 of 3686400 bytes differ — 07000002 --bond
+  -82.30,5.30,32.05,1.570,-0.100 at frames 140/170/200, and 07000007 --bond
+  42.59,44.10,-71.71,-1.228,0 --skip-cutscenes at 170, lavapipe 1280x720).
+- The frame-170 NIS camera matrices differ by a few ulps: max 5.1e-6 (translation row
+  −27.251987 vs −27.251982), yaw bits identical (0x403baa18), fov identical; actor positions
+  identical. No function on the path exceeds 1e-5; the per-function host-vs-exact probe gives
+  mul 7.2e-7, object_matrix 1.1e-6, quat_trans_to_mat 4.8e-7 over wide domains.
+- The decompile settles WHICH math is the game's: RotMatrix 0x1e2368 (decomp :28-40, the caller adds
+  π/2 for the cosines, the nine products/sums row-vector with translation row 3), Quat_QuatTransToMat
+  0x1e3fa8 (decomp :16-35, y2/z2/xx2/xw2 exactly as the branch computes them), psiBuildMatrixPalette
+  0x111498 (the VU quat chain + row-vector t·M translations — the port's mul(local, base) operand
+  order matches). The branch's arithmetic (chop products, no-guard FPU adds, PS2Sinf — proven on the
+  interpreter samples and the 40 recorded calls) IS the game's; master's host math is the stand-in.
+- fix_camera_exact_math.rs pins it: the tick-170 camera matrix recomputed from the stream's key
+  inputs through INLINED decompile arithmetic equals the sim's camera BIT-FOR-BIT on the branch and
+  FAILS on master's host math (bf7a694a... vs bf7a6946...); the sister ≤2e-6 assertion passes on
+  both. Failing-first demonstrated by running the test on both trees.
+- The grenade-bounce 0.04 fix (Bullet_CollisionHandler 0x12ce80) kept; grenade_live/ai_live green.
+- Suite (final tree, targeted batches via the fast runner, foreground — this sandbox kills background
+  jobs between tool calls): placement,anim,probe,camera tests,grenade_live,ai_live,walkreal → 45
+  passed, 0 failed; doors,pickup,searchlight,trig,models_misc,worldobj,copter → 19 passed, 0 failed,
+  1 ignored. Full four-crate suite run left for the merge gate.
+- Shared files: nis.rs gained the additive Scripts::camera_stream_inputs() accessor (12 lines,
+  no behaviour change). Report: docs/reports/fix-exact-math-swap3.md.
+---
+Task ID: 103j-fix-weapon-fx-levels
+Agent: weapon-fx-levels worker
+Task: fix-weapon-fx-levels — audit the weapon EFFECTS across all 27 levels x the carried set (fire sound, reload/draw/mode-switch sounds, muzzle flash, shell eject, tracer, impact puff/spark/decal per surface, projectile model+trail, explosion); record resolve vs missing as a table; fix every missing cell (or give game evidence the game lacks it too); watch gadgets' laser/stunner beam/impact; tests + 3 named spot checks; report docs/reports/fix-weapon-fx-levels.md.
+
+Work Log:
+- (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
+
+
+---
+Task ID: 103j-fix-weapon-fx-levels
+Agent: weapon-fx-levels worker
+Task: fix-weapon-fx-levels — audit the weapon EFFECTS across all 27 levels x the carried set (fire sound, reload/draw/mode-switch sounds, muzzle flash, shell eject, tracer, impact puff/spark/decal per surface, projectile model+trail, explosion); record resolve vs missing as a table; fix every missing cell (or give game evidence the game lacks it too); watch gadgets' laser/stunner beam/impact; tests + 3 named spot checks; report docs/reports/fix-weapon-fx-levels.md.
+
+Work Log:
+- (14:29 UTC) Branch s/fix-weapon-fx-levels created from origin/master 088bdf4 (s/weapon-matrix2 already merged: ad50a3c). Setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; effect-resolution research next.
+- (15:36) Resumed in a fresh sandbox: master merged (2caa27f, the WORKLOG conflict resolved append-only). Background jobs confirmed dead between tool calls here — testing went through foreground chunks.
+- (15:45-16:35) Research (subagent + own disasm): the game's FX set is per-level redundant (EffectInfo decals/debris/gas, the tracer 0x02000123, the blast script 0x06000052 — kind-7 NIS — all in every story archive [D census]); 100a's wanted list missed the fp muzzle mesh +0x48 (0x02000ac7 only in 14/15/16/1b) and the ammo-9 casing 0x02000548; Bullet_DoTrails 0x12d890's smoke/exhaust trails were never ported (bit 0x2: 0x1b/0x36/0x69 every 4th tick, Bullet_trail_effect_smoke 0x12cba8; bit 0x20: 0x2a/0x2b every 3rd tick — args read off the disasm incl. the dropped life args 0x78/0x40; the bit-0x10000 Swoosh 0x1a4e40 documented, not ported).
+- (16:36-16:50) Fixes: +0x48 + casing_meshes into wanted_weapon_models (lib.rs, weapon_assets.rs param); init_trail_smoke + init_exhaust_puff (gas.rs, 3 shared RNG draws each, searchlight precedent); the two gates in the grenade tick (drone.rs).
+- (16:50-17:27) weapon_fx_levels_live.rs: the static sweep (20 levels x 114 records modelling the give path's pool: own ∪ earlier-story ∪ skin-owner; per-level own bank ∪ all-bank spares for the op-1 ids — args[1], not args[0]) + 3 spot checks. The rifle check is green (draw 0x282 from the own bank, the flash attachment, fire 0x40d, a live casing, the floor decal/debris); the launcher/gadget checks are #[ignore]d with the exact headless fire-path repro attempts written down; the sweep's only residual is two records' +0x80 held model in non-story archives (documented).
+- (17:30) Neighbours green: fix_weapon_effects 6/6, explode 2/2, fix_weapons_all 4/4, fix_weapon_sounds 3/3 (+2 pre-existing ignores). The full suite did NOT fit the window (no background jobs here) — next session runs it on the merged tree.
+
+Stage Summary:
+- Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
+
+---
+Task ID: 103k2-fix-weapon-anims2
+Agent: weapon-anims2 worker
+Task: fix-weapon-anims2 — the three suite failures the s/fix-weapon-anims merge held (gadget_select's weapon-cycle-on-a-gadget, gadget_laser's parked beam, fix_weapon_sounds' silent sweep cells); fix code or justify test windows from the game's code.
+
+Work Log:
+- (17:04) Resumed the claim (branch already at the merge 7440bd5, pushed). Reproduced all 3 failures + captured the full 5-cell sounds failure list (0x32/0x33/0x41 + 0x42/0x43).
+- (17:15-17:50) Diagnosis with a master throwaway worktree as baseline: (a) gadget_select — the port matches the game (weapon byte swaps at holster-done [M 0x1a2e38 case 2:262-263]; holster/draw at 1.25 [case 1:220-223/case 3:287-288]); the test broke out mid-draw (camera draw ~86 ticks). (b) gadget_laser — the Laser's 76-frame draw at 1.25 + the fire gate; the first beam measured at hold-tick 49 vs the 30-tick window. (c) sounds — THREE real port bugs: the op-1 frame window empty during a switch (the (prev_script,prev_time) watermark sat after the switch machine's advance), the idle fidget threshold 20 [S] vs the game's 0x14*FRAME_RATE_INT = 1200 [L bldata.md +0x93E = 1200, +0x95E n = 60], and the Gun's stale fire_state/latch surviving a switch (the game's Player_WeaponSelect 0x1a2cc0 writes +0xF4 = 8/3/1 directly) which suppressed the next weapon's fire-script queue; plus the sweep's until_drawn breaking inside the post-draw auto-reload (view states 5/6/7) so the held trigger never re-armed [M 0x1a5460:442-445 edge test].
+- (17:50-18:05) Fixes: scene.rs — the watermark moved above the switch machine, the threshold 1200, the fire-state/latch clear at switch start; the four test files' windows re-tuned with the game tick counts (assertions unchanged; the predecessor fidget test corrected 20→1200).
+- (18:05) All green: gadget_laser 7/7, gadget_select 2/2, fix_weapon_sounds 3/3, weapon_anims 7/7. master (ed718f8, fix-weapon-fx-levels) merged mid-task (WORKLOG conflict resolved append-only); the four binaries re-run green on the merged tree. Pushed.
+- (18:05-18:20) Neighbourhood chunks in foreground (the background suite dies between tool calls here): fix_audio2 4, fix_auto_switch 2, fix_weapon_effects 6, fix_weapon_fire_modes 5, fix_weapon_modes 6, fix_weapons_all 4, gadget_grapple 1, gadgets 4, fix_pickups_remainder 1, fix_pickups_trace 2, weapon_assets 5, weapon_fx_levels 2, nf-game lib 150 — 211 passed, 0 failed. The full four-crate sweep did not fit the window again; it is the next session's first item. Report: docs/reports/103k2-fix-weapon-anims2.md (live checks inside: the fidget threshold in gdbwatch, the Samurai draw whoosh, the pre-existing AIMS lights 900/2700-tick thresholds flagged for the main agent's render, the twins' clip-slot follow-up).
+
+Stage Summary:
+- The three merge-held tests green on the merged tree; three real port bugs fixed with game citations (op-1 switch window, fidget threshold 1200, stale fire-state across switches); the test windows re-tuned to the correct-rate switches without loosening any assertion. Pushed through f44e141 + the report commit.
+## fix-06-driver — s/fix-06-driver (task 104d, started 16:46 UTC)
+- Task: playtest 1011-1535 (06) — the friendly truck driver (07000006) cowers on top of the boxes he stands next to, and shooting him knocks him back like a guard with the guard death sound. Check against the game: (1) the cower state's position/anim + floor snap for a civilian ally by props; (2) whether the driver is damageable at all in the game (invulnerable/ally flag on the drone, the team check in the bullet hit) and, if he is, his own death reaction/sound. Port the differences. Files: crates/nf-game/src/drone.rs (small, local).
+- Status: branch cut from origin/master 7785582 (pulled), WORKLOG started. Next: decompile research (cower state, damage team check), reproduce, fix.
+- DONE (17:50 UTC): the driver states dropped the game's absent msg-0x14 (SOUND) arms. The game's
+  TruckDriverInit 0x160bd0 routes msgs 0x11/0x12/0x13/0x16/0x1e → 0x33 and has NO 0x14 case, InitAlert
+  0x160d98 handles no sound msg at all, TruckDriverIdle 0x160ed0 routes 0x11/0x12/0x15/0x16/0x1e to
+  EnemyAlerts with NO 0x14 case [M all three, decompile read whole]; the port's extra SOUND halves ran
+  the guard heard-noise chain (0xa2-0xa5) on the friendly truck driver the moment gunfire sounded, and
+  that chain's attack path DREW HIM A WEAPON (DRAW_WEAPON 0x66 EXIT: weapon 6, anim set 12 → 4 — the
+  guard set) — the playtest's "shoot the driver and he flies back like a guard with the same guard
+  death sound": the fly-back was the guard set's death anim, reached through the weapon draw. Shooting
+  him is game-accurate (DealWithObjHit case 5: the player's shot has no team gate [M 0x13fff0:181-235]);
+  his death line is DeathTalk's default line 1 for voice type 0xf [M 0x13eff8 default arm] — this
+  level's bank shares its sfx (139) with the guards' line 4 [L d.voices], so the "same guard death
+  sound" is the game's own sharing; the anim set was the deviation. The scare/cower half: the game's
+  CivilianScared at alt mode 0 (the driver's) goes straight to CivilianHiding's cower 0x19 — IN PLACE
+  [M 0x15d3a0:31-43, 0x15d520; D seq 04000048's constant x/z root], and the current build's gravity
+  floor snap keeps his feet on the courtyard floor (the user's build predated fix-drone3's gravity
+  fix — his "crouches on top of the boxes" was the old no-gravity drift onto the crate stack by the
+  gate truck's grille). Tests: crates/nf-view/tests/fix_06_driver_live.rs 2/2 (the shot test fails on
+  the pre-fix tree at the heard-noise assert — shown; the cower pin + sisters: the guards still react
+  to the same gunfire, the protected-actor ch 0x60 rises on his death). Suite on the merged tree:
+  see docs/reports/fix-06-driver.md. Report: docs/reports/fix-06-driver.md (live checks: the PCSX2
+  no-draw confirmation, the death anim, the 700-880 step-out window; the headless render gap).
+## fix-oddjob-hat — s/fix-oddjob-hat (task 104e, 17:36-18:5x UTC)
+- The hat = weapon 0x45 [L ee_start_05.bin @0x2c398c]: damage 100.0, speed 0.6667, +0x6C = 0x20C08
+  (gravity + no-flesh-pass 0x800 + the HOMING bit 0x20000 — the only carrier among the thrown
+  projectiles), +0x70 = 0x100 (the stick flag; no 0x4/0x200 — it never explodes). Evidence: the
+  homing is `Bullet_homing` 0x12f358 (from `Bullet_update` 0x12e7b0:476-478; the nearest
+  heat-seekable target in the 0.66 cone with LOS, the steer `dir += clamp((to−dir)·0.0333, ±0.01)`);
+  the world contact STICKS (`Bullet_CollisionHandler` 0x12ce80:255 state 3, the hat-only 1500.0
+  lifetime + the 0x4a7 clang :315-317; the bounce block needs +0x80 or a character hit :398-407);
+  the stuck hat's handler never runs again (:102) and `Bullet_update` case 3 counts 1500 down
+  (0x45-only :363-371) to a silent delete. **No return-to-thrower exists** — fix-gadgets-live's
+  "unmeasured" item resolves to the homing + the stick.
+- Fixes: grenade.rs (the `stuck`/`seek_target` fields, `GrenadeEvent::Stick`, HAT_STICK_LIFE,
+  the stick branch + the silent stuck countdown); drone.rs (the homing pass in the grenade loop —
+  the flag-driven gate, the same shape as the bullets' homing; the hat_out exclusions; the Stick
+  arm's clang); scene.rs (the spawn fields). The mine/satchel +0x100 stick branches left to their
+  task (documented on the `stuck` field). Master's projectile-trails block kept beside the homing
+  in the merge.
+- Tests: crates/nf-view/tests/oddjob_hat_live.rs — the stick test SHOWN FAILING pre-fix (the hat
+  bounced like a grenade), green post-fix: the frozen position, one 0x4a7, zero 0x51c, no blast,
+  the stuck hat kills nobody, the silent 1500-tick expiry, the frag's 0x51c sister; the aimed
+  throw kills in one hit with no 0x51c and no explosion (its pre-fix pass via the dig-edge kill is
+  documented honestly in the report).
+- Suite on the merged tree: nf-game+nf-formats+nf-audio --no-fail-fast 362 passed / 3 failed (the
+  ALLOWED disc_golden trio) / 46 binaries; the 16 nf-view neighbour binaries 65 passed / 0 failed.
+  suite.py's background process cannot survive this sandbox (the 102c/100f precedent) — the same
+  binaries ran in foreground --test-threads=1 chunks.
+- Report: docs/reports/fix-oddjob-hat.md (the evidence chain, the live checks: the PCSX2 curve/
+  stick/clang/expiry, the gdbwatch obj+0xF4=3 and BU+0xFC=1500 countdown, the nf-view render spots).
