@@ -112,6 +112,9 @@ impl Draw {
     }
 }
 
+/// fix-0c-pylon probe: `Clone` so headless render tests can stage material subsets per render
+/// (the pylon-only isolation render); nothing else changes.
+#[derive(Clone)]
 pub struct Material {
     pub layer: Layer,
     pub draw: Draw,
@@ -774,6 +777,13 @@ pub fn scope_graph(g: &CelGraph) -> nf_game::world::ScopeGraph {
         portals: g.portals.iter().map(|p| nf_game::world::ScopePortal {
             tris: [[p.corners[0], p.corners[1], p.corners[2]], [p.corners[0], p.corners[2], p.corners[3]]],
             a: p.cel_a, b: p.cel_b,
+            // The game's portal+0x70: the 4 corners' average [M build_alloc_portal 0x1c8928]
+            // (fix-08-collision2 — Intersect_Portal's 0x800 path projects against it).
+            centre: [
+                (p.corners[0][0] + p.corners[1][0] + p.corners[2][0] + p.corners[3][0]) * 0.25,
+                (p.corners[0][1] + p.corners[1][1] + p.corners[2][1] + p.corners[3][1]) * 0.25,
+                (p.corners[0][2] + p.corners[1][2] + p.corners[2][2] + p.corners[3][2]) * 0.25,
+            ],
         }).collect(),
     }
 }
@@ -1812,9 +1822,17 @@ impl Sim {
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             input.fire = trigger;
-            // The queries' start cel (obj+0x20 — fix-safe08b): the movement pass's relink, read fresh
-            // off the position the same way `build_LinkToRoom` 0x1c9680 re-links.
-            self.bond.cel = self.cel_at(self.bond.pos).and_then(|room| self.room_cell.get(room).copied().flatten());
+            // The queries' start cel (obj+0x20 — fix-safe08b): the game's per-tick relink is
+            // `build_LinkToRoom` 0x1c9680:35-40 → `build_FindCel` 0x1c8cb0 — the room cels' two-ray
+            // tie-break (the up ray, then the down ray capped at min(up hit, len); the nearest hit
+            // wins; no hits → the first candidate), so the actor's cel always carries the geometry
+            // under him and the straddle BFS roots at the floor's cel. fix-08-collision2: the coarse
+            // room-bbox stand-in rooted the 01 escort's straddle at the wrong cel at the room seams
+            // (the pass's triangle order differs from the flat pass's — a 3 cm path shift at the
+            // first seam compounds into the escort fight), and with the portal-centre crossings
+            // ([M 0x1c8928's +0x70] — the other half of this task) the FindCel root keeps the 08
+            // missile-room wall blocked through the doorway portals.
+            self.bond.cel = find_cell_raycast(&self.cel_graph, self.bond.pos, Some(&self.world));
             self.bond.tick_ctx(&self.world, &ctx, &input);
             // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the
             // current weapon id is SAVED to `anim+0x64` (the port's `saved_weapon`), the class becomes
