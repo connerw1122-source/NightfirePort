@@ -53,6 +53,40 @@ impl Font {
         }
         (out, pen - x)
     }
+
+    /// The drawn line advance for a '\n' in a multi-line string: `__Font_DrawText` 0x1ee598:65-71 adds
+    /// `*(u16*)(glyph_table + 6) + Font+0x14 + 1.0` — the table's first glyph's h plus the font's line
+    /// gap plus 1 — per newline (× the y scale, 1 here).
+    pub fn line_height(&self) -> f32 {
+        self.glyphs.first().map_or(0.0, |g| g.h as f32) + self.gap + 1.0
+    }
+
+    /// `Font_WordWrapString` 0x1ef178 as `Text_AddMsg` 0x1b0c30 uses it: greedy word wrap at `max_w`
+    /// HUD pixels (`TextMsgFormats[type]`'s maxWidth — 480 for the type-2 objective text [L
+    /// 0x2bf108+0x14]), the lines joined with '\n' — the string the game stores, which
+    /// `__Font_DrawText`'s newline branch then lays out. Words that alone exceed `max_w` keep their
+    /// own line.
+    pub fn word_wrap(&self, text: &str, max_w: f32) -> String {
+        let mut out = String::new();
+        let mut line = String::new();
+        let mut line_w = 0.0f32;
+        for word in text.split(' ') {
+            let candidate = if line.is_empty() { word.to_string() } else { format!("{line} {word}") };
+            let (_, w) = self.layout(&candidate, 0.0, 0.0);
+            if !line.is_empty() && w > max_w {
+                out.push_str(&line);
+                out.push('\n');
+                line = word.to_string();
+                line_w = self.layout(word, 0.0, 0.0).1;
+            } else {
+                line = candidate;
+                line_w = w;
+            }
+        }
+        let _ = line_w;
+        out.push_str(&line);
+        out
+    }
 }
 
 /// The HUD tables.
