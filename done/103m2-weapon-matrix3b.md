@@ -31,3 +31,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox3 at 2026-10-14T18:26Z
+
+---
+## Report (done, 2026-10-14T19:42Z)
+
+Closed by the driver: the report is on `s/weapon-matrix3b` (docs/reports/weapon-matrix3b.md); the worker didn't run finish.sh.
