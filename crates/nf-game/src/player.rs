@@ -1336,6 +1336,87 @@ pub fn weapon_lock_auto_draw(level: u32, on: bool, prev: bool) -> bool {
     level == WEAPON_LOCK_LEVEL && on && !prev
 }
 
+/// A hint marker (placement kind 0x33, `Hint_Create` 0x1b3248 → class 0x43): the one-shot text
+/// markers the game scatters next to usable things ("Hint: Use Watch Laser" at the 07000008 safe).
+/// `Hint_Create` builds a 0x10-byte instance off the placement's params:
+/// `inst+0x00` = param 1 (**the sound id** — `Sound_Play(100.0, sound, 0, 0)` on fire; 0 = silent),
+/// `inst+0x04` = param 0 (**the text label** — `Txt_BindLabel(param 0)`; the safe's is 0x1000336
+/// [D USATxt.dat entry 1822]), `inst+0x08` = param 3 (**the on-channel** — the hint only fires
+/// while the channel is 0 (never armed) or on), `inst+0x0C` = param 4 (**the off-channel** — when
+/// it is non-zero and ON the hint stays silent) [M 0x1b3248:33-37, 0x1b3380:17-22].
+///
+/// `Hint_Update` 0x1b3380 fires it once: with a class-3 object (the player) in the marker's
+/// obj+0xD0 chain (the same straddle-cel occupancy the third icons arm through — the marker's
+/// world sphere is its map object's bounds, `Control_BuildWorldSph` 0x133070 via
+/// `build_LinkToRoom` 0x1c9680:40, resolved like `wire::icons`) it plays the sound, posts
+/// `Text_AddMsg(BL+0x94e, 0, 1, label, 0, 0xb4)` — TXTMSG **type 1 = the INFO pane**, life 0xB4 =
+/// 180 ticks — and sets obj+0xFE bit 0, the delete flag [M 0x1b3380:24-42; obj-tag.md +0xFE bit 0
+/// = delete me]. `Hint_Create`'s stage gate (param 2: 0 = always; 5/6/7 = only on game states
+/// 1/2/3 [S — the GameState+0x40 compare]) is 0 on every hint marker found on the disc so far.
+///
+/// The label id rides in the struct; the message text binds at drain (`USATxt.dat`, the scene's
+/// `lang`), so the tests can pin the game's ids without disc text.
+#[derive(Clone, Debug)]
+pub struct Hint {
+    /// The placement translation (the marker object's position).
+    pub pos: V3,
+    /// `obj+0x80..0x8C`: the world-sphere centre through the placement's yaw matrix (the same
+    /// resolution as `wire::icons` [M Control_BuildWorldSph 0x133070]).
+    pub centre: V3,
+    /// `obj+0x8C`: the world-sphere radius (the object's glist bounds — the trigger volume the
+    /// player's pick fills the obj+0xD0 chain through).
+    pub radius: f32,
+    /// Param 0: the hint's text label (`Txt_BindLabel` id).
+    pub label: u32,
+    /// Param 1: the sound id played on fire (0 = none).
+    pub sound: u32,
+    /// Param 3: the on-channel (0 = always armed).
+    pub on_channel: u32,
+    /// Param 4: the off-channel (when non-zero and ON the hint never fires).
+    pub off_channel: u32,
+}
+
+/// Every hint marker of a level (placement kind 0x33, `parsemap_create_dynamic_objects` 0x1d04f0
+/// case 0x33 → `Hint_Create`), in placement order, resolved against its map object exactly like
+/// `wire::icons` (an unresolved placement never creates an object, so it is skipped).
+pub fn hints(level: &nf_formats::level::Level) -> Vec<Hint> {
+    let mut out = Vec::new();
+    for (mi, m) in level.maps.iter().enumerate() {
+        for p in &m.placements {
+            if p.flags & 0xff != 0x33 { continue; }
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                else if (p.index as usize) < m.objects.len() { Some((mi, p.index as usize)) } else { None };
+            let obj = obj.and_then(|(om, oi)| level.maps.get(om).and_then(|map| map.objects.get(oi)));
+            let Some(o) = obj else { continue };
+            let yaw = p.rotation[1];
+            let (s, c) = yaw.sin_cos();
+            let centre = [
+                p.translation[0] + o.centre[0] * c + o.centre[2] * s,
+                p.translation[1] + o.centre[1],
+                p.translation[2] - o.centre[0] * s + o.centre[2] * c,
+            ];
+            let scale = p.scale();
+            let s_max = scale.iter().fold(1.0f32, |a, &v| a * v.max(1e-6).abs());
+            out.push(Hint {
+                pos: p.translation,
+                centre,
+                radius: o.radius * s_max,
+                label: param_of(p, 0),
+                sound: param_of(p, 1),
+                on_channel: param_of(p, 3),
+                off_channel: param_of(p, 4),
+            });
+        }
+    }
+    out
+}
+
+/// The placement's param k (the word at +0x2C + k·4); 0 when the record omits it (the same
+/// default `wire::icons` reads through [M 0x1d04f0's param-buffer reads]).
+fn param_of(p: &nf_formats::placement::Placement, k: u32) -> u32 {
+    p.params.iter().find(|(i, _)| *i == k).map_or(0, |&(_, v)| v)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
