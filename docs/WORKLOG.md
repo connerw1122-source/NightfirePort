@@ -10734,3 +10734,24 @@ Stage Summary:
 ## fix-armour-ring (outcome)
 - The armour branch was already ported and is game-faithful [M HUD_UpdateHealthPane 0x19b9c8:139-158]: armour 0 → HealthSprInfo[0..8] hidden (+0x38 = 0xFF); armour > 0 → the 8 bronze-tinted (0x7d6d59) orange-art segments with alpha 1.0 (k=0) / 0.75 (k < armour·0.16) / 0.35. No separate 007-logo sprite: HealthSprInfo[15] is the 87×86 hollow circle outline tinted by the health colour; the captures' "orange 007 ring" = this pane at the god-cheat's armour 50 (cheats.py writes health 100 + armour 50 every frame). All BLData+0x8b0 readers agree (Pickup_Handler 0x18e650:221-224 take, Player_HandlePain 0x1902c8:100-104 absorb, RamSave/Load, the pane).
 - Tests (fix_armour_ring_live): hide-at-0 + the green ring unchanged; the real take path (kind-3 pickup → step_bond → armour 50) lights exactly 8 segments with alphas {255, 191×7} and segment 0 at (48,367); value tracking 25 → {255, 191×3, 89×4}, 0 → hidden. Green on the final merged tree (1496b80). Shared file: lib.rs gained the 4-line `--armour <n>` shot hook (reported).
+
+---
+Task ID: 103e-campaign-flow
+Agent: campaign-flow worker
+Task: campaign-flow — play every single-player mission's levels in order from the front end's mission start, headless: walkreal walkers / scripted routes where they exist, dev teleport + objective triggers where they don't; through the transitions and end-of-mission flow (outro, results, next mission unlocked). Per level: reached exit / which objective blocked / crashes / stuck script / missing trigger. docs/reports/campaign-flow.md table; fix the first pinnable blockers with tests; list the rest as follow-ups.
+
+Work Log:
+- (11:59 UTC) Branch s/campaign-flow created from origin/master bf2f6bd; setup reused (repo, work/, ISO, nf-queue). Suite baseline starting in background; campaign-flow research next.
+
+---
+Task ID: 103e-campaign-flow
+Agent: campaign-flow worker
+Task: campaign-flow — play every mission end to end headless; the blockers map; fix the first pinnable blockers.
+
+Work Log:
+- (11:59-12:48 UTC) Branch s/campaign-flow from origin/master bf2f6bd. The runner (campaign_flow_live.rs): the story order = ResetMap_LevelCode2Img's cases [M 0x1d5258], the mission grouping = the MissionData `mission` field (BaseMap [M 0x182270]); the drive = the objectives' own condition/enable channels + the E-use exit path (Trigger_Activate 0x1b2318); the transitions = load_with_carry warm (the game's ResetMap_LevelToLoad(next,1,0) + RamSave [M 0x1b2318:111-116]); the mission end = case 6's LevelToEndTo (driving codes skipped, 0x07000048 = the front end [M 0x182c60:85-135]).
+- Every story level parses and spawns; the exit E-path chains 02→03→04, 05→06, 07→08, 0c→0d, 14→15→16 warm with the carry; the mission-final driving arms land (04/08/0b/0d/16/1b).
+- FIXED (failing-first): the warm-transition mission freeze — `Mission::restore` overwrote the re-armed globals with the carried internal 5 (the post-banner state [M 0x182c60:65-84]); the monitor (case 5 = a bare break) never ran again and the level could not end. The game re-arms via Mission_Init and keeps only the .data records (LS_LoadMission is the save path). Test: the_mission_layer_re_arms_on_a_warm_transition (left: 5 / right: 1 pre-fix).
+- Blockers mapped (the report has the live checks): 01's escort-extraction exit (the ch16 TOUCH filter needs the Mayhew drone; the walkreal-a stall); 06/11/4a have NO exit trigger in the data (06's 0xE9s are Drone_AIPoint [M 0x1d04f0 case 0xe9]) — forced completes land the front end; 09/0a's exit triggers self-loop (next = own hash [D]); 0a's real exit needs the trigger-volume work; the gameplay-driven objective channels ride the per-mission walkthrough tasks.
+- Non-story records 0700000e/f/10: no FILES.BIN archive [D] — cut MissionData records.
+- Report: docs/reports/campaign-flow.md. Files: crates/nf-view/tests/campaign_flow_live.rs (new), crates/nf-game/src/mission.rs (the restore fix), crates/nf-view/tests/probe_campaign06.rs (kept probe). Shared files untouched.
