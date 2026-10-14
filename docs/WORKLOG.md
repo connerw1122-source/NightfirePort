@@ -9994,3 +9994,23 @@ Task 101h, both symptoms from the 1013-1758 playtest at 07000008's safe area (~(
   allowed disc_golden trio), 27 ignored (19 min)**, no TIMEOUT/CRASH; baseline on master 906/3/27;
   the targeted post-fix suites (the 08 four, vent5 2, wire2 3) green on the same tree.
   Report: docs/reports/fix-08-walls.md.
+
+## fix-context-hints (s/fix-context-hints) — 2026-10-14
+
+Task 100h, branch start. The two PCSX2 symptoms from the main agent (2026-10-13): standing at a
+usable thing, (1) the hint bar at the top ("Hint: Use Watch Laser" at the 07000008 safe,
+--bond 155.19,43.12,-113.38,1.57,0) and (2) the context indicator icon (the port shows neither).
+Work log:
+- Traced the context system in the decompile: `ThirdIcon_Update` 0x196e80 writes the icon's
+  context type into the player's `BLData+0x95F` (already ported by fix-wire2/fix-08-walls in
+  scene.rs) and posts the type-6 generic hint "Press Action" (label 0x1000291) through
+  `Text_AddMsg(0,0,1,…,0,0xb4)` on a 4-tick per-icon cooldown while the player is not creeping;
+  `Hint_Create` 0x1b3248 / `Hint_Update` 0x1b3380 (placement kind 0x33, class 0x43) are the
+  one-shot hint markers: param 0 = the label (0x1000336 = "Hint: Use Watch Laser" [D USATxt.dat]),
+  param 1 = the sound, param 3/4 = the on/off channels; firing = the player in the marker's
+  obj+0xD0 chain, once (obj+0xFE bit 0 deletes it). `HUD_UpdateHealthPane` 0x19b9c8:273-303 is the
+  context icon (health-pane sprite 18): texture table 0x2FC168[ctx] = 0x03000064+ctx (only
+  0x66/0x67/0x6A exist on the disc [D tex-list] — winch/hanging-man/figure), screen (400,48),
+  layer 29, colour 0x7f7f7fff, fade-out over ThirdIconTimer 30; the type-1 TXTMSG draws on the
+  INFO pane 4 (MsgInfoStatusPane 0x319810 [L], InfoStatusSprInfo 0x319730: bar 480×26 at (16,0),
+  text centred (256,16), the 0x19c310 state machine the pickup pane already ports).
