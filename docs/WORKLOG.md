@@ -11995,3 +11995,42 @@ Stage Summary:
   the bolt's contact (world and flesh) creates the explosion with script 0x060007c4 and its entities
   draw. Keep fix_blast_scripts_live, fix_cutscene_actors_live, fix_samurai_fire_live green.
 - Work log:
+
+## fix-blast-scripts2 — s/fix-blast-scripts2 (task 105c2, finished 23:56 UTC 2026-10-14)
+- The ONE 0x060007c4 path, reconciled from s/fix-blast-scripts + origin/master + origin/s/fix-samurai-fire + origin/s/fix-cutscene-actors (291):
+  the merge root cause was the fire-modes3-shaped FIRST world arm whose gate included the bolt bits
+  (0x100000/0x200000) while pushing the generic script 0x06000052 — the bolt's own else-if arm was
+  dead code, and cutscene-actors's separate direct `spawn_once(0x06007c4)` at the world hit was the
+  only thing drawing the cyan blast (at scale 1, alongside a leaked generic 0x06000052 player).
+- Evidence [M, ACTION.ELF disasm, little-endian decode]: `Bullet_CollisionHandler` 0x12ce80 runs
+  THREE independent explode arms on every non-ricochet contact (world AND flesh) — `+0x70 & 4` →
+  `Explode_Create(f12 = +0x08, f13 = +0x08, f14 = +0x0C, script 0x6000052)` [0x12d0ac-0c0];
+  `+0x70 & 0x100000` and `+0x70 & 0x200000` → `Explode_Create(f12 = 1.0 [0x12d0ec-0f0 `lui $at,
+  0x3f80; mtc1 $at, $f12`], f13 = +0x08 [0x12d118], f14 = +0x0C, script 0x60007c4)` [0x12d154-88].
+  `Explode_Create` 0x17cbd0 stores param_1 (f12) into SCRIPTINFO+0x94 = the script player's scale,
+  and param_2 (f13) is the blast radius (Camera_Shake + obj fields) [0x17cbd0 body]. The fuse death
+  0x12cd98 passes f12 = +0x08 [0x12ce1c] and Destroy_Smash 0x12bb60 passes f12 = tag+0x8c [0x12bcdc].
+  So: the game's bolt cyan blast plays at SCALE 1.0 while the blast radius stays 8.0 — the
+  fix-blast-scripts test's scale-8.0 pin contradicted the disc and is corrected to 1.0.
+- Fixes (crates/nf-game/src/drone.rs): the world arm now picks script AND scale by bits in ONE arm
+  (the flesh arm already did; both cite the disasm); cutscene-actors's separate direct spawn is
+  GONE — the queued blast's `spawn_blast` spawns the same script player, whose entities draw from
+  the scene.rs sweep (all four hashes kept, the ONE path); `pending_blasts` gained the game's f12
+  as a 7th tuple element (every push site cites its arm's f12: 0x4/fuse/destroy = radius, bolt =
+  1.0), and `spawn_blast` takes the scale instead of deriving it from the radius.
+- Tests: crates/nf-view/tests/fix_blast_scripts_live.rs — the corrected cyan-scale pin (1.0 [M
+  0x12d0ec-0x12d0f0]) + the generic-script sister SHOWN FAILING pre-fix (the bolt's blast played
+  0x06000052 through the mis-routed arm; "the bolt must not play the generic 0x06000052" panics on
+  the pre-fix merged tree), green post-fix with the destroy + frag/rocket sisters. fix_cutscene_actors_live
+  5/5, fix_samurai_fire_live 3/3, fix_weapon_fire_modes_live 5/5 (the neighbouring gates).
+- Suite on the final tree (287 state entries + the second same-named fix_ai_remainder_live binary,
+  foreground --test-threads=1 chunks — this sandbox kills background jobs, the 102c/100f/oddjob-hat
+  precedent): 1154 passed / 6 failed / 63 ignored; the 6 = the 3 ALLOWED disc_golden + the 3
+  pre-existing pylon failures (probe_pylon_render 1, fix_0c_pylon_live 2, documented on
+  weapon-matrix4b). weapon_matrix_live green in-suite (6/24 ignored, 340 s — the held timeout stays gone).
+- Shared files touched: crates/nf-view/src/scene.rs (the merge conflict resolution keeps the
+  four-hash sweep, comment-only union — no behaviour change), crates/nf-view/src/matrix.rs (the dbg
+  has_ammo call gained master's clip_slot arg — a compile fix, no behaviour change), crates/nf-game/src/gun.rs
+  and crates/nf-view/tests/weapon_switch_live.rs + docs/reports/fix-samurai-fire.md + docs/reports/fix-cutscene-actors.md
+  arrived from the merges themselves. Report: docs/reports/fix-blast-scripts2.md (the render spots
+  for the main agent + the live checks).
