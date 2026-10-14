@@ -9364,3 +9364,18 @@ state never lets the shot come due — needs a state whose UPDATE leaves firing/
 Left (censused + decompile-cited in docs/systems/anim-engine.md): op-4 kinds 1/6/7, EventFunc 0xE
 (partner messaging), the other 53 ChangeWeapon entries, footprint decals, the +0x45 setup read.
 Shared files: drone.rs only (fields on their own lines, merge lesson 4).
+
+Task ID: fix-cutscene-models
+Agent: worker (cutscene-models session)
+Task: REGRESSION — cut-scene character models missing (the 1013-1758 playtest: on 07000008 only
+Kiko shows in the briefcase/safe scene; on 07000007 only Bond shows). Bisect the last-two-days
+merges (fix-script-commands 0a7268d, fix-facial/facial2 366ceff/bc231e8, fix-anim-blend2 e679d6e,
+fix-gpu-skinning 942e2ca, fix-portal6 8ee0791, fix-spawners/-remainder, fix-cover/nav-remainder)
+with a headless test that runs each cut-scene on 07000005/06/07/08 and counts the characters
+actually DRAWN vs the actors the script creates; fix the cause with the game address; note in the
+report what's left for 291-fix-cutscene-actors (positions/skins in general).
+
+Work Log:
+- Session started 01:17 UTC (deadline ~03:15 UTC). Branch s/fix-cutscene-models created from
+  origin/master (8144bd6), pushed with this entry.
+- (next: the cutscene_models_live test through the real script path; the bisect worktrees)
