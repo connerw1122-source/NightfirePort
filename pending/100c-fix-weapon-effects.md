@@ -5,10 +5,16 @@ proper animations and particles." The dev tools (the dev window / F2 menu, `--gi
 level. Today `scene.rs` builds a first-person view model only when the weapon's first-person skin (`weapon_data+0xDC`),
 its sleeve and its parts are in the CURRENT level's archive (`level.skins.get(&fp)`, scene.rs "The first-person gun
 models"), and the same holds for its view-model animation scripts, its muzzle-flash mesh (`weapon+0x48`), its casing,
-its projectile and its sounds (the level's own sound bank). So a weapon the level doesn't natively carry is invisible,
-silent, unanimated or fires the wrong effects (the user saw the grapple fire a bullet impact, the laser and stunner fire
-"bullets", no Q-Claw model). The real game only ever loads a level's own set; the port goes further on purpose, so that
-every weapon behaves exactly as it does on a level that carries it.
+its projectile and its sounds (the level's own sound bank). So a weapon the level doesn't natively carry may be
+invisible, silent, unanimated or fire the wrong effects. The real game only ever loads a level's own set; the port goes
+further on purpose, so that every weapon behaves exactly as it does on a level that carries it.
+
+CORRECTION from the user (2026-10-13): the watch gadgets — the Q-Claw grapple, the Q-Laser and the stunner — are
+ALWAYS carried on every single-player map (not on multiplayer maps), so they are not a cross-level asset case. On
+07000005 the Q-Claw problem was that there was NO grapple point at the spot the playtest used (nothing to latch onto),
+not a missing claw model. The laser and stunner SOUND like rapid bullet impacts; whether they actually fire bullets is
+not established — check what they spawn and which sounds they play before assuming. Don't treat these three as
+missing-asset failures in your results.
 
 The four 100x tasks split the work: 100a the assets and animations (the foundation), 100b the sounds, 100c the fire
 behaviour and effects, 100d the all-weapons x all-levels check. They run in parallel: pull `master` often, and if
@@ -22,8 +28,9 @@ YOUR PART: what each weapon DOES when fired, matched to the game per weapon clas
 - shotguns: the pellet count and spread;
 - explosives: rockets (projectile model, smoke trail, flight sound, explosion size and damage: the user said "the
   explosion is very small"), grenades (thrown on the animation event, bounce, settle, fuse), mines, the crossbow bolt;
-- gadgets: the laser watch (a beam, burns locks, no bullet), the stunner, the Q-Claw (the hook projectile and cable, no
-  bullet), the micro-camera (no shot);
+- gadgets: the laser watch (its beam and the burn on locks; the user hears rapid bullet-impact sounds while holding it:
+  find whether that is impact sound effects, actual bullet hits, or something else), the stunner (same symptom), the
+  Q-Claw (its hook projectile and cable; it needs a grapple point in range), the micro-camera (no shot);
 - the alt fire and twin variants (silencer, heat-seeker) and their effects.
 Use the game's own code for each (`Player_WeaponFiring` 0x1a5460, `Player_MuzzleFlash`, the effect/particle system,
 `Explosion_*`, the projectile classes); compare against PCSX2 where the docs have measured numbers. Tests per class on
