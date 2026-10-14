@@ -38,6 +38,11 @@ PCSX2 ground truth is on master: `docs/live/2026-10-13-weapon-modes-pcsx2.md` (r
   exact value from the decompile); the twin switch needs the twin to have rounds;
 - with the default "Classic Bond" layout the mode switch is SQUARE ("Alt. Fire"), not circle: find the action and keep
   the port's B key on it.
+- the same doc now has EVERY weapon's two modes as the real game labels and switches them (a table of 32 weapons:
+  Semi/Silenced, Semi/Burst (3 rounds), Auto/Semi, Burst/Grenade (the AIMS-20 underbarrel launcher), Pump/Auto,
+  Single/Armor Piercing, Heatseeker/Unguided, Overcharge/Beam (the Phoenix Samurai's charge-and-release vs drain beam),
+  the remote mine's detonator, the satchel's countdown, the tripbomb's laser, the flare gun, the Q-Pen dart, ...). Port
+  every row and test each against it.
 
 Files: `crates/nf-game/src/{gun,grenade,bullet,explode}.rs`, `crates/nf-view/src/{lib,scene,hud}.rs` (the missile camera
 and overlay), a new `docs/systems/weapons.md`, tests.
