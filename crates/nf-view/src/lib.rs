@@ -1047,6 +1047,8 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool) -> (Op
             "difficulty" => menu::Page::Difficulty,
             "missions" | "single" => menu::Page::MissionSelect,
             "dossier" => menu::Page::Dossier,
+            // fix-menus-real (additive hook): the dossier's Records table renders headless too.
+            "records" => menu::Page::Records,
             // fix-pause-menu: the in-game pages render headless too (the pause page over the
             // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
             // picks the pause tab, `--confirm` arms the pause confirm.

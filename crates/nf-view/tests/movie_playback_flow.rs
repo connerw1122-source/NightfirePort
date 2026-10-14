@@ -87,6 +87,7 @@ fn a_menu_started_mission_rides_state6_back_to_the_level_load() {
     for _ in 0..fe.flow.movie_frames { fe.flow.main_tick(); }
     assert_eq!(fe.flow.get_state(), ST_RUNNER, "the intro popped; state 2");
     fe.action(Action::Confirm); // NightFire → Codename
+    fe.action(Action::Down);    // row 1 = Play without saving [M 0x1f79c0:15-23; fix-menus-real]
     fe.action(Action::Confirm); // Codename → the confirm box armed
     fe.action(Action::Confirm); // the box → Select Difficulty
     fe.action(Action::Confirm); // Difficulty → Single Player
