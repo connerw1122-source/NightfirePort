@@ -30,8 +30,14 @@ behaviour (an impact-mode grenade explodes on its first contact, a timed one aft
 the look input and the camera rides it then returns; numbers only; sister assertions. List `--give` + key steps for the
 user to try each mode (`--give <id>` then B to switch mode).
 
-The main agent will add PCSX2 observations (a multiplayer match with these weapons) to `docs/live/` on master; pull
-before you finish and check your port against them.
+PCSX2 ground truth is on master: `docs/live/2026-10-13-weapon-modes-pcsx2.md` (read it first):
+- the AT-420 Sentinel 0x2C ("Guided") puts the view ON the rocket: a red-tinted camera, a red ring + bracket overlay,
+  scanlines, the normal HUD's health bar and crosshair hidden; the look input steers; on impact one or two frames of red
+  static, then back to Bond;
+- the Militek MGL is a TWIN pair: 0x2A "Grenade" = IMPACT detonation, 0x2B "Delay" = a fuse of about 3-4 s (take the
+  exact value from the decompile); the twin switch needs the twin to have rounds;
+- with the default "Classic Bond" layout the mode switch is SQUARE ("Alt. Fire"), not circle: find the action and keep
+  the port's B key on it.
 
 Files: `crates/nf-game/src/{gun,grenade,bullet,explode}.rs`, `crates/nf-view/src/{lib,scene,hud}.rs` (the missile camera
 and overlay), a new `docs/systems/weapons.md`, tests.
