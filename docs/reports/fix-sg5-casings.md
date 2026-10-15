@@ -67,10 +67,15 @@ With the SG5's record ([L] +0xF8 = (0.02, −0.05, 0) → local (0.02, 0.05, 0))
   fix_sg5_casings_live + the nf-game and nf-view unit-test binaries (the casing module's tests
   among them) — **47 passed, 0 failed, 6 ignored**.
 - The sandbox reset at 05:04 UTC (right after the sweep and the checkpoint push) destroyed the
-  local build; a second, wider sweep on the re-cloned tree re-validated the pushed branch (see the
-  WORKLOG entry). The full 305-binary suite did not run this session — the pre-reset window went to
-  the fail-first cycle and the sweep above; the 13-binary sweep covers every firing/casing/weapons
-  suite that touches the changed path.
+  local build; the branch survived on origin. The re-cloned tree (origin/master 2cbfd7e3 + this
+  fix, commit 6b0f45c2) was rebuilt from scratch and re-validated with a wider sweep — 25 binaries
+  (the list above plus weapon_fx_levels_live, weapon_assets_live, models_weapons_live,
+  weapon_anims_live, fix_weapon_effects_live, fix_aim_raise_live, fix_guard_weapons_live,
+  fix_grenade_types_live, fix_remote_mine_play, fix_samurai_fire_live, fix_auto_switch_live,
+  decal_order_live): **91 passed, 0 failed, 9 ignored** (tools/test/suite.py, --test-threads=1).
+  The full 305-binary suite did not run this session — the window went to the fail-first cycle,
+  the two sweeps and the reset recovery; the 25-binary sweep covers every firing/casing/weapons/
+  effects suite that touches the changed path plus both crates' unit-test binaries.
 
 ## How to reproduce (headless)
 
