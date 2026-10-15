@@ -13030,3 +13030,23 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
   also adds the recoil kick BL+0x8e4 — the port doesn't model 0x8e0/0x8e4; no increment found in
   the C decompile (only decay ×0.75 + init 0), decompiler-dropped store suspected. GAPS G-044 →
   Closed. Suite restarted on the final tree.
+## menus vs PCSX2 (2026-10-15, branch mine/menus, main agent)
+- Every reachable front-end and in-game menu page compared side by side with PCSX2 captures (07000048 / 07000005)
+  and corrected: page headers left-aligned at x 50 at the header face's own size; the wheel rows left-aligned at
+  their controls' x; the ring texture 0x030000bf only masks the preview (no rim/square drawn); per-row difficulty
+  previews (table 0x2df4c0); locked wheel rows at half the slot alpha (Menu_UpdateWheel 0x1f8388:210-234); the
+  stray stamp 0x0300014c and the main menu's logo removed; main rows in the header face; Records rebuilt (three
+  framed boxes, the mission spinner, the rows, the medal only when earned — C_RBDSRECORDS 0x20bf00:58-110); title
+  prompt/legal sizes; pause hint bars dark words; OBJECTIVES rows = the visible objectives
+  (Mission_NumVisObjectives 0x182540) with the list cursor; quit/restart confirm; the codename option box
+  (Menu_CreateOptionBox 0x1f9608); hint bars at PCSX2's middles.
+- New: the level loading screen (ResetMap_GenLoadScreen 0x1d5de0 — crate::loading; the picture from
+  07000500.bin, objective + random hint, the LOADING dots static while the load blocks the thread).
+- New: Codenames → Edit Codename (0x4000001b) → Edit <name> (0x4000001d, table 0x2dfc28) → Advanced /
+  Multiplayer / AV Options (0x4000002d/2e/31): rows, value items and profile bytes from P_CNOPTIONS 0x213f08 /
+  P_CNMPOPTIONS 0x2144d8 / P_CNAVOPTIONS 0x214818, descriptions from the (control, value) table 0x2e4a18;
+  ◀ ▶ change values (Action::Left/Right; other pages keep Back/Confirm). The values are not wired to the sim yet
+  (queue task 610). Secret Unlocks / Controller Setup / Driving Controller / Screen Adjust / Credits / the
+  trailer / New Codename entry and the Multiplayer menus are not ported (611-613 queued for their data).
+- Renderer: the movie plane keeps the 4:3 picture centred with black bars (every menu movie and briefing was
+  stretched a third too wide on 16:9).
