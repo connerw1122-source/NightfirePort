@@ -311,17 +311,23 @@ pub struct Progress {
     /// `GameState[0x52]` — the game-complete flag (finishing 0x0700001B sets it
     /// [M Menu_SetLevelBonus 0x1ffa10]).
     pub game_complete: bool,
-    /// `NewScoresRef` 0x30cc6c's stand-in: the on-foot (0x07-map) score rows come from here in the
-    /// game — a 9×3 s32 array filled through the PTP buffer (0x31ca38 is inside it) by the boot
-    /// hand-off, with no writer in ACTION.ELF [M docs/fields/player-stats.md "Unknowns" 3]. The
-    /// port has no PTP: `None` = the game's NULL pointer, and GetScore aborts for 0x07 maps — the
-    /// faithful behaviour, with a live check filed in the report.
+    /// `NewScoresRef` 0x30cc6c's stand-in: the DRIVING (0x09-map) score rows come from here in
+    /// the game — a 9×3 s32 array filled through the PTP buffer (0x31ca38 is inside it) by the
+    /// boot hand-off, with no writer in ACTION.ELF [M 0x1984b0:44-64 copies it for the maps whose
+    /// hash's top byte is 0x09; docs/fields/player-stats.md "Unknowns" 3]. The port has no PTP:
+    /// `None` = the game's NULL pointer, and GetScore aborts for 0x09 maps — the faithful
+    /// behaviour, with a live check filed in the report.
     pub new_scores: Option<[[i32; 3]; 9]>,
     /// `GameState+0x40` (0x2a37a8) — the difficulty (1 Agent / 2 Secret Agent / 3 00 Agent /
     /// 4 the bonus double-damage mode [M Player_HandlePain 0x1902c8:29-48]). Boot default 2
     /// [M bootup 0x1c7e78:25]. Kept here (not on GameState — the port has no GameState struct)
     /// and mirrored on `Drones::difficulty` for the tick code.
     pub difficulty: u32,
+    /// `DAT_002e1c2c` — "a new reward unlocked": Menu_SetLevelBonus 0x1ffa10 sets it when a medal
+    /// counter's bit was not yet set [M :74-79], and P_NFRESULTS case 0x4b routes to the bonus
+    /// page 0x40000038 while it stands [M 0x208e78:49-52]. Cleared at every SetLevelBonus entry
+    /// [M :56].
+    pub new_reward: bool,
 }
 
 impl Default for Progress {
@@ -338,6 +344,7 @@ impl Default for Progress {
             game_complete: false,
             new_scores: None,
             difficulty: 2,
+            new_reward: false,
         }
     }
 }
@@ -374,20 +381,21 @@ impl Progress {
     }
 
     /// `PlrStat_GetScore` 0x1984b0. `base_map` = `Mission_BaseMapHCode()`, `ms` =
-    /// `Mission_Status()`, `difficulty` = `GameState+0x40`, `commit` = the function's u8 param
-    /// (non-zero on the results path — the pause screen calls GetScore(0)).
+    /// `Mission_Status()`, `difficulty` = `GameState+0x40`, `commit` = the results path — the
+    /// game's param_1 **0** (P_NFRESULTS 0x208e78:77 calls `GetScore(0)`); a non-zero param (the
+    /// pause screen's read) leaves the entry's last/best alone.
     ///
-    /// Row sources [M 0x1984b0:doc step 2]: the 0x09 maps (entry +0x38 == 0) read
-    /// `PlrMissionStats[0]`; the 0x07 maps (+0x38 == 1) copy `NewScoresRef`'s 9×3 s32 rows and
-    /// ABORT when it is NULL — the port's `new_scores: None` models the NULL, so on-foot maps
-    /// score nothing until the PTP hand-off is modelled (the game's retail behaviour per the doc's
-    /// honesty note; live check filed).
+    /// Row sources [M 0x1984b0:38-84 — the hash's top byte picks the branch]: the 0x07 maps
+    /// (entry +0x38 == 1) build the rows from `PlrMissionStats[0]`; the 0x09 maps (+0x38 == 0)
+    /// copy `NewScoresRef`'s 9×3 s32 rows and ABORT when it is NULL — the port's `new_scores:
+    /// None` models the NULL, so the driving maps score nothing until the PTP hand-off is
+    /// modelled (the game's retail behaviour per the doc's honesty note; live check filed).
     pub fn get_score(&mut self, base_map: u32, ms: u32, difficulty: u32, commit: bool) -> Option<Scored> {
         let idx = self.table.iter().position(|e| e.hash == base_map)?;
         let s = *self.stats();
-        // The row values, per source.
+        // The row values, per source [M 0x1984b0:38-84].
         let mut rows = self.table[idx].rows;
-        if self.table[idx].new_scores != 0 {
+        if self.table[idx].new_scores == 0 {
             let ns = self.new_scores.as_ref()?;
             // [value, count, target] per row; row 7's value is ×100 (1/100 s).
             for (r, n) in rows.iter_mut().zip(ns.iter()) {
@@ -448,27 +456,38 @@ impl Progress {
             base += r.raw;
         }
         self.table[idx].rows = rows;
-        // The difficulty multiplier [M 0x1984b0:294-300].
+        // The difficulty multiplier [M 0x1984b0:294-300] — written to the entry before the commit
+        // guard, like the game's puVar7[9]/[10]/[0xb] stores [M :292-300].
         let dif_idx = match difficulty { 1 => 0, 2 => 1, _ => 2 };
         let fmult = SCORING_DIF_MUL[dif_idx];
-        self.table[idx].dif = fmult as u32;
         let base_u = base as u32;
         let bonus_u = (base * fmult) as u32;
         let total = base_u + bonus_u;
+        let mut done_better = false;
+        {
+            let e = &mut self.table[idx];
+            e.dif = fmult as u32;
+            e.base = base_u;
+            e.bonus = bonus_u;
+            // The commit [M 0x1984b0:301-315 — the param_1 == 0 block]: DoneBetter = best ≤ total
+            // (best BEFORE the update, and only when total != 0 [M :303-307]); then last = total
+            // and best = max(best, last) [M :309-315]. A read (commit == false) touches neither.
+            if commit {
+                if total != 0 { done_better = e.best <= total; }
+                e.last = total;
+                e.best = e.best.max(total);
+            }
+        }
+        // Step 6 [M 0x1984b0:316-333]: scores only stick on the results path (Mission_Status 6) —
+        // everything from step 3 except entry.best is zeroed otherwise, and DoneBetter clears.
         let e = &mut self.table[idx];
-        e.base = base_u;
-        e.bonus = bonus_u;
-        let done_better = commit && total >= e.best;
-        e.last = total;
-        e.best = e.best.max(total);
-        // Step 6 [M 0x1984b0]: scores only stick on the results path (Mission_Status 6) —
-        // everything from step 3 except entry.best is zeroed otherwise.
         if ms != 6 {
             for r in e.rows.iter_mut() { r.value = 0; r.ratio = 0.0; r.raw = 0.0; }
             e.base = 0;
             e.bonus = 0;
             e.last = 0;
             e.dif = 0;
+            done_better = false;
         }
         let th = SCORING_TABLE[idx].thresholds;
         let medal = if e.last >= th[3] { 4 } else if e.last >= th[2] { 3 }
@@ -503,13 +522,21 @@ impl Progress {
         self.bonus[slot] & (1u64 << bit) != 0
     }
 
-    /// `Menu_SetLevelBonus` 0x1ffa10: award `medal` (1 bronze .. 4 platinum, 5 none) for `hash` in
-    /// `bonus[slot]` — set every counter's bit ≤ medal, stamp the level completed in `sp_level`
+    /// `Menu_SetLevelBonus` 0x1ffa10: award `medal` (1 bronze .. 4 platinum, 5 none) for `hash` —
+    /// the medal loop runs only for counters 1..4 (the `param_2 < 5 && 0 < param_2` guard [M
+    /// :70], so a no-medal run awards nothing), each counter sets only when its bit was clear and
+    /// raises `new_reward` when it does [M :72-79]; it stamps the level completed in `sp_level`
     /// (+0x10 = 1) AND the next level's (+0x10 = 1); finishing 0x0700001B instead sets the game
-    /// complete [M 0x1ffa10:70-82].
+    /// complete [M :62-68].
     pub fn set_level_bonus(&mut self, hash: u32, medal: u32, slot: usize) {
-        for counter in 1..=medal.min(4) {
-            self.process_reward_counter(hash, counter, slot, true);
+        self.new_reward = false; // [M 0x1ffa10:56]
+        if (1..5).contains(&medal) {
+            for counter in (1..=medal).rev() {
+                if !self.process_reward_counter(hash, counter, slot, false) {
+                    self.process_reward_counter(hash, counter, slot, true);
+                    self.new_reward = true; // [M 0x1ffa10:76-79]
+                }
+            }
         }
         if let Some(i) = SP_LEVEL_HASHES.iter().position(|&h| h == hash) {
             self.nightfire_status |= 1 << i;
@@ -704,51 +731,63 @@ mod tests {
         assert_eq!(q.decode_save(&file[..40]), Err("crc mismatch"));
     }
 
-    /// GetScore's arithmetic on 07000005 (the 0x09-row path runs the same code; this entry is a
-    /// 0x07 map so the NULL NewScoresRef aborts — assert that, then drive the formula through a
-    /// 0x09 entry where the row source is PlrMissionStats).
+    /// GetScore's arithmetic on 07000005 (a 0x07 map — the rows come from PlrMissionStats
+    /// [M 0x1984b0:66-84]), then the same formula through a 0x09 entry's NewScoresRef copy
+    /// [M :44-64].
     #[test]
     fn get_score_arithmetic() {
-        // The 0x07 map with new_scores: None aborts — the faithful NULL NewScoresRef [M 0x1984b0].
-        let mut p = Progress::default();
-        assert!(p.get_score(0x0700_0005, 6, 2, true).is_none());
-        // The 0x09 path: entry 2 (0x09000005), rows [(5,100000),(1,75000),(0,0),(0,0),(0,0),
-        // (100,50000),(92,50000),(250,50000),(3,100000)].
+        // The 0x07 path: the mission tally rows [M 0x1984b0:66-84].
         let mut p = Progress::default();
         let s = p.stats_mut();
-        s.bond_moments = 4;          // row 0: 4/5
-        s.dispatched = 1;            // row 1: 1/1
+        s.bond_moments = 2;          // row 0: 2/2
+        s.dispatched = 30;           // row 1: 30/30
         s.shots_fired = 10;
         s.shots_hit_enemy = 8;       // row 5: 80/100
-        s.health = 46.0;             // row 6: 46/92
-        s.elapsed = 25_000;          // row 7: 250.00 s == the 250 s par → full target
-        s.bonus_pickups = 3;         // row 8: 3/3
-        let sc = p.get_score(0x0900_0005, 6, 1, true).expect("the 0x09 entry scores");
-        // Row raws: 100000·4/5 = 80000; 75000·1/1 = 75000; 50000·80/100 = 40000;
-        // 50000·46/92 = 25000; time: t = 250.0, count 250 not < t → 50000; bonus 100000.
-        // Σ = 80000+75000+40000+25000+50000+100000 = 370000.
-        assert_eq!(sc.base, 370_000, "Σ raw");
+        s.health = 46.0;             // row 6: 46/100
+        s.elapsed = 54_000;          // row 7: 540.00 s == the 540 s par → full target
+        s.bonus_pickups = 7;         // row 8: 7/7
+        let sc = p.get_score(0x0700_0005, 6, 1, true).expect("the 0x07 entry scores");
+        // Row raws: 50000·2/2 = 50000; 50000·30/30 = 50000; accuracy 50000·80/100 = 40000;
+        // health 50000·46/100 = 23000; time full 25000; bonus 150000.
+        // Σ = 50000+50000+40000+23000+25000+150000 = 338000.
+        assert_eq!(sc.base, 338_000, "Σ raw");
         // Difficulty 1 → multiplier 0.0 → bonus 0, last = base.
         assert_eq!(sc.bonus, 0);
-        assert_eq!(sc.last, 370_000);
-        assert!(sc.done_better, "370000 ≥ the fresh best 0");
-        assert_eq!(sc.best, 370_000);
-        // Medal vs [50000, 125000, 200000, 1000000]: 370000 ≥ 200000 → gold 3.
+        assert_eq!(sc.last, 338_000);
+        assert!(sc.done_better, "338000 ≥ the fresh best 0 [M 0x1984b0:303-307]");
+        assert_eq!(sc.best, 338_000);
+        // Medal vs [50000, 125000, 200000, 1000000]: 338000 ≥ 200000 → gold 3.
         assert_eq!(sc.medal, 3);
+        // Sister: a read (the game's param_1 != 0 — the pause screen) leaves last/best alone.
+        let before = (p.table[1].last, p.table[1].best);
+        let sc_r = p.get_score(0x0700_0005, 6, 1, false).unwrap();
+        assert_eq!(sc_r.last, before.0, "the read reports the entry's last");
+        assert_eq!((p.table[1].last, p.table[1].best), before, "a read commits nothing [M 0x1984b0:301]");
         // Sister: the same tally at difficulty 3 doubles (multiplier 2.0).
         let mut p2 = Progress::default();
         std::mem::swap(p2.stats_mut(), p.stats_mut());
-        let sc2 = p2.get_score(0x0900_0005, 6, 3, true).unwrap();
-        assert_eq!(sc2.base, 370_000);
-        assert_eq!(sc2.bonus, 740_000, "bonus = base × 2.0 [M 0x1984b0 step 4]");
-        assert_eq!(sc2.last, 1_110_000, "last = base + bonus");
+        let sc2 = p2.get_score(0x0700_0005, 6, 3, true).unwrap();
+        assert_eq!(sc2.base, 338_000);
+        assert_eq!(sc2.bonus, 676_000, "bonus = base × 2.0 [M 0x1984b0 step 4]");
+        assert_eq!(sc2.last, 1_014_000, "last = base + bonus");
         // Sister: status != 6 zeroes the stickable fields but keeps best (step 6 zeroes everything
-        // from step 3 EXCEPT entry.best [M 0x1984b0]). A fresh tally still earns the time row's
-        // full target (elapsed 0 ≤ the 250 s par → 50000), so best = max(0, 50000).
+        // from step 3 EXCEPT entry.best [M 0x1984b0:316-333]). A fresh tally still earns the time
+        // row's full target (elapsed 0 ≤ the 540 s par → 25000), so best = max(0, 25000).
         let mut p3 = Progress::default();
-        let sc3 = p3.get_score(0x0900_0005, 1, 1, true).unwrap();
+        let sc3 = p3.get_score(0x0700_0005, 1, 1, true).unwrap();
         assert_eq!(sc3.last, 0, "not the results path — last zeroed");
-        assert_eq!(p3.table[2].best, 50_000, "best kept");
+        assert_eq!(p3.table[1].best, 25_000, "best kept");
+        assert!(!sc3.done_better, "DoneBetter clears off the results path [M 0x1984b0:332]");
+        // The 0x09 path: NewScoresRef's [value, count, target] rows, row 7's value ×100
+        // [M 0x1984b0:50-56] — the PTP stand-in supplies the driving tallies.
+        let mut p4 = Progress::default();
+        p4.new_scores = Some([
+            [2, 5, 100_000], [1, 1, 75_000], [0, 0, 0], [0, 0, 0], [0, 0, 0],
+            [80, 100, 50_000], [46, 92, 50_000], [250, 250, 50_000], [3, 3, 100_000],
+        ]);
+        let sc4 = p4.get_score(0x0900_0005, 6, 1, true).expect("the 0x09 entry scores from NewScoresRef");
+        assert_eq!(sc4.base, 330_000, "40000+75000+40000+25000+50000+100000");
+        assert_eq!(sc4.last, 330_000);
     }
 
     /// The medal bits: 07000005's bronze is bit 26 [L bonus[0] = 0x4004000000], the gold group of
@@ -796,5 +835,41 @@ mod tests {
         p.reset_for_mission();
         assert_eq!(*p.stats(), PlrMissionStats::default());
         assert_eq!(p.bond_moments, [0; 10]);
+    }
+
+    /// GetScore's row source [M 0x1984b0:38-84]: the hash's top byte picks it — the 0x07 maps
+    /// (`+0x38` = 1) build the rows from `PlrMissionStats`; the 0x09 maps (`+0x38` = 0) copy
+    /// `NewScoresRef` and ABORT when it is NULL. The port had the branch inverted, so every
+    /// on-foot mission aborted and the results page could build no fields.
+    #[test]
+    fn the_on_foot_mission_rows_come_from_the_mission_stats() {
+        let mut p = Progress::default();
+        let s = p.stats_mut();
+        s.dispatched = 30; // row 1: 30/30 → the full 50000
+        s.elapsed = 54_000; // row 7: 540.00 s == the 540 s par → the full 25000
+        let sc = p.get_score(0x0700_0005, 6, 2, true).expect("the 0x07 map scores from PlrMissionStats");
+        assert_eq!(sc.base, 75_000, "dispatched 50000 + time 25000");
+        assert_eq!(sc.last, 150_000, "difficulty 2 → ×1.0 → last = base + bonus");
+        assert_eq!(sc.medal, 2, "150000 ≥ the silver 125000, < the gold 200000");
+        // Sister: the 0x09 maps keep the NewScoresRef row source — NULL aborts [M 0x1984b0:44-48].
+        assert!(p.get_score(0x0900_0005, 6, 2, true).is_none());
+    }
+
+    /// Menu_SetLevelBonus 0x1ffa10's medal loop runs only for counters 1..4 — a no-medal run
+    /// (P_NFRESULTS's uVar11 = 5 [M 0x208e78:106]) awards NO medal bits (the `param_2 < 5` guard
+    /// [M 0x1ffa10:70]) but still stamps the level complete + the next unlock [M :62-66].
+    #[test]
+    fn set_level_bonus_medal_none_awards_no_bits() {
+        let mut p = Progress::default();
+        p.set_level_bonus(0x0700_0005, 5, 0);
+        for k in 1..=4 {
+            assert!(!p.has_medal(0x0700_0005, k, 0), "medal 5 awards no counter {k}");
+        }
+        assert_eq!(p.nightfire_status() & 0b110, 0b110, "07000005 complete + 09000005 unlocked");
+        // Sister: a real medal stamps every counter ≤ the medal.
+        let mut p2 = Progress::default();
+        p2.set_level_bonus(0x0700_0005, 2, 0);
+        assert!(p2.has_medal(0x0700_0005, 1, 0) && p2.has_medal(0x0700_0005, 2, 0));
+        assert!(!p2.has_medal(0x0700_0005, 3, 0), "the gold counter is above the silver medal");
     }
 }

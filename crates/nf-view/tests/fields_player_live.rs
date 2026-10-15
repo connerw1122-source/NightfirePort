@@ -68,7 +68,8 @@ fn bullet_damage_still_absorbs_into_armour() {
     let mut h = sim.drones.health;
     h.health = 100.0; // normalize: the test targets the armour arithmetic, not the loadout
     h.armour = 10.0; // below the effective 18 so the remainder reaches health
-    h.pain(30.0, 1, 0x0700_0005); // type 0: armour absorbs
+    let mut rng = sim.drones.rng.clone();
+    h.pain(&mut rng, 30.0, 1, 0x0700_0005); // type 0: armour absorbs
     assert!((h.armour - 0.0).abs() < 1e-4, "30 -> 18 effective, the 10 armour empties");
     assert!((h.health - 92.0).abs() < 1e-4, "the remainder 8 reaches health");
 }

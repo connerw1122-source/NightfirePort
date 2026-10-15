@@ -1347,6 +1347,18 @@ impl App {
         fe.flow.stack = vec![menu::ST_RUNNER];
         fe.flow.current_level = self.level_code;
         fe.mission_ended(if complete { menu::Outcome::Complete } else { menu::Outcome::Failed }, menu::Stats::default());
+        // The completed page's enter runs against the live progress layer [M P_NFRESULTS 0x208e78
+        // :77 GetScore(0) + :169 Menu_SetLevelBonus] — the fields the overlay draws
+        // (front-end-chain). GameState+0x72 is BaseMap [M 0x182c60:68-70's clamp].
+        if complete {
+            let lang = self.lang.as_ref();
+            if let Some(sim) = self.scene.sim.as_mut() {
+                let b = sim.drones.mission.base_map;
+                let base = if b == u32::MAX || b == 0 { self.level_code } else { b };
+                let diff = sim.drones.progress.difficulty;
+                fe.results_enter(&mut sim.drones.progress, base, 6, diff, lang);
+            }
+        }
         self.fe = Some(fe);
         self.grab(false);
     }
