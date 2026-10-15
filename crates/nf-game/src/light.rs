@@ -480,7 +480,7 @@ mod tests {
         assert_eq!(li.flicker_mask, 0x18);
         assert_eq!(li.channel, 9);
         assert_eq!(li.rgb, [0xff, 0x80, 0x40]);
-        let before = Rng { x: rng.x, y: rng.y };
+        let before = Rng { x: rng.x, y: rng.y, ..Default::default() };
         let mut rng2 = Rng::new(7);
         l.create_full(6.0, 1.0, [1.0, 2.0, 3.0], [0xff, 0x80, 0x40], 9, -1, 0, 60, 200, 0x18, &mut rng2);
         let _ = before;
