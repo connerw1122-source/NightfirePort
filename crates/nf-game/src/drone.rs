@@ -848,6 +848,15 @@ pub struct Drone {
     pub in_air: bool,
     /// `anim+0x60 & 8`: feet on a walkable surface this tick (`Drone_FeetOnPoint`).
     pub on_surface: bool,
+    /// `Drone+0xA0`: the ANIMATED hip height — `DroneAnim_PreTransCallback` 0x13b490:58-67 rewrites it
+    /// every anim resolve as `clamp(animObj+0x5C − 0.02, 0.2)` (+0x5C = the resolve's consumed root
+    /// height, 0x1c35f8:374-378; DefaultInit 0x14b300:48 starts it at 1.0). The floor snap, the
+    /// down-ray length and the on-surface test all read it (`Drone_FeetOnPoint` 0x140660), so a
+    /// sitting anim (the 06 driver's start script: the face track's zero consumed root → the 0.2
+    /// clamp [L 05-truck.trace: his y settles to the crate top + 0.2]) sits ON its seat instead of
+    /// floating a standing hip above it. The port's draw (`draw_y`) keeps mapping the POSE root, which
+    /// already equals this for single-window anims; only the collision anchor was hard 1.0.
+    pub hip_anim: f32,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
     /// `Drone+0x4F8 & 0x1000000`: knocked out (`KnockedOut_Anim` ENTER [M 0x172ab0-c4]). Makes
@@ -943,6 +952,7 @@ impl Drone {
             // fix-progress tally outboxes (fields on their own lines — merge lesson 4):
             surrender_logged: false,
             hit_log: 0,
+            hip_anim: 1.0,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
             switch_channel: param(3) as u8, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
@@ -1766,6 +1776,11 @@ impl Drone {
                 self.move_by(d, step);
             }
         }
+        // fix-driver-air: the anim-root hip tracking is NOT ported — the game's per-anim hip needs the
+        // resolve's +0x60 addend (0x1c35f8:376) which the traces contradict between the guard anims
+        // (the y tracks the root exactly: state 1 → 3 = 39.003 → 39.155 [L 05-truck.trace]) and the
+        // sit/cower clamps (39.2 / 39.196 [L both traces]) — the live checks own it. The port's hip
+        // stays at its state-set value (1.0; the sit's 0.2 below).
         self.root_prev = root;
     }
 
@@ -2871,10 +2886,14 @@ impl Drone {
 
     /// `Drone_CollisionHandler` (0x140968): the per-tick collision + gravity driver. Clears the in-air flag, runs the
     /// down-ray (`feet_on_point`), and when off the surface accumulates `WldGravity · REC_FRAME_RATE` into `velocity`
-    /// and steps `pos += velocity · REC_FRAME_RATE`. On the surface the velocity is zeroed and `pos.y` snaps to
-    /// `floor + hip` (the port's ground convention: `pos.y = floor + 1.0`, feet at `pos.y − 0.6`). The `free_root` path
-    /// (SpecialDeath) bypasses this; `bounded = false` (the AI-boundary push-out flag) also skips it. [M] constants:
-    /// WldGravity (0,−9.8,0), REC_FRAME_RATE 1/60, hip+0.6 ray, 0.2 on-surface.
+    /// and steps `pos += velocity · REC_FRAME_RATE`. On the surface the velocity is zeroed and `pos.y` runs the game's
+    /// SOFT settle [M 0x140968 tail: `if (anim+0x60 & 8) { velocity = 0; if (−0.1 < correction) obj.y −= correction ×
+    /// 0.125 }` — the correction is `Drone_FeetOnPoint` 0x140660's out param `pos.y − hip − hit.y`], converging to
+    /// `floor + hip` — the trace's own shape (the 06 driver 39.305 → 39.2 over ~8 ticks [L 05-truck.trace]). A
+    /// correction ≤ −0.1 (the feet sunk > 0.1 below the floor) takes the old snap fallback — the game's deep-correction
+    /// path is unread, and without it a tunnelling start would sink. The `free_root` path (SpecialDeath) bypasses this;
+    /// `bounded = false` (the AI-boundary push-out flag) also skips it. [M] constants: WldGravity (0,−9.8,0),
+    /// REC_FRAME_RATE 1/60, hip+0.6 ray, 0.2 on-surface, 0.125 settle rate.
     pub fn collision_handler(&mut self, world: &CollisionWorld) {
         if self.free_root || self.corpse || !self.bounded { return; }
         // `+0x4F8 & 0x4000` cleared at the top.
@@ -2884,9 +2903,14 @@ impl Drone {
         let on_surface = self.feet_on_point(world);
         self.on_surface = on_surface.is_some();
         if let Some(floor) = on_surface {
-            // Snap the feet to the floor and zero the velocity (the game sets `anim+0x60 & 8`).
-            self.pos[1] = floor + self.hip();
+            // Zero the velocity (the game sets `anim+0x60 & 8`), then the soft settle toward `floor + hip`.
             self.velocity = [0.0; 3];
+            let correction = self.pos[1] - self.hip() - floor;
+            if correction > -0.1 {
+                self.pos[1] -= correction * 0.125;
+            } else {
+                self.pos[1] = floor + self.hip();
+            }
         } else {
             self.in_air = true;
             // `velocity += WldGravity · REC_FRAME_RATE` (gravity per tick²).
@@ -2900,9 +2924,11 @@ impl Drone {
         self.pos[2] += self.velocity[2] * r;
     }
 
-    /// `Drone+0xA0`: the hip height (the offset from `pos` to the feet). Default 1.0; the port's ground convention is
-    /// `pos.y = floor + hip` and `feet() = pos − 0.6` (the 0.6 is the port's own feet offset, not the game's).
-    fn hip(&self) -> f32 { 1.0 }
+    /// `Drone+0xA0`: the hip height — the ANIMATED value (`hip_anim`, `DroneAnim_PreTransCallback`
+    /// 0x13b490:58-67), not a hard 1.0: `Drone_FeetOnPoint` 0x140660 reads +0xA0 for both the down-ray
+    /// length (+0xA0 + 0.6) and the feet (`pos.y − +0xA0`), and the sitting driver's is the 0.2 clamp
+    /// [L 05-truck.trace]. DefaultInit 0x14b300:48 starts it at 1.0.
+    fn hip(&self) -> f32 { self.hip_anim }
 
     /// `NDrone2_SetAngleToCover`: low node or as-low cover → the opponent; side 1 → node yaw − π/2; side 2 → node yaw.
     fn set_angle_to_cover(&mut self, d: &Data) {
@@ -3901,6 +3927,15 @@ impl Drone {
                 if self.start_script != 0 {
                     let script = self.start_script;
                     self.start_script = 0;
+                    // fix-driver-air: the sitting hip — the game's driver y settles to the crate top
+                    // (Object_Crates_Seat hi y 38.9987) + 0.2 through the whole 880-frame sit script
+                    // [L 05-truck.trace 07000006: 39.305 → 39.19 → 39.2, the ×0.125 settle shape],
+                    // i.e. the PreTransCallback clamp floor (0x13b490:64-66) — the sit's consumed
+                    // root lands ≤ 0.22 there (the +0x60 addend unread, the report's residual). The
+                    // port's floor snap + down-ray read this hip (0x140660), so the sit sits ON the
+                    // crate seat instead of floating a standing hip above it — the playtest's
+                    // "he's sitting in the air".
+                    self.hip_anim = 0.2;
                     self.play_script(d, script, 0x24, 0x11a, 0, msg::ANIM_DONE);
                     return true;
                 }
@@ -3912,13 +3947,13 @@ impl Drone {
             // node cursor — the port models no per-node path walk, and the game's driver is never shown
             // leaving on a mission path in the traces) → 0x34; only a running mission path would take
             // 0x35. The driver steps into TruckDriverIdle ("hands behind back", the user's C1).
-            (TRUCK_DRIVER_INIT, msg::ANIM_DONE) => { self.set_state(TRUCK_DRIVER_IDLE); true }
+            (TRUCK_DRIVER_INIT, msg::ANIM_DONE) => { self.hip_anim = 1.0; self.set_state(TRUCK_DRIVER_IDLE); true }
             // fix-06-driver: the game's arm is msgs 0x11/0x12/0x13/0x16/0x1e → 0x33 [M 0x160bd0:97-105] —
             // msg 0x14 (SOUND, DroneFunc_HandleSoundAlerts' dispatch) has NO arm (default → unhandled):
             // the driver never reacts to heard gunfire. The port's SOUND half sent him into the guard
             // heard-noise chain (0xa2-0xa5) whose ATTACK arm drew him a weapon (+0x66 → weapon 6, anim set 4)
             // — the playtest's "shoot the driver, he flies back like a guard with the guard death sound".
-            (TRUCK_DRIVER_INIT, msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
+            (TRUCK_DRIVER_INIT, msg::ALARM) => { self.hip_anim = 1.0; self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
             (TRUCK_DRIVER_INIT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, TRUCK_DRIVER_INIT_ALERT, false), // HandleImpact(0x33, 0)
             // TruckDriverInitAlert (0x160d98): anim done → CivilianScared (0x12); bullets/noise HandleImpact(0, …).
             (TRUCK_DRIVER_INIT_ALERT, msg::ANIM_DONE) => { self.set_state(CIVILIAN_SCARED); true }
@@ -8473,6 +8508,7 @@ mod tests {
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0,
             grenade_weapon: 0x35, grenade_count: 0, pending_grenade: false, shots: Vec::new(),
             surrender_logged: false, hit_log: 0,
+            hip_anim: 1.0,
             log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, start_script: 0, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
             damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
@@ -8522,13 +8558,17 @@ mod tests {
     #[test]
     fn drone_stands_on_the_floor() {
         // A drone whose feet (pos.y − hip 1.0) are 0.1 above the floor at y=0 is on the surface: the down-ray hits
-        // within 0.2 below the feet, velocity zeroes and pos snaps to floor + hip = 1.0.
+        // within 0.2 below the feet, velocity zeroes, and pos runs the game's SOFT settle (`Drone_CollisionHandler`
+        // 0x140968 tail: obj.y −= correction × 0.125 per tick, the correction = pos.y − hip − floor [M 0x140660]) —
+        // converging to floor + hip = 1.0.
         let w = floor_world();
         let mut dr = drone_at([0.0, 1.1, 0.0]);
         dr.collision_handler(&w);
-        assert!((dr.pos[1] - 1.0).abs() < 1e-5, "snaps to floor+hip: {}", dr.pos[1]);
+        assert!((dr.pos[1] - 1.0875).abs() < 1e-6, "one tick settles by correction × 0.125: {}", dr.pos[1]);
         assert!(dr.on_surface && !dr.in_air);
         assert!(dr.velocity[1].abs() < 1e-9);
+        for _ in 0..64 { dr.collision_handler(&w); }
+        assert!((dr.pos[1] - 1.0).abs() < 1e-3, "converges to floor+hip: {}", dr.pos[1]);
     }
 
     #[test]
