@@ -105,6 +105,13 @@ The escort walk passing 2/2 under exact motion needs a decision that needs live 
 - `crates/nf-view/src/lib.rs` — +1 line in `load()` calling it.
 - `crates/nf-view/tests/fix_08_walls_live.rs` — the wire-icon expectation (this task's fix).
 
-## ntfy
+## ntfy failed
 
-(see the WORKLOG final entry; sent after this report is pushed)
+All three fallbacks hit the ntfy daily-message quota (the same 429 already recorded by exact-sine-sites-3
+and 110z), 15:58–15:59 UTC 2026-10-15:
+
+- `curl -sS -m 20 -H "Title: NightfirePort" -d "exact-sine-sites-merge: …" https://ntfy.sh/nightfire-yoda-8k3x`
+  → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- `python3 -c "…urlopen…"` → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- `wget -O- --post-data …` → `HTTP request sent, awaiting response... 429 Too Many Requests` / `ERROR 429: Too Many Requests`
+  (the earlier silent `wget -q` "exit 0" was the pipe's tail status, not wget's — re-run verbosely to confirm).
