@@ -6064,7 +6064,10 @@ impl Scene {
         };
         let mut p = vec![FAR; l.n_mats as usize];
         for (ci, c) in self.characters.iter().enumerate() {
-            let base = l.char_base[ci] as usize;
+            // A character added after the layout was built (the dev spawn) has no palette slots
+            // until the renderer is rebuilt.
+            let Some(&base) = l.char_base.get(ci) else { break };
+            let base = base as usize;
             let nb = c.skeleton.bones as usize;
             if fs.hidden[ci] { for k in 0..=nb { p[base + k] = collapse(&c.matrix); } continue; }
             let cpos = fs.posed[ci].as_ref().map_or(c.matrix[3], |(_, _, m)| m[3]);

@@ -1655,6 +1655,14 @@ impl App {
             // `Camera_CheckLocation` re-finds it at Bond's position.
             if let Some(g) = self.gfx.as_mut() { g.renderer.viewer_cel = crate::scene::ViewerCel::default(); }
         }
+        // "spawn at crosshair" (`Dev::spawn_guard`) adds a Character; the renderer's skin layout was
+        // built for the old count and `skin_palette` indexed past it (a panic on the next frame — the
+        // main agent's playtest-check dry run). Rebuild the renderer like the weapon-asset reload does.
+        if let Some(g) = self.gfx.as_mut() {
+            if g.renderer.skin_layout.char_base.len() != self.scene.characters.len() {
+                g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
+            }
+        }
         if let Some(d) = self.dev.as_deref_mut() { d.result_msg = Some(msg); d.result_timer = 180; }
     }
 
