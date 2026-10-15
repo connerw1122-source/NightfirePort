@@ -101,6 +101,17 @@ the per-mission spawn model, and the per-frame AI step, ported beside 506's vehi
   raw AIEl chunk bytes vs the parsed 0x100-byte records (type at +0x44, the activate flag at +0x48,
   the link at +0x50, the model name at +0x54) [S expectation].
 
-## ntfy
+## ntfy failed
 
-(sending now — see the report tail if it failed)
+All three fallbacks ran, in order, and all hit the ntfy.sh daily-message quota (the same 429 the
+day's earlier tasks recorded):
+
+1. `curl -sS -m 20 -H "Title: NightfirePort" -d "drive-ai-traffic: …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your
+   limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 -c "…urlopen(Request('https://ntfy.sh/nightfire-yoda-8k3x', data=msg.encode('utf-8'),
+   headers={'Title':'NightfirePort'}), timeout=20)"`
+   → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget -q -O- --post-data "drive-ai-traffic: …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → silent (`-q`), exit code **8** (server issued an error response); a rerun with output visible
+   confirmed the same 429 body.
