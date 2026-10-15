@@ -3495,6 +3495,13 @@ impl Sim {
         // 0x80 flag (event 7) [M 0x1da880:41-43] — ported as `Drones::npc_enabled` (core-loop §7 items 1-2).
         // (The B-10 symptom was the opposite gating bug: freezing the whole tick stopped Trigger_Calc +
         // SP_Update, so PlayerEnable never arrived.)
+        // The reserved player shells eject from the view model's datum as posed NOW (`Bullet_init_casing_ex`
+        // 0x12f678:88-99 — datum 1, or 5 for the 0x40000 alternating records with `BL+0x958 == 0`).
+        self.drones.eject_bone_now = if self.drones.casings.list.iter().any(|c| c.pending && c.state == 3) {
+            let w: &[u8] = self.weapons.records.get(self.gun.weapon as usize).map(|r| &r[..]).unwrap_or(&[]);
+            let alt = w.get(0x68..0x6c).is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) & 0x40000 != 0) && self.gun.alt_fire_toggle == 0;
+            Some((self.view_datum_matrix(if alt { 5 } else { 1 }).unwrap_or_else(|| self.gun_matrix()), self.bond.pos[1]))
+        } else { None };
         self.drones.tick(&d, &player);
         // fix-script-objects: the script-created AI volumes (`Drone_AIVolume_Create` 0x1376c0 via
         // `Script_CreateEntity` 0x1d8968's 0xF5 arm) join the level's volume list the tick their
