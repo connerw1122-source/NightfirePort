@@ -97,3 +97,9 @@ four crates compiled.
    hitch, then the weapon draws (this path was deliberately not threaded).
 6. **Optional** — a load failure (bad archive) logs `level: failed to load …` and keeps the old
    scene rather than freezing; a worker panic logs `level: load of … panicked` the same way.
+
+## ntfy failed (quota)
+
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python3 urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit 0, no output (ambiguous — sent after the 429s, most likely also rejected; same pattern the codename-entry worker recorded).
