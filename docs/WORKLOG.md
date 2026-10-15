@@ -12006,14 +12006,6 @@ Work Log:
 - 22:56: the full suite started on the final tree (tools/test/suite.py); the report + the finish steps follow.
 
 ---
-<<<<<<< HEAD
-Task: fix-scope-zoom2
-Agent: worker (sandbox web-a8aa38dd)
-Task: the sniper mode-press test fails on the merge — fire_modes3_live::sniper_mode_press_resets_zoom_and_swaps_damage "the scope zoomed in (zoom 1)": after s/fix-scope-zoom the sniper's zoom stays 1.0 in the test's window. Decide from the game: the zoom model (aim-start sqrt(mag) slots, zoom keys, scoped gate) vs the test's expectation (fire_modes3_live.rs ~452, written for the old zoom); the aim bit sets at the raise's end — the zoom starts then. Branch s/fix-scope-zoom2 from s/fix-scope-zoom + origin/master.
-
-Work Log:
-- 23:53 UTC: sandbox kept from the previous task (repo + ISO + nf-queue present); work/ re-fetched (work-slim, py7zr — 7z missing). Branch s/fix-scope-zoom2 created from origin/s/fix-scope-zoom (2c4864b0), merging origin/master: 4 conflicts in scene.rs + 1 in WORKLOG.md.
-=======
 Task ID: 106a-fix-samurai-fire
 Agent: samurai-fire worker
 Task: fix-samurai-fire — the Phoenix Samurai (0x32/0x33, the laser rifle's Overcharge/Beam modes) draws, plays its fire script and sounds, but nothing spawns on 16 of 18 levels [weapon-matrix4 red #1]. Find the game's fire path (Player_WeaponFiring 0x1a5460, Player_WeaponInitBullet 0x1a4bf0, the charge for Overcharge, the beam for Beam, any target gate) and port what's missing: the charged bolt flies and hits walls (fix-fire-modes3 ported its impact blast), the beam draws. Tests at 07000005's spawn: Overcharge at a wall spawns the bolt + blast; Beam draws to the wall.
@@ -12041,4 +12033,11 @@ Work Log:
 - Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
->>>>>>> origin/master
+
+---
+Task: fix-scope-zoom2
+Agent: worker (sandbox web-a8aa38dd)
+Task: the sniper mode-press test fails on the merge — fire_modes3_live::sniper_mode_press_resets_zoom_and_swaps_damage "the scope zoomed in (zoom 1)": after s/fix-scope-zoom the sniper's zoom stays 1.0 in the test's window. Decide from the game: the zoom model (aim-start sqrt(mag) slots, zoom keys, scoped gate) vs the test's expectation (fire_modes3_live.rs ~452, written for the old zoom); the aim bit sets at the raise's end — the zoom starts then. Branch s/fix-scope-zoom2 from s/fix-scope-zoom + origin/master.
+
+Work Log:
+- 23:53 UTC: sandbox kept from the previous task (repo + ISO + nf-queue present); work/ re-fetched (work-slim, py7zr — 7z missing). Branch s/fix-scope-zoom2 created from origin/s/fix-scope-zoom (2c4864b0), merging origin/master: 4 conflicts in scene.rs + 1 in WORKLOG.md.
