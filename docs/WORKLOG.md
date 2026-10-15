@@ -13417,6 +13417,13 @@ Work Log (drive-crp-format):
 - Tests: mp_menu_flow.rs 9 headless (flow + back-outs + locks + bots + start checks + Quick Game +
   loader handover, each with a sister assertion) + mp_menu_lists_live.rs 5 ISO-gated (the five
   tables + the side bytes vs the disc's ACTION.ELF). 14/14 green; suite run on the final tree.
+
+## objective-hints (2026-10-15, branch s/objective-hints)
+- Started: the pause OBJECTIVES tab's ✕ Hint — porting from C_GCPAUSE_Handler 0x204408 (OBJECTIVES case) and the
+  objective records: which row is selected, what ✕ shows (message box? label ids, timing), whether hints are limited
+  or affect scoring (Mission Stats / 007 Bonus), and Back. State + getters on FrontEnd (pause_objectives already
+  lists the visible rows); host side passes the hint labels. No drawing.
+
 ## credits-data (2026-10-15, branch s/credits-data) — started 18:31 UTC
 Task: the credits roll's content and timing (no drawing). P_WINGAME_Handler 0x215100 (end of game) and AV Options → Credits play P_CREDITS_Handler 0x2152b0. Do: (1) docs/systems/credits.md — where the lines come from (label ranges in USATxt.dat or a table, cite the address), line kinds (heading/name/gap/image), fonts/colours/positions as the handler sets them, scroll speed/timing per frame in the game's 512×448 units, the end condition and return page, any music/movie; (2) port a credits model in crates/nf-view/src/menu.rs (or a new module): the ordered line list from the game's data, a tick() giving each visible line's y at a given frame, the exit, hooked to a Page::Credits (state + getters only); (3) tests: line count/order vs the data (numbers/ids only), scroll position after N frames vs the handler's rate, roll end + return page — each with a sister assertion that can fail. Not in scope: drawing.
 
@@ -13445,3 +13452,18 @@ Work Log (credits-data):
 - Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
   0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
   the PAL base note).
+
+## objective-hints (2026-10-15, branch s/objective-hints)
+- Ported the pause OBJECTIVES tab's data + ✕ flow (no drawing): `Mission::num_vis_objectives()`/`objective_state()`
+  = Mission_NumVisObjectives 0x182540 / Mission_ObjectiveState 0x182630 (LEVELS order, other missions skipped, the
+  part gate stops the walk, state > 1 = visible; text +0x00, hint +0x08), FrontEnd `pause_objectives`
+  (PauseObjective{text,hint,done} — the host now fills the WHOLE mission's rows, prior parts included),
+  `pause_objectives_sel` (the populate's msg 0x1d = numVis−1 last-row start, ~V-scroll), `pause_hint` (✕ opens the
+  modal ok-only option box with the selected row's hint, 0xffffffff → label 0x31d [M 0x205bd0-0x205bdc];
+  Confirm/Back pop it, other input idles; Back on the box does NOT unpause). Hints are free: the hint label has no
+  reader outside 0x182630, no PlrStat counter, the ✕ case writes no flag [M]. OBJ_STATE[1]'s constants are
+  stored-unread (checked the disasm of both call sites) — omitted.
+- Tests: nf-game objective_state.rs 5 headless (traversal, part gate, leak, states) + nf-view objective_hints_flow.rs
+  7 (last-row selection, per-row hints, the 0x31d fallback, modal, Back-vs-unpause, clamps, NF_ISO binds 0x202/0x31d/
+  0x266 from USATxt.dat), each with a sister assertion; menus_flow.rs updated to the new row struct. All green on the
+  merged tree (ce62cd7e). Doc: docs/systems/objective-hints.md; mission.md's "hint never drawn" + gap lines corrected.
