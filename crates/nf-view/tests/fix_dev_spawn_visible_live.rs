@@ -112,6 +112,14 @@ fn spawn_at_crosshair_guards_on_the_floor_in_front_and_fighting() {
     // POSED + IN THE PALETTE: the bound character has a pose and is not hidden; with a layout that
     // covers every character the palette carries the guard's object matrix, not the FAR collapse.
     assert!(!chars.is_empty(), "no character is bound to the spawned drone (char_drone) — the renderer has nothing to draw");
+    // The bound character's MESH must be in the renderer's vertex buffer: the character layer's
+    // vertices were uploaded at build time (the Character-layer draw groups → `Scene::char_verts`,
+    // the `v.character` tag). A Character pushed after the build (the old spawn_guard) has a
+    // palette but no vertices — the GPU draws nothing (fix-dev-spawn-visible's crosshair-row bug).
+    for &ci in &chars {
+        assert!(scene.char_verts.iter().any(|v| v.character as usize == ci),
+            "the bound character {ci} has no vertices in the renderer's buffer — nothing draws");
+    }
     {
         let fs = scene.frame_state(None, 0.0, ViewOpts::default());
         for &ci in &chars {
