@@ -13175,6 +13175,23 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   trailer / New Codename entry and the Multiplayer menus are not ported (611-613 queued for their data).
 - Renderer: the movie plane keeps the 4:3 picture centred with black bars (every menu movie and briefing was
   stretched a third too wide on 16:9).
+---
+Task ID: drive-ptp (checkpoint 1)
+Agent: drive-ptp worker
+Task: port the PTP handover block (Boot_GetPTPData 0x1c8198), the 12 PlrStats driving slots, and the ACTION↔DRIVING level-transition hook
+
+Work Log:
+- Measured Boot_GetPTPData 0x1c8198 (968 B) field-by-field: every PTP offset it writes (block at 0x31c090, size 0xa50)
+- Measured the return mirror Boot_LoadPTPData 0x1c8560: Mission_SetStatus from PTP+0x978 (0→6, 4→3, else→2), GameState+0x28 codes (0→0x40000036, 1/2/4→0x4000001c), resume = ResetMap_LevelToLoad(0x7000048) always
+- Measured DRIVING main 0x174bf0: PTP+0x960 valid gate, PTP+0x974 mission index drives the key switch (1=paris_mis01, 2=uw_mis11, 3=junglea_mis13a, 4=jungleb_mis13b, 5=snow1a_mis3, 6=snow2a_mis4, 7=junglec_mis13c, 8=snow2a_race, default=paris_map) [D strings at 0x374da8..]
+- Measured Mission_Update 0x182c60 case 6: the 8 on-foot→interlude pairs (0x7000004→0x7300004 … 0x700001b→0x730001b)
+- Measured ResetMap_LevelToLoad 0x1d3800: only 0x900000X ids push GameFlow state 9 (the launch); PTP+0x974 = GameState._8_4_ - 0x9000000 [M 0x1c8198]
+- Measured PlrStats_Get/SetDrivingData 0x199ac8/0x199b18: 12 entries, stride 0x3c, +0x00 record ptr, +0x18 id; values at record+8; table root PTR 0x2bc658 → table 0x2bbda0..0x2bc5c8 [L ee_start_05.bin: all rec+8 = 0]
+- Found psiGetDrivingData 0x120a88 / Boot_LoadPTPData 0x1c8560 (the return path) and psiLaunchDriving 0x120af0 (writes PTP+0x97c = 1 after the copy)
+
+Stage Summary:
+- Next: write crates/nf-game/src/ptp.rs + the nf-view hook + tests + driving.md update
+- Open ([S], live check listed): the interlude-code → drive-index link lives in the hub menu (sp_level table) — not read in this window; the port uses the task's own example (castle 0x07000004 → index 1, paris_mis01) and flags it [S]
 - (15:38-15:53) Final tree: merged origin/master a2958c03 (WORKLOG/GAPS both kept on the append conflicts); the
   fast runner on the affected binaries: ai_live/fix_ai_remainder_live/trig_live/fix_portonly_review_live/
   tuning_live/fire_modes3_live/fix_weapon_fire_modes_live/weapon_switch_live/fix_weapons_all_live/
@@ -13200,6 +13217,26 @@ Work Log (fix-scores-handoff):
 - (16:00-16:15) The port: `Progress::finish_level(base_map, difficulty)` (progress.rs) — the results-path formula at status 6, READ-mode (commit=false: a mid-mission part exit must not stamp best/last; the results page's results_enter commit stays the game's), producing `FinishedLevel` (the 9 scored rows + base/dif/bonus/last/medal + the PlrMissionStats snapshot) mirrored on `Progress::finished`. The additive tick-end hook in drone.rs: when the level-exit latch stands, produce for mission.base_map at Drones::difficulty. Unit tests: finish_level_handoff_no_kills_zero_rows (the task's sister — the zero rows, the read-mode no-commit, the idempotent re-run, the unknown-hash None) + finish_level_handoff_kill_run — 2/2 green with the existing 9 progress tests.
 - (16:15-16:25) The NF_ISO pin: crates/nf-view/tests/fix_scores_handoff_live.rs — the 07000005 truck-ride exit through the real input path (the gate_guard_truck helpers): the exit tick's hand-off equals the formula recomputed from the snapshot tally (rows 1/2/3/4/5/8 zero — the vanilla ride is the no-kill run; row 6 health/row 7 elapsed from the snapshot; base=Σ raw, bonus=base×dif, last=base+bonus, the medal chain), the entry's last/best untouched. FAIL-FIRST recorded: the hook disabled → the test dies at the missing rows (the port's NULL-path abort, exactly the task's symptom); restored → ok (16.3 s; base 100000 = the moments row 50000 + the time row 50000, medal 1 at difficulty 1). Checkpoint pushed @ 16:07 (code+test) — suite runner note: the background suite.py died on the sandbox's reaping (empty suite.out); foreground chunks instead.
 - (16:26-16:35) Merged origin/master 0bcd8077 (corona + find-corona-creator's docs; WORKLOG both kept) → 39924dab. Merged-tree verify: nf-game lib 177/177, fix_scores_handoff_live 1/1. Foreground suite chunks on the final tree (the bg runner is reaped by this sandbox): nf-game lib 177/177; nf-formats 77+11 with exactly the 3 allowed disc_golden fails; nf-audio green; nf-view lib 8/8; progress_remainder_live 4/4 + failfirst 3/3; level_reload_live + fix_progress_live 9/9; levels_sweep_live 3/3 (185 s — every level 600 ticks with the hook live); fix_scores_handoff_live 1/1. Report + finish steps next.
+
+---
+Task ID: drive-ptp
+Agent: drive-ptp worker
+Task: port the PTP handover block (Boot_GetPTPData 0x1c8198), the 12 PlrStats driving slots, and the ACTION↔DRIVING level-transition hook (nf-view)
+
+Work Log:
+- Measured the full handover chain: Boot_GetPTPData 0x1c8198 (every PTP offset it writes, block 0x31c090 size 0xa50), psiLaunchDriving 0x120af0 (copy to 0x100000, +0x97c = 1), DRIVING main 0x174bf0 (the +0x960 gate, the +0x974 index → key switch with the 8 [D] strings, the +0x984 status map 1→0/2→1/3,4→2, the exit tail: next index + next key + FUN_00300058(0x100000, flag)), FUN_00300058 0x300058 (the +0x4b4 gate, +0x97c = result, BASE.ELF), Boot_LoadPTPData 0x1c8560 (the return mirror: +0x978 → Mission_SetStatus 0→6/4→3/else→2, GameState+0x28 = 0x40000036/0x4000001c/0x40000043, resume = ResetMap_LevelToLoad(0x7000048) ALWAYS, PlrStats_SetDrivingData)
+- Measured ResetMap_LevelToLoad 0x1d3800 (only 0x900000X ids push GameFlow state 9 — PTP+0x974 = GameState._8_4_ − 0x9000000) and Mission_Update 0x182c60 case 6's 8 on-foot→interlude pairs
+- Measured PlrStats_Get/SetDrivingData 0x199ac8/0x199b18: 12 entries, stride 0x3c, +0x00 record ptr, +0x18 id, values at record+8; table 0x2bbda0..0x2bc5c8; boot state all-zero [L ee_start_05.bin]
+- Wrote crates/nf-game/src/ptp.rs: PtpBlock (every field both sides touch, offsets in the doc comments), DrivingStats, DriveResult/DriveReturn (the dev stand-in), interlude_drive_index [S], 9 unit tests
+- nf-view hook: the LevelEnd arm's interlude branch → pub Sim::ptp_handover (scene.rs); lib.rs applies the stashed DriveReturn to the reloaded session (the mission status + the 12 slots, Boot_LoadPTPData's mirror)
+- Drones: three additive fields (driving_stats/driving_result/driving_return), own lines per merge lesson 4
+- Tests: walk_07000004_ptp_live (4, NF_ISO, the real load+step_bond path) — the kill route now runs the banner into the handover (resume armed at 0x07000048 cold, result 1 → MissionState 6, key paris_mis01); the Fail sister; the slots' carry. Pre-fix the first two fail (the handover never ran) — the reproduce-first record
+- docs/atlas/driving.md: the §2 "Ported (drive-ptp)" status block + the header status
+- Suite on the final merged tree (a1cb5b36), foreground chunks: 886 passed / 3 failed / 26 ignored + 1 OOM crash — the 3 = the known no-GPU pylon set, the crash = fix_death_restart_live OOM (dmesg global_oom, 4 GB box, does not intersect the change)
+
+Stage Summary:
+- The ACTION↔DRIVING handover now runs end to end in the port: a mission-complete on an arc-ending level builds the PTP block, skips the drive with a dev-chosen result, and resumes ACTION at the front end with the status and stats carried
+- Open [S] with live checks in docs/reports/drive-ptp.md: the interlude→drive-index pairing (the hub menu's sp_level table, unread) and PTP+0x978's DRIVING-side writer
 - (16:40-17:00) driving-viv.md: the decompressor section (opcode table + the divergence note) + the size correction 6,825,216 → 6,826,240 with the [D] bytes. Report drafted. Suite started in chunks (this sandbox reaps even setsid-detached background jobs — canary verified): chunk 1 85 binaries green but the no-GPU pylon trio; chunk 2 core (nf_game/nf_formats/nf_audio/nf_view libs + driving_golden + disc_golden + facial_probe + pss_movies_live) 289 passed / 3 failed = the allowed slim-ISO disc_golden set; chunk 3 49 more, zero failures. ~196 integration/live binaries unreached (documented in the report; the change is additive to nf-formats only). driving_golden re-run with NF_DRIVING_REFPACK inside the window: 6/6.
 ## drive-refpack (2026-10-15, branch s/drive-refpack) — final
 - (17:25-17:30) Report docs/reports/drive-refpack.md (done/verified/left + live checks for the main agent), finish steps: push → finish.sh → ntfy. Disk pressure handled: target/debug (312M, unused) and the stale /home/z/nf-master checkout (720M) deleted; the 8 mission VIVs live in /home/z/driving-refpack/DRIVING (outside the repo, never committed).
@@ -13247,3 +13284,42 @@ Work Log (drive-crp-format):
 - (17:05-17:33) Research: found the .crp consumer chain [M]: boot chain FUN_00174198 0x174198 prints "Loading track file", FUN_0022f898 0x22f898 opens data\track\<key>.crp from the mission VIV, scans the decompressed root table for tag 0x44424e20 ("DBN ") and registers the DBN payload string as the track name. Format decoded [M+D]: after RefPack (or plain) every .crp starts "CARP" (0x43415250); 16-byte records {tag u32 BE 4-char, flags u32, count i32, dref i32}; root flags bit1 = dref relative, bits 5+ = pool size (records), count = directory size; resolve = flags&2 ? rec+dref : dref — VERIFIED IN DISASM (0x2d6940: lw 4/andi 2/beq/lw 12/addu — the C's "*0x10" is a decompiler artifact); window walk [0x2d5a10/0x2d5920]: [resolve(root) + (flags>>5)*16 .. +count*16); flags bit0 = short tag (low half = instance index, normalize |0x2020 — "ns  "); payload size = flags>>8 [M 0x1a9600 ELF loader: FUN_0029f7c8/0029f820(elf, size, ELFr, 1)]. Pool tags [M 0x2dc1b0]: "Arti" (articles, each scanned for a "Name" 0x4e616d65 record), "Shar"=Shared, "CDat"=Collision, "RNgp"=RoadNetwork, "Map " ; chunk tags: "DBN " (track name), "ELFd" (a real 32-bit LE MIPS ET_REL object — \x7fELF found at rec+dref), "ELFr" (relocs), "MapN", "Sect", "ns  " (instance-indexed). Census [D]: 89 .crp entries over the 23 archives (8 track: DBN+MapN+RNgp+CDat; ~30 car + ~10 weapon models: no DBN/MapN; MISC.VIV's 5 cars are plain PRAC, the rest RefPack). paris_mis01 ELFd = 0x3BE810 = 3,929,104 B. NF_DRIVING extracted (Nightfire-driving.7z 428,903,899 B → DRIVING/ at repo root). Next: crp.rs + goldens + doc.
 - (17:33-17:52) crp.rs written (CARP parser: parse/Record/pool/directory/find/find_instance/payload/track_name/article_name; 3 unit tests on a hand-built container). FALSE START corrected by disassembly: the C's "*0x10" in FUN_002d6940 looked like a decompiler artifact (my ad-hoc disassembler printed the SLL's rs field instead of sa) — the raw word 0x00021100 at 0x2d6954 is `sll $v0,$v0,4`, so table refs DO scale dref by 16 while the chunk consumers' inline payload resolution adds raw bytes; crp.rs models both (Record::table vs Record::data_addr). driving_golden.rs extended with crp_canonical (key/entry/dec/sha1/root_flags/pool/chunks/elf/name/elfd_sha1) + structure test (8 tracks with DBN+MapN+RNgp+CDat, 5 plain MISC cars, 89 ELF modules); golden/crp_golden.tsv generated over all 89 .crp entries (python generator cross-checks the Rust canonicalization byte-for-byte). All 8 driving_golden tests green with NF_DRIVING; nf-formats --lib 76/76. lib.rs: one-line `pub mod crp;`. docs/formats/crp.md written. Pushed 2a846296.
 - (17:53-18:18) Merged origin/master (29 new commits, ee1619d1; clean, WORKLOG both kept) → final tree 9ef63124. Suite runner needed the full audio env (reused from the old env.sh: PKG_CONFIG_PATH + RUSTFLAGS="-L native=/tmp/alsa/prefix/usr/lib/x86_64-linux-gnu" + LD_LIBRARY_PATH incl. the lavapipe VK ICD — without RUSTFLAGS the nf-audio test links fail `unable to find library -lasound`); suite restarted in the background on the final tree with NF_ISO + NF_DRIVING. Report drafted at docs/reports/drive-crp-format.md.
+
+## verify-ledger (s/verify-ledger, started 2026-10-15 ~17:10 UTC)
+- Task 600: extend the bit-exact call-verification machinery (045n) into a ledger: docs/verify/ledger.md
+  (one row per ported sim function: address, name, port fn, status), replay tests in diff_calls.rs style
+  for anything replayable without the emulator, gdbcall.py --spec recording requests for the rest, and a
+  test that fails if a row claims bit-exact without recording+replay behind it.
+- Plan: seed the ledger from the port map + atlas (hot paths first), wire existing recordings, write spec
+  requests for the missing ones, add the guard test, run the touched crates + full suite, push, report.
+- Done: docs/verify/ledger.md (474 rows: 3 verified + 17 hot paths with gdbcall specs + 454 appendix rows from
+  the port maps), the guard test ledger_claims_match_the_recordings + its sister in diff_calls.rs (status
+  grammar, recording/adapter backing, N >= claimed, no dupes), call-traces.md harness section now points at the
+  ledger. diff_calls 6/6 green on the merged tree. No gameplay code changes.
+## live-backlog (2026-10-15, branch s/live-backlog) — started 17:30 UTC
+- Docs-only task: one ledger of every open question that needs the real game, harvested from all 204 reports
+  carrying "Live checks" sections (docs/reports/*.md) plus the UNKNOWNS/GAPS rows needing live play.
+- docs/live/backlog.md: 814 rows (L-001..L-786 from the reports in four harvest blocks, L-801..L-835 from
+  UNKNOWNS U-xxx / GAPS G-xxx). Row anatomy: id | source | type (pcsx2/render/both) | level | Q | HOW
+  (level, --pos/--bond spot, tool, what to read) | EXP (expected answers + what each changes in the port) |
+  EV (for/against with citations) | ST (open/answered/obsolete/settled-in-report) | SETTLED (where recorded).
+- Answered rows marked from docs/live/2026-10-13-portal-ground-truth.md, 2026-10-13-weapon-modes-pcsx2.md,
+  2026-10-14-weapon-measurements-pcsx2.md, the merge log and WORKLOG (52 settled lines: portal ground truth,
+  weapon modes/measurements, the 05 gate-door icon 0xFF, menu captures, guard first shot, spawner p7, EE FPU
+  model, eye-cel 15, radar, armour ring, ...). 19 obsolete framings recorded (forced-objects theory, p7 arm
+  reading, mine "→0x39", Square-as-mode-button, sbs.ps1 crop artifact, ...).
+- Open rows ordered by value in "what to run next": 12 clusters, each one PCSX2 session segment (escort 01
+  cluster unblocking the held walkreal line; guard RNG/fire cluster; the 4a lift cluster; the 0c vent/hatch
+  cluster; portal leftovers; weapon-matrix W/D cells; the UNKNOWNS High AI rows; MP; front-end; weapon/UX
+  grab-bag; audio/lighting; long tail). A generated level/spot index at the end groups all 814 rows per level
+  so one session clears a column.
+- docs/live/README.md added with the new rule: new reports add their live checks to the backlog with an id,
+  not only in the report; answered rows get ST: answered + SETTLED: pointer.
+## playtest-spots (2026-10-15, branch s/playtest-spots)
+- Started: writing docs/playtest/spots.md (--bond spot + --give list per playtest feature, sourced from existing tests/evidence) and crates/nf-view/tests/playtest_spots_live.rs (headless check per spot: load level, place Bond, 60 ticks, grounded + object within reach with distance/LOS). In progress.
+## playtest-spots (2026-10-15, branch s/playtest-spots) — DONE
+- docs/playtest/spots.md: all 13 requested features covered (18 spots) — level, --bond x,y,z,yaw,pitch, --give, the object in reach with the game's own constant (laser 4.0 / Q-Claw bolt 50.0 / E 2.5 / Q-Worm shot 2.0), per-row sources. 02's "vent" documented as non-existent (bathhouse SS props #308/#309 [D kind-census]); the real crawl vent row is 05's wall-hug window #35.
+- crates/nf-view/tests/playtest_spots_live.rs: 18 headless NF_ISO tests, one per level; each spot placed via the window's --bond contract (Bond::new + raw pitch), 60 ticks, grounded (SS_SWIM in the pond; 07 skips grounded — the cut-scene freezes Bond airborne) + distance + clear eye ray where the game's path needs one, plus functional reach proofs through the real input path (16 door opens on E, 12 buttons ch 0x59 on E, 0a worm installs ch 0x48 on fire, 0c hinge #14 burns under the held beam, 06 alarm ch 55 rises, 07 scene ch 0x48). 18/18 green, re-run green on the final tree merged with origin/master (d76a4b73).
+- Findings: the fix-melee guard-2 stand (60.4,27.1,100.4) has no floor in the sim — the Scorpion row uses the [L] chase-trace stand (79.86,22.92,96.0; guard 19.3 out in view); the 0c upper-walkway spot is walled off from the vent (end wall z −110.02, opening 3.2 up) — the doc's hatch row uses the burn stance (6.0,12.94,−110.5, floor 11.84 [L]); the 0a cubicle blocker is Bond-body only (eye ray blocked t≈0.46, the shot installs clean; fire straight after spawning — a settled Bond slides ~1.1 off the desk-edge spot).
+- Suite: this sandbox kills detached processes between tool calls (3 attempts) and OOM'd/disk-filled at the suite's -j4 build (3 GB RAM; pruned 2.4 GB of stale target artifacts) — the suite ran in foreground chunks against the 555 s tool cap: 94 binaries through chunk 0 (93 ok, 1 FAILED = probe_pylon_render: wgpu finds no GPU in this sandbox — environment, not code), 25 more ok in chunk 1 (cut mid-run). ~220 long NF_ISO binaries didn't fit the window. No failure attributable to this task (two new files only; no shared file touched).
+- Report: docs/reports/playtest-spots.md. Live checks for the main agent listed there + in spots.md (Q-Claw draw on cold 05, 0a walk-in, 0c ascent, 14 approach, 02 bathhouse hatches, 06 siren).

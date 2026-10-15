@@ -2503,6 +2503,43 @@ impl Sim {
         self.first_person = !self.disabled;
     }
 
+    /// drive-ptp: the ACTION→DRIVING handover for a `0x0730xxxx` interlude — the port of
+    /// `GameFlow_Main` 0x1c98c8 case 9 (`Boot_GetPTPData` + `psiLaunchDriving`) with the drive
+    /// itself stood in by the dev choice (`driving_result`). Builds the PTP block from the Sim's
+    /// state, runs the DRIVING-side exit stand-in, and arms the resume: the level the return
+    /// names (`Boot_LoadPTPData` 0x1c8560's unconditional 0x07000048) as a COLD load, with the
+    /// return stashed for lib.rs to apply after the reload (the mission status + the 12 stats).
+    /// Pub so the headless tests drive the exact path the view's event drain runs.
+    pub fn ptp_handover(&mut self, next: u32) {
+        let index = nf_game::ptp::interlude_drive_index(next); // [S — see ptp.rs]
+        let map_id = 0x0900_0000 | index as u32; // GameState._8_4_ [M 0x1c8198:62]
+        let block = nf_game::ptp::PtpBlock::build(&nf_game::ptp::BuildInputs {
+            map_id,
+            game_state_40: self.drones.difficulty, // GameState+0x28 [M 0x1c7f88]
+            game_state_52: 0,                      // word 82 — not tracked [M-negative]
+            stats: self.drones.driving_stats,
+            result: self.drones.driving_result,
+        });
+        let ret = nf_game::ptp::drive_exit(
+            self.drones.driving_result,
+            block.drive_index as u8,
+            self.drones.driving_stats,
+        );
+        eprintln!(
+            "[ptp] drive handover: map {map_id:08x} index {} key '{}' → result {} (MissionState {}), resume {:08x}",
+            block.drive_index,
+            nf_game::ptp::key_for_index(block.drive_index as u8),
+            ret.result,
+            ret.mission_state(),
+            nf_game::ptp::RESUME_LEVEL,
+        );
+        self.drones.driving_return = Some(ret);
+        self.drones.level_exit = Some(nf_game::ptp::RESUME_LEVEL);
+        // The return is a fresh ACTION boot (BASE.ELF re-dispatch → GameFlow case 1 →
+        // Boot_LoadPTPData) — the port models it as a cold load [M 0x1c8560].
+        self.drones.level_exit_cold = true;
+    }
+
     /// The cut-scene camera, when a script runs one: position, yaw, pitch (from the matrix's +Z) and vertical field of
     /// view.
     pub fn script_camera(&self) -> Option<([f32; 3], f32, f32, f32)> {
@@ -3852,10 +3889,13 @@ impl Sim {
                 }
                 nf_game::mission::Event::PlayerDead => {} // the red fade is render-side; the menu arrives below
                 nf_game::mission::Event::LevelEnd { next } => {
-                    // `ResetMap_LevelToLoad(LevelToEndTo)` [M 0x182c60:73]. The 0x0730xxxx codes
-                    // are DRIVING.ELF levels the port cannot load — logged and skipped.
+                    // `ResetMap_LevelToLoad(LevelToEndTo)` [M 0x182c60:73]. The 0x0700xxxx codes
+                    // are the port's own levels; the 0x0730xxxx codes are the driving interludes
+                    // (the handover below).
                     if next & 0xffff_0000 == 0x0700_0000 {
                         self.drones.level_exit = Some(next);
+                    } else if nf_game::ptp::is_driving_interlude(next) {
+                        self.ptp_handover(next);
                     } else {
                         eprintln!("ission] complete → LevelToEndTo {next:08x} (driving level, not ported)");
                     }

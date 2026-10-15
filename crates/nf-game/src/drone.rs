@@ -5873,6 +5873,16 @@ pub struct Drones {
     /// mission-start force 1, `Menu_RunMiniMission` 0x1ffb90:22) [L ee_start_*.bin]. The difficulty
     /// page (180-fix-menus) writes it through `set_difficulty`.
     pub difficulty: u32,
+    /// drive-ptp: the 12 `PlrStats` driving slots the ACTION↔DRIVING handover carries
+    /// (`PlrStats_Get/SetDrivingData` 0x199ac8/0x199b18; PTP+0x154/+0x184). Boot state: every
+    /// record+8 = 0 [L ee_start_05.bin @ 0x2bbda0..].
+    pub driving_stats: crate::ptp::DrivingStats,
+    /// drive-ptp: the dev stand-in's chosen outcome for a skipped drive (the real DRIVING.ELF
+    /// decides on the track). Success matches the story flow [S].
+    pub driving_result: crate::ptp::DriveResult,
+    /// drive-ptp: the pending `Boot_LoadPTPData` return — set by the handover hook, consumed by
+    /// the viewer's level reload (the mission status + the stats carry, crates/nf-view/src/lib.rs).
+    pub driving_return: Option<crate::ptp::DriveReturn>,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -5986,6 +5996,10 @@ impl Drones {
             // fix-sg5-casings: the caller's view-model gun bone for the next shot's eject (own line).
             eject_gun: None,
             eject_bone_now: None,
+            // drive-ptp: the PTP handover state (fields on their own lines — merge lesson 4).
+            driving_stats: Default::default(),
+            driving_result: crate::ptp::DriveResult::Success,
+            driving_return: None,
     };
         drones
     }
