@@ -71,10 +71,25 @@ landed the weights (`AnimFacialBlend` 0x1be648) on the CPU skinning path only; t
 ## Verification
 
 - `facial_gpu_live` 3/3, `gpu_skin_live` 3/3, `facial2_live` 2/2, `facial3_live` 3/3,
-  `fix_cutscenes2_live` 5/5 on the merged tree (9d8918d4). Full suite totals: see the WORKLOG
-  entry (tools/test/suite.py on the final tree).
-- Failing-first: the pre-fix src run is quoted above (stash of `crates/nf-view/src`, the
-  pre-fix-API tests only — the full test file binds to the new APIs by design).
+  `fix_cutscenes2_live` 5/5, and the SkinAttr readers (`models_weapons_live` 2/2,
+  `fix_searchlight_remainder_live` 4/4, `fix_interp_ghosting_live` 2/2, `cutscene_models_live`
+  3/3, `cutscene_draw_live` 4/4) on the merged tree (9d8918d4). Full suite (tools/test/suite.py,
+  the final tree, this checkout): **TOTALS_PLACEHOLDER**.
+- Failing-first: the pre-fix src run is quoted above (a pre-fix checkout of `crates/nf-view/src`
+  with the pre-fix-API tests — the full test file binds to the new APIs by design).
+- **Independent audit (subagent, decompile-checked): PASS with three fixes landed.** It verified
+  SkinIt's morph loop against the WGSL (indexing units, bounds, the pre-blend order), the
+  concat/base order consistency, the Pod layout, and that the merge preserved the fix. Its
+  findings, all fixed: (1) a zero-size `mtg_buf` binding would fail bind-group creation on scenes
+  with no morph bearers — now floored at 16 bytes like the weight buffer; (2) the single-bone/
+  no-bone character fallback attrs carried mtb −1 while the CPU path morphs every morph-indexed
+  vertex — the fallbacks now keep the character's plumbing (latent divergence, not hit on
+  05/06/07); (3) the `gpu_skin_live` sister picked the first blended vertex, which could panic if
+  it were ever morph-bearing — now requires mtb −1. The audit also flagged that no recorded test
+  constructs a `Renderer` (no GPU here) — the wgpu-side plumbing (shader compile, bind group,
+  buffers) needs the main agent's render run to exercise; the render checkpoints below cover it.
+  The game's per-draw morph LOD gates and the weight sort/trim remain deliberately unported
+  (Left/open).
 
 ## Shared files touched
 
