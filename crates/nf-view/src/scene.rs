@@ -1715,8 +1715,11 @@ impl Sim {
                 // the raw radians steered at ~3% of the game's rate (the user: guided missiles "still
                 // don't work").
                 const K: f32 = 0.024_543_693;
-                let yaw_in = (input.turn / K).clamp(-1.0, 1.0);
-                let pitch_in = (input.look * std::f32::consts::FRAC_PI_2 / K).clamp(-1.0, 1.0);
+                // Signs: `steer_missile` SUBTRACTS (the game's raw-stick convention) while Bond's view ADDS the
+                // port's `turn`/`look` (player.rs: `yaw += turn`, `pitch += look`) — negate, so the mouse turns
+                // the rocket the way it turns Bond's view (the user: "the controls are reversed when flying").
+                let yaw_in = (-input.turn / K).clamp(-1.0, 1.0);
+                let pitch_in = (-input.look * std::f32::consts::FRAC_PI_2 / K).clamp(-1.0, 1.0);
                 nf_game::drone::steer_missile(&mut b.dir, yaw_in, pitch_in);
                 cam.pos = b.pos;
                 cam.dir = b.dir;
@@ -3858,6 +3861,11 @@ pub struct Attachment {
     /// the level archive resolves, the `hashtable_set_sub_object_to_entity_gfx` mesh); the slot
     /// draws only while the live effect carries THAT mesh — free slots collapse far below the world.
     pub effect: Option<(u8, usize, u32)>,
+    /// fix-silencer-visual follow-up: the silenced twins' +0x7C tube. `Player_WeaponFiring` 0x1a5460:96-110 clears
+    /// datum 0 while the view anim is in state 8 (the swap/holster) — the swap anim screws its own part-bone 43
+    /// piece on — so the tube hides during the swap (the user: "it looks like it's already on and you're screwing
+    /// it on tighter").
+    pub silencer: bool,
 }
 
 /// Viewer switches that change what the game state would be.
@@ -4602,10 +4610,10 @@ impl Scene {
             let character = characters.len() as u32 - 1;
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             let local = anim::quat_trans_to_mat(dt.q, dt.t);
-            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
             // The same gun as a pickup once the drone drops it.
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-            attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+            attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
             // Its muzzle flash: `DroneWeap_FireWeapon` asks `AnimGetBoneWorldTrans(obj, datum id, 1, …)`, which looks up
             // the datum whose id is id + 1 — the muzzle (07000005: 8 → 9 at x −0.77, 16 → 17 at x −1.18).
             if let Some((fmesh, rgb)) = wd.muzzle_flash(weapon as u8) {
@@ -4613,7 +4621,7 @@ impl Scene {
                 if let (Some(&(fmap, fobject)), Some(md)) = (level.by_hash.get(&fmesh), muzzle) {
                     let finst = Instance { map: fmap, object: fobject, ..winst };
                     add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                 }
             }
         }
@@ -4641,7 +4649,7 @@ impl Scene {
                     let Some(&(pmap, pobject)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
                     let pinst = Instance { map: pmap, object: pobject, matrix: ident, placement: placement.clone() };
                     add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                 }
                 // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
                 let r = &wd.records[wid as usize];
@@ -4649,7 +4657,7 @@ impl Scene {
                 if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                     let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
                     add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                    attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                 }
                 // fix-gadgets-live: the AIMS-20's four side lights [M Player_WeaponFiring 0x1a5460:256-360 —
                 // for the records whose class halfword (+0x02) is 0x1a/0x1b, `AnimDatumSetEntity(animobj,
@@ -4664,7 +4672,7 @@ impl Scene {
                         for bone in 8u8..=11 {
                             let linst = Instance { map: lmap, object: lobject, matrix: ident, placement: placement.clone() };
                             add_instance(level, &linst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                            attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: Some(bone), projectile: None, script: None, gas: None, effect: None });
+                            attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: Some(bone), projectile: None, script: None, gas: None, effect: None, silencer: false });
                         }
                     }
                 }
@@ -4687,7 +4695,7 @@ impl Scene {
                     if let (Some(&(emap, eobject)), Some(dt)) = (level.by_hash.get(&ventity), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                         let einst = Instance { map: emap, object: eobject, matrix: ident, placement: placement.clone() };
                         add_instance(level, &einst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: true });
                     }
                 }
                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None , morph_targets: None });
@@ -4748,7 +4756,7 @@ impl Scene {
                                     let Some(&(map, object)) = part.and_then(|ph| level.by_hash.get(&ph)) else { continue };
                                     let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
                                     add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                                 }
                                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)), morph_targets: morph_of_object.clone() });
                                 script_objects += 1;
@@ -4772,7 +4780,7 @@ impl Scene {
                                                 let winst = Instance { map: wmap, object: wobject, matrix: ident, placement: placement.clone() };
                                                 add_instance(level, &winst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                                 let local = anim::quat_trans_to_mat(dt.q, dt.t);
-                                                attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                                                attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                                             } else { weapons_missing += 1; }
                                         } else { weapons_missing += 1; }
                                     }
@@ -4786,7 +4794,7 @@ impl Scene {
                                 if level.maps[map].objects[object].flags & 0x8 != 0 { script_billboards.insert(hash); }
                                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
                                 add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                                attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: Some((h, si as u8, hash)), gas: None, effect: None });
+                                attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: Some((h, si as u8, hash)), gas: None, effect: None, silencer: false });
                                 script_objects += 1;
                             }
                             _ => {}
@@ -4802,7 +4810,7 @@ impl Scene {
             for slot in 0..TRACER_SLOTS {
                 let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
                 add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
             }
             // fix-gadgets-live: the gadget BEAM draws the game's own sprites, not the trail stand-in —
             // `Draw_LaserBeam` 0x1a4560 sets the beam object's gfx to 0x2000131 "lazer" (the class-'N'
@@ -4822,7 +4830,7 @@ impl Scene {
                     if let Some(&(bmap, bobj)) = level.by_hash.get(&hash) {
                         let binst = Instance { map: bmap, object: bobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
                         add_instance(level, &binst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                        attachments.push(Attachment { character: 0, bone: 0, local: binst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                        attachments.push(Attachment { character: 0, bone: 0, local: binst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                     }
                 }
             }
@@ -4858,7 +4866,7 @@ impl Scene {
             for slot in 0..proj_slots {
                 let pinst = Instance { map: pmap, object: pobject, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: pslot_placement.clone() };
                 add_instance(level, &pinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u16, mesh)), script: None, gas: None, effect: None });
+                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u16, mesh)), script: None, gas: None, effect: None, silencer: false });
             }
         }
         for (inst, follows_camera) in &sky {
@@ -4895,7 +4903,7 @@ impl Scene {
                         for slot in 0..slots {
                             let inst = Instance { map: m, object: o, matrix: ident, placement: slot_placement.clone() };
                             add_instance(level, &inst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                            attachments.push(Attachment { character: 0, bone: 0, local: inst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)) });
+                            attachments.push(Attachment { character: 0, bone: 0, local: inst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)), silencer: false });
                         }
                     }
                 }
@@ -4912,7 +4920,7 @@ impl Scene {
                 for slot in 0..4 {
                     let cinst = Instance { map: m, object: o, matrix: ident, placement: cplacement.clone() };
                     add_instance(level, &cinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: 0, bone: 0, local: cinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((3, slot, 0x0200_0273)) });
+                    attachments.push(Attachment { character: 0, bone: 0, local: cinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((3, slot, 0x0200_0273)), silencer: false });
                 }
             }
         }
@@ -4931,7 +4939,7 @@ impl Scene {
                     for slot in 0..2 {
                         let dinst = Instance { map: dm, object: dobj, matrix: dident, placement: dplacement.clone() };
                         add_instance(level, &dinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                        attachments.push(Attachment { character: 0, bone: 0, local: dinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)) });
+                        attachments.push(Attachment { character: 0, bone: 0, local: dinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)), silencer: false });
                     }
                 }
             }
@@ -5729,6 +5737,11 @@ impl Scene {
                 }
                 let b = self.sim.as_ref().and_then(|s| s.drones.bullets.get(slot)).filter(|b| b.state == 1);
                 return match b { Some(b) => tracer_matrix(b), None => [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]] };
+            }
+            // The silencer tube hides during the variant swap (state 8) — the game clears datum 0 there
+            // [M 0x1a5460:96-110]; the swap anim's own piece is what gets screwed on.
+            if a.silencer && self.sim.as_ref().is_some_and(|s| s.gun.switch_state == 8) {
+                return [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
             }
             if let Some((slot, mesh)) = a.projectile {
                 // A projectile-mesh slot: visible only while the slot's live projectile flies AND carries THIS
