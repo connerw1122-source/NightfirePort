@@ -13445,3 +13445,12 @@ Work Log (credits-data):
 - Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
   0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
   the PAL base note).
+## drive-ai-traffic (2026-10-15, branch s/drive-ai-traffic) — started 20:55 UTC
+Task: the driving missions' AI cars (task 507). From DRIVING.ELF: path following on the track's AI
+splines (CRP/VIV data), speed control, attacks (chase/shooting), spawn/despawn per mission (MIS01.VIV
+scripts). Port the data (splines, per-mission spawn lists) and the AI step in nf_game::driving beside
+506's physics (not landed yet on master — coordinate through the data model). Tests: a headless AI car
+follows its spline at the game's speed numbers. No drawing.
+
+Work Log (drive-ai-traffic):
+- (20:55) Sandbox reused (repo + work/ + ISO present; no downloads needed). Branch s/drive-ai-traffic created from origin/master @ f59b47fb, pushed with this entry.
