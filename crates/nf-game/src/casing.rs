@@ -75,12 +75,6 @@ impl Casings {
     /// 0x12f860..0x12f8f0]: 3× `Rand_FRand_MVar2(0.1, 0.05)` (spin), 3× `(0.01, 0.005)` (velocity
     /// jitter), 1× `Rand_FRand(0.5)` (landing plane).
     pub fn eject(&mut self, ammo: &nf_formats::sfx::AmmoData, weapon: &[u8], origin: V3, yaw: f32, pitch: f32, shooter_y: f32, rng: &mut Rng) {
-        let delay = weapon[0x78] as f32;
-        let ammo_byte = weapon[0x90] as usize;
-        let Some(&mesh) = ammo.casing_mesh.get(ammo_byte) else { return };
-        if mesh == 0 { return; }
-        let f = |o: usize| f32::from_le_bytes(weapon[o..o + 4].try_into().unwrap());
-        let local = [f(0xf8), -f(0xfc), f(0x100)];
         // The bone-rotation stand-in: the shooter's yaw about y, then the pitch ([S]; the game uses
         // `AnimGetBoneWorldTrans`'s matrix, which carries the view model's own orientation).
         let (cy, sy) = (yaw.cos(), yaw.sin());
@@ -88,17 +82,39 @@ impl Casings {
         let right = [cy, 0.0, -sy];
         let fwd = [sy * cp, sp, cy * cp];
         let up = [fwd[1] * right[2] - fwd[2] * right[1], fwd[2] * right[0] - fwd[0] * right[2], fwd[0] * right[1] - fwd[1] * right[0]];
-        let xform = |v: V3| [
-            right[0] * v[0] + up[0] * v[1] + fwd[0] * v[2],
-            right[1] * v[0] + up[1] * v[1] + fwd[1] * v[2],
-            right[2] * v[0] + up[2] * v[1] + fwd[2] * v[2],
-        ];
+        let pad = |v: [f32; 3]| [v[0], v[1], v[2], 0.0];
+        let bone = [pad(right), pad(up), pad(fwd), [origin[0], origin[1], origin[2], 1.0]];
+        self.eject_bone(ammo, weapon, &bone, shooter_y, rng);
+    }
+
+    /// fix-sg5-casings: the game's own eject transform [M Bullet_init_casing_ex 0x12f678:83-160]:
+    /// the weapon-local vector (`+0xf8, −+0xfc, +0x100` — the +0xfc negation at 0x12f83c)
+    /// through the WEAPON DATUM's bone world matrix (`AnimGetBoneWorldTrans(shooter, datum)`, the
+    /// view-model gun `Sim::gun_matrix()` stands in for it), re-positioned at that bone's VECTOR out
+    /// (`Vec_Copy2(bone_pos, obj+0x30, obj+0x40)`). `bone` is row-major like the game's MATRIX use
+    /// (`ApplyMatrixLVI`): world = local·M, so row 0 carries the datum's +x (the viewer LEFT —
+    /// `Player_PositionGun` 0x1a3b40's gl), row 1 +y (up), row 2 +z (the barrel forward), and
+    /// `bone[3]` is the eject origin. RNG order [M 0x12f860..0x12f8f0]: 3×
+    /// `Rand_FRand_MVar2(0.1, 0.05)` (spin), 3× `(0.01, 0.005)` (velocity jitter), 1×
+    /// `Rand_FRand(0.5)` (landing plane) — identical to `eject`, the shared RNG stays bit-exact.
+    pub fn eject_bone(&mut self, ammo: &nf_formats::sfx::AmmoData, weapon: &[u8], bone: &[[f32; 4]; 4], shooter_y: f32, rng: &mut Rng) {
+        let delay = weapon[0x78] as f32;
+        let ammo_byte = weapon[0x90] as usize;
+        let Some(&mesh) = ammo.casing_mesh.get(ammo_byte) else { return };
+        if mesh == 0 { return; }
+        let f = |o: usize| f32::from_le_bytes(weapon[o..o + 4].try_into().unwrap());
+        let local = [f(0xf8), -f(0xfc), f(0x100)];
         let spin = [frand_mvar2(rng, 0.1, 0.05), frand_mvar2(rng, 0.1, 0.05), frand_mvar2(rng, 0.1, 0.05)];
         let jitter = [frand_mvar2(rng, 0.01, 0.005), frand_mvar2(rng, 0.01, 0.005), frand_mvar2(rng, 0.01, 0.005)];
-        let e = xform(local);
+        let e = [
+            bone[0][0] * local[0] + bone[1][0] * local[1] + bone[2][0] * local[2],
+            bone[0][1] * local[0] + bone[1][1] * local[1] + bone[2][1] * local[2],
+            bone[0][2] * local[0] + bone[1][2] * local[1] + bone[2][2] * local[2],
+        ];
         let vel = [e[0] + jitter[0], e[1] + jitter[1], e[2] + jitter[2]];
         let landing_y = shooter_y - (rng.frand(0.5) + 1.0);
         let material = (weapon[0x50] & 0x3f) as u16;
+        let origin = [bone[3][0], bone[3][1], bone[3][2]];
         let slot = &mut self.list[self.next];
         *slot = Casing {
             state: 3, delay, pos: origin, vel, spin, rot: 0.0, age: 0.0, landing_y, mesh, material, landed: false,

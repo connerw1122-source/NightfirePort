@@ -2841,6 +2841,12 @@ pub fn run() -> Result<()> {
             if let Some(id) = first { sim.gun.switch_request = id; }
         }
     }
+    // fix-restart-health: the level opened from the command line is a load too — the game re-saves
+    // the RamSave buffer with the post-load state on EVERY load [M `Player_InitWeapon` 0x1a7ef8:325],
+    // so a fail-Restart serves health 100. Only the in-play level change set `entry_save`; the
+    // first level kept None and its Restart served the zero buffer's 50 floor (the main agent's
+    // dry run on 07000005). Taken after `--give` so the restart keeps the given gear.
+    app.entry_save = app.scene.sim.as_ref().map(entry_checkpoint_save);
     // B-5: start the recorder AFTER the scenario is applied (so the header captures the post-scenario starting state:
     // Bond near a guard, the RNG seed, etc.). On replay, the same starting state is reproduced.
     if let Some(path) = record_path {
