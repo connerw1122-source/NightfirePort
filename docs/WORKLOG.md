@@ -13510,3 +13510,33 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   7 (last-row selection, per-row hints, the 0x31d fallback, modal, Back-vs-unpause, clamps, NF_ISO binds 0x202/0x31d/
   0x266 from USATxt.dat), each with a sister assertion; menus_flow.rs updated to the new row struct. All green on the
   merged tree (ce62cd7e). Doc: docs/systems/objective-hints.md; mission.md's "hint never drawn" + gap lines corrected.
+Work Log (drive-ai-traffic):
+- (20:55-21:10) Research (two parallel Explore agents + own reads): the RNgp article reader FUN_00220c28
+  0x220c28 (RNhd = u16[5] counts rn/rs/ri/rr/rj; the five pointer tables DAT_0033a5fc..a60c), the
+  rn/rs/rr record layouts, the follow geometry (FUN_00222468 straight eval; FUN_00222d40→FUN_001a8380
+  4-point curve; FUN_00225c48 join; FUN_002247b0 next-segment), the AI step (FUN_0012e350 Update →
+  states 1..5; FUN_0012e808 target speed = the segment limit rs+0x4c; FUN_00133ab0 drive control:
+  arrival max(speed·0.5, 5.0), ramp min(|Δ|,7.5)/7.5 floor 0.05), the AIVehicle struct (0x2a0 B), the
+  AIEl database (FUN_0012b8b0) and the spawn pool (FUN_0013e688: 6 heap + 22 static vehicles + 16
+  helis). All [M]-tagged in docs/systems/driving-ai.md.
+- (21:13-21:45) The port: crates/nf-game/src/driving/{road,ai}.rs — RoadNet::parse_crp (the game's
+  RNgp walk incl. the count/instance rules and the rr occupancy zeroing), RoadNode/RoadSeg accessors,
+  seg_point (FUN_00222468), curve_point (control-polygon fallback, exact FUN_001a85d0 = live check
+  L-3), next_segment (the 0x2/0x200/0x400 + self-id + car-group filters), AiCar (states, the target
+  speed gates, drive_control = FUN_00133ab0's four vtbl calls as a pure DriveCommand, the 60 Hz step).
+  SimCar is the 506-physics seam (no throttle→accel model invented).
+- (21:45-21:55) Tests crates/nf-game/tests/driving_ai_follow.rs (9, all green): the fixture is a
+  hand-built format-exact .crp; follows-the-spline (25 units/s on a 100-unit segment, node crossing
+  onto the clean link, pos == seg_point exactly), arrival stop, the 00133ab0 ramp numbers (1.0, 5/7.5,
+  the 0.05 floor, the target 0.5 floor, the brake early-outs, the forced-stop handbrake), the 0012e808
+  gates, the 002247b0 filters, malformed-fixture rejection (sisters), the curved control-point eval,
+  and NF_DRIVING-gated real MIS01.VIV walk (skips without the folder — the slim ISO zeroes the
+  DRIVING archives' bytes; Nightfire-driving.7z exists on the host but 429 MB vs 545 MB free with the
+  suite compiling → not pulled this session).
+- (21:58-22:00) Merge origin/master mid-task (car-models + codename-entry + objective-hints landed):
+  WORKLOG both kept; no code overlap (lib.rs clean). Re-ran on the final tree: driving_ai_follow 9/9 +
+  objective_state 5/5, then the full nf-game suite 350 passed / 0 failed (39 binaries). nf-formats +
+  nf-audio: 89 passed / 3 failed = exactly the 3 disc_golden slim-ISO tests (allowed). nf-view two
+  foreground slices: 191 passed / 2 failed = the known no-GPU pylon set. The background suite.py
+  start died empty (this sandbox reaps detached processes — the screen-adjust-model note) → the
+  foreground slices above are the suite coverage; suite.out stayed empty.
