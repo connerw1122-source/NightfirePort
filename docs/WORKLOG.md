@@ -13167,6 +13167,23 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   trailer / New Codename entry and the Multiplayer menus are not ported (611-613 queued for their data).
 - Renderer: the movie plane keeps the 4:3 picture centred with black bars (every menu movie and briefing was
   stretched a third too wide on 16:9).
+---
+Task ID: drive-ptp (checkpoint 1)
+Agent: drive-ptp worker
+Task: port the PTP handover block (Boot_GetPTPData 0x1c8198), the 12 PlrStats driving slots, and the ACTION↔DRIVING level-transition hook
+
+Work Log:
+- Measured Boot_GetPTPData 0x1c8198 (968 B) field-by-field: every PTP offset it writes (block at 0x31c090, size 0xa50)
+- Measured the return mirror Boot_LoadPTPData 0x1c8560: Mission_SetStatus from PTP+0x978 (0→6, 4→3, else→2), GameState+0x28 codes (0→0x40000036, 1/2/4→0x4000001c), resume = ResetMap_LevelToLoad(0x7000048) always
+- Measured DRIVING main 0x174bf0: PTP+0x960 valid gate, PTP+0x974 mission index drives the key switch (1=paris_mis01, 2=uw_mis11, 3=junglea_mis13a, 4=jungleb_mis13b, 5=snow1a_mis3, 6=snow2a_mis4, 7=junglec_mis13c, 8=snow2a_race, default=paris_map) [D strings at 0x374da8..]
+- Measured Mission_Update 0x182c60 case 6: the 8 on-foot→interlude pairs (0x7000004→0x7300004 … 0x700001b→0x730001b)
+- Measured ResetMap_LevelToLoad 0x1d3800: only 0x900000X ids push GameFlow state 9 (the launch); PTP+0x974 = GameState._8_4_ - 0x9000000 [M 0x1c8198]
+- Measured PlrStats_Get/SetDrivingData 0x199ac8/0x199b18: 12 entries, stride 0x3c, +0x00 record ptr, +0x18 id; values at record+8; table root PTR 0x2bc658 → table 0x2bbda0..0x2bc5c8 [L ee_start_05.bin: all rec+8 = 0]
+- Found psiGetDrivingData 0x120a88 / Boot_LoadPTPData 0x1c8560 (the return path) and psiLaunchDriving 0x120af0 (writes PTP+0x97c = 1 after the copy)
+
+Stage Summary:
+- Next: write crates/nf-game/src/ptp.rs + the nf-view hook + tests + driving.md update
+- Open ([S], live check listed): the interlude-code → drive-index link lives in the hub menu (sp_level table) — not read in this window; the port uses the task's own example (castle 0x07000004 → index 1, paris_mis01) and flags it [S]
 - (15:38-15:53) Final tree: merged origin/master a2958c03 (WORKLOG/GAPS both kept on the append conflicts); the
   fast runner on the affected binaries: ai_live/fix_ai_remainder_live/trig_live/fix_portonly_review_live/
   tuning_live/fire_modes3_live/fix_weapon_fire_modes_live/weapon_switch_live/fix_weapons_all_live/
@@ -13183,3 +13200,23 @@ Work Log (fix-scores-handoff):
 - (16:00-16:15) The port: `Progress::finish_level(base_map, difficulty)` (progress.rs) — the results-path formula at status 6, READ-mode (commit=false: a mid-mission part exit must not stamp best/last; the results page's results_enter commit stays the game's), producing `FinishedLevel` (the 9 scored rows + base/dif/bonus/last/medal + the PlrMissionStats snapshot) mirrored on `Progress::finished`. The additive tick-end hook in drone.rs: when the level-exit latch stands, produce for mission.base_map at Drones::difficulty. Unit tests: finish_level_handoff_no_kills_zero_rows (the task's sister — the zero rows, the read-mode no-commit, the idempotent re-run, the unknown-hash None) + finish_level_handoff_kill_run — 2/2 green with the existing 9 progress tests.
 - (16:15-16:25) The NF_ISO pin: crates/nf-view/tests/fix_scores_handoff_live.rs — the 07000005 truck-ride exit through the real input path (the gate_guard_truck helpers): the exit tick's hand-off equals the formula recomputed from the snapshot tally (rows 1/2/3/4/5/8 zero — the vanilla ride is the no-kill run; row 6 health/row 7 elapsed from the snapshot; base=Σ raw, bonus=base×dif, last=base+bonus, the medal chain), the entry's last/best untouched. FAIL-FIRST recorded: the hook disabled → the test dies at the missing rows (the port's NULL-path abort, exactly the task's symptom); restored → ok (16.3 s; base 100000 = the moments row 50000 + the time row 50000, medal 1 at difficulty 1). Checkpoint pushed @ 16:07 (code+test) — suite runner note: the background suite.py died on the sandbox's reaping (empty suite.out); foreground chunks instead.
 - (16:26-16:35) Merged origin/master 0bcd8077 (corona + find-corona-creator's docs; WORKLOG both kept) → 39924dab. Merged-tree verify: nf-game lib 177/177, fix_scores_handoff_live 1/1. Foreground suite chunks on the final tree (the bg runner is reaped by this sandbox): nf-game lib 177/177; nf-formats 77+11 with exactly the 3 allowed disc_golden fails; nf-audio green; nf-view lib 8/8; progress_remainder_live 4/4 + failfirst 3/3; level_reload_live + fix_progress_live 9/9; levels_sweep_live 3/3 (185 s — every level 600 ticks with the hook live); fix_scores_handoff_live 1/1. Report + finish steps next.
+
+---
+Task ID: drive-ptp
+Agent: drive-ptp worker
+Task: port the PTP handover block (Boot_GetPTPData 0x1c8198), the 12 PlrStats driving slots, and the ACTION↔DRIVING level-transition hook (nf-view)
+
+Work Log:
+- Measured the full handover chain: Boot_GetPTPData 0x1c8198 (every PTP offset it writes, block 0x31c090 size 0xa50), psiLaunchDriving 0x120af0 (copy to 0x100000, +0x97c = 1), DRIVING main 0x174bf0 (the +0x960 gate, the +0x974 index → key switch with the 8 [D] strings, the +0x984 status map 1→0/2→1/3,4→2, the exit tail: next index + next key + FUN_00300058(0x100000, flag)), FUN_00300058 0x300058 (the +0x4b4 gate, +0x97c = result, BASE.ELF), Boot_LoadPTPData 0x1c8560 (the return mirror: +0x978 → Mission_SetStatus 0→6/4→3/else→2, GameState+0x28 = 0x40000036/0x4000001c/0x40000043, resume = ResetMap_LevelToLoad(0x7000048) ALWAYS, PlrStats_SetDrivingData)
+- Measured ResetMap_LevelToLoad 0x1d3800 (only 0x900000X ids push GameFlow state 9 — PTP+0x974 = GameState._8_4_ − 0x9000000) and Mission_Update 0x182c60 case 6's 8 on-foot→interlude pairs
+- Measured PlrStats_Get/SetDrivingData 0x199ac8/0x199b18: 12 entries, stride 0x3c, +0x00 record ptr, +0x18 id, values at record+8; table 0x2bbda0..0x2bc5c8; boot state all-zero [L ee_start_05.bin]
+- Wrote crates/nf-game/src/ptp.rs: PtpBlock (every field both sides touch, offsets in the doc comments), DrivingStats, DriveResult/DriveReturn (the dev stand-in), interlude_drive_index [S], 9 unit tests
+- nf-view hook: the LevelEnd arm's interlude branch → pub Sim::ptp_handover (scene.rs); lib.rs applies the stashed DriveReturn to the reloaded session (the mission status + the 12 slots, Boot_LoadPTPData's mirror)
+- Drones: three additive fields (driving_stats/driving_result/driving_return), own lines per merge lesson 4
+- Tests: walk_07000004_ptp_live (4, NF_ISO, the real load+step_bond path) — the kill route now runs the banner into the handover (resume armed at 0x07000048 cold, result 1 → MissionState 6, key paris_mis01); the Fail sister; the slots' carry. Pre-fix the first two fail (the handover never ran) — the reproduce-first record
+- docs/atlas/driving.md: the §2 "Ported (drive-ptp)" status block + the header status
+- Suite on the final merged tree (a1cb5b36), foreground chunks: 886 passed / 3 failed / 26 ignored + 1 OOM crash — the 3 = the known no-GPU pylon set, the crash = fix_death_restart_live OOM (dmesg global_oom, 4 GB box, does not intersect the change)
+
+Stage Summary:
+- The ACTION↔DRIVING handover now runs end to end in the port: a mission-complete on an arc-ending level builds the PTP block, skips the drive with a dev-chosen result, and resumes ACTION at the front end with the status and stats carried
+- Open [S] with live checks in docs/reports/drive-ptp.md: the interlude→drive-index pairing (the hub menu's sp_level table, unread) and PTP+0x978's DRIVING-side writer
