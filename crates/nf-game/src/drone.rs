@@ -2933,14 +2933,24 @@ impl Drone {
 
     /// `Drone_CollisionHandler` (0x140968): the per-tick collision + gravity driver. Clears the in-air flag, runs the
     /// down-ray (`feet_on_point`), and when off the surface accumulates `WldGravity · REC_FRAME_RATE` into `velocity`
-    /// and steps `pos += velocity · REC_FRAME_RATE`. On the surface the velocity is zeroed and `pos.y` runs the game's
-    /// SOFT settle [M 0x140968 tail: `if (anim+0x60 & 8) { velocity = 0; if (−0.1 < correction) obj.y −= correction ×
-    /// 0.125 }` — the correction is `Drone_FeetOnPoint` 0x140660's out param `pos.y − hip − hit.y`], converging to
-    /// `floor + hip` — the trace's own shape (the 06 driver 39.305 → 39.2 over ~8 ticks [L 05-truck.trace]). A
-    /// correction ≤ −0.1 (the feet sunk > 0.1 below the floor) takes the old snap fallback — the game's deep-correction
-    /// path is unread, and without it a tunnelling start would sink. The `free_root` path (SpecialDeath) bypasses this;
-    /// `bounded = false` (the AI-boundary push-out flag) also skips it. [M] constants: WldGravity (0,−9.8,0),
-    /// REC_FRAME_RATE 1/60, hip+0.6 ray, 0.2 on-surface, 0.125 settle rate.
+    /// and steps `pos += velocity · REC_FRAME_RATE`. On the surface the velocity is zeroed and `pos.y` runs the tail's
+    /// settle — gated by the game's SECOND probe relation, not the correction itself: the disassembly compares the
+    /// hit against `drone+0x400` — `NDrone2_Collision` 0x140e90's probe `obj.pos + up·(0.4 − hip)` [M 0x140c44-60:
+    /// `c2 = hit+0x40 − drone+0x400`; 0x140e30-48: the settle runs while `c2 > −0.1`; the ×0.125 feed is
+    /// `Drone_FeetOnPoint` 0x140660's correction out-param, 0x140e50] — so the gate is
+    /// `correction < 0.5 − hip` (0.4 − hip − correction > −0.1). Through the ANIMATED hip that is the driver-only
+    /// gating the game does itself: the sit's 0.2 clamp settles the whole on-surface band (correction < 0.3 — the
+    /// trace's ×0.125 decay [L 05-truck.trace 39.305 → 39.2]), while the standing hip 1.0 settles only the deep-sink
+    /// band (correction < −0.5, a 0.1-wide slice of the ray's [−0.6, 0.2] reach) and is otherwise NOT re-adjusted —
+    /// the game owns the standing y through the animated hip (`DroneAnim_PreTransCallback` 0x13b490 rewrites +0xA0
+    /// per resolve), which the port has only for the sit (the +0x60 addend unread — the fix-driver-air residual).
+    /// The port keeps its snap for that un-settling band: without the animated hip a no-op would float standing
+    /// drones up to 0.2 (the live traces pin the snap's heights; the fix-driver-air2 probe showed the 109j
+    /// settle-everywhere transients flipped the seeded cover RNG — danim 178 90@1.0 instead of lean-out 176 51@1.5
+    /// → UnderCoverAim 90 vs live 37). The `free_root` path (SpecialDeath) bypasses this; `bounded = false` (the
+    /// AI-boundary push-out flag) also skips it. [M] constants: WldGravity (0,−9.8,0), REC_FRAME_RATE 1/60,
+    /// hip+0.6 ray, 0.2 on-surface, probe 0.4 (0x140e90; 0.55 when +0xd8 == 0xc and 0.3 when +0x2f — unmodelled,
+    /// the gate's band only shifts, the sit/stand split does not change), 0.125 settle rate.
     pub fn collision_handler(&mut self, world: &CollisionWorld) {
         if self.free_root || self.corpse || !self.bounded { return; }
         // `+0x4F8 & 0x4000` cleared at the top.
@@ -2950,12 +2960,16 @@ impl Drone {
         let on_surface = self.feet_on_point(world);
         self.on_surface = on_surface.is_some();
         if let Some(floor) = on_surface {
-            // Zero the velocity (the game sets `anim+0x60 & 8`), then the soft settle toward `floor + hip`.
+            // Zero the velocity (the game sets `anim+0x60 & 8`), then the tail's settle gated through the
+            // second probe: `correction < 0.5 − hip` (see the doc above — [M 0x140968 @0x140c44-60 +
+            // 0x140e30-48, the probe 0x140e90]).
             self.velocity = [0.0; 3];
             let correction = self.pos[1] - self.hip() - floor;
-            if correction > -0.1 {
+            if correction < 0.5 - self.hip() {
                 self.pos[1] -= correction * 0.125;
             } else {
+                // The un-settling band: the port's standing-y management (the game re-adjusts nothing here;
+                // its animated hip owns the standing height — the port's snap stands in until that lands).
                 self.pos[1] = floor + self.hip();
             }
         } else {
@@ -8744,18 +8758,27 @@ mod tests {
 
     #[test]
     fn drone_stands_on_the_floor() {
-        // A drone whose feet (pos.y − hip 1.0) are 0.1 above the floor at y=0 is on the surface: the down-ray hits
-        // within 0.2 below the feet, velocity zeroes, and pos runs the game's SOFT settle (`Drone_CollisionHandler`
-        // 0x140968 tail: obj.y −= correction × 0.125 per tick, the correction = pos.y − hip − floor [M 0x140660]) —
-        // converging to floor + hip = 1.0.
+        // A drone whose feet (pos.y − hip 1.0) are 0.1 above the floor at y=0 is on the surface: velocity zeroes,
+        // but the tail's gate is `correction < 0.5 − hip` [M 0x140968 @0x140c44-60 + 0x140e30-48] — 0.1 < −0.5
+        // fails, so the standing drone takes the port's snap (the game re-adjusts nothing there; its animated hip
+        // owns the standing y — fix-driver-air2).
         let w = floor_world();
         let mut dr = drone_at([0.0, 1.1, 0.0]);
         dr.collision_handler(&w);
-        assert!((dr.pos[1] - 1.0875).abs() < 1e-6, "one tick settles by correction × 0.125: {}", dr.pos[1]);
+        assert!((dr.pos[1] - 1.0).abs() < 1e-5, "the un-settling band keeps the snap: {}", dr.pos[1]);
         assert!(dr.on_surface && !dr.in_air);
         assert!(dr.velocity[1].abs() < 1e-9);
-        for _ in 0..64 { dr.collision_handler(&w); }
-        assert!((dr.pos[1] - 1.0).abs() < 1e-3, "converges to floor+hip: {}", dr.pos[1]);
+        // Sister: the sit's animated hip 0.2 settles the whole band — one tick = correction × 0.125
+        // [M 0x140968 tail; L 05-truck.trace 39.305 → 39.289].
+        let mut sit = drone_at([0.0, 0.35, 0.0]); // feet 0.15 above the floor, hip 0.2
+        sit.hip_anim = 0.2;
+        sit.collision_handler(&w);
+        assert!((sit.pos[1] - (0.35 - 0.15 * 0.125)).abs() < 1e-6, "the sit settles at ×0.125: {}", sit.pos[1]);
+        // Sister: the deep-sink band (correction < −0.5, within the ray's [−0.6, 0.2] reach) rises at ×0.125 —
+        // the game's own deep path [M 0x140e50-68], which replaces the old snap fallback.
+        let mut deep = drone_at([0.0, 0.45, 0.0]); // feet −0.55
+        deep.collision_handler(&w);
+        assert!((deep.pos[1] - (0.45 + 0.55 * 0.125)).abs() < 1e-6, "the deep sink rises at ×0.125: {}", deep.pos[1]);
     }
 
     #[test]

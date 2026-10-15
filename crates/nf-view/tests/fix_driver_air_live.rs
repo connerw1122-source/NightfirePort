@@ -77,17 +77,34 @@ fn the_sitting_driver_rests_on_his_seat_at_the_game_height() {
     assert_eq!(dr.state, 0x34, "the driver steps into TruckDriverIdle when the sit script ends [M 0x160bd0 case 5]");
 }
 
-/// Sister: the soft settle is the game's rate, not a snap — a drone whose feet sit 0.15 above its
-/// floor moves exactly correction × 0.125 on the first tick ([M 0x140968 tail]; the trace's own decay
-/// shape 39.305 → 39.289 → … [L 05-truck.trace]). The standing driver is the subject: after the sit
-/// script he idles in place (state 0x34), so his x/z does not wander under the probe.
+/// Sister: the soft settle is the game's rate — the SITTING driver (the 0.2 animated hip, the state
+/// the trace pins [L 05-truck.trace]) lifted 0.15 mid-sit moves exactly correction × 0.125 on the
+/// first tick ([M 0x140968 tail; the trace's own decay shape 39.305 → 39.289 → …]). The tail's gate
+/// is the game's hip-dependent SECOND probe: `c2 = hit − (obj.pos + up·(0.4 − hip))`, settle while
+/// `c2 > −0.1` ⟺ `correction < 0.5 − hip` [M 0x140968 @0x140c44-60 + 0x140e30-48; the probe
+/// `NDrone2_Collision` 0x140e90] — so the STANDING driver (hip 1.0, state 0x34 after the script) is
+/// NOT settled by a 0.15 lift (the gate needs correction < −0.5): the port keeps its snap there (the
+/// game's standing y is owned by the animated hip, unported — the report's residual 1; the 109j
+/// settle-everywhere gate was the ai_live cover regression, fix-driver-air2).
 #[test]
 fn the_floor_settle_runs_at_the_games_one_eighth_rate() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, "07000006.bin", false).expect("load");
     let sim = scene.sim.as_mut().unwrap();
     let di = sim.drones.list.iter().position(|dr| dr.skin == 0x0500_0035).expect("the driver");
-    tick_idle(sim, 920); // the 880-frame sit done; he stands idle at the fixed spot
+    // Mid-sit (state 0x32 holds through the 880-frame script [L 05-truck.trace drone 13]): lifted 0.15,
+    // one tick of the settle moves correction × 0.125.
+    tick_idle(sim, 100);
+    assert_eq!(sim.drones.list[di].state, 0x32, "mid-sit");
+    let steady = sim.drones.list[di].pos[1];
+    sim.drones.list[di].pos[1] = steady + 0.15;
+    sim.step_bond(Input::default(), false, false, false);
+    let after = sim.drones.list[di].pos[1];
+    assert!((after - (steady + 0.15 - 0.15 * 0.125)).abs() < 0.005,
+        "the sitting driver settles correction × 0.125 per tick [M 0x140968 tail; L the trace's 39.305→39.289] — {} → {}", steady + 0.15, after);
+    // Sister: the STANDING driver (the script done, hip restored to 1.0 [M 0x160bd0 case 5]) lifted 0.15
+    // is NOT settled — the gate needs correction < 0.5 − 1.0 = −0.5 — and takes the port's snap.
+    tick_idle(sim, 820); // tick 920: the sit done
     assert_eq!(sim.drones.list[di].state, 0x34, "the driver idles");
     let floor = {
         let g = &sim.drones.list[di];
@@ -96,10 +113,8 @@ fn the_floor_settle_runs_at_the_games_one_eighth_rate() {
         from[1] - 2.5 * h
     };
     sim.drones.list[di].pos[1] = floor + 1.0 + 0.15; // the feet 0.15 above the floor — inside the 0.2 on-surface band [M 0x140660]
-    let before = sim.drones.list[di].pos[1];
     sim.step_bond(Input::default(), false, false, false);
     let after = sim.drones.list[di].pos[1];
-    // One tick of the settle: the correction (0.15) shrinks by an eighth — NOT the old full snap.
-    assert!((after - (before - 0.15 * 0.125)).abs() < 0.005,
-        "the settle moves correction × 0.125 per tick [M 0x140968 tail; L the trace's 39.305→39.289] — {before} → {after}");
+    assert!((after - (floor + 1.0)).abs() < 0.005,
+        "the standing hip is not settled by a 0.15 lift (the gate needs correction < −0.5 [M 0x140e30-48]) — the snap stands in: {floor} → {after}");
 }
