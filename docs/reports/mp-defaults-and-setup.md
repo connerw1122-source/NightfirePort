@@ -109,3 +109,13 @@ writes +0x1C0, so the boot value 2 (Random) persists; it clears +0x1D4 [M 0x20c7
    0x30001a3 / 0x30001a2 on 0x100001a0).
 5. Render spots (keyboard agent 1): `--bond` not needed — the pages are menu-only; draw the port's
    Page::MpSetup through the three states and compare with PCSX2's three prompts on Team Arena.
+
+## ntfy failed
+
+All three fallbacks rejected — the ntfy.sh daily message quota is exhausted (22:44 UTC):
+1. `curl -sS -H "Title: NightfirePort" -d "…" https://ntfy.sh/nightfire-yoda-8k3x` →
+   `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 urllib` → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget --post-data …` → `HTTP request sent, awaiting response... 429 Too Many Requests` /
+   `ERROR 429: Too Many Requests` (a first quiet attempt exited 0 but the verbose retry shows the
+   same 429; nothing was published)
