@@ -103,6 +103,12 @@ sides). Everything below cites the game address; the fact tags are the task's.
 6. **nf-view spot**: `--bond 0,0,0,0,0` on the CnMenu page, row 0 → the CnName stub grid — the
    cursor brackets and the typed line should render (the real layout is the drawing task's).
 
-## ntfy
+## ntfy failed
 
-(sent after this report — see the finish step)
+All three fallbacks returned the daily-quota 429 (same as drive-ptp's report):
+
+1. curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. python3 urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. wget: `-q` silenced the body, exit 0 with no output — the server returned the same 429 page (no message delivered).
+
+Notification content that could not be delivered: `secret-codes: done — 52-code table + validator port + grid model, 205+12 lib tests green, report pushed`.
