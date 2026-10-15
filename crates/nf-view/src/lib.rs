@@ -313,13 +313,23 @@ fn wire_music(sim: &mut scene::Sim, mm: Vec<nf_formats::music::MapMusic>, vars: 
 }
 
 pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, false, &[])
+    load_inner(iso, archive, all, false)
+}
+
+/// mp-core: the `--mp` load — the same parse, plus the match core (the placement registrations,
+/// `MP_Init`/`MP_Start` and the human spawn at the policy's point) inside `load_inner`.
+pub fn load_mp(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
+    load_inner(iso, archive, all, true)
+}
+
+fn load_inner(iso: &str, archive: &str, all: bool, mp: bool) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, None, false, &[], mp)
 }
 
 /// `--dev`: the same load with the dev view-model merge (folded 190-fix-dev2). Normal play never
 /// passes `dev = true`, so no extra archive is opened without the flag.
 pub fn load_dev(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, true, &[])
+    load_impl(iso, archive, all, None, true, &[], false)
 }
 
 /// `load` pre-merged for the given weapon ids (`--give` at startup, the dev menu's lazy give):
@@ -327,7 +337,7 @@ pub fn load_dev(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
 /// from their owning archive before the scene builds, so the weapon draws exactly as it does on a
 /// level that carries it (`weapon_assets::merge_weapon_assets`).
 pub fn load_weapons(iso: &str, archive: &str, all: bool, wids: &[u8]) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, false, wids)
+    load_impl(iso, archive, all, None, false, wids, false)
 }
 
 /// The sim catch-up cap (`NF_MAXTICKS`, default 4) — see the frame loop.
@@ -338,18 +348,18 @@ static MAX_TICKS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 /// wrote, and `Player_InitWeapon` (0x1a7ef8) runs the per-level loadout switch over `Player_RamLoad`
 /// (0x1957a8). `None` = a cold load (the game's boot path; `Player_RamLoad`'s whole body is skipped).
 pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, false, &[])
+    load_impl(iso, archive, all, save, false, &[], false)
 }
 
 /// The carry-over load pre-merged for the given weapon ids (the dev menu's lazy give: the same
 /// warm reload the level transition runs, plus the given weapons' assets).
 pub fn load_with_carry_weapons(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, wids: &[u8]) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, false, wids)
+    load_impl(iso, archive, all, save, false, wids, false)
 }
 
 /// `--dev` level transition: the carry-over load with the dev view-model merge.
 pub fn load_with_carry_dev(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, true, &[])
+    load_impl(iso, archive, all, save, true, &[], false)
 }
 
 /// The fail/death menu's Restart serve — the reload loop's `level_exit_restart` branch
@@ -420,7 +430,7 @@ pub fn entry_checkpoint_save(sim: &scene::Sim) -> nf_game::player::RamSave {
         .with_mission(&sim.drones.mission)
 }
 
-fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8]) -> Result<scene::Scene> {
+fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8], mp: bool) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
     let iso = IsoImage::open(iso_path)?;
@@ -849,6 +859,49 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         } else if let Some((pos, yaw)) = scene.start {
             // No type-0x24 starts parsed: keep the "Player1" stand-in.
             sim.bond = nf_game::player::Bond::stand_at(&sim.world, pos, yaw);
+        }
+        // mp-core: the MP arenas have no type-0x24 starts — `--mp` runs the match core instead:
+        // the 0x25/0x26 registrations (`parsemap_create_dynamic_objects` 0x1d04f0 case 0x25/0x26 —
+        // the team and the MP object type are the placement's param 0, the block+0x2c slot [M
+        // 0x1d1b68]), `MP_Init` 0x183438 / `MP_Start` 0x183a50, then the human spawn at the policy's
+        // point (the `Player_Init` 0x1910f8 port — the yaw is the placement rotation[1], the same
+        // convention `level_starts` pins).
+        if mp {
+            let mut m = nf_game::mp::MpMatch::init(nf_game::mp::MpSettings::deathmatch(level_id));
+            let map = level.main_map().and_then(|mi| level.maps.get(mi));
+            let mut spawn_count = 0usize;
+            if let Some(map) = map {
+                let param = |p: &nf_formats::placement::Placement, k: u32| -> u32 {
+                    p.params.iter().find(|(i, _)| *i == k).map_or(0, |&(_, v)| v)
+                };
+                for p in &map.placements {
+                    match p.flags & 0xff {
+                        0x25 => {
+                            let team = param(p, 0) as u16;
+                            let before = m.spawns.count;
+                            m.register_spawn_point(p.translation, p.rotation, team, &sim.world);
+                            if m.spawns.count > before { spawn_count += 1; }
+                        }
+                        0x26 => {
+                            let ty = param(p, 0);
+                            let cfg: [u32; 7] = std::array::from_fn(|k| param(p, k as u32));
+                            m.register_mp_object(p.translation, p.rotation, ty, cfg, p.hashcode);
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            m.start(&mut sim.drones.rng);
+            // The first human's pick: `MP_Start` calls `MP_GetSpawnPoint(team, NULL)` BEFORE
+            // `Player_Init` creates the obj [M 0x183a50:120-123] — no slots exist yet, so every used
+            // point is a 9999-distance candidate (policy-dependent pick, empty slots).
+            let sp = m.get_spawn_point(m.settings.players[0].team as u16, 0, &mut sim.drones.rng) as usize;
+            let sp_ent = m.spawns.points[sp];
+            sim.bond = nf_game::player::Bond::stand_at(&sim.world, [sp_ent.pos[0], sp_ent.pos[1], sp_ent.pos[2]], sp_ent.facing[1]);
+            m.set_slot(0, sim.bond.pos);
+            sim.mp = Some(m);
+            eprintln!("mp: arena {level_id:08x} — {spawn_count} spawn points registered, Bond at spawn {sp} ({:.2}, {:.2}, {:.2}) yaw {:.3}",
+                sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2], sp_ent.facing[1]);
         }
         // `Player_CheckWeaponsLoaded`'s model check (0x1a97c8): the hashtable holds the level's loaded
         // skins; the port's equivalent is the level skin table [M — the fp model hash is a skin hash].
@@ -2588,6 +2641,7 @@ pub fn run() -> Result<()> {
         }).collect()).unwrap_or_default();
     let scene = if dev { load_dev(&iso, &level, all)? }
         else if !give_ids.is_empty() { load_weapons(&iso, &level, all, &give_ids)? }
+        else if args.iter().any(|a| a == "--mp") { load_mp(&iso, &level, all)? }
         else { load(&iso, &level, all)? };
     let mut cam = start_camera(&scene);
     if let Some(i) = args.iter().position(|a| a == "--cam") {
