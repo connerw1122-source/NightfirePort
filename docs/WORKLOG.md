@@ -12904,3 +12904,17 @@ the binaries the window fit.)
   bookkeeping) + the view_time floor for the reverse. fix_switch_after_cold_load_live 2/2
   (07000016 mash + the first-possible-tick single press + the settled press; 07000012 kit 0x10
   the same). Next: merge master, restart the suite on the final tree.
+
+Task 110t: fix-bullet-child-list — the searchlight bullet box's exact path (worker, started
+13:40 UTC, window to ~15:35 UTC). U-041 (docs/UNKNOWNS.md; G-033 docs/GAPS.md): the port takes
+searchlight bullet hits through a stand-in box; the game finds them through the bullet's
+collision child list. Door_ReactToHit has the same open "exact proxy-list path" (G-035). Do:
+(1) document in docs/systems/searchlight.md how a bullet ray reaches the searchlight object —
+the collide pass, the child/proxy list it walks (Collide_*, Bullet_CollisionHandler 0x12d068
+area), the box/geometry tested — with addresses; (2) replace the stand-in box with the game's
+test in crates/nf-game/src/searchlight.rs / the bullet collision caller; (3) NF_ISO test on a
+level with breakable searchlights: a shot the game registers (lamp housing) breaks the light, a
+shot just outside the game's volume doesn't (the old stand-in box would have caught it); show
+the sister failing on the old code first. Files: searchlight.rs, the bullet collision caller,
+docs/systems/searchlight.md, docs/UNKNOWNS.md (U-041), the new test. Branch cut from
+origin/master 404d7dc1.
