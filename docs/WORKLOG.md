@@ -13540,3 +13540,23 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   predicate, the turn-rate pair, the −13 gravity on camera, the Friction tun's dead keys) and the ntfy
   429 record. What's left for the next message: the VU0 macro (.vutext 0x324800), car↔world collision
   vs the track quads, suspension/world colliders, handbrake in the step, the Friction name normalizer.
+## drive-track-mesh (2026-10-15, branch s/drive-track-mesh)
+- Started: decode CRP track geometry into meshes (verts/indices/UVs/texture refs per section, collision/road surface if separable). Plan: read docs/formats/crp.md + the 503 parser, map the track-mesh chunks, add nf-formats mesh decode + `crp-mesh` OBJ export in nf-extract, goldens of per-section counts + SHA-1s of decoded buffers. In progress.
+
+## drive-track-mesh (2026-10-15, branch s/drive-track-mesh) — DONE (phase 1 of the mesh decode)
+- Decoded the CARP track article layer + the embedded module loader path: crp_mesh.rs (ArticleMeta
+  bbox from Base +0x10/+0x20, as#N→sr#N→EAGL symbol names, TrackModule = ELFd+ELFr combined image
+  with the game's 0x29ea00 sh_addr/e_shoff resolve rule + all R_MIPS_32 relocations applied, model
+  segment + GeoPrim name indexes, CDat CGrd/ci/cn census). nf-extract crp-mesh + crp-mesh-digest.
+- Golden: golden/crp_mesh_golden.tsv, all 8 mission tracks (articles/parts/model_symbols/geoprims/
+  relocations/ci_items/cn_records + relocated-image SHA-1s; paris 494/1899/1890/1736/54613/994/
+  2111/2f0000bc…); driving_track_mesh_layer_matches_the_golden + tamper sister + hand-built unit
+  test. nf-formats 77 lib + 9 driving_golden green; 4 crates compile; nf-game/nf-audio green;
+  nf-view green except the pre-documented wgpu-no-GPU binaries; the 3 slim-ISO disc_golden
+  failures are the allowed ones. suite.py background runner dies between tool calls here (twice).
+- NOT decoded yet (next phase): the render-vertex VIF chains (the EAGL engine builds them at load
+  from the model objects; the list walk starts at paris 0x33c020 → GeoPrim objects 0x180530), the
+  CDat ci/cn + RNgp layouts, and the world placement (the "Map in#0 = 2552 instances" community
+  claim did NOT verify; placement must live in the Map group's aq#N arrays 451×32 B ×3).
+- Shared-file touches: lib.rs +1 line (pub mod crp_mesh), crp.rs Record::parse made pub.
+- Report: docs/reports/drive-track-mesh.md (live checks for the main agent listed there).

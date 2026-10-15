@@ -88,6 +88,8 @@ fn main() -> Result<()> {
         "gfx-boxes" => gfx_boxes(&IsoImage::open(a(1)?)?),
         "gfx-export" => gfx_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
         "bigf-extract" => bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
+        "crp-mesh" => crp_mesh(a(1)?, a(2)?, Path::new(a(3)?)),
+        "crp-mesh-digest" => crp_mesh_digest(a(1)?),
         "symtab" => symtab(Path::new(a(1)?)),
         "drivingsym" => {
             let iso = IsoImage::open(a(1)?)?;
@@ -140,6 +142,110 @@ fn bigf_extract(iso: &IsoImage, archive: &str, out: &Path) -> Result<()> {
     }
     println!("{} entries -> {}", g.entries.len(), out.display());
     Ok(())
+}
+
+/// `crp-mesh <iso-or-DRIVING-dir> <viv> <out-dir>` — the driving track `.crp`'s mesh layer (task
+/// drive-track-mesh): decompresses the archive's `data\track\*.crp`, parses the CARP pool,
+/// relocates the embedded ELFd+ELFr module and writes per-article TSVs (`<track>-articles.tsv`:
+/// name/bbox/parts/sr refs; `<track>-module.tsv`: sections/symbols/relocations/collision census).
+/// Prints one summary row. The first argument is either a disc image (`<iso>`) or the extracted
+/// `DRIVING/` folder (the slim test image ships without it; the tests use the folder form).
+fn crp_mesh(source: &str, viv: &str, out: &Path) -> Result<()> {
+    let (entry_name, row) = crp_mesh_row(source, viv, Some(out))?;
+    println!("{row}");
+    println!("# wrote TSVs for {entry_name} -> {}", out.display());
+    Ok(())
+}
+
+/// `crp-mesh-digest <iso-or-DRIVING-dir>` — the canonical per-track digest rows (numbers only) for
+/// all 8 mission tracks: the golden form (golden/crp_mesh_golden.tsv).
+fn crp_mesh_digest(source: &str) -> Result<()> {
+    for viv in MISSION_VIVS {
+        println!("{}", crp_mesh_row(source, viv, None)?.1);
+    }
+    Ok(())
+}
+
+const MISSION_VIVS: [&str; 8] =
+    ["MIS01.VIV", "MIS11.VIV", "MIS13A.VIV", "MIS13B.VIV", "MIS13C.VIV", "MIS3.VIV", "MIS4.VIV", "RACE.VIV"];
+
+/// One archive's bytes: either from the disc image or straight from the DRIVING folder.
+fn driving_archive_bytes(source: &str, viv: &str) -> Result<Vec<u8>> {
+    let p = std::path::Path::new(source);
+    if p.is_dir() {
+        return Ok(std::fs::read(p.join(viv)).with_context(|| format!("reading {}", p.join(viv).display()))?);
+    }
+    let iso = IsoImage::open(p)?;
+    let path = format!("/DRIVING/{viv}");
+    let e = iso.find(&path).with_context(|| format!("no {path} on the disc"))?;
+    Ok(iso.read_file(e)?)
+}
+
+/// Loads one mission VIV's track `.crp`, computes the mesh summary; with `out` set, writes the
+/// per-article and module TSVs. Returns `(entry name, summary row)`.
+fn crp_mesh_row(source: &str, viv: &str, out: Option<&Path>) -> Result<(String, String)> {
+    use nf_formats::crp::Crp as CrpFile;
+    use nf_formats::crp_mesh::TrackModule;
+
+    let data = driving_archive_bytes(source, viv)?;
+    let g = nf_formats::bigf::Bigf::parse(&data, data.len() as u64)?;
+    let (idx, entry) = g.entries.iter().enumerate()
+        .find(|(_, x)| {
+            let n = x.name.to_ascii_lowercase();
+            n.starts_with("data\\track\\") && n.ends_with(".crp")
+        })
+        .with_context(|| format!("{viv}: no data\\track\\*.crp entry"))?;
+    let idx = idx;
+    let entry_name = entry.name.clone();
+    let blob = data[entry.offset as usize..(entry.offset + entry.size) as usize].to_vec();
+    let dec = if nf_formats::refpack::is_refpack(&blob) {
+        nf_formats::refpack::decompress(&blob)?
+    } else {
+        blob
+    };
+    let crp = CrpFile::parse(&dec)?;
+    let track = crp.track_name()?.unwrap_or("-").to_owned();
+    let articles = crp.track_articles()?;
+    let module = TrackModule::load(&crp)?;
+    let coll = crp.collision_census()?;
+    let model_symbols = module.symbols.iter().filter(|s| s.name.starts_with("__Model:::")).count();
+    let geoprims = module.geoprim_names().len();
+    let parts: usize = articles.iter().map(|a| a.parts.len()).sum();
+    let image_sha1: String = nf_formats::sha1::sha1(&module.image).iter().map(|b| format!("{b:02x}")).collect();
+    let row = format!(
+        "{viv}#{idx}\t{entry_name}\t{track}\t{}\t{parts}\t{model_symbols}\t{geoprims}\t{}\t{}\t{}\t{image_sha1}",
+        articles.len(), module.relocations, coll.ci_total_items, coll.cn_records,
+    );
+    if let Some(out) = out {
+        std::fs::create_dir_all(out)?;
+        let stem = track.replace(['/', '\\'], "_");
+        let mut art = String::from("name\tbbox_min\tbbox_max\tparts\n");
+        for a in &articles {
+            let fmt = |v: &[f32; 3]| format!("{:.4},{:.4},{:.4}", v[0], v[1], v[2]);
+            let refs = if a.parts.is_empty() {
+                "-".to_owned()
+            } else {
+                a.parts.iter()
+                    .map(|p| match p.sr_index {
+                        Some(sr) => format!("as#{}->sr#{}", p.as_instance, sr),
+                        None => format!("as#{}->-", p.as_instance),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|")
+            };
+            art.push_str(&format!("{}\t{}\t{}\t{}\n", a.name, fmt(&a.bbox_min), fmt(&a.bbox_max), refs));
+        }
+        std::fs::write(out.join(format!("{stem}-articles.tsv")), art)?;
+        let mut mods = String::from("section\ttype\toffset\tsize\tentsize\n");
+        for s in &module.sections {
+            mods.push_str(&format!("{}\t{:#x}\t{:#x}\t{}\t{:#x}\n", s.name, s.sh_type, s.offset, s.size, s.entsize));
+        }
+        mods.push_str(&format!("# symbols={}\n", module.symbols.len()));
+        mods.push_str(&format!("# relocations={} (R_MIPS_32)\n", module.relocations));
+        mods.push_str(&format!("# collision: grd={} ci={} ci_items={} cn={}\n", coll.grd_records, coll.ci_records, coll.ci_total_items, coll.cn_records));
+        std::fs::write(out.join(format!("{stem}-module.tsv")), mods)?;
+    }
+    Ok((entry_name, row))
 }
 
 fn files_extract(iso: &IsoImage, out: &Path) -> Result<()> {
