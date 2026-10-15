@@ -4,6 +4,7 @@ pub mod aipath;
 pub mod anim;
 pub mod bigf;
 pub mod buf;
+pub mod carmodel;
 pub mod character;
 pub mod collision;
 pub mod crp;
