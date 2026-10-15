@@ -212,6 +212,10 @@ fn view_model_entries(scene: &scene::Scene, l: &scene::SkinLayout) -> Option<Vec
     // anim set [M `Player_ChangeSubState(10)`; L PCSX2 "no view model"]) — frame_state hides the
     // arms' palette; the reattach skips too.
     if s.missile_cam.is_some() { return None; }
+    // fix-wallhug-prompt: the creep's third-person camera hides the view model too [M
+    // `Player_PositionCamera` 0x18f5d8 case 0xb: `View_SetDrawInNoViews(BLData+0x7e8)`; the entry
+    // holsters the weapon, `Player_WeaponNone` 0x196758:114].
+    if s.bond.substate == nf_game::player::SS_CREEP { return None; }
     let ci = *scene.view_models.get(&s.gun.weapon)?;
     let base = *l.char_base.get(ci)? as usize;
     let nb = scene.characters.get(ci)?.skeleton.bones as usize;
@@ -2325,6 +2329,12 @@ impl ApplicationHandler for App {
                             // ride hide + hud.rs's gate).
                             if let Some((p, d)) = sim.view_override() {
                                 self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw: d[0].atan2(d[2]), pitch: d[1].clamp(-1.0, 1.0).asin(), fov: GAME_FOV };
+                            }
+                            // fix-wallhug-prompt [M `Player_PositionCamera` 0x18f5d8 case 0xb → `camera_tracking`
+                            // 0x1ba5e0]: the wall shimmy's camera is the game's third-person tracking camera
+                            // (the user's "when I entered a prompt it was in first person. should be 3rd person").
+                            if let Some((p, yaw, pitch, fov)) = sim.creep_camera() {
+                                self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov: GAME_FOV / fov };
                             }
                         }
                         // HUD stand-in: Bond's health (`BL+0x894`) and the hit flash (`BL+0x968`) in the title.
