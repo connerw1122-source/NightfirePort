@@ -115,3 +115,9 @@ tasks' calibrated windows.
   re-derivation (Copter/GT/RB/Effect_Laser/Ripples_Update) before it can join the real stream.
 - The drone fire-script muzzle op (0x1c1b38:445-453, 6 draws) is not ported at all.
 - The two AI re-calibrations above.
+
+## Final tree
+
+origin/master 404d7dc1 merged (WORKLOG conflict resolved keeping both; gas.rs/effect.rs/scene.rs
+auto-merged clean). Re-runs on the merged tree: `fix_gas_rng_live` 2/2, the nf-game chunk
+**172 passed / 0 failed**. Branch pushed at this state.
