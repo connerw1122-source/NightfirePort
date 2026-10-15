@@ -12919,3 +12919,21 @@ the binaries the window fit.)
   Branch cut from origin/master cf4f33cd. Plan: read the decompile + writers of +0x108/+0x114, write
   the fail-first NF_ISO test (zoom 2 tilt = half of zoom 1), fix scene.rs, sister test zoom 1
   bit-for-bit unchanged.
+- (14:55-15:15) Finding: G-044's fix is ALREADY on master — fix-viewmodel-zoom (b12a1b77, merged
+  2026-10-13) appended `/ self.zoom` to both gun-tilt terms in scene.rs `gun_matrix`, with the
+  4/3 aspect and an [L ee_start_05] citation, plus fix_viewmodel_zoom_live (composed-angle, 10%
+  tolerance at an uncontrolled zoom). This task verified the decompile chain independently
+  (Player_WeaponRecoil 0x1a3de8:52-57; viewer+0x108 writer = Player_PositionCamera 0x18f5d8 case
+  0/0xe feeding BL+0x8D0, case 1 pins 1.0; viewer+0x114 writer = Camera_CalcViewAngles 0x1baf70:
+  29-41 — 4/3 default, 16/9 widescreen option [DAT_002a37c4 = switch_CONFIG_WIDESCREEN 0x216168],
+  ×0.5/×2 split-screen), re-verified the [L] tag myself from ee_start_05 (0x1fc6c10: +0x108=1.0,
+  +0x114=0x3faaaaab, +0x118=π/3), and added the task's exact tests: fix_hud_zoom_tilt_live
+  (zoom-2 halves both terms; aspect = the constant's bits; the real input path's Ronin ramp
+  follows the formula tick-by-tick). FAIL-FIRST shown on the reverted divide (zoom-2 term stayed
+  at the zoom-1 value; ramp tick 0 failed), 3/3 pass on the restored tree; scene.rs left
+  byte-identical to master. No scoped weapon zooms to exactly 2.0 ([L ee_start_05 zooms 3.5/4/6/
+  10/16]) so the exact-2.0 leg sets BL+0x8D0 = 2.0 directly (a mid-ramp value; PositionCamera
+  feeds it verbatim). Observation (out of scope, noted in the GAPS closure): the game's rot+0x54
+  also adds the recoil kick BL+0x8e4 — the port doesn't model 0x8e0/0x8e4; no increment found in
+  the C decompile (only decay ×0.75 + init 0), decompiler-dropped store suspected. GAPS G-044 →
+  Closed. Suite restarted on the final tree.
