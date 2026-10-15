@@ -74,10 +74,15 @@ pub struct LadderCtx<'a> {
     pub sink: bool,
     /// The level's creepwall objects (class 0x2B '+', placement 0x3F), in placement order.
     pub creepwalls: &'a [crate::creepwall::CreepWall],
+    /// The head-bump sound gate: `Player_HandleJump` 0x1916b0:196-198 picks the metal clang 0x5FB
+    /// when `level_tag+0x50` (a byte the port's loader does not read) is 0xD/0xE, else the flesh
+    /// thud 0xA3. The Sim sets it per level once the byte is identified (live check in
+    /// docs/systems/sound-coverage.md); default false = the 0xA3 arm.
+    pub level_bump_5fb: bool,
 }
 
 impl Default for LadderCtx<'_> {
-    fn default() -> Self { LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[] } }
+    fn default() -> Self { LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[], level_bump_5fb: false } }
 }
 
 /// One tick of player input as game actions: `forward` (action 2), `strafe` (action 1; + = left), `turn` (radians
@@ -241,6 +246,11 @@ pub struct Bond {
     /// `vel += WldGravity·REC_FRAME_RATE`) and `Player_ChangeSubState` 0x190630 case 0xd/0xe
     /// (the death-anim pick, see `death_script`). fix-world-gravity.
     pub world_gravity: [f32; 3],
+    /// audit-sound-calls: the jump sounds this tick produced, `(id, pos)` — the launch 0xA3 and
+    /// the head bump 0xA3/0x5FB [`Player_HandleJump` 0x1916b0:184, 195-198]. Drained by the Sim
+    /// into `drones.audio` (the Sim's sound list) and cleared there. Field on its own line
+    /// (merge lesson 4).
+    pub sfx_out: Vec<(u32, V3)>,
 }
 
 impl Bond {
@@ -255,6 +265,10 @@ impl Bond {
             prev_pos: pos,
             creep: None,
             world_gravity: [0.0, -9.8, 0.0],
+            // audit-sound-calls: the jump launch / head-bump sounds outbox (drained by the Sim
+            // into `drones.audio`); `Player_HandleJump` 0x1916b0 plays 0xA3 at launch (:184) and
+            // 0xA3/0x5FB at the head bump (:195-198).
+            sfx_out: Vec::new(),
         }
     }
 
@@ -1038,6 +1052,8 @@ impl Bond {
             self.jump = 1;
             self.land_delay = 4;
             self.grounded = false;
+            // [M Player_HandleJump 0x1916b0:184]: the launch plays 0xA3 at the player.
+            self.sfx_out.push((0xa3, self.pos));
         }
         // The matrix turns first, then the position moves along the new axes. The climb's one-tick
         // local-forward push (Player_Climb's ±0x18 write) rides along once.
@@ -1119,7 +1135,13 @@ impl Bond {
             self.fall_timer = 0;
         }
         // Jump: a head bump ends the rise; landing after the delay.
-        if self.jump == 1 && self.head_bump { self.vel = [0.0; 3]; self.jump = 2; }
+        if self.jump == 1 && self.head_bump {
+            self.vel = [0.0; 3];
+            self.jump = 2;
+            // [M Player_HandleJump 0x1916b0:195-198]: the bump zeroes the velocity and plays
+            // 0x5FB on levels whose `level_tag+0x50` byte is 0xD/0xE, else 0xA3.
+            self.sfx_out.push((if ctx.level_bump_5fb { 0x5fb } else { 0xa3 }, self.pos));
+        }
         self.land_delay = self.land_delay.saturating_sub(1);
         if self.jump != 0 && self.land_delay == 0 && self.grounded && self.vel[1] <= 0.0 { self.vel = [0.0; 3]; self.jump = 0; }
         if self.grounded && self.jump == 0 { self.vel[1] = 0.0; }
@@ -1676,7 +1698,7 @@ mod tests {
     fn the_ladder_grab_gate_excludes_only_climb_and_grapple() {
         let world = CollisionWorld::from_triangles(Vec::new());
         let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
-        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: Some(2.0), sink: false, creepwalls: &[] };
+        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: Some(2.0), sink: false, creepwalls: &[], level_bump_5fb: false };
         // SWIM grabs: one tick in the water context attaches (pre-fix it stayed SS_SWIM).
         let mut b = Bond::new([10.0, 3.0, 20.5], lad.yaw + std::f32::consts::PI);
         b.substate = SS_SWIM;
@@ -1700,7 +1722,7 @@ mod tests {
     #[test]
     fn swim_moves_along_the_look_direction_and_the_surface_clamps() {
         let world = CollisionWorld::from_triangles(Vec::new());
-        let ctx = LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: Some(3.0), sink: false, creepwalls: &[] };
+        let ctx = LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: Some(3.0), sink: false, creepwalls: &[], level_bump_5fb: false };
         let mut b = Bond::new([0.0, 2.7, 0.0], 0.0); // below surface − 0.3? 2.7 < 2.7 is false — at the ceiling
         b.substate = SS_SWIM;
         // Look down-ish (pitch −0.5: dir = (0, −sin π/4, cos π/4)), swim forward: the position must
@@ -1731,7 +1753,7 @@ mod tests {
     fn climb_look_turns_within_the_ladder_window_and_pitch_is_free() {
         let world = CollisionWorld::from_triangles(Vec::new());
         let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
-        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[] };
+        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[], level_bump_5fb: false };
         let mut b = Bond::new([10.0, 3.0, 20.0 + 0.5], lad.yaw + std::f32::consts::PI);
         b.substate = SS_CLIMB;
         b.ladder = Some(0);

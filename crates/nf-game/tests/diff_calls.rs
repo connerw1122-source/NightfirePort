@@ -159,7 +159,7 @@ fn rand_rand(r: &CallRecord) -> Result<PortResult, String> {
     let seed = |a: u32| -> Result<u32, String> {
         r.ins.iter().find(|g| g.addr == a).map(|g| u32_at(&g.bytes, 0)).ok_or(format!("no in region for seed {a:#x}"))
     };
-    let mut rng = nf_game::drone::Rng { x: seed(0x30d0_a0)?, y: seed(0x30d0_a4)? };
+    let mut rng = nf_game::drone::Rng { x: seed(0x30d0_a0)?, y: seed(0x30d0_a4)?, ..Default::default() };
     let v0 = rng.rand(n);
     let outs = r.outs.iter().map(|g| {
         let v = match g.addr { 0x30d0_a0 => rng.x, 0x30d0_a4 => rng.y, a => return Err(format!("unexpected out region {a:#x}")) };
