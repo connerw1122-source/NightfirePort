@@ -74,7 +74,7 @@ landed the weights (`AnimFacialBlend` 0x1be648) on the CPU skinning path only; t
   `fix_cutscenes2_live` 5/5, and the SkinAttr readers (`models_weapons_live` 2/2,
   `fix_searchlight_remainder_live` 4/4, `fix_interp_ghosting_live` 2/2, `cutscene_models_live`
   3/3, `cutscene_draw_live` 4/4) on the merged tree (9d8918d4). Full suite (tools/test/suite.py,
-  the final tree, this checkout): **TOTALS_PLACEHOLDER**.
+  the final tree, this checkout): the full-suite totals were not captured — the sandbox rolled over to the next task before the final tree's run finished; what ran green on the final tree is the list above (the five facial/cutscene binaries + the five SkinAttr-reader binaries, 31 tests) plus `nf-game --lib` untouched. The next session should re-run `tools/test/suite.py` once on the merged tree..
 - Failing-first: the pre-fix src run is quoted above (a pre-fix checkout of `crates/nf-view/src`
   with the pre-fix-API tests — the full test file binds to the new APIs by design).
 - **Independent audit (subagent, decompile-checked): PASS with three fixes landed.** It verified
