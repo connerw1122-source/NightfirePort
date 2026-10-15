@@ -5440,8 +5440,14 @@ pub struct Drones {
     /// 0x176a28:68-69 runs sight — and `DroneVision_FindAlertedDrones` — only once
     /// `DAT_00298fb8 + 15 <= now` (stamped by `Drone_PostLoad_Init` 0x136938:46 at every level
     /// load) AND `DAT_00298fbc + 15 <= now` (stamped by `Drone_EnableAll(1)` 0x1383e8:25); 15 flat
-    /// ticks, no FRAME_RATE_MUL in the disasm. Hearing is NOT gated. The port mirrors both stamps
-    /// with this one field: `frame + 15` at construction (the load) and at every re-enable.
+    /// ticks, no FRAME_RATE_MUL in the disasm. Hearing is NOT gated. `now` is the boot-global
+    /// frame counter `GameState+0x34` = 0x2a379c [M 0x176a7c `lw v1, 14236(0x2a0000)`;
+    /// tools/trace/ai_trace.py samples the same word as "once per in-game frame"]. The fb8 stamp
+    /// lands in the LOAD sequence — [L ee_start_05.bin] fb8 = 108150 with the counter at 108153
+    /// (fb8 − 3) and fbc = 0 (never stamped): the 15 frames elapse during the loading/fade frames
+    /// BEFORE the first AI tick, so the pause never gates gameplay ticks — the port's frame 0 is
+    /// the post-load state and the construction value is 0. The fbc stamp DOES land in gameplay
+    /// (`Script_Free`'s re-enable mid-level) and is mirrored at every DroneEnable(1).
     pub sight_pause_until: u32,
     los_cursor: usize,
     /// The game's drone list (0x298E14, `LList_Add` appends): drones created at load in placement order, spawned ones
@@ -5836,10 +5842,11 @@ impl Drones {
             aims_raise: 1200,
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
-            // fix-trigger-unknowns (U-032): the 15-frame sight pause — the fb8 (load) stamp; the fbc
-            // (EnableAll(1)) re-stamp happens in the DroneEnable handler. (fields on their own lines —
-            // merge lesson 4)
-            sight_pause_until: 15,
+            // fix-trigger-unknowns2 (U-032): the 15-frame sight pause — only the `Drone_EnableAll(1)`
+            // (fbc) stamp can land in gameplay and is re-stamped in the DroneEnable handler; the load
+            // stamp (fb8) is consumed by the loading frames before the first AI tick, so the
+            // construction value is 0 (see the field's doc — merge lesson 4: fields on own lines).
+            sight_pause_until: 0,
             pending_blasts: Vec::new(),
             level_current: 0,
             // fix-safe08: (script hash, stream) → the reserved pickup slot the renderer built for the
@@ -7147,7 +7154,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         if self.npc_enabled {
         // U-032: sight and FindAlertedDrones wait out the 15-frame pause (see `sight_pause_until`);
         // the hearing passes after the alerted-drones block are NOT gated [M 0x176a28:68-70 vs
-        // 0x139520:172+]. `frame` counts from the load, so the construction stamp is the fb8 one.
+        // 0x139520:172+]. Only the DroneEnable(1) re-stamp can set this into the future — the load
+        // stamp expires before the first simulated tick (fix-trigger-unknowns2).
         if frame >= self.sight_pause_until {
         // Visibility every tick for drones with vision on; line of sight for one drone per tick (round robin).
         for dr in &mut self.list { dr.visibility = if dr.present && !dr.corpse && (dr.vision_on || dr.alert >= 1.0) { dr.visibility() } else { 0.0 }; if dr.visibility < 0.7 { dr.los = false; } }
@@ -8777,14 +8785,20 @@ mod tests {
     use super::*;
     use crate::world::CollisionWorld;
 
-    /// U-032's third question: the 15-frame sight pause is stamped at load — `Drones::new` is the
-    /// port's `Drone_PostLoad_Init` 0x136938:46 (`DAT_00298fb8 = now`), and the reader gate is
-    /// `DroneVision_ProcessDroneSight` 0x176a28:68-69 (`fb8 + 15 <= now && fbc + 15 <= now`).
-    /// The `Drone_EnableAll(1)` re-stamp is mirrored in the DroneEnable handler.
+    /// U-032's third question: the 15-frame sight pause (`DroneVision_ProcessDroneSight`
+    /// 0x176a28:68-69, `fb8 + 15 <= now && fbc + 15 <= now`) never consumes SIMULATED ticks on
+    /// the load path — `now` is the boot-global counter `GameState+0x34` 0x2a379c [M 0x176a7c]
+    /// and PostLoad_Init's fb8 stamp lands in the load sequence: [L ee_start_05.bin] fb8 = 108150
+    /// with the counter at 108153 (fb8 − 3) and fbc = 0, so the 15 frames are the loading/fade
+    /// frames BEFORE the first AI tick (the live 61-tick notice — WORKLOG 0019 — is otherwise
+    /// impossible: a gameplay-side pause would push it to 64, which is exactly the regression
+    /// fix-trigger-unknowns2 removed). The port's frame 0 is the post-load state, so the
+    /// construction value is 0; the `Drone_EnableAll(1)` re-stamp (mid-gameplay) stays in the
+    /// DroneEnable handler.
     #[test]
-    fn the_15_frame_sight_pause_is_stamped_at_load() {
+    fn the_load_sight_pause_never_consumes_gameplay_ticks() {
         let d = Drones::new(Vec::new(), Rng::new(1));
-        assert_eq!(d.sight_pause_until, 15, "sight waits 15 flat ticks after the load stamp");
+        assert_eq!(d.sight_pause_until, 0, "the fb8 load stamp is consumed before the first simulated tick");
     }
 
     /// A drone with only the collision-relevant fields set (pos, velocity, bounded, free_root, corpse), for the
