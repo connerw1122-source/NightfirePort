@@ -482,6 +482,11 @@ pub struct Sim {
     /// crouch-icon timer, the pickup message bar (pane 21) and how many `drones.taken` events it has
     /// converted. Stepped per tick in `hud_tick` (the game's HUD update runs per 60 Hz frame).
     pub hud: HudState,
+    /// The view aspect the game writes at viewer+0x114 (`Camera_CalcViewAngles` 0x1baf70:28-32:
+    /// 16/9 = 0x3fe38e39 with the AV options' widescreen flag set, 4/3 = 0x3faaaaab otherwise; the
+    /// host feeds it from `FrontEnd::view_aspect`). screen-adjust-model (field on its own line
+    /// [WORKLOG lesson 4]).
+    pub view_aspect: f32,
 }
 
 /// A status-pane message (`Text_AddMsg` 0x1b0c30's `TXT_MSG` node): the bound text, its remaining ticks,
@@ -4120,11 +4125,12 @@ impl Sim {
         let (cx, cy) = self.crosshair();
         // G-044 [M Player_WeaponRecoil 0x1a3de8:52-57]: both tilt terms divide by `glb_viewer+0x108`
         // (the zoom — `Player_PositionCamera` 0x18f5d8:129 feeds it BL+0x8D0, the port's `self.zoom`),
-        // and the x term scales by `viewer+0x114` = 4/3 on a 4:3 screen [L ee_start_05 viewer
-        // 0x1fc6c10+0x114 = 0x3faaaaab; `Camera_CalcViewAngles` 0x1baf70 writes 16/9 there in the
-        // widescreen mode the port doesn't model]. A zoomed view used to tilt the gun as if unzoomed.
+        // and the x term scales by `viewer+0x114` = 4/3 on a 4:3 screen, 16/9 with the AV options'
+        // widescreen flag [L ee_start_05 viewer 0x1fc6c10+0x114 = 0x3faaaaab; `Camera_CalcViewAngles`
+        // 0x1baf70:28-32 writes 0x3fe38e39 = 16/9 there when DAT_002a37c4 is set — screen-adjust-model
+        // feeds it through `self.view_aspect`]. A zoomed view used to tilt the gun as if unzoomed.
         let (gy, gp) = (
-            4.0 / 3.0 * cx * std::f32::consts::FRAC_PI_6 / self.zoom,
+            self.view_aspect * cx * std::f32::consts::FRAC_PI_6 / self.zoom,
             cy * std::f32::consts::FRAC_PI_6 / self.zoom,
         );
         let gf = [0, 1, 2].map(|k| fwd[k] * gp.cos() * gy.cos() - left[k] * gp.cos() * gy.sin() + up[k] * gp.sin());
@@ -5917,6 +5923,9 @@ impl Scene {
                 view_aim_anim: None,
                 view_aim_raising: false,
                 mp: None,
+                // screen-adjust-model: viewer+0x114's 4:3 default; the host feeds 16/9 when the AV
+                // options' widescreen is on [M Camera_CalcViewAngles 0x1baf70:28-32].
+                view_aspect: 4.0 / 3.0,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
