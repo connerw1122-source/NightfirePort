@@ -12921,3 +12921,25 @@ the binaries the window fit.)
   0x12f678:100-113). Plan: for each site, read the decompile at the game's point, replace the
   port's construction with the game's mechanism (or prove equivalence with a test); fail-first
   NF_ISO tests, suite green, G-046 updated. Branch cut from origin/master cf4f33cd.
+- (14:30-15:58) The four PORT_ONLY sites (G-046): researched via 3 parallel subagents (the decompile chains with
+  addresses) + implemented. CASING (done): the game's guard arm of Bullet_init_casing_ex 0x12f678:102-114 reads
+  the weapon-datum bone world matrix via AnimGetBoneWorldTrans — datum base+2 when the skin carries the eject port
+  (AnimDatumGetIndex 0x1c77f8) else base+1 (the muzzle datum); Drone::eject_matrix added (the weapon_matrix/
+  muzzle composition) and the guard fire call site feeds Casings::eject_bone (RNG order unchanged); test
+  guard_casing_ejects_from_the_weapon_datum_matrix, fail-first shown by reverting the call site. HEAD-TRACK
+  (equivalence proven + gates fixed): the object-space measurement ≡ the game's world-space two-acos-block
+  measurement (rigid yaw+translation ⇒ rotation-invariant dots/crosses/acos) — proven by
+  head_track_want_matches_the_game_s_world_space_measurement (0x1bf618:189-281 transcribed on the world palette);
+  the game's per-plane 0.25 gates (:209-210,:257-258) + behind skip (:222-236) added to head_track_want (the old
+  full-3D gate measured behind targets and clamped them) — head_track_pitch_stays_level_for_behind_targets,
+  fail-first shown; head_track_want made pub for the test. LADDER (documented, blocked): the game's stage 2 =
+  capsule vs the ladder's authored celglist triangles (Collide_Update 0x1ea398 → Collide_Intersect 0x1ebaa8:276-296
+  → Intersect_CylGeom 0x109da0, no trig); the port's analytic in_mesh_column stands because the ladder's glist is
+  unreachable in the port's data model (07000005 probe: map object hashcode 0xFFFFFFFF, world.shape() empty) —
+  also documented: the decompile's capsule arms are substate−1 keyed (walk/swim take the DEFAULT 0.55 arm, not the
+  port's playtest-tuned 0.275/low mapping). CRAWL (documented): the crawl anim scripts 0x600046d/f/471/475 ARE in
+  the level bins (0x6000471/0x6000475 = 90-frame looping locomotion → sequences 0x040003f0/0x040003e5, 222
+  channels); the root-motion extraction (bond's skeleton-0 skin + the channel order) didn't fit the window — the
+  0.02/tick [S] stand-in stays, live check requested. G-046 updated; report
+  docs/reports/exact-sine-portonly-review.md (live checks for the main agent: the guard shell basis, the
+  behind-target head behavior, the crawl speed fieldprobe, the ladder grab width). Suite totals appended below.
