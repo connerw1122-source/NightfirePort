@@ -171,7 +171,11 @@ impl Effects {
                     // a visual; `Vec_NormToRot`/`ATAN2_APPROX` are not ported, see the report).
                     let _ = g.orient_normal;
                     let rgba = [((g.rgba[0] >> 24) & 0xff) as u8, ((g.rgba[0] >> 16) & 0xff) as u8, ((g.rgba[0] >> 8) & 0xff) as u8, (g.rgba[0] & 0xff) as u8];
-                    gas.init_ex(g.mesh, p, 0.0, [0.0; 3], g.scale[0], g.scale[1], g.kind as u8, rgba, g.rgba[1], g.life as f32);
+                    // fix-gas-rng: the real-stream form — `Gas_Init`'s own draws (spin 0x1ab060,
+                    // sign 0x1ab08c, the kind-7 wind ×3 0x1ab160/184/1a4) ride the shared RNG (the
+                    // game passes the velocity pointer NULL at this site, so the NULL-vel dispatch
+                    // applies: kind 4 entries take the rising default with no extra draws).
+                    gas.init_effect_puff(rng, g.mesh, p, g.kind as u8, rgba, g.rgba[1], g.scale[0], g.scale[1], g.life as f32);
                 }
             }
             // The decal: `EffectInfo+4` != 0 → take a pool node, evicting the OLDEST when the 200 are
@@ -324,7 +328,8 @@ mod tests {
             let mut rng = Rng::new(seed);
             let before = (rng.x, rng.y);
             let out = e.bullet_impact(&mut rng, Some(&surf2), &mut gas, [0.0; 3], n, 10, dir, 0x12, 0, true);
-            assert_ne!((rng.x, rng.y), before, "N != 0: exactly one Rand_Rand draw (seeds advanced)");
+            assert_ne!((rng.x, rng.y), before,
+                "the tick drew (the kind-9 entry's spin+sign for the player shot + the ricochet roll)");
             if let Some(d) = out { found = Some((seed, d)); break; }
         }
         let (_, d) = found.expect("some seed must roll a ricochet with N=0xffff");
@@ -333,8 +338,11 @@ mod tests {
         assert!((d[0] - 0.995).abs() < 0.01, "the tangential component survives");
         assert!(d[2].abs() < 0.01, "the normal component is removed (e ≈ 0)");
         assert!((d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - 1.0).abs() < 1e-4, "normalised");
-        // Sister: N = 0 → no draw, no reflection.
-        let r3 = EffectRecord { debris_enable: 0, ..rec(0, 0) };
+        // Sister: N = 0 → no ricochet draw, no reflection. The gas entries are emptied so the
+        // count isolates the ricochet roll (fix-gas-rng: the player's impact puffs always draw —
+        // the game skips the 1-in-2 kill for the obj+0xff == 3 owner [M 0x1ce8a8] — so the old
+        // gas-carrying sister saw the kind-9 entry's 2 spin draws land and read them as the roll).
+        let r3 = EffectRecord { gas: Default::default(), debris_enable: 0, ..rec(0, 0) };
         let surf3 = table(r3);
         let mut e3 = Effects::new();
         let mut rng3 = Rng::new(1);
