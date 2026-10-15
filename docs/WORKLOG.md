@@ -12437,3 +12437,20 @@ Work Log:
 
 Stage Summary:
 - The guided ride now takes the window's view in play, in the headless renders, with the arms and the crosshair hidden and the 15-tick restore; the Sentinel rockets fly at the measured 0.33666/0.2525 u/frame. Report: docs/reports/fix-sentinel-camera-play.md (the live checks: the guided speed gdbwatch, the other 0x200 records, the red tint).
+---
+Task: fix-guard-first-shot
+Agent: worker (sandbox web-461a08d8)
+Task: guards still shoot instantly after first sight (user playtest 1014-1725, 07000006 courtyard). Measure the port's ticks from first sight to first shot through the real input path, find the game's chain (DroneFunc_CombatState, the alert/raise-gun anim, DroneWeap_FireWeapon 0x178f68's gates, the per-difficulty reaction delay) and port what makes the port fire early. Files: crates/nf-game/src/drone.rs.
+
+Work Log:
+- 01:33 UTC: branch s/fix-guard-first-shot created from origin/master (bf2bd176). Repo, work/, ISO, nf-queue worktree, cargo+ALSA all present from the previous sandbox; setup skipped except remote+fetch. Reading docs/live/2026-10-14-weapon-measurements-pcsx2.md and the drone decompile next.
+---
+Task: fix-guard-first-shot
+Agent: worker (sandbox web-461a08d8)
+Task: guards still shoot instantly after first sight (07000006 courtyard, playtest 1014-1725). Measure the port's sight→first-shot through the real input path, find the game's chain and port what makes the port fire early. Files: crates/nf-game/src/drone.rs.
+
+Work Log:
+- 01:33 UTC: branch s/fix-guard-first-shot from origin/master (bf2bd176); setup skipped (repo/ISO/work present), suite started in background.
+- 01:35-02:55: the decompile read (subagent + direct). The game's chain, all [M]: the sight flag 4 is set by `DroneVision_HaveOpponentSight` 0x175ef0 ONLY after `+0x270 >= DroneFunc_ReactionTime` 0x14ac60 (default arm 10 ticks on 07000006; the 5-level formula otherwise; 0 with flag 8 or alertness 1); `ProcessDroneSight` 0x176a28 resets the unseen counter +0x274 ONLY on the opponent-visible branch (+0x170 != 0 && +0x228 & 2) that gates the HaveOpponentSight call, so during the reaction window +0x274 KEEPS GROWING and `DoFiring` 0x17a080's `+0x274 < 0x10` gate holds every bullet; the fire request +0x3B is armed by `DroneWeap_Fire` 0x17a8c0 on fire-state entry and re-armed from the sight flag in `DroneFunc_CombatState` 0x148338:108-113; `FireWeapon` 0x178f68's SP path has no ammo/sight gate of its own (the first burst's NextBulletTime max(now, +0xBC8+BurstDelay+interval) collapses to now [0x179d40:134-142]); CombatNewSighting 0x173280 rolls crouch→0x70 else 0x68 (matches the port). The trace [L 06-firstsight.trace]: the courtyard guards woke WaitSwitch→Idle at +547, sighted Bond (alertness jump ON the combat-state tick), d9 Idle→AIM_STAND (31f), d1 Idle→STEP_AIM (116f), first hits 70/128 frames after the jump.
+- 02:55: REPRODUCED fail-first through the real input path (crates/nf-view/tests/fix_guard_first_shot_live.rs: Bond stands in the searchlight sweep, the alarm ch55 wakes the guards, per-guard sight→first-shot): guard 20 fired THE SAME TICK as first LOS (sight→shot 0, seen=false, state 0x5a, the alarm-scheduled burst) — inside the reaction window.
+- 02:58: FIX (drone.rs sight loop): the unseen-ticks reset moves inside the reaction ack — `ProcessDroneSight` 0x176a28 resets +0x274 only on the opponent-visible branch whose sight flag rides the 0x175ef0 reaction gate, so the port now holds `unseen_ticks` growing until `seen_ticks >= reaction_time`, keeping DoFiring's +0x274 < 0x10 gate shut through the window. Post-fix: sight→shot 9 (the ack lands on the 10th LOS tick — the counter counts the sighting tick [0x176a28:222]), seen=true. Sisters green (searchlight alarm 5/5, searchlights_guards 2/2, drone3 2/2); pre-fix tree re-shown failing (git stash round-trip).
