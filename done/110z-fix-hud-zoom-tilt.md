@@ -142,3 +142,8 @@ nf-view (no GPU here; render-check the tilt, not the reticle). Spot: `nf-view 07
 PCSX2 (optional, only if the kick term gets its task): gdbwatch `BL+0x8e0`/`BL+0x8e4` (BL = the
 player's BLData) during sustained fire on 07000005 — expected: non-zero spikes on shots, ×0.75
 decay between them, and the view-model yaw kicking with them (Player_WeaponRecoil 0x1a3de8:54-57).
+
+---
+## ntfy failed
+
+All three fallbacks failed at 2026-10-15T15:50Z: curl → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached"}`; python3 urllib → `HTTP Error 429: Too Many Requests`; wget → `ERROR 429: Too Many Requests.` Server-side daily quota. The full error text is in the report (docs/reports/fix-hud-zoom-tilt.md on the branch).
