@@ -140,3 +140,39 @@ through the save.
 `gdbwatch 0x2bcc20 0x1c0 readwrite --seconds 10` on 07000005 during a fight (shots, a kill, a KO, a
 surrender, a detection): the expected writers are the Log family (0x1998d8/0x199840/0x1996a8/0x199730/
 0x1997b8/0x199960/0x199620/0x1995a0) and the readers GetScore (0x1984b0) + the save path.
+
+## `Player_InitWeapon` 0x1a7ef8:10-27 — the per-difficulty autoaim distance writes (fix-progress-detected-hook)
+
+`Player_InitWeapon` (called from `Player_Init` at every mission/warm load) writes the pair
+`MAX_AUTO_AIM_DIST_*` at **0x30ccf0** (`$gp-0x7980`) / **0x30ccf4** (`$gp-0x797c`) keyed on the
+difficulty runtime `GameState+40` (DECIMAL — hex +0x28, address 0x2a3790; see the progress.rs
+correction — the decomp's `_40_4_` names are decimal offsets, and `[0x2a37a8]` is a different
+field that reads 0 in every snapshot [L]):
+
+| difficulty (`[0x2a3790]`) | store target 0x30ccf0 | store target 0x30ccf4 | disasm |
+|---|---|---|---|
+| MP (`[0x2a4920]` != 0) | 10.0 | 16.0 | `lui at,0x4120/0x4180` 0x1a7f44-0x1a7f50 |
+| 2 | 8.0 | 14.0 | `lui at,0x4100/0x4160` 0x1a7f98-0x1a7fa4 |
+| anything but 3 (SP) | 12.0 | 18.0 | `lui at,0x4140/0x4190` 0x1a7f80-0x1a7f8c |
+| 3 | 0.0 | 0.0 | `sw zero` 0x1a7f7c / 0x1a7fb4 |
+
+The decomp's symbolic names are **crossed against the addresses**: the C labels the 0x30ccf0
+global `MAX_AUTO_AIM_DIST_MIDL` and the 0x30ccf4 one `NEAR`, but the stores put the SMALLER value
+(NEAR) at 0x30ccf0 and the LARGER (MIDL) at 0x30ccf4 — [L] `ee_start_05.bin` with difficulty 1
+(the 12.0/18.0 arm) reads [0x30ccf0]=12.0, [0x30ccf4]=18.0, matching the disasm store order
+(`swc1 f0`, then `swc1 f1` in the 0x1a7fac branch's delay slot), not the C labels.
+
+**The pair is write-only in ACTION.ELF** — the port does not thread it (that would add behaviour
+the shipped game does not have):
+- whole-decompile grep: only `Player_InitWeapon` touches the names [M];
+- the only autoaim consumers, `Check_AutoAim` 0x1a73f8 and `Player_AutoAim` 0x1a7c98, touch
+  `Autoaim_Range/Angle_H/Angle_V/Easy/Normal/Hard/LockOnMul` only [M decomp; fix-progress-
+  remainder's gp-relative + symbolic lui/addiu scans found no other reader];
+- fix-progress-remainder (110d) fixed the real gap instead: `Player_AutoAim` seeds the scan cap
+  from `Autoaim_Range` (25.0) except the Q-Claw (0x50/0x51), whose cap is its `weapon_data+0x1c`
+  (50.0/100.0 [L]).
+
+The **effective** per-difficulty autoaim behaviour is the multiplier pick in `Check_AutoAim`
+0x1a73f8:127-141 — `Autoaim_NormalMul` default, `Autoaim_EasyMul` iff d==1, `Autoaim_HardMul`
+iff d==3 or 4, keyed on the same `[0x2a3790]` — which the port threads at `Drones::auto_aim`
+(drone.rs, `match self.difficulty { 1 => Easy, 3 | 4 => Hard, _ => Normal }`).
