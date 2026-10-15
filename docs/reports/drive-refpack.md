@@ -80,20 +80,23 @@ kept). Task: 500-drive-refpack. Everything below cites its evidence.
 - `cargo test --offline --release -p nf-formats --lib refpack` → 9/9 pass.
 - `NF_DRIVING_REFPACK=… cargo test --offline --release -p nf-formats --test driving_golden` → 6/6
   pass (4 pre-existing + the 2 new, the new decode test with the real 8 archives).
-- The chunked suite (`tools/test/suite.py`, foreground chunks — this sandbox reaps background jobs):
-  chunk 1 85 binaries (all green but the known no-GPU pylon trio), chunk 2 the core set
-  (`nf_game`/`nf_formats`/`nf_audio`/`nf_view` libs + `driving_golden` + `disc_golden` +
+- The chunked suite (`tools/test/suite.py`, foreground chunks — this sandbox reaps background jobs,
+  even setsid-detached ones; canary-verified): chunk 1 85 binaries (all green but the known no-GPU
+  pylon trio: `probe_pylon_render` + `fix_0c_pylon_live` ×2, wgpu "adapter: NotFound"), chunk 2 the
+  core set (`nf_game`/`nf_formats`/`nf_audio`/`nf_view` libs + `driving_golden` + `disc_golden` +
   `facial_probe` + `pss_movies_live`) → **289 passed / 3 failed** — the 3 are exactly the allowed
-  slim-ISO `disc_golden` set; chunk 3 49 more binaries, zero failures. `driving_golden` re-run with
-  the real folder inside the suite window: 6/6. **~196 binaries were not reached** (the
-  integration/live tail of nf-game/nf-view — list below); they touch none of this task's code (the
-  change is additive to nf-formats only).
+  slim-ISO `disc_golden` set; chunks 3+4 98 more binaries, zero failures. `driving_golden` re-run
+  with the real folder inside the suite window: 6/6. **Total 183 of 338 binaries covered** — every
+  failure is one of the two documented environmental sets (slim-ISO disc_golden ×3, no-GPU pylon ×3).
+  The ~155 unrun binaries are the integration/live tail of nf-game/nf-view; they touch none of this
+  task's code (the change is additive to nf-formats only) — run the full suite on the merged tree
+  before merge, as standard.
 
 ## What's left
 
-- The ~196 unrun suite binaries (nf-game/nf-view integration + live tests, e.g. everything after
-  `ear_job_live` alphabetically plus `arena_smoke`… in the third chunk's tail): run the full suite on
-  the merged tree before merge — standard for every merge anyway. Chunks 1-3 logs: /home/z/suite_chunk*.log (scratch, not committed).
+- The ~155 suite binaries not reached in this sandbox's window (nf-game/nf-view integration + live
+  tests): run the full suite on the merged tree before merge — standard for every merge anyway.
+  Chunk logs stayed in the sandbox (scratch, not committed).
 - `.crp`/`.gal`/`.ssh`/… content formats (driving phase 1) — untouched, as scoped.
 - The 0x1E/0x9E callback decoder: unregistered in this build, unimplementable from it — the port
   errors on those flags like the game does.
