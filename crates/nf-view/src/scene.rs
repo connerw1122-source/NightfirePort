@@ -829,6 +829,12 @@ pub struct CelGraph {
     /// does not create a cel). A cel placement's glist draws when ITS cel is visible
     /// (`View_AddCels` 0x1e6ba0), not when the room its centre lands in is. fix-portal2.
     pub own_cells_main: Vec<Option<u32>>,
+    /// Per portal edge, the linked door's `Doors::list` index — `build_LinkDoors2Portals`
+    /// (0x1c8ac8, block 0x21's door half) writes the door object into the runtime portal's +0xC
+    /// (both halves; `Door_Link2Portal` 0x136788 gates which doors qualify). `None` = no door on
+    /// that portal. The vision walk skips a linked portal while `Door_IsClosed` (0x1367b0) reads
+    /// closed [M `Vision_Recurse` 0x1e82e0:65-70]. Built by `link_doors_to_portals` at load.
+    pub portal_doors: Vec<Option<u32>>,
 }
 
 #[derive(Clone, Copy)]
@@ -1018,7 +1024,76 @@ pub fn parse_cel_graph(level: &Level) -> (Vec<Cel>, CelGraph) {
             portals.push(PortalEdge { corners: q.corners, n_fwd: [pl[0], pl[1], pl[2]], d_fwd: pl[3], cel_a: a, cel_b: b, flags: q.flags });
         }
     }
-    (rooms, CelGraph { cells, portals, room_to_cell, dropped_portals: dropped, chains, own_cells_main })
+    let portal_doors: Vec<Option<u32>> = vec![None; portals.len()];
+    (rooms, CelGraph { cells, portals, room_to_cell, dropped_portals: dropped, chains, own_cells_main, portal_doors })
+}
+
+/// `build_LinkDoors2Portals` (0x1c8ac8 — map block 0x21's door half, GAPS G-035). Every door
+/// object (class 0x1C) with a runtime record and the portal-link flag — `Door_Link2Portal`
+/// 0x136788 = `obj+0xFD >> 3 & 1`, set by `Door_Create` when the placement's param 4 != 0, the
+/// port's `Door::straddle` — is linked to the portal quad it sits in: the game straddles the
+/// door's gfx sphere (obj+0x80/+0x8C) through the portal graph (`Collide_StraddleCels` 0x1eac98)
+/// and tests each straddled cel's portal chain for the quad whose PLANE lies within 0.25 of the
+/// sphere centre (`ABS(dot) < 0.25`, 0x1c8c34) and whose polygon contains it
+/// (`vecutil_point_on_poly` 0x1ec940 over the node's two triangles, the quad (c0,c1,c2) +
+/// (c2,c3,c0)). A match writes the door into `portal+0xC` on BOTH halves (the matched node and
+/// its twin at +0x4 — `if (puVar7[3] == 0)`, first door wins) and sets `obj+0xF0 |= 0x8000`.
+/// The port's `PortalEdge` is the pair of runtime halves, so one edge field carries the link.
+/// The straddle pre-pass is folded into the containment test: a quad containing the centre
+/// within 0.25 of its plane is always touched by the door's sphere (dist-to-tri ≤ 0.25 < the
+/// door radii measured on our levels, ≥ 1.1), so the game's straddle set provably contains both
+/// boundary cels of any quad this test accepts — the filter cannot change the match. Returns the
+/// number of doors that linked (a door may match several quads; an edge keeps its first door).
+pub fn link_doors_to_portals(graph: &mut CelGraph, doors: &nf_game::door::Doors) -> usize {
+    let quad_centre = |c: &[[f32; 3]; 4]| [
+        (c[0][0] + c[1][0] + c[2][0] + c[3][0]) * 0.25,
+        (c[0][1] + c[1][1] + c[2][1] + c[3][1]) * 0.25,
+        (c[0][2] + c[1][2] + c[2][2] + c[3][2]) * 0.25,
+    ];
+    // `vecutil_point_on_poly` 0x1ec940's barycentric containment over one triangle (the door
+    // centre's projection is within 0.25 of the plane, far inside the epsilon).
+    let tri_contains = |a: [f32; 3], b: [f32; 3], c: [f32; 3], x: [f32; 3]| {
+        let dot = |p: [f32; 3], q: [f32; 3]| p[0] * q[0] + p[1] * q[1] + p[2] * q[2];
+        let v0 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let v1 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+        let v2 = [x[0] - a[0], x[1] - a[1], x[2] - a[2]];
+        let (d00, d01, d11) = (dot(v0, v0), dot(v0, v1), dot(v1, v1));
+        let (d20, d21) = (dot(v2, v0), dot(v2, v1));
+        let den = d00 * d11 - d01 * d01;
+        if den.abs() < 1e-12 { return false; }
+        let u = (d11 * d20 - d01 * d21) / den;
+        let v = (d00 * d21 - d01 * d20) / den;
+        u >= -1e-4 && v >= -1e-4 && u + v <= 1.0 + 1e-4
+    };
+    let mut linked = 0usize;
+    for (di, d) in doors.list.iter().enumerate() {
+        // The game's `Door_Link2Portal` gate (obj+0xFD bit 3) and its record guard (+0x20 != 0 —
+        // every created door has one). Doors created before the cel graph would straddle nothing.
+        if !d.straddle { continue; }
+        let x = d.sph.0;
+        let mut matched = false;
+        for (pi, p) in graph.portals.iter().enumerate() {
+            // First door wins per edge (`if (puVar7[3] == 0)`).
+            if graph.portal_doors[pi].is_some() { continue; }
+            let dist = (p.n_fwd[0] * x[0] + p.n_fwd[1] * x[1] + p.n_fwd[2] * x[2] + p.d_fwd).abs();
+            if dist >= 0.25 { continue; }
+            let c = &p.corners;
+            if tri_contains(c[0], c[1], c[2], x) || tri_contains(c[2], c[3], c[0], x) {
+                graph.portal_doors[pi] = Some(di as u32);
+                matched = true;
+            }
+        }
+        if matched { linked += 1; }
+    }
+    if std::env::var_os("NF_PORTAL_DEBUG").is_some() {
+        for (pi, pd) in graph.portal_doors.iter().enumerate() {
+            if let Some(di) = pd {
+                let p = &graph.portals[pi];
+                eprintln!("[doorlink] portal {pi} (cells {} <-> {}) <- door {di} (placement {})", p.cel_a, p.cel_b, doors.list[*di as usize].placement);
+            }
+        }
+    }
+    linked
 }
 
 /// The `+0x18` chain builder (fix-portal4, the owner rule fix-portal5). The game hangs each generic
@@ -1118,7 +1193,14 @@ fn cel_sphere(c: &CelNode) -> ([f32; 3], f32) { c.sphere }
 /// VisCelList, `Vision_AddCelToDraw` 0x1e8908 is the only inserter) stays
 /// `portal_visible_cels_from_cell`. fix-portal2.
 pub fn portal_visible_cels_game_from_cell(graph: &CelGraph, start: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5], sides: &[[f32; 4]; 4]) -> Option<Vec<bool>> {
-    let chain = portal_cel_chain_from_cell(graph, start, eye, depth0)?;
+    portal_visible_cels_game_from_cell_doors(graph, start, eye, depth0, sides, None)
+}
+
+/// The game mask with the door links honoured (`Vision_Recurse` 0x1e82e0's `Door_IsClosed` gate,
+/// G-035) — the draw path's walk. `door_closed` = `Doors::closed_flags()` at this tick; `None` =
+/// the doors-less walk.
+pub fn portal_visible_cels_game_from_cell_doors(graph: &CelGraph, start: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5], sides: &[[f32; 4]; 4], door_closed: Option<&[bool]>) -> Option<Vec<bool>> {
+    let chain = portal_cel_chain_from_cell_doors(graph, start, eye, depth0, door_closed)?;
     let mut vis = vec![false; graph.cells.len()];
     for &c in &chain { vis[c] = true; }
     let start_class = graph.cells[start].flags & 0xffff;
@@ -1403,6 +1485,15 @@ pub fn portal_visible_cels_from_cell(graph: &CelGraph, start_cell: usize, eye: [
     Some(visible)
 }
 
+/// `portal_visible_cels_from_cell` with the door links honoured (`Vision_Recurse` 0x1e82e0's
+/// `Door_IsClosed` gate — G-035): `door_closed` = `Doors::closed_flags()` at this tick.
+pub fn portal_visible_cels_from_cell_doors(graph: &CelGraph, start_cell: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5], door_closed: Option<&[bool]>) -> Option<Vec<bool>> {
+    let chain = portal_cel_chain_from_cell_doors(graph, start_cell, eye, depth0, door_closed)?;
+    let mut visible = vec![false; graph.cells.len()];
+    for c in chain { visible[c] = true; }
+    Some(visible)
+}
+
 /// The game's `VisCelList` (0x34b3b0) chain order — what `View_AddCels` (0x1e6ba0) walks when it
 /// hands out the −90000 + 10·k list-0 keys. `Vision_Portal_Recurse` (0x1e86e8) inserts the viewer's
 /// cel at depth 0, `Vision_Recurse` (0x1e82e0) inserts each portal-reached cel at **first reach**
@@ -1417,6 +1508,14 @@ pub fn portal_cel_chain(graph: &CelGraph, eye_room: usize, eye: [f32; 3], depth0
 
 /// The chain from a resolved cell — see `portal_cel_chain`.
 pub fn portal_cel_chain_from_cell(graph: &CelGraph, start: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5]) -> Option<Vec<usize>> {
+    portal_cel_chain_from_cell_doors(graph, start, eye, depth0, None)
+}
+
+/// The chain from a resolved cell, honouring the door links (`build_LinkDoors2Portals` 0x1c8ac8):
+/// `door_closed` is the per-door `Door_IsClosed` (0x1367b0) snapshot (`Doors::closed_flags`), read
+/// per portal the same order the game reads it — after the eye-side plane test, before the clip
+/// [M `Vision_Recurse` 0x1e82e0:50-70]. `None` = the doors-less walk (the pre-G-035 behaviour).
+pub fn portal_cel_chain_from_cell_doors(graph: &CelGraph, start: usize, eye: [f32; 3], depth0: &[[f32; 4]; 5], door_closed: Option<&[bool]>) -> Option<Vec<usize>> {
     let mut visited = vec![false; graph.cells.len()];
     let mut planes: Vec<Vec<[f32; 4]>> = vec![Vec::new(); 48];
     planes[0] = depth0.to_vec();
@@ -1429,12 +1528,13 @@ pub fn portal_cel_chain_from_cell(graph: &CelGraph, start: usize, eye: [f32; 3],
     fn recurse(
         graph: &CelGraph, eye: [f32; 3], cell: usize, depth: usize,
         visited: &mut Vec<bool>, planes: &mut Vec<Vec<[f32; 4]>>, budget: &mut usize, order: &mut Vec<(usize, u16)>,
+        door_closed: Option<&[bool]>,
     ) {
         *budget += 1;
         if *budget > 100 || depth > 45 { return; }
         let n0 = planes[depth].len();
         let dbg = std::env::var_os("NF_PORTAL_DEBUG").is_some();
-        for p in &graph.portals {
+        for (pi, p) in graph.portals.iter().enumerate() {
             let (side_open, dest, fwd) = if cell == p.cel_a {
                 ((p.flags & 1) == 0, p.cel_b, false)
             } else if cell == p.cel_b {
@@ -1451,6 +1551,18 @@ pub fn portal_cel_chain_from_cell(graph: &CelGraph, start: usize, eye: [f32; 3],
             if n[0] * eye[0] + n[1] * eye[1] + n[2] * eye[2] + d >= 0.0 {
                 if dbg { eprintln!("[pwalk] d{depth} cell {cell} -> {dest}: eye on the wrong side of the portal plane"); }
                 continue;
+            }
+            // `Vision_Recurse` 0x1e82e0:65-70: after the plane test, `Door_IsClosed` (0x1367b0)
+            // on the portal's linked door (portal+0xC) ends this portal — a shut door's room is
+            // not walked into (G-035). The game's walk runs the test for EVERY portal (a NULL
+            // door reads open, `Door_IsClosed` 0x1367b0's `param_1 == 0` arm).
+            if let Some(closed) = door_closed {
+                if let Some(&Some(di)) = graph.portal_doors.get(pi) {
+                    if closed.get(di as usize).copied().unwrap_or(false) {
+                        if dbg { eprintln!("[pwalk] d{depth} cell {cell} -> {dest}: linked door {di} is shut"); }
+                        continue;
+                    }
+                }
             }
             // The quad as the runtime node stores it: forward corners on the celB node, reversed
             // (c3,c2,c1,c0) on the celA node [M 0x1c8928's amemcpy sources].
@@ -1477,13 +1589,13 @@ pub fn portal_cel_chain_from_cell(graph: &CelGraph, start: usize, eye: [f32; 3],
                 let mut next: Vec<[f32; 4]> = (0..m).map(|i| plane_eq(eye, poly[i], poly[(i + 1) % m])).collect();
                 next.push([n[0], n[1], n[2], d]);
                 planes[depth + 1] = next;
-                recurse(graph, eye, dest, depth + 1, visited, planes, budget, order);
+                recurse(graph, eye, dest, depth + 1, visited, planes, budget, order, door_closed);
                 if *budget > 100 { return; }
             }
         }
     }
     visited[start] = true;
-    recurse(graph, eye, start, 0, &mut visited, &mut planes, &mut budget, &mut order);
+    recurse(graph, eye, start, 0, &mut visited, &mut planes, &mut budget, &mut order, door_closed);
     quicksort_viscel(&mut order);
     Some(order.into_iter().map(|(c, _)| c).collect())
 }
@@ -5586,6 +5698,12 @@ impl Scene {
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.lights = lights;
             drones.attach_level(level);
+            // fix-door-portal-links (G-035): `build_LinkDoors2Portals` (0x1c8ac8) runs at load — each
+            // portal-linked door (placement param 4) takes the portal quad it sits in; the vision
+            // walk then skips it while `Door_IsClosed` reads closed. The Scene's graph and the Sim's
+            // clone below both carry the links.
+            let linked_doors = link_doors_to_portals(&mut cel_graph, &drones.doors);
+            let _ = linked_doors;
             // Ladders (`Ladder_Create` 0x1966c0, placement type 0x22, class 0x2D): fix-ladder. The world
             // sphere comes from the placement's object glist bounds, like the game's
             // `Control_BuildWorldSph` 0x133070.
@@ -6515,7 +6633,17 @@ impl Scene {
                 // index `n_doors + k`, and `pick_base − door_base` = max door-or-ss index + 1.
                 let dpos = s.drones.doors.list.get(k).map(|d| d.matrix[3])
                     .or_else(|| s.drones.sss.list.get(k - s.drones.doors.list.len()).map(|q| q.matrix[3]));
-                if dpos.is_some_and(|p3| !vis_room([p3[0], p3[1], p3[2]])) { p[l.door_base as usize + k] = FAR; continue; }
+                // A door linked to a portal (`build_LinkDoors2Portals` 0x1c8ac8, `obj+0xF0 |= 0x8000`) straddles the
+                // two cels its portal joins (`Collide_StraddleCels` 0x1eac98) and draws while EITHER is visible — the
+                // shut door is what you see from the near side once its portal stops the walk (render, 07000001: the
+                // shoji vanished and the sky showed through the doorway when only its centre's cel counted).
+                let linked: Vec<usize> = self.cel_graph.portal_doors.iter().enumerate()
+                    .filter(|(_, d)| **d == Some(k as u32))
+                    .filter_map(|(e, _)| self.cel_graph.portals.get(e))
+                    .flat_map(|pe| [pe.cel_a, pe.cel_b]).collect();
+                let straddle_seen = !linked.is_empty() && vis.is_some_and(|v| self.cel_graph.room_to_cell.iter().enumerate()
+                    .any(|(r, c)| c.is_some_and(|c| linked.contains(&c)) && v.get(r).copied().unwrap_or(false)));
+                if !straddle_seen && dpos.is_some_and(|p3| !vis_room([p3[0], p3[1], p3[2]])) { p[l.door_base as usize + k] = FAR; continue; }
                 p[l.door_base as usize + k] = match s.drones.doors.list.get(k) {
                     Some(d) => d.matrix,
                     None => s.drones.sss.list.get(k - s.drones.doors.list.len()).map_or(FAR, |q| q.matrix),

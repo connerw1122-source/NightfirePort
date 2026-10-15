@@ -312,11 +312,15 @@ pub struct Progress {
     /// [M Menu_SetLevelBonus 0x1ffa10]).
     pub game_complete: bool,
     /// `NewScoresRef` 0x30cc6c's stand-in: the DRIVING (0x09-map) score rows come from here in
-    /// the game — a 9×3 s32 array filled through the PTP buffer (0x31ca38 is inside it) by the
-    /// boot hand-off, with no writer in ACTION.ELF [M 0x1984b0:44-64 copies it for the maps whose
-    /// hash's top byte is 0x09; docs/fields/player-stats.md "Unknowns" 3]. The port has no PTP:
-    /// `None` = the game's NULL pointer, and GetScore aborts for 0x09 maps — the faithful
-    /// behaviour, with a live check filed in the report.
+    /// the game — a 9×3 s32 array (`[value, count, target]` per row) whose pointer bootup sets
+    /// to the zeroed bss buffer 0x31ca38 (the `PTPDATA` region — the ACTION↔DRIVING hand-off
+    /// block lives at 0x31c090 [M symtab; docs/atlas/driving.md §2]) and no ACTION.ELF writer
+    /// exists [M whole-decompile grep + the whole-ELF lui/addiu scan: only `bootup` 0x1c7e78:86
+    /// `NewScoresRef = &DAT_0031ca38` and `PlrStat_GetScore` 0x1984b0:45-64 touch them]. [L
+    /// ee_start_05] the pointer is 0x31ca38 and rows 0..8 are all zero. So the game's shipped
+    /// behaviour for the 0x09 maps is NOT the NULL abort (that is dead code — bootup always sets
+    /// the ref): it reads the zero rows, every row's count is 0, nothing scores. The port models
+    /// that state (`Some` zeroed rows); a driving hand-off, if one ever lands, writes rows here.
     pub new_scores: Option<[[i32; 3]; 9]>,
     /// `GameState+0x40` (0x2a37a8) — the difficulty (1 Agent / 2 Secret Agent / 3 00 Agent /
     /// 4 the bonus double-damage mode [M Player_HandlePain 0x1902c8:29-48]). Boot default 2
@@ -342,7 +346,9 @@ impl Default for Progress {
             bonus: [0; 21],
             nightfire_status: 0,
             game_complete: false,
-            new_scores: None,
+            // Bootup 0x1c7e78:86 sets `NewScoresRef = &DAT_0031ca38` (the zeroed PTPDATA tail);
+            // the NULL GetScore abort is dead code in the shipped game.
+            new_scores: Some([[0; 3]; 9]),
             difficulty: 2,
             new_reward: false,
         }
@@ -387,9 +393,12 @@ impl Progress {
     ///
     /// Row sources [M 0x1984b0:38-84 — the hash's top byte picks the branch]: the 0x07 maps
     /// (entry +0x38 == 1) build the rows from `PlrMissionStats[0]`; the 0x09 maps (+0x38 == 0)
-    /// copy `NewScoresRef`'s 9×3 s32 rows and ABORT when it is NULL — the port's `new_scores:
-    /// None` models the NULL, so the driving maps score nothing until the PTP hand-off is
-    /// modelled (the game's retail behaviour per the doc's honesty note; live check filed).
+    /// copy `NewScoresRef`'s 9×3 s32 rows (row 7's value ×100) and abort only when the pointer
+    /// is NULL — dead in the game, whose bootup always sets it to the zeroed PTPDATA buffer
+    /// [M 0x1c7e78:86; L ee_start_05], which the port models with `new_scores: Some(zeros)`. The
+    /// doc maps in docs/systems/progress.md and docs/fields/player-stats.md step 2 carry the
+    /// 0x07/0x09 labels swapped vs the decompile (the accuracy formula in the +0x38==1 branch
+    /// settles it: accuracy is an on-foot stat) — flagged in the fix-progress-remainder report.
     pub fn get_score(&mut self, base_map: u32, ms: u32, difficulty: u32, commit: bool) -> Option<Scored> {
         let idx = self.table.iter().position(|e| e.hash == base_map)?;
         let s = *self.stats();
@@ -397,9 +406,11 @@ impl Progress {
         let mut rows = self.table[idx].rows;
         if self.table[idx].new_scores == 0 {
             let ns = self.new_scores.as_ref()?;
-            // [value, count, target] per row; row 7's value is ×100 (1/100 s).
-            for (r, n) in rows.iter_mut().zip(ns.iter()) {
-                r.value = n[0] as u32;
+            // [value, count, target] per row; row 7's value is ×100 at the copy [M 0x1984b0:
+            // 52-54 — the driving module's par seconds become the 1/100-s unit the row carries;
+            // the row-7 step's /100 turns it back].
+            for (r, (i, n)) in rows.iter_mut().zip(ns.iter().enumerate()) {
+                r.value = if i == 7 { n[0].wrapping_mul(100) } else { n[0] } as u32;
                 r.count = n[1] as u32;
                 r.target = n[2] as u32;
             }
@@ -839,8 +850,9 @@ mod tests {
 
     /// GetScore's row source [M 0x1984b0:38-84]: the hash's top byte picks it — the 0x07 maps
     /// (`+0x38` = 1) build the rows from `PlrMissionStats`; the 0x09 maps (`+0x38` = 0) copy
-    /// `NewScoresRef` and ABORT when it is NULL. The port had the branch inverted, so every
-    /// on-foot mission aborted and the results page could build no fields.
+    /// `NewScoresRef` (row 7 ×100 at the copy [M :52-54]). The NULL abort [M :44-48] is dead in
+    /// the shipped game: bootup 0x1c7e78:86 points the ref at the zeroed PTPDATA tail 0x31ca38
+    /// and no ACTION.ELF writer exists — the port's `Some(zeroed rows)` default models that.
     #[test]
     fn the_on_foot_mission_rows_come_from_the_mission_stats() {
         let mut p = Progress::default();
@@ -851,8 +863,10 @@ mod tests {
         assert_eq!(sc.base, 75_000, "dispatched 50000 + time 25000");
         assert_eq!(sc.last, 150_000, "difficulty 2 → ×1.0 → last = base + bonus");
         assert_eq!(sc.medal, 2, "150000 ≥ the silver 125000, < the gold 200000");
-        // Sister: the 0x09 maps keep the NewScoresRef row source — NULL aborts [M 0x1984b0:44-48].
-        assert!(p.get_score(0x0900_0005, 6, 2, true).is_none());
+        // Sister: the 0x09 maps keep the NewScoresRef row source — the bootup-set zeroed buffer
+        // [M 0x1c7e78:86; L ee_start_05] scores nothing (every row's count is 0), no abort.
+        let sc = p.get_score(0x0900_0005, 6, 2, true).expect("the 0x09 map reads the zeroed buffer");
+        assert_eq!((sc.base, sc.last), (0, 0), "zero rows → nothing scores");
     }
 
     /// Menu_SetLevelBonus 0x1ffa10's medal loop runs only for counters 1..4 — a no-medal run

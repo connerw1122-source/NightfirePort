@@ -242,9 +242,13 @@ impl crate::drone::Drones {
     /// `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)` — a WARM reload
     /// of the CURRENT level (`GameState+0xC` — `Drones::level_current` [M 0x1d5080:6], the level
     /// Bond is on, NOT the mission's base map; that is the pause menu's Restart, `C_GCPAUSE_Handler`
-    /// 0x204408:139) on the ENTRY checkpoint with the 50.0 health floor [L 0x30cc34-3c]. The viewer
-    /// re-serves the save this level was loaded with (`level_exit_restart`); it does NOT capture the
-    /// dying state — that would carry ch 99 and replay the fail (the old 07000007 loop).
+    /// 0x204408:139) on the ENTRY checkpoint with the 50.0 health floor [L 0x30cc34-3c]. The boost
+    /// argument 1 [M 0x216618:21] is the port's `RamSave::continue_boost` on the restart serve
+    /// (`nf_view::fail_restart_save` — the handler's `Player_RamLoad` position in the reload flow,
+    /// the buffer write-back [M 0x1957a8:21-34, 0x1958e4]); the trigger-exit's fresh
+    /// `Player_RamSave` passes 0 [M 0x1a7ef8:158-305 — all eight RamLoad calls] — no floor. The
+    /// viewer re-serves the save this level was loaded with (`level_exit_restart`); it does NOT
+    /// capture the dying state — that would carry ch 99 and replay the fail (the old 07000007 loop).
     pub fn fail_choose_restart(&mut self) {
         if !self.mission.menu_open { return; }
         self.mission.menu_open = false;

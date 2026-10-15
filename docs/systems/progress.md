@@ -33,7 +33,7 @@ port]. The writers and their port hooks:
 
 | Counter | Game writer | Port hook |
 |---|---|---|
-| +0x00 detected | `PlrStat_LogEnemyDetectedPlayer` 0x199960 | `log_detected` (no live site yet — the vision-log call site is unhooked; see the report) |
+| +0x00 detected | `PlrStat_LogEnemyDetectedPlayer` 0x199960 | `log_detected` via the tick fold ← the `DroneVision_LogSeenOpponent` 0x1780a8 rule run at the port's `HaveOpponentSight` ack (fix-progress-remainder): once per drone (`Drone+0x42`, no clearer in ACTION.ELF), team +0x44 ≠ 2, team 3 only on 0x07000009/0x0700000A, and on 0x07000007 only while Bond's class byte (`Drones.bond_weapon`, obj+0xdc → +0x62) is outside the `>1 && >=0x47` band minus 0x6a..0x71 |
 | +0x04 fired | `PlrStat_LogShotFired` 0x1998d8 ← `Player_WeaponInitBullet` 0x1a4bf0:258 per bullet | `Drones::fire_player` per pellet |
 | +0x04 −1 scenery | `PlrStat_LogShotHitScenery` 0x198408 ← SP_Update 0x1dbda8:261, Destroy_Smash 0x12bb60:55 | the bullet's world-hit arm (`PlayerImpact::World`) |
 | +0x08 hit enemy | `PlrStat_LogShotHitEnemy` 0x199840 ← `NDrone2_HitDamage` 0x145558:57-60 (team 1 + hit by the player) | `Drone.hit_log` outbox → the tick fold |
@@ -52,14 +52,18 @@ mission's first part [M 0x182270:65].
 ## The score (`PlrStat_GetScore` 0x1984b0)
 
 `Progress::get_score(base_map, mission_status, difficulty, commit)` implements the doc's 6 steps:
-the row sources (the 0x09 maps read `PlrMissionStats`; the 0x07 maps read `NewScoresRef` — the
-port's `new_scores: None` models the game's NULL pointer, so on-foot maps abort exactly as the
-game does until the PTP hand-off is modelled), the per-row raw (normal / the row-4 detection
-penalty `max(0, 1 − over·penalty)` with the 0.03 code default / the row-7 time ratio in 1/100 s /
-the row-8 all-or-nothing bonus), `base = Σ raw`, the difficulty multiplier (`ScoringTableDifMul`,
-1 → 0.0 / 2 → 1.0 / else 2.0), `last = base + bonus`, `best = max`, `DoneBetter` on commit, and
-step 6: **scores only stick when `Mission_Status() == 6`** (everything but `best` is zeroed
-otherwise).
+the row sources (the 0x09 maps read `NewScoresRef`; the 0x07 maps read `PlrMissionStats` — the
+hash's top byte sets the entry's +0x38 flag 0 for 0x09 / 1 for 0x07 [M 0x1984b0:38-47]; the
+accuracy formula in the flag-1 branch settles the mapping), the per-row raw (normal / the row-4
+detection penalty `max(0, 1 − over·penalty)` with the 0.03 code default / the row-7 time ratio in
+1/100 s / the row-8 all-or-nothing bonus), `base = Σ raw`, the difficulty multiplier
+(`ScoringTableDifMul`, 1 → 0.0 / 2 → 1.0 / else 2.0), `last = base + bonus`, `best = max`,
+`DoneBetter` on commit, and step 6: **scores only stick when `Mission_Status() == 6`** (everything
+but `best` is zeroed otherwise). `NewScoresRef` is modelled as the bootup state — bootup
+0x1c7e78:86 points it at the zeroed PTPDATA tail 0x31ca38 (`PTPDATA` 0x31c090, the ACTION↔DRIVING
+hand-off region [M symtab]) and no ACTION.ELF writer exists — so the 0x09 maps score zero rows
+(nothing scores) and the NULL abort is dead code; the port's `new_scores: Some(zeroed 9×3)` and
+the copy's row-7 ×100 [M 0x1984b0:52-54] live in `progress.rs`.
 
 Medals: P_NFRESULTS 0x208e78:119-146 compares `last` against the entry's thresholds
 (≥ +0x10 platinum 4, ≥ +0xC gold 3, ≥ +8 silver 2 — the doc prints silver as medal 1 in the
@@ -81,7 +85,8 @@ The readers, per the decompile (all wired to `Drones::difficulty` / `Data::diffi
 | `NDrone2_HitDamage` | 0x145558:134-152 | Bond→guard: `DroneDamage_*` 1.5/1.0/0.8 — `damage::hit_damage` |
 | `DroneWeap_DoBulletAccuracy` | 0x179740:81-95 | the hit chance × 0.8/0.9/1.3 — `drone::level_accuracy` |
 | `Check_AutoAim` | 0x1a73f8:127-149 | the aim-assist multiplier 1.9/1.0/0.0 — `Drones::auto_aim` |
-| `Player_InitWeapon` | 0x1a7ef8:24-39 | the autoaim distances 12/18, 8/14, 0/0 (not yet threaded — the port's auto-aim has no distance gate; noted in the report) |
+| `Player_AutoAim` | 0x1a7c98:0x1a7d30-64 | the scan's distance cap: `Autoaim_Range` 25.0 (`ReadTuningVars` 0x1d3a80:20, store 0x1d3bcc [L]), except the Q-Claw (0x50/0x51) seeded from its `weapon_data+0x1c` (50/100 [L ee_start_05]) — `Drones::auto_aim` (fix-progress-remainder) |
+| `Player_InitWeapon` | 0x1a7ef8:24-39 | writes MAX_AUTO_AIM_DIST_MIDL/NEAR per difficulty (d2 14/8, d<3 or d>3 12/18 [L ee_start_05 with difficulty 1: 18/12], d3 0/0, MP 16/10) — **write-only in ACTION.ELF** (the whole-ELF gp/absolute scans + the full disasm of both auto-aim functions find no reader): NOT threaded; the live gate is `Autoaim_Range` above |
 | `Drone_Create` | 0x136be0:49 | spawn gate: the level-tag int ≤ difficulty |
 | `SoundTrigger/Hint_Create` | 0x1b2628 / 0x1b3248 | the min-difficulty tags (5/6/7 = exclusively d1/2/3) |
 | `Lock_Create` | 0x1ae1f8:67 | doors auto-unlock on d1 — `lock.rs` |
