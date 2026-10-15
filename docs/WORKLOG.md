@@ -12450,3 +12450,38 @@ Work Log:
 
 Stage Summary:
 - The world's hold-jump stutter while turning is fixed at the source: the render bracket is now the last two ticks' cameras at every frame rate, the view model keeps its one-tick-bracket reattach, and nothing moves at a solid 60 fps. Files: crates/nf-view/src/lib.rs + crates/nf-view/tests/turn_stutter_live.rs (new); NO shared files touched; scratch probe (uncommitted): examples/tick_cost.rs. Report: docs/reports/fix-turn-stutter.md.
+
+---
+Task: fix-ladder-water (109i)
+Agent: worker (sandbox web-8fb9d45a)
+Task: (1) ladder dismount into water infinitely re-latches — fix the regrab timer, the swim entry, fix-swim2's exit; (2) Script_FFwd (cut-scene skip mid-dialogue) must stop the playing NIS voice stream. Files: crates/nf-game/src/{ladder,player}.rs + the voice stop.
+
+Work Log:
+- 03:05 UTC: branch s/fix-ladder-water from origin/master (d5b22f91), setup reused, pushed.
+- 03:05-04:40 UTC: the decompile read + the repro. The latch: dismount regrab 60 [M 0x196310] is
+  overwritten to 5 by the swim entry [M 0x195e50, FRAME_RATE 60/DIV 1.0 confirmed [L 0x30d0d0/d4]];
+  5-6 ticks later the pick re-grabs the swimmer at the snap (0.5 off the axis) — the port fed
+  swimmers the WALK pick (the walk segment + the radial min(r,1)+capsule 1.55 column) while the game
+  builds the swim HITTEST per substate [M 0x194df0 case 3: the low capsule, radius 0.55] and refines
+  every sphere candidate against the glist mesh (Collide_Update 0x1ea398:84-93 → Collide_Intersect
+  0x1ebaa8) — the thin rung plane cuts the reach at ~the capsule radius, which the 5-tick drift
+  (~0.2 at the Player_Move 0.2/tick ramp [M 0x191dd0]) clears. Fix: capsule_hits_swim (the swim arm)
+  + the frontal/lateral mesh-scale stage 2 for BOTH forms (|frontal| ≤ capsule_radius, |lateral| ≤
+  0.4+capsule_radius [S — the stand-in for the cel scoping + mesh refine]); every existing pin green
+  (the 0c yard walk, the 102h cases, wire, swim, vent). fail-first: re-latch at +27 on master, free
+  with the fix. The swim pin's bed spawn moved into the game's grabbable column (test-only).
+- The voice: Script_KillStream case 5 = Sound_Stop [M 0x1d9860:96-99] via Script_Free's per-stream
+  kill [M 0x1da880:27] — the port's kill() ignored kind 5. The dialogue: Script_FFwd's ScriptCam arm
+  calls Text_FlushAllSubtitles [M 0x1dac78:26-30] and the game draws ONE subtitle slot
+  [M Text_Update 0x1b1510] while the port queued the catch-up's remaining lines. Fix: kill() case 5
+  pushes SoundStop; ffwd() pushes TextFlush; the catch-up passes drop their Text adds [S]; the
+  viewer drops the script-sourced HUD lines. The end-to-end repro limits, honestly: 02's intro has
+  no kind-5 streams, 04's voices carry their own end ops and its script never arms the skip gate —
+  the voice pins pass on master too; the live checks cover the PCSX2 confirmation.
+
+Stage Summary:
+- The dismount into the pond no longer infinitely re-latches (the pick follows the substate's
+  HITTEST; the mesh-scale stage 2 gives the game's drift escape); Script_FFwd stops the playing
+  kind-5 voice [M 0x1d9860 case 5] and flushes the dialogue [M 0x1dac78:26-30] with the catch-up
+  adds dropped [S]. Report: docs/reports/fix-ladder-water.md (the live checks: the regrab writes,
+  the Sound_Stop-during-free watch, the 04 skip gate, the no-input drift).
