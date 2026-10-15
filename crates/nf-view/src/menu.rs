@@ -113,6 +113,9 @@ pub const PAGE_CN_NAME: u32 = 0x4000_0020;
 pub const PAGE_CN_ADVANCED: u32 = 0x4000_002d;
 /// Multiplayer Options [L page 0x4000002e; P_CNMPOPTIONS_Handler 0x2144d8].
 pub const PAGE_CN_MP: u32 = 0x4000_002e;
+/// Screen Adjust — the picture-offset subscreen of AV Options [L page 0x40000047; C_SBCNOPTIONS
+/// 0x213528's row 0x10000137 → Manager 0x44 0x40000047 [M 0x214818:117-126]]. Aux movie 0 [L PAGE record].
+pub const PAGE_SCREEN_ADJUST: u32 = 0x4000_0047;
 /// AV Options [L page 0x40000031; P_CNAVOPTIONS_Handler 0x214818].
 pub const PAGE_CN_AV: u32 = 0x4000_0031;
 /// The IN-GAME pause page [M Player_Update 0x193600:73 — pressing Start in a mission runs
@@ -462,7 +465,7 @@ pub const INTRO_TICKS: u32 = 850;
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnName, CnAdvanced, CnMp, CnAv,
+pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnName, CnAdvanced, CnMp, CnAv, ScreenAdjust,
     // mp-menu-flow: the multiplayer front end (page ids in the PAGE_MP_* constants below).
     MpJoin, MpScenario, MpMap, MpSetup, MpOptions, MpRules, MpPlayerMods, MpEnviroMods, MpBots, MpBotChoose, MpBotSetup, MpConfirm, MpDebriefing, Credits }
 
@@ -474,7 +477,7 @@ impl Page {
             Page::Dossier => PAGE_DOSSIER, Page::Records => PAGE_RECORDS,
             Page::Options => PAGE_OPTIONS, Page::Pause => PAGE_PAUSE, Page::Results => PAGE_RESULTS,
             Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnName => PAGE_CN_NAME, Page::CnAdvanced => PAGE_CN_ADVANCED,
-            Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV,
+            Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV, Page::ScreenAdjust => PAGE_SCREEN_ADJUST,
             Page::MpJoin => PAGE_MP_JOIN, Page::MpScenario => PAGE_MP_SCENARIO, Page::MpMap => PAGE_MP_MAP,
             Page::MpSetup => PAGE_MP_SETUP, Page::MpOptions => PAGE_MP_OPTIONS, Page::MpRules => PAGE_MP_RULES,
             Page::MpPlayerMods => PAGE_MP_PLAYERMODS, Page::MpEnviroMods => PAGE_MP_ENVIROMODS,
@@ -490,7 +493,7 @@ impl Page {
             PAGE_DOSSIER => Page::Dossier, PAGE_RECORDS => Page::Records,
             PAGE_OPTIONS => Page::Options, PAGE_PAUSE => Page::Pause, PAGE_RESULTS => Page::Results,
             PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_NAME => Page::CnName, PAGE_CN_ADVANCED => Page::CnAdvanced,
-            PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv,
+            PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv, PAGE_SCREEN_ADJUST => Page::ScreenAdjust,
             PAGE_MP_JOIN => Page::MpJoin, PAGE_MP_SCENARIO => Page::MpScenario, PAGE_MP_MAP => Page::MpMap,
             PAGE_MP_SETUP => Page::MpSetup, PAGE_MP_OPTIONS => Page::MpOptions, PAGE_MP_RULES => Page::MpRules,
             PAGE_MP_PLAYERMODS => Page::MpPlayerMods, PAGE_MP_ENVIROMODS => Page::MpEnviroMods,
@@ -581,7 +584,7 @@ pub const AV_ROWS: &[OptRow] = &[
     OptRow { ctrl: 0x1000_0134, label: 0x193, y: 114.0, items: &[], kind: OptKind::Slider },
     OptRow { ctrl: 0x1000_0136, label: 0x2b5, y: 142.0, items: ON_OFF, kind: OptKind::List },
     OptRow { ctrl: 0x1000_019a, label: 0x2b8, y: 170.0, items: &[(0x2ba, "Horizontal", 0), (0x2b9, "Vertical", 1)], kind: OptKind::List },
-    OptRow { ctrl: 0x1000_0198, label: 0x195, y: 198.0, items: &[(0x393, "Mono", 0), (0x394, "Stereo", 1), (0x395, "Pro Logic", 4)], kind: OptKind::List },
+    OptRow { ctrl: 0x1000_0198, label: 0x195, y: 198.0, items: &[(0x393, "Mono", 0), (0x394, "Stereo", 1), (0x395, "Surround", 4)], kind: OptKind::List },   // 0x395 = "Surround" [D USATxt.dat]
     OptRow { ctrl: 0x1000_0223, label: 0x5b8, y: 227.0, items: ON_OFF, kind: OptKind::List },
     OptRow { ctrl: 0x1000_0137, label: 0x2b6, y: 256.0, items: &[], kind: OptKind::Action },
     OptRow { ctrl: 0x1000_01a3, label: 0x37e, y: 284.0, items: &[], kind: OptKind::Action },
@@ -1036,6 +1039,19 @@ pub struct FrontEnd {
     /// secret-codes: the Secret Unlocks letter-grid model (page 0x40000020 in cheat mode). The
     /// grid cursor + typed string + the valid-code box flag [M C_KEYBOARD_Handler 0x213a98].
     pub secret: SecretEntry,
+    /// The picture offset — `PS2ScreenXPos` 0x30c75c / `PS2ScreenYPos` 0x30c760 [M symtab], edited
+    /// by the Screen Adjust page and saved in the global settings blob [M LS_MakeGlobalSettings
+    /// 0x1cd9d0; docs/systems/screen-adjust.md §3/§5]. (Each field on its own line [WORKLOG lesson 4].)
+    pub screen_x: i32,
+    pub screen_y: i32,
+    /// The Screen Adjust page's enter snapshot — `PS2OldX`/`PS2OldY` 0x30d578/0x30d57c, taken by
+    /// msg 0x4c and restored by the msg 0x6b close [M P_SCREENADJUST 0x217a58].
+    pub screen_saved_x: i32,
+    pub screen_saved_y: i32,
+    /// The AV page's own snapshot — `screen_adjust_x/y` 0x30d8e8/0x30d8ec [M P_CNAVOPTIONS
+    /// 0x214818:29/135], restored by the page's Back (msg 0x4d) [M :79-85].
+    pub screen_av_saved_x: i32,
+    pub screen_av_saved_y: i32,
     // ── mp-menu-flow: the multiplayer front end (each new field on its own line [WORKLOG lesson 4]) ──
     /// The four Join-Game panels [M mpjoin 0x2dee68 (4 × 0x10: +0x00 joined, +0x01 ready,
     /// +0x04 team, +0x08 skin) and mp_stuff+0x360+slot·4 (the per-slot state: 0 = press ✕ to
@@ -1140,6 +1156,15 @@ impl FrontEnd {
             // secret-codes: the letter-grid model starts empty (the game's buffer 0x34e028 begins
             // empty on every page enter [M P_CNNAME 0x213790:46 re-binds the empty buffer]).
             secret: SecretEntry::default(),
+            // screen-adjust-model (each new field on its own line [WORKLOG lesson 4]): the game
+            // boots the offset at 0/0 (.sbss) [M psiRestoreScreenPos 0x10b940's reset value].
+            screen_x: 0,
+            screen_y: 0,
+            screen_saved_x: 0,
+            screen_saved_y: 0,
+            screen_av_saved_x: 0,
+            screen_av_saved_y: 0,
+
             // mp-menu-flow (each new field on its own line [WORKLOG lesson 4]).
             mp_join: std::array::from_fn(|_| MpJoinAgent::default()),
             mp_scenario: 0,
@@ -1210,6 +1235,9 @@ impl FrontEnd {
             // credits-data: the credits page has no wheel rows (the two list controls are the
             // roll itself) [M P_CREDITS_Handler 0x2152b0 has no cursor code].
             Page::Credits => 0,
+            // The Screen Adjust page's two sliders (the vertical and the horizontal bar) [L page
+            // 0x40000047's two 0x100001eb controls, d1 0 = vertical / 1 = horizontal].
+            Page::ScreenAdjust => 2,
             // The MISSION tab's rows [L page 0x4000004b's d1=6 list (153,183,334×120) binds labels
             // 0x16a CONTINUE / 0x16b RESTART / 0x16c QUIT via its m0x11 messages].
             Page::Pause => 3,
@@ -1284,7 +1312,9 @@ impl FrontEnd {
                 ["Restart level", "Restart mission", "Quit to menu"][row.min(2)].into(),
             // The COMPLETED page draws no rows (P_NFRESULTS has none [L page 0x40000036's
             // controls]); rows() is 1 for the wheel arithmetic only.
-            Page::Results => String::new(),
+            // The Screen Adjust page's bars carry no text — the game's page data has no label
+            // controls on it, only the two slider bars, the picture and the hint [L page 0x40000047].
+            Page::ScreenAdjust | Page::Results => String::new(),
             // ── mp-menu-flow: the wheels' own labels (the tables above) ──
             // The join panels: agent 1's states bind 0x1e8/0x37b/0x1e9 [M C_RBMPSTART 0x20d048's
             // 0x5c/0x4b arms — 0x1e8 "Press ~A to join", 0x37b "Choose Codename", 0x1e9 "Press ~A
@@ -1345,6 +1375,72 @@ impl FrontEnd {
     /// The option page's rows (empty off the option pages).
     pub fn opt_rows(&self) -> &'static [OptRow] {
         match self.page { Page::CnAdvanced => ADV_ROWS, Page::CnMp => MP_ROWS, Page::CnAv => AV_ROWS, _ => &[] }
+    }
+
+    // --- The picture offset (AV Options → Screen Adjust) [M docs/systems/screen-adjust.md §3] ---
+
+    /// `psiAdjustScreenPos(dx, dy)` 0x10b890: X += dx·12 clamped ±0x1b0 (±432), Y += dy·4 clamped
+    /// ±0x30 (±48). `dx`/`dy` are the slider's −1..1 steps (C_SBSCREEN 0x217b08 msg 0x49 passes the
+    /// slider value; d1 0 = vertical/Y, d1 1 = horizontal/X).
+    pub fn screen_adjust(&mut self, dx: i32, dy: i32) {
+        self.screen_y = (self.screen_y + dy * 4).clamp(-0x30, 0x30);
+        self.screen_x = (self.screen_x + dx * 12).clamp(-0x1b0, 0x1b0);
+    }
+
+    /// P_SCREENADJUST's msg 0x4c (page enter): `psiGetScreenPos(&PS2OldX, &PS2OldY)` 0x217a58:8-10 —
+    /// the offset the Cancel path restores [M; Cancel rides the manager's msg 0x6b close
+    /// notification, which the ✕ path's 0x5f(1) skips — §2 of the doc].
+    pub fn screen_adjust_open(&mut self) {
+        self.screen_saved_x = self.screen_x;
+        self.screen_saved_y = self.screen_y;
+    }
+
+    /// P_SCREENADJUST's msg 0x6b (closed without Confirm): `psiSetScreenPos(PS2OldX, PS2OldY)`
+    /// 0x217a58:16-18 [M].
+    pub fn screen_adjust_cancel(&mut self) {
+        self.screen_x = self.screen_saved_x;
+        self.screen_y = self.screen_saved_y;
+    }
+
+    /// `psiRestoreScreenPos` 0x10b940 — the Restore Defaults row's offset reset [M 0x214818:107].
+    pub fn screen_restore_defaults(&mut self) {
+        self.screen_x = 0;
+        self.screen_y = 0;
+    }
+
+    /// P_CNAVOPTIONS' screen snapshot (`screen_adjust_x/y` 0x30d8e8/ec): taken at page enter and
+    /// RE-taken on every re-enter (0x214818:29, 135) — so returning from Screen Adjust updates the
+    /// baseline the page's Back restores [M].
+    pub fn av_screen_snapshot(&mut self) {
+        self.screen_av_saved_x = self.screen_x;
+        self.screen_av_saved_y = self.screen_y;
+    }
+
+    /// P_CNAVOPTIONS' msg 0x4d Back: `psiSetScreenPos(screen_adjust_x, screen_adjust_y)` 0x214818:82 [M].
+    pub fn av_screen_restore(&mut self) {
+        self.screen_x = self.screen_av_saved_x;
+        self.screen_y = self.screen_av_saved_y;
+    }
+
+    /// The picture offset in the menu's 640×480 authoring space: the visible line is 2560 X-units
+    /// (MAGH 5 × 512) so 640-space x = X/4; 448 field lines make 480-space y = Y·480/448 = Y·15/14
+    /// [M VBlankInt 0x124088 + sceGsSetDefDispEnv 0x226370; the derivation is §3 of the doc].
+    pub fn screen_offset_640(&self) -> (f32, f32) {
+        (self.screen_x as f32 / 4.0, self.screen_y as f32 * 15.0 / 14.0)
+    }
+
+    /// The picture offset as fractions of the visible picture: (X/2560, Y/448) [M §3]. The renderer
+    /// multiplies by its own viewport size; the DIRECTION of the shift on the TV is the report's
+    /// live check (DISPLAY's DX/DY select where the read starts).
+    pub fn screen_offset_frac(&self) -> (f32, f32) {
+        (self.screen_x as f32 / 2560.0, self.screen_y as f32 / 448.0)
+    }
+
+    /// The view aspect the game's camera writes at viewer+0x114: 16/9 (0x3fe38e39) with the
+    /// widescreen option set, 4/3 (0x3faaaaab) otherwise [M Camera_CalcViewAngles 0x1baf70:28-32].
+    /// Split-screen's ×0.5 / ×2 (two viewers) is not modelled — no split-screen view.
+    pub fn view_aspect(&self) -> f32 {
+        if self.opt_value(0x1000_0223) == 1 { 16.0 / 9.0 } else { 4.0 / 3.0 }
     }
 
     /// The current value of an option row.
@@ -1667,7 +1763,7 @@ impl FrontEnd {
         // grid cursor; elsewhere they keep the old Back / Confirm meaning. The MP wheels
         // (scenario/map/options/bots) keep the remap.
         let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv | Page::CnName
-            | Page::MpJoin | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup)) {
+            | Page::MpJoin | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup | Page::ScreenAdjust)) {
             (Action::Left, false) => Action::Back,
             (Action::Right, false) => Action::Confirm,
             (a, _) => a,
@@ -1695,6 +1791,9 @@ impl FrontEnd {
                 Action::Confirm => {
                     let to = match self.cursor { 0 => Page::CnName, 3 => Page::CnAdvanced, 4 => Page::CnMp, 5 => Page::CnAv, 6 => Page::CnSelect, _ => return false };
                     self.opts_saved = Some(self.opts.clone());
+                    // P_CNAVOPTIONS' page enter (msg 0x4c) snapshots the offset the page's Back
+                    // restores [M 0x214818:29; re-entered only from the wheel 0x4000001d, :21].
+                    self.av_screen_snapshot();
                     self.page = to;
                     self.cursor = if to == Page::CnSelect { 1 } else { 0 };
                     return true;
@@ -1725,26 +1824,88 @@ impl FrontEnd {
                     Action::Down if self.cursor + 1 < rows.len() => { self.cursor += 1; return true; }
                     Action::Left => { let r = &rows[self.cursor]; self.opt_step(r, -1); return true; }
                     Action::Right => { let r = &rows[self.cursor]; self.opt_step(r, 1); return true; }
-                    // Restore Defaults [M P_CNAVOPTIONS 0x214818:100-106 resets the rows]; Credits
-                    // opens the credits page (credits-data: the menu-def's action control
-                    // 0x10000138 → P_CREDITS page 0x40000030); Screen Adjust / the trailer stay
-                    // unported.
+                    // The action rows [M P_CNAVOPTIONS 0x214818 msg 0x4b]: Screen Adjust (0x10000137)
+                    // pushes page 0x40000047 (:117-126); Restore Defaults (0x100001a3) runs the full
+                    // reset list (:96-110); Credits (0x10000138) opens the credits page 0x40000030 (credits-data); the
+                    // trailer (0x10000222) opens a page not ported yet (:91-94, 112-115).
                     Action::Confirm if rows[self.cursor].kind == OptKind::Action => {
-                        if rows[self.cursor].ctrl == 0x1000_01a3 {
-                            let d = default_opts();
-                            for r in AV_ROWS { if let Some(v) = d.get(&r.ctrl) { self.opts.insert(r.ctrl, *v); } }
-                            return true;
+                        match rows[self.cursor].ctrl {
+                            0x1000_0137 => {
+                                self.screen_adjust_open();          // the subscreen's own 0x4c snapshot [M 0x217a58:8-10]
+                                self.page = Page::ScreenAdjust;
+                                self.cursor = 0;                    // the vertical bar first [L page data's d1 0 arm]
+                                return true;
+                            }
+                            0x1000_01a3 => {
+                                // The game's own reset list [M 0x214818:97-110]: music slider 0xe →
+                                // volume 70, sfx 0x14 → 100, subtitles per LanguageToLoad (NTSC-U's
+                                // language 0 → Off), split 0, speaker 1, widescreen 0, and
+                                // psiRestoreScreenPos. (Not default_opts — the Default profile's
+                                // music 80 is a different thing.)
+                                self.opts.insert(0x1000_0135, 70);
+                                self.opts.insert(0x1000_0134, 100);
+                                self.opts.insert(0x1000_0136, 0);
+                                self.opts.insert(0x1000_019a, 0);
+                                self.opts.insert(0x1000_0198, 1);
+                                self.opts.insert(0x1000_0223, 0);
+                                self.screen_restore_defaults();
+                                return true;
+                            }
+                            0x1000_0138 => {
+                                let vol = self.opts.get(&0x1000_0135).copied().unwrap_or(100);
+                                return self.open_credits(crate::credits::PAGE_CN_AV, vol, false);
+                            }
+                            _ => return false,
                         }
-                        if rows[self.cursor].ctrl == 0x1000_0138 {
-                            let vol = self.opts.get(&0x1000_0135).copied().unwrap_or(100);
-                            return self.open_credits(crate::credits::PAGE_CN_AV, vol, false);
-                        }
-                        return false;
                     }
-                    Action::Confirm => { self.opts_saved = None; self.page = Page::CnMenu; self.cursor = back_row; return true; }
+                    // Any other row's ✕ commits: the option globals keep the edits and the offset's
+                    // cancel baseline re-snapshots [M 0x214818:127-136 — psiGetScreenPos at :135],
+                    // then the page closes back to the wheel (Manager 0x5f(0,0)).
+                    Action::Confirm => {
+                        self.opts_saved = None;
+                        if self.page == Page::CnAv { self.av_screen_snapshot(); }
+                        self.page = Page::CnMenu; self.cursor = back_row; return true;
+                    }
                     Action::Back => {
                         if let Some(o) = self.opts_saved.take() { self.opts = o; }
+                        // The game's Back restores the offset snapshot too (msg 0x4d) — but only
+                        // when no subscreen was opened; a subscreen trip re-snapshots on re-enter,
+                        // so the stored baseline is always the right one [M 0x214818:79-85].
+                        if self.page == Page::CnAv { self.av_screen_restore(); }
                         self.page = Page::CnMenu; self.cursor = back_row; return true;
+                    }
+                    _ => return false,
+                }
+            }
+            // The Screen Adjust page [M P_SCREENADJUST 0x217a58 + C_SBSCREEN 0x217b08]: two sliders
+            // (row 0 vertical/Y, row 1 horizontal/X — the page data's d1 0/1); a slider step calls
+            // psiAdjustScreenPos with the −1..1 value (X step 12, Y step 4); ✕ keeps (Manager 0x5f(1)
+            // skips the restore notification [M 0x21c858 case 0x5f]) and ○/Back restores the enter
+            // snapshot (the msg 0x6b path, the page hint's "Cancel" [L 0x67b]).
+            Page::ScreenAdjust => {
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                    Action::Left => {
+                        if self.cursor == 0 { self.screen_adjust(0, -1); } else { self.screen_adjust(-1, 0); }
+                        return true;
+                    }
+                    Action::Right => {
+                        if self.cursor == 0 { self.screen_adjust(0, 1); } else { self.screen_adjust(1, 0); }
+                        return true;
+                    }
+                    Action::Confirm => {
+                        self.av_screen_snapshot();   // the AV page's re-enter re-snapshots [M 0x214818:135]
+                        self.page = Page::CnAv;
+                        self.cursor = 6;             // the Screen Adjust row [L page data y=256 is the 7th row]
+                        return true;
+                    }
+                    Action::Back => {
+                        self.screen_adjust_cancel();
+                        self.av_screen_snapshot();
+                        self.page = Page::CnAv;
+                        self.cursor = 6;
+                        return true;
                     }
                     _ => return false,
                 }
@@ -3185,6 +3346,19 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             opt_list(&mut h, fe, font, lang);
             hint_bar(&mut h, font, &hint(0x217, "~A Confirm  ~V Scroll  ~H Change  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
+        }
+        Page::ScreenAdjust => {
+            // The Screen Adjust page's own controls [L page 0x40000047 walk 2026-10-15]: the
+            // fullscreen reference picture TEX 0x3000074 (the msg-0x24 control (0,0,640,480)); the
+            // two slider bars — vertical (304,176,32,128) d1 0, horizontal (256,224,128,32) d1 1,
+            // both named 0x100001eb; the hint bar (50,419) LBL 0x67b. The main agent compares this
+            // against PCSX2 — the bars here are the page data's plates with the focused one bright.
+            quad640(&mut h, 0x0300_0074, 0.0, 0.0, MW, MH, [0.0, 0.0, 512.0, 512.0], gs(0x7f7f7f, 0xff));
+            let (bar_v, bar_h) = (gs(0x73330f, 0xc0), gs(0x73330f, 0xc0));
+            let hot = cream;
+            plate(&mut h, 304.0, 176.0, 32.0, 128.0, if fe.cursor == 0 { hot } else { bar_v });
+            plate(&mut h, 256.0, 224.0, 128.0, 32.0, if fe.cursor == 1 { hot } else { bar_h });
+            hint_bar(&mut h, font, &hint(0x67b, "~A Confirm  ~B Cancel"), 50.0, 419.0, cream);
         }
         Page::Pause => pause_page(&mut h, fe, font, lang, textures, cream, bright, dim),
         Page::Results => results_page(&mut h, fe, font, lang, textures, cream, bright, dim),
