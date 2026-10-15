@@ -7083,6 +7083,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         for dr in &mut self.list {
             if dr.los {
                 dr.seen_ticks += 1;
+                // fix-guard-first-shot2: `ProcessDroneSight` 0x176a28:216-223 resets the unseen
+                // counter (+0x274) to 0 on EVERY opponent-visible tick — BEFORE the
+                // `HaveOpponentSight` call and unconditionally on the raw LOS (disasm 0x176de8
+                // `sw $zero, 0x274($s0)` between the flag-2 test and `jal 0x175ef0`), NOT on the
+                // reaction ack. Every game reader treats +0x274 as "ticks since the last LOS
+                // tick" (the 0x10/0xf DSTATE gates, CombatState 0x148338:67/151/208/235,
+                // SetCombatMoveAnim's 180-tick fire-request hold 0x13cfb0:73, DoFiring's
+                // +0x274 < 0x10 gate 0x17a080:24-25), so counting it up during the reaction
+                // window (the 109f writer) flipped every movement/engagement reader into the
+                // lost-sight arms and moved the 3x3 guards' settle. The first-shot hold is NOT
+                // +0x274: it is the sight flag 4 — HaveOpponentSight 0x175ef0:41-44 sets it only
+                // once +0x270 >= ReactionTime — gating the fire request +0x3b in the combat
+                // arms (0x148338:108-113 etc.) plus Ready2Fire's aim-class + muzzle-tolerance
+                // gates (0x178c48), which the port mirrors (face_and_aim/ready_to_fire).
                 dr.unseen_ticks = 0;
                 if dr.seen_ticks >= dr.reaction_time(d.level) {
                     if !dr.seen && std::env::var_os("NF_AILOG").is_some() {
