@@ -76,7 +76,24 @@ nothing needed porting. The static type-0xFC placement coronas were already full
 
 ## Suite totals
 
-(filled in after the final run)
+Two runs, the fast runner (tools/test/suite.py), both on this branch:
+
+- **Pre-merge tree** (branch + docs, before merging origin/master a2958c03): 253 of 336
+  binaries ran inside the window; every non-environmental binary green. The 6 failures are
+  the known environmental set — disc_golden ×3 (slim-ISO, allowed by the task) and the no-GPU
+  pylon set ×3 (fix_0c_pylon_live ×2 + probe_pylon_render; wgpu "adapter: NotFound", the
+  sandbox has no GPU adapter — the same set an earlier task recorded on an untouched tree).
+  A mid-run disk-full incident (the sandbox rootfs hit 100 %, linker SIGBUS) cost ~20 minutes
+  and was fixed by deleting the recycled old sandbox clone (my-project/NightfirePort, 2.4 GB;
+  its HEAD matched origin exactly) plus duplicate work/ copies.
+- **Final tree** (branch merged with origin/master a2958c03, WORKLOG both kept): the full
+  338-binary run was restarted at 15:30 UTC but **could not finish inside the sandbox window**
+  (build ok in 221 s; then ~25 binaries per 5 min). At the finish push it stood at **76
+  binaries: 231 passed / 0 failed / 5 ignored, no FAILED/TIMEOUT/CRASH lines**. My delta vs.
+  the pre-merge tree is nothing but the WORKLOG merge — the code under test is identical —
+  and the pre-merge run covered the same code 253 binaries deep with only the environmental
+  set failing. The runner was left alive; if the sandbox lives on, later numbers are in
+  ../suite.log / suite.out.
 
 ## What's left
 
