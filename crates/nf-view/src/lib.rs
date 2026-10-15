@@ -91,10 +91,23 @@ pub fn ticks_for_frame(anim_time: &mut f32, dt: f32, max_ticks: u32) -> u32 {
 /// after each `step_bond`); `ran` = the ticks the frame actually executed (a replay exhaustion
 /// break runs none; noclip ticks record no camera).
 pub fn update_cam_bracket(cam_prev: &mut Option<Camera>, cam_cur: &mut Option<Camera>, ran: u32, second_last: Option<Camera>, last: Option<Camera>) {
-    let _ = second_last;
-    if ran > 0 {
-        *cam_prev = *cam_cur;
-        *cam_cur = last;
+    match ran {
+        // Nothing ran this frame (the pause page, the dev menu, a replay exhausted): the pair
+        // stays — the draw keeps blending the last two ticks, which is still what the alpha
+        // spans.
+        0 => {}
+        // The solid-60 frame: exactly one tick — the previous frame's camera and the new one,
+        // the one-tick-behind pair the scheme has always drawn.
+        1 => { *cam_prev = *cam_cur; *cam_cur = last; }
+        // THE FIX: a loaded frame ran 2+ ticks. The old pair update kept the previous FRAME's
+        // camera as `cam_prev`, so the bracket spanned every tick the frame ran while the blend
+        // alpha (`anim_time.fract()`) only spans one — the drawn camera crawled through the wide
+        // bracket, then jumped at the boundary: the world's hold-jump stutter while turning
+        // (playtest 1015; the view model, pinned to the draw camera by the reattach, stayed
+        // smooth and unmasked it). The bracket is the LAST TWO TICKS' cameras — one tick apart —
+        // so `lerp_cam` at `anim_time.fract()` draws exactly one tick behind the sim clock at
+        // every frame rate (turn_stutter_live::loaded_frames_render_one_tick_behind_exactly).
+        _ => { *cam_prev = second_last; *cam_cur = last; }
     }
 }
 /// The palette half of the G-043 interpolation: the draw loop blends the previous tick's skin
@@ -1344,6 +1357,12 @@ struct App {
     prev_lock_ch: bool,
     /// Render interpolation state: the cameras and palettes of the last two ticks, and whether a tick ran this frame.
     ticked: bool,
+    /// fix-turn-stutter: the tick count of the frame that last rebuilt the palette/bracket pair.
+    /// The view model's camera-space reattach needs the palette pair and the camera pair from the
+    /// SAME one-tick bracket; a 2+ tick frame's palette spans its wide bracket while the cameras
+    /// span one, so there the reattach keeps the plain world blend (the pre-ghosting behavior
+    /// under load).
+    bracket_ticks: u32,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -2326,6 +2345,7 @@ impl ApplicationHandler for App {
                     // fix-turn-stutter: the bracket comes from the per-tick captures through
                     // `update_cam_bracket` (extracted; the headless test drives the same code).
                     update_cam_bracket(&mut self.cam_prev, &mut self.cam_cur, ran, second_last, last_cam);
+                    self.bracket_ticks = ran;
                 }
                 let interp = interp0;
                 let alpha = alpha0;
@@ -2339,7 +2359,14 @@ impl ApplicationHandler for App {
                             // uses for the view — so mid-turn the gun cannot swim against the
                             // view. With a live script camera the tick cams are not Bond's: the
                             // gun keeps the plain world blend there.
-                            if self.scene.sim.as_ref().map_or(true, |s| s.script_camera().is_none()) {
+                            // fix-interp-ghosting's reattach needs the palette pair and the
+                            // camera pair from the SAME one-tick bracket (fix-turn-stutter): a
+                            // 2+ tick frame rebuilt the palette across its wide bracket while
+                            // `update_cam_bracket` closed the cameras to the last two ticks —
+                            // reattaching there would pose the gun from mismatched ticks. Those
+                            // frames keep the plain world blend (the pre-ghosting behavior under
+                            // load).
+                            if self.bracket_ticks == 1 && self.scene.sim.as_ref().map_or(true, |s| s.script_camera().is_none()) {
                                 if let (Some(entries), Some(cp), Some(cc)) =
                                     (view_model_entries(&self.scene, &g.renderer.skin_layout), self.cam_prev, self.cam_cur) {
                                     reattach_view_model(&mut blended, pp, pal, alpha, &cp, &cc, &draw_cam, &entries);
@@ -2634,7 +2661,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, bracket_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, };
     if dev {

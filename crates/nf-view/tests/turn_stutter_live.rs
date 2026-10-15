@@ -81,7 +81,10 @@ fn loaded_frames_render_one_tick_behind_exactly() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
     let (rendered, correct, old_rule) = run_turning(&mut scene, 30, 6.0);
-    assert_eq!(rendered.len(), 179, "the first frame has one camera and cannot interpolate");
+    // The fix's first-frame bonus: a 2-tick frame closes the bracket from its own per-tick
+    // captures, so even frame 1 interpolates (at 60 fps the first 1-tick frame still has only
+    // one camera — 239 there).
+    assert_eq!(rendered.len(), 180);
     let err = max_err(&rendered, &correct);
     assert!(err < 1e-4, "the drawn camera must sit one tick behind the sim clock at 30 fps; max error {err:.5} rad");
     let old_err = max_err(&old_rule, &correct);
