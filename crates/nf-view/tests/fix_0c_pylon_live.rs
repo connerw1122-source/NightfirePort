@@ -12,15 +12,20 @@ use nf_view::scene::{Scene, ViewOpts};
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
 /// Render the full scene from `cam` and return the RGBA frame (row-padded rows collapsed).
-fn render_full(scene: &Scene, cam: glam::Vec3, yaw: f32, pitch: f32, fov: f32, ticks: u32) -> (u32, u32, Vec<u8>) {
+fn render_full(scene: &Scene, cam: glam::Vec3, yaw: f32, pitch: f32, fov: f32, ticks: u32) -> Option<(u32, u32, Vec<u8>)> {
     let (w, h) = (1280u32, 720u32);
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    // fix-shading-parity: the GPU-less sandbox has no adapter — skip (the pixel checks run on
+    // the main agent's machine); the old expect() turned the missing GPU into a false failure.
+    let Some(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok() else {
+        eprintln!("skip: no wgpu adapter in this environment (no GPU) — the pixel checks run on a GPU machine");
+        return None;
+    };
     let (device, queue) = pollster::block_on(async {
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.expect("adapter");
         adapter.request_device(&Default::default()).await.expect("device")
     });
     let format = wgpu::TextureFormat::Rgba8Unorm;
-    let mut r = gpu::Renderer::new(&device, &queue, format, scene, false, false);
+    let mut r = gpu::Renderer::new(&device, &queue, format, scene, false, false, 1);
     let (vp, _) = {
         let cp = pitch.cos(); let fw = glam::Vec3::new(cp * yaw.sin(), pitch.sin(), cp * yaw.cos()).normalize();
         let s = fw.cross(glam::Vec3::Y).normalize(); let u = s.cross(fw);
@@ -46,7 +51,7 @@ fn render_full(scene: &Scene, cam: glam::Vec3, yaw: f32, pitch: f32, fov: f32, t
     });
     let view = target.create_view(&Default::default());
     let depth = gpu::depth_view(&device, w, h);
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp, cam.to_array(), ticks, &[], &gpu::HudFrame::default(), None);
+    let mut enc = r.render(&device, &queue, &view, &depth, (w, h), vp, vp, cam.to_array(), ticks, &[], &gpu::HudFrame::default(), None);
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -59,7 +64,7 @@ fn render_full(scene: &Scene, cam: glam::Vec3, yaw: f32, pitch: f32, fov: f32, t
     let data = buf.get_mapped_range(..).expect("map range");
     let mut rgba = Vec::with_capacity((4 * w * h) as usize);
     for y in 0..h as usize { rgba.extend_from_slice(&data[y * row as usize..][..4 * w as usize]); }
-    (w, h, rgba)
+    Some((w, h, rgba))
 }
 
 /// Dark pixels (the dark lattice / baked shadow against a bright fog-sky background).
@@ -93,7 +98,7 @@ fn the_0c_pylon_is_on_screen_at_the_user_spot() {
         sim.bond = nf_game::player::Bond::stand_at(&sim.world, [14.22, 16.28, -139.54], 0.986);
         for _ in 0..5 { sim.step_bond(Default::default(), false, false, false); }
     }
-    let (w, h, rgba) = render_full(&sc, glam::Vec3::new(14.22, 16.96, -139.54), 0.986, 0.0, std::f32::consts::FRAC_PI_3, 30);
+    let Some((w, h, rgba)) = render_full(&sc, glam::Vec3::new(14.22, 16.96, -139.54), 0.986, 0.0, std::f32::consts::FRAC_PI_3, 30) else { return; };
     // The tower's screen band at this camera: the mast above the pier roofline (world bbox
     // 44.3..60.0 × 0..36.4 × −115..−106 projects with the lattice body in x 590..730, y 90..400 —
     // pre-fix that band is pure bright sky/sea, post-fix the lattice struts cross it).
@@ -117,7 +122,7 @@ fn the_0c_pylon_is_on_screen_at_the_user_spot() {
 fn the_0c_pylon_fills_the_view_from_the_closeup_spot() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let sc: Scene = match nf_view::load(&iso, "0700000c.bin", false) { Ok(s) => s, Err(e) => { panic!("0700000c: {e}") } };
-    let (w, h, rgba) = render_full(&sc, glam::Vec3::new(34.0, 18.0, -124.0), 0.707, 0.05, std::f32::consts::FRAC_PI_3, 30);
+    let Some((w, h, rgba)) = render_full(&sc, glam::Vec3::new(34.0, 18.0, -124.0), 0.707, 0.05, std::f32::consts::FRAC_PI_3, 30) else { return; };
     // The tower fills the centre-right of this frame (the pier building is at the left edge).
     let lattice = dark_in(w, h, &rgba, 560, 60, 1000, 660);
     eprintln!("lattice dark pixels from the close-up: {lattice}");

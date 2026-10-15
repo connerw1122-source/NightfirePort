@@ -21,10 +21,16 @@ fn probe_render_pylon_only() {
     let (w, h) = (1280u32, 720u32);
 
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+    // fix-shading-parity: the GPU-less sandbox has no adapter — skip (the pixel checks run on
+    // the main agent's machine); the old expect() turned the missing GPU into a false failure.
+    let Some(adapter) = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions::default())).ok() else {
+        eprintln!("skip: no wgpu adapter in this environment (no GPU) — the pixel checks run on a GPU machine");
+        return;
+    };
     let (device, queue) = pollster::block_on(async {
-        let adapter = instance.request_adapter(&wgpu::RequestAdapterOptions::default()).await.expect("adapter");
         adapter.request_device(&Default::default()).await.expect("device")
-    });    let format = wgpu::TextureFormat::Rgba8Unorm;
+    });
+    let format = wgpu::TextureFormat::Rgba8Unorm;
 
     // The pylon materials and the shadow decal, by node (indices into sc.materials).
     let pylon: Vec<usize> = sc.materials.iter().enumerate().filter(|(_, m)| m.layer == Layer::World && [116u32, 117, 118, 119].contains(&m.node)).map(|(i, _)| i).collect();
@@ -37,7 +43,7 @@ fn probe_render_pylon_only() {
         sc.materials = kept;
         if let Some(f) = flip { for m in &mut sc.materials { f(&mut m.draw); } }
         eprintln!("[{label}] {} materials kept", sc.materials.len());
-        let mut r = gpu::Renderer::new(&device, &queue, format, sc, false, false);
+        let mut r = gpu::Renderer::new(&device, &queue, format, sc, false, false, 1);
         let (vp, _) = {
             let cp = pitch.cos(); let fw = glam::Vec3::new(cp * yaw.sin(), pitch.sin(), cp * yaw.cos()).normalize();
             let s = fw.cross(glam::Vec3::Y).normalize(); let u = s.cross(fw);
@@ -63,7 +69,7 @@ fn probe_render_pylon_only() {
         });
         let view = target.create_view(&Default::default());
         let depth = gpu::depth_view(&device, w, h);
-        let mut enc = r.render(&device, &queue, &view, &depth, vp, vp, cam.to_array(), 30, &[], &gpu::HudFrame::default(), None);
+        let mut enc = r.render(&device, &queue, &view, &depth, (w, h), vp, vp, cam.to_array(), 30, &[], &gpu::HudFrame::default(), None);
         let row = (4 * w).next_multiple_of(256);
         let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
         enc.copy_texture_to_buffer(
