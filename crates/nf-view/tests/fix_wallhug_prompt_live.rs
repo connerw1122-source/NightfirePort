@@ -111,11 +111,13 @@ fn the_q_claw_latch_plays_no_bullet_impact() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut sim = load(&iso);
     wait_for_control(&mut sim);
-    // The user's playtest spot, aiming at the WALL below grapple point #281 — outside the pick's
-    // acceptance sphere (the ray's closest approach ≈ 3.0 > the point's radius + the bolt's 1.0
-    // [M Bullet_init 0x12c5a0:92, gadget.rs]), so the press tick FIRES the real claw bolt.
+    // The user's playtest spot; the wall-shot phase aims at the wall BEHIND the spot — outside
+    // the pick's acceptance sphere (the ray points away from the point), so the press tick FIRES
+    // the real claw bolt, which dies on that wall. (The forward castle wall at the pulley has no
+    // collision at the bracket gap — the bolt dies at its range cap unsounded there; the mechanism
+    // under test is the bolt's WORLD HIT, whichever wall.)
     let spot = [-18.28f32, 38.19, -71.83];
-    let target = [-3.3962271f32, 39.940285, -71.76922];
+    let target = [-28.28f32, 39.70, -71.83];
     sim.bond.pos = spot;
     let wd = sim.weapons.clone();
     let rounds = wd.clip_size(0x50).max(1);
@@ -142,7 +144,7 @@ fn the_q_claw_latch_plays_no_bullet_impact() {
         // spawn the claw bolt, which dies on the wall — SILENT in the game).
         sim.step_bond(Input::default(), true, false, false);
         assert!(sim.bond.grapple.is_none(),
-            "the wall spot must not latch (the pick's acceptance is the point's sphere + the bolt's 1.0)");
+            "the away-facing wall spot must not latch (the pick's ray points away from the point)");
         let active = sim.drones.audio.active_ids();
         let hit = active.iter().find(|id| impact_ids.contains(id));
         assert!(hit.is_none(),
