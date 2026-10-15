@@ -24,9 +24,11 @@
 //!     → the hand-off cut-scene → the crouched ride → the park → the EndLevel chain → ch 0x1D →
 //!     the LOAD_LEVEL of 07000006 [D U-048; M Trigger_Update case 10 0x1b1a78 →
 //!     Trigger_Activate 0x1b2318]. The ride kills nobody and fires no shots, so the kill rows
-//!     (1 dispatched / 2 disabled / 3 surrendered), the detection row (4), the accuracy row (5)
-//!     and the bonus row (8) are the task's sister's zero rows; the health (6) and time (7)
-//!     rows score from the run's own snapshot.
+//!     (1 dispatched / 2 disabled / 3 surrendered) and the bonus row (8) are zero in value AND
+//!     raw; the stealth row (4) has value 0 (no detections) but scores the FULL max within par
+//!     [M 0x1984b0:225-233]; the accuracy row (5) carries the par 100 and the FULL target — the
+//!     game copies the count into the value first and only a shot tally rescales it [M
+//!     0x1984b0:74-78]; the health (6) and time (7) rows score from the run's own snapshot.
 //!
 //! Run with: `NF_ISO=… cargo test -p nf-view --test fix_scores_handoff_live -- --nocapture --test-threads=1`
 
@@ -100,10 +102,22 @@ fn truck_ride_finish_produces_the_results_rows() {
     assert_eq!((f.stats.dispatched, f.stats.disabled, f.stats.surrendered), (0, 0, 0),
         "the truck ride is a no-kill run");
     assert_eq!(f.stats.shots_fired, 0, "Bond never fires on the ride");
-    for i in [1usize, 2, 3, 5, 8] {
+    for i in [1usize, 2, 3, 8] {
         assert_eq!(f.rows[i].value, 0, "row {i}: the no-kill run's stat");
         assert_eq!(f.rows[i].raw, 0.0, "row {i} scores the zero rows");
     }
+    // Row 5 (accuracy): the game copies the par (count 100) into the value FIRST and only a
+    // shot tally rescales it [M PlrStat_GetScore 0x1984b0 — the store row+0x6c ← row+0x64 (the
+    // count), then the DAT_002bcc24 (PlrMissionStats+0x04 shots fired) != 0 guard overwrites
+    // with hits × count / fired] — a NO-SHOT run shows 100% and scores the FULL target
+    // (P_NFSTATS 0x209938:57-66 displays that value verbatim; the capture's "Accuracy 100% /
+    // 100% / 50,000" — docs/reports/nfstats-model.md). (The pre-nfstats `else { 0 }` was the
+    // misport; the held 614 tree fixed the scorer but left this loop expecting 0 — the held
+    // failure.)
+    assert_eq!(f.rows[5].value, 100, "no shots → the accuracy par copies [M 0x1984b0:74-78]");
+    assert_eq!(f.rows[5].raw, expect_generic(f.rows[5].count, f.rows[5].value, f.rows[5].target),
+        "row 5's raw per the generic formula — 100/100 of the par is the full target");
+    assert_eq!(f.rows[5].raw, 50_000.0, "the capture's Accuracy 50,000 on 07000005");
     // Row 4 (stealth): within par → the FULL max [M 0x1984b0:225-233 — the else store of row+0x4
     // into row+0x10, ratio 1.0 at LAB_00198bdc]; over par → the penalty ramp. (The old port
     // fell through to the proportional arm and scored 0 for a clean run — the capture's
