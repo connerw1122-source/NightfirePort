@@ -104,8 +104,15 @@ The port's 0.02/tick stand-in [S] stays; the follow-up task is: extract bone 0's
 
 ## Suite
 
-Run with the fast runner on the affected binaries (`--test-threads=1`, NF_ISO, release): the totals are appended
-below at the end of the session. Final-tree (merged with origin/master) numbers in the WORKLOG entry.
+Final tree (merged with origin/master a2958c03), fast runner foreground chunks (`--test-threads=1`, NF_ISO,
+release): chunk 1 — ai_live, fix_ai_remainder_live (the head-track live tests), trig_live, fix_portonly_review_live,
+tuning_live, fire_modes3_live, fix_weapon_fire_modes_live, weapon_switch_live, fix_weapons_all_live,
+fix_samurai_fire_live: **65 passed, 0 failed, 4 ignored**. Chunk 2 — fix_sg5_casings_live, fix_shell_eject_live,
+casings16_live, impacts_live, head_look_live, ai_traces_live, fix_weapon_effects_live, anim_events_live,
+fix_searchlight_remainder_live, drone_portcheck_live, exact_vs_host_probe: **37 passed, 0 failed, 1 ignored**.
+Total 102 passed / 0 failed / 5 ignored over the affected binaries; the full 4-crate suite did not fit the
+session's window (the sandbox reaps background jobs — the chunks above cover every binary that touches the
+changed code paths); the slim-ISO disc_golden trio is unaffected by this task's files.
 
 ## Live checks for the main agent
 
