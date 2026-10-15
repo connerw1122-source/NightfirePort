@@ -13484,3 +13484,10 @@ Work Log (credits-data):
 - Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
   0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
   the PAL base note).
+
+## nfstats-model2 (2026-10-15, branch s/nfstats-model2)
+- Started: land held 614 (s/nfstats-model dd301c6) — branch created from origin/s/nfstats-model, origin/master
+  merged (menu.rs union: Stats + CnName/ScreenAdjust/MP pages/Credits all kept; WORKLOG union). Target: the held
+  suite failure `nf-view/tests/fix_scores_handoff_live.rs:104` "row 5: the no-kill run's stat" (left 100, right 0)
+  — 614's test edit vs master's 111e PlrMissionStats handoff (progress.rs). Next: reproduce, decide from
+  P_NFSTATS_Handler 0x209938 / the results rows what row 5 shows for a no-kill run, fix code or test, verify.
