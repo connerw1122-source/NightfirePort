@@ -12904,3 +12904,11 @@ the binaries the window fit.)
   bookkeeping) + the view_time floor for the reverse. fix_switch_after_cold_load_live 2/2
   (07000016 mash + the first-possible-tick single press + the settled press; 07000012 kit 0x10
   the same). Next: merge master, restart the suite on the final tree.
+- (13:05-13:35) Final-tree verification: merged origin/master (815714d6, WORKLOG both kept); the
+  refinement pushed (the request write also allowed during the retarget's reverse — the game's
+  case list allows state 2 and case 2's tail applies the LATEST +0x63 at the stop [M 0x1a2e38
+  case 2/0xe's tail]); fix_switch_after_cold_load_live 2/2 on it. Foreground sweep of the
+  switch-affected binaries on the final tree: fire_modes3_live 5/0/4, fix_weapon_fire_modes_live
+  5/0, fix_weapon_modes_live 6/0, fix_samurai_fire_live 3/0, fix_weapons_all_live 4/0,
+  weapon_switch_live 2/0 (nf-game), tuning_live 2/0 (nf-game). The fast suite on the final tree
+  running (started 12:58); fix_switch_after_cold_load_live passed inside it as well.
