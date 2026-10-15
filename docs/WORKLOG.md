@@ -13403,3 +13403,25 @@ Work Log (credits-data):
   handbrake, tyre grip, steering, suspension), collision response against the track road/collision data, at
   the game's tick rate. Deliverable: a headless nf_game::driving sim + tests driving a scripted input on a
   flat surface, asserting the decompile's speed/turn numbers. No rendering.
+## drive-physics (2026-10-15, branch s/drive-physics) — first pass 21:08 UTC
+- docs/systems/drive-physics.md: the CARP tick map (FUN_00159d10 → FUN_001ff3d8 passes A-F →
+  FUN_00188200 → FUN_0018cef8 engine/gears/steer + FUN_00190f88 tyres), the .tun text DB
+  (KEY=VALUE, substring lookup FUN_001426a8, per-namespace registered globals Rigid 0x3390d0../
+  Physical 0x331970../Friction 0x3319d8.. with the .data initials), the pvehicle .atr per-car
+  schema (FUN_001968f8; Bond = vanquish.atr: MASS 1660, MAXACC 3, MAXBRAKE 3.15, MAXSTEERING 0.09,
+  MODSTEERSPEED 10, MINSTEER 0.425, GEAR_LIMIT 18/29/50/54/69, RATIO 0.65..0.44, SPRING_*,
+  WHEEL_RADIUS 0.365), the auto-shift walk + RPM (FUN_0018aa88: rpm = |v|·6000/LIMIT[gear],
+  neutral rev = throttle·7000), the drive force (MAXACC·RATIO[gear] − brake·MAXBRAKE), the
+  steering falloff (1−(v−MODSTEER)/25 floored at MINSTEER), the tyre grip boost
+  ((1−min(1,v/15))·2.5+1) + the ±12.5 lateral clamp (FUN_00190f88:506-508), the gravity bodge
+  (cars −13, jungle_truck −34; strings 0x396578/88), and the ground-damping predicate finding
+  (FUN_001f7c60:171-184 reads as the PROP path — applied to a car it would cap 0.16 m/s; cars
+  take ROLLING_RESISTANCE 0.1 instead).
+- crates/nf-game/src/driving.rs: Tuning (the .tun parser), Rigid/Friction (game defaults +
+  from_tun), CarParams (schema defaults + vanquish() + parse_atr), Car/CarInput/FlatWorld with
+  the per-tick step (gears → steering → drive/brake → bicycle-model yaw under the game's lateral
+  clamp → semi-implicit Euler, the VU0 macro form flagged [S]).
+- crates/nf-game/tests/drive_physics.rs: 11 tests, all green (parsers, gearbox walk + RPM
+  denominators, neutral rev, steering floor 0.03825, drive 1.95/1.77, brake −3.15, reverse decay
+  2.4−cut·0.075, gravity −13/−34 with the discrete Euler sum, the grip boost 3.5→1.0 + the clamp
+  sweep, the 90 s flat run visiting every gear and coasting gently).
