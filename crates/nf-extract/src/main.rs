@@ -23,7 +23,7 @@
 //! ```
 
 use anyhow::{bail, Context, Result};
-use nf_formats::{disc, elf::Elf, iso9660::IsoImage, png, sha1, symfile};
+use nf_formats::{bigf, carmodel, crp, disc, elf::Elf, iso9660::IsoImage, png, refpack, sha1, symfile};
 use std::path::Path;
 
 fn main() -> Result<()> {
@@ -88,6 +88,8 @@ fn main() -> Result<()> {
         "gfx-boxes" => gfx_boxes(&IsoImage::open(a(1)?)?),
         "gfx-export" => gfx_export(&IsoImage::open(a(1)?)?, Path::new(a(2)?), args.get(3).map(String::as_str)),
         "bigf-extract" => bigf_extract(&IsoImage::open(a(1)?)?, a(2)?, Path::new(a(3)?)),
+        "crp-mesh" => crp_mesh(a(1)?, a(2)?, Path::new(a(3)?)),
+        "crp-mesh-digest" => crp_mesh_digest(a(1)?),
         "symtab" => symtab(Path::new(a(1)?)),
         "drivingsym" => {
             let iso = IsoImage::open(a(1)?)?;
@@ -98,6 +100,7 @@ fn main() -> Result<()> {
         "level-survey" => level_survey(&IsoImage::open(a(1)?)?),
         "level-mesh-audit" => level_mesh_audit(&IsoImage::open(a(1)?)?, a(2)?),
         "kind-census" => kind_census(&IsoImage::open(a(1)?)?),
+        "carmodels" => carmodels(a(1)?, args.get(2).map(std::path::PathBuf::from).as_deref()),
         "char-textures" => char_textures(&IsoImage::open(a(1)?)?, a(2)?),
         other => bail!("unknown command {other:?} (see the module doc)"),
     }
@@ -139,6 +142,110 @@ fn bigf_extract(iso: &IsoImage, archive: &str, out: &Path) -> Result<()> {
     }
     println!("{} entries -> {}", g.entries.len(), out.display());
     Ok(())
+}
+
+/// `crp-mesh <iso-or-DRIVING-dir> <viv> <out-dir>` — the driving track `.crp`'s mesh layer (task
+/// drive-track-mesh): decompresses the archive's `data\track\*.crp`, parses the CARP pool,
+/// relocates the embedded ELFd+ELFr module and writes per-article TSVs (`<track>-articles.tsv`:
+/// name/bbox/parts/sr refs; `<track>-module.tsv`: sections/symbols/relocations/collision census).
+/// Prints one summary row. The first argument is either a disc image (`<iso>`) or the extracted
+/// `DRIVING/` folder (the slim test image ships without it; the tests use the folder form).
+fn crp_mesh(source: &str, viv: &str, out: &Path) -> Result<()> {
+    let (entry_name, row) = crp_mesh_row(source, viv, Some(out))?;
+    println!("{row}");
+    println!("# wrote TSVs for {entry_name} -> {}", out.display());
+    Ok(())
+}
+
+/// `crp-mesh-digest <iso-or-DRIVING-dir>` — the canonical per-track digest rows (numbers only) for
+/// all 8 mission tracks: the golden form (golden/crp_mesh_golden.tsv).
+fn crp_mesh_digest(source: &str) -> Result<()> {
+    for viv in MISSION_VIVS {
+        println!("{}", crp_mesh_row(source, viv, None)?.1);
+    }
+    Ok(())
+}
+
+const MISSION_VIVS: [&str; 8] =
+    ["MIS01.VIV", "MIS11.VIV", "MIS13A.VIV", "MIS13B.VIV", "MIS13C.VIV", "MIS3.VIV", "MIS4.VIV", "RACE.VIV"];
+
+/// One archive's bytes: either from the disc image or straight from the DRIVING folder.
+fn driving_archive_bytes(source: &str, viv: &str) -> Result<Vec<u8>> {
+    let p = std::path::Path::new(source);
+    if p.is_dir() {
+        return Ok(std::fs::read(p.join(viv)).with_context(|| format!("reading {}", p.join(viv).display()))?);
+    }
+    let iso = IsoImage::open(p)?;
+    let path = format!("/DRIVING/{viv}");
+    let e = iso.find(&path).with_context(|| format!("no {path} on the disc"))?;
+    Ok(iso.read_file(e)?)
+}
+
+/// Loads one mission VIV's track `.crp`, computes the mesh summary; with `out` set, writes the
+/// per-article and module TSVs. Returns `(entry name, summary row)`.
+fn crp_mesh_row(source: &str, viv: &str, out: Option<&Path>) -> Result<(String, String)> {
+    use nf_formats::crp::Crp as CrpFile;
+    use nf_formats::crp_mesh::TrackModule;
+
+    let data = driving_archive_bytes(source, viv)?;
+    let g = nf_formats::bigf::Bigf::parse(&data, data.len() as u64)?;
+    let (idx, entry) = g.entries.iter().enumerate()
+        .find(|(_, x)| {
+            let n = x.name.to_ascii_lowercase();
+            n.starts_with("data\\track\\") && n.ends_with(".crp")
+        })
+        .with_context(|| format!("{viv}: no data\\track\\*.crp entry"))?;
+    let idx = idx;
+    let entry_name = entry.name.clone();
+    let blob = data[entry.offset as usize..(entry.offset + entry.size) as usize].to_vec();
+    let dec = if nf_formats::refpack::is_refpack(&blob) {
+        nf_formats::refpack::decompress(&blob)?
+    } else {
+        blob
+    };
+    let crp = CrpFile::parse(&dec)?;
+    let track = crp.track_name()?.unwrap_or("-").to_owned();
+    let articles = crp.track_articles()?;
+    let module = TrackModule::load(&crp)?;
+    let coll = crp.collision_census()?;
+    let model_symbols = module.symbols.iter().filter(|s| s.name.starts_with("__Model:::")).count();
+    let geoprims = module.geoprim_names().len();
+    let parts: usize = articles.iter().map(|a| a.parts.len()).sum();
+    let image_sha1: String = nf_formats::sha1::sha1(&module.image).iter().map(|b| format!("{b:02x}")).collect();
+    let row = format!(
+        "{viv}#{idx}\t{entry_name}\t{track}\t{}\t{parts}\t{model_symbols}\t{geoprims}\t{}\t{}\t{}\t{image_sha1}",
+        articles.len(), module.relocations, coll.ci_total_items, coll.cn_records,
+    );
+    if let Some(out) = out {
+        std::fs::create_dir_all(out)?;
+        let stem = track.replace(['/', '\\'], "_");
+        let mut art = String::from("name\tbbox_min\tbbox_max\tparts\n");
+        for a in &articles {
+            let fmt = |v: &[f32; 3]| format!("{:.4},{:.4},{:.4}", v[0], v[1], v[2]);
+            let refs = if a.parts.is_empty() {
+                "-".to_owned()
+            } else {
+                a.parts.iter()
+                    .map(|p| match p.sr_index {
+                        Some(sr) => format!("as#{}->sr#{}", p.as_instance, sr),
+                        None => format!("as#{}->-", p.as_instance),
+                    })
+                    .collect::<Vec<_>>()
+                    .join("|")
+            };
+            art.push_str(&format!("{}\t{}\t{}\t{}\n", a.name, fmt(&a.bbox_min), fmt(&a.bbox_max), refs));
+        }
+        std::fs::write(out.join(format!("{stem}-articles.tsv")), art)?;
+        let mut mods = String::from("section\ttype\toffset\tsize\tentsize\n");
+        for s in &module.sections {
+            mods.push_str(&format!("{}\t{:#x}\t{:#x}\t{}\t{:#x}\n", s.name, s.sh_type, s.offset, s.size, s.entsize));
+        }
+        mods.push_str(&format!("# symbols={}\n", module.symbols.len()));
+        mods.push_str(&format!("# relocations={} (R_MIPS_32)\n", module.relocations));
+        mods.push_str(&format!("# collision: grd={} ci={} ci_items={} cn={}\n", coll.grd_records, coll.ci_records, coll.ci_total_items, coll.cn_records));
+        std::fs::write(out.join(format!("{stem}-module.tsv")), mods)?;
+    }
+    Ok((entry_name, row))
 }
 
 fn files_extract(iso: &IsoImage, out: &Path) -> Result<()> {
@@ -1449,5 +1556,92 @@ fn char_textures(iso: &IsoImage, level_name: &str) -> Result<()> {
         }
     }
     if dupes == 0 { println!("\t(no duplicate main-mesh hashcodes)"); }
+    Ok(())
+}
+
+/// `nf-extract carmodels <file.crp | file.viv> [out-dir]` — decodes the driving missions' car
+/// models (docs/formats/car-model.md). Reads a car `.crp` directly, or a `DRIVING/*.VIV`
+/// archive and every `data\car\model\*.crp` in it; RefPack-decompresses when flagged
+/// (`10fb`, `nf_formats::refpack`). Prints a TSV census per car and, with an out-dir, writes
+/// the per-buffer bytes + an OBJ (vertices only — the triangle connectivity is the remaining
+/// unknown, see the doc). Nothing it writes is committed.
+fn carmodels(path: &str, out: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let raw = std::fs::read(path)?;
+    let mut cars: Vec<(String, Vec<u8>)> = Vec::new();
+    if raw.starts_with(b"BIGF") {
+        let g = bigf::Bigf::parse(&raw, raw.len() as u64)?;
+        for e in &g.entries {
+            if !e.name.contains("car\\model") || !e.name.ends_with(".crp") { continue; }
+            let mut bytes = raw[e.offset as usize..(e.offset + e.size) as usize].to_vec();
+            if refpack::is_refpack(&bytes) { bytes = refpack::decompress(&bytes)?; }
+            cars.push((e.name.rsplit('\\').next().unwrap_or(&e.name).to_string(), bytes));
+        }
+        if cars.is_empty() { bail!("no data\\car\\model\\*.crp entries in {path}"); }
+    } else {
+        cars.push((std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), raw));
+    }
+    if let Some(out) = out { std::fs::create_dir_all(out)?; }
+    println!("car\tarticle\tparts\tsheet\tmodels\tvariant.lod\tvertices\tgroups\tbuffer_sha1");
+    for (name, bytes) in &cars {
+        let m = carmodel::CarModel::parse(bytes)
+            .with_context(|| format!("{name}: not a car .crp"))?;
+        let article = m.name()?.unwrap_or("-").to_string();
+        let sk = m.skel()?;
+        let parts = sk.as_ref().map(|s| s.parts.join(",")).unwrap_or_default();
+        let sheet = m.sheet_name()?.unwrap_or("-").to_string();
+        let module = m.module_bytes()?;
+        let cm = carmodel::CarModule::parse(module)
+            .with_context(|| format!("{name}: embedded module"))?;
+        for (vi, li, v) in cm.vertices_per_model() {
+            let groups: usize = cm.models.iter().find(|x| x.variant == vi && x.lod == li)
+                .map(|x| x.groups.iter().map(|g| g.buffers.len()).sum()).unwrap_or(0);
+            println!("{name}\t{article}\t{parts}\t{sheet}\t{}\t{vi}.{li}\t{v}\t{groups}\t-",
+                cm.models.len());
+        }
+        // per-buffer rows
+        let modl = cm.models.len();
+        for b in &cm.buffers {
+            println!("{name}\t{article}\t{parts}\t{sheet}\t{modl}\t-\t{}\t-\t{}", b.census.vertices(), b.sha1);
+        }
+        if let Some(out) = out {
+            let stem = name.trim_end_matches(".crp");
+            let od = out.join(stem);
+            std::fs::create_dir_all(&od)?;
+            for b in &cm.buffers {
+                std::fs::write(od.join(format!("buf_{:05x}.bin", b.offset)), &b.bytes)?;
+            }
+            write_obj(&od.join("model.obj"), &cm)?;
+        }
+    }
+    Ok(())
+}
+
+/// OBJ with the decoded V4_32 (x,y,z,1.0) position quads of every draw buffer. Faces are
+/// omitted: the per-triangle index list is the remaining unknown (docs/formats/car-model.md).
+fn write_obj(path: &std::path::Path, cm: &carmodel::CarModule) -> anyhow::Result<()> {
+    use std::fmt::Write as _;
+    let mut s = String::from("# driving car model: vertices only (see docs/formats/car-model.md)\n");
+    for b in &cm.buffers {
+        writeln!(&mut s, "o buf_{:05x}", b.offset)?;
+        let mut i = 0x18usize;
+        let list = &b.bytes[0x18..];
+        let packets = match nf_formats::vif::parse_vif(list) { Ok(p) => p, Err(_) => continue };
+        for p in packets {
+            if !p.is_unpack() || p.vn() != 3 || p.vl() != 0 { continue; }
+            let d = p.data;
+            for q in 0..(d.len() / 16) {
+                let x = f32::from_le_bytes(d[q*16..q*16+4].try_into()?);
+                let y = f32::from_le_bytes(d[q*16+4..q*16+8].try_into()?);
+                let z = f32::from_le_bytes(d[q*16+8..q*16+12].try_into()?);
+                let w = f32::from_le_bytes(d[q*16+12..q*16+16].try_into()?);
+                if w == 1.0 && x.abs() < 1e5 && y.abs() < 1e5 && z.abs() < 1e5 {
+                    let _ = writeln!(&mut s, "v {x:.6} {y:.6} {z:.6}");
+                }
+            }
+            i = 0;
+        }
+        let _ = i;
+    }
+    std::fs::write(path, s)?;
     Ok(())
 }

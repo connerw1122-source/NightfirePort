@@ -320,7 +320,9 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
         assert!(!frame.runs.is_empty(), "{page:?}: no draw runs");
         // Which textures the page referenced (run.tex is hud_textures index + 1).
         let used: Vec<u32> = frame.runs.iter().filter(|r| r.0 > 0).map(|r| textures[r.0 - 1].0).collect();
-        assert!(!used.is_empty(), "{page:?}: no textured runs");
+        // The main menu's only art is its backdrop movie, and its hint keys are drawn keycaps (PC port), so it has
+        // no textured run of its own.
+        assert!(!used.is_empty() || page == Page::Main, "{page:?}: no textured runs");
         saw.insert(page.id(), used);
     }
     // Per-page sprite hashes (numbers only) — the pages' msg-0x24 sets [M the menu-def]:
@@ -350,7 +352,8 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
     // The hint bars draw the game's own specialchar icon font [M specialchar 0x2dd8d8: every entry's
     // texture is 0x03000075] — not the 64×64 atlas 0x03000042 the port guessed before, and the ✕ is
     // the table's (235,1,19×19) tile, not the font's letter X.
-    assert!(has(0x4000_001c, 0x0300_0075), "the hint bars draw the specialchar icon font [M 0x2dd8d8]");
+    // PC port: the hint keys draw as keycaps (solid quads + font text), not the pad icon font.
+    assert!(!has(0x4000_001c, 0x0300_0075), "the hint bars draw keyboard keycaps, not the pad icons");
     assert!(!has(0x4000_001c, 0x0300_0042), "the hint bars no longer use the guessed 0x03000042 atlas");
     // The title page is the only one with the full-screen art (the others use the dark plate).
     assert!(!has(0x4000_0002, 0x0300_0074));
@@ -623,31 +626,29 @@ fn the_ring_preview_is_clipped_to_the_ring_circle() {
     assert!(preview_verts >= 20 * 6, "the preview drew as the circle strips ({preview_verts} verts)");
 }
 
-/// The hint bar's ~A draws the specialchar table's ✕ tile [M specialchar 0x2dd8d8 entry 0: texture
-/// 0x03000075, u 235, v 1, 19×19, advance 19] — not the font's letter X. Sister: the codename page's
-/// hint has ~Y — the table's triangle tile (235,61).
+/// PC port: the hint bars name keyboard keys, not the PlayStation pad buttons (the user, 2026-10-15). The ~A/~B/~Y/
+/// ~V/~H tokens map to the keys `key_action` uses — Enter / Esc / Tab / the arrows — and draw as keycaps, so no
+/// specialchar pad tile (the ✕ at (235,1), the □ at (235,61)) is drawn on the codename page's hint any more. Sister:
+/// the objective bullets ~I/~J are not buttons and keep the game's glyphs.
 #[test]
-fn the_hint_icons_come_from_the_specialchar_table() {
+fn the_hint_bars_name_keyboard_keys() {
+    use nf_view::menu::{pc_key, KeyCap};
+    assert_eq!(pc_key('A'), Some(KeyCap::Text("Enter")));
+    assert_eq!(pc_key('B'), Some(KeyCap::Text("Esc")));
+    assert_eq!(pc_key('Y'), Some(KeyCap::Text("Tab")));
+    assert_eq!(pc_key('V'), Some(KeyCap::UpDown));
+    assert_eq!(pc_key('H'), Some(KeyCap::LeftRight));
+    assert_eq!(pc_key('I'), None, "the objective bullet is not a key");
+    assert_eq!(pc_key('J'), None);
     let font = test_font();
     let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
-    // The codename page's hint 0x216 = "~A Select  ~Y Create  ~V Scroll  ~B Back" [L USATxt.dat].
     let mut fe = FrontEnd::new();
     fe.page = Page::Codename;
     let frame = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     let ti = textures.iter().position(|(h, _)| *h == 0x0300_0075).unwrap() + 1;
-    let mut cross = false;
-    let mut triangle = false;
-    for run in &frame.runs {
-        if run.0 != ti { continue; }
-        for vtx in &frame.v[run.2 as usize..(run.2 + run.3) as usize] {
-            // The uv rect is normalized by the test texture's real pitch (256×128).
-            let (u, v) = (vtx.uv[0] * 256.0, vtx.uv[1] * 128.0);
-            if (u - 235.0).abs() < 0.6 && (v - 1.0).abs() < 0.6 { cross = true; }
-            if (u - 235.0).abs() < 0.6 && (v - 61.0).abs() < 0.6 { triangle = true; }
-        }
-    }
-    assert!(cross, "the ✕ hint icon is specialchar's (235,1,19×19) tile [M 0x2dd8d8:0] — the letter-X symptom");
-    assert!(triangle, "the △ hint icon is specialchar's (235,61) tile [M 0x2dd8d8:16]");
+    let pad_tile = frame.runs.iter().filter(|r| r.0 == ti).flat_map(|r| frame.v[r.2 as usize..(r.2 + r.3) as usize].iter())
+        .any(|vtx| { let (u, v) = (vtx.uv[0] * 256.0, vtx.uv[1] * 128.0); (u - 235.0).abs() < 0.6 && ((v - 1.0).abs() < 0.6 || (v - 61.0).abs() < 0.6) });
+    assert!(!pad_tile, "the codename hint draws no PlayStation pad tile");
 }
 
 /// The title's legal block wraps inside its plate (50,332,540×108) and every line is centred at the
@@ -711,7 +712,8 @@ fn text_rows(frame: &nf_view::gpu::HudFrame, n_tex: usize, aspect: f32) -> TextR
     let head_tex = menu::MENU_TEXTURES.iter().position(|&t| t == 0x0300_0005).expect("header atlas listed") + 1;
     let mut is_text = vec![false; frame.v.len()];
     for &(tex, _, start, count) in &frame.runs {
-        if tex == font_tex || tex == icon_tex || tex == head_tex { for v in &mut is_text[start as usize..start as usize + count as usize] { *v = true; } }
+        // tex 0 = the solid quads: the PC hint keycaps ride the rows with their words.
+        if tex == font_tex || tex == icon_tex || tex == head_tex || tex == 0 { for v in &mut is_text[start as usize..start as usize + count as usize] { *v = true; } }
     }
     let k = (2.0 / 512.0) * (4.0 / 3.0) / aspect;
     // Per-quad bboxes (runs concatenate 6-vertex quads; the full-screen plates also ride the font
@@ -772,7 +774,8 @@ fn the_footer_hints_are_centred_in_their_bars() {
         let (frame, n) = frame_with_font(&fe, lang.as_ref(), 4.0 / 3.0);
         let rows = text_rows(&frame, n, 4.0 / 3.0);
         eprintln!("[dbg] {page:?} rows: {:?}", rows.rows);
-        let band = rows.band(390.0).or_else(|| rows.band(385.0)).or_else(|| rows.band(394.0)).expect("the footer hint draws");
+        // The bar (419 + 21/2 = 429.5 of 480 → HUD y ≈ 400) — probe its centre first.
+        let band = rows.band(400.0).or_else(|| rows.band(390.0)).or_else(|| rows.band(385.0)).or_else(|| rows.band(394.0)).expect("the footer hint draws");
         let centre = (band.0 + band.1) / 2.0;
         assert!((centre - 256.0).abs() < 5.0, "{page:?}: the hint row spans {band:?}, centre {centre} — the bar centres its label at 320/640 [M Label_Update 0x218cb8:177-182]");
         // Sister: the hint sits inside the bar control (50..590 → 40..472 HUD x).
@@ -991,8 +994,12 @@ fn the_pause_objectives_tab_draws_the_objective_rows_with_their_markers() {
     assert!(fe.open_pause());
     fe.pause_tab = 1;
     let empty = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0).v.len();
-    // Two objectives: the first pending, the second done (state 4 [M 0x204408:259]).
-    fe.pause_objectives = vec![(0x0400_0000, false), (0x0400_0001, true)];
+    // Two objectives: the first pending, the second done (state 4 [M 0x204408:259]). The hints
+    // are the records' +0x08 labels (objective-hints; 0xffffffff = none).
+    fe.pause_objectives = vec![
+        menu::PauseObjective { text: 0x0400_0000, hint: 0x0400_005b, done: false },
+        menu::PauseObjective { text: 0x0400_0001, hint: 0xffff_ffff, done: true },
+    ];
     let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     assert!(f.v.len() > empty, "the objectives rows add quads ({} -> {})", empty, f.v.len());
     // The 'J' marker's glyph quad: uv = (176,57) texels of the specialchar atlas, normalised by its
@@ -1221,4 +1228,48 @@ fn the_option_pages_change_values() {
     assert_eq!(g.page, Page::CnSelect, "▶ confirms on the main menu");
     assert!(g.action(Action::Left));
     assert_eq!(g.page, Page::Main, "◀ backs out");
+}
+
+/// PC mouse support: hovering a list row selects it, a click on it confirms, a click on a wheel's neighbour row scrolls
+/// the wheel, the value column's ◀ / ▶ step a value, the pause tabs take clicks (coordinates in the 640×480 menu space).
+#[test]
+fn the_mouse_drives_the_menus() {
+    // Main: hover row 2, click it → Codenames → Edit Codename.
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Main;
+    assert!(fe.mouse_move(320.0, 343.0));
+    assert_eq!(fe.cursor, 2, "hovering the third main row selects it");
+    assert!(fe.mouse_click(320.0, 343.0));
+    assert_eq!(fe.page, Page::CnSelect);
+    // Sister: a click on empty space on the main menu does nothing.
+    let mut g = FrontEnd::new();
+    g.page = Page::Main;
+    assert!(!g.mouse_click(40.0, 40.0));
+    assert_eq!(g.page, Page::Main);
+    // A wheel: the row below the centre scrolls the wheel, the centre confirms.
+    let mut fe = FrontEnd::new();
+    fe.page = Page::CnMenu;
+    fe.cursor = 1;
+    assert!(fe.mouse_click(450.0, 215.0));
+    assert_eq!((fe.page, fe.cursor), (Page::CnMenu, 2), "a neighbour row scrolls the wheel to it");
+    fe.cursor = 3;
+    assert!(fe.mouse_click(450.0, 190.0));
+    assert_eq!(fe.page, Page::CnAdvanced, "the centre row confirms");
+    // The value column: ▶ steps Auto Aim (row 1, y 136) On → Off.
+    let auto_aim = menu::ADV_ROWS[1].ctrl;
+    assert_eq!(fe.opt_value(auto_aim), 1);
+    assert!(fe.mouse_click(560.0, 144.0));
+    assert_eq!(fe.cursor, 1);
+    assert_eq!(fe.opt_value(auto_aim), 0, "clicking the value side steps it");
+    // The pause tabs.
+    let mut p = FrontEnd::new();
+    p.flow.current_level = 0x0700_0005;
+    p.open_pause();
+    assert_eq!(p.page, Page::Pause);
+    assert!(p.mouse_click(400.0, 128.0));
+    assert_eq!(p.pause_tab, 2, "the CONTROLS tab takes the click");
+    assert!(p.mouse_click(130.0, 128.0));
+    assert_eq!(p.pause_tab, 0);
+    assert!(p.mouse_move(320.0, 242.0));
+    assert_eq!(p.cursor, 1, "hovering RESTART selects it");
 }

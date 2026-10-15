@@ -297,6 +297,15 @@ fn gold_group(entry_idx: usize) -> (u16, usize, usize) {
     (REWARDS_TABLE[entry_idx].desc[0].bit + rank as u16, len, rank)
 }
 
+/// The game's ceil with the 1e-5 epsilon: `(int)x`, then +1 when the dropped fraction is at
+/// least 1e-5 [M `PlrStat_GetScore` 0x1984b0 — the bump appears on every raw-score store
+/// (:181-185, :213-218, :155-160)]. Float noise below 1e-5 does not bump.
+fn ceil_1e5(x: f32) -> f32 {
+    let t = x as i32; // trunc toward zero; the game's scores are non-negative here
+    let tf = t as f32;
+    if x - tf >= 1e-5 { (t + 1) as f32 } else { tf }
+}
+
 /// The outcome of one `PlrStat_GetScore` commit — what the results screen and the save show.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Scored {
@@ -496,9 +505,12 @@ impl Progress {
             rows[2].value = s.disabled;
             rows[3].value = s.surrendered;
             rows[4].value = s.detected;
+            // Accuracy: the value STARTS at the par (count) and only a shot tally rescales it —
+            // no shots → the full 100% [M 0x1984b0:74-78: row+0x8 = row+0x0, then the fired != 0
+            // branch overwrites with hit × count / fired].
             rows[5].value = if s.shots_fired > 0 {
                 (rows[5].count as u64 * s.shots_hit_enemy as u64 / s.shots_fired as u64) as u32
-            } else { 0 };
+            } else { rows[5].count };
             rows[6].value = s.health as u32; // fptoui [M 0x1984b0 row 6]
             if ms == 3 { rows[6].value = 0; } // the failed-mission zero [M 0x1984b0]
             rows[7].value = s.elapsed;
@@ -510,33 +522,46 @@ impl Progress {
             let r = &mut rows[i];
             if r.count == 0 { continue; }
             match i {
-                // Row 4, the undetected row: over par → the penalty ramp.
-                4 if r.count < r.value => {
-                    let pen = if self.table[idx].penalty == 0.0 { 0.03 } else { self.table[idx].penalty };
-                    let f = (1.0 - (r.value - r.count) as f32 * pen).max(0.0);
-                    r.raw = f * r.target as f32;
-                    r.ratio = f.clamp(0.0, 1.0);
-                }
-                // Row 7, the time row: value in 1/100 s, count in seconds.
-                7 => {
-                    let t = r.value as f32 / 100.0;
-                    if (r.count as f32) < t {
-                        r.raw = r.target as f32 * r.count as f32 / t;
-                        r.ratio = (r.count as f32 / t).clamp(0.0, 1.0);
+                // Row 4, the undetected row. Over par → the penalty ramp, CEILED with the game's
+                // 1e-5 epsilon [M 0x1984b0:213-218]. Within par → the FULL max, ratio 1.0
+                // [M 0x1984b0:225-233 — the else store of row+0x4 into row+0x10, then the 1.0
+                // ratio at LAB_00198bdc]. (The old fall-through into the proportional arm
+                // awarded 0 for a clean run — the capture's 100% / 25,000 is the disproof.)
+                4 => {
+                    if r.count < r.value {
+                        let pen = if self.table[idx].penalty == 0.0 { 0.03 } else { self.table[idx].penalty };
+                        let f = (1.0 - (r.value - r.count) as f32 * pen).max(0.0);
+                        r.raw = ceil_1e5(f * r.target as f32);
+                        r.ratio = f.clamp(0.0, 1.0);
                     } else {
                         r.raw = r.target as f32;
                         r.ratio = 1.0;
                     }
+                }
+                // Row 7, the time row: value in 1/100 s, count in seconds. BOTH of the game's
+                // branches are the same expression — raw = ceil₁ₑ₋₅(max × par / max(elapsed_s, 1))
+                // — under par the score RISES above max [M 0x1984b0:118-170: the under-par arm
+                // computes max × par and divides by max(elapsed, 1); the over-par arm divides max
+                // by elapsed/par]. The PCSX2 capture's 01:19 / 09:00 → 170,887 =
+                // ceil(25000 × 540 / 79) is the proof (docs/systems/mission-stats.md). The ratio
+                // is the game's shared block [M :234-253]: round½↑(raw/max × 100) × 0.01 clamped.
+                7 => {
+                    let t = (r.value as f32 / 100.0).max(1.0);
+                    r.raw = ceil_1e5(r.target as f32 * r.count as f32 / t);
+                    r.ratio = if r.target != 0 {
+                        ((r.raw / r.target as f32 * 100.0).round() * 0.01).clamp(0.0, 1.0)
+                    } else { 0.0 };
                 }
                 // Row 8, the bonus pickups: all-or-nothing.
                 8 => {
                     if r.count <= r.value { r.raw = r.target as f32; r.ratio = 1.0; }
                     else { r.raw = 0.0; r.ratio = 0.0; }
                 }
-                // The normal rows: raw = target · min(count, value) / count.
+                // The normal rows: raw = ceil₁ₑ₋₅(target · min(count, value) / count) [M
+                // 0x1984b0:171-185 — (int)f then the 1e-05 bump].
                 _ => {
                     let m = r.count.min(r.value);
-                    r.raw = r.target as f32 * m as f32 / r.count as f32;
+                    r.raw = ceil_1e5(r.target as f32 * m as f32 / r.count as f32);
                     r.ratio = (((m as f32 / r.count as f32) * 100.0).round() * 0.01).clamp(0.0, 1.0);
                 }
             }
@@ -877,16 +902,17 @@ mod tests {
         s.elapsed = 54_000;          // row 7: 540.00 s == the 540 s par → full target
         s.bonus_pickups = 7;         // row 8: 7/7
         let sc = p.get_score(0x0700_0005, 6, 1, true).expect("the 0x07 entry scores");
-        // Row raws: 50000·2/2 = 50000; 50000·30/30 = 50000; accuracy 50000·80/100 = 40000;
-        // health 50000·46/100 = 23000; time full 25000; bonus 150000.
-        // Σ = 50000+50000+40000+23000+25000+150000 = 338000.
-        assert_eq!(sc.base, 338_000, "Σ raw");
+        // Row raws: 50000·2/2 = 50000; 50000·30/30 = 50000; stealth 0 detections ≤ 30 → the FULL
+        // 25000 [M 0x1984b0:225-233]; accuracy 50000·80/100 = 40000; health 50000·46/100 = 23000;
+        // time 25000·540/540 = 25000 [M :118-170]; bonus 150000.
+        // Σ = 50000+50000+25000+40000+23000+25000+150000 = 363000.
+        assert_eq!(sc.base, 363_000, "Σ raw");
         // Difficulty 1 → multiplier 0.0 → bonus 0, last = base.
         assert_eq!(sc.bonus, 0);
-        assert_eq!(sc.last, 338_000);
-        assert!(sc.done_better, "338000 ≥ the fresh best 0 [M 0x1984b0:303-307]");
-        assert_eq!(sc.best, 338_000);
-        // Medal vs [50000, 125000, 200000, 1000000]: 338000 ≥ 200000 → gold 3.
+        assert_eq!(sc.last, 363_000);
+        assert!(sc.done_better, "363000 ≥ the fresh best 0 [M 0x1984b0:303-307]");
+        assert_eq!(sc.best, 363_000);
+        // Medal vs [50000, 125000, 200000, 1000000]: 363000 ≥ 200000 → gold 3.
         assert_eq!(sc.medal, 3);
         // Sister: a read (the game's param_1 != 0 — the pause screen) leaves last/best alone.
         let before = (p.table[1].last, p.table[1].best);
@@ -897,16 +923,17 @@ mod tests {
         let mut p2 = Progress::default();
         std::mem::swap(p2.stats_mut(), p.stats_mut());
         let sc2 = p2.get_score(0x0700_0005, 6, 3, true).unwrap();
-        assert_eq!(sc2.base, 338_000);
-        assert_eq!(sc2.bonus, 676_000, "bonus = base × 2.0 [M 0x1984b0 step 4]");
-        assert_eq!(sc2.last, 1_014_000, "last = base + bonus");
+        assert_eq!(sc2.base, 363_000);
+        assert_eq!(sc2.bonus, 726_000, "bonus = base × 2.0 [M 0x1984b0 step 4]");
+        assert_eq!(sc2.last, 1_089_000, "last = base + bonus");
         // Sister: status != 6 zeroes the stickable fields but keeps best (step 6 zeroes everything
-        // from step 3 EXCEPT entry.best [M 0x1984b0:316-333]). A fresh tally still earns the time
-        // row's full target (elapsed 0 ≤ the 540 s par → 25000), so best = max(0, 25000).
+        // from step 3 EXCEPT entry.best [M 0x1984b0:316-333]). A fresh tally still scores: stealth
+        // 25000 (0 detections ≤ 30) + accuracy 50000 (no shots → the par copies) + the time row's
+        // max × par / max(0, 1) = 25000·540 = 13,500,000 [M :118-170 — the max(elapsed, 1) guard].
         let mut p3 = Progress::default();
         let sc3 = p3.get_score(0x0700_0005, 1, 1, true).unwrap();
         assert_eq!(sc3.last, 0, "not the results path — last zeroed");
-        assert_eq!(p3.table[1].best, 25_000, "best kept");
+        assert_eq!(p3.table[1].best, 13_575_000, "best kept (the commit precedes the zeroing)");
         assert!(!sc3.done_better, "DoneBetter clears off the results path [M 0x1984b0:332]");
         // The 0x09 path: NewScoresRef's [value, count, target] rows, row 7's value ×100
         // [M 0x1984b0:50-56] — the PTP stand-in supplies the driving tallies.
@@ -977,11 +1004,11 @@ mod tests {
         let mut p = Progress::default();
         let s = p.stats_mut();
         s.dispatched = 30; // row 1: 30/30 → the full 50000
-        s.elapsed = 54_000; // row 7: 540.00 s == the 540 s par → the full 25000
+        s.elapsed = 54_000; // row 7: 540.00 s == the 540 s par → 25000·540/540 = 25000
         let sc = p.get_score(0x0700_0005, 6, 2, true).expect("the 0x07 map scores from PlrMissionStats");
-        assert_eq!(sc.base, 75_000, "dispatched 50000 + time 25000");
-        assert_eq!(sc.last, 150_000, "difficulty 2 → ×1.0 → last = base + bonus");
-        assert_eq!(sc.medal, 2, "150000 ≥ the silver 125000, < the gold 200000");
+        assert_eq!(sc.base, 150_000, "dispatched 50000 + stealth 25000 (0 ≤ 30) + accuracy 50000 (no shots [M :74-78]) + time 25000");
+        assert_eq!(sc.last, 300_000, "difficulty 2 → ×1.0 → last = base + bonus");
+        assert_eq!(sc.medal, 3, "300000 ≥ the gold 200000, < the platinum 1000000");
         // Sister: the 0x09 maps keep the NewScoresRef row source — the bootup-set zeroed buffer
         // [M 0x1c7e78:86; L ee_start_05] scores nothing (every row's count is 0), no abort.
         let sc = p.get_score(0x0900_0005, 6, 2, true).expect("the 0x09 map reads the zeroed buffer");
@@ -1014,26 +1041,32 @@ mod tests {
     fn finish_level_handoff_no_kills_zero_rows() {
         let mut p = Progress::default();
         // A run with no kills: nothing logged. The kill rows (1 dispatched / 2 disabled /
-        // 3 surrendered), the detection row (4), the accuracy row (5, no shots) and the bonus
-        // row (8) all score zero; the time row still scores full (elapsed 0 ≤ the 540 s par).
+        // 3 surrendered) and the bonus row (8) score zero. No shots → the accuracy par copies
+        // (100/100 → the full 50000 [M :74-78]); row 4 scores the FULL max (0 detections ≤ 30
+        // [M :225-233]); the time row scores max × par / max(0, 1) = 13,500,000 [M :118-170].
         let f = p.finish_level(0x0700_0005, 2).expect("07000005 is a ScoringTable entry");
         assert_eq!(f.base_map, 0x0700_0005);
         assert_eq!(f.mission_status, 6, "the production runs the results-path status");
         assert_eq!(f.stats, *p.stats(), "the snapshot is the run's tally");
-        for i in [1usize, 2, 3, 4, 5, 8] {
+        for i in [1usize, 2, 3, 8] {
             assert_eq!(f.rows[i].value, 0, "row {i}: the empty tally's stat");
             assert_eq!(f.rows[i].raw, 0.0, "row {i} scores zero on a no-kill run");
         }
+        assert_eq!(f.rows[5].value, 100, "no shots → the accuracy par copies [M 0x1984b0:74-78]");
+        assert_eq!(f.rows[5].raw, 50_000.0);
+        assert_eq!(f.rows[4].value, 0, "row 4: no detections");
+        assert_eq!(f.rows[4].raw, 25_000.0, "within par → the FULL max [M 0x1984b0:225-233]");
+        assert_eq!(f.rows[4].ratio, 1.0);
         // The static design data survives in the hand-off rows.
         assert_eq!(f.rows[1].count, SCORING_TABLE[1].rows[1].count);
         assert_eq!(f.rows[1].target, SCORING_TABLE[1].rows[1].target);
-        assert_eq!(f.rows[7].raw, SCORING_TABLE[1].rows[7].target as f32, "elapsed 0 → the full time target");
-        // base = Σ raw = the time row only; difficulty 2 → ×1.0 → last = base + bonus.
-        assert_eq!(f.base, 25_000);
+        assert_eq!(f.rows[7].raw, 25_000.0 * 540.0, "elapsed 0 → max × par / max(0, 1) [M :118-170]");
+        // base = Σ raw = 25000 + 50000 + 13500000; difficulty 2 → ×1.0 → last = base + bonus.
+        assert_eq!(f.base, 13_575_000);
         assert_eq!(f.dif, 1);
-        assert_eq!(f.bonus, 25_000);
-        assert_eq!(f.last, 50_000);
-        assert_eq!(f.medal, 1, "50000 ≥ 07000005's bronze 50000, < the silver 125000");
+        assert_eq!(f.bonus, 13_575_000);
+        assert_eq!(f.last, 27_150_000);
+        assert_eq!(f.medal, 4, "27150000 ≥ 07000005's platinum 1000000");
         assert_eq!(f.best, 0, "the read-mode production commits nothing");
         assert_eq!((p.table[1].last, p.table[1].best), (0, 0), "the entry's last/best stay the game's");
         assert_eq!(p.finished, Some(f), "the hand-off mirrors on Progress::finished");
@@ -1057,8 +1090,11 @@ mod tests {
         assert_eq!(f.stats.dispatched, 7);
         assert_eq!(f.rows[1].value, 7);
         let m = f.rows[1].count.min(7);
-        assert_eq!(f.rows[1].raw, f.rows[1].target as f32 * m as f32 / f.rows[1].count as f32,
-            "the generic row's raw = target · min(count, value) / count [M 0x1984b0:186]");
+        let x = f.rows[1].target as f32 * m as f32 / f.rows[1].count as f32;
+        let ti = x as i32;
+        let want = if x - ti as f32 >= 1e-5 { (ti + 1) as f32 } else { ti as f32 };
+        assert_eq!(f.rows[1].raw, want,
+            "the generic row's raw = ceil₁ₑ₋₅(target · min(count, value) / count) [M 0x1984b0:181-185]");
         assert_eq!(f.rows[6].value, 80, "the health snapshot's fptoui [M 0x1984b0:80-81]");
         // Difficulty 3 → the multiplier 2.0 [M 0x1984b0:294-297].
         assert_eq!(f.dif, 2, "difficulty 3 doubles");

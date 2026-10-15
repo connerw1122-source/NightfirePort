@@ -482,6 +482,11 @@ pub struct Sim {
     /// crouch-icon timer, the pickup message bar (pane 21) and how many `drones.taken` events it has
     /// converted. Stepped per tick in `hud_tick` (the game's HUD update runs per 60 Hz frame).
     pub hud: HudState,
+    /// The view aspect the game writes at viewer+0x114 (`Camera_CalcViewAngles` 0x1baf70:28-32:
+    /// 16/9 = 0x3fe38e39 with the AV options' widescreen flag set, 4/3 = 0x3faaaaab otherwise; the
+    /// host feeds it from `FrontEnd::view_aspect`). screen-adjust-model (field on its own line
+    /// [WORKLOG lesson 4]).
+    pub view_aspect: f32,
 }
 
 /// A status-pane message (`Text_AddMsg` 0x1b0c30's `TXT_MSG` node): the bound text, its remaining ticks,
@@ -1817,7 +1822,9 @@ impl Sim {
         // the port's fixed tick stands in for the game's wall-clock delta (the module doc's
         // *Deviation*). Arena loads only — `None` on every campaign level.
         if let Some(m) = self.mp.as_mut() {
-            m.update(1.0 / 60.0, false);
+            // the shared bit-exact generator — the game's MP_Update draws the global RNG only on
+            // the state-6 restart's site re-pick (MP_RestartScenario 0x183fc0)
+            m.update(1.0 / 60.0, false, &mut self.drones.rng);
         }
         // `Game_Run` 0x1c9790:33 runs `Light_Update` before the object movement each tick (fix-lighting):
         // lifetimes (the muzzle light of the previous tick dies here), the script-channel gate and the
@@ -4120,11 +4127,12 @@ impl Sim {
         let (cx, cy) = self.crosshair();
         // G-044 [M Player_WeaponRecoil 0x1a3de8:52-57]: both tilt terms divide by `glb_viewer+0x108`
         // (the zoom — `Player_PositionCamera` 0x18f5d8:129 feeds it BL+0x8D0, the port's `self.zoom`),
-        // and the x term scales by `viewer+0x114` = 4/3 on a 4:3 screen [L ee_start_05 viewer
-        // 0x1fc6c10+0x114 = 0x3faaaaab; `Camera_CalcViewAngles` 0x1baf70 writes 16/9 there in the
-        // widescreen mode the port doesn't model]. A zoomed view used to tilt the gun as if unzoomed.
+        // and the x term scales by `viewer+0x114` = 4/3 on a 4:3 screen, 16/9 with the AV options'
+        // widescreen flag [L ee_start_05 viewer 0x1fc6c10+0x114 = 0x3faaaaab; `Camera_CalcViewAngles`
+        // 0x1baf70:28-32 writes 0x3fe38e39 = 16/9 there when DAT_002a37c4 is set — screen-adjust-model
+        // feeds it through `self.view_aspect`]. A zoomed view used to tilt the gun as if unzoomed.
         let (gy, gp) = (
-            4.0 / 3.0 * cx * std::f32::consts::FRAC_PI_6 / self.zoom,
+            self.view_aspect * cx * std::f32::consts::FRAC_PI_6 / self.zoom,
             cy * std::f32::consts::FRAC_PI_6 / self.zoom,
         );
         let gf = [0, 1, 2].map(|k| fwd[k] * gp.cos() * gy.cos() - left[k] * gp.cos() * gy.sin() + up[k] * gp.sin());
@@ -5674,7 +5682,7 @@ impl Scene {
         let textures = keys.into_iter().map(|key| {
             TextureImage::from_texture(key.0, &level.maps[key.0].textures[key.1 as usize])
         }).collect();
-        let mut hud_textures: Vec<(u32, TextureImage)> = crate::hud::TEXTURES.iter().chain(crate::menu::MENU_TEXTURES.iter()).filter_map(|&h| level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == h).map(|t| {
+        let mut hud_textures: Vec<(u32, TextureImage)> = crate::hud::TEXTURES.iter().chain(crate::menu::MENU_TEXTURES.iter()).chain(crate::menu::mp_textures().iter()).filter_map(|&h| level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == h).map(|t| {
             (h, TextureImage::from_texture(mi, t))
         }))).collect();
         // fix-pause-menu2: the pause page's figure (0x030000db) keeps the standard 8bpp decode —
@@ -5917,6 +5925,9 @@ impl Scene {
                 view_aim_anim: None,
                 view_aim_raising: false,
                 mp: None,
+                // screen-adjust-model: viewer+0x114's 4:3 default; the host feeds 16/9 when the AV
+                // options' widescreen is on [M Camera_CalcViewAngles 0x1baf70:28-32].
+                view_aspect: 4.0 / 3.0,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
@@ -6804,9 +6815,15 @@ impl Scene {
         let tintable = |p: &nf_game::pickup::Pickup| p.kind != nf_game::pickup::kind::ARMOUR && p.kind != nf_game::pickup::kind::BOND_BONUS;
         let mut pickup_mult: std::collections::HashMap<u16, [f32; 3]> = std::collections::HashMap::new();
         let mut attach_mult: std::collections::HashMap<u32, [f32; 3]> = std::collections::HashMap::new();
+        // The lag fix (the user's "very laggy" playtest): the keys were collected by walking EVERY character
+        // vertex — the effect pools (decal/casing/debris/gas/projectile slots, 8561 attachments on 07000005)
+        // made that 34 ms of a 52 ms frame. The multiplier depends only on the key, so it is computed once per
+        // pickup and per attachment; keys no vertex carries are never read (the palette's colour slot and
+        // `posed_vertices`' lookup are both per-vertex), so the results the vertices see are unchanged.
         if let Some(s) = self.sim.as_ref() {
-            for cv in &self.char_verts {
-                if let Some(pk) = cv.pickup {
+            for pk in 0..s.drones.pickups.len().min(u16::MAX as usize + 1) as u32 {
+                let pk = pk as u16;
+                {
                     pickup_mult.entry(pk).or_insert_with(|| {
                         match s.drones.pickups.get(pk as usize) {
                             Some(p) if tintable(p) => amb_at(s, &p.m),
@@ -6828,7 +6845,9 @@ impl Scene {
                         }
                     });
                 }
-                if let Some(ai) = cv.attachment {
+            }
+            for ai in 0..self.attachments.len() as u32 {
+                {
                     attach_mult.entry(ai).or_insert_with(|| {
                         let Some(a) = self.attachments.get(ai as usize) else { return one() };
                         if a.flash.is_some() || a.tracer.is_some() { return one(); }

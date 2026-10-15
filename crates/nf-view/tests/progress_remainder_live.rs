@@ -266,9 +266,11 @@ fn the_driving_maps_score_through_the_zeroed_new_scores_buffer() {
         "the copy writes value/count/target = [0]/[1]/[2] [M 0x1984b0:56-61]");
     assert_eq!(rows[7].value, 9000, "row 7's value is ×100 at the copy [M 0x1984b0:52-54]");
     assert_eq!(rows[4].value, 1, "the other rows copy raw");
-    // Row 7's ratio math reads the ×100'd value: t = 9000/100 = 90 s, count 60 → 60/90.
-    assert!((rows[7].ratio - (60.0f32 / 90.0)).abs() < 1e-4,
-        "the time ratio runs on the ×100'd value [M 0x1984b0 row 7 + the copy]");
+    // Row 7's ratio math reads the ×100'd value: t = 9000/100 = 90 s, count 60. The game's shared
+    // ratio block [M 0x1984b0:234-253] rounds raw/max × 100 to the integer percent grid:
+    // raw = ceil(1000·60/90) = 667 → 66.7 → 67 → 0.67 (the pre-round fraction is 60/90).
+    assert!((rows[7].ratio - 0.67).abs() < 1e-4,
+        "the time ratio runs on the ×100'd value, on the game's 2-decimal grid [M 0x1984b0 row 7 + the ratio block]");
 }
 
 fn dist(a: [f32; 3], b: [f32; 3]) -> f32 {
