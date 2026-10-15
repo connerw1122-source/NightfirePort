@@ -136,3 +136,11 @@ the flow, the getters and the tests. Design + evidence: `docs/systems/net-online
    status line once a session is wired (with none, "No network session is wired").
 3. Join Online: typing an address shows the digits as typed; a refused/timeout shows its message
    on the address page; a connected client's lobby shows the host's choices as they change.
+
+## ntfy
+
+- curl: HTTP 429 "limit reached: daily message quota reached" (the same daily quota
+  mp-defaults-and-setup hit at 22:4x UTC).
+- python fallback: first attempt a script bug (non-ASCII byte literal), the clean retry HTTP 429.
+- wget fallback: `wget -q -O- --post-data "net-online-lobby: done" …` exited 0 (200 OK) —
+  the notification went out through the third fallback.
