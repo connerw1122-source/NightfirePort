@@ -13491,3 +13491,40 @@ Work Log (async-level-load):
   7 (last-row selection, per-row hints, the 0x31d fallback, modal, Back-vs-unpause, clamps, NF_ISO binds 0x202/0x31d/
   0x266 from USATxt.dat), each with a sister assertion; menus_flow.rs updated to the new row struct. All green on the
   merged tree (ce62cd7e). Doc: docs/systems/objective-hints.md; mission.md's "hint never drawn" + gap lines corrected.
+## async-level-load (2026-10-15, branch s/async-level-load) — DONE 22:10 UTC
+- Research [M work/decomp/ACTION.ELF]: ResetMap_Load 0x1d6360 state 3 draws the screen
+  (ResetMap_GenLoadScreen 0x1d5de0, skipped for 0x07000048), runs the whole blocking build on the
+  calling thread, then psiEndLoadingScreen 0x10ba28 (just PS2LSActive = 0); the dots animate from
+  VBlankInt 0x124088 while PS2LSActive == 2 (1 = psiStartLoadingScreen 0x10b9f8, 2 =
+  psiAllocateLoadingBlobs 0x11f270): BlobTime 10 → underflow → step BlobToDraw ±BlobDir every
+  11 vblanks, ping-pong 0↔6 — loading::dots_lit already had the arithmetic.
+- The port: crates/nf-view/src/async_load.rs — Job<T> (named level-load worker thread, mpsc
+  Option<T> channel: worker panic → None → Some(None), never an infinite pending state;
+  Disconnected-without-value and spawn failure land there too; elapsed_ticks() = wall-clock in
+  60 Hz vblank units; compile-time Send assert — Scene is plain data, no Send surgery needed).
+  lib.rs: App::async_load: Option<LevelLoad{job,next,ptp_return}> (new field on its own line);
+  start_async_load = the transition's first half verbatim (cold / fail-Restart ENTRY-checkpoint /
+  warm RamSave arms from the old sim, which stays in self.scene until the swap) + the screen's
+  first frame + the spawn; poll_async_load = one frame of the running load (pending → the
+  animated screen at dots_lit(elapsed_ticks()) + request_redraw and the frame ENDS — no movie
+  glue, no sim ticks, no input, mirroring the game's blocked main loop); swap_in_scene =
+  build_sound → audio_paused reset → camera → scene → anim_time=0 → drive-ptp return → the
+  renderer GPU rebuild (stays on the window thread) → entry_checkpoint_save, the sync order;
+  prev_lock_ch resets on Ok/Err/panic alike. Kept: movie-wrapped holds (re-issue through
+  movie_tick before any spawn), pending_weapon_assets (deliberately still synchronous), the
+  pre-window startup load, the dt cap across the load.
+- Tests (each with a sister assertion): async_load lib 3 (delivery+tick advance, panic→Some(None)
+  + drain, inline seam); async_load_frame_loop 2 headless (the 16 ms redraw loop over a 1 s fake
+  load: ≥20 pending frames, the dot count passes several states of 0→6→0 — the old model showed
+  one; fast load arrives + drains); async_level_load_live 3 NF_ISO (worker scene == sync scene on
+  07000002 cold AND warm — level/bond pos/cels/vertices/characters/colliders/sequences/stats;
+  missing archive → Err(String) through the channel).
+- Merge origin/master mid-task (codename-entry + objective-hints landed): WORKLOG both kept,
+  lib.rs auto-merged. Suite (fast runner, foreground slices — detached processes die here; all
+  357 test binaries built clean, 324 s): family slice 16/17 binaries = 128/0 (walkreal_07000001_live
+  cut by the window — its walk alone runs minutes, pre-existing), nf-view lib 15/0, nf-game lib
+  206/0, objective_state 5/0, codename_entry 14/0, objective_hints_flow 7/0 → 375 passed /
+  0 failed / 0 TIMEOUT observed; my 8 tests all green on the final merged tree (8ce6bf7a).
+- Report docs/reports/async-level-load.md with 6 live checks (the dots' cadence on a warm
+  transition, the cold + fail-Restart arms, the movie-wrapped load, the weapon-give hitch left
+  synchronous, the failure path).
