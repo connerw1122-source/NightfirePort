@@ -2899,6 +2899,23 @@ impl Sim {
                         // 1.0 [L PCSX2: the script after the throw runs +1.0 per frame], then idle.
                         self.view_script = fire_last;
                         (self.view_time, self.view_speed) = (0.0, 1.0);
+                    } else if rd(0x6c) & 0x400 != 0 && fire_last != 0 && self.view_script == fire_last {
+                        // State 0xc's end [M 0x1a2e38 case 0xc :521-551]: +0xB4 stopped → `Player_ReloadAmmoType`
+                        // → view state 3 → the DRAW (case 3: `AnimScriptAddSpeed(1.25, draw)` + the 0x281/0x282
+                        // draw sound, state 4; case 4's end zeroes the refire timer). Measured in PCSX2 on
+                        // 07000015 (the frag, per frame): +0xB0 at 1.5 to +47, +0xB4 at 1.0 to +83, the draw
+                        // at 1.25 (state 4) to ~+107, then idle with the clip refilled — the next throw ~+125
+                        // with repeated taps. The port went straight to idle and threw again at +84.
+                        self.gun.end_fire_state();
+                        let draw = self.weapons.draw_script(self.gun.weapon as usize);
+                        if draw != 0 {
+                            self.view_script = draw;
+                            (self.view_time, self.view_speed) = (0.0, 1.25);
+                            self.gun.switch_state = 3;
+                            self.drones.audio.play(if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { 0x281 } else { 0x282 });
+                        } else {
+                            self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0);
+                        }
                     } else {
                         if flags & 0x1000 == 0 { self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0); }
                         self.gun.end_fire_state();

@@ -189,3 +189,26 @@ fn the_frag_launches_from_behind_the_eye() {
     assert!(fwd < 0.05, "the frag starts at or behind the eye plane on the release tick (fwd {fwd})");
     assert!(off > 0.1, "the frag does not start at the eye (offset {off})");
 }
+
+/// The throw cycle [M 0x1a2e38 cases 0xb/0xc/3/4; L PCSX2 07000015 per frame]: +0xB0 at 1.5, +0xB4 at 1.0, then
+/// the DRAW at 1.25 (state 4) before the next throw — the game is ready again ~111 frames after the press (the
+/// frag; the mine ~94). Sister: the old cycle (straight to idle after +0xB4) threw again 84 ticks apart.
+#[test]
+fn the_frag_throw_cycle_runs_the_draw_before_the_next_throw() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load_weapons(&iso, "07000015.bin", false, &[0x34]).expect("load 07000015");
+    let sim = scene.sim.as_mut().unwrap();
+    let wd = sim.weapons.clone();
+    sim.drones.inventory.equip_weapon(&wd, 0x34, 1, true); sim.drones.inventory.equip_ammo(&wd, 0x34, 6);
+    sim.step_bond(Input { switch_to: Some(0x34), ..Input::default() }, false, false, false);
+    for _ in 0..150 { sim.step_bond(Input::default(), false, false, false); }
+    let (mut n, mut spawns) = (0usize, Vec::new());
+    for t in 0..400u32 {
+        sim.step_bond(Input::default(), t % 6 < 2, false, false); // repeated taps
+        if sim.drones.grenades.len() > n { spawns.push(t); }
+        n = sim.drones.grenades.len();
+    }
+    assert!(spawns.len() >= 3, "three throws in 400 ticks of tapping ({spawns:?})");
+    let gap = spawns[1] - spawns[0];
+    assert!((100..=120).contains(&gap), "throw-to-throw {gap} ticks (the game: ready ~111 after the press)");
+}
