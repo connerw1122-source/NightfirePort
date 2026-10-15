@@ -26,14 +26,15 @@ fn story_levels() -> Vec<u32> {
     nf_game::mission::LEVELS.iter().map(|l| l.level).collect()
 }
 
-fn open_archive(iso_path: &str, name: &str) -> (Vec<u8>, nf_formats::level::Level) {
+fn open_archive(iso_path: &str, name: &str) -> Option<(Vec<u8>, nf_formats::level::Level)> {
     let img = nf_formats::iso9660::IsoImage::open(iso_path).unwrap();
     let (entries, bin) = nf_formats::disc::files_bin_entries(&img).unwrap();
-    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name))
-        .unwrap_or_else(|| panic!("{name}: not in FILES.BIN"));
+    // 0700000e/0f/10 sit in mission::LEVELS but have no archive (campaign_flow_live: "no
+    // LevelCode2Img case and not story levels" — the game never loads them).
+    let Some(fe) = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)) else { return None };
     let data = img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).unwrap();
     let level = nf_formats::level::Level::parse(&data).unwrap();
-    (data, level)
+    Some((data, level))
 }
 
 /// One level's census row.
@@ -55,9 +56,9 @@ struct Row {
     sleeve_left_after: usize,
 }
 
-fn census(iso_path: &str, name: &str) -> Row {
+fn census(iso_path: &str, name: &str) -> Option<Row> {
     // BEFORE: the raw archive, before any of the loader's session merges.
-    let (_, level) = open_archive(iso_path, name);
+    let (_, level) = open_archive(iso_path, name)?;
     let mut placements = 0usize;
     let mut before_missing_skin = 0usize;
     let mut skins_of_placements: Vec<u32> = Vec::new();
@@ -104,13 +105,13 @@ fn census(iso_path: &str, name: &str) -> Row {
     }
     // The game's runtime skin records never carry a 0x10-flagged main hash —
     // `AnimProcessSkinData` 0x1bd500:159-166 reroutes them at registration. The port must too.
+    // Checked over EVERY loaded skin, not just the placed ones: the weapon-fp skins merged by
+    // weapon_assets do carry sleeve-flagged mains (that's where the mechanism actually fires).
     let mut sleeve_left_after = 0usize;
-    for &sk in &skins_of_placements {
-        if let Some(s) = sim.skins.get(&sk) {
-            sleeve_left_after += s.main.iter().flatten().filter(|h| nf_formats::character::Skin::is_sleeve(**h)).count();
-        }
+    for s in sim.skins.values() {
+        sleeve_left_after += s.main.iter().flatten().filter(|h| nf_formats::character::Skin::is_sleeve(**h)).count();
     }
-    Row { placements, before_missing_skin, after_unresolved, sleeve_entries, sleeve_raw_present, sleeve_left_after }
+    Some(Row { placements, before_missing_skin, after_unresolved, sleeve_entries, sleeve_raw_present, sleeve_left_after })
 }
 
 /// The per-level census. Run with `--nocapture` to see the table (the report's before/after).
@@ -119,7 +120,7 @@ fn every_story_level_resolves_its_drone_skins() {
     let Some(iso_path) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     for id in story_levels() {
         let name = format!("{id:08x}.bin");
-        let r = census(&iso_path, &name);
+        let Some(r) = census(&iso_path, &name) else { eprintln!("[{name}] no archive in FILES.BIN — not a story level, skipped"); continue };
         eprintln!("[{name}] placements {:3}, missing skin in archive {:2} (before), unresolved after load {:2}, sleeve entries {:3} (raw present {}, left after load {})",
             r.placements, r.before_missing_skin, r.after_unresolved, r.sleeve_entries, r.sleeve_raw_present, r.sleeve_left_after);
         assert_eq!(r.after_unresolved, 0, "{name}: {} of {} drone placements resolve no skin after load (G-021)", r.after_unresolved, r.placements);

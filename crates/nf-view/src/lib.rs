@@ -644,6 +644,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             }
         }
     }
+    }
     // The sleeve substitution (fix-missing-drone-skins): `AnimProcessSkinData` 0x1bd500:159-166
     // reroutes every 0x10-flagged MAIN entry through `AnimSleeveGetEntity(0)` 0x1c6590 — the first
     // present entity of the fixed SleeveEnts list @0x2c6ed8 — before the celglist lookup; none

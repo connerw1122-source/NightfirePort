@@ -175,14 +175,19 @@ mod tests {
         s.substitute_sleeves(|h| h == SLEEVE_ENTS[0]);
         assert_eq!(s.main, vec![Some(SLEEVE_ENTS[0]), None, Some(0x0200_040d), Some(SLEEVE_ENTS[0])]);
         // A session where only the third list entry is loaded: the walk skips the first two.
-        let mut s2 = s.clone();
-        let mut s2c = s2.clone();
-        s2c.substitute_sleeves(|h| h == SLEEVE_ENTS[2]);
-        assert_eq!(s2c.main[0], Some(SLEEVE_ENTS[2]));
-        assert_eq!(s2c.main[3], Some(SLEEVE_ENTS[2]));
+        // (Rebuilt raw — `s` above is already substituted, its entries are no longer flagged.)
+        let raw = || Skin {
+            hashcode: 0x0500_0030, scale: [1.0; 3], skeleton: 7, bones: vec![0xff],
+            main: vec![Some(0x0210_0001), None, Some(0x0200_040d), Some(0x0210_00ff)],
+            extra: Vec::new(), inverse_bind: Vec::new(), facial: 0, datums: Vec::new(),
+        };
+        let mut s2 = raw();
+        s2.substitute_sleeves(|h| h == SLEEVE_ENTS[2]);
+        assert_eq!(s2.main, vec![Some(SLEEVE_ENTS[2]), None, Some(0x0200_040d), Some(SLEEVE_ENTS[2])]);
         // Nothing present at all: the flagged entries drop to None (the game's hashtable 0).
-        s2.substitute_sleeves(|_| false);
-        assert_eq!(s2.main, vec![None, None, Some(0x0200_040d), None]);
+        let mut s3 = raw();
+        s3.substitute_sleeves(|_| false);
+        assert_eq!(s3.main, vec![None, None, Some(0x0200_040d), None]);
         // The substitute list is the game's byte-exact SleeveEnts @0x2c6ed8.
         assert_eq!(SLEEVE_ENTS[0], 0x0200_09d0);
         assert_eq!(SLEEVE_ENTS[7], 0x0200_0a13);

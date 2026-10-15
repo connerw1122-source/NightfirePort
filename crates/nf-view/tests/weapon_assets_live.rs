@@ -295,7 +295,17 @@ fn native_carry_is_unchanged() {
         let (a, b) = (ps.skins.get(&fp), ms.skins.get(&fp));
         assert_eq!(a.map(|s| s.hashcode), b.map(|s| s.hashcode), "{w:#04x} skin unchanged");
         if let (Some(a), Some(b)) = (a, b) {
-            assert_eq!(a.main, b.main, "{w:#04x} main meshes unchanged");
+            // fix-missing-drone-skins: a 0x10-flagged main entry becomes the first present
+            // SleeveEnts entity (AnimProcessSkinData 0x1bd500:159-166 / AnimSleeveGetEntity
+            // 0x1c6590), so the sleeve value legitimately tracks the session table: the give
+            // path merges the holding archive's maps and 07000001 (no earlier archive) only
+            // carries SleeveEnts[1] 0x02000900, while the merged session also holds
+            // SleeveEnts[0] 0x020009d0 — both are the game's answer for their session.
+            let sleeve = |v: &Option<u32>| matches!(v, Some(h) if nf_formats::character::SLEEVE_ENTS.contains(h));
+            let mains_equal = a.main == b.main
+                || (a.main.len() == b.main.len()
+                    && a.main.iter().zip(b.main.iter()).all(|(x, y)| x == y || (sleeve(x) && sleeve(y))));
+            assert!(mains_equal, "{w:#04x} main meshes unchanged (up to the sleeve substitution): {:?} vs {:?}", a.main, b.main);
             assert_eq!(a.extra, b.extra, "{w:#04x} extra parts unchanged");
             assert_eq!(a.datums.len(), b.datums.len(), "{w:#04x} datums unchanged");
         }
