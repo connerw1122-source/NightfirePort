@@ -519,7 +519,7 @@ pub fn pcm_voices(movie: &Movie, looping: bool) -> Result<(std::sync::Arc<nf_aud
 /// closed-GOP chunks decode in order until `n` is covered (a chunk ≈ 10 pictures; frame 12 of the
 /// menu loops rides chunk 1 [L golden/pss_movies.tsv: 180 I pictures / 1800 total]) instead of the
 /// whole ES. Chunk boundaries sit at closed GOPs, so a chunk's frames equal the whole-ES decode's
-/// frames for the same pictures [ISO 13818-2 §6.4.3; the `1f1fe7b0…` frame-12 pin in
+/// frames for the same pictures [ISO 13818-2 §6.4.3; the `21d0739d…` frame-12 pin in
 /// menu_movies::the_menu_loop_movie_decodes].
 #[cfg(feature = "movies")]
 pub fn movie_still(iso_path: &str, code: u32, n: usize) -> Result<crate::scene::TextureImage> {

@@ -13335,3 +13335,51 @@ Work Log (drive-crp-format):
 - (19:15-19:30) The FrontEnd: crates/nf-view/src/menu.rs — Page::CnName (0x40000020) + SecretEntry {cursor, typed, accepted, pending_submit} + SECRET_GRID (39 cells: 0-9, A-Z, Delete, Space, Submit) + secret_press (8-char cap/delete/space/flag) + secret_submit(&mut Progress) (the host drains — no Progress in the action handler, same split as results_enter); the wheel's row 0 routes to the page [M 0x213528 case 0]; the overlay draws a stub grid (the drawing task owns the look). 3 grid tests (type BOWLER + submit, the cap + delete, the routing). nf-game lib 196/196, nf-view lib 12/12.
 - (19:30-19:35) Merged origin/master (crp/refpack + WORKLOG conflict resolved keeping both) → nf-game 205/205, nf-view 12/12 on the merged tree. Suite restarted in background with the env (the first bg run died on the missing cargo PATH). Doc: docs/systems/secret-codes.md (the table, the flow, the save, the bit semantics, the open items). Report + finish steps next.
 - (19:35-19:53) Suite on the merged tree: build ok 347 binaries in 346 s; through 19:50 UTC the FAILED/CRASH lines are exactly the environmental/allowed set — 3 disc_golden (slim ISO), probe_pylon_render + fix_0c_pylon_live ×2 (no-GPU pylon set), fix_death_restart_live exit -9 (OOM in the 3 GB sandbox). No secret-codes failure. The total line prints only at the end and did not land before the sandbox expired — recorded in the report. Report amended (ntfy 429 quota on all three fallbacks) and pushed; finish.sh re-run.
+
+## mpeg2-interlaced-decode (s/mpeg2-interlaced-decode, started 2026-10-15 ~18:40 UTC)
+- Task 605: the menu backdrop movie 07350048 (512x448 interlaced MP@ML, I/P/B) decodes as a ghost/smear in the
+  port vs a crisp picture in PCSX2 — suspected wrong interlaced predicted-picture reconstruction in
+  oxideav-mpeg12video or our use of it. Plan: PSNR the port vs an independent ffmpeg decode per frame/picture
+  type, find the cause, fix, pin with an NF_ISO test + sister.
+- Done: the decode itself was NEVER wrong — whole-ES PSNR port vs ffmpeg on the real 07350048 (range-fetched
+  from the retail image on the file host, SHA-1 verified against the golden manifest): 62.5–69.6 dB over 120
+  frames (I 69.4+, P 62.5+), and 07100005 65.1–76.1 dB (I/P/B); the crate's own conformance suite is 1462/0
+  (field pictures, dual-prime, 16x8, qmat). The user-visible ghost was PRESENTATION: the movies are BT.601
+  limited range (07350048 Y spans 14..218) and yuv420_to_rgb8 rendered Y raw with full-range chroma gains —
+  black at RGB(16,16,16), ~86% contrast, vs the game's IPU CSC which expands to full range. Fixed the matrix
+  (black now 0), plus VideoFrame::coding_type now reports the spec codes 1/2/3 (the crate enum is 0-based;
+  I pictures reported 0/"?" and P 1/"I" before). New: mpeg2_reference.rs (NF_ISO+movies-gated: per-frame
+  exact SHA-1 pin + reference block-grid MAD <= 2.0 over 120 frames, sister tests), golden
+  mpeg2_ref_digests_07350048.tsv + mpeg2_ref_psnr_07100005.tsv, dump_mpeg2_yuv/dump_pss_es examples,
+  pss.md decode-accuracy section. Pins 1f1fe7b0 -> 21d0739d (the CSC fix legitimately changes RGB8 output);
+  menu_movies/menu_backdrop_still re-pinned and green on a 3-movie mini ISO (NF_MOVIE_ISO).
+## mp-menu-flow (2026-10-15, branch s/mp-menu-flow)
+- Started: multiplayer front-end flow and its data (no drawing) — porting the MP page flow, lists and state into
+  nf-view's FrontEnd/Page/action, headless-testable. Reading the ACTION.ELF handlers and the menu-def 07000048.bin
+  kind-8 08000002 entry; deliverable: docs/systems/mp-menus.md + Page variants + tests.
+
+## mp-menu-flow (2026-10-15, branch s/mp-menu-flow)
+- The MP front end is ported into nf-view's menu.rs: 13 new Page::Mp* variants (ids 0x40000019/
+  1a/13/51/12/14/17/28/27/3f/2c/49/33 — every one a kind-8 PAGE record in 07000048.bin with aux
+  0x07350048 [L the menu-def dump]), the full action() graph (Join → Scenario → Map → Setup →
+  Options hub → Rules/PlayerMods/EnviroMods/Bots{Choose,Setup} → Confirm → match start, plus the
+  debriefing), and the game's own tables lifted to MP_SCENARIO_ROWS (mp_scenario @0x2df508, 13
+  rows), MP_MAP_ROWS (mp_level @0x2df400, 8), MP_OPTIONS_ROWS (@0x2dfbb0, 5), MP_BOTS_ROWS
+  (@0x2dfd30, 5), MP_CHARACTERS (@0x2df640, 29) + the Menu_IsBotGood side bytes from
+  default_bot_stats+0x09 @0x26D2F0 [L .data dumps, pinned row-for-row by mp_menu_lists_live.rs].
+- Key decompile findings: the atlas's "MPSettings+0x420/424/428/432" are DECIMAL prints — the real
+  offsets are +0x1A4/+0x1A8/+0x1AC/+0x1B0; the confirm (P_MPCONFIRM 0x20ec00:53-94) converts the
+  time limit minutes→seconds (×0x3c), sets +0x180=1, +0x1AC=joined, GameState+0x08=level, and
+  runs ResetMap_LevelToLoad(level,0,0) + the 80f fade + MenuManager_Delete; Quick Game
+  (C_SBMPSCEN 0x20c600:48-145) sets Deathmatch/10 min/10 frags/radar/no-FF/3 bots (Drake/Kiko/
+  Rook, Phoenix) and jumps straight to 0x40000049; Ravine (0x0700004b) zeroes the AI Bots row
+  (P_MPOPTIONS 0x217678:20-25) and the bot count (Menu_PrepareBots 0x1f94a0:85-88).
+- The port hands the match over as nf_game::mp::MpSettings (mp_match_settings) + the level request
+  through the existing loader (verified headless to reach the arena); keyboard-only, agent 1 joins
+  (the game joins 2-4 through their pads, msg 0x6a). Drawing is NOT in scope: the overlay's MP arms
+  are empty for the main agent, fed by rows()/row_label()/mp_row_preview/mp_row_desc/mp_row_locked/
+  mp_confirm_lines. Deliverable doc: docs/systems/mp-menus.md (page graph, every list's rows with
+  label/preview/desc ids and unlocks, the confirm handover, live checks).
+- Tests: mp_menu_flow.rs 9 headless (flow + back-outs + locks + bots + start checks + Quick Game +
+  loader handover, each with a sister assertion) + mp_menu_lists_live.rs 5 ISO-gated (the five
+  tables + the side bytes vs the disc's ACTION.ELF). 14/14 green; suite run on the final tree.
