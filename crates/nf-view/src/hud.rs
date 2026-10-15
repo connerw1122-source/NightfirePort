@@ -753,7 +753,9 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
             // circle). Drawn whole, it wrapped: the user's 2×2 grid. Sprites 2-7: the mid-height
             // brackets 0x03000056 (sprite 3 h-flipped by flag 0x40) and 0x03000057. Sprite 0 is the
             // photo flash (shown only during `HUD_UpdateCameraPane` 0x1a12d8's post-shot countdown —
-            // hidden at rest) and sprite 8 (flags 0x900) is 3D-positioned; neither is drawn.
+            // hidden at rest; not drawn). Sprite 8 is the centre circle: 0x03000090 at (256, 224), layer 34,
+            // flags 0x900 = additive (0x100) + centred on its x/y (0x800, `View_DrawSprites` 0x1e5290:60-75) —
+            // static (the pane update only touches sprite 0's layer [M 0x1a12d8:20-36]); PCSX2 shows it.
             ZoomOverlay::Camera => {
                 let c = gs(0x7f7f7f, 0xff);
                 let (tw56, th56) = h.tex_dims(0x0300_0056);
@@ -764,6 +766,8 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
                 for (x, y) in [(48.0, 120.0), (432.0, 120.0), (48.0, 256.0), (432.0, 256.0)] {
                     h.quad(Anchor::Centre, 39, 0x0300_0057, 1, x, y, tw57, th57, [0.0, 0.0, tw57, th57], (false, false), c);
                 }
+                let (tw90, th90) = h.tex_dims(0x0300_0090);
+                h.quad(Anchor::Centre, 34, 0x0300_0090, 1, 256.0 - tw90 / 2.0, 224.0 - th90 / 2.0, tw90, th90, [0.0, 0.0, tw90, th90], (false, false), c);
                 // The target brackets (`HUD_UpdateCameraPane` 0x1a12d8) — one "DroneScan" sprite per
                 // drawn, living, non-WaitSwitch drone, drawn through walls (the user's report). The
                 // game's sprite is one frame deep (Debris_Update 0x1aac00 deletes it); the pane
