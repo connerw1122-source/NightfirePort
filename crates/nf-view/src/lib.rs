@@ -23,6 +23,7 @@ pub mod gamepad;
 pub mod dev;
 pub mod devwin;
 pub mod hud;
+pub mod credits;
 pub mod menu;
 pub mod movie;
 pub mod scene;
