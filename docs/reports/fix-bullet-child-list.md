@@ -100,6 +100,11 @@ final push). Session 13:36–15:15 UTC 2026-10-15, sandbox window honoured. File
   `7.1,48.6,-23.6,-1.4,0.2` (07000006 courtyard) — the head parts hidden, the spot's light gone;
   a mount-shot control render shows the light still sweeping.
 
-## ntfy
+## ntfy failed
 
-(sent at finish; see the finish log if it failed)
+All three fallbacks hit ntfy's daily message quota (the same 429 the earlier tasks recorded):
+1. curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase
+   your limits with a paid plan, see https://ntfy.sh/docs/publish/#limitations"}`
+2. python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. wget: exit 0 with an empty body (the server accepted the connection; the quota error body was
+   empty on stdout — treated as failed like the earlier tasks' exit-8 case).
