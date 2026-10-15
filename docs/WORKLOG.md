@@ -12024,3 +12024,11 @@ Work Log:
 - Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
+
+---
+Task ID: 108d-fix-flesh-impacts
+Agent: fix-flesh-impacts worker
+Task: fix-flesh-impacts — player bullets hitting characters must spawn the game's own contact effect: every contact goes through Bullet_CollisionHandler 0x12ce80 → Effect_Create 0x1ce688 with HITDATA+0x50's material; the port's drone-hit arm only runs NDrone2_DoHitEffects 0x1458e0 (damage + the 0x601/0x413 hit sounds, no visual). Also settle material 0x10 (docs/fields: flesh/none vs effect.rs GLASS) via the EffectInfo table 0x3037c0, the flesh pass-through rule (0x800 / 0x10 [M 0x12ce80:136-141]), and the same for guard bullets hitting Bond.
+
+Work Log:
+- (00:44 UTC) Setup reused (repo, work/, ISO, nf-queue). Branch s/fix-flesh-impacts created from origin/master (88cba630) and pushed with this entry.
