@@ -38,3 +38,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox5 at 2026-10-15T06:13Z
+
+---
+## Report (done, 2026-10-15T07:49Z)
+
+Closed by the driver: the report is on `s/fix-hud-ammo-odd` (docs/reports/fix-hud-ammo-odd.md); the worker didn't run finish.sh.
