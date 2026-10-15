@@ -850,8 +850,9 @@ mod tests {
 
     /// GetScore's row source [M 0x1984b0:38-84]: the hash's top byte picks it — the 0x07 maps
     /// (`+0x38` = 1) build the rows from `PlrMissionStats`; the 0x09 maps (`+0x38` = 0) copy
-    /// `NewScoresRef` and ABORT when it is NULL. The port had the branch inverted, so every
-    /// on-foot mission aborted and the results page could build no fields.
+    /// `NewScoresRef` (row 7 ×100 at the copy [M :52-54]). The NULL abort [M :44-48] is dead in
+    /// the shipped game: bootup 0x1c7e78:86 points the ref at the zeroed PTPDATA tail 0x31ca38
+    /// and no ACTION.ELF writer exists — the port's `Some(zeroed rows)` default models that.
     #[test]
     fn the_on_foot_mission_rows_come_from_the_mission_stats() {
         let mut p = Progress::default();
@@ -862,8 +863,10 @@ mod tests {
         assert_eq!(sc.base, 75_000, "dispatched 50000 + time 25000");
         assert_eq!(sc.last, 150_000, "difficulty 2 → ×1.0 → last = base + bonus");
         assert_eq!(sc.medal, 2, "150000 ≥ the silver 125000, < the gold 200000");
-        // Sister: the 0x09 maps keep the NewScoresRef row source — NULL aborts [M 0x1984b0:44-48].
-        assert!(p.get_score(0x0900_0005, 6, 2, true).is_none());
+        // Sister: the 0x09 maps keep the NewScoresRef row source — the bootup-set zeroed buffer
+        // [M 0x1c7e78:86; L ee_start_05] scores nothing (every row's count is 0), no abort.
+        let sc = p.get_score(0x0900_0005, 6, 2, true).expect("the 0x09 map reads the zeroed buffer");
+        assert_eq!((sc.base, sc.last), (0, 0), "zero rows → nothing scores");
     }
 
     /// Menu_SetLevelBonus 0x1ffa10's medal loop runs only for counters 1..4 — a no-medal run
