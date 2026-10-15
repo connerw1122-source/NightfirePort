@@ -229,6 +229,18 @@ work/decomp/ACTION.ELF [D]):
 1. **MP core harness** — MP_Init/MP_Start/MP_Update + MPSettings/MPGame + spawn-point registration
    and selection; load an arena, spawn 1 human + N static bots at spawn points, single viewport.
    ~15 functions (mp_* core), size M. Reuses the existing sim + player.
+
+   **Status (mp-core, 2026-10-15): DONE for the core.** `crates/nf-game/src/mp/` ports `MP_Init`
+   0x183438 / `MP_Start` 0x183a50 / `MP_Update` 0x184bd0, `MPSettings` 0x2a47a0 / `MPGame` 0x2a4980
+   (the carried fields with offsets in comments), `MP_RegisterSpawnPoint` 0x184f20 (the 64-entry
+   table, the floor snap via `build_PointOnFloor` 0x1c95a8 + the 1.6 eye, the team-2 rejection, the
+   FFA/team split), the spawn policy `MP_GetSpawnPoint` 0x185098 (see the report: the decompile's
+   trackers are an argmax and an ARGMIN — the doc's "2nd-farthest" gloss for policy 0 did not
+   survive the arithmetic), and the 0x26 stores of `MP_RegisterMPObject` 0x185990 (the scenario
+   gates + the 8-caps; the team/type come from the placement's PARAM 0, not the celglist — the
+   dispatch's second argument is the placement's 0xb0 params block [M 0x1d1b68]). `nf-view --mp`
+   loads the arena, registers, starts, spawns Bond at the policy's point and runs the clock per
+   tick. Tests: `mp_core_live.rs` (5) + `mp_arenas_live.rs` (the pre-existing pin).
 2. **Deathmatch end-to-end** — kill scoring (MP_HitBy/PlayerKilled/BulletHit), MPGame scores, HUD
    score/time panes (viewer 5 overlay), respawn (MP_ReSpawn). ~25 functions, size M.
 3. **Split screen** — viewer rects for 2/4 players + scissor + per-view crosshair + MapPlayerToSlot
