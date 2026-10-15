@@ -2539,7 +2539,7 @@ impl Drone {
     /// is negated into the port's positive-up. The target = the opponent's tracked bone world
     /// position (sAnimObject+0x104 = 5 [docs/fields/animobject.md [L-read]]; the port stands in
     /// the AI's player eye snapshot).
-    fn head_track_want(&self, d: &Data, target: [f32; 3]) -> Option<(f32, f32)> {
+    pub fn head_track_want(&self, d: &Data, target: [f32; 3]) -> Option<(f32, f32)> {
         let (world, hip) = self.object_pose_inner(d, false)?;
         if world.len() <= 5 { return None; }
         // The port's pose is OBJECT-space (the game's palette is world; the port factors the
@@ -2550,7 +2550,6 @@ impl Drone {
         let target = [rel[0] * cs - rel[2] * sn, rel[1], rel[0] * sn + rel[2] * cs];
         let head = [world[5][3][0], world[5][3][1], world[5][3][2]];
         let tv = [target[0] - head[0], target[1] - head[1], target[2] - head[2]];
-        if tv[0] * tv[0] + tv[1] * tv[1] + tv[2] * tv[2] < 0.25 { return Some((0.0, 0.0)); } // the game's 0.5 plane-projection gate
         let neckv = [head[0] - world[2][3][0], head[1] - world[2][3][1], head[2] - world[2][3][2]];
         let nl = (neckv[0] * neckv[0] + neckv[1] * neckv[1] + neckv[2] * neckv[2]).sqrt();
         if nl < 1e-6 { return None; }
@@ -2562,19 +2561,44 @@ impl Drone {
         let side = [side[0] / sl, side[1] / sl, side[2] / sl];
         let cross = |a: [f32; 3], b: [f32; 3]| [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]];
         let unit = |a: [f32; 3]| { let l = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt(); if l < 1e-9 { None } else { Some([a[0] / l, a[1] / l, a[2] / l]) } };
+        let fu = unit(fwd)?;
+        // The game gates each PLANE-projected distance at 0.25 separately and skips a block whose
+        // gate (or behind-test) fails, leaving that angle 0 (the fresh track's zeroed stored angles,
+        // 0x1bf618:185-188) — not the measured/clamped value. Pitch block :192-236 (the (neck, fwd)
+        // plane, the gate :209-210, the behind skip :222-236 `dot < 0 → pitch stays 0`); yaw block
+        // :241-281 (the (side, fwd) plane, the gate :257-258); the one-plane-passed coupling
+        // :284-289 is subsumed by the failed block's own 0. The old single full-3D `tv² < 0.25`
+        // gate measured both angles whenever the 3D distance cleared 0.5 — a target behind/above-
+        // behind the head pitched the head to the clamp where the game returns to level.
         // Yaw: project the target onto the (side, forward) plane — remove the neck component.
         let dn = tv[0] * neck[0] + tv[1] * neck[1] + tv[2] * neck[2];
-        let to_y = unit([tv[0] - neck[0] * dn, tv[1] - neck[1] * dn, tv[2] - neck[2] * dn])?;
-        let fu = unit(fwd)?;
-        let mut yaw = (fu[0] * to_y[0] + fu[1] * to_y[1] + fu[2] * to_y[2]).clamp(-1.0, 1.0).acos();
-        let cf = cross(fu, to_y);
-        if cf[0] * neck[0] + cf[1] * neck[1] + cf[2] * neck[2] < 0.0 { yaw = -yaw; }
+        let dy = [tv[0] - neck[0] * dn, tv[1] - neck[1] * dn, tv[2] - neck[2] * dn];
+        let yaw = match unit(dy) {
+            Some(to_y) if dy[0] * dy[0] + dy[1] * dy[1] + dy[2] * dy[2] >= 0.25 => {
+                let mut y = (fu[0] * to_y[0] + fu[1] * to_y[1] + fu[2] * to_y[2]).clamp(-1.0, 1.0).acos();
+                let cf = cross(fu, to_y);
+                if cf[0] * neck[0] + cf[1] * neck[1] + cf[2] * neck[2] < 0.0 { y = -y; }
+                y
+            }
+            _ => 0.0,
+        };
         // Pitch: remove the side component (the (neck, forward) plane); the game's sign: positive down.
         let ds = tv[0] * side[0] + tv[1] * side[1] + tv[2] * side[2];
-        let to_p = unit([tv[0] - side[0] * ds, tv[1] - side[1] * ds, tv[2] - side[2] * ds])?;
-        let mut pitch = (fu[0] * to_p[0] + fu[1] * to_p[1] + fu[2] * to_p[2]).clamp(-1.0, 1.0).acos();
-        let cp = cross(fu, to_p);
-        if cp[0] * side[0] + cp[1] * side[1] + cp[2] * side[2] < 0.0 { pitch = -pitch; }
+        let dp = [tv[0] - side[0] * ds, tv[1] - side[1] * ds, tv[2] - side[2] * ds];
+        let pitch = match unit(dp) {
+            Some(to_p) if dp[0] * dp[0] + dp[1] * dp[1] + dp[2] * dp[2] >= 0.25 => {
+                let c = fu[0] * to_p[0] + fu[1] * to_p[1] + fu[2] * to_p[2];
+                if c < 0.0 {
+                    0.0 // the behind skip: the measurement is skipped, the pitch stays 0
+                } else {
+                    let mut p = c.clamp(-1.0, 1.0).acos();
+                    let cp = cross(fu, to_p);
+                    if cp[0] * side[0] + cp[1] * side[1] + cp[2] * side[2] < 0.0 { p = -p; }
+                    p
+                }
+            }
+            _ => 0.0,
+        };
         let yaw = if yaw.abs() > 2.6 { 0.0 } else { yaw.clamp(-1.1, 1.1) };
         let pitch = pitch.clamp(-1.0, 0.6);
         Some((yaw, -pitch))
@@ -2617,6 +2641,32 @@ impl Drone {
         let Some(dt) = skin.datums.iter().find(|x| x.id == datum && x.bone >= 0) else { return obj };
         let Some(bone) = pal.get(dt.bone as usize) else { return obj };
         nf_formats::anim::mul(&nf_formats::anim::quat_trans_to_mat(dt.q, dt.t), bone)
+    }
+
+    /// The guard casing eject's bone world matrix — `Bullet_init_casing_ex` 0x12f678:102-114's guard
+    /// arm: `AnimDatumGetWeaponInfo` reads the weapon's `+0x50` datum byte (0xFF → no weapon datum →
+    /// the game returns and no shell ever appears), then `AnimDatumGetIndex(datum+2)` gates the eject
+    /// port: when the skin's attachment table carries datum id `base+2` the game calls
+    /// `AnimGetBoneWorldTrans(obj, datum, 2)` on it, else it falls back to `AnimGetBoneWorldTrans(obj,
+    /// datum, 1)` — the muzzle datum (`DroneWeap_FireWeapon` 0x178f68:154's bullet origin). The datum's
+    /// `QuatTransToMat(q,t)` concatenated with its palette bone's world matrix (the port's
+    /// `Skin.datums` stands in for the game's skin attachment table, `Drone::palette` for
+    /// `psiBuildMatrixPalette`) — the same composition `weapon_matrix`/`muzzle` use; `None` = the
+    /// game's early return (no eject).
+    pub fn eject_matrix(&self, d: &Data) -> Option<nf_formats::anim::Mat4> {
+        let skin = d.skins.get(&self.skin)?;
+        let (_, datum) = d.weapons.third_person(self.weapon as u8)?;
+        if datum == 0xff { return None; }
+        let base = datum as u32;
+        let pal = self.palette(d)?;
+        for id in [base + 2, base + 1] {
+            if let Some(dt) = skin.datums.iter().find(|x| x.id == id && x.bone >= 0) {
+                if let Some(bone) = pal.get(dt.bone as usize) {
+                    return Some(nf_formats::anim::mul(&nf_formats::anim::quat_trans_to_mat(dt.q, dt.t), bone));
+                }
+            }
+        }
+        None
     }
 
     /// `DroneFunc_OnInitDeath` → `DroneFunc_DropGrenade`: a captain drops grenades at its own matrix — the stun
@@ -8087,13 +8137,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             if !dr.corpse { let _pf = crate::prof::scope("drone: handle_firing"); let b = { let lights = &mut self.lights; dr.handle_firing(d, rng, frame, player, (moving, first_moved), index, lights) }; if let Some(b) = b {
                 // `DroneWeap_FireWeapon` 0x178f68:264 → `Bullet_init_casing`: the guard's shell eject,
                 // right after `Bullet_init`'s spread draws [S] the eject draws run inline here instead
-                // of on the weapon's +0x78-tick delay expiry; origin = the muzzle, rotation = the aim
-                // direction (the game reads the weapon bone's world transform).
-                let (muzzle, bdir, bweapon) = (b.pos, b.dir, b.weapon);
+                // of on the weapon's +0x78-tick delay expiry. The basis is the game's guard arm of
+                // `Bullet_init_casing_ex` 0x12f678:102-114: the weapon datum's bone world matrix
+                // (datum base+2 when the skin carries the eject port, else base+1 — the muzzle), not
+                // the aim direction: velocity = that matrix's rows on the weapon-local eject vector,
+                // origin = the datum's world position.
+                let (_, _, bweapon) = (b.pos, b.dir, b.weapon);
                 if let Some(w) = d.weapons.records.get(bweapon as usize) {
-                    let yaw = bdir[0].atan2(bdir[2]);
-                    let pitch = bdir[1].clamp(-1.0, 1.0).asin();
-                    self.casings.eject(&d.surfaces.map(|s| &s.ammo).unwrap_or(&Default::default()), w, muzzle, yaw, pitch, dr.pos[1], rng);
+                    if let Some(m) = dr.eject_matrix(d) {
+                        self.casings.eject_bone(&d.surfaces.map(|s| &s.ammo).unwrap_or(&Default::default()), w, &m, dr.pos[1], rng);
+                    }
                 }
                 self.bullets.push(b);
             } }

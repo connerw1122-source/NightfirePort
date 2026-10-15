@@ -257,6 +257,15 @@ impl Hud<'_> {
         for q in qv.iter_mut() { if q.uv == [0.0, 0.0] { q.uv = [0.0, 0.0]; } q.c = c; }
         self.quads.push(Quad { layer, tex: ti + 1, blend: 0, v: qv });
     }
+
+    /// A solid shape in NDC through the renderer's 1×1 white texture (slot 0), so `c` is its exact colour —
+    /// `ndc_quad` samples a font-atlas texel (the menus' plates are tuned to that), which dulled the pause arrow
+    /// to brown where PCSX2's is bright yellow.
+    pub(crate) fn ndc_solid(&mut self, layer: i32, v: [HudVertex; 6], c: [f32; 4]) {
+        let mut qv = v;
+        for q in qv.iter_mut() { q.c = c; }
+        self.quads.push(Quad { layer, tex: 0, blend: 0, v: qv });
+    }
 }
 
 /// What the ammo strip draws for a clip count: the drawn height is `strip_clip(clip, clip_size) · hpr`

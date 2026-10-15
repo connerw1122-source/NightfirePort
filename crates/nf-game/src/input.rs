@@ -12,6 +12,10 @@
 
 mod styles_gen;
 
+/// The driving levels' input path from DRIVING.ELF (G-004) [M docs/systems/driving-input.md]:
+/// the pure PollDevice/binding port; the driving levels stay unwired.
+pub mod driving;
+
 /// One dead-zoned axis byte's tSlot offset [M docs/systems/input.md §2, WORKLOG 0006].
 pub const AX_RX: u16 = 0x128;
 pub const AX_RY: u16 = 0x129;

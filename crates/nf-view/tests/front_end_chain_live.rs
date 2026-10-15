@@ -34,7 +34,7 @@ fn the_failed_page_keeps_the_fail_menu_arms() {
     fe.flow.current_level = 0x0700_0004;
     fe.mission_ended(Outcome::Failed, Stats::default());
     assert_eq!(fe.page, Page::Results);
-    assert_eq!(fe.rows(), 3, "the fail menu's Replay/Restart/Quit rows");
+    assert_eq!(fe.rows(), 2, "the fail menu's REPLAY/QUIT rows [L page 0x40000042: items 0x5bc (value 0) and 0x16c (value 2)]");
     assert_eq!(fe.requested_level.take(), Some(0x0700_0048), "failures go straight to the front end [M 0x182c60:45-57]");
     fe.cursor = 0;
     assert!(fe.action(Action::Confirm));

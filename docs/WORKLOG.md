@@ -12953,6 +12953,38 @@ docs/formats/ps2gfx.md, docs/GAPS.md (G-014).
   5/0, fix_weapon_modes_live 6/0, fix_samurai_fire_live 3/0, fix_weapons_all_live 4/0,
   weapon_switch_live 2/0 (nf-game), tuning_live 2/0 (nf-game). The fast suite on the final tree
   running (started 12:58); fix_switch_after_cold_load_live passed inside it as well.
+
+## exact-sine-portonly-review (branch s/exact-sine-portonly-review)
+- (14:30) Task started (110y): G-046's four PORT_ONLY trig stand-ins — ladder.rs:151 mesh columns,
+  player.rs:858 crawl advance, casing.rs:80-81 eject matrix (guards' yaw/pitch basis only; the
+  player path already ejects from the view-model datum per Casings::reserve/arm), drone.rs:2495
+  object-space head-track (game reads the drone's datum through AnimGetBoneWorldTrans
+  0x12f678:100-113). Plan: for each site, read the decompile at the game's point, replace the
+  port's construction with the game's mechanism (or prove equivalence with a test); fail-first
+  NF_ISO tests, suite green, G-046 updated. Branch cut from origin/master cf4f33cd.
+- (14:30-15:58) The four PORT_ONLY sites (G-046): researched via 3 parallel subagents (the decompile chains with
+  addresses) + implemented. CASING (done): the game's guard arm of Bullet_init_casing_ex 0x12f678:102-114 reads
+  the weapon-datum bone world matrix via AnimGetBoneWorldTrans — datum base+2 when the skin carries the eject port
+  (AnimDatumGetIndex 0x1c77f8) else base+1 (the muzzle datum); Drone::eject_matrix added (the weapon_matrix/
+  muzzle composition) and the guard fire call site feeds Casings::eject_bone (RNG order unchanged); test
+  guard_casing_ejects_from_the_weapon_datum_matrix, fail-first shown by reverting the call site. HEAD-TRACK
+  (equivalence proven + gates fixed): the object-space measurement ≡ the game's world-space two-acos-block
+  measurement (rigid yaw+translation ⇒ rotation-invariant dots/crosses/acos) — proven by
+  head_track_want_matches_the_game_s_world_space_measurement (0x1bf618:189-281 transcribed on the world palette);
+  the game's per-plane 0.25 gates (:209-210,:257-258) + behind skip (:222-236) added to head_track_want (the old
+  full-3D gate measured behind targets and clamped them) — head_track_pitch_stays_level_for_behind_targets,
+  fail-first shown; head_track_want made pub for the test. LADDER (documented, blocked): the game's stage 2 =
+  capsule vs the ladder's authored celglist triangles (Collide_Update 0x1ea398 → Collide_Intersect 0x1ebaa8:276-296
+  → Intersect_CylGeom 0x109da0, no trig); the port's analytic in_mesh_column stands because the ladder's glist is
+  unreachable in the port's data model (07000005 probe: map object hashcode 0xFFFFFFFF, world.shape() empty) —
+  also documented: the decompile's capsule arms are substate−1 keyed (walk/swim take the DEFAULT 0.55 arm, not the
+  port's playtest-tuned 0.275/low mapping). CRAWL (documented): the crawl anim scripts 0x600046d/f/471/475 ARE in
+  the level bins (0x6000471/0x6000475 = 90-frame looping locomotion → sequences 0x040003f0/0x040003e5, 222
+  channels); the root-motion extraction (bond's skeleton-0 skin + the channel order) didn't fit the window — the
+  0.02/tick [S] stand-in stays, live check requested. G-046 updated; report
+  docs/reports/exact-sine-portonly-review.md (live checks for the main agent: the guard shell basis, the
+  behind-target head behavior, the crawl speed fieldprobe, the ladder grab width). Suite totals appended below.
+
 ## fix-progress-detected-hook (2026-10-15, branch s/fix-progress-detected-hook) — started 12:57 UTC
 Task: G-045's two remaining pieces. (1) The detected counter's live hook: PlrMissionStats has a "times detected" stat but the port never increments it — find the vision-log call site in the decompile (PlrStat_Log* callers in DroneVision_*/NDrone2_*), port the increment, pin with a test (07000005 guard spotting Bond raises the counter exactly once per detection event). (2) Player_InitWeapon 0x1a7ef8's per-difficulty autoaim distances: the port uses fixed values — read the difficulty arms, port keyed on GameState+0x40, test each difficulty. Checked origin/s/fix-progress-remainder (110d, merged @ a958d179): it did neither part (G-045 on master still lists both as remaining). Files: crates/nf-game/src/progress.rs, the vision call site, crates/nf-game/src/player.rs, new tests, docs/fields/player-stats.md.
 
@@ -12973,6 +13005,51 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
 - (13:04-13:20) Research: 4 parallel decompile reads (goal machine, attack family, BotGlobal dispatch mechanics, spawn/pickup/timing) — headlines: msg 3 is the per-tick heartbeat delivered to 0xC5 first for bots [M 0x171df8:78-86]; msg[1] never read; the ignore block returns 1/default 0; no SetState(0xE9) exists (BotStuck is an orphan stub); the goal duration is VIDEO_FRAME_RATE*5 = 300.0 on a seconds clock [M 0x1278a8:50,58], not 5 s; +0x76E is the last-pickup index (reader found); +0x767 is the round-robin vision cursor (writer found); the mode bitmask is MPGame+0x1A8+team*2; the visit decay is ×max(|now−visit|·50,1)/×4500 [M 0x126b88:407-415]; the burst arithmetic (interval min-60, Rand_Rand(3)+2 / Rand_Rand(2)+1, ≥4 ×aggression min-3) [M 0x179d40].
 - (13:20-14:26) The port: bots.rs §6 behind mp-bots — BotVars/GoalSlot/BotPickup/OtherPlayer/BotCtx (offsets in comments), the goal machine (initGoal/uninitGoal/setGoalComplete/getActiveGoal/setGoalPickPrefs/pickGoal/gotoGoal/processGoals), the 0xC5 heartbeat + corrections, 0xF9/0xEB (the 0xF6 detour, no 0xE9), 0xCF/0xD2 (the verbatim latch routing, the NextBulletTime lift, the per-tick firing pipeline with the 0.9998 cone), the trait switch 0x128b50. Deviations documented: straight-line walk at the stats' speed mult (the AINetwork route wiring is the named gap), checkAttackMove stand-in (the move states unported), the minimal FindOpponent (nearest seen candidate).
 - (14:26-14:41) Tests: 5 brain unit tests (the pickup round trip with the 300.0 deadline + the now+45.0 stamp; the stand sister; the fire decision — aim +x, tick ≥ the burst deadline, through 0xEC→0xCF→0xD2; the visit-decay skip; the RNG-order determinism) + mp_bots_live 2/2 on Arena 1 through the real spawn/pickup path. Priority batch green: nf-game lib 175/175, nf-view lib 8/8, mp_arenas 1/1, mp_core 5/5, mp_bots 2/2, rng 1/1. Docs: bot-vars.md 4 row corrections + the atlas §4 status + the report. The full 4-crate suite did NOT run (the sandbox's bg runner died on PATH; the batch covers the touched crate) — run it on the merged tree.
+
+
+## driving-input-path (2026-10-15, branch s/driving-input-path) — started 14:08 UTC
+
+Task 110w (G-004, U-003): the driving levels' input path from DRIVING.ELF is unported. Plan: (1)
+find the pad read, dead-zone chop/scale, steering/throttle/brake mapping and ramps in
+work/decomp/DRIVING.ELF, document in docs/systems/driving-input.md with addresses, compare with
+the on-foot ACTION.ELF path (input.md §2: threshold 40, scale 127/87); (2) port as pure module
+crates/nf-game/src/input/driving.rs (raw pad bytes in, vehicle controls out) with bit-exact unit
+tests; (3) map keyboard+mouse bindings onto it, note where a driving level would call it, don't
+wire the driving levels. Files: input/driving.rs (new), docs/systems/driving-input.md (new),
+docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
+- (14:06-15:20) driving-input-path (G-004/U-003) done on this branch. The decode: the SYM hint
+  addresses stay absent [M-negative], but our DRIVING.ELF matches the Raikaru shipped-ELF layout —
+  PS2PadDevice::PollDevice = FUN_00169288 [M]. The device vtable is 8-byte-stride (adj,func) at
+  0x374880, vptr at obj+0x18 [M 0x167bc8 pattern]; slots: 2 = the InputTable registration
+  (FUN_00168b08, 32 named values ALX/ALY/ARX/ARY + 12 AButton pressures + 16 DButton bits,
+  records 0x34 = kind+name+4 buffer pointers), 3 = PollDevice, 4 = value count (32), 5 = HasChanged.
+  PollDevice [M 0x169288, disasm-checked]: axes = LX, −LY, RX, −RY through b*0x3c008081f−1
+  (0x3c008081 = exactly f32(2/255) [M 0x169218]), all-sticks-zero guard zeroes only the axes,
+  then the dead zone FUN_00167c48(−0.3, 0.3) = strict lo<v<hi → 0 with NO rescale [M 0x167c48] —
+  a different mechanism from on-foot's byte threshold 40 + 127/87 (input.md §2). Pressures
+  b/192 capped 1 [M 0x169248]; digital mode 4 remaps DButton floats {29,31,28,30,20..} over the
+  AButton slots. The action layer: FUN_00168678 evaluates per-value 0xc-byte bindings {type,arg,
+  action} through 7 helpers (pressed/released edges 0.5/−0.5, crossings, centre ±0.2 [0x3e4ccccd],
+  auto-repeat with the strict `last+delay < now` clock and repeat state stored in message buffers
+  C/D), sends {action, device, value} via FUN_00165850 (ids 1..0x40; 0x1f FIRESECONDARY dropped
+  behind DAT_00339f54). Action ids from the .data pairs at 0x32c098 (STEER=1 .. RESUMEAUTODRIVE=0x40).
+  NO ramps in the input path [M-negative] — the only time-based behaviour is the auto-repeat.
+  Port: crates/nf-game/src/input/driving.rs (pure; wired via one `pub mod driving;` line in
+  input.rs) with 11 bit-exact unit tests; keyboard+mouse → RawPadSlot mapping marked [S] (the
+  shipped bindings live in Master.def/FrontEnd.def, not extractable here). Docs:
+  docs/systems/driving-input.md (new), GAPS G-004 closed, UNKNOWNS U-003 partial. Suite on the
+  final tree: nf-game lib 181/0 (the 11 driving tests inside), nf-formats 64/0 + integration
+  (driving_golden 4 skips without the disc folder, weapon_live 1/0, pss_movies_live 3/0,
+  exact_vs_host_probe 3/0, facial_probe 1/0), nf-audio 9/0, nf-view 8/0, nf-game integration
+  23 bins 99/0; disc_golden 3 failed = the allowed slim-ISO trio. Total 373 passed / 3 allowed
+  failures / 1 ignored. The sandbox kills background jobs between tool calls, so the suite ran
+  as foreground chunks (scripts/run_suite_chunks.py) instead of the nohup runner.
+
+- (15:52) Final-tree correction: after merging origin/master a2958c03 the priority suite on the
+  merged tree gives nf_game lib 186/0 (the 11 driving tests inside), disc_golden 11/3 (the allowed
+  trio), driving_golden 4/0 (disc-folder skips), ~40 integration bins green, probe_pylon_render
+  down on the no-GPU wgpu adapter (known environment class). The 373/3/1 line above describes the
+  pre-merge tree; docs/reports/driving-input-path.md carries both.
 - find-corona-creator (U-042 / G-034, branch s/find-corona-creator, cut from origin/master cf4f33cd):
   hunting the runtime creator of class-0x45 coronas (Corona_Update's LOS-fade class). Plan: scan
   every control_create_object caller passing 0x45 + control_funcs slot assignments across
@@ -13027,3 +13104,55 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
   suite was started on the pre-edit tree and killed when the sandbox disk hit 100% (the stray
   in-repo target/ 1.9 G deleted); the final-tree suite run is left to the next session. Report:
   docs/reports/audit-sound-calls.md.
+
+## fix-hud-zoom-tilt (110z)
+- (14:50) Started. Task: G-044 — port `Player_WeaponRecoil`'s zoom divide (glb_viewer+0x108) and
+  aspect x-term (viewer+0x114) into the gun-axis computation in scene.rs, using Sim::zoom (BL+0x8D0).
+  Branch cut from origin/master cf4f33cd. Plan: read the decompile + writers of +0x108/+0x114, write
+  the fail-first NF_ISO test (zoom 2 tilt = half of zoom 1), fix scene.rs, sister test zoom 1
+  bit-for-bit unchanged.
+- (14:55-15:15) Finding: G-044's fix is ALREADY on master — fix-viewmodel-zoom (b12a1b77, merged
+  2026-10-13) appended `/ self.zoom` to both gun-tilt terms in scene.rs `gun_matrix`, with the
+  4/3 aspect and an [L ee_start_05] citation, plus fix_viewmodel_zoom_live (composed-angle, 10%
+  tolerance at an uncontrolled zoom). This task verified the decompile chain independently
+  (Player_WeaponRecoil 0x1a3de8:52-57; viewer+0x108 writer = Player_PositionCamera 0x18f5d8 case
+  0/0xe feeding BL+0x8D0, case 1 pins 1.0; viewer+0x114 writer = Camera_CalcViewAngles 0x1baf70:
+  29-41 — 4/3 default, 16/9 widescreen option [DAT_002a37c4 = switch_CONFIG_WIDESCREEN 0x216168],
+  ×0.5/×2 split-screen), re-verified the [L] tag myself from ee_start_05 (0x1fc6c10: +0x108=1.0,
+  +0x114=0x3faaaaab, +0x118=π/3), and added the task's exact tests: fix_hud_zoom_tilt_live
+  (zoom-2 halves both terms; aspect = the constant's bits; the real input path's Ronin ramp
+  follows the formula tick-by-tick). FAIL-FIRST shown on the reverted divide (zoom-2 term stayed
+  at the zoom-1 value; ramp tick 0 failed), 3/3 pass on the restored tree; scene.rs left
+  byte-identical to master. No scoped weapon zooms to exactly 2.0 ([L ee_start_05 zooms 3.5/4/6/
+  10/16]) so the exact-2.0 leg sets BL+0x8D0 = 2.0 directly (a mid-ramp value; PositionCamera
+  feeds it verbatim). Observation (out of scope, noted in the GAPS closure): the game's rot+0x54
+  also adds the recoil kick BL+0x8e4 — the port doesn't model 0x8e0/0x8e4; no increment found in
+  the C decompile (only decay ×0.75 + init 0), decompiler-dropped store suspected. GAPS G-044 →
+  Closed. Suite restarted on the final tree.
+## menus vs PCSX2 (2026-10-15, branch mine/menus, main agent)
+- Every reachable front-end and in-game menu page compared side by side with PCSX2 captures (07000048 / 07000005)
+  and corrected: page headers left-aligned at x 50 at the header face's own size; the wheel rows left-aligned at
+  their controls' x; the ring texture 0x030000bf only masks the preview (no rim/square drawn); per-row difficulty
+  previews (table 0x2df4c0); locked wheel rows at half the slot alpha (Menu_UpdateWheel 0x1f8388:210-234); the
+  stray stamp 0x0300014c and the main menu's logo removed; main rows in the header face; Records rebuilt (three
+  framed boxes, the mission spinner, the rows, the medal only when earned — C_RBDSRECORDS 0x20bf00:58-110); title
+  prompt/legal sizes; pause hint bars dark words; OBJECTIVES rows = the visible objectives
+  (Mission_NumVisObjectives 0x182540) with the list cursor; quit/restart confirm; the codename option box
+  (Menu_CreateOptionBox 0x1f9608); hint bars at PCSX2's middles.
+- New: the level loading screen (ResetMap_GenLoadScreen 0x1d5de0 — crate::loading; the picture from
+  07000500.bin, objective + random hint, the LOADING dots static while the load blocks the thread).
+- New: Codenames → Edit Codename (0x4000001b) → Edit <name> (0x4000001d, table 0x2dfc28) → Advanced /
+  Multiplayer / AV Options (0x4000002d/2e/31): rows, value items and profile bytes from P_CNOPTIONS 0x213f08 /
+  P_CNMPOPTIONS 0x2144d8 / P_CNAVOPTIONS 0x214818, descriptions from the (control, value) table 0x2e4a18;
+  ◀ ▶ change values (Action::Left/Right; other pages keep Back/Confirm). The values are not wired to the sim yet
+  (queue task 610). Secret Unlocks / Controller Setup / Driving Controller / Screen Adjust / Credits / the
+  trailer / New Codename entry and the Multiplayer menus are not ported (611-613 queued for their data).
+- Renderer: the movie plane keeps the 4:3 picture centred with black bars (every menu movie and briefing was
+  stretched a third too wide on 16:9).
+- (15:38-15:53) Final tree: merged origin/master a2958c03 (WORKLOG/GAPS both kept on the append conflicts); the
+  fast runner on the affected binaries: ai_live/fix_ai_remainder_live/trig_live/fix_portonly_review_live/
+  tuning_live/fire_modes3_live/fix_weapon_fire_modes_live/weapon_switch_live/fix_weapons_all_live/
+  fix_samurai_fire_live = 65/0/4, then fix_sg5_casings_live/fix_shell_eject_live/casings16_live/impacts_live/
+  head_look_live/ai_traces_live/fix_weapon_effects_live/anim_events_live/fix_searchlight_remainder_live/
+  drone_portcheck_live/exact_vs_host_probe = 37/0/1. Total 102 passed / 0 failed / 5 ignored; the full suite
+  didn't fit the window (background jobs die here), the affected paths are covered.
