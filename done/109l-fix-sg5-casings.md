@@ -41,3 +41,7 @@ claimed-by: sandbox4 at 2026-10-15T04:31Z
 ## Report (done, 2026-10-15T05:10Z)
 
 Closed by the driver: the report is on `s/fix-sg5-casings` (docs/reports/fix-sg5-casings.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T05:23Z)
+
