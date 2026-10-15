@@ -26,3 +26,8 @@ Start from `origin/s/fix-gas-rng2`, merge `origin/master` first, reproduce the f
 
 ---
 claimed-by: sandbox7 at 2026-10-15T17:48Z
+
+---
+## Report (done, 2026-10-15T19:43Z)
+
+Closed by the driver: the report is on `s/fix-gas-rng3` (docs/reports/fix-gas-rng3.md); the worker didn't run finish.sh.
