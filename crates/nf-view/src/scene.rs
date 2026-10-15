@@ -2036,19 +2036,26 @@ impl Sim {
             //   fix-swim-vent5 probe put 07000005's gate door and the second vent's ctx-6 icons in one
             //   port cel — so pure cel occupancy would arm the gate door against the [L PCSX2 2026-10-13
             //   pin (0xFF there; enforced by fix_swim_vent5_live)]. The arm region is therefore the
-            //   INTERSECTION: the straddle set AND the live-measured 12.0 window (the same measured
-            //   middle the pre-fix radius used: the vent crawl spot must read 6 at 3.9, the gate door
-            //   must not at 24.1). The intersection keeps the wall gate this task fixes (the 07000008
-            //   east balcony reads ctx 3 pre-fix at 11.1 through the wall — its cel is not the icon's;
-            //   the wall is the difference) and every measured pin. When the port's FindCel resolves
-            //   cels exactly like the game's, the distance factor can drop.
-            //   Window 12.0 → 6.0 (fix-context-hints2): the driver's 2026-10-14 PCSX2 side-by-side
-            //   pins 07000005's grapple spot (16.5, 29.6, 58.6) — 8.17 from the ctx-6 icon[3]
-            //   (24.20, 31.93, 60.01), same port cel 15 — at NO context and NO "Press Action" [L
-            //   PCSX2 2026-10-14], while the vent crawl spot still reads 6 at 3.9 [L PCSX2
-            //   2026-10-13]. The middle must sit between them: 6.0 (both icons' own world spheres
-            //   are r 2.276 [D probe], so the game's cel-chain arm at 3.9 is pure cel occupancy;
-            //   the port's coarse buckets need the [S] distance factor until FindCel matches).
+            //   INTERSECTION: the straddle set AND the game's own SPHERE test (fix-wallhug-prompt).
+            //   Window 12.0 → 6.0 → THE GAME'S SPHERE (fix-context-hints2 → fix-wallhug-prompt): the
+            //   driver's 2026-10-14 PCSX2 side-by-side pins 07000005's grapple spot (16.5, 29.6, 58.6)
+            //   — 8.17 from the ctx-6 icon[3] (24.20, 31.93, 60.01), same port cel 15 — at NO context
+            //   and NO "Press Action" [L PCSX2 2026-10-14], while the vent crawl spot still reads 6
+            //   [L PCSX2 2026-10-13]. The game's exact volume is NOT a flat window at all: the icon
+            //   writes only into the player object its own obj+0xd0 chain names, and `Collide_Pick`
+            //   0x1eb320 admits a candidate object ONLY when its world sphere meets the picker's
+            //   sphere — `Vec_SqDist3D(picker+0x60, obj+0x80) < (picker+0x6C + obj+0x8C)²` [M
+            //   0x1eb320 LAB_001eb4e4; the picker's +0x6C copies +0x8C = the player's world-sphere
+            //   radius 1.0576 (L M_CONTROL+0x8C, ee_start_05 player 0 standing), the icon's +0x8C is
+            //   its `Control_BuildWorldSph` 0x133070 radius — r 2.2757 on 05's ctx-6 icons [D probe]],
+            //   then `Collide_Intersect` 0x1ebaa8's LAB_001ebf04 re-tests sphere-sphere and the chain
+            //   keeps only overlapping pairs. So arm = `dist(bond.sphere_centre(), icon.centre) <
+            //   1.0576 + icon.radius`, gated by the straddle-cel set (the cel-cull stand-in). The
+            //   measured pins all sit the right side of 3.333: the crawl out-point is 3.28 from
+            //   icon[1] (arms), the grapple spot 8.17 from icon[3] (silent), the gate door 24.06
+            //   (0xFF). The old [S] 6.0 window measured Bond's FEET, not the sphere centre, and
+            //   reached ~1.8× past the game's shell — the user's "its interaction prompt area is a
+            //   bit too large. Like I'm walking away from it and I still see it" (05 trench ledge).
             self.bond.icon_ctx = 0xff;
             let bond_cell = find_cell_raycast(&self.cel_graph, self.bond.pos, Some(&self.world));
             for (ii, icon) in self.icons.iter().enumerate() {
@@ -2056,7 +2063,13 @@ impl Sim {
                 let Some(cells) = self.icon_cels.get(ii) else { continue };
                 if cells.is_empty() { continue; }
                 if !bond_cell.is_some_and(|bc| cells.contains(&bc)) { continue; }
-                let near = (icon.centre[0] - self.bond.pos[0]).powi(2) + (icon.centre[1] - self.bond.pos[1]).powi(2) + (icon.centre[2] - self.bond.pos[2]).powi(2) < 36.0;
+                // The game's sphere-sphere candidate filter [M Collide_Pick 0x1eb320 LAB_001eb4e4]:
+                // the player's world sphere (r 1.0576 [L M_CONTROL+0x8C]) vs the icon's [M
+                // Control_BuildWorldSph 0x133070] — `bond.sphere_centre()` is the ported player
+                // branch, NOT the root `bond.pos` the old window measured.
+                let c = self.bond.sphere_centre();
+                let reach = icon.radius + 1.0576;
+                let near = (icon.centre[0] - c[0]).powi(2) + (icon.centre[1] - c[1]).powi(2) + (icon.centre[2] - c[2]).powi(2) < reach * reach;
                 if near {
                     self.bond.icon_ctx = icon.ctx;
                     // `ThirdIcon_Update` 0x196e80:38-53: the type-6 icon posts the generic hint
@@ -2314,6 +2327,54 @@ impl Sim {
         let f = m[2];
         let l = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt().max(1e-6);
         Some(([m[3][0], m[3][1], m[3][2]], f[0].atan2(f[2]), (f[1] / l).clamp(-1.0, 1.0).asin(), fov))
+    }
+
+    /// The wall-shimmy's third-person tracking camera (`Player_PositionCamera` 0x18f5d8 case 0xb →
+    /// `camera_tracking` 0x1ba5e0), Some only while the creep substate (7) runs — the user's "when I
+    /// entered a prompt it was in first person. should be 3rd person". Position, yaw, pitch (radians,
+    /// the window's Camera convention) and the FOV factor 1.0 (`viewer+0x108 = 1.0` [M 0x18f5d8:233]).
+    ///
+    /// The game, per creep tick [M 0x1ba5e0:69-110]:
+    /// 1. the carried wall's axis line — `wall+0x30` ± `Vec_Spherical_2_Cartesian(wall+0x8C,
+    ///    wall+0x54 + π/2, wall+0x58)` — with BOTH ends' Y raised **+1.0** for the creepwall's '+'
+    ///    class (the closest-point line hovers at Bond's head while he crawls) [M 0x1ba5e0:80-88];
+    /// 2. the closest point of that line to the player's position (obj+0x30) [M 0x1ba5e0:90];
+    /// 3. the camera sits at `closest − Cartesian(radius, yaw, −pitch)` with the radius the entry
+    ///    set (`viewer+0x1F0 = 4.0` [M Player_CollCreepWall 0x196758:123]), the yaw the wall's +0x54
+    ///    + π [M 0x1ba5e0:104-106] and the pitch the creepwall constant **0x402fede0 = 2.7486268**
+    ///    [M 0x1ba5e0:106-110] (a wall-specific ThirdPersonCameras spline only when the wall's
+    ///    BLData u16[1] (placement param 1) is set — 07000005's two 0x3F placements carry none
+    ///    [D probe], so the computed spherical is the live path);
+    /// 4. the look at the closest point, from the actual offset (the tail atan2s [M 0x1ba5e0:135-155]).
+    ///
+    /// In the port's convention (`Cartesian(r, θ, φ)` = `r·(sinθ·cosφ, −sinφ, cosθ·cosφ)` — the
+    /// wall axis [M 0x196758:86-90] pins the φ=0 slice) the offset resolves to
+    /// `cam = closest + axis_dir·(4.0·sin(2.7486268)) + up·(4.0·|cos(2.7486268)|)` with
+    /// `axis_dir = fwd(wall.yaw + π/2)` — ~1.53 along the wall from the tracked point, ~3.70 above
+    /// it, looking down at Bond. The game also draws Bond's body here (`View_SetDrawInAllViews`
+    /// [M 0x18f5d8:228]) and hides the view model (`View_SetDrawInNoViews(BLData+0x7e8)` [M :229]) —
+    /// the port has no player body mesh; the view-model hide lives in lib.rs's `view_model_entries`.
+    pub fn creep_camera(&self) -> Option<([f32; 3], f32, f32, f32)> {
+        if self.disabled || self.bond.substate != nf_game::player::SS_CREEP { return None; }
+        let w = self.creepwalls.get(self.bond.creep?)?;
+        // The tracked point: the closest point of the wall axis to Bond's pos [M 0x1ba5e0:90 —
+        // `vecutil_calculate_closest_point_on_line` clamps to the segment ends, as the port's
+        // `CreepWall::closest_point` does], with the line's Y +1.0 [M 0x1ba5e0:80-88]. Lifting both
+        // ends by a constant does not move the projected t, so the lift applies to the result.
+        let closest = w.closest_point(self.bond.pos);
+        let closest = [closest[0], closest[1] + 1.0, closest[2]];
+        // The spherical offset [M 0x1ba5e0:106-125], resolved in the port's convention (see the doc).
+        const CAM_PITCH: f32 = 2.748_626_8; // 0x402fede0 [M 0x1ba5e0:108]
+        let (sp, cp) = CAM_PITCH.sin_cos();
+        let (along, up) = (4.0 * sp, -4.0 * cp); // 1.5317 along the axis, 3.6952 up
+        let axis = [(w.yaw + std::f32::consts::FRAC_PI_2).cos(), 0.0, -(w.yaw + std::f32::consts::FRAC_PI_2).sin()];
+        let cam = [closest[0] + axis[0] * along, closest[1] + up, closest[2] + axis[2] * along];
+        // The look at the tracked point (the tail atan2s [M 0x1ba5e0:135-155]).
+        let d = [closest[0] - cam[0], closest[1] - cam[1], closest[2] - cam[2]];
+        let horiz = (d[0] * d[0] + d[2] * d[2]).sqrt();
+        let yaw = d[0].atan2(d[2]);
+        let pitch = (d[1] / horiz.max(1e-4)).clamp(-1.0, 1.0).asin();
+        Some((cam, yaw, pitch, 1.0))
     }
 
     /// The clip slot the held weapon reads and writes: the BASE's when the record is a twin (+0x05
