@@ -74,15 +74,14 @@ commit a6f536a6's stat belong to the merged fix-laser-watch-look task).
   three) + 3 pylon-render (`fix_0c_pylon_live` ×2, `probe_pylon_render` ×1 — another session's
   known scope, pre-existing on master). Wall-cuts at 90 s, all green at 270 s:
   fix_guard_weapons_live, levels_sweep_live, campaign_flow_live, walkreal_07000001_live.
-  `weapon_matrix_live` timed out at 270 s while still advancing (last started
-  `matrix_0700001b`) — a long binary, not a hang; re-run pending (see What's left).
+  `weapon_matrix_live` needed a longer window and passed solo at limit 600 s (6 passed / 0 failed /
+  24 ignored, ~5 min) — a long binary, not a hang.
 
 ## What's left
 
-- `weapon_matrix_live` one more window (it advances between cut points; suggest `--limit 600`
-  solo). Nothing about the satchel depends on it.
-- The [S] build-predates-fix hypothesis can only be closed by a playtest rebuild: the main agent
-  should re-run the user's exact repro (07000005, `--give 0x3b,0x3a`, throw at the low wall).
+- Nothing blocking. The [S] build-predates-fix hypothesis can only be closed by a playtest
+  rebuild: the main agent should re-run the user's exact repro (07000005, `--give 0x3b,0x3a`,
+  throw at the low wall).
 
 ## Live checks for the main agent
 
