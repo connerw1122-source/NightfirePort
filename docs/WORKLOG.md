@@ -12945,3 +12945,11 @@ fail-first shown: on the old code even the housing shot did NOT break (the stand
 mismatch), the sisters' old-code behavior recorded in the report. Suite: pre-fix baseline
 1316 passed / 6 failed (the 3 disc_golden + the no-GPU pylon set) / 66 ignored; the post-fix
 full run does not fit the window — the report lists what ran.
+- (13:05-13:35) Final-tree verification: merged origin/master (815714d6, WORKLOG both kept); the
+  refinement pushed (the request write also allowed during the retarget's reverse — the game's
+  case list allows state 2 and case 2's tail applies the LATEST +0x63 at the stop [M 0x1a2e38
+  case 2/0xe's tail]); fix_switch_after_cold_load_live 2/2 on it. Foreground sweep of the
+  switch-affected binaries on the final tree: fire_modes3_live 5/0/4, fix_weapon_fire_modes_live
+  5/0, fix_weapon_modes_live 6/0, fix_samurai_fire_live 3/0, fix_weapons_all_live 4/0,
+  weapon_switch_live 2/0 (nf-game), tuning_live 2/0 (nf-game). The fast suite on the final tree
+  running (started 12:58); fix_switch_after_cold_load_live passed inside it as well.
