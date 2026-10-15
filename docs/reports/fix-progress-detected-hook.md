@@ -146,6 +146,19 @@ is not needed. If a render is wanted: on 07000005, stand Bond 4 units in front o
 team-1 guard — the pause menu's STATS page row 4 (the undetected row) should show the allowed
 detections shrinking by the counter growth (the port's `rows[4]` wiring, progress.rs).
 
-## ntfy
+## ntfy failed
 
-(see the WORKLOG final entry — sent after this report)
+All three fallbacks failed with the same server error — ntfy.sh's daily message quota for the
+free plan is exhausted (nothing about the sandbox/network):
+
+1. `curl -sS -m 20 -H "Title: NightfirePort" -d "fix-progress-detected-hook: done …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → exit 0 but the response body is the error:
+   `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 -c "… urlopen(Request('https://ntfy.sh/nightfire-yoda-8k3x', data=b'fix-progress-detected-hook: done', headers={'Title':'NightfirePort'}), timeout=20)"`
+   → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget -O- --post-data "fix-progress-detected-hook: done" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `HTTP request sent, awaiting response... 429 Too Many Requests` / `ERROR 429: Too Many Requests.`
+
+The queue close (finish.sh) and the branch push both succeeded; only the push notification is
+undelivered. Retry it once the daily quota resets: the one-liner is
+`curl -H "Title: NightfirePort" -d "fix-progress-detected-hook: done" https://ntfy.sh/nightfire-yoda-8k3x`.
