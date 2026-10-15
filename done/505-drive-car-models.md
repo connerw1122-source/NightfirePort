@@ -16,3 +16,7 @@ SHA-1s. Document the format in docs/formats/. No renderer work.
 
 ---
 claimed-by: sandbox3 at 2026-10-15T19:59Z
+
+---
+## Report (done, 2026-10-15T21:00Z)
+
