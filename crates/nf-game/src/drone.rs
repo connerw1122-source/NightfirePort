@@ -2439,8 +2439,20 @@ impl Drone {
                 let side = [side[0] / sl, side[1] / sl, side[2] / sl];
                 let mp = axis_angle_mat(side, hp);
                 let my = axis_angle_mat(neck, -hy);
-                let m = nf_formats::anim::mul(&world[5], &mp);
-                world[5] = nf_formats::anim::mul(&m, &my);
+                // The game turns ONLY the head's orientation: HeadTrack hands Quat_QuatToMat
+                // (0x1e3e80) the palette entry itself (0x1bfcc0 `lw $a1, 0xd8($sp)` = palette +
+                // bone·0x40, 0x1bfcc4 `jal 0x1e3e80`), and that helper stores offsets 0x00..0x2c
+                // — the three rotation rows — never the +0x30 translation row. The head keeps the
+                // anim-posed position on the neck while only its rotation turns. The full-matrix
+                // product below used to rotate the translation row about the object origin, so at
+                // the saturated track angles (yaw ±1.1, pitch ±1.0, e.g. a guest at ~1 unit) the
+                // head detached onto the shoulders/back (the 07000007 playtest's sideways heads).
+                let mut rot = world[5];
+                rot[3] = [0.0, 0.0, 0.0, 1.0];
+                let m = nf_formats::anim::mul(&rot, &mp);
+                let mut turned = nf_formats::anim::mul(&m, &my);
+                turned[3] = world[5][3];
+                world[5] = turned;
             }
         }
         Some((world, hip))
