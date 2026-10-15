@@ -1817,7 +1817,9 @@ impl Sim {
         // the port's fixed tick stands in for the game's wall-clock delta (the module doc's
         // *Deviation*). Arena loads only — `None` on every campaign level.
         if let Some(m) = self.mp.as_mut() {
-            m.update(1.0 / 60.0, false);
+            // the shared bit-exact generator — the game's MP_Update draws the global RNG only on
+            // the state-6 restart's site re-pick (MP_RestartScenario 0x183fc0)
+            m.update(1.0 / 60.0, false, &mut self.drones.rng);
         }
         // `Game_Run` 0x1c9790:33 runs `Light_Update` before the object movement each tick (fix-lighting):
         // lifetimes (the muzzle light of the previous tick dies here), the script-channel gate and the
