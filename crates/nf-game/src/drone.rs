@@ -308,10 +308,11 @@ pub struct Data<'a> {
     pub surfaces: Option<&'a nf_formats::sfx::SurfaceSounds>,
     /// Drone voice lines (`Drone_SfxInfo`); `None`: the drones do not talk.
     pub voices: Option<&'a [nf_formats::sfx::VoiceLine]>,
-    /// `GameState+0x40` (0x2a37a8): the difficulty — the `Player_HandlePain` 0x1902c8 damage
-    /// factor, the `DroneWeap_DoBulletAccuracy` 0x179740 hit chance, the captain/lock/hint gates
-    /// and `PlrStat_GetScore` 0x1984b0's multiplier all read it (fix-progress; mirrored from
-    /// `Drones::difficulty` in the view's `data()`).
+    /// `GameState+0x28` (0x2a3790): the difficulty — the `Player_HandlePain` 0x1902c8 damage
+    /// factor (`lw a0,14224(v0)` 0x19040c) and the `DroneWeap_DoBulletAccuracy` 0x179740 hit
+    /// chance (`lw a0,40(v0)` 0x179848) both read +0x28, and the difficulty page writes it there
+    /// (`C_SBNFDFCTY_Handler` 0x216dc4); the scored member at +0x40 (0x2a37a8) stays 0 in play
+    /// [L ee_start_05.bin] (mirrored from `Drones::difficulty` in the view's `data()`).
     pub difficulty: u32,
 }
 
@@ -1927,23 +1928,34 @@ impl Drone {
         if d.level == 0x0700_0007 && !self.obj_armed() {
             self.fail_reason = Some(crate::ally::mission_fail_reason(5));
         }
-        if self.health <= 0.0 {
-            // 0x145f28:60-84: enemy or not, mode != 0x1E → 0x42 (the KO); 0x1E → 0xF2 (bots, not ported).
-            self.set_state(state::KNOCKED_OUT_ANIM);
-            return true;
+        // 0x145f28:69-73: outside the team-1 arm, an UNARMED victim on every level but
+        // 07000009/0700000a raises fail reason 6 (the civilians' channel 0x60, label 0x4000034
+        // [M 0x13e560 case 1/3/6/9]). On 07000007 the reason-5 arm above ran first for the same
+        // victim, so the label is the last call's — the civilians' — and both channels end up set
+        // (the drain applies this reason; the mission monitor's standing ch-0x60 hook re-sets
+        // ch 99 [M 0x1827d8:98-107]). The 05 guards are team 1: this arm never fires for them.
+        if self.team != 1 && !matches!(d.level, 0x0700_0009 | 0x0700_000a) && !self.obj_armed() {
+            self.fail_reason = Some(crate::ally::mission_fail_reason(6));
         }
         // `Drone_AlertStatusSet(2)` [M 0x145f28:30] — the port's alert-status-2 = alert ≥ 0.66
-        // (the convention crate::drone line ~2703 uses for the stun family).
+        // (the convention crate::drone line ~2703 uses for the stun family). The game stamps it
+        // before the damage; the port reaches the same value for every living victim.
         self.alert = self.alert.max(1.0);
-        self.pain_talk(d);
-        // `DroneFunc_SendHurtMessage` 0x145e28:19-57 (prop 0x32 = the scream property, the +8
-        // once-per-life bit, +0xc5 != 2): the hurt civilian SCREAMS — msg 0x12 broadcast with the
-        // victim as the alert source. The queue drains in the shared pass (the send needs the
-        // other drones, unreachable from inside this one's borrow).
-        if self.health > 0.0 && self.prop(d, 0x32) && !self.screamed {
-            self.screamed = true;
-            self.pending_shout = Some((msg::SCREAM, self.pos));
+        // 0x145f28:57-84 — the two team arms, in the game's order: team 1 KOs BEFORE the hurt
+        // message (a punched-out guard never screams); team ≠ 1 sends it FIRST — even when the
+        // punch was the kill — then KOs.
+        let ko = |s: &mut Self| {
+            // 0x145f28:60-84: mode != 0x1E → 0x42 (the KO); 0x1E → 0xF2 (bots, not ported).
+            s.set_state(state::KNOCKED_OUT_ANIM);
+        };
+        if self.team == 1 {
+            if self.health <= 0.0 { ko(self); return true; }
+            self.send_hurt_scream(d);
+        } else {
+            self.send_hurt_scream(d);
+            if self.health <= 0.0 { ko(self); return true; }
         }
+        self.pain_talk(d);
         if allow {
             // `CallAnim(0, 0x51, 0, *(Drone+0x118), 0, 0)` + both flinch stamps (0x145f28:89-94).
             self.call_anim(d, anim_state::PUNCHED, self.impact_resume, 0);
@@ -1953,6 +1965,17 @@ impl Drone {
         }
         if valid(setv) { self.set_state(setv); }
         true
+    }
+
+    /// `DroneFunc_SendHurtMessage` 0x145e28:19-57 (prop 0x32 = the scream property, the +8
+    /// once-per-life bit, +0xc5 != 2): the hurt civilian SCREAMS — msg 0x12 broadcast with the
+    /// victim as the alert source. The queue drains in the shared pass (the send needs the
+    /// other drones, unreachable from inside this one's borrow).
+    fn send_hurt_scream(&mut self, d: &Data) {
+        if self.prop(d, 0x32) && !self.screamed {
+            self.screamed = true;
+            self.pending_shout = Some((msg::SCREAM, self.pos));
+        }
     }
 
     /// `NDrone2_ObjectIsArmed` 0x178768 on this drone's own class byte: classes 2..0x47 and 0x6a..0x71 are
@@ -4808,12 +4831,37 @@ impl Drone {
         dly as u32
     }
 
-    /// `DroneWeap_NextBulletTime(new burst / start)`.
+    /// `BOT_getAggressionMul` 0x126468: the table off `Drone+0xB5` (0x12649c-0x1264ec) —
+    /// 0→0.3, 1→0.5, 2→0.7, 3→0.85, 4/default→1.0 (the MP close boost 0x1264f4+ is MP-only).
+    fn aggression_mul(&self) -> f32 {
+        match self.aggression { 0 => 0.3, 1 => 0.5, 2 => 0.7, 3 => 0.85, _ => 1.0 }
+    }
+
+    /// `DroneWeap_NextBulletTime` 0x179d40 (new burst / continuing burst).
     fn next_bullet_time(&mut self, d: &Data, rng: &mut Rng, frame: u32, new_burst: bool) {
+        // interval = signed short weapon_data+0x40 (0x179dc0 `lh v1,64(v1)`), min-clamped per weapon
+        // (0x179dc4-0x179e04): weapons 6, 10, 0x0e, 0x0f, 0x10 → min 60; every other weapon → min 0.
+        let w = self.weapon as u32;
         let interval = self.weapon_field_u16(d, 0x40) as i16 as i32;
-        let i = interval.max(0) as u32;
+        let i = if matches!(w, 6 | 10 | 0x0e | 0x0f | 0x10) { interval.max(60) } else { interval.max(0) } as u32;
         if new_burst {
-            self.burst = (self.weapon_field_u16(d, 0x2c) as i32).max(1);
+            // burst = unsigned short weapon_data+0x2c (0x179e74 `lhu v1,44(v1)`), resized per weapon
+            // (0x179ea8-0x179ef8) — the RNG draws the game makes, in its order: weapons 6/10 with a
+            // raw size < 2 draw `Rand(3)+2` (0x179eb8-0x179ed0); weapons 0x0e-0x10 draw `Rand(2)+1`
+            // (0x179ed4-0x179edc); the rest take the raw short sign-extended (0x179e90-0x179ee8).
+            // Then min 1 (0x179eec-0x179ef8).
+            let raw = self.weapon_field_u16(d, 0x2c);
+            self.burst = match w {
+                6 | 10 if raw < 2 => (rng.rand(3) + 2) as i32,
+                0x0e..=0x10 => (rng.rand(2) + 1) as i32,
+                _ => raw as i16 as i32,
+            }.max(1);
+            // SP aggression cut (0x179f80-0x17a01c): for weapons NOT in {6, 10, 0x0e-0x10}, a burst
+            // of 4+ is `trunc(max(burst × BOT_getAggressionMul, 3.0))` — weapon 0x12/0x13's record
+            // burst 12 with the common +0xB5=0 (0.3) fires 3-round bursts, not 12.
+            if !matches!(w, 6 | 10 | 0x0e | 0x0f | 0x10) && self.burst >= 4 {
+                self.burst = ((self.burst as f32 * self.aggression_mul()).max(3.0)) as i32;
+            }
             self.last_shot += self.burst_delay(rng);
         }
         self.next_shot = (self.last_shot + i).max(frame);
@@ -4887,14 +4935,16 @@ impl Drone {
     }
 
     /// `DroneWeap_FireWeapon` + `DoBulletAccuracy`: hit roll, the miss wobble, the cone (`Bullet_init`), damage
-    /// (`Drone_ModBulletDamage`: ×2 under 4 units, × `+0x100`).
+    /// (`Drone_ModBulletDamage`: the ×2 under TooClose lands at the hit site, × `+0x100` here).
     fn fire_weapon(&mut self, d: &Data, rng: &mut Rng, frame: u32, p: &Player, (moving, first_moved): (bool, bool), owner: usize, lights: &mut crate::light::LightList) -> Option<crate::bullet::Bullet> {
         let w = d.weapons.records.get(self.weapon as usize)?;
         let f32_at = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
-        // Hit chance: p = 100 − 5·accuracy, ×2 under TooClose (3), ×0.25 first moved, ×0.75 moving, × level
-        // difficulty accuracy (07000005–08: 0.8 / 0.9 / 1.3; difficulty 1 as read live), ×2 again under TooClose.
+        // Hit chance: p = 100 − 5·accuracy, ×2 under TooClose ([0x30cb14] — `close_threshold`), ×0.25
+        // first moved, ×0.75 moving, × level difficulty accuracy (07000005–08: 0.8 / 0.9 / 1.3;
+        // difficulty 1 as read live), ×2 again under TooClose. The hard always-hit cut is a separate
+        // literal 3.0 [M 0x179914-0x17992c].
         let mut pct = 100.0 - 5.0 * self.accuracy as f32;
-        let close = self.dist < 3.0;
+        let close = self.dist < close_threshold(d.level);
         if close { pct *= 2.0 }
         if first_moved { pct *= 0.25 }
         if moving { pct *= 0.75 }
@@ -4918,11 +4968,29 @@ impl Drone {
         // `Light_Create(radius 7.0, intensity 1.0, the muzzle, rgb = weapon_data+0x56/+0x55/+0x54,
         // channel 0, life 0 → +0x20 = 1 (one tick), kind 1)` — before the bullet's spread draws.
         lights.create(7.0, 1.0, muzzle, [w[0x56], w[0x55], w[0x54]], 0, 0, 1, 0, rng);
+        // fix-guard-weapons3: the game's next three draws — the flash-sprite orientation jitter
+        // FRand(2π) 0x179268 / FRandHalf(0.2) 0x179288 / 0x1792ac — sit INSIDE
+        // `if (lVar9 != 0)` (FireWeapon 0x17925c-0x1792b0): they run only when the kind-0x40
+        // muzzle-flash sprite object (`control_create_object(0x40, …)` 0x179248) is created. The
+        // port's sim creates no render sprite, so the branch's draws never fire here — consuming
+        // them unconditionally shifted the shared stream (the HELD merge's cover-test 90-vs-37 and
+        // the matrix's re-rolled rates; the live-calibrated `ai_live::guard_takes_cover_like_the_game`
+        // pins the per-shot stream at roll + Light_Create's Rand(param_11) + the spread draws).
+        // The main agent's live check (the report) settles the object-create side with gdbwatch.
         let aim = [p.target[0] + off[0] - muzzle[0], p.target[1] + off[1] - muzzle[1], p.target[2] + off[2] - muzzle[2]];
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
         let dir = crate::bullet::spread(aim, f32_at(0x24), flags68, rng);
-        let mut damage = f32_at(0x0c) * self.damage_mul;
-        if self.dist < 4.0 { damage *= 2.0 }
+        // The raw damage: weapon_data+0x0C. `Drone+0x100` (the ×mul) is applied at HIT time by
+        // `Drone_ModBulletDamage` — weapons 0x63-0x66 skip EVERY modifier there (0x139f98-0x139fa8),
+        // so they must not carry the multiplier in the bullet either.
+        let special = (0x63..=0x66).contains(&(self.weapon as u32));
+        let damage = f32_at(0x0c) * if special { 1.0 } else { self.damage_mul };
+        // fix-guard-weapons3: the game's per-shot `Rand_Rand(500) − 250` shot-pitch draw
+        // (FireWeapon 0x179490-0x17949c, skipped only for the silent 0x5ef) is AUDIO-side —
+        // `Sound_Play3D`'s pitch jitter. The port's audio layer (nf-audio) is render-side and
+        // does not feed the sim's RNG; consuming it here shifted every later sim draw off the
+        // live-calibrated stream (the HELD merge's two failures). The main agent's live check
+        // (the report) settles whether the game's sim stream really carries it.
         Some(crate::bullet::Bullet { pos: muzzle, dir, speed: f32_at(0x20), travelled: 0.0, range: f32_at(0x1c), damage, owner, state: 0,
             weapon: self.weapon as u16, flyby: d.weapons.flyby(self.weapon as usize), bounces: 0 })
     }
@@ -5108,7 +5176,10 @@ pub fn level_drones(d: &Data, level: &nf_formats::level::Level, rng: &mut Rng, l
 }
 
 /// Per-level accuracy factors by difficulty (`ReadTuningVars` 0x1d3a80). The difficulty itself is
-/// `Drones::difficulty` (`GameState+0x40`, 0x2a37a8 — NOT +0x28; fix-progress made it runtime).
+/// `Drones::difficulty` — `GameState+0x28` (0x2a3790): BOTH the accuracy switch (`DroneWeap_DoBulletAccuracy`
+/// 0x179848: `lw a0,40(v0)` off GameState 0x2a3768) and the pain switch (`Player_HandlePain` 0x19040c) read
+/// +0x28, and the difficulty page writes it there (`C_SBNFDFCTY_Handler` 0x216dc4: `sw v0,0x3790(t0)`);
+/// the snapshot has +0x28 = 1 at 07000005 start while the scored +0x40 (0x2a37a8) = 0 [L ee_start_05.bin].
 pub fn level_accuracy(level: u32, difficulty: u32) -> f32 {
     let (e, n, h) = match level & 0xff {
         0x01..=0x04 | 0x14..=0x16 => (0.5, 0.7, 1.0),
@@ -5120,6 +5191,18 @@ pub fn level_accuracy(level: u32, difficulty: u32) -> f32 {
         _ => (0.5, 1.0, 2.0),
     };
     match difficulty { 1 => e, 3 | 4 => h, _ => n }
+}
+
+/// The "too close" tuning variable `DroneAcc_TooClose` (0x30cb14, written per level group by
+/// `ReadTuningVars`): the threshold for the ×2 accuracy bonus and the ×2 hit damage
+/// (`Drone_ModBulletDamage` 0x139fb4: `c.4.s f1, [0x30cb14]`). The groups write 3.0 (01–1B campaign
+/// groups + 4A); 21–29+4B+4C write 4.0; every unlisted level keeps the ELF static 4.0. NOT the 4.0
+/// the port hardcoded before — on 07000005 the game's threshold is 3.0 [L ee_start_05.bin: 3.0].
+pub fn close_threshold(level: u32) -> f32 {
+    match level & 0xff {
+        0x01..=0x0d | 0x11..=0x16 | 0x1b | 0x4a => 3.0,
+        _ => 4.0,
+    }
 }
 
 /// All drones of a level plus the round-robin line-of-sight cursor.
@@ -5407,11 +5490,14 @@ pub struct Drones {
     /// bitmask, the `sp_level` flags and the save codec (fix-progress). The tally hooks fold the
     /// per-drone outboxes in `tick`; the menus (180-fix-menus) read it through here.
     pub progress: crate::progress::Progress,
-    /// `GameState+0x40` (0x2a37a8): the difficulty — 1 Agent / 2 Secret Agent (the boot default
-    /// [M bootup 0x1c7e78:25]) / 3 00 Agent / 4 the bonus double-damage mode [M Player_HandlePain
-    /// 0x1902c8:29-48]. The old `DIFFICULTY` const (hardcoded 1, commented as `GameState+0x28` —
-    /// the wrong offset; the scored member is +0x40 [M PlrStat_GetScore 0x1984b0:295]) stood in
-    /// for this. The difficulty page (180-fix-menus) writes it through `set_difficulty`.
+    /// `GameState+0x28` (0x2a37a8 is the SCORED member and stays 0 in play — the MODEL difficulty lives
+    /// at +0x28, 0x2a3790): 1 Agent / 2 Secret Agent / 3 00 Agent / 4 the bonus double-damage mode
+    /// [M Player_HandlePain 0x19040c and DroneWeap_DoBulletAccuracy 0x179848 both switch on +0x28;
+    /// the difficulty page writes it there, C_SBNFDFCTY_Handler 0x216dc4]. Boot default 2 [M bootup
+    /// 0x1c7e78:25, `sw t0,40(s1)` @0x1c7f88 → 0x2a3790 = 2; Ghidra's `_40_4_` field name is DECIMAL].
+    /// The level-start snapshots' +0x28 = 1 is session state (PTP restore 0x1c8560:36 / the
+    /// mission-start force 1, `Menu_RunMiniMission` 0x1ffb90:22) [L ee_start_*.bin]. The difficulty
+    /// page (180-fix-menus) writes it through `set_difficulty`.
     pub difficulty: u32,
 }
 
@@ -5508,7 +5594,13 @@ impl Drones {
             // fix-progress: the tally/scoring layer and the runtime difficulty (fields on their
             // own lines — the shared-constructor collisions, merge lesson 4).
             progress: Default::default(),
-            difficulty: 2, // [M bootup 0x1c7e78:25 GameState._40_4_ = 2]
+            // Boot default 2: `bootup` 0x1c7e78:25 stores 2 to 0x2a3790 (`sw t0,40(s1)` @0x1c7f88 —
+            // Ghidra's field name `GameState._40_4_` is DECIMAL 40 = +0x28, GameState base 0x2a3768).
+            // The level-start snapshots' +0x28 = 1 is session state, not boot: PTP restore
+            // (Boot_LoadPTPData 0x1c8560:36) and the mission-start force (`Menu_RunMiniMission`
+            // 0x1ffb90:22 writes 1) put 1 there [L ee_start_*.bin]; the direct-level load replays it
+            // (scene.rs `drones.difficulty = 1`).
+            difficulty: 2,
             // fix-cover-remainder: the HandleExplosives queue (own line — merge lesson 4).
             explosive_queue: Vec::new(),
             // fix-grenade-throw: the smoke grenade's occluder clouds (`Occlude_Create` 0x17ea80).
@@ -5519,8 +5611,9 @@ impl Drones {
         drones
     }
 
-    /// `GameState+0x40`'s setter (C_SBNFDFCTY_Handler 0x216ca8:10-17 writes the difficulty page's
-    /// selection; the boot default is 2 [M 0x1c7e78:25]). The menus (180-fix-menus) call this.
+    /// `GameState+0x28`'s setter (C_SBNFDFCTY_Handler 0x216ca8 stores the difficulty page's
+    /// selection to 0x2a3790, `sw v0,14224(t0)` @0x216dc4; the boot default is 2 [M bootup
+    /// 0x1c7e78:25 @0x1c7f88]). The menus (180-fix-menus) call this.
     pub fn set_difficulty(&mut self, d: u32) {
         self.difficulty = d.clamp(1, 4);
         self.progress.difficulty = self.difficulty;
@@ -6494,7 +6587,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // The distance test runs from the player's position (+0x30) but the LOS from his world-sphere
             // centre (+0x80) — two different points [M 0x18e148:203-214 + L]. Port-check §1: the old call
             // passed `player.pos` for both, so the take-ray origin differed from the game's by construction.
-            if alive && !p.hidden && p.touches(d.world, player.cel, player.pos, player.sph) {
+            // fix-pickups-ammo: NO `!p.hidden` gate — `Pickup_Update`'s take path never reads `obj+0xF0`
+            // [M 0x18e148: no +0xF0 read; Script_HideObj 0x1db808 only sets/clears the draw bit], so the
+            // game takes hidden pickups: the AR drop's invisible 0x1B grenade pile (`DroneWeap_DropWeapon`
+            // 0x17a2a0 creates it with obj+0xF0 |= 0x10) is collected walking over the drop. The state-2
+            // wait above still gates the respawn-hidden pickups (0x10 is set WITH state 2 there).
+            if alive && p.touches(d.world, player.cel, player.pos, player.sph) {
                 let loaded = d.skins.contains_key(&d.weapons.first_person(p.weapon as usize));
                 // `Pickup_Handler`: the armour case writes `BLData+0x8B0`; the clock is `GameState+0x52`
                 // (the 10 → 0xC remap gate) — the port's tick count stands in for it.
@@ -6530,10 +6628,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // `if (+0x28) switch_channels[+0x28] = 1` (+ time stamp) [M 0x18e650:330-333].
                     if p.switch_channel != 0 { self.channels.set(p.switch_channel as u32, 1, frame); }
                     // `Pickup_Handler` overwrites `+0x2A` with the per-kind sound at take time —
-                    // 0xF5 weapon/ammo, 0x141 armour, 0x14C Bond bonus (:290,300,319-321) — before
-                    // `Sound_Play3D` (:334-337). A placed bonus's create sound is 0xFFFF (none); the
-                    // take still plays 0x14C [M]. fix-objects: kind 6 was silent.
+                    // 0xF5 for kinds 0 AND 1 (the message switch's cases 0/1 both land on
+                    // LAB_0018ee80: `*(ushort*)(info+0x2a) = 0xf5`), 0x141 armour, 0x14C Bond bonus
+                    // [M 0x18e650:290-300, 319-321]. The placement's own sound word is NOT played for
+                    // weapon/ammo takes: the disc places them with 0x13F (the 07000002 sniper, the
+                    // 07000008 rockets, the 07000005/01 id-6 boxes) and 0xFFFF (the 0700000c/d 0x1f
+                    // boxes) — the game still plays 0xF5. fix-pickups-ammo: the port used to play
+                    // `p.sound` (0x13F, or nothing) for kinds 0/1.
                     let take_sound = match t {
+                        crate::pickup::Taken::Weapon { .. } | crate::pickup::Taken::Ammo { .. } => Some(0xF5),
                         crate::pickup::Taken::Bonus => Some(0x14C),
                         crate::pickup::Taken::Armour => Some(0x141),
                         _ => p.sound,
@@ -7728,6 +7831,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 sound: if sp.sound == 0 || sp.sound == 0xFFFF { None } else { Some(sp.sound) },
                 hidden: false, gone: false, from: None, obj: None,
                 respawn: 0, respawn_ticks: 0, spin: sp.kind == crate::pickup::kind::BOND_BONUS,
+                label: 0, // PendingPickup carries the entity's params 0-4 only; no script-spawned pickup on the disc labels non-zero
             });
         }
         { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&script_parts(self, d)); }
@@ -7786,6 +7890,35 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     }
                     crate::bullet::BulletEvent::Player { damage, at } => {
                         let before = self.health.health;
+                        // `Drone_ModPlayerHitDamage` 0x13a940 → `Drone_ModBulletDamage` 0x139f50 runs at
+                        // HIT time on the raw `weapon_data+0x0C` (HITDATA+8, carried in the bullet):
+                        // 1. `Drone+0xD8 == 0xC` (the voice set of skins 0x500003b/0x500003c,
+                        //    `DefaultInit` 0x14b300:201-206) → 0 damage, always [M 0x139f84-0x139f88];
+                        // 2. weapons 0x63-0x66 return the raw damage untouched [M 0x139f98-0x139fa8];
+                        // 3. `Drone+0x1A0` (the shooter's tracked distance) < the level's TooClose
+                        //    [0x30cb14] → ×[0x30cb1c] `DroneFiring_TooClose_Damage` (2.0)
+                        //    [M 0x139fac-0x139fc8] — `close_threshold`;
+                        // 4. ×`Drone+0x100` [M 0x139fcc-0x139fdc] (the bullet already carries it);
+                        // 5. the BACKSHOT ×[0x30cb20] `DroneFiring_PlayerBackShot_Damage` (2.0)
+                        //    [M 0x139fd4-0x13a080]: the shooter's mode (+0xC5) is neither 2 nor 0x19,
+                        //    its weapon (+0xDA) is 0x12, the level is not 0x700001b, and the angle
+                        //    between the bullet's travel yaw (ATAN2 of HITDATA+0x30/+0x38) and Bond's
+                        //    facing (obj+0x54) is under 1.5707964 — the shot into his back.
+                        // No distance falloff anywhere in the chain [M 0x19455c-0x194588:
+                        // `HIT+8 + Hurt_GetDamage`; the only distance term is this binary TooClose ×2].
+                        let mut damage = damage;
+                        let special_weapon = (0x63..=0x66).contains(&(b.weapon as u32));
+                        if let Some(sh) = self.list.get(b.owner).filter(|x| x.present) {
+                            if sh.voice_type == 0xC { damage = 0.0; }
+                            else if !special_weapon {
+                                if sh.dist < close_threshold(d.level) { damage *= 2.0; }
+                                if b.weapon as u32 == 0x12 && sh.mode != 2 && sh.mode != 0x19 && d.level != 0x700001b {
+                                    let bullet_yaw = atan2_approx(b.dir[0], b.dir[2]);
+                                    let bond_yaw = atan2_approx(player.aim[0], player.aim[2]);
+                                    if angle_difference(bullet_yaw, bond_yaw).abs() < 1.5707964 { damage *= 2.0; }
+                                }
+                            }
+                        }
                         // `Player_DealWithObjHit` 0x194458:201-226: the direction bits from the ATTACKER's position
                         // (HITDATA+0x30 = the shooter) in the viewer's frame.
                         let attacker = self.list.get(b.owner).filter(|d| d.present).map_or(at, |d| d.pos);

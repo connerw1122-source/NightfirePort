@@ -235,23 +235,26 @@ impl PlayerHealth {
     }
 }
 
-/// `Plr_DMod_Easy/Normal/Hard` per level (`ReadTuningVars` 0x1d3a80): 0x7000001–04 0.5/0.7/1.2 (:37-42),
-/// 0x7000005–08 0.6/0.7/1.0 (:50-55), 0x7000009–b 0.6/0.8/1.0 (:97-99), 0x700000c–d 0.4/0.7/1.2
-/// (:126-127,143), 0x7000011–13+0x4a 0.5/0.6/1.0 (:168-173), 0x7000014–16 0.4/0.6/1.0 (:180-185),
-/// 0x700001b 0.6/0.7/1.0 (:190-197); otherwise the ELF boot defaults 0.75/1.0/1.25 [L 0x30cc50-58].
-/// Difficulty 4 doubles [M 0x1902c8:43-45]; difficulty 0 reads `Plr_DMod_Normal` [M 0x1902c8:29-48].
+/// `Plr_DMod_Easy/Normal/Hard` per level (`ReadTuningVars` 0x1d3a80 — the per-level jump-table groups
+/// 0x1d3c44-0x1d4878; the ELF statics 0x30cc50/54/58 = 0.75/1.0/1.25 serve the levels no group covers):
+/// 0x7000001–04 0.5/0.7/1.2 [0x1d3e00], 05–08 0.6/0.7/1.0 [0x1d3c44], 09–0B 0.6/0.8/1.0 [0x1d3f5c],
+/// 0C–0D 0.4/0.7/1.2 [0x1d40f4], 11–13+4A 0.5/0.6/1.0 [0x1d42bc], 14–16 0.4/0.6/1.0 [0x1d4424],
+/// 1B 0.6/0.7/1.0 [0x1d458c]; 21–29+4B+4C and every unlisted level keep the statics (their groups
+/// write no Plr_DMod — 0x1d46ec/0x1d4878). Difficulty 4 doubles [M Player_HandlePain 0x190470].
 pub fn damage_factor(level: u32, difficulty: u32) -> f32 {
     let (e, n, h) = match level & 0xff {
         0x01..=0x04 => (0.5, 0.7, 1.2),
         0x05..=0x08 => (0.6, 0.7, 1.0),
         0x09..=0x0b => (0.6, 0.8, 1.0),
-        0x0c..=0x0d => (0.4, 0.7, 1.2),
+        0x0c | 0x0d => (0.4, 0.7, 1.2),
         0x11..=0x13 | 0x4a => (0.5, 0.6, 1.0),
         0x14..=0x16 => (0.4, 0.6, 1.0),
         0x1b => (0.6, 0.7, 1.0),
         _ => (0.75, 1.0, 1.25),
     };
-    match difficulty { 1 => e, 2 | 0 => n, 3 => h, 4 => 2.0, _ => n }
+    // Difficulty 0/other picks Normal, not a no-op [M Player_HandlePain 0x190404-0x190470:
+    // 1 → Easy, 2 and every unmatched value → Normal, 3 → Hard, 4 → the ×2 add.s f20,f20,f20].
+    match difficulty { 1 => e, 3 => h, 4 => 2.0, _ => n }
 }
 
 #[cfg(test)]
