@@ -27,8 +27,11 @@ selection and ✕ flow from `C_GCPAUSE_Handler` 0x204408 — no drawing (the mai
   0x202218 → 0x1f9608, box_id 10, ok_only 1, the OK row label 0x266 [M 0x1f9608:34-42]`) with the selected row's
   hint label; **hint == 0xffffffff shows label 0x31d** [M 0x205bd0-0x205bdc]. Confirm/Back pop it (the box's 0x4b
   OK row / 0x6d cancel, option_return 4 ok-only [M C_LBMSGOPTIONS 0x2022a0]); while up, all other input idles
-  (the box page 0x4000002f is modal [M 0x1f9608:45]); dismissal re-shows the list (the 0x4b-exit sweep
-  0x205670-0x205700, which re-shows the root list + hint bar 0x201 — the port just clears the field).
+  (the box page 0x4000002f is modal [M 0x1f9608:45]); dismissal re-shows the list — the game's pause page handler
+  does it on msg 0x50 (`option_return != 0 → control 8 0x2b(0)` [M P_PAUSE_Handler 0x203c28:19-24; Handler_HandleMessage
+  0x2029e0 routes page 0x4000004b → P_PAUSE and menu-def 0x10000028's controls → C_GCPAUSE — page-level events vs
+  control-level events]); the ok-only box returns 3/4 (both non-zero) so the list always comes back with its rows
+  and selection intact. The port just clears the field, the row state untouched underneath.
 - `open_pause()` resets the box + selection; the OBJECTIVES draw arm's yellow cursor follows `pause_objectives_sel`
   (was pinned to the last row).
 

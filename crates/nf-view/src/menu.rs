@@ -995,8 +995,9 @@ pub struct FrontEnd {
     pub pause_objectives_sel: usize,
     /// objective-hints: the ✕ hint box — Some(label) while the modal ok-only option box is up
     /// (label 0x31d already applied) [M 0x204408 case 1 → Menu_CreateOptionBox 0x202218 with
-    /// box_id 10, ok_only 1; Confirm/Back pop it [M C_LBMSGOPTIONS 0x2022a0], the 0x4b-exit sweep
-    /// re-shows the list [M 0x204408 0x205670-0x205700] — the port just clears the field].
+    /// box_id 10, ok_only 1; the box's OK row / a cancel pop it [M C_LBMSGOPTIONS 0x2022a0] and
+    /// the page handler re-shows the list on msg 0x50 [M P_PAUSE_Handler 0x203c28:19-24 —
+    /// `option_return != 0` → control 8 0x2b(0)] — the port just clears the field].
     pub pause_hint: Option<u32>,
     /// fix-save-profile: the port's memory card — the profiles dir next to the port's config,
     /// one file per codename [M Menu_UpdateMessageBox 0x1f7de8:19/28 passes the codename buffer
@@ -1947,9 +1948,11 @@ impl FrontEnd {
                 }
                 // objective-hints: the ✕ hint box is modal (option-box page 0x4000002f pushed
                 // over the pause [M Menu_CreateOptionBox 0x1f9608:45]). Its OK row (0x4b) or a
-                // cancel (0x6d) pops it [M C_LBMSGOPTIONS_Handler 0x2022a0]; the pause re-shows
-                // the list through the 0x4b-exit sweep [M 0x204408 0x205670-0x205700] — the port
-                // just clears the field. Everything else idles.
+                // cancel (0x6d) pops it [M C_LBMSGOPTIONS_Handler 0x2022a0]; the page handler
+                // then re-shows the list on msg 0x50 [M P_PAUSE_Handler 0x203c28:19-24 —
+                // option_return != 0 → control 8 0x2b(0); the ok-only box returns 3 on OK and 4
+                // on cancel, both non-zero] — the port just clears the field. Everything else
+                // idles.
                 if self.pause_hint.is_some() {
                     match a {
                         Action::Confirm | Action::Back => { self.pause_hint = None; return true; }

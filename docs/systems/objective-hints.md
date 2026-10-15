@@ -81,12 +81,14 @@ button [M 0x205934-0x20595c: the arm switches on `param_2->0x20` (the activated 
      is re-tinted 0x645a4cff [M 0x205c14-0x205c2c].
 5. **Dismiss**: the box's OK row (0x4b on the box → `option_return = the row's value` [M C_LBMSGOPTIONS_Handler
    0x2022a0]) or a cancel (msg 0x6d → `option_return = 4` because ok_only [M 0x2022a0's else arm]) pops the box
-   (manager msg 0x5f) [M 0x2022a0]. The pause handler then re-shows the tab: the 0x4b arm's shared exit block sends
-   0x2b(2) to every control (8..0xf, 6, 9, 0xa..0xf — a full re-init sweep) [M 0x205670-0x2056d4, reached from the
-   hint case's tail at 0x205c34 → 0x205edc… — the block at 0x205670 falls through to 0x205934's 0x4b arm head and is
-   re-entered after the hint case; the sweep re-shows the ROOT list (control 6 0x2b(0) + 0x75(0xaf)) and the hint
-   bar back to 0x201 [M 0x2056d8-0x205700]]. The port models the box as `FrontEnd::pause_hint: Option<u32>` — set
-   on ✕, cleared on Confirm/Back (both pops), with every other action swallowed while it is up (modal).
+   (manager msg 0x5f) [M 0x2022a0]. When the box pops the manager notifies the page handler with **msg 0x50**, and
+   the pause page's own handler re-shows the list: `P_PAUSE_Handler` 0x203c28:19-24 (page 0x4000004b's handler —
+   `Handler_HandleMessage` 0x2029e0 routes 0x4000004b → P_PAUSE and the menu-def 0x10000028's controls →
+   C_GCPAUSE; the split is page-level events vs control-level events) does `option_return != 0 → Menu_SendEx
+   (0x10000028, 8, 0x2b, 0)` — the ok-only box returns 3 (OK) or 4 (cancel), both non-zero, so the list ALWAYS
+   comes back with its rows and selection intact (they were only hidden, never cleared). The port models the box
+   as `FrontEnd::pause_hint: Option<u32>` — set on ✕, cleared on Confirm/Back (both pops), every other action
+   swallowed while it is up (modal), the row state untouched underneath.
 
 ### Selection state
 
@@ -134,8 +136,8 @@ from the disc's USATxt.dat). Each has a sister assertion that can fail.
    level with several). gdbwatch on control 8's selection word is awkward; instead: with ≥ 2 announced objectives
    the yellow cursor should sit on the LAST row when the tab opens (fieldprobe screenshot).
 2. **The hint box**: ✕ on a row → the memo box over the paused frame with the objective's hint text and one
-   "continue"-labelled row; ✕ again (or circle) closes it and the list returns WITH its rows (not blank) [M the
-   0x205670 sweep].
+   "continue"-labelled row; ✕ again (or circle) closes it and the list returns WITH its rows and selection (msg 0x50
+   re-shows control 8 [M P_PAUSE 0x203c28:19-24]).
 3. **The no-hint fallback**: not reachable on the shipped records (every hint ≠ −1 [L]) — only a mod would show
    0x31d's text ("No hint available" or similar — bind 0x31d from USATxt.dat to see the shipped string).
 4. **Scoring**: show several hints, finish the level, check the SCORE tab / results — no "hints" row, no bonus

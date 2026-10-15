@@ -3,7 +3,8 @@
 //! [M C_GCPAUSE_Handler 0x204408 0x204840-0x204850]), ✕ opening the selected row's hint box
 //! (control 1's 0x4b case [M 0x205b98-0x205c34]) with the 0xffffffff → 0x31d fallback
 //! [M 0x205bd0-0x205bdc], the modal box (Menu_CreateOptionBox 0x202218, ok_only [M 0x1f9608]),
-//! and the dismissal re-showing the list [M the 0x4b-exit sweep 0x205670-0x205700]. Numbers/ids
+//! and the dismissal re-showing the list [M P_PAUSE_Handler 0x203c28:19-24 — msg 0x50 re-shows
+//! control 8; the ok-only box's option_return is 3 (OK) / 4 (cancel), both non-zero]. Numbers/ids
 //! only; one NF_ISO check binds the ids against the disc's USATxt.dat.
 
 use nf_view::menu::{Action, FrontEnd, PauseObjective};
@@ -83,7 +84,7 @@ fn the_hint_box_is_modal_until_confirmed() {
     assert!(!fe.action(Action::Side), "the box swallows ~H");
     assert_eq!(fe.pause_tab, 1, "no tab cycle under the box");
     // ✕ dismisses (the OK row [M C_LBMSGOPTIONS_Handler 0x2022a0's 0x4b arm]) and the list is
-    // interactive again (the 0x4b-exit sweep re-shows it [M 0x204408 0x205670-0x205700]).
+    // interactive again (msg 0x50 re-shows control 8 [M P_PAUSE_Handler 0x203c28:19-24]).
     assert!(fe.action(Action::Confirm), "✕ pops the box");
     assert!(fe.pause_hint.is_none(), "the box is gone");
     assert!(fe.action(Action::Down), "the list scrolls again");
