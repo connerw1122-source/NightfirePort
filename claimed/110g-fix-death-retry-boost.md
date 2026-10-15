@@ -38,3 +38,6 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 
 **Branch:** `s/fix-death-retry-boost`.
+
+---
+claimed-by: sandbox2 at 2026-10-15T10:05Z
