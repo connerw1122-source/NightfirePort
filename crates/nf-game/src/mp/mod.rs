@@ -31,6 +31,15 @@ use crate::world::CollisionWorld;
 /// the sim calls it yet; the dispatch is behind the `mp-bots` feature.
 pub mod bots;
 
+/// The lockstep state hash (`state_hash(&MpMatch) -> u64`, FNV-1a 64 over the state's bit
+/// patterns) — the desync detector the future `nf-net` UDP lockstep exchanges per tick. See
+/// `docs/systems/net-lockstep.md`.
+pub mod hash;
+
+/// The recorded-input replay harness for the MP core: settings + seed + per-tick events in, the
+/// same sim calls the live host makes, per-tick hashes out.
+pub mod replay;
+
 /// The per-scenario rules (402 mp-match-rules): kill scoring, the end-condition latches and the
 /// state machine, the who-won decision, respawn rules, friendly fire, and every scenario's
 /// objective update (CTF flags, Uplink terminals, KOTH hill, Demolition/Protection sites,

@@ -974,6 +974,96 @@ impl BotBrain {
         }
     }
 
+    /// The brain's lockstep hash — every **live** state field, f32 as bit patterns
+    /// (`mp::hash::Hasher`). The brains are sim state: a lockstep host hashes them with the
+    /// match every tick (`docs/systems/net-lockstep.md`). The derived logs (`shots`,
+    /// `visited_pickups`, `trace`) hash as lengths only — they are pure functions of the live
+    /// state + the shared RNG stream, so a content divergence implies a hashed divergence.
+    pub fn state_hash(&self) -> u64 {
+        use crate::mp::hash::Hasher;
+        let mut h = Hasher::new();
+        let v = &self.vars;
+        h.u8(v.aggression);
+        h.u8(v.aim);
+        h.u16(v.max_hp);
+        h.u8(v.speed);
+        h.u8(v.weapon_class);
+        h.u8(v.trait_id);
+        h.u8(v.flags);
+        for g in &v.goals {
+            h.f32_slice(&g.celpos);
+            h.f32(g.scratch);
+            h.f32(g.start);
+            h.f32(g.duration);
+            h.f32(g.weight_health);
+            h.f32(g.weight_ammo);
+            h.f32(g.weight_weapon);
+            h.f32(g.objective_weight);
+            h.usize(g.target);
+            h.u8(g.fire_state);
+            h.u8(g.complete);
+            h.u8(g.goal_type);
+            h.u8(g.pref_byte);
+            h.u8(g.dist_limit as u8);
+            h.u8(g.route_code);
+            h.u8(g.active);
+            h.u8(g.subtype);
+        }
+        h.u8(v.active_goal);
+        h.u32(v.requested_state);
+        h.u32(v.pending_scratch);
+        h.u32(v.flag_word);
+        h.u32(v.regen_deadline);
+        h.u16(v.nav_node);
+        h.u16(v.slot as u16);
+        h.u16(v.bot_index as u16);
+        h.u8(v.state_type);
+        h.u8(v.weapon_id);
+        h.u8(v.announced_weapon);
+        h.u8(v.grudge as u8);
+        h.u8(v.last_pickup as u8);
+        h.u8(v.guard_near_flag);
+        h.u8(v.scan_flag);
+        h.u8(v.attack_latch);
+        match v.opponent {
+            None => h.u8(0),
+            Some(o) => {
+                h.u8(1);
+                h.usize(o);
+            }
+        }
+        h.u32(v.sighted);
+        h.u32(v.unseen_ticks);
+        h.f32(v.sight_stamp);
+        h.f32_slice(&v.combat_range);
+        h.u8(v.fire_latch);
+        h.u8(v.burst_empty);
+        h.u16(v.clip_rounds as u16);
+        h.f32(v.next_bullet_at);
+        h.u32(v.burst_left);
+        h.u16(v.resume_state);
+        h.u8(self.state);
+        h.f32_slice(&self.pos);
+        h.f32(self.yaw);
+        h.u32(self.tick);
+        h.i16(self.weapon.interval);
+        h.u16(self.weapon.burst);
+        h.f32(self.weapon.aggression_mul);
+        h.usize(self.shots.len());
+        h.usize(self.visited_pickups.len());
+        h.usize(self.trace.len());
+        h.usize(self.last_visit_stamp.0);
+        h.f32(self.last_visit_stamp.1);
+        match self.pending {
+            None => h.u8(0),
+            Some(p) => {
+                h.u8(1);
+                h.u8(p);
+            }
+        }
+        h.finish()
+    }
+
     // ------------------------------------------------------------------
     // The goal machine (BOTSTATE_*)
     // ------------------------------------------------------------------
