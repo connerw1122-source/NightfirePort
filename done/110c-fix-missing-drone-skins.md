@@ -36,3 +36,7 @@ claimed-by: sandbox7 at 2026-10-15T08:51Z
 ## Report (done, 2026-10-15T09:38Z)
 
 Closed by the driver: the report is on `s/fix-missing-drone-skins` (docs/reports/fix-missing-drone-skins.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T09:55Z)
+
