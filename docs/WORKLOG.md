@@ -13459,6 +13459,32 @@ Work Log (credits-data):
 - Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
   0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
   the PAL base note).
+
+## drive-car-models (s/drive-car-models)
+
+Started 2026-10-15 ~20:05 UTC. Task: decode the driving missions' car models from the
+`DRIVING/*.VIV` archives (format, LODs, textures, wheel attachment points), a `nf_formats`
+module + an `nf-extract` OBJ dump command, goldens (per-model vertex/triangle counts +
+buffer SHA-1s), format doc in docs/formats/. No renderer work.
+
+### drive-car-models — session result (2026-10-15, ~22:00 UTC)
+
+- Format decoded end-to-end and documented (docs/formats/car-model.md): car `.crp` article
+  window records, the `Skel` part table = the wheel/hub attachment points (resolved by name
+  via FUN_001c9980 0x1c9980 / FUN_001d2648 0x1d2648, tables EE 0x334070/0x334080/0x334090),
+  the ELFd||ELFr MIPS ET_REL module (`.data` = model, symbols name `__Model:::{as NNNN}::
+  Model[L]` variant×LOD descriptors, TAR texture refs, MatCar* materials), the batch table,
+  and the draw buffers as VIF streams (V4_32 (x,y,z,1.0) quads = vertices).
+- Port: `crates/nf-formats/src/carmodel.rs` + `nf-extract carmodels` (OBJ vertices-only,
+  local). Goldens: `golden/carmodel_golden.tsv` (5 plain MISC cars) + `carmodel_golden.rs`
+  (NF_DRIVING-gated, tamper sisters, wheel-names test).
+- Tests run: `cargo test --offline --release -j2 -p nf-formats -- --test-threads=1` with
+  NF_ISO + NF_DRIVING → 78 lib + 2 carmodel_golden + 11 driving/disc others passed; the only
+  3 failures are the allowed `disc_golden` trio on the slim ISO. The background fast runner
+  could not survive between tool calls in this sandbox (2 launches died); the foreground
+  per-crate command above is the substitute. Crates touched: nf-formats, nf-extract.
+- Left: triangle connectivity (EAGL GeoPrim consumer 0x262000–0x2a7000), DMA head words,
+  mission-car goldens, the main agent's render/parity pass.
 - Merge with origin/master (f59b47fb): master's Page::CnName (the secret-codes worker's cheat grid) kept as the one page id 0x40000020; my profile-name mode rides the same variant behind cn_profile_mode (cn_open arms it; the wheel's row 0 = cn_open(PAGE_CN_MENU) leaves Secret Unlocks untouched); the CnMenu row 6 = Save Codename semantics restored on top of master's row-0/snapshot arm. Merged tree: cargo check clean, codename_entry 14/14 + secret 8/8 + menus_flow 36/36. Suite runner: build ok (348 binaries), --only codename_entry,nf-game,menus_flow = 50 passed / 0 failed / 0 ignored; the full run doesn't fit the window (build alone 338 s; detached processes get killed here). finish.sh closed 616-codename-entry in done/; ntfy 429 daily quota on curl+urllib (wget exit 0, ambiguous) — exact outputs in the report.
 
 ## objective-hints (2026-10-15, branch s/objective-hints)
