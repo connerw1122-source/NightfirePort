@@ -12101,3 +12101,29 @@ Work Log:
 - 22:20 UTC: branch created from origin/master (eb52fb56), pushed. work/ + ISO + nf-queue already present from the prior sandbox; setup skipped.
 - 22:20-22:59: the melee audit, every fact tagged. [L ee_start_05.bin record 1]: fists 5.0 dmg / 1.75 range / speed 1.0 / +0x44 = 6 strike frame / +0x40 = 30 refire / flags68 0x880A2 / ammo 0, +0x91 = 0; fire scripts 0x060006de (op-1 0x142 @ frame 7) / 0x060006dd (@ frame 9) len 23 each [D 07000005.bin dump]; sound 0x142 hearing weight 0.0 vs 0x403's 65 [L SFXOutputData]. Two port bugs found + fixed, each with a fail-first NF_ISO test: (1) the fire path fed EVERY weapon's hearing the 0x403 gunshot — a punch alerted the room at weight 65 (the game's punch is silent to the AI; the whoosh weighs 0) — scene.rs hearing_id now 0x142 for weapons 1/0x4b/0x4d; fail-first shown (hearer loudness 58.24 → 0.0). (2) punch_impact missed the fail-reason-6 arm [M 0x145f28:69-73] (unarmed non-team-1 on every level but 09/0a → ch 0x60) and had the team arms' SendHurtMessage/KO order swapped (team 1 KOs before the scream; non-team-1 screams even when the punch was the kill) — restructured 1:1, the level-7 guest tests still green. Verified-matching (no change): the damage 7.5 = 5·1.0·1.5 through the real path, the +0x44 = 6 release, the KO 0x42 (not 0x44), head→torso for 1/0x4a..0x4d [M 0x145558], armour 0 (DefaultInit 0x14b300:566 the only writer), no casing (+0x6C & 0x40 clear + ammo_data[0] mesh 0), the 0x80000 alternation (one Rand(100) > 50 per punch), interval 30, the whoosh op-1, AlertStatusSet(2). 5 new tests in crates/nf-view/tests/fix_melee_live.rs (all green). Suite restarted (the first run had died silently).
 - 23:00-23:50: the punch-neighbor suites green after the restructure (guests 3/3, party 8/8, death 15/15, nf-game 268/268); origin/master merged (4ea550b7, WORKLOG both sides kept); the full 286-binary suite ran on the final tree in foreground chunks (the sandbox kills background jobs — the nohup/setsid runner died twice): **1125 passed / 5 failed (3 disc_golden allowed + 2 pre-existing pylon) / 66 ignored**; weapon_matrix_live 345 s no timeout. Report docs/reports/fix-melee.md committed; ntfy delivered on the wget fallback (curl/python3 429). DONE.
+## fix-pickups-ammo — s/fix-pickups-ammo (task 107e, started 22:37 UTC 2026-10-14)
+- Started from origin/master 4ea550b7. Scope: the pickup layer vs the game — caps, owned-weapon
+  takes, dropped guns, ammo boxes, the take sound + message, auto-switch.
+- Audit: read Pickup_Handler 0x18e650, Pickup_Update 0x18e148, Pickup_Create 0x18dda0,
+  Player_EquipWeapon 0x1a8a58, Player_EquipAmmo 0x1a8d18, DroneWeap_DropWeapon 0x17a2a0,
+  Script_HideObj 0x1db808 + a disc-wide placement census (a scratch example, not committed).
+  Five divergences found, all fixed failing-first:
+  1. The take sound for kinds 0/1 must be FORCED 0xF5 [M 0x18e650 LAB_0018ee80] — the disc
+     places them with 0x13F (the 07000002 sniper, the 07000008 rockets, the 07000005 id-6
+     boxes) and 0xFFFF (the 0700000c/d 0x1f boxes); the port played the placement's word.
+  2. The ammo path's id is the COMPOSITION upgrade_ammo_id(upgrade_weapon(raw)) [M
+     0x18e650:142-144 + 0x1a8d18:11-19] — the id-6 boxes (07000001/05) credit the P2K's
+     type-1 pool (cap 70 [L weapon_data: record 6 is type 2]), not type 2 (cap 90).
+  3. Pickup_Create's 07000008 && id 0x2c → rounds = 4 override [M 0x18dda0] — the vault's
+     rocket placement says 5 [D]; the old port granted 4 loaded + 1 spare (4/5 vs 4/4).
+  4. A hidden pickup is still takeable — Pickup_Update's take path never reads obj+0xF0 [M];
+     the AR drop's invisible 0x1B grenade pile [M 0x17a2a0:110-112] was never collected.
+  5. The kind-4 label (the placement's param 6 → +0x34) rides the take and is the message when
+     non-zero [M 0x18e650 case 4] — 0700000b's id-0x47 item carries 0x2000036 [D].
+- Tests: nf-game pickup units 12/12 (3 new), nf-view fix_pickups_ammo_live 4/4 (new, NF_ISO:
+  the boxes' type-1 pool + the raw-type message, the drop taken twice to the cap, the vault
+  rocket 4/4 + the forced sound, the hidden pile take, the 0700000b label message), the census
+  (fix_pickups_remainder_live) green over the levels with the override + the composed-id
+  refusal model, fix_pickups_trace_live 2/2, fix_auto_switch_live 6/6, fix_hud_live 6/6,
+  fix_objects_live 2/2.
+
