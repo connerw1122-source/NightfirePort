@@ -13499,7 +13499,7 @@ Work Log (credits-data):
   the disc-pinned 0x06000961 timeline (ticks 184/1340/2113/3570, labels 0x06000068-6b, times 1132/756/988/555 [D]),
   no-row codes, the Off gate through the real Sim, the ON queue at the right tick. fix_script_commands_live's text
   test now pins the ON behaviour explicitly. Ran: nf-game lib 212/212, nf-formats+nf-audio green (disc_golden 3 =
-  the slim-ISO set), the HUD-affected view binaries 34/34, suite runner over 65 more view/game binaries (menus_flow,
-  level_live, mp_arenas_live…) — 0 failed; fix_0c_pylon_live's 2 = the sandbox's missing Vulkan ICD (adapter
+  the slim-ISO set), the HUD-affected view binaries 34/34, suite runner over 104 more binaries across five chunks (menus_flow, level_live,
+  mp_arenas_live, codename_entry, the fields/fix_* sets…) — 0 failed; fix_0c_pylon_live's 2 = the sandbox's missing Vulkan ICD (adapter
   request, pre-existing). The full 356-binary sweep didn't fit the window (background jobs die here; the runner
   rebuilds cost 336 s). Doc: docs/systems/subtitles.md (the queue layout, both presenters, all three sources).

@@ -85,20 +85,24 @@ presenter.
   - The HUD/message-affected view binaries (`fix_hud_live`, `fix_objective_banner_live`,
     `fix_objective_messages_live`, `fix_pickups_ammo_live`, `fix_pickups_trace_live`,
     `hud_playtest_live`, `screen_adjust`): **34/34**.
-  - The suite runner over **65 further binaries** (round 1: the nf-view level/render set —
-    `levels_sweep_live`, `portal_sweep_live`, `walkreal_*`, `render2_live`, `menu_movies`,
-    `mp_menu_flow`, …; chunk 2: `menus_flow`, `level_live`, `mp_arenas_live`, `objective_state`,
-    `progress_live`, `pickup_live`, `rng_live`, `trig_live`, `tuning_live`, `weapon_live`,
-    `weapon_switch_live`, `input_ramp_live`, `input_styles_live`, `facial_live`,
+  - The suite runner over **104 further binaries** across five foreground chunks: round 1 the
+    nf-view level/render set (`levels_sweep_live`, `portal_sweep_live`, `walkreal_*`, `render2_live`,
+    `menu_movies`, `mp_menu_flow`, …); then `menus_flow`, `level_live`, `mp_arenas_live`,
+    `objective_state`, `progress_live`, `pickup_live`, `rng_live`, `trig_live`, `tuning_live`,
+    `weapon_live`, `weapon_switch_live`, `input_ramp_live`, `input_styles_live`, `facial_live`,
     `sound_coverage_live`, `searchlight_live`, `stun_grenade_live`, `grenade_live`, `doors_live`,
-    `ledge_live`, `sound_coverage_live`): **0 failed**.
+    `ledge_live`; `codename_entry`, `campaign_flow_live`, `cutscene_draw_live`,
+    `cutscene_models_live`, `fields_player_live`, `fields_actors_live`, `driving_golden`,
+    `facial2/3_live`, `dev_menu_flow`, `fire_modes3_live`, `explode_live`, `casings16_live`,
+    `ai_traces_live`, `ammo_pane_live`; `fix_actors_live`, `fix_06_alarm_live`,
+    `fix_aims20_lights_render`, `fix_08_collision_live/2`, `fix_08_walls_live`, `fix_0c_hatch_live`,
+    `fix_0c_vent2_live`: **0 failed** (75 + 63 + 22 tests in the chunked runs alone).
   - Two failures are environmental: `fix_0c_pylon_live`'s 2 tests panic at the wgpu
     `request_adapter` (this sandbox has no Vulkan ICD — pre-existing on any branch, levels.md §6).
   - **The full 356-binary sweep did not fit the window**: background jobs are killed between tool
-    calls here, and each runner invocation re-checked the build (one cost 336 s). What ran is listed
-    above; the unrun remainder is the middle nf-view/nf-game ISO-gated set (`fix_*`, `gadget_*`,
-    `doors_01_live`, `facial_probe`, …) — none of which touch the subtitle path (the affected set
-    above is green).
+    calls here, and one runner invocation paid a 336 s rebuild. ~109 of 356 binaries ran (listed
+    above); the unrun remainder is the rest of the ISO-gated `fix_*`/`gadget_*`/probe set — none of
+    which touch the subtitle path (the affected set above is green).
 
 ## What's left
 
