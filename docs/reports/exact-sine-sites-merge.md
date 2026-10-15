@@ -89,7 +89,8 @@ The escort walk passing 2/2 under exact motion needs a decision that needs live 
 - `fix_08_walls_live` 4/4 (after the expectation fix) · `exact_sine_sites_live` 1/1 ·
   `exact_sine_sites3_live` 6/6 · `ai_live` 35/35 (110k's re-pinned seed holds on the merged tree) ·
   `trig_live` 4/4 · `diff_calls` 4/4 · `walkreal_07000002_live` 1/1 · `wire_live` 2/0/2i ·
-  `fix_ladder_live` 3/0/1i · `fix_wire2_live` 3/0 · `walkreal_07000001_live` 1/2 (the known escort
+  `fix_ladder_live` 3/0/1i · `fix_wire2_live` 3/0 · `fix_camera_exact_math` 1/1 · nf-game lib 175/175 ·
+  `walkreal_07000005_live` 0/2i (parked, per walkreal-a) · `walkreal_07000001_live` 1/2 (the known escort
   failure; passes with `NF_HOST_TRIG=1`).
 - Full suite: **not run** — the window; the chunks above cover both branches' own fail-first tests, the
   AI/bullet consumers and the movement walks. The next session must run the full suite on the final tree
