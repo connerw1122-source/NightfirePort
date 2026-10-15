@@ -12916,3 +12916,31 @@ docs/formats/vu1-microcode.md (per entry point: input qword layout, output to th
 addresses), and mark ps2gfx.md's "medium" batch assumptions confirmed / refuted / open. No
 renderer changes. Files: tools/ (the disassembler), docs/formats/vu1-microcode.md,
 docs/formats/ps2gfx.md, docs/GAPS.md (G-014).
+- (14:00-15:00) Setup: branch from origin/master 404d7dc1, pushed with the entry. Full suite started
+  in the background early (tools/test/suite.py). The microcode: .vutext (EE 0x241c80, file 0x13bb80,
+  0x2880 bytes) — first 0x10 bytes = an upload header (DMA tag word 0x7000025c + VIF MPG 0x4a000000),
+  program = .vutext+0x10 = micro qword 0 (692 qwords per the ovlytab chunk sizes; chunks map to VU
+  byte offsets 0x0/0x800/0x1000/0x1800/0x2000/0x0). The six .DVP.overlay sections are ALL ZERO bytes
+  [D verified] — no second program exists on the disc. tools/vu1dis.py written (opcode tables from
+  PCSX2's public DisVUmicro.h/DisVUops.h, cited; ILW/SQ addressing from mVUaddrFix/VUops.cpp: VU1 data
+  = quadword-indexed ×16, ILW lanes = u16 at bytes 0/2/4/6; decoder self-tested against hand-built
+  encodings).
+- (15:00-15:15) The read (all [M], addresses = micro qwords): MSCALF 0 → 0x000 (B 0x034: vi14 = 0x400
+  = clip-enable, BAL 0x24f = JR vi01 setup), MSCALF 2 → 0x002 (same minus vi14); both set vi02 = 2 and
+  E; per-batch MSCNT resumes the dispatch loop 0x01e/0x03f (control ptr at data (vi02+20), jump table =
+  data16[vi01+6] + data16[22], JR), handlers return to the XGKICK block (0x027/0x06c), vi02 += 15, E.
+  Transform: vf20 = vf01..vf04 (data 0-3) · pos; DIV Q = 1/w; position out = FTOI4(p·Q); ST out =
+  LQIxy(B+0xc7+i)·Q with output Q = 1.0 (vf17.zw = (1,1)) — the ST·Q mechanism, port's direct-UV
+  confirmed. Clip: 3 verts/iter CLIP + FCAND 0x3ffff, AND/OR masks → trivial reject (0x0a2: NLOOP 0,
+  XGKICK, E) / pass-through (0x06c); edge interpolation = MR32 rolls + DIV Q + ABS, w forced 0
+  (MFIRw vf27, vi00); 5 plane masks 0x800/0x400/0x200/0x100/0x80 drive the emitters; output NLOOP
+  counter vi11 written via ISW.w (0x099); output = double-buffered data 0x25/0x3e (selector toggled at
+  0x1c5-0x1d0, init by entry-0's continuation 0x039-0x03d), one XGKICK per batch. No lighting anywhere
+  in the read paths. Normals/RGBA ride the in-place rewritten batch (stride-3 record walk confirmed at
+  0x26f/0x27e; UV at B+0xc7 confirmed).
+- (15:15) Docs: docs/formats/vu1-microcode.md (new), ps2gfx.md confidence updates (entries/UV/lighting
+  → confirmed; normal w byte stays medium), GAPS.md G-014 marked done-with-remainder. Open: handlers
+  0x2e0-0x50e (~40%: the w-flag consumption, the skinning palette walk at 0x4f4-0x50c, 14 lower-op
+  words 0x810273ff-class the public tables lack — LQD-like, in the skin-dispatch save/restore around
+  the 0x24f JR-vi01 trampoline). Live checks listed in the doc (5 PCSX2 items; no nf-view spots — no
+  renderer changes).
