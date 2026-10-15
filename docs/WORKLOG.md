@@ -12024,3 +12024,11 @@ Work Log:
 - Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
+---
+Task ID: 109c-fix-remote-mine-play
+Agent: remote-mine-play worker
+Task: fix-remote-mine-play — playtest 1014-1725 (07000005, --give 0x37,0x38): the remote mine 0x37 bounces instead of sticking on contact (the game: +0x70 & 0x100 [L], like the satchel/hat), and the detonator 0x38 is bound to the watch/gadget cycle instead of the mine's own alternate fire / mode press (Player_WeaponInitBullet 0x1a4bf0's +0x68 & 0x20000 arm). Tests through the real input path (Sim::step_bond + the Input lib.rs builds), shown failing on master first.
+
+Work Log:
+- (01:07-01:12 UTC) Branch s/fix-remote-mine-play created from origin/master 2ee3f2b8 and pushed. Setup reused (repo, work/, ISO, nf-queue).
+- (01:12+) Decompile round next: the 0x37/0x38 weapon records, the 0x1a4bf0 init arms, the +0x70 stick flags, the watch/gadget cycle reader.
