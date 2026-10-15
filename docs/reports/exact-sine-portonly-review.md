@@ -134,3 +134,10 @@ PCSX2 (07000005, the corridor with the SG5 guard, or any level with a visible gu
    offsets and record where the grab stops triggering. Expected (game): the boundary follows the authored
    rails/rungs geometry (the celglist triangles), not a uniform ±(0.4 + capsule_radius) corridor about the
    ladder axis — if the grab boundary hugs the geometry unevenly, the port's analytic column diverges there.
+
+## ntfy failed
+
+All three fallbacks failed with the topic's daily quota:
+- `curl`: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- `python3 urllib`: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- `wget --post-data`: no output (silent 429).
