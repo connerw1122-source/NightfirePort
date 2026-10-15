@@ -12912,3 +12912,9 @@ the binaries the window fit.)
   5/0, fix_weapon_modes_live 6/0, fix_samurai_fire_live 3/0, fix_weapons_all_live 4/0,
   weapon_switch_live 2/0 (nf-game), tuning_live 2/0 (nf-game). The fast suite on the final tree
   running (started 12:58); fix_switch_after_cold_load_live passed inside it as well.
+
+## fix-search-cover-g028 (2026-10-15, branch s/fix-search-cover-g028) — started 14:47 UTC
+- Branch cut from origin/master cf4f33cd. Task G-028 (part of G-026): guard cover-node selection
+  (NDrone2_*Cover* / Drone_FindCover*), scoring, enter/leave transitions, tick order vs vision;
+  document in docs/systems/drone-ai.md, port into cover.rs + drone.rs hook, NF_ISO test
+  (07000005 courtyard / 07000012).
