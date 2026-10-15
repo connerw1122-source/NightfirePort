@@ -1595,6 +1595,129 @@ impl FrontEnd {
         }
     }
 
+    // ── PC mouse support (the user, 2026-10-15: "mouse support for menu navigation") ──
+    // Every page keeps the keyboard's actions; the mouse maps onto them: hovering a list row selects it, a left click
+    // on the selected row (or anywhere on single-action pages) is Confirm, a click on a wheel's neighbour row scrolls
+    // the wheel to it, the ◀ ▶ columns of a value row are Left / Right, right click is Back and the wheel scrolls
+    // (Up / Down). Coordinates are the menu's 640×480 space.
+
+    /// The row cursor of the current page (the MP wheels keep their own counters).
+    fn page_row(&self) -> usize {
+        match self.page {
+            Page::MpScenario => self.mp_scenario_row, Page::MpMap => self.mp_map_row, Page::MpOptions => self.mp_options_row,
+            Page::MpBots => self.mp_bots_row, Page::MpBotChoose => self.mp_bot_char, _ => self.cursor,
+        }
+    }
+    fn set_page_row(&mut self, r: usize) {
+        match self.page {
+            Page::MpScenario => self.mp_scenario_row = r, Page::MpMap => self.mp_map_row = r, Page::MpOptions => self.mp_options_row = r,
+            Page::MpBots => self.mp_bots_row = r, Page::MpBotChoose => self.mp_bot_char = r, _ => self.cursor = r,
+        }
+    }
+    /// The value-list rows' y (640 space) on the list pages, or None off them.
+    fn list_rows_y(&self) -> Option<Vec<f32>> {
+        Some(match self.page {
+            Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().iter().map(|r| r.y).collect(),
+            Page::MpRules => vec![191.0, 223.0],
+            Page::MpPlayerMods => vec![143.0, 175.0, 207.0, 239.0, 271.0],
+            Page::MpEnviroMods => vec![143.0, 177.0, 209.0, 241.0, 273.0],
+            Page::MpBotSetup => (0..8).map(|i| 85.0 + 32.0 * i as f32).collect(),
+            _ => return None,
+        })
+    }
+    fn is_wheel_page(&self) -> bool {
+        matches!(self.page, Page::Codename | Page::Difficulty | Page::MissionSelect | Page::Dossier | Page::CnSelect | Page::CnMenu
+            | Page::MpScenario | Page::MpMap | Page::MpOptions | Page::MpBots | Page::MpBotChoose)
+    }
+
+    /// The pointer moved to (x, y): hovering a list row selects it. Returns whether the selection changed.
+    pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
+        let pick = |rows: &[(f32, f32)], x0: f32, x1: f32| rows.iter().position(|&(a, b)| y >= a && y < b && x >= x0 && x < x1);
+        let before = (self.page_row(), self.confirm_sel);
+        match self.page {
+            Page::Main => if let Some(i) = pick(&(0..3).map(|i| (262.0 + 32.0 * i as f32, 290.0 + 32.0 * i as f32)).collect::<Vec<_>>(), 167.0, 473.0) { self.cursor = i; },
+            Page::Pause if self.confirming_restart || self.confirming_quit => {
+                if let Some(i) = pick(&[(220.0, 254.0), (254.0, 288.0)], 238.0, 403.0) { self.confirm_sel = i; }
+            }
+            Page::Pause if self.pause_tab == 0 => {
+                if let Some(i) = pick(&(0..3).map(|i| (192.0 + 33.5 * i as f32, 225.5 + 33.5 * i as f32)).collect::<Vec<_>>(), 153.0, 487.0) { self.cursor = i; }
+            }
+            Page::Results if self.outcome == Outcome::Failed => {
+                if let Some(i) = pick(&[(200.0, 235.0), (235.0, 273.0)], 197.0, 443.0) { self.cursor = i; }
+            }
+            _ => {
+                if let Some(ys) = self.list_rows_y() {
+                    let rows: Vec<(f32, f32)> = ys.iter().map(|&y0| (y0 - 6.0, y0 + 22.0)).collect();
+                    if let Some(i) = pick(&rows, 40.0, 600.0) { self.cursor = i; }
+                }
+            }
+        }
+        let changed = (self.page_row(), self.confirm_sel) != before;
+        if changed {
+            // The pointer landing on a different control is the game's cursor-over-focus change:
+            // MENU_SOUND 7 [M Page_Update 0x21edc8:38-53 — Menu_GetControl picks the control under
+            // the cursor sprite, and the focus change plays when both controls sit on one page].
+            self.focus_moved();
+        }
+        changed
+    }
+
+    /// A left click at (x, y), as the keyboard action it stands for. Returns whether anything happened.
+    pub fn mouse_click(&mut self, x: f32, y: f32) -> bool {
+        // Hover first, so a click lands on the row under the pointer.
+        self.mouse_move(x, y);
+        // The pause tabs [L page 0x4000004b's four type-1 controls at y 120].
+        if self.page == Page::Pause && !(self.confirming_restart || self.confirming_quit) && (110.0..140.0).contains(&y) {
+            let tabs = [(84.0, 191.0), (199.0, 331.0), (339.0, 457.0), (465.0, 555.0)];
+            if let Some(t) = tabs.iter().position(|&(a, b)| x >= a && x < b) {
+                if t != self.pause_tab {
+                    self.pause_tab = t;
+                    if t == 1 { self.pause_objectives_sel = self.pause_objectives.len().saturating_sub(1); }
+                }
+                return true;
+            }
+        }
+        // Wheels: a neighbour row scrolls the wheel to it, the centre row confirms.
+        if self.is_wheel_page() && x >= 290.0 {
+            for (slot, &wy) in WHEEL_Y.iter().enumerate() {
+                if y >= wy - 6.0 && y < wy + 23.0 {
+                    let d = slot as i32 - 2;
+                    if d == 0 { return self.action(Action::Confirm); }
+                    let r = self.page_row() as i32 + d;
+                    if r >= 0 && (r as usize) < self.rows() { self.set_page_row(r as usize); return self.focus_moved(); }
+                    return false;
+                }
+            }
+            return false;
+        }
+        // Value rows: the ◀ / ▶ columns step the value; the rest of an action row confirms.
+        if let Some(ys) = self.list_rows_y() {
+            if !ys.iter().any(|&y0| y >= y0 - 6.0 && y < y0 + 22.0) { return false; }
+            let is_action = matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv)
+                && self.opt_rows().get(self.cursor).is_some_and(|r| r.kind == OptKind::Action);
+            if is_action { return self.action(Action::Confirm); }
+            if (340.0..400.0).contains(&x) { return self.action(Action::Left); }
+            if (400.0..600.0).contains(&x) { return self.action(Action::Right); }
+            // A click on the row outside the value columns: the game's ✕ over the row's control
+            // blips before the handler decides [M Button_Update 0x1ef948:106].
+            self.sfx(MENU_SOUND_SELECT, SFX_MENU_TICK);
+            return true;
+        }
+        match self.page {
+            // Pages whose rows are hovered: only a click ON a row confirms.
+            Page::Main => if (167.0..473.0).contains(&x) && (262.0..358.0).contains(&y) { return self.action(Action::Confirm); },
+            Page::Pause if self.confirming_restart || self.confirming_quit => if (238.0..403.0).contains(&x) && (220.0..288.0).contains(&y) { return self.action(Action::Confirm); },
+            Page::Pause if self.pause_tab == 0 => if (153.0..487.0).contains(&x) && (192.0..293.0).contains(&y) { return self.action(Action::Confirm); },
+            Page::Pause => {}
+            Page::Results if self.outcome == Outcome::Failed => if (197.0..443.0).contains(&x) && (200.0..273.0).contains(&y) { return self.action(Action::Confirm); },
+            // The letter grid and the MP setup panels keep the keyboard (typing / the per-agent steps).
+            Page::CnName | Page::MpSetup => {}
+            // Single-action pages (the title, the results page, the credits, the Join panel, the summary): a click is ✕.
+            _ => return self.action(Action::Confirm),
+        }
+        false
+    }
+
     /// The option page's rows (empty off the option pages).
     pub fn opt_rows(&self) -> &'static [OptRow] {
         match self.page { Page::CnAdvanced => ADV_ROWS, Page::CnMp => MP_ROWS, Page::CnAv => AV_ROWS, _ => &[] }
@@ -2219,7 +2342,7 @@ impl FrontEnd {
         // grid cursor; elsewhere they keep the old Back / Confirm meaning. The MP wheels
         // (scenario/map/options/bots) keep the remap.
         let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv | Page::CnName
-            | Page::MpJoin | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup | Page::ScreenAdjust)) {
+            | Page::MpJoin | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup | Page::ScreenAdjust | Page::Pause)) {
             (Action::Left, false) => Action::Back,
             (Action::Right, false) => Action::Confirm,
             (a, _) => a,
@@ -2669,7 +2792,12 @@ impl FrontEnd {
                     }
                 }
                 match a {
-                    Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
+                    // PC: ← / → switch tabs (the hint's ~H Next is the D-pad left/right on the pad).
+                    Action::Left | Action::Right => {
+                        self.pause_tab = if a == Action::Right { (self.pause_tab + 1) % 4 } else { (self.pause_tab + 3) % 4 };
+                        if self.pause_tab == 1 { self.pause_objectives_sel = self.pause_objectives.len().saturating_sub(1); }
+                        return true;
+                    }
                     // ~H Next: the tab cycle [L the page hint 0x201 "~A Select ~V Scroll ~H Next";
                     // the four tabs are the page's type-1 controls]. Every entry re-populates the
                     // tab — the OBJECTIVES list re-selects its LAST row (msg 0x1d = numVis−1
@@ -4041,29 +4169,21 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
                 // Behind the labels (a higher layer draws first); a translucent dark band in the capture.
                 h.ndc_solid(-1, v, [0.06, 0.02, 0.02, 0.5]);
             }
-            let yellow = gs(0xfec43e, 0xff);
-            for (dy, up) in [(-8.0f32, true), (8.0, false)] {
-                let (cx, cy) = (96.0f32, 169.0 + dy);
-                let (a, b, d) = if up { ((cx - 9.0, cy + 6.0), (cx + 9.0, cy + 6.0), (cx, cy - 6.0)) } else { ((cx - 9.0, cy - 6.0), (cx + 9.0, cy - 6.0), (cx, cy + 6.0)) };
-                let q = |p: (f32, f32)| HudVertex { p: h.ndc(Anchor::Centre, mx(p.0), my(p.1)), uv: [0.03, 0.03], c: yellow };
-                let v = [q(a), q(b), q(d), q(a), q(d), q(d)];
-                h.ndc_solid(-3, v, yellow);
-            }
+            // PC port: the tab lists the port's keyboard + mouse bindings (the keys lib.rs reads) under the game's own
+            // action labels, instead of the PlayStation pad styles (the user, 2026-10-15: "the controller layout is
+            // for Playstation controllers. But this is a PC port"). The game's style spinner and Y-Axis row have no
+            // keyboard meaning and are not drawn.
             let left_label = |h: &mut Hud, s: &str, x: f32, yc: f32, c: [f32; 4]| h.text(Anchor::Centre, font, -2, s, mx(x), my(yc + 6.0), false, c, false);
-            left_label(h, &lbl(0x100_019a, "Classic Bond"), 114.0, 169.0, bright);
-            left_label(h, &lbl(0x492, "Y-Axis"), 404.0, 168.0, cream);
-            left_label(h, &lbl(0x3bd, "Normal"), 466.0, 168.0, gs(0x694646, 0xff));
-            // The rows: PCSX2 07000005 (2026-10-15) — row centres 199 + 21·i, the left column's icons at x 98, the
-            // right column's at 329.
-            let rows: [(&str, u32, &str, u32); 6] = [
-                ("~A", 0x100_01a7, "~B", 0x100_01a4), ("~Y", 0x100_01a3, "~X", 0x100_01a5), ("~C", 0x100_019c, "~D", 0x100_01a1),
-                ("~L", 0x100_019d, "~R", 0x100_01a2), ("~F", 0x100_01a0, "~E", 0x100_01a8), ("~H", 0x100_019f, "~V", 0x100_019e)];
-            for (i, (g0, l0, g1, l1)) in rows.iter().enumerate() {
-                let y = 199.0 + i as f32 * 21.0 - 9.0;
-                glyph_row(h, font, &format!("{g0} {}", lbl(*l0, "")), 98.0, y, cream);
-                glyph_row(h, font, &format!("{g1} {}", lbl(*l1, "")), 329.0, y, cream);
+            left_label(h, "Keyboard & Mouse", 104.0, 169.0, bright);
+            for (i, (key, label, fb)) in PC_CONTROLS.iter().enumerate() {
+                let (col, row) = (i / 7, i % 7);
+                let x = if col == 0 { 98.0 } else { 329.0 };
+                let yc = 199.0 + row as f32 * 21.0;
+                draw_keycap(h, font, KeyCap::Text(key), mx(x), my(yc), cream);
+                let kw = keycap_w(font, KeyCap::Text(key));
+                let name = if *label == 0 { fb.to_string() } else { lbl(*label, fb) };
+                h.text(Anchor::Centre, font, -2, &name, mx(x) + kw + mx(6.0), my(yc + 6.0), false, cream, false);
             }
-            glyph_row(h, font, &format!("~T {}", lbl(0x100_01ce, "Vision Mode")), 98.0, 199.0 + 6.0 * 21.0 - 9.0, cream);
         }
         // fix-pause-menu2: the SCORE tab — the stats list box (98,147,445×190) [L the d1=8 control]
         // filled exactly as the game's msg-0x4e case-3 arm does [M 0x204408:447-498]: the
@@ -4178,7 +4298,9 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
         _ => "~A Select  ~V Scroll  ~H Next",
     };
     // Dark words without a shadow on the bright bar (PCSX2 m21–m24, 2026-10-15).
-    hint_row_s(h, font, &hint_wrap(lang, hint_id, hint_fb), 45.0, 341.0 + 2.5, gs(0x0d0904, 0xff), None, false); // middle 352 (m21–m27)
+    // PC: the CONTROLS tab's hint is the keyboard's (the pad's "○ Invert" has no meaning here).
+    let hint_text = if tab == 2 && !(fe.confirming_restart || fe.confirming_quit) { "~H Next  ~B Back".to_string() } else { hint_wrap(lang, hint_id, hint_fb) };
+    hint_row_s(h, font, &hint_text, 45.0, 341.0 + 2.5, gs(0x0d0904, 0xff), None, false); // middle 352 (m21–m27)
 }
 
 /// fix-pause-menu2: a menu-space text row with the specialchar glyphs inline (the "~A Label" rows of
@@ -4598,6 +4720,86 @@ fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
 
 /// `hint_row` with the text shadow switchable (the pause bar's dark words have none).
 #[allow(clippy::too_many_arguments)]
+/// The port's keyboard + mouse bindings as the pause CONTROLS tab lists them: (key, the game's action label — 0 for a
+/// port-only action, the fallback text). Keep in step with the key handling in lib.rs (`KeyCode::*` reads and the
+/// mouse buttons) — W/S/A/D move, the mouse looks, left button fires, right button zooms, Space jumps, C/Ctrl
+/// crouch, R reloads, E acts, B toggles the alt-fire mode, Q/the wheel cycle weapons, G cycles gadgets, Esc pauses.
+pub const PC_CONTROLS: [(&str, u32, &str); 13] = [
+    ("W A S D", 0x100_01ad, "Move/Strafe"), ("Mouse", 0x100_01b9, "Look/Turn"), ("L Click", 0x100_01a2, "Fire"),
+    ("R Click", 0, "Aim / Zoom"), ("Space", 0x100_01a4, "Jump"), ("C", 0x100_019c, "Crouch"), ("R", 0, "Reload"),
+    ("E", 0, "Action"), ("B", 0x100_01a3, "Alt. Fire"), ("Wheel / Q", 0, "Cycle Weapon"),
+    ("G", 0x100_019f, "Cycle Gadget"), ("1 2 3", 0, "Select Weapon"), ("Esc", 0x100_01aa, "Pause"),
+];
+
+/// The PC port's key for a menu hint token: the game's ~A/~B/... button glyphs are PlayStation pad buttons
+/// (`specialchar` 0x2dd8d8); on PC the hint bars name the keyboard key `key_action` maps to that action instead (the
+/// user, 2026-10-15: "the controller layout is for Playstation controllers. But this is a PC port"). The objective
+/// bullets ~I/~J are not buttons and keep the game's glyphs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyCap { Text(&'static str), UpDown, LeftRight }
+pub fn pc_key(token: char) -> Option<KeyCap> {
+    Some(match token {
+        'A' => KeyCap::Text("Enter"),     // ✕ — Action::Confirm (Enter / Space)
+        'B' => KeyCap::Text("Esc"),       // △ — Action::Back (Esc / Backspace)
+        'V' => KeyCap::UpDown,            // the D-pad scroll — the arrow keys / W S
+        'H' => KeyCap::LeftRight,         // the D-pad left/right — change a value / next tab
+        'Y' => KeyCap::Text("Tab"),       // □ — Action::Side (Tab / E)
+        'X' => KeyCap::Text("Del"),       // ○ — delete / invert
+        'S' => KeyCap::Text("Enter"),     // Start
+        _ => return None,
+    })
+}
+const KEYCAP_SCALE: f32 = 0.8;
+fn keycap_w(font: &nf_formats::hud::Font, cap: KeyCap) -> f32 { keycap_w_k(font, cap, 1.0) }
+fn keycap_w_k(font: &nf_formats::hud::Font, cap: KeyCap, k: f32) -> f32 {
+    match cap {
+        KeyCap::Text(t) => (font.layout(t, 0.0, 0.0).1 * KEYCAP_SCALE + mx(10.0)) * k,
+        KeyCap::UpDown | KeyCap::LeftRight => mx(22.0) * k,
+    }
+}
+/// A keyboard keycap at screen x `x` (its left edge), centred on screen y `ymid`: a dark key face with a light rim
+/// and the key's name (or arrows) on it.
+fn draw_keycap(h: &mut Hud, font: &nf_formats::hud::Font, cap: KeyCap, x: f32, ymid: f32, c: [f32; 4]) { draw_keycap_k(h, font, cap, x, ymid, c, 1.0) }
+fn draw_keycap_k(h: &mut Hud, font: &nf_formats::hud::Font, cap: KeyCap, x: f32, ymid: f32, c: [f32; 4], k: f32) {
+    let w = keycap_w_k(font, cap, k);
+    let hh = my(18.0);
+    let (x0, y0, x1, y1) = (x, ymid - hh / 2.0, x + w, ymid + hh / 2.0);
+    let rect = |h: &mut Hud, a: (f32, f32), b: (f32, f32), col: [f32; 4]| {
+        let (pa, pb) = (h.ndc(Anchor::Centre, a.0, a.1), h.ndc(Anchor::Centre, b.0, b.1));
+        let q = |p: [f32; 2]| HudVertex { p, uv: [0.0, 0.0], c: col };
+        h.ndc_solid(-2, [q([pa[0], pa[1]]), q([pb[0], pa[1]]), q([pb[0], pb[1]]), q([pa[0], pa[1]]), q([pb[0], pb[1]]), q([pa[0], pb[1]])], col);
+    };
+    // The key face is always dark with a cream label; the rim takes the row's colour (dark on the pause page's bright
+    // bar, cream elsewhere).
+    let rim = [c[0], c[1], c[2], c[3] * 0.85];
+    let face = gs(0x0e0a08, 0xe0);
+    let c = gs(CREAM, 0xff);
+    let t = mx(1.2);
+    rect(h, (x0, y0), (x1, y1), rim);
+    rect(h, (x0 + t, y0 + t), (x1 - t, y1 - t), face);
+    match cap {
+        KeyCap::Text(label) => {
+            let lw = font.layout(label, 0.0, 0.0).1 * KEYCAP_SCALE * k;
+            h.text_scaled(Anchor::Centre, font, -2, label, x0 + (w - lw) / 2.0, ymid + my(7.5 * KEYCAP_SCALE), false, c, false, KEYCAP_SCALE * k);
+        }
+        KeyCap::UpDown | KeyCap::LeftRight => {
+            let (cx, cy, a) = ((x0 + x1) / 2.0, ymid, my(4.0));
+            let tri = |h: &mut Hud, p: [(f32, f32); 3]| {
+                let q = |pt: (f32, f32), h: &Hud| HudVertex { p: h.ndc(Anchor::Centre, pt.0, pt.1), uv: [0.0, 0.0], c };
+                let v = [q(p[0], h), q(p[1], h), q(p[2], h), q(p[0], h), q(p[2], h), q(p[2], h)];
+                h.ndc_solid(-2, v, c);
+            };
+            if cap == KeyCap::UpDown {
+                tri(h, [(cx - a, cy - my(1.0)), (cx + a, cy - my(1.0)), (cx, cy - my(1.0) - a)]);
+                tri(h, [(cx - a, cy + my(1.0)), (cx + a, cy + my(1.0)), (cx, cy + my(1.0) + a)]);
+            } else {
+                tri(h, [(cx - mx(1.5), cy - a), (cx - mx(1.5), cy + a), (cx - mx(1.5) - a, cy)]);
+                tri(h, [(cx + mx(1.5), cy - a), (cx + mx(1.5), cy + a), (cx + mx(1.5) + a, cy)]);
+            }
+        }
+    }
+}
+
 fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y640: f32, c: [f32; 4], left: Option<f32>, shadow: bool) {
     // One pass collects each item's ink span relative to the row's pen origin (text glyphs sit at
     // [p0.x − gw0/2, plast.x + gwlast/2] — the per-glyph quads centre at their pen x — and an icon's
@@ -4622,6 +4824,16 @@ fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, 
             // A word's trailing spaces don't advance the pen far enough before the next icon: PCSX2 leaves ~10 units
             // from the word's last ink to the icon (07000005 fail menu, 2026-10-15).
             adv_sum = (adv_sum + nat).max(adv_sum + b + mx(10.0));
+        }
+        let tok = after.chars().nth(1).unwrap_or(' ');
+        if let Some(cap) = pc_key(tok) {
+            let iw = keycap_w(font, cap);
+            items.push(Item::Icon { tex: 0, uv: [0.0; 4], w: iw, hh: my(18.0), ink: (adv_sum, adv_sum + iw) });
+            after_icon = Some(adv_sum + iw);
+            adv_sum += iw + mx(6.0);
+            rest = &after[2.min(after.len())..];
+            if rest.starts_with(' ') { rest = &rest[1..]; adv_sum += 4.0; }
+            continue;
         }
         match after.chars().nth(1).and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
             Some(&(_, tex, u, v, w, hh, adv)) => {
@@ -4651,7 +4863,9 @@ fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, 
     let ink_hi = items.iter().map(|i| match i { Item::Text { ink, .. } | Item::Icon { ink, .. } => ink.1 }).fold(f32::MIN, f32::max);
     // The bar's centre: ctrl.x + ctrl.w/2 = 50 + 540/2 = 320 in 640-space [L the parsed bars].
     let bar_c = mx(x640 + 270.0);
-    let pen0 = match left { Some(lx) => mx(lx) - ink_lo, None => bar_c - (ink_lo + ink_hi) / 2.0 };
+    // A centred row wider than its 540-unit bar shrinks to fit (the PC keycaps are wider than the pad icons).
+    let k = if left.is_none() && ink_hi - ink_lo > mx(530.0) { mx(530.0) / (ink_hi - ink_lo) } else { 1.0 };
+    let pen0 = match left { Some(lx) => mx(lx) - ink_lo, None => bar_c - (ink_lo + ink_hi) * k / 2.0 };
     if std::env::var_os("NF_DEBUG_HINT").is_some() { eprintln!("[hint] text={text:?} items={} ink=({ink_lo},{ink_hi}) bar_c={bar_c} pen0={pen0}", items.len()); }
     // Label_Update centres the label vertically in its 18-px control [M 0x218cb8:202-206]: PCSX2 puts every hint
     // row's centre ~y + 9 (main menu 430, pause/fail 350 of 480 — 2026-10-13/15 captures); the port's text pen
@@ -4668,12 +4882,22 @@ fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, 
         let (before, after) = rest.split_at(t);
         if !before.is_empty() {
             if let Item::Text { x, .. } = &items[ti.min(items.len() - 1)] { seg_pen = *x; }
-            let x = pen0 + seg_pen;
-            h.text(Anchor::Centre, font, -2, before, x, y, false, c, shadow);
+            let x = pen0 + seg_pen * k;
+            h.text_scaled(Anchor::Centre, font, -2, before, x, y, false, c, shadow, k);
             let (placed, nat) = font.layout(before, 0.0, 0.0);
             let ink_end = placed.last().map_or(nat, |pl| pl.x + font.glyphs[pl.glyph].w as f32);
             seg_pen = (seg_pen + nat).max(seg_pen + ink_end + mx(10.0));
             ti += 1;
+        }
+        let tok = after.chars().nth(1).unwrap_or(' ');
+        if let Some(cap) = pc_key(tok) {
+            if let Item::Icon { ink, .. } = &items[ti.min(items.len() - 1)] { seg_pen = ink.0; }
+            draw_keycap_k(h, font, cap, pen0 + seg_pen * k, y - my(6.5), c, k);
+            seg_pen += keycap_w(font, cap) + mx(6.0);
+            ti += 1;
+            rest = &after[2.min(after.len())..];
+            if rest.starts_with(' ') { rest = &rest[1..]; seg_pen += 4.0; }
+            continue;
         }
         match after.chars().nth(1).and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
             Some(&(_, tex, u, v, w, hh, adv)) => {
@@ -4690,7 +4914,7 @@ fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, 
                 let ic = if shadow { c } else { gs(0x7f7f7f, 0xff) };
                 // Centred on the words' middle (the pen y sits ~6.5 below it): the 20-unit buttons land where they did, the small
                 // objective bullets level with their text (PCSX2 m22).
-                h.quad(Anchor::Centre, -2, tex, 0, pen0 + seg_pen, y - my(6.5) - ih / 2.0, iw, ih, [u, v, w, hh], (false, false), ic);
+                h.quad(Anchor::Centre, -2, tex, 0, pen0 + seg_pen * k, y - my(6.5) - ih * k / 2.0, iw * k, ih * k, [u, v, w, hh], (false, false), ic);
                 let _ = adv;
                 seg_pen += iw + mx(6.0);
                 ti += 1;
@@ -4702,7 +4926,7 @@ fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, 
     }
     if !rest.is_empty() {
         if let Some(Item::Text { x, .. }) = items.last() { seg_pen = *x; }
-        h.text(Anchor::Centre, font, -2, rest, pen0 + seg_pen, y, false, c, shadow);
+        h.text_scaled(Anchor::Centre, font, -2, rest, pen0 + seg_pen * k, y, false, c, shadow, k);
     }
 }
 
