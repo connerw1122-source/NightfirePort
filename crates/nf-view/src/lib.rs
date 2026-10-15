@@ -2651,7 +2651,12 @@ pub fn run() -> Result<()> {
             // zoom overlays (the overlay draws only while the key is held; `Player_Zoom` 0x1a1a70 raises the
             // zoom on the held input — the same path the fix-zoom-overlays tests drive).
             let zoom_hold = args.iter().any(|a| a == "--zoom-hold");
-            let shot_input = nf_game::player::Input { aiming: zoom_hold, zoom: zoom_hold, ..Default::default() };
+            // fix-aims20-lights-render: hold a strafe stick deflection every tick — the analog half of the
+            // idle-counter reset (DAT_002a3a1c [M 0x17ee88:80-84]), so the aims lights' gates evaluate on a
+            // moving Bond exactly as the main agent's strafing render does, instead of the dead-still all-off
+            // state 0.75 s in.
+            let strafe_hold = args.iter().any(|a| a == "--strafe-hold");
+            let shot_input = nf_game::player::Input { aiming: zoom_hold, zoom: zoom_hold, strafe: if strafe_hold { 1.0 } else { 0.0 }, ..Default::default() };
             // `--channels`: every switch channel on first (as K).
             if args.iter().any(|a| a == "--channels") { for c in 1..=255 { sim.drones.set_channel(c) } }
             // `--bond x,y,z`: Bond starts exactly there (in the air he falls), instead of the level start.
@@ -2677,6 +2682,32 @@ pub fn run() -> Result<()> {
                 None => Vec::new(),
             };
             if let Some(w) = draw { sim.step_bond(nf_game::player::Input { switch_to: Some(w), ..shot_input }, false, false, false); }
+            // fix-aims20-lights-render: the headless `--shot` path honours `--give` too — the same equip +
+            // switch_request the window path applies below (the shot path returned before that block, so
+            // `nf-view <iso> <level> --dev --give 0x1a --shot …` rendered the level's starting gun and the
+            // main agent could never get the AIMS-20's view model into a headless render). Runs BEFORE the
+            // ticks, so the draw anim completes and the aims lights' gates evaluate on the held 0x1a/0x1b.
+            if let Some(list) = args.iter().position(|a| a == "--give").and_then(|i| args.get(i + 1)) {
+                let wd = sim.weapons.clone();
+                let mut first = None;
+                for t in list.split(',') {
+                    let t = t.trim();
+                    let id = if let Some(h) = t.strip_prefix("0x") { usize::from_str_radix(h, 16).ok() } else { t.parse().ok() };
+                    let Some(id) = id.filter(|&i| i < 0x72) else { eprintln!("--give: bad id {t:?}"); continue };
+                    let rounds = wd.clip_size(id).max(1);
+                    if sim.drones.inventory.equip_weapon(&wd, id, rounds, true) {
+                        sim.drones.inventory.equip_ammo(&wd, id, (rounds * 3).max(rounds));
+                        first.get_or_insert(id as u8);
+                        eprintln!("--give: equipped {id:#04x}");
+                    } else if sim.drones.inventory.owned.get(id).copied().unwrap_or(false) {
+                        first.get_or_insert(id as u8);
+                        eprintln!("--give: {id:#04x} already owned — drawing it");
+                    } else {
+                        eprintln!("--give: {id:#04x} refused (no first-person model)");
+                    }
+                }
+                if let Some(id) = first { sim.gun.switch_request = id; }
+            }
             for t in 1..=time as u32 {
                 if skip_cuts && sim.disabled { sim.drones.scripts.skip_request = true; }
                 // `--mode 70,90`: the fire-mode press (the B key) on those ticks.
