@@ -220,28 +220,30 @@ fn the_results_pages_split_complete_from_failed() {
     assert_eq!(fe.page, Page::MissionSelect);
     assert_eq!(fe.flow.page, 0x4000_001c);
     assert_eq!(fe.requested_level, None, "a page change, not a level load [M 0x208e78:43]");
-    // The FAILED page is P_ENDMISSION 0x216618: its three arms stay [M :19-27].
+    // The FAILED page 0x40000042: its list holds TWO items — REPLAY (value 0) and QUIT (value 2) [L the 07000005
+    // mission menu-def]; P_ENDMISSION reads the item VALUE (msg 0x35) [M 0x216618:12-26], so the BaseMap arm 1 is
+    // unreachable from this page. PCSX2 07000005 (2026-10-15): REPLAY / QUIT.
     fe.mission_ended(Outcome::Failed, Stats::default());
-    assert_eq!(fe.rows(), 3);
-    // Cursor 0 = restart the CURRENT level, warm, on the entry checkpoint
+    assert_eq!(fe.rows(), 2);
+    assert_eq!(fe.page_id(), menu::PAGE_FAIL_MENU, "the fail menu is its own page (no aux movie)");
+    assert_eq!(menu::aux_movie_for(fe.page_id()), 0);
+    // Row 0 (REPLAY, value 0) = restart the CURRENT level, warm, on the entry checkpoint
     // [M 0x216618:19-21: ResetMap_LevelToLoad(GameState._12_4_, 1, 1) + Player_RamLoad(Bond, 1)].
     fe.cursor = 0;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0005));
-    assert!(fe.flow.warm_reset, "row 0 is the warm arm [M 0x216618:20]");
-    // Cursor 1 = restart the mission from its first map, cold
-    // [M 0x216618:15-17: ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)].
+    assert!(fe.flow.warm_reset, "REPLAY is the warm arm [M 0x216618:20]");
+    // Row 1 (QUIT, value 2) = quit to the menu [M 0x216618's value-2 arm].
     fe.mission_ended(Outcome::Failed, Stats::default());
     fe.cursor = 1;
     assert!(fe.action(Action::Confirm));
-    assert_eq!(fe.requested_level, Some(0x0700_0005));
-    assert!(!fe.flow.warm_reset, "row 1 is the cold arm [M 0x216618:16]");
-    // Cursor 2 = quit to the menu [M 0x216618's level==2 arm].
-    fe.mission_ended(Outcome::Failed, Stats::default());
-    fe.cursor = 2;
-    assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL));
     assert_eq!(fe.flow.page, 0x4000_001c);
+    // Sister: the cursor wraps over the two rows.
+    fe.mission_ended(Outcome::Failed, Stats::default());
+    fe.cursor = 0;
+    fe.action(Action::Down); assert_eq!(fe.cursor, 1);
+    fe.action(Action::Down); assert_eq!(fe.cursor, 0);
 }
 
 #[test]
@@ -323,7 +325,9 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
     let has = |page: u32, tex: u32| saw[&page].iter().any(|&t| t == tex);
     assert!(has(0x4000_0034, 0x0300_0074), "the title draws the full-screen art [M page 0x40000009 control 0x10000196]");
     assert!(has(0x4000_0025, 0x0300_00b3), "the codename page draws the panel [M page 0x40000025 control (50,53) TEX 0x030000b3]");
-    assert!(has(0x4000_0025, 0x0300_00bf), "the codename page draws the ring emblem [M control 0x10000103]");
+    // The ring 0x030000bf only masks the preview: PCSX2 shows no rim or square of its own (07000048 m06,
+    // 2026-10-15), so the port clips the preview to the disc and draws no ring quad.
+    assert!(!has(0x4000_0025, 0x0300_00bf), "the codename page draws no ring overlay (PCSX2 m06)");
     // The codename preview follows the cursor [M Menu_UpdateCodenameWheel 0x1f89f0:80-99 — the
     // create row 0x300013b, the default row 0x3000135; the page's static 0x030000b6 is the boot look].
     assert!(has(0x4000_0025, 0x0300_013b), "the codename page draws the create row's preview [M 0x1f89f0:80-99]");
@@ -338,7 +342,9 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
     // the page's static 0x030000c4 is the Gadgets row].]
     assert!(has(0x4000_002b, 0x0300_019b), "the dossier draws its Records row's preview [L table 0x2dfcd0]");
     assert!(has(0x4000_001c, 0x0300_016d), "the list pages draw the logo [M control (434,38,156×43) TEX 0x0300016d]");
-    assert!(has(0x4000_0023, 0x0300_014c), "the list pages draw the stamp [M control 0x10000224 TEX 0x0300014c]");
+    // The stamp control 0x10000224 (539,393, f1 0x2d) shows nothing in PCSX2's list pages (07000048 m06/m10/m12,
+    // 2026-10-15); the port's quad at (340,198) drew a ring arc across the description, so it is gone.
+    assert!(!has(0x4000_0023, 0x0300_014c), "the list pages draw no stamp ring (PCSX2 m10)");
     // The hint bars draw the game's own specialchar icon font [M specialchar 0x2dd8d8: every entry's
     // texture is 0x03000075] — not the 64×64 atlas 0x03000042 the port guessed before, and the ✕ is
     // the table's (235,1,19×19) tile, not the font's letter X.
@@ -772,8 +778,8 @@ fn the_footer_hints_are_centred_in_their_bars() {
     }
 }
 
-/// The header label centres in its (50,40,376×17) band [M the pages' header CONTROL records;
-/// Label_Update 0x218cb8:177-182/:202-206] — the old draw centred the text AT x=50, half off-screen.
+/// The header label starts at its (50,40,376×17) band's x: PCSX2 draws every header's ink from x 51 (07000048
+/// m06/m10/m12/m15, 2026-10-15) — the band-centred draw sat ~100 units right.
 #[test]
 fn the_page_headers_are_centred_in_their_bands() {
     let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
@@ -787,17 +793,16 @@ fn the_page_headers_are_centred_in_their_bands() {
             Some(match acc { Some((x0, x1)) => (x0.min(a), x1.max(b)), None => (a, b) })
         }).expect("the header draws");
         eprintln!("[hdr] {page:?} band {band:?} rows {:?}", rows.rows);
-        let centre = (band.0 + band.1) / 2.0;
-        let want = (50.0 + 376.0 / 2.0) * 512.0 / 640.0;   // 190.9 HUD
-        assert!((centre - want).abs() < 5.0, "{page:?}: header centre {centre}, want {want} (ctrl.x + ctrl.w/2 [M Label_Update])");
+        let want = 50.0 * 512.0 / 640.0;   // 40 HUD
+        assert!((band.0 - want).abs() < 3.0, "{page:?}: header starts at {}, want {want} (PCSX2: x 51/640)", band.0);
         // Sister: the header text is the page data's own LBL.
         let s = lang.as_ref().and_then(|l| l.bind(header)).unwrap_or("");
         assert!(!s.is_empty(), "{page:?}: header LBL {header:#x} binds");
     }
 }
 
-/// The wheel rows centre in their controls: slot centres = ctrl.x + ctrl.w/2 [L the parsed rows:
-/// (323,123,317) (333,152,307) (304,182,336) (333,211,307) (323,241,317)].
+/// The wheel rows start at their controls' x [L the parsed rows: (323,123,317) (333,152,307) (304,182,336)
+/// (333,211,307) (323,241,317)]; PCSX2 left-aligns them (07000048 m06/m10/m12: ink from x 303 / 331).
 #[test]
 fn the_wheel_rows_center_in_their_controls() {
     let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
@@ -807,14 +812,16 @@ fn the_wheel_rows_center_in_their_controls() {
     let (frame, n) = frame_with_font(&fe, lang.as_ref(), 4.0 / 3.0);
     let rows = text_rows(&frame, n, 4.0 / 3.0);
     let wheel_y = [123.0f32, 152.0, 182.0, 211.0, 241.0];
-    let wheel_cx = [(323.0 + 317.0 / 2.0) * 512.0 / 640.0, (333.0 + 307.0 / 2.0) * 512.0 / 640.0, (304.0 + 336.0 / 2.0) * 512.0 / 640.0, (333.0 + 307.0 / 2.0) * 512.0 / 640.0, (323.0 + 317.0 / 2.0) * 512.0 / 640.0];
+    let wheel_x = [323.0f32 * 512.0 / 640.0, 333.0 * 512.0 / 640.0, 304.0 * 512.0 / 640.0, 333.0 * 512.0 / 640.0, 323.0 * 512.0 / 640.0];
+    let mut seen = 0;
     for (slot, y) in wheel_y.iter().enumerate() {
         let hy = y * 448.0 / 480.0 + 8.0;
         if let Some(band) = rows.band(hy) {
-            let centre = (band.0 + band.1) / 2.0;
-            assert!((centre - wheel_cx[slot]).abs() < 5.0, "slot {slot}: row centre {centre}, want {}", wheel_cx[slot]);
+            seen += 1;
+            assert!((band.0 - wheel_x[slot]).abs() < 4.0, "slot {slot}: row starts at {}, want {}", band.0, wheel_x[slot]);
         }
     }
+    assert!(seen >= 2, "the wheel rows draw");
     // Sister: every text row on the page lies inside the screen.
     assert!(rows.all_inside_the_screen(), "a text row left the 512×448 screen");
 }
@@ -912,9 +919,9 @@ fn the_records_page_draws_the_score_table() {
     let mut fe = FrontEnd::new();
     fe.page = Page::Records;
     let (frame, n) = frame_with_font(&fe, Some(&lang), 4.0 / 3.0);
-    // The medal image is the page data's own texture control.
+    // No profile → no medal earned: the medal controls stay hidden [M C_RBDSRECORDS 0x20bf00:58-110; PCSX2 m15].
     let idx = menu::MENU_TEXTURES.iter().position(|&t| t == 0x0300_013d).expect("medal tex listed") + 1;
-    assert!(frame.runs.iter().any(|r| r.0 == idx), "the medal image 0x0300013d draws");
+    assert!(!frame.runs.iter().any(|r| r.0 == idx), "no medal draws without one earned");
     // The three score-row labels + the medal label bind from the language bank.
     for id in [0x302u32, 0x165, 0x305, 0x307] {
         let s = lang.bind(id).unwrap_or("");
@@ -1038,24 +1045,20 @@ fn the_pause_score_tab_shows_the_disc_targets() {
     assert!(f.v.len() > 60, "the SCORE tab draws the header and the rows ({} verts)", f.v.len());
 }
 
-/// (NF_ISO) The pause page's figure: texture 0x030000db loads as the 64×128 alpha mask (the 5551
-/// alpha-bit silhouette), not the 8bpp blob card. Before the fix the load produced the palette-card
-/// picture (coloured blobs + white figure) the user saw.
+/// (NF_ISO) The pause page's figure: texture 0x030000db is a placeholder on the disc (palette blobs and a basketball
+/// player); the loader replaces its texels with the burning woman's first frame (crate::woman,
+/// `psiDecompressWoman` 0x1202a8) — fire-coloured texels inside her silhouette, black around.
 #[test]
 fn the_pause_figure_texture_loads_as_the_silhouette_mask() {
     let Some(iso) = std::env::var("NF_ISO").ok() else { return };
     let scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
     let (_, t) = scene.hud_textures.iter().find(|(h, _)| *h == 0x0300_00db).expect("the pause figure texture loads");
     assert_eq!((t.width, t.height), (128, 128), "the figure texture is 128×128 [L the map header]");
-    // The figure = index 0x43 whose palette entry is pure WHITE [L pal[067]=ffffff80; the index
-    // histogram: a flat run of 987 0x4343 words in the figure's bbox]. The white pixels sit in the
-    // texture's RIGHT half (x ≥ 64) — the blobs (the left half) never enter the menu's uv rect.
-    let white: Vec<(usize, usize)> = (0..128usize).flat_map(|y| (0..128usize).map(move |x| (x, y)))
-        .filter(|&(x, y)| { let i = (y * 128 + x) * 4; t.rgba[i] == 255 && t.rgba[i + 1] == 255 && t.rgba[i + 2] == 255 })
-        .collect();
-    assert!(white.len() >= 900, "the white silhouette is present ({} px)", white.len());
-    let left = white.iter().filter(|(x, _)| *x < 64).count();
-    assert!(left * 10 < white.len(), "the silhouette sits in the texture's right half ({} left-half px of {})", left, white.len());
+    let w = scene.woman.as_ref().expect("the woman decoder is set up");
+    assert_eq!(t.rgba, w.rgba(), "the HUD texture holds the woman's current frame");
+    // Sister: the disc's placeholder had a pure-white figure (palette entry 0x43); the woman has none.
+    let white = (0..128 * 128).filter(|&k| t.rgba[k * 4] == 255 && t.rgba[k * 4 + 1] == 255 && t.rgba[k * 4 + 2] == 255).count();
+    assert!(white < 50, "no white placeholder silhouette ({white} px)");
 }
 
 // ── fix-menus-real2: the headers' bold-italic face ──────────────────────────────────────────────
@@ -1146,4 +1149,74 @@ fn the_dossier_wheel_opens_at_records_and_clamps() {
     fe.cursor = 0;
     assert!(fe.action(Action::Down));
     assert_eq!(fe.cursor, 1, "Down steps to Rewards, never wraps");
+}
+
+/// Main → Codenames opens Edit Codename on the Default row, Edit opens the "Edit Default" wheel, its Advanced /
+/// Multiplayer / AV rows open their option pages [M C_GOCODENAMES 0x216b38; C_SBCNOPTIONS_Handler 0x213528:32-60].
+#[test]
+fn the_codenames_row_reaches_the_option_pages() {
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Main;
+    fe.cursor = 2;
+    assert!(fe.action(Action::Confirm));
+    assert_eq!((fe.page, fe.cursor), (Page::CnSelect, 1), "Edit Codename opens on Default (PCSX2 m29)");
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::CnMenu);
+    assert_eq!(fe.cn_name, "Default");
+    assert_eq!(fe.rows(), 7, "the wheel's seven rows [L table 0x2dfc28]");
+    for (row, page) in [(3usize, Page::CnAdvanced), (4, Page::CnMp), (5, Page::CnAv)] {
+        fe.page = Page::CnMenu;
+        fe.cursor = row;
+        assert!(fe.action(Action::Confirm));
+        assert_eq!(fe.page, page, "row {row}");
+        assert!(fe.action(Action::Back));
+        assert_eq!((fe.page, fe.cursor), (Page::CnMenu, row), "Back returns to the row it came from");
+    }
+    // Sister: the rows without a ported page do nothing.
+    fe.cursor = 1;
+    assert!(!fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::CnMenu);
+}
+
+/// ◀ / ▶ step an option's value; Back throws the edits away, Confirm keeps them; a slider moves by 10 in 0..=100.
+#[test]
+fn the_option_pages_change_values() {
+    let mut fe = FrontEnd::new();
+    fe.page = Page::CnMenu;
+    fe.cursor = 3;
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::CnAdvanced);
+    let auto_aim = menu::ADV_ROWS[1].ctrl;
+    assert_eq!(fe.opt_value(auto_aim), 1, "Auto Aim defaults On");
+    fe.cursor = 1;
+    assert!(fe.action(Action::Right));
+    assert_eq!(fe.opt_value(auto_aim), 0, "▶ steps On → Off");
+    assert!(fe.action(Action::Back));
+    assert_eq!(fe.opt_value(auto_aim), 1, "Back restores the value");
+    fe.page = Page::CnMenu; fe.cursor = 3;
+    assert!(fe.action(Action::Confirm));
+    fe.cursor = 1;
+    assert!(fe.action(Action::Left));
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::CnMenu);
+    assert_eq!(fe.opt_value(auto_aim), 0, "Confirm keeps the edit");
+    // The music slider.
+    fe.cursor = 5;
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::CnAv);
+    let music = menu::AV_ROWS[0].ctrl;
+    let v0 = fe.opt_value(music);
+    fe.cursor = 0;
+    for _ in 0..20 { fe.action(Action::Right); }
+    assert_eq!(fe.opt_value(music), 100, "the slider stops at 100 (from {v0})");
+    fe.action(Action::Left);
+    assert_eq!(fe.opt_value(music), 90);
+    // Sister: off the option pages ◀ / ▶ keep their Back / Confirm meaning.
+    let mut g = FrontEnd::new();
+    g.page = Page::Main;
+    g.cursor = 2;
+    assert!(g.action(Action::Right));
+    assert_eq!(g.page, Page::CnSelect, "▶ confirms on the main menu");
+    assert!(g.action(Action::Left));
+    assert_eq!(g.page, Page::Main, "◀ backs out");
 }

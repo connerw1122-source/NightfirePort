@@ -13089,6 +13089,70 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   (slim ISO) + the no-GPU pylon set ×3 (fix_0c_pylon_live ×2 + probe_pylon_render, wgpu
   "adapter: NotFound" — the sandbox has no GPU adapter; same set WORKLOG fix-death-retry-boost
   recorded). The required final-tree suite restarted on the merge (totals in the report).
+
+## fix-search-cover-g028 (2026-10-15, branch s/fix-search-cover-g028) — started 14:47 UTC
+- Branch cut from origin/master cf4f33cd. Task G-028 (part of G-026): guard cover-node selection
+  (NDrone2_*Cover* / Drone_FindCover*), scoring, enter/leave transitions, tick order vs vision;
+  document in docs/systems/drone-ai.md, port into cover.rs + drone.rs hook, NF_ISO test
+  (07000005 courtyard / 07000012).
+- (14:47-15:30) G-028 findings: the cover selection chain was already ported and trace-verified (WORKLOG
+  0023/0079 + fix-cover-remainder) — `find_cover` 0x152548 (smallest emitter byte, strict-less, byte² ≤
+  opponent-dist²), `cover_node_ok` 0x151d68, `cover_available` 0x155a38 (all decompile callers pass needLos=1,
+  so FindCover's needLos=0 early return is dead code), the 0x8C-0x9C/0x97/0x98/0x37/0x38 states and the RNG
+  order. The real deviation was the ORDER: the game's `Drone_InitComms` runs `Drone_ProcessCoverNodes`
+  (0x139520:150, cadence −2/<1→10 [M 0x138e78]) BEFORE `ProcessOpponents` :151 and `ProcessDroneSight` :162 —
+  the port ran it after vision and the nav-node cache. Moved to the game's position (drone.rs); inputs are
+  identical at both positions, so it is a conformance fix with no observable delta. Docs: drone-ai.md cover
+  section (addresses) + the stale "Not yet: cover" port-status line fixed. New tests
+  `cover_selection_live.rs`: the scoring rule replicated in-test over the level's real nodes (side/LOS gates
+  load-bearing: a gate-less replication picks node 3 over the trace's node 1 — shown RED mid-session) and the
+  stance flags both ways (node 1 re-flagged crouch-only → cover type 0/1/4 and no stand anim; stand-only →
+  2/3). ai_live 35/35, cover_selection 2/2, portcheck 5/5.
+
+## fix-hud-zoom-tilt (110z)
+- (14:50) Started. Task: G-044 — port `Player_WeaponRecoil`'s zoom divide (glb_viewer+0x108) and
+  aspect x-term (viewer+0x114) into the gun-axis computation in scene.rs, using Sim::zoom (BL+0x8D0).
+  Branch cut from origin/master cf4f33cd. Plan: read the decompile + writers of +0x108/+0x114, write
+  the fail-first NF_ISO test (zoom 2 tilt = half of zoom 1), fix scene.rs, sister test zoom 1
+  bit-for-bit unchanged.
+- (14:55-15:15) Finding: G-044's fix is ALREADY on master — fix-viewmodel-zoom (b12a1b77, merged
+  2026-10-13) appended `/ self.zoom` to both gun-tilt terms in scene.rs `gun_matrix`, with the
+  4/3 aspect and an [L ee_start_05] citation, plus fix_viewmodel_zoom_live (composed-angle, 10%
+  tolerance at an uncontrolled zoom). This task verified the decompile chain independently
+  (Player_WeaponRecoil 0x1a3de8:52-57; viewer+0x108 writer = Player_PositionCamera 0x18f5d8 case
+  0/0xe feeding BL+0x8D0, case 1 pins 1.0; viewer+0x114 writer = Camera_CalcViewAngles 0x1baf70:
+  29-41 — 4/3 default, 16/9 widescreen option [DAT_002a37c4 = switch_CONFIG_WIDESCREEN 0x216168],
+  ×0.5/×2 split-screen), re-verified the [L] tag myself from ee_start_05 (0x1fc6c10: +0x108=1.0,
+  +0x114=0x3faaaaab, +0x118=π/3), and added the task's exact tests: fix_hud_zoom_tilt_live
+  (zoom-2 halves both terms; aspect = the constant's bits; the real input path's Ronin ramp
+  follows the formula tick-by-tick). FAIL-FIRST shown on the reverted divide (zoom-2 term stayed
+  at the zoom-1 value; ramp tick 0 failed), 3/3 pass on the restored tree; scene.rs left
+  byte-identical to master. No scoped weapon zooms to exactly 2.0 ([L ee_start_05 zooms 3.5/4/6/
+  10/16]) so the exact-2.0 leg sets BL+0x8D0 = 2.0 directly (a mid-ramp value; PositionCamera
+  feeds it verbatim). Observation (out of scope, noted in the GAPS closure): the game's rot+0x54
+  also adds the recoil kick BL+0x8e4 — the port doesn't model 0x8e0/0x8e4; no increment found in
+  the C decompile (only decay ×0.75 + init 0), decompiler-dropped store suspected. GAPS G-044 →
+  Closed. Suite restarted on the final tree.
+## menus vs PCSX2 (2026-10-15, branch mine/menus, main agent)
+- Every reachable front-end and in-game menu page compared side by side with PCSX2 captures (07000048 / 07000005)
+  and corrected: page headers left-aligned at x 50 at the header face's own size; the wheel rows left-aligned at
+  their controls' x; the ring texture 0x030000bf only masks the preview (no rim/square drawn); per-row difficulty
+  previews (table 0x2df4c0); locked wheel rows at half the slot alpha (Menu_UpdateWheel 0x1f8388:210-234); the
+  stray stamp 0x0300014c and the main menu's logo removed; main rows in the header face; Records rebuilt (three
+  framed boxes, the mission spinner, the rows, the medal only when earned — C_RBDSRECORDS 0x20bf00:58-110); title
+  prompt/legal sizes; pause hint bars dark words; OBJECTIVES rows = the visible objectives
+  (Mission_NumVisObjectives 0x182540) with the list cursor; quit/restart confirm; the codename option box
+  (Menu_CreateOptionBox 0x1f9608); hint bars at PCSX2's middles.
+- New: the level loading screen (ResetMap_GenLoadScreen 0x1d5de0 — crate::loading; the picture from
+  07000500.bin, objective + random hint, the LOADING dots static while the load blocks the thread).
+- New: Codenames → Edit Codename (0x4000001b) → Edit <name> (0x4000001d, table 0x2dfc28) → Advanced /
+  Multiplayer / AV Options (0x4000002d/2e/31): rows, value items and profile bytes from P_CNOPTIONS 0x213f08 /
+  P_CNMPOPTIONS 0x2144d8 / P_CNAVOPTIONS 0x214818, descriptions from the (control, value) table 0x2e4a18;
+  ◀ ▶ change values (Action::Left/Right; other pages keep Back/Confirm). The values are not wired to the sim yet
+  (queue task 610). Secret Unlocks / Controller Setup / Driving Controller / Screen Adjust / Credits / the
+  trailer / New Codename entry and the Multiplayer menus are not ported (611-613 queued for their data).
+- Renderer: the movie plane keeps the 4:3 picture centred with black bars (every menu movie and briefing was
+  stretched a third too wide on 16:9).
 - (15:38-15:53) Final tree: merged origin/master a2958c03 (WORKLOG/GAPS both kept on the append conflicts); the
   fast runner on the affected binaries: ai_live/fix_ai_remainder_live/trig_live/fix_portonly_review_live/
   tuning_live/fire_modes3_live/fix_weapon_fire_modes_live/weapon_switch_live/fix_weapons_all_live/
