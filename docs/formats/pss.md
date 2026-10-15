@@ -63,3 +63,30 @@ count = `SSbd body / (2·channels)` and agrees with the video picture count at 3
 audio-bearing movies; SHA-1s of frames 0 and 1000 (feature `movies`). Sister assertions flip one value in each
 comparison. The slim on-foot image stubs the movies (size 0) — point `NF_MOVIE_ISO` (or `NF_ISO`) at an image
 with movie data (e.g. the retail `007 - Nightfire (USA)` image).
+
+## G-008 verification (2026-10-15, verify-pss-vag)
+
+The slim on-foot image carries the whole VAG/SPU-ADPCM side of the disc, so the audio decoders are now verified
+on Nightfire's own files (`crates/nf-formats/tests/pss_vag_golden.rs`, goldens `golden/pss_vag.tsv`, measured on
+this image):
+
+* **Banks** (`PS2/ENGLISH/SB_n/SB_n.{SHF,SFX,SBF}`, all 25 slots): headers parse, the 36-byte `.SHF` sample sizes
+  sum exactly to the `.SBF` for every bank, every sample's extent ends with the end flag (`vag::sample_extent`),
+  looped counts 2–19, per-bank decoded-PCM SHA-1s pinned (0 decode errors across 6,581 samples).
+* **Music** (`MFX_n.SSD`, 16 files): whole 0x100 blocks, per-channel de-interleaved frame streams SHA-1-pinned,
+  every `.SMF` marker byte position inside the stream, stereo PCM decode SHA-1s pinned on MFX_1/11/16.
+* **Speech** (`STREAMS.LUT`/`STREAMS.BIN`): 1681 LUT entries, all 136-byte headers, 828 carry a type-9 end
+  marker (29,322,752 played bytes; the other 853 are unreferenced stale takes), three named decodes pinned, and
+  every stream `FileRef` in all 25 banks (1552 references, 675 distinct entries) resolves to a valid entry.
+* **Movies**: the 22 tree entries exist (size-0 stubs on the slim image, counted and skipped; on an image with
+  data each demuxes to its `pss_movies.tsv` row). The ES SHA-1s print under `--nocapture` for a data-image run.
+
+Independent decoders (the rounding question): ffmpeg's `vag` demuxer (`adpcm_psx`) decodes the port's frames
+bit-exactly for structure (nibble order, shift/filter byte, coefficients, 16-byte frames) — its prediction is
+trunc-toward-zero of the *summed* products (`(k0·h1 + k1·h2) / 64`), measured on 3 bank samples, both MFX_1
+channels and 3 speech streams (bit-exact under that form; the port's Rounded drifted ≤ 27 over 16 884 samples,
+OpenGoal ≤ 78). DuckStation master (`spu.cpp`) shifts each product separately (the OpenGoal form); vgmstream
+(`psx_decoder.c`) uses float coefficients. **No published software decoder implements the rounded form**, so
+`vag.rs`'s two variants stay and its attribution note was corrected (the old comment called Rounded "the
+PCSX2/DuckStation form" — DuckStation's master source is per-term). Which form the real SPU2 plays is still
+open — a live check would settle it (docs/reports/verify-pss-vag.md).
