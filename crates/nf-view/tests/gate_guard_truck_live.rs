@@ -81,7 +81,7 @@ fn cold_start_walks_the_gatehouse_and_the_truck_ride_ends_the_level() {
     let mut saw_5c = 0u32;
     for _ in 0..2400u32 {
         w.tick(Input::default(), false);
-        if w.scene.sim.as_ref().unwrap().drones.channels.on(0x5c) { saw_5c = Some(w.total_ticks).unwrap(); break; }
+        if w.scene.sim.as_ref().unwrap().drones.channels.on(0x5c) { saw_5c = w.total_ticks; break; }
     }
     assert!(saw_5c > 0, "standing on the porch must fire the script-created ch-0x5C plate (SP #37 stream 8, tick 1884)");
     eprintln!("[gate] ch 0x5C on at world tick {saw_5c} — the hand-off cut-scene");
