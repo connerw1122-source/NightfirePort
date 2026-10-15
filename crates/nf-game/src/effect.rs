@@ -171,7 +171,11 @@ impl Effects {
                     // a visual; `Vec_NormToRot`/`ATAN2_APPROX` are not ported, see the report).
                     let _ = g.orient_normal;
                     let rgba = [((g.rgba[0] >> 24) & 0xff) as u8, ((g.rgba[0] >> 16) & 0xff) as u8, ((g.rgba[0] >> 8) & 0xff) as u8, (g.rgba[0] & 0xff) as u8];
-                    gas.init_ex(g.mesh, p, 0.0, [0.0; 3], g.scale[0], g.scale[1], g.kind as u8, rgba, g.rgba[1], g.life as f32);
+                    // fix-gas-rng: the real-stream form — `Gas_Init`'s own draws (spin 0x1ab060,
+                    // sign 0x1ab08c, the kind-7 wind ×3 0x1ab160/184/1a4) ride the shared RNG (the
+                    // game passes the velocity pointer NULL at this site, so the NULL-vel dispatch
+                    // applies: kind 4 entries take the rising default with no extra draws).
+                    gas.init_effect_puff(rng, g.mesh, p, g.kind as u8, rgba, g.rgba[1], g.scale[0], g.scale[1], g.life as f32);
                 }
             }
             // The decal: `EffectInfo+4` != 0 → take a pool node, evicting the OLDEST when the 200 are

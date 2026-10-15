@@ -3427,9 +3427,12 @@ impl Sim {
                             // order — every MuzzleFlash tick, the stunner's no-target ones included
                             // (the draw keeps the shared RNG's draw count bit-exact).
                             let _angle = self.drones.rng.frand(6.2831854820251465);
-                            // The puff itself: models-misc's gas system (`Gas_Init(0.05, 0.1, …, 0x2000039, 7,
-                            // 0x48403080, 1)` [M 0x1a4298]); Gas_Init's own draws stay un-consumed (G-033). Life [S] 8 ticks.
-                            self.drones.gas.init(pos, 0.0, [0.0; 3], 0.05, 0.1, 7, [0x48, 0x40, 0x30, 0x80], 8.0);
+                            // The puff itself: `Gas_Init(0.05, 0.1, vel NULL, 0x2000039, 7, 0x48403080,
+                            // end 1, life 0x80 = 128)` [M disasm 0x1a4404-0x1a442c — the life the
+                            // decompile drops]. fix-gas-rng: `Gas_Init`'s own draws (spin 0x1ab060,
+                            // sign 0x1ab08c, kind-7 wind 0x1ab160/184/1a4) now ride the shared stream
+                            // right after this draw, 5 more per puff.
+                            self.drones.gas.init_muzzle_smoke(&mut self.drones.rng, pos);
                         }
                     }
                     if spawn_shot {
