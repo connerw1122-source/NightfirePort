@@ -98,6 +98,18 @@ pub mod state {
     /// `StunGrenadeRecover` 0x163350: ENTER sets +0x4F8 & 0x10000 and plays the get-up anim 0x76 with follow-on
     /// 0x56 (Attack) for non-civilians; bullets (msg 8/9) → 0x44.
     pub const STUN_GRENADE_RECOVER: u8 = 0x4f;
+    /// The taser family (109b): `DSTATE_Taser` 0x162b98 — the fall state msg 7 enters once the tase
+    /// accumulator passes 2·health [M DroneFunc_HandleImpact 0x1469b8:126-130]. ENTER plays the
+    /// Rand(2) fall anim (0x31/0x32), drops the weapon, arms the twitch timer 1800
+    /// [M 0x162b98:44-56].
+    pub const TASER: u8 = 0x4a;
+    /// `DSTATE_Stunned` 0x162eb0 — the down state; ENTER arms the recover (+0xce0) and plays the
+    /// struggle anim 0x30/0x2f [M case 1]; TIMER_C falls to Recover 0x4c unless AnyoneNear(2.0)
+    /// re-arms 300 [M case 0xc].
+    pub const STUNNED: u8 = 0x4b;
+    /// `DSTATE_Stunned_Recover` 0x1630b8 — the get-up anim 0x76 with follow-on 0x56 + ChangeWeapon(6)
+    /// for non-civilians [M case 1]; another tase (msg 7) re-runs the fall.
+    pub const STUNNED_RECOVER: u8 = 0x4c;
     /// The scary-object family (`DroneFunc_ConsiderExplosive` 0x1431c0 → `RunAwayFromObject` 0x86 [M 0x1431c0:194-195];
     /// `HideFromScaryObject` 0x87 waits out the flee deadline +0x324 → 0x88 [M 0x168d18:39-44];
     /// `RecoverFromScaryObject` 0x88: +0x5A0 != 0x89 → Attack 0x56 [M 0x173658:33-42]). Names per the port's
@@ -221,8 +233,11 @@ pub mod msg {
     pub const ALARM: u8 = 0x1e;
     /// A bullet hit (`Drone_BulletHit` → msg 8 with the HITDATA).
     pub const BULLET: u8 = 8;
+    /// A taser hit (`NDrone2_DealWithObjHit` 0x13fff0:269-300 → msg 7 with the HITDATA): the Stunner's
+    /// bullets 0x4A / 0x4C route here — the zero-damage dart that stuns (109b).
+    pub const TASE: u8 = 7;
     /// A punch hit (`NDrone2_DealWithObjHit` 0x13fff0 case 5 → msg 6 with the HITDATA): weapon 1
-    /// (fists), 0x4B and 0x4D route here instead of msg 8; 0x4A / 0x4C are the taser (msg 7, not ported).
+    /// (fists), 0x4B and 0x4D route here instead of msg 8; 0x4A / 0x4C are the taser (msg 7).
     pub const PUNCH: u8 = 6;
     /// "Open that door" (`DroneAnim_EventFunc` 0x13b750 event 6 → `Drone_SM_SendMsg(0x20, 0, own, own)`;
     /// docs/fields/drone-statemachine.md). Only `DSTATE_OpenDoor` handles it: retry the door activation.
