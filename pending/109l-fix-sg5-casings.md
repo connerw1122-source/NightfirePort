@@ -31,3 +31,5 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Live checks:** list what the main agent should check in PCSX2 (spot, action, expected result) and in nf-view (`--bond` spots).
 
 **Branch:** `s/sg5-casings`.
+
+**PCSX2 ground truth (main agent, 2026-10-14):** read `docs/live/2026-10-14-weapon-measurements-pcsx2.md` on master first.
