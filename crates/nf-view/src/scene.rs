@@ -355,6 +355,15 @@ pub struct Sim {
     /// [M `Player_SetWeaponAnimObj` case 0xf 0x1a2e38:554-561]; false for the lower — its finish
     /// leaves the bit clear (case 0x10, [M 0x1a2e38:562-567]).
     pub view_aim_raising: bool,
+    /// fix-zoom-during-swap: this tick's aim-BIT rise/fall edge, computed in `aim_gate` the way
+    /// `Player_Weapon` 0x1a24c8 does — against the bit as the last advance left it (bVar5, [M
+    /// :57]) AFTER the input arm and the machine force-clear ([M :59-96]), so a button HELD from
+    /// before a swap/reload re-marks the rise the tick the machine returns to idle. Consumed by
+    /// the view chain's queue arm (the single queue point); raise-script records only.
+    pub aim_rise: bool,
+    /// fix-zoom-during-swap: the fall half of the same edge — the lower queues from the idle
+    /// machine on it [M 0x1a24c8:120-143].
+    pub aim_fall: bool,
     /// fix-weapon-fire-modes: the guided-missile camera (`Bullet_init` 0x12c5a0:234-254 for a weapon
     /// record with `+0x6C & 4` — only the AT-420 Sentinel 'Guided' 0x2C [L ee_start_05.bin]). While
     /// `Some`, the view rides the projectile: position/direction = the bullet's [M
@@ -1651,22 +1660,38 @@ impl Sim {
             }
         }
         let raise = self.weapons.raise_script(self.gun.weapon as usize);
-        if raise == 0 {
-            // No raise script: the aim bit follows the button at once [M 0x1a24c8:36-64].
-            self.aiming = button;
-            return button;
-        }
-        // The hold-aim bit dynamics with the raise gate (the game's hold branch 0x1a24c8:36-47:
-        // the bit clears with the button up and sets while it is held; case D :145-152 re-clears
-        // the input-set bit and queues state 0xF, so the rise waits for the finish above). The
-        // queue itself is the view chain's edge arm — one queue point (the raise cannot re-fire
-        // mid-play: state 0xF is in the game's own refused set [M 0x1a24c8:66-99]).
-        let was = self.aiming;
-        if button && !was {
-            self.aiming = false; // the rise is deferred until the raise stops [M 0x1a24c8:146]
-        } else if !button {
-            self.aiming = false; // hold-aim: the bit follows the button down [M 0x1a24c8:46]
-        }
+        // bVar5 [M 0x1a24c8:57]: the bit as AnimObjectUpdate left it (the advance half above —
+        // the raise's finish included) is the edge reference, exactly where the game reads it.
+        let bit_prev = self.aiming;
+        // The machine force-clear [M 0x1a24c8:80-96]: the `+0x68 & 0x40` switch clears the bit in
+        // view states 1..4, 6..8, 0xa, 0xd..0x10 on a SCOPED record, 1..4, 0xa, 0xd, 0xe on an
+        // unscoped one — AFTER the input arm, so a held button does not set the bit back while
+        // the machine runs. The port's machine maps: switch_state 1/3/8 = views 1/3/8 (holster,
+        // draw, the variant swap), reload_state 6/7 = views 6/7 (reload_state 5 = view 5, not in
+        // either set), `view_aim_anim` = 0xf/0x10; fire_state = view 9 — the case-8 arm there
+        // keeps the bit, so no fire term; the grenade hold (0xb) is not in the set either.
+        let scoped_rec = self.weapons.flags(self.gun.weapon as usize) & 0x40 != 0;
+        let machine_clear = if scoped_rec {
+            self.gun.switch_state != 0
+                || matches!(self.gun.reload_state, 6 | 7)
+                || self.view_aim_anim.is_some()
+        } else {
+            matches!(self.gun.switch_state, 1..=4)
+        };
+        // The input arm [M :59-79] (hold mode — the port models no toggle) applied over the
+        // machine clear.
+        let bit = button && !machine_clear;
+        // The edge [M :100-119]: the bit moved against bVar5 — the rise/fall is marked only for
+        // raise-script records (the game's queue arms sit behind the `+0xb8 != 0` check).
+        let rise = raise != 0 && bit && !bit_prev;
+        let fall = raise != 0 && !bit && bit_prev;
+        // Case D [M :145-152]: the rise re-clears the bit (the raise queues from the view chain's
+        // idle-machine arm — the single queue point; the raise cannot re-fire mid-play: state 0xF
+        // is in the game's own refused set [M 0x1a24c8:66-99]). A no-raise record keeps the bit
+        // the input arm set [M :117-119].
+        self.aiming = if rise { false } else { bit };
+        self.aim_rise = rise;
+        self.aim_fall = fall;
         self.aiming
     }
 
@@ -2347,12 +2372,16 @@ impl Sim {
         } else {
             self.zoom_target = 1.0;
         }
-        // Interpolate zoom toward target [M 0x1a1a70 lines 22-39].
-        // `Player_Zoom` (0x1a1a70): zoom in at 1.025×/tick, zoom out at 1.15×/tick [M lines 22-39].
-        // The game's BLData+0x8D4 is the inverse (decreases as zoom increases); the port's `zoom` is the FOV
-        // divisor (increases as zoom increases), so the interpolation factor is the complement.
-        let rate = if self.zoom < self.zoom_target { 1.0 + 0.025 } else { 1.0 + 0.15 };
-        self.zoom = self.zoom + (self.zoom_target - self.zoom) * (1.0 - 1.0 / rate);
+        // fix-zoom-during-swap: the game's exact ride [M Player_Zoom 0x1a1a70:63-79] — the value
+        // MULTIPLIES toward the target (×1.025/tick in [M :37-41]; ÷1.15/tick out, the rate
+        // inverted when the value sits above the target [M :39-41]) and SNAPS on crossing it
+        // [M :71-79 `if (bVar2) +0x8D0 = +0x8D4`] — the release lands on exactly 1.0, where the
+        // port's lerp form only converged asymptotically and never reached it (the user's "does
+        // like a half zoom, but never actually zooms in").
+        let rising = self.zoom < self.zoom_target;
+        let prev_zoom = self.zoom;
+        self.zoom = if rising { prev_zoom * 1.025 } else { prev_zoom / 1.15 };
+        if (prev_zoom - self.zoom_target) * (self.zoom - self.zoom_target) <= 0.0 { self.zoom = self.zoom_target; }
         self.zoom = self.zoom.clamp(1.0, max_zoom.max(1.0));
         // Wire / creep: the music event moved up with the substate effects (fix-wire) — the substate is
         // now the only source (the old proximity hack is gone).
@@ -2443,12 +2472,11 @@ impl Sim {
     }
 
     fn run(&mut self, pos: [f32; 3], sph: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool, stick: bool) {
-        // fix-weapon-anims + fix-aim-raise2: the aim raise/lower edges — the RAW button (the
-        // param; the gated BIT is `self.aiming`, which `aim_gate` maintained before run) — before
-        // the level is overwritten (the queue arm deep in the view chain reads the EDGE)
-        // [M Player_Weapon 0x1a24c8:117-152: the arm fires on the tick the input flips the bit].
-        let aim_on_edge = aiming && !self.prev_aiming;
-        let aim_off_edge = !aiming && self.prev_aiming;
+        // fix-weapon-anims + fix-aim-raise2: the aim raise/lower edges. fix-zoom-during-swap: the
+        // edge is the aim BIT's rise/fall now — `aim_gate` marks it against the bit as the last
+        // advance left it, after the input arm and the machine force-clear [M Player_Weapon
+        // 0x1a24c8:57-119], so a button held from BEFORE a swap (never a raw edge again) still
+        // queues the raise the tick the draw ends. The raw param only keeps `prev_aiming` warm.
         self.prev_aiming = aiming;
         // The drones aim at and look for Bond's chest (`Drone_View_Bones`; one point here, 0.45 under the eye).
         let hanging = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
@@ -3016,12 +3044,12 @@ impl Sim {
                 let lower_hash = rd(0xbc);
                 if self.view_aim_anim.is_none() && raise_hash != 0 && self.view_script == idle_hash
                     && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state {
-                    if aim_on_edge {
+                    if self.aim_rise {
                         self.view_script = raise_hash;
                         (self.view_time, self.view_speed) = (0.0, 1.25);
                         self.view_aim_anim = Some(raise_hash);
                         self.view_aim_raising = true;
-                    } else if aim_off_edge {
+                    } else if self.aim_fall {
                         if lower_hash != 0 {
                             self.view_script = lower_hash;
                             (self.view_time, self.view_speed) = (0.0, 1.25);
@@ -5671,6 +5699,8 @@ impl Scene {
                 prev_aiming: false,
                 view_aim_anim: None,
                 view_aim_raising: false,
+                aim_rise: false,
+                aim_fall: false,
                 mp: None,
             })
         });
