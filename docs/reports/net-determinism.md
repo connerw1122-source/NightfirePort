@@ -84,6 +84,18 @@ tests/mp_lockstep.rs) + docs. No game bytes, tokens, URLs or credentials committ
 4. `ctx.now` is now ignored — a follow-up could drop the field and update the two rigs that set
    it (kept for API compatibility this round).
 
-## ntfy
+## ntfy failed
 
-(sent — see the finish steps; if it failed, the exact error would be here under "ntfy failed".)
+All three fallbacks failed — ntfy.sh's daily message quota is exhausted (the service returned the
+same 429 to every attempt, ~23:50 UTC 2026-10-15):
+
+1. curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase
+   your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. python3 urllib: `HTTPError 429: 'Too Many Requests'`
+3. wget: exit code 8 (server error), no body.
+
+The message that would have been sent: "net-determinism: done — MP sim proven lockstep-safe:
+audit fixed bots' libm trig (ATAN2_APPROX) + the ctx.now seam; state_hash(&MpMatch) FNV-1a over
+f32 bits; replay harness; 10k-tick two-sim bots-on soak over all 12 scenarios green (nf-game
+371/0)". The queue's `done/050-net-determinism.md` entry carries this report; the branch is
+pushed through `0c492a2f` + the report fix below.
