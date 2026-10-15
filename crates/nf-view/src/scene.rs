@@ -299,6 +299,9 @@ pub struct Sim {
     pub nav: nf_game::nav::Network,
     pub covers: Vec<nf_game::cover::CoverNode>,
     pub tuning: nf_formats::tuning::Tuning,
+    /// mp-core: the MP match core (`nf_game::mp`) when `--mp` runs an arena — `MP_Update` 0x184bd0
+    /// runs per frame in gameplay [M]; `None` on every campaign level.
+    pub mp: Option<nf_game::mp::MpMatch>,
     pub hitboxes: nf_formats::hitbox::CollisionBones,
     pub sfx: Option<nf_formats::sfx::SfxTable>,
     pub volumes: Vec<nf_game::aivolume::AiVolume>,
@@ -1698,6 +1701,12 @@ impl Sim {
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
+        // mp-core: `MP_Update` 0x184bd0 runs per frame in the gameplay flow state [M 0x184bd0:17-21];
+        // the port's fixed tick stands in for the game's wall-clock delta (the module doc's
+        // *Deviation*). Arena loads only — `None` on every campaign level.
+        if let Some(m) = self.mp.as_mut() {
+            m.update(1.0 / 60.0, false);
+        }
         // `Game_Run` 0x1c9790:33 runs `Light_Update` before the object movement each tick (fix-lighting):
         // lifetimes (the muzzle light of the previous tick dies here), the script-channel gate and the
         // flicker state machine. The flicker's RNG re-seeds ride the shared generator before this tick's draws.
@@ -2426,7 +2435,9 @@ impl Sim {
     /// set) sharing the base's ammo type, else its own [M `Player_ReloadAmmoType` 0x1a1988:18-22 —
     /// `iVar4 = base` routes `clip[0x1B8 + slot·0xC]` to the base for such twins; the give path's
     /// `pickup.rs clip_slot` is the same unification]. One physical magazine per twin family.
-    fn clip_slot(&self, id: usize) -> usize {
+    // fix-hud-ammo-odd: pub(crate) — the dev window's ammo pin (dev.rs after_tick) resolves the
+    // twin slot with the same pick [M Player_AmmoIndex 0x1a9148]; no behaviour change.
+    pub(crate) fn clip_slot(&self, id: usize) -> usize {
         let base = self.weapons.base(id) as usize;
         if self.weapons.shares_base_clip(id) && self.weapons.ammo_type(id) == self.weapons.ammo_type(base) { base } else { id }
     }
@@ -3336,7 +3347,13 @@ impl Sim {
                         // shell at the view-model gun bone's world position (`AnimGetBoneWorldTrans`
                         // VECTOR out) — hand the posed gun matrix (`Player_PositionGun` 0x1a3b40's
                         // port) to the next fire_player so the casing spawns at the gun, not the eye.
-                        self.drones.eject_gun = Some(self.gun_matrix());
+                        // The player arm [M 0x12f678:88-99]: `AnimGetBoneWorldTrans(BL+0x7e8, 1, 0, pos, MATRIX)` —
+                        // DATUM 1 (a non-negative id is a datum [M 0x1c3120]); the 0x40000 alternating records with
+                        // `BL+0x958 == 0` use datum 5 (the other gun). The view model's origin (`gun_matrix`) sits
+                        // ~0.43 behind the eye: shells ejected there spawned at the camera — "big on my screen, but
+                        // I can't really see them" (the user, 1015-0046).
+                        let alt = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40000 != 0 && self.gun.alt_fire_toggle == 0;
+                        self.drones.eject_gun = Some(self.view_datum_matrix(if alt { 5 } else { 1 }).unwrap_or_else(|| self.gun_matrix()));
                         self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
                         // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:248-253]: a `+0x6C & 4` shot hands
                         // the view to the projectile — `Player_ChangeSubState(owner, 10)`, `BLData+0x878 =
@@ -3842,6 +3859,11 @@ impl Sim {
     /// `QuatTransToMat(datum.q, datum.t) · bone world`]): the first-person skin (+0xDC), the view script's
     /// sequence at the current frame (root translation zeroed, as the draw does), through `gun_matrix`.
     pub fn view_datum(&self, id: u32) -> Option<[f32; 3]> {
+        self.view_datum_matrix(id).map(|m| [m[3][0], m[3][1], m[3][2]])
+    }
+
+    /// `view_datum`'s full world matrix (rotation rows + translation) — the `AnimGetBoneWorldTrans` MATRIX out.
+    pub fn view_datum_matrix(&self, id: u32) -> Option<Mat4> {
         let w = self.weapons.records.get(self.gun.weapon as usize)?;
         let skin = self.skins.get(&u32::from_le_bytes(w[0xdc..0xe0].try_into().ok()?))?;
         let skel = self.skeletons.get(&skin.skeleton)?;
@@ -3853,8 +3875,7 @@ impl Sim {
         let mut local = anim::local_pose(seq, skel, skin, (t.saturating_sub(a) + 1) as u32);
         if let Some(r) = local.first_mut() { r.0 = [0.0; 3]; }
         let world = anim::world_pose(&local, skin);
-        let m = anim::mul(&anim::mul(&anim::quat_trans_to_mat(dt.q, dt.t), world.get(dt.bone as usize)?), &self.gun_matrix());
-        Some([m[3][0], m[3][1], m[3][2]])
+        Some(anim::mul(&anim::mul(&anim::quat_trans_to_mat(dt.q, dt.t), world.get(dt.bone as usize)?), &self.gun_matrix()))
     }
 
     pub fn view_frame(&self, skeleton: u8) -> Option<(usize, u32)> {
@@ -3926,6 +3947,9 @@ pub fn flash_mod(frame: u32) -> f32 {
 /// A rigid mesh hung on a character's datum (`AnimObjectDraw`): world = `QuatTransToMat(q, t)` · bone world.
 /// Draw slots per gas mesh (the sim's pool holds `GasPool::CAP` = 128; a puff past this index doesn't draw).
 pub const GAS_DRAW_SLOTS: usize = 64;
+/// "DroneScan" [D 07000005.bin]: the Micro-Camera's per-drone target bracket mesh, and its draw slots.
+pub const DRONE_SCAN: u32 = 0x0200_0832;
+pub const DRONE_SCAN_SLOTS: usize = 16;
 
 pub struct Attachment {
     pub character: u32,
@@ -4205,7 +4229,10 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
         Layer::SkyCamera | Layer::SkyFixed => if param4 == 1 { (0, 1) } else { (4, 0) },
         Layer::World => if chain == u32::MAX && obj.flags & 1 != 0 { (3, 2) } else { (1, 1) },
         Layer::Character => (2, 1),
-        Layer::Effect => (5, 0),
+        // `View_AddObjects` 0x1e62d8:57-59 routes an object with glist flag 0x2000 to sort list 2, which
+        // `Game_Draw` 0x1e6f50:162-175 draws after `psiClearZ` — over the whole world. Only the Micro-Camera's
+        // DroneScan (0x02000832, flags 0x2128 [D]) takes it here; the other 0x2000 effect meshes are unverified.
+        Layer::Effect => if obj.hashcode == DRONE_SCAN && obj.flags & 0x2000 != 0 { (6, 0) } else { (5, 0) },
     };
     // The object's world centre (glist sphere centre through the instance matrix) for the draw-order sort; world layers
     // keep each object apart. The world-space bounding-sphere radius (glist radius × the instance matrix's max axis
@@ -5050,6 +5077,19 @@ impl Scene {
                 }
             }
         }
+        // fix-microcam-brackets: the Micro-Camera's target brackets — `HUD_UpdateCameraPane` 0x1a12d8 creates one
+        // one-frame object per candidate drone at its root with gfx "DroneScan" 0x02000832 (Effect kind 6).
+        if drones.is_some() {
+            if let Some(&(m, o)) = level.by_hash.get(&DRONE_SCAN) {
+                let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+                let splacement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
+                for slot in 0..DRONE_SCAN_SLOTS {
+                    let sinst = Instance { map: m, object: o, matrix: ident, placement: splacement.clone() };
+                    add_instance(level, &sinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                    attachments.push(Attachment { character: 0, bone: 0, local: sinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((6, slot, DRONE_SCAN)), silencer: false });
+                }
+            }
+        }
         // fix-satchel-tripbomb: the satchel's countdown digits — the 0x3b tail of `Bullet_DoTrails`
         // (0x12d890:485-553) spawns two kind-0x40 objects every tick, gfx `SatchelDigits[sec/10]` and
         // `SatchelDigits[sec%10]` [L SatchelDigits @0x2bed90 = 0x2000791..0x200079a], linked to the
@@ -5650,6 +5690,7 @@ impl Scene {
                 prev_aiming: false,
                 view_aim_anim: None,
                 view_aim_raising: false,
+                mp: None,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
@@ -6008,6 +6049,17 @@ impl Scene {
                             m
                         }
                         _ => far,
+                    },
+                    // The DroneScan bracket: at the candidate's root (`obj+0x30` [M 0x1a12d8:53]), no rotation
+                    // (control_create_object's null angles) — its glist flag 8 makes `View_DrawObjectGlist` 0x1e6780
+                    // billboard it (the viewer's rotation), scale 1.
+                    6 => match crate::hud::camera_scan_roots(s).get(slot) {
+                        Some(p) => {
+                            let (r, u) = (opts.right, opts.up);
+                            let f = [r[1] * u[2] - r[2] * u[1], r[2] * u[0] - r[0] * u[2], r[0] * u[1] - r[1] * u[0]];
+                            [[r[0], r[1], r[2], 0.0], [u[0], u[1], u[2], 0.0], [f[0], f[1], f[2], 0.0], [p[0], p[1], p[2], 1.0]]
+                        }
+                        None => far,
                     },
                     // fix-satchel-tripbomb: the satchel's countdown digits (kinds 4 = tens, 5 = units)
                     // — the meshes SatchelDigits[sec/10]/[sec%10] [L 0x2bed90], drawn at the stuck
@@ -6390,6 +6442,26 @@ impl Scene {
         const FAR: Mat4 = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
         let fs = self.frame_state(choice, time, opts);
         let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
+        // fix-dev-spawn-visible: a LIVE drone's character (present + enabled — the dev NPC spawns, and
+        // the placed guards while they fight) must not vanish when the strict portal walk drops the
+        // room he stands in. The measured case: the skin-row guard settles 4.4 m in front of the
+        // 07000005 spawn into a room whose cell (31) is in NEITHER mask from the eye's cell (14) —
+        // game 75/137, strict 5/137 — while the player looks straight at him; the game draws an
+        // object there (View_AddCels' depth-0 frustum band covers 200 units, View_DrawObjList 0x1e69a0
+        // draws the VisCelList cels' object lists, and the object is linked to the room build_FindCel
+        // 0x1c8680 picks at its own position). The port's walk is the approximation that already
+        // needed `near_los_rescue` for the World draws (fix-portal-sweep: "the near unoccluded
+        // generics the walk drops where the port's per-cel attribution approximation disagrees");
+        // for a live NPC the palette trusts the position + the GPU clip instead of the walk. The
+        // hidden/present collapse below still removes dead and disabled ones.
+        // Only the dev panel's pool copies (`npc_pool` chars): exempting EVERY live drone let the strict
+        // walk's hidden rooms draw their partygoers (fix_portal_live's ballroom).
+        let live_drone = |ci: usize| {
+            self.npc_pool.iter().any(|s| s.chars.contains(&ci)) && self.sim.as_ref()
+                .and_then(|s| s.char_drone.get(ci).copied().flatten())
+                .and_then(|di| self.sim.as_ref().map(|s| (s, di)))
+                .map_or(false, |(s, di)| s.drones.list[di].present && s.drones.list[di].enabled)
+        };
         let vis_room = |pos: [f32; 3]| -> bool {
             vis.map_or(true, |v| self.cel_index_at(pos).map_or(true, |r| v.get(r).copied().unwrap_or(true)))
         };
@@ -6402,7 +6474,7 @@ impl Scene {
             let nb = c.skeleton.bones as usize;
             if fs.hidden[ci] { for k in 0..=nb { p[base + k] = collapse(&c.matrix); } continue; }
             let cpos = fs.posed[ci].as_ref().map_or(c.matrix[3], |(_, _, m)| m[3]);
-            if !vis_room([cpos[0], cpos[1], cpos[2]]) { for k in 0..=nb { p[base + k] = FAR; } continue; }
+            if !live_drone(ci) && !vis_room([cpos[0], cpos[1], cpos[2]]) { for k in 0..=nb { p[base + k] = FAR; } continue; }
             match &fs.posed[ci] {
                 Some((mats, _, m)) => {
                     p[base] = *m;

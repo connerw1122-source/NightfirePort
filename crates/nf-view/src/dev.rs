@@ -175,9 +175,29 @@ impl Dev {
                     }
                 }
                 let wi = sim.gun.weapon as usize;
-                let cs = sim.weapons.clip_size(wi);
-                if self.no_reload && cs > 0 {
-                    if let Some(c) = sim.drones.inventory.clip.get_mut(wi) { *c = (*c).max(cs); }
+                // fix-hud-ammo-odd: the pin's slot and cap are the twin-RESOLVED record's
+                // [M Player_AmmoIndex 0x1a9148: +0x05 set and the +0x90 types equal → the base's
+                // slot], the same pick the pane's own clip read makes (scene.rs `clip_slot`). The
+                // held detonator 0x38's own +0x92 is 500 while the game's pane reads the mine's
+                // shared slot 0x37 (cap 1 [L ee_snapshot]) — the old held-record pin maxed the live
+                // clip to 500 ("500-4") and kept in step with the give's twin-fill junk in
+                // clip[0x38]. The Samurai charge (base 0x33) drains the SAME shared slot.
+                let slot = sim.clip_slot(wi);
+                let cs = sim.weapons.clip_size(slot);
+                // fix-hud-ammo-odd: the Phoenix Samurai's charge drain (`Player_WeaponFiring`
+                // 0x1a5460:197-201, the scene.rs port) is not a `Player_RoundToFire` spend — the
+                // game's ammo flag (DAT_002a3740) never blocks it — and the kind-0x1f pane climbs
+                // with it [M HUD_UpdateAmmoPane 0x19a7f0:129-136 + disasm 0x19a914-0x19a934; L the
+                // fix-fire-modes3 PCSX2 pass's "the HUD number climbs 0 → 100"]. The every-tick pin
+                // re-maxed the clip to cap and froze the pane at the full-charge "0"; skip the pin
+                // while a charge script (the record's +0xB0) is the playing view script.
+                let charging = matches!(sim.gun.weapon, 0x32 | 0x33) && sim.gun.fire_state
+                    && sim.weapons.records.get(sim.gun.weapon as usize).is_some_and(|r| {
+                        let h = u32::from_le_bytes(r[0xb0..0xb4].try_into().unwrap());
+                        h != 0 && sim.view_script == h
+                    });
+                if self.no_reload && cs > 0 && !charging {
+                    if let Some(c) = sim.drones.inventory.clip.get_mut(slot) { *c = (*c).max(cs); }
                 }
                 // fix-silencer-modes: with infinite ammo the CURRENT weapon's clip stays at its
                 // `weapon_data+0x92` size EVERY tick (both the live `gun.clip` and the inventory slot).
@@ -188,13 +208,13 @@ impl Dev {
                 // the clip pinned the refire is the table's +0x40 (120 frames) with no reload gap. The
                 // clip size is the record's own; the spares keep the trace-cheat's best-seen shape (no
                 // ammo cap touched, so pickups still take).
-                if self.infinite_ammo && cs > 0 {
-                    if let Some(c) = sim.drones.inventory.clip.get_mut(wi) { *c = (*c).max(cs); }
+                if self.infinite_ammo && cs > 0 && !charging {
+                    if let Some(c) = sim.drones.inventory.clip.get_mut(slot) { *c = (*c).max(cs); }
                     sim.gun.clip = sim.gun.clip.max(cs as u32);
                 }
                 // Keep the gun's HUD copies in step with the refilled inventory (the HUD and the title read
                 // `gun.clip`/`gun.spare`; `Sim::run` re-reads them from the inventory next tick anyway).
-                if let (Some(&c), Some(&n)) = (sim.drones.inventory.clip.get(wi), sim.drones.inventory.carried.get(sim.weapons.ammo_type(wi))) {
+                if let (Some(&c), Some(&n)) = (sim.drones.inventory.clip.get(slot), sim.drones.inventory.carried.get(sim.weapons.ammo_type(wi))) {
                     sim.gun.clip = sim.gun.clip.max(c.max(0) as u32);
                     sim.gun.spare = sim.gun.spare.max(n.max(0) as u32);
                 }
@@ -206,60 +226,85 @@ impl Dev {
     }
 
     /// Spawn a guard at `pos` with the picked type/mode, the way the game's spawner does (`Action::Spawn` → present +
-    /// enabled + llist). Also adds a `Character` (skin + skeleton + matrix) and a `char_drone` entry so the
-    /// renderer draws the guard — without this the drone exists in the AI but is invisible (the user's Round 7
-    /// report: "spawning a guard doesn't work in the viewer, even though the test passes"). B-12.
-    pub fn spawn_guard(&self, scene: &mut Scene, pos: [f32; 3], yaw: f32) -> Option<usize> {
-        let sim = scene.sim.as_mut()?;
-        let d = sim.data();
-        // B-12: pick the skin of the first active guard on the level (guarantees the mesh is in the level archive).
-        // The old hardcoded skins (0x05000006 / 0x05000019) aren't in 07000005's skin table, so spawn returned None.
-        let skin = sim.drones.list.iter()
-            .find(|x| x.present && x.enabled && !x.corpse && x.health > 0.0 && x.drawn)
-            .map(|x| x.skin)
-            .unwrap_or(0x0500_0006);
+    /// enabled + llist), from the level's own NPC pool (the skin-row path's mechanism, `panel::spawn_npc`).
+    ///
+    /// Why the pool and not a fresh `Character` (fix-dev-spawn-visible): the renderer's character
+    /// geometry is uploaded at build time (`Scene::char_verts`, the tail of `vertices` from the
+    /// Character-layer draw groups) — a `Character` pushed here after the build gets palette slots
+    /// (the renderer rebuild in `App::apply_menu_action` covers `char_base`) but has NO vertices in
+    /// the buffer, so nothing draws no matter what the palette carries (the main agent's dry run:
+    /// "[dev] guard #16: spawned (normal) at (101.2,24.3,106.4)" and no guard anywhere). The pool
+    /// copies are ordinary build-time characters (their meshes ARE in the buffer), bound to the drone
+    /// through `Sim::char_drone`, and `frame_state` poses a bound character at the drone's position.
+    ///
+    /// The drone inits through the level loader's own path (`Drone::new`, `NDrone2_DefaultInit`
+    /// 0x14b300) with the SLOT's real placement parameter block — `Drone_Create` 0x136be0 copies
+    /// `placement+0x2C` and the reads take param 9 (the weapon selector), param 14 (the sight class),
+    /// param 11 (the alert block) — the old zero-filled closure (`|k| match k { 0 => skin, 16/21 =>
+    /// mode, _ => 0 }`) gave the guard weapon selector 0 and sight class 0. Only params 16/21 (the
+    /// mode) are overridden and 3/4 zeroed (a dev spawn is active at once: no switch channel to wait
+    /// on, no spawner group), exactly like `panel::spawn_npc`. The guard faces Bond (the skin rows'
+    /// own convention — `yaw = atan2(eye − pos)`), so his sight cone can take Bond in.
+    pub fn spawn_guard(&self, scene: &mut Scene, pos: [f32; 3], _yaw: f32) -> Option<usize> {
+        // B-12: pick the skin of the first active guard on the level (guarantees the pool has the
+        // skin — the pool is built per skin from the level's first drone placement of that skin).
+        // The old hardcoded skins (0x05000006 / 0x05000019) aren't in 07000005's skin table.
+        let skin = {
+            let sim = scene.sim.as_ref()?;
+            sim.drones.list.iter()
+                .find(|x| x.present && x.enabled && !x.corpse && x.health > 0.0 && x.drawn)
+                .map(|x| x.skin)
+                .unwrap_or(0x0500_0006)
+        };
         let mode = match self.spawn {
             SpawnPick::Normal => 0u32,
             SpawnPick::Sniper => 2u32,
             SpawnPick::Ambush => 0x10u32,
         };
-        let mut rng = Rng::new(0xdead_beef);
-        let param = |k: u32| match k { 0 => skin, 16 => mode, 21 => mode, _ => 0 };
-        let mut dr = Drone::new(&d, pos, yaw, param, &mut rng);
-        dr.present = true;
-        dr.enabled = true;
-        dr.started = false;
-        dr.grenade_weapon = 0x35;
-        dr.grenade_count = 5;
-        let idx = sim.drones.list.len();
-        sim.drones.list.push(dr);
-        sim.drones.llist.push(idx);
-        // B-12: add a Character (mesh + skeleton) so the renderer draws the spawned guard. The skin is resolved
-        // by hashcode from the level's skin table; the skeleton from the skin's skeleton id. slot_bones is empty
-        // (no weapon-attachment bones — the guard's held weapon won't draw, but the body will). This mirrors how
-        // `Scene::build` creates a Character for each placement (scene.rs:1114).
-        let (skin_obj, skeleton_obj) = {
-            let skin_ref = sim.skins.get(&skin)?;
-            let skeleton_ref = sim.skeletons.get(&skin_ref.skeleton)?;
-            (skin_ref.clone(), skeleton_ref.clone())
+        // A free pool slot of that skin: its characters' char_drone entries are all None.
+        let slot = {
+            let sim = scene.sim.as_ref()?;
+            scene.npc_pool.iter()
+                .find(|s| s.skin == skin && s.chars.iter().all(|&c| sim.char_drone.get(c).copied().flatten().is_none()))
+                .cloned()?
         };
-        let matrix = nf_formats::placement::object_matrix([0.0, yaw, 0.0], pos);
-        let char_idx = scene.characters.len();
-        scene.characters.push(crate::scene::Character {
-            matrix,
-            skin: skin_obj,
-            skeleton: skeleton_obj,
-            slot_bones: Vec::new(), // no weapon slots — body draws, held weapon does not
-            start: None,
-            role: nf_formats::drone::SpawnRole::Placed,
-            floor: None,
-            script: None,
-            morph_targets: None,
-        });
-        // char_drone maps character index → drone index. The renderer's `animate()` uses this to find the drone
-        // for each character; without it, the spawned character would pose in the bind pose (not the drone's state).
-        sim.char_drone.push(Some(idx));
-        let _ = char_idx; // the character is now at scene.characters[char_idx]; char_drone[char_idx] == Some(idx)
+        let params = slot.params.clone();
+        let param = |k: u32| match k {
+            16 | 21 => mode,
+            // A dev spawn is active at once: no switch channel to wait on (3), no spawner group (4).
+            3 | 4 => 0,
+            _ => params.iter().find(|(i, _)| *i == k).map_or(0, |&(_, v)| v),
+        };
+        // Face the guard at Bond (the skin rows' convention), so a normal-mode guard's sight cone
+        // can take the player the playtest checks put him in front of.
+        let yaw = {
+            let sim = scene.sim.as_ref()?;
+            let b = sim.bond.pos;
+            (b[0] - pos[0]).atan2(b[2] - pos[2])
+        };
+        // A separate RNG seed for the dev spawn: the game's own stream is untouched.
+        let mut rng = Rng::new(0xdead_beef ^ scene.sim.as_ref()?.drones.list.len() as u32);
+        let idx = {
+            let sim = scene.sim.as_mut()?;
+            let mut dr = {
+                let d = sim.data();
+                Drone::new(&d, pos, yaw, param, &mut rng)
+            };
+            dr.present = true;
+            dr.enabled = true;
+            dr.started = false;
+            // The dev tool's grenade belt (B-12: the force-grenade tool and its tests rely on it).
+            dr.grenade_weapon = 0x35;
+            dr.grenade_count = 5;
+            let idx = sim.drones.list.len();
+            sim.drones.list.push(dr);
+            sim.drones.llist.push(idx);
+            idx
+        };
+        for &c in &slot.chars {
+            if let Some(cd) = scene.sim.as_mut()?.char_drone.get_mut(c) { *cd = Some(idx); }
+            if let Some(a) = scene.sim.as_mut()?.char_ambient.get_mut(c) { *a = [0xff; 3]; }
+        }
         Some(idx)
     }
 
@@ -905,7 +950,13 @@ pub fn apply_menu_action_to_scene(dev: &mut Dev, scene: &mut Scene, action: Menu
         MenuAction::Spawn(pick) => {
             let look = { let s = scene.sim.as_ref(); match s { Some(sim) => sim.bond.look(), None => [0.0, 0.0, 1.0] } };
             let hit = scene.sim.as_ref().and_then(|s| s.world.segment(eye, [eye[0] + look[0] * 30.0, eye[1] + look[1] * 30.0, eye[2] + look[2] * 30.0]));
-            let pos = hit.map_or([eye[0] + look[0] * 5.0, eye[1], eye[2] + look[2] * 5.0], |t| [eye[0] + (look[0] * 30.0) * t, eye[1] + (look[1] * 30.0) * t, eye[2] + (look[2] * 30.0) * t]);
+            // fix-dev-spawn-visible: the drone's ROOT sits at floor + hip (1.0) — the collision snap's
+            // own convention (`Drone_CollisionHandler` 0x140968 port: `pos.y = floor + self.hip()`, the
+            // hip 1.0). A root AT the hit surface puts the feet 1 m underground: the grounding ray
+            // (`feet_on_point`, 1.6 down from the root) starts past the surface, the guard falls
+            // through the world and settles on whatever is far below — the main agent's dry run saw
+            // no guard "there or anywhere around Bond".
+            let pos = hit.map_or([eye[0] + look[0] * 5.0, eye[1], eye[2] + look[2] * 5.0], |t| [eye[0] + (look[0] * 30.0) * t, eye[1] + (look[1] * 30.0) * t + 1.0, eye[2] + (look[2] * 30.0) * t]);
             dev.spawn = pick;
             let gi = dev.spawn_guard(scene, pos, yaw);
             let kind = match pick { SpawnPick::Normal => "normal", SpawnPick::Sniper => "sniper", SpawnPick::Ambush => "ambush" };

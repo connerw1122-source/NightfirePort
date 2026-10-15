@@ -394,12 +394,34 @@ pub fn spawn_npc(scene: &mut crate::scene::Scene, skin: u32, mode: Option<u32>) 
         scene.npc_pool.iter().find(|s| s.skin == skin && s.chars.iter().all(|&c| sim.char_drone.get(c).copied().flatten().is_none()))
             .cloned().ok_or_else(|| format!("no free {skin:08x} NPC (pool of {} per type)", crate::scene::NPC_POOL))?
     };
+    let (eye, look, pos) = {
+        let sim = scene.sim.as_ref().ok_or("no game")?;
+        let eye = sim.bond.head();
+        let look = sim.bond.look();
+        let flat = (look[0] * look[0] + look[2] * look[2]).sqrt().max(1e-6);
+        let (fx, fz) = (look[0] / flat, look[2] / flat);
+        // fix-dev-spawn-visible: the y is the floor within a SHORT band under the eye (4 units) —
+        // the ground "a few metres in front of Bond", near his own standing height — with his own
+        // floor as the fallback. The old `floor_below(eye+1, depth 20)` scanned 20 units down and
+        // fell THROUGH the slope the player sees onto a surface ~8 m lower (the 07000005 spawn's
+        // snow bank: the guard spawned at y 15.9 under Bond's 24.2 floor and settled inside the
+        // terrain — the main agent's "no guard appeared in front of Bond", the pool count dropping
+        // while nothing shows). The bank also drops ~8 m between 3 and 4 m out at this spot, so the
+        // candidates walk IN from 4 m and take the first whose ground sits within 1.5 of Bond's —
+        // the spawn placements' own shape (a guard on the ground near the player).
+        let bond_floor = sim.bond.pos[1] - 1.0;
+        // The root convention: pos.y = floor + hip (1.0) [M Drone_CollisionHandler 0x140968's port
+        // snap] — a root AT the floor puts the feet 1 m underground and the guard falls through.
+        let mut picked = None;
+        for d in [4.0f32, 3.0, 2.0, 1.2] {
+            let p = [eye[0] + fx * d, eye[1], eye[2] + fz * d];
+            if let Some(f) = sim.world.floor_below([p[0], p[1] + 1.0, p[2]], 4.0) {
+                if (f - bond_floor).abs() < 1.5 { picked = Some([p[0], f + 1.0, p[2]]); break; }
+            }
+        }
+        (eye, look, picked.unwrap_or([sim.bond.pos[0] + fx * 1.2, bond_floor + 1.0, sim.bond.pos[2] + fz * 1.2]))
+    };
     let sim = scene.sim.as_mut().ok_or("no game")?;
-    let eye = sim.bond.head();
-    let look = sim.bond.look();
-    let flat = (look[0] * look[0] + look[2] * look[2]).sqrt().max(1e-6);
-    let mut pos = [eye[0] + look[0] / flat * 4.0, eye[1], eye[2] + look[2] / flat * 4.0];
-    pos[1] = sim.world.floor_below([pos[0], eye[1] + 1.0, pos[2]], 20.0).unwrap_or(sim.bond.pos[1]);
     let yaw = (eye[0] - pos[0]).atan2(eye[2] - pos[2]);
     let params = slot.params.clone();
     let param = |k: u32| match (k, mode) {
