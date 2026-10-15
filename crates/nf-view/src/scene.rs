@@ -2751,7 +2751,14 @@ impl Sim {
                 let script = self.gun.firing_anim_script(flags, u16::from_le_bytes([w[2], w[3]]), self.gun.clip, rd(0xb0), rd(0xb4), &mut self.drones.rng);
                 if script != 0 && !(was_fire_state && flags & 0x100400 != 0 && fire_anim_len != 0) {
                     self.view_script = script;
-                    (self.view_time, self.view_speed) = (0.0, 1.0);
+                    // [M `Player_WeaponFiring` 0x1a5460:676-685]: a record with +0x6C & 0x400 and a +0xB4
+                    // script enters view state 0xb and the just-queued fire script plays at 1.5×
+                    // (`*(script + 0x98) = 0x3fc00000`) — the hand grenades 0x34..0x37 [L +0x6C 0x8c08/0x8c0a].
+                    // Measured in PCSX2 (07000015, the frag): script time +1.5 per frame from the press,
+                    // frame 26 (the release, +0x44) at +17 frames. At 1.0 the port released at +25 with the
+                    // hand still on the pin (the user's report, four rounds).
+                    let speed = if rd(0x6c) & 0x400 != 0 && rd(0xb4) != 0 { 1.5 } else { 1.0 };
+                    (self.view_time, self.view_speed) = (0.0, speed);
                 }
             } else if self.gun.reload_state != 0 && was_reloading == 0 {
                 // Reload just started [M Player_WeaponFiring's shared tail 0x1a6250-0x1a631c]: state 6
@@ -2813,6 +2820,12 @@ impl Sim {
                     if flags & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) {
                         self.view_script = fire_last;
                         (self.view_time, self.view_speed) = (0.0, 1.5);
+                    } else if rd(0x6c) & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) {
+                        // The grenades' state 0xb [M `Player_SetWeaponAnimObj` 0x1a2e38 case 0xb]: the fire
+                        // script stopped → `AnimScriptAdd(+0xB4)` (the next grenade coming up) at its own
+                        // 1.0 [L PCSX2: the script after the throw runs +1.0 per frame], then idle.
+                        self.view_script = fire_last;
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
                     } else {
                         if flags & 0x1000 == 0 { self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0); }
                         self.gun.end_fire_state();
@@ -4578,6 +4591,28 @@ impl Scene {
                         }
                     }
                 }
+                // fix-silencer-visual: the silenced twins' view-entity — the silencer MESH the user
+                // doesn't see ("The suppressor still stays on the gun, but visually it's not
+                // there"). While the HELD record's flags (+0x68) carry 0x800, `Player_WeaponFiring`
+                // 0x1a5460:96-110 attaches the mesh at weapon_data+0x7C to DATUM 0 of the weapon
+                // AnimObj (BL+0x7e8) every tick — `AnimDatumSetEntity(vm, 0, weapon+0x7C, 0xff)`,
+                // cleared in the swap/holster state 8 and by the twin arm (0x1a5460:111-118) on the
+                // bare record; `AnimObjectDraw` 0x1c4490 draws a datum's entity at
+                // `QuatTransToMat(datum.q, datum.t) · bone world`. The silenced twins 0x03/0x05/
+                // 0x07/0x09 carry flags 0x1884/0x188c over the bare 0x02/0x04/0x06/0x08's
+                // 0x1004/0x100c, sharing +0x7C and the fp skin [L the golden weapon table 2fd48d6d;
+                // the P2K's mesh 0x02000842, on 05 natively [D]]. The mesh rides the record's own
+                // view-model character, so it draws only while that record is held — the game's
+                // per-tick gate. (Session 102b's open decode: fix_silencer_modes_live.rs.)
+                let wflags = u32::from_le_bytes(r[0x68..0x6c].try_into().unwrap());
+                let ventity = u32::from_le_bytes(r[0x7c..0x80].try_into().unwrap());
+                if wflags & 0x800 != 0 && ventity != 0 {
+                    if let (Some(&(emap, eobject)), Some(dt)) = (level.by_hash.get(&ventity), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
+                        let einst = Instance { map: emap, object: eobject, matrix: ident, placement: placement.clone() };
+                        add_instance(level, &einst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                    }
+                }
                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None , morph_targets: None });
                 view_models.insert(wid, ci as usize);
             }
@@ -5649,6 +5684,10 @@ impl Scene {
                     }
                 } else {
                     match s.drones.player_bullets.get(slot as usize - GRENADE_SLOTS - TRACER_SLOTS) {
+                        // The ridden guided rocket is never drawn in its own camera: `Player_PositionCamera`
+                        // 0x18f5d8 case 0xc `View_SetDrawInOtherViewsOnly(BL+0x878, view)` [M]. Drawing it put
+                        // the eye inside the rocket's mesh — the big dark octagon the user saw instead of the view.
+                        Some(b) if b.guided_cam && s.missile_cam.is_some() => return far,
                         Some(b) if !b.dead => (b.pos, b.dir, s.weapons.projectile_mesh(b.weapon as usize)),
                         _ => return far,
                     }
