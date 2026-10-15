@@ -2439,8 +2439,20 @@ impl Drone {
                 let side = [side[0] / sl, side[1] / sl, side[2] / sl];
                 let mp = axis_angle_mat(side, hp);
                 let my = axis_angle_mat(neck, -hy);
-                let m = nf_formats::anim::mul(&world[5], &mp);
-                world[5] = nf_formats::anim::mul(&m, &my);
+                // The game turns ONLY the head's orientation: HeadTrack hands Quat_QuatToMat
+                // (0x1e3e80) the palette entry itself (0x1bfcc0 `lw $a1, 0xd8($sp)` = palette +
+                // bone·0x40, 0x1bfcc4 `jal 0x1e3e80`), and that helper stores offsets 0x00..0x2c
+                // — the three rotation rows — never the +0x30 translation row. The head keeps the
+                // anim-posed position on the neck while only its rotation turns. The full-matrix
+                // product below used to rotate the translation row about the object origin, so at
+                // the saturated track angles (yaw ±1.1, pitch ±1.0, e.g. a guest at ~1 unit) the
+                // head detached onto the shoulders/back (the 07000007 playtest's sideways heads).
+                let mut rot = world[5];
+                rot[3] = [0.0, 0.0, 0.0, 1.0];
+                let m = nf_formats::anim::mul(&rot, &mp);
+                let mut turned = nf_formats::anim::mul(&m, &my);
+                turned[3] = world[5][3];
+                world[5] = turned;
             }
         }
         Some((world, hip))
@@ -6296,15 +6308,23 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     let flags6c_w = d.weapons.records.get(b.weapon as usize)
                         .map_or(0u32, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()));
                     let laser_beam = flags6c_w & 0x100 != 0;
-                    if !laser_beam {
+                    // fix-wallhug-prompt: the sound rides the SAME gate as the effects [M
+                    // Bullet_CollisionHandler 0x12ce80:187-190 — effect flags |= 0x61 only with
+                    // weapon_data+0x70 & 2, and `Effect_Bullet` 0x1ce8a8:86-90 plays the
+                    // `EffectInfo+0x14` impact sound only on flags 0x40]. The Q-Claw bolt carries
+                    // +0x70 = 0x40 — the grapple bit, no effects bit [L ee_start_05.bin 0x2bf150 +
+                    // 0x50/0x51·0x10C] — so its world hit (the hook latch) is SILENT: the user's
+                    // "hook latched, pulled me in, but I also heard a bullet impact". The old
+                    // unconditional sound also voiced the stunner (0x800) and the gadgets.
+                    let flags70 = d.weapons.records.get(b.weapon as usize)
+                        .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                    if !laser_beam && flags70 & 2 != 0 {
                         self.impact_sound(d, b.pos, end);
                     }
                     // `Bullet_CollisionHandler` 0x12ce80 → `Effect_Create` 0x1ce688 / `Effect_Bullet`
                     // 0x1ce8a8 / `Effect_RicochetProb` 0x1cf290 (docs/atlas/effect.md). Bond is class 3,
                     // so `Effect_Bullet` skips its `Rand_Rand(2)` [M 0x1ce94c]. A ricochet keeps the
                     // bullet alive on the reflected direction [M 0x12d704].
-                    let flags70 = d.weapons.records.get(b.weapon as usize)
-                        .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
                     let mut ricochet: Option<(V3, V3)> = None;
                     if let Some((_, n, m)) = d.world.segment_surface(b.pos, end, false) {
                         if laser_beam {
@@ -8074,11 +8094,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     crate::bullet::BulletEvent::World(p) => {
                         let end = [p[0] + dir[0] * 0.1, p[1] + dir[1] * 0.1, p[2] + dir[2] * 0.1];
                         if let (Some(s), Some((_, n, m))) = (d.surfaces, d.world.segment_surface(from, end, false)) {
-                            if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
-                            // `Bullet_CollisionHandler` 0x12ce80: the effects + ricochet. The shooter is a
-                            // drone (not class 3), so `Effect_Bullet` draws its `Rand_Rand(2)` [M 0x1ce94c].
+                            // fix-wallhug-prompt [M Bullet_CollisionHandler 0x12ce80:187-190 +
+                            // Effect_Bullet 0x1ce8a8:86-90]: the impact sound only with the effects bit
+                            // (weapon_data+0x70 & 2 → flags 0x61, the sound arm 0x40) — the claw bolt's
+                            // +0x70 = 0x40 [L] dies silent (site 1 has the same gate).
                             let flags70 = d.weapons.records.get(b.weapon as usize)
                                 .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                            if flags70 & 2 != 0 {
+                                if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
+                            }
+                            // `Bullet_CollisionHandler` 0x12ce80: the effects + ricochet. The shooter is a
+                            // drone (not class 3), so `Effect_Bullet` draws its `Rand_Rand(2)` [M 0x1ce94c].
                             if let Some(nd) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, p, n, m, b.dir, flags70, b.bounces, false) {
                                 if b.bounces < 3 {
                                     // The bullet continues on the reflected direction [M 0x12d7a8..0x12d7f0].

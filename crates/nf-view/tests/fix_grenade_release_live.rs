@@ -78,15 +78,19 @@ fn the_frag_leaves_the_hand_on_the_release_frame_after_the_pin_pull() {
         if spawn_tick.is_none() && sim.drones.grenades.iter().any(|g| g.state < 2) {
             spawn_tick = Some(t);
             let frame = sim.view_time + 1.0; // the port's script frames are time+1
-            assert_eq!(frame, 26.0, "the spawn lands on the fire script's release frame 26 (+0x44), \
-                i.e. AFTER the pin pull (the pin sound is frame 16) — not on the press tick");
+            // The grenades play the fire script at 1.5× [M Player_WeaponFiring 0x1a5460:676-685;
+            // L PCSX2 07000015: +1.5 per frame], so the release frame 26 is crossed between 26 and 27.5.
+            assert!((26.0..27.5).contains(&frame), "the spawn lands on the fire script's release frame 26 (+0x44), \
+                i.e. AFTER the pin pull (the pin sound is frame 16) — not on the press tick (frame {frame})");
             break;
         }
     }
     let (Some(press), Some(spawn)) = (press_tick, spawn_tick) else { panic!("no press or no spawn within 120 ticks (press {press_tick:?})") };
     assert_eq!(clip_on_press, Some(0), "the clip spends on the press frame [L PCSX2]");
     let lag = spawn - press;
-    assert!((23..=27).contains(&lag), "the grenade leaves the hand {} ticks after the press (the game: the release frame 26)", lag);
+    // [L PCSX2 07000015, the main agent's per-frame trace: frame 26 crossed at +17 from the press].
+    // Sister: the old 1.0 speed spawned at +25, outside this window.
+    assert!((16..=18).contains(&lag), "the grenade leaves the hand {} ticks after the press (the game: +17)", lag);
 }
 
 /// ── The blast: the puffs draw camera-facing (billboarded), not as a wall in their authored plane ──

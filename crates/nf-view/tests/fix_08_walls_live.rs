@@ -93,9 +93,14 @@ fn the_hand_over_hand_grab_still_fires_on_the_icons_side() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load_08(&iso);
     let sim = scene.sim.as_mut().unwrap();
+    // fix-wallhug-prompt: the spot stays the [D probe spot] — 3.47 (sphere centre) from the icon
+    // (133.43, 48.33, −101.21), inside the PICK-SPHERE shell 2.5 + 1.1638 = 3.66 [M Collide_Pick
+    // 0x1eb320 LAB_001eb4e4 — the picker radius is the hittest's own +0x8C, a bigger pick sphere
+    // than the object's world sphere 1.0576 [L M_CONTROL+0x8C]; the pins bracket it 2.31..5.9,
+    // see scene.rs]. The old [S] 12.0/6.0 window masked the pick sphere entirely.
     sim.bond = nf_game::player::Bond::new([132.0, 46.7, -104.0], 0.0);
     for _ in 0..90 { sim.step_bond(Input::default(), false, false, false); }
-    assert_eq!(sim.bond.icon_ctx, 3, "the west ledge reads the cable icon [D probe spot]");
+    assert_eq!(sim.bond.icon_ctx, 3, "the west ledge reads the cable icon [D probe spot; the pick-sphere shell 2.5 + 1.1638 = 3.66 covers the 3.47 spot]");
     for t in 0..8 { sim.step_bond(Input { jump: true, ..Input::default() }, false, false, false); }
     assert_eq!(sim.bond.substate, SS_ZIPLINE, "the intended zipline grab fires on the icon's side (substate {})", sim.bond.substate);
     assert_eq!(sim.bond.wire, Some(0), "the level's only wire is grabbed");
