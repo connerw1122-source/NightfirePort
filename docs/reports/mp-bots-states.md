@@ -119,4 +119,5 @@ gotoGoal's rolls) and the burst-schedule assertions.
 
 ## ntfy failed
 
-(none — notification sent at finish)
+curl and the python fallback both got HTTP 429 (ntfy daily quota, 14:46 UTC); the wget fallback
+succeeded (HTTP 200). Notification delivered.
