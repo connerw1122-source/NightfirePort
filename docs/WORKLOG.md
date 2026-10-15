@@ -12486,5 +12486,15 @@ Work Log:
 Stage Summary:
 - Branch s/fix-stunner-press @ c85f6796 + the report commit; the tase path ported end to end; the press verified on the real input path.
 
+
+Work Log (fix-sg5-casings):
+- (04:40-05:00) The decomp read: `Bullet_init_casing_ex` 0x12f678 line 160 — `Vec_Copy2(bone_pos, obj+0x30, obj+0x40)` re-positions the casing at `AnimGetBoneWorldTrans(shooter, weapon_datum)`'s VECTOR out (the view-model gun bone, on the record's +0xE0 offset [L ee_start_05: SG5 (0.028, 0.203, −0.244)]); the port ejected at `camera` — the EYE (scene.rs passed the fire origin, drone.rs `casings.eject(..., from, ...)`). `FRAME_RATE_MUL` = 60/FRAME_RATE = 1 at 60 Hz [M 0x17d2b8] — the velocity model was already right; only the origin (and the bone basis) were wrong.
+- (05:00) FAIL-FIRST on the pre-fix tree: the walked SG5 burst ejected at eye distance 0.021/0.071/0.091 (the assertion `>= 0.15` failed — "super large" is the shell drawn 2 cm from the eye). Post-fix 0.309/0.273/0.257 with the measured up-left drift, 2/2 green (fix_sg5_casings_live, real input path, dev give 0x16, 07000005).
+- (05:00-05:02) The fix: casing.rs `eject_bone` (the game's row-major bone transform, RNG order preserved bit-exact; `eject` delegates — guards unchanged), drone.rs `Drones.eject_gun: Option<[[f32;4];4]>` (own line) consumed in `fire_player`, scene.rs one additive hook: `self.drones.eject_gun = Some(self.gun_matrix())` (the port's Player_PositionGun 0x1a3b40).
+- (05:02-05:04) Regression sweep on the exact final tree (origin/master 2cbfd7e3 + fix): 13 binaries (all the fire/weapon/casing suites + nf-game/nf-view unit bins) — 47 passed, 0 failed, 6 ignored. Pushed ec1c5b0b. THE SANDBOX RESET at 05:04 (rootfs wiped); the branch survived on origin.
+- (05:10-05:25) Re-cloned s/fix-sg5-casings (ec1c5b0b intact), re-validated the pushed tree: rebuilt the env (rustup, ALSA prefix, work-slim + ISO), re-ran the sweep plus the weapon-asset/FX suites on the re-cloned tree — result below. Report: docs/reports/fix-sg5-casings.md.
+
 ## fix-laser-watch-look (2026-10-15, branch s/fix-laser-watch-look) — started
 - (05:34 UTC) Branch created from origin/master 0404d95b and pushed. Setup reused (repo, work/, ISO, nf-queue, ALSA prefix). Task: the laser watch 0x4e must match the measured game — wrist turn on press, beam from the watch face bone to the crosshair hit (pink-white glow tapering to a thin red line), drain ~31/s [D docs/live/2026-10-14-weapon-measurements-pcsx2.md "The laser watch 0x4e"]. Files: crates/nf-view/src/scene.rs, crates/nf-game/src/gadget.rs.
+## fix-sg5-casings (2026-10-15, branch s/fix-sg5-casings) — started 04:40 UTC
+Task: SG5 casings fly huge across the screen while walking forward (user 05 playtest 1014-1725: "bullet casings flying across my screen, like super large"). Suspects: world-space spawn + camera moving into them, wrong scale, near plane. First read docs/live/2026-10-14-weapon-measurements-pcsx2.md. Plan: repro via real input path (nf_view::load + Sim::step_bond), find Bullet_init_casing 0x12fde0 in the decomp, fix the draw/scale.

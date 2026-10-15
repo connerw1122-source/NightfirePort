@@ -1713,7 +1713,14 @@ impl Sim {
         if let Some(cam) = self.missile_cam.as_mut() {
             let live = self.drones.player_bullets.iter_mut().find(|b| b.guided_cam && !b.dead);
             if let Some(b) = live {
-                nf_game::drone::steer_missile(&mut b.dir, input.turn, input.look);
+                // `steer_missile` takes the game's analog units (full stick = 1.0 → π/128 per tick). The
+                // mouse delivers `turn` in radians (look in π/2 units), so convert, capped at full stick:
+                // the raw radians steered at ~3% of the game's rate (the user: guided missiles "still
+                // don't work").
+                const K: f32 = 0.024_543_693;
+                let yaw_in = (input.turn / K).clamp(-1.0, 1.0);
+                let pitch_in = (input.look * std::f32::consts::FRAC_PI_2 / K).clamp(-1.0, 1.0);
+                nf_game::drone::steer_missile(&mut b.dir, yaw_in, pitch_in);
                 cam.pos = b.pos;
                 cam.dir = b.dir;
                 cam.riding = true;
@@ -1770,7 +1777,12 @@ impl Sim {
         // The right mouse button is the scope/aim button for the mouse (lib.rs sets `scope` and `zoom`): it drives the
         // aim bit (the raise, then the zoom) exactly like the pad's aim button; only the pad's button also
         // enters free-aim (the cursor window), since the mouse aims directly (D-002).
-        let aiming = self.aim_gate(input.aiming || input.scope);
+        // The user (2026-10-14): right-click must not put an unscoped gun into the aim stance ("why is manual aim a
+        // thing"). The mouse button is a SCOPE button: it reaches the aim bit only on a weapon with a scope
+        // (weapon_data +0x68 bit 0x40, the pad path's `scoped` [input.rs]); on every other weapon it does nothing.
+        let scoped = self.weapons.records.get(self.gun.weapon as usize)
+            .and_then(|w| w.get(0x68..0x6c)).map_or(false, |b| u32::from_le_bytes(b.try_into().unwrap()) & 0x40 != 0);
+        let aiming = self.aim_gate(input.aiming || (input.scope && scoped));
         self.free_aim = aiming && input.aiming;
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
         // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
@@ -3178,6 +3190,11 @@ impl Sim {
                             _ => 0x403,
                         };
                         let sound = self.sfx.as_ref().map(|t| t.get(hearing_id)).unwrap_or(nf_formats::sfx::SfxHearing { id: hearing_id, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false });
+                        // fix-sg5-casings [M Bullet_init_casing_ex 0x12f678:160]: the game ejects the
+                        // shell at the view-model gun bone's world position (`AnimGetBoneWorldTrans`
+                        // VECTOR out) — hand the posed gun matrix (`Player_PositionGun` 0x1a3b40's
+                        // port) to the next fire_player so the casing spawns at the gun, not the eye.
+                        self.drones.eject_gun = Some(self.gun_matrix());
                         self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
                         // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:248-253]: a `+0x6C & 4` shot hands
                         // the view to the projectile — `Player_ChangeSubState(owner, 10)`, `BLData+0x878 =
