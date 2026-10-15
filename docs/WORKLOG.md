@@ -13445,3 +13445,19 @@ Work Log (credits-data):
 - Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
   0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
   the PAL base note).
+
+## async-level-load (2026-10-15, branch s/async-level-load) — started 21:16 UTC
+Task: load levels off the render thread so the loading screen animates. The port draws the loading
+screen (ResetMap_GenLoadScreen 0x1d5de0) once, then loads synchronously in the window thread
+(App level switch in crates/nf-view/src/lib.rs, load_with_carry), so the six LOADING dots can't
+animate (the game animates them from the vblank interrupt every 11 vblanks, ping-pong 0→6→0 —
+loading::dots_lit). Do: move the level build (load_with_carry / Scene construction — everything
+but GPU upload) to a worker thread; the window keeps redrawing the loading screen with
+dots_lit(ticks) until the scene is ready, then swaps it in (renderer rebuild on the main thread).
+Keep every existing behaviour (warm/cold saves, the restart checkpoint, movie-wrapped loads,
+pending_weapon_assets). Tests: the load path still produces the same scene; a test that the frame
+loop keeps ticking during a load (headless fake slow load, the dot count advances).
+
+Work Log (async-level-load):
+- (21:16) Sandbox reused (repo + work/ + ISO present). Branch s/async-level-load created from
+  origin/master @ bfdc7e25, pushed with this entry.
