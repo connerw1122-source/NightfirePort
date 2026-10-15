@@ -23,3 +23,7 @@ ISO-gated where they read the disc, each with a sister assertion that can fail).
 
 ---
 claimed-by: sandbox7 at 2026-10-15T21:17Z
+
+---
+## Report (done, 2026-10-15T22:53Z)
+
