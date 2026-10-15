@@ -1248,6 +1248,10 @@ pub const MENU_TEXTURES: [u32; 32] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0
 /// char, the texture hash 0x03000075, u0, v0, w, h, advance, height) [M ACTION.ELF symtab + the table's
 /// bytes; the hint strings' ~A/~B/... tokens draw through it — the game's own button glyphs, NOT the
 /// 64×64 atlas 0x03000042 the port guessed before]. (token, u, v, w, h, advance)
+/// The button icons draw ~1.25× their atlas size in the hint bars (PCSX2 2026-10-13/15 captures: the 19-px ✕ and
+/// D-pad span ~24 of 640).
+const ICON_SCALE: f32 = 1.25;
+
 pub const SPECIALCHAR: [(char, u32, f32, f32, f32, f32, f32); 17] = [
     ('A', 0x0300_0075, 235.0, 1.0, 19.0, 19.0, 19.0),   // the blue ✕ cross [D atlas (235,1,19×19)]
     ('B', 0x0300_0075, 235.0, 21.0, 19.0, 19.0, 19.0),  // the green △ triangle [D atlas (235,21)]
@@ -1539,16 +1543,18 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
     // draws flags 0x100 with ALPHA_1 = 0x48 = (Cs−0)·As + Cd [M 0x120e68:56-68]: additive, the black around her adds
     // nothing. PCSX2 (07000005 fail menu, 2026-10-15): the fiery woman with a pistol on the panel's right.
     {
-        h.quad(Anchor::Centre, 0, 0x0300_00db, 1, mx(385.0), my(121.0), mx(202.0), my(218.0), [0.0, 0.0, 128.0, 128.0], (false, false), gs(0x808080, 0xff));
+        h.quad(Anchor::Centre, 0, 0x0300_00db, 1, mx(385.0), my(121.0), mx(202.0), my(218.0), [0.0, 0.0, 128.0, 128.0], (false, false), gs(0x7f7f7f, 0x50));
     }
     // The four tabs [L the page's four type-1 controls 0x10000028 at (84/199/339/465,120,107/132/118/90×16),
     // LBL 0x167 MISSION / 0x176 OBJECTIVES / 0x168 CONTROLS / 0x169 SCORE; base colour 0x7d6d59ff →
     // 0x645a49ff [M 0x21b908:238-243], the selected tab's 0x1c colour 0x201707ff].
     let tabs = [(0x167u32, 84.0, 107.0, "MISSION"), (0x176, 199.0, 132.0, "OBJECTIVES"), (0x168, 339.0, 118.0, "CONTROLS"), (0x169, 465.0, 90.0, "SCORE")];
     let tab = fe.pause_tab.min(3);
+    // The selected tab is the LIGHT one and the rest dark brown (PCSX2 07000005 pause, MISSION/OBJECTIVES tabs) — the
+    // controls' 0x1b colour 0x7d6d59 vs 0x1c 0x201707; each centred in its control.
     for (i, &(id, x, w, fb)) in tabs.iter().enumerate() {
-        let c = if i == tab { gs(0x201707, 0xff) } else { cream };
-        h.text(Anchor::Centre, font, -2, &lbl(id, fb), mx(x + w / 2.0), my(120.0 + 8.0), false, c, false);
+        let c = if i == tab { gs(0x7d6d59, 0xff) } else { gs(0x201707, 0xff) };
+        label(h, font, &lbl(id, fb), x, 120.0, w, 16.0, c, false, 1.0);
     }
     match tab {
         // fix-pause-menu2: the CONTROLS tab. The d1=0xa list (94,185,465×153) is the controller-
@@ -1559,23 +1565,44 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
         // row geometry from the d1=0xa control's 0x28 message 0x34 = 52-px rows [L]]. The style
         // name is the port's only style (the others' labels are the game's, unported) [S].
         2 => {
-            // The Y-Axis toggle line (400,160) LBL 0x492 + the value 0x3bd "Normal" / 0x206
-            // "Inverted" [L the page's d1=0x10/0xe controls; the toggle is the game's msg-0x5e arm
-            // flipping PlayerSetting [M 0x204408 case 0x5e]; the port's setting is not-inverted →
-            // the game's boot value 0 shows 0x3bd "Normal" [M 0x204408:512-517]].
-            h.text(Anchor::Centre, font, -2, &lbl(0x492, "Y-Axis"), mx(400.0 + 30.0), my(160.0 + 8.0), false, cream, false);
-            h.text(Anchor::Centre, font, -2, &lbl(0x3bd, "Normal"), mx(463.0 + 46.0), my(160.0 + 8.0), false, bright, false);
-            // The style name + its up/down marker, then the two glyph columns.
-            h.text(Anchor::Centre, font, -2, &lbl(0x2f5, "Classic Bond"), mx(94.0 + 232.0), my(192.0), false, bright, false);
-            h.text(Anchor::Centre, font, -2, "▲▼", mx(94.0 + 232.0), my(205.0), false, gs(YELLOW, 0xff), false);
-            let rows: [(&str, u32, &str, u32); 6] = [
-                ("~A", 0x8f, "~B", 0x8c), ("~Y", 0x8b, "~X", 0x8d), ("~C", 0x84, "~D", 0x89),
-                ("~L", 0x85, "~R", 0x8a), ("~F", 0x88, "~E", 0x90), ("~H", 0x87, "~V", 0x86)];
-            for (i, (g0, l0, g1, l1)) in rows.iter().enumerate() {
-                let y = 222.0 + i as f32 * 19.0;
-                glyph_row(h, font, &format!("{g0} {}", lbl(*l0, "")), 112.0, y, cream);
-                glyph_row(h, font, &format!("{g1} {}", lbl(*l1, "")), 330.0, y, cream);
+            // The CONTROLS tab, from `Menu_DisplayControllerStyleList` 0x1f44d8 for the selected style. PCSX2's
+            // default (and the port's: mouse+keyboard has no pad styles) is style 7 "Classic Bond" 0x100019a [M
+            // P_PAUSE_Handler 0x203c28 binds the 8 style names 0x82/0x91/0xa0/0xaf/0xbe/0xcd/0x100018b/0x100019a].
+            // Style 7's rows [M 0x1f44d8 case 7]: each row is "%s %s" of a fixed button token (.data 0x30d1c8..
+            // 0x30d228: ~A ~B / ~Y ~X / ~C ~D / ~L ~R / ~F ~E / ~H ~V / ~T) and that style's label.
+            // The header band (88,156,465×27) — a solid texel of 0x03000042 in 0x07020280 [L the control's m0x2d uv
+            // (19,38,1×1)]; the style spinner (84,152,24×34); the style name in the list (113,156,286×28); the Y-Axis
+            // label (400,160) and its value (463,160) — 0x3bd "Normal" in 0x694646 (PlayerSetting 0) [M 0x203c28].
+            {
+                let (a, b) = (h.ndc(Anchor::Centre, mx(88.0), my(156.0)), h.ndc(Anchor::Centre, mx(88.0 + 465.0), my(156.0 + 27.0)));
+                let q = |p: [f32; 2]| HudVertex { p, uv: [0.0, 0.0], c: [0.0; 4] };
+                let v = [q([a[0], a[1]]), q([b[0], a[1]]), q([b[0], b[1]]), q([a[0], a[1]]), q([b[0], b[1]]), q([a[0], b[1]])];
+                // Behind the labels (a higher layer draws first); a translucent dark band in the capture.
+                h.ndc_solid(-1, v, [0.06, 0.02, 0.02, 0.5]);
             }
+            let yellow = gs(0xfec43e, 0xff);
+            for (dy, up) in [(-8.0f32, true), (8.0, false)] {
+                let (cx, cy) = (96.0f32, 169.0 + dy);
+                let (a, b, d) = if up { ((cx - 9.0, cy + 6.0), (cx + 9.0, cy + 6.0), (cx, cy - 6.0)) } else { ((cx - 9.0, cy - 6.0), (cx + 9.0, cy - 6.0), (cx, cy + 6.0)) };
+                let q = |p: (f32, f32)| HudVertex { p: h.ndc(Anchor::Centre, mx(p.0), my(p.1)), uv: [0.03, 0.03], c: yellow };
+                let v = [q(a), q(b), q(d), q(a), q(d), q(d)];
+                h.ndc_solid(-3, v, yellow);
+            }
+            let left_label = |h: &mut Hud, s: &str, x: f32, yc: f32, c: [f32; 4]| h.text(Anchor::Centre, font, -2, s, mx(x), my(yc + 6.0), false, c, false);
+            left_label(h, &lbl(0x100_019a, "Classic Bond"), 114.0, 169.0, bright);
+            left_label(h, &lbl(0x492, "Y-Axis"), 404.0, 168.0, cream);
+            left_label(h, &lbl(0x3bd, "Normal"), 466.0, 168.0, gs(0x694646, 0xff));
+            // The rows: PCSX2 07000005 (2026-10-15) — row centres 199 + 21·i, the left column's icons at x 98, the
+            // right column's at 329.
+            let rows: [(&str, u32, &str, u32); 6] = [
+                ("~A", 0x100_01a7, "~B", 0x100_01a4), ("~Y", 0x100_01a3, "~X", 0x100_01a5), ("~C", 0x100_019c, "~D", 0x100_01a1),
+                ("~L", 0x100_019d, "~R", 0x100_01a2), ("~F", 0x100_01a0, "~E", 0x100_01a8), ("~H", 0x100_019f, "~V", 0x100_019e)];
+            for (i, (g0, l0, g1, l1)) in rows.iter().enumerate() {
+                let y = 199.0 + i as f32 * 21.0 - 9.0;
+                glyph_row(h, font, &format!("{g0} {}", lbl(*l0, "")), 98.0, y, cream);
+                glyph_row(h, font, &format!("{g1} {}", lbl(*l1, "")), 329.0, y, cream);
+            }
+            glyph_row(h, font, &format!("~T {}", lbl(0x100_01ce, "Vision Mode")), 98.0, 199.0 + 6.0 * 21.0 - 9.0, cream);
         }
         // fix-pause-menu2: the SCORE tab — the stats list box (98,147,445×190) [L the d1=8 control]
         // filled exactly as the game's msg-0x4e case-3 arm does [M 0x204408:447-498]: the
@@ -1584,39 +1611,40 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
         // the port's tracked stats (time, accuracy); the other counters are the port's zeros
         // (reported). Targets = SCORE_TARGETS for the level's campaign row.
         3 => {
-            plate(h, 98.0, 147.0, 445.0, 190.0, gs(0x1e1210, 0x60));
-            h.text(Anchor::Centre, font, -2, &lbl(0x1000_0204, "Category"), mx(98.0 + 30.0), my(155.0), false, bright, false);
-            h.text(Anchor::Centre, font, -2, &lbl(0x1000_01e1, "Current"), mx(98.0 + 280.0), my(155.0), false, bright, false);
-            h.text(Anchor::Centre, font, -2, &lbl(0x1000_01e2, "Target"), mx(98.0 + 395.0), my(155.0), false, bright, false);
+            // The d1=8 list (98,147,445×190): two right-aligned value columns [M 0x204408:447-498 — msg 0x59 (1,2) and
+            // (2,2) right-align columns 1 and 2]. PCSX2 07000005 (2026-10-15): the Current column ends at x 421, the
+            // Target column at 548; rows from y 157 at a 16.7 pitch — header, a blank row (0x30d2d8), Bond Moves,
+            // Opponents (no values), the indented Dispatched/Subdued/Surrendered ("  %s" 0x30d2f8), Accuracy Rating,
+            // Health Remaining (the literal 100), Time ("%s" of Timer_Seconds2String), 007 Bonus. Values print "%d"
+            // (0x30d2f0) — no % sign. No backing plate (the page plate shows through).
             let st = &fe.stats;
-            let row = score_row_for_level(fe.flow.current_level).unwrap_or(0);
+            let row = score_row_for_level(fe.flow.current_level).unwrap_or(fe.mission);
             let t = SCORE_TARGETS[row.min(11)];
             let time_s = |s: u32| format!("{:02}:{:02}", s / 60, s % 60);
-            // (category label, indented?, current, target) — the game's row order [M :461-498].
-            let rows: [(u32, bool, String, String); 8] = [
-                (0x165, false, "0".into(), t[0].to_string()),                       // Bond Moves
-                (0x15a, false, String::new(), String::new()),                       // Opponents (parent)
-                (0x15b, true, "0".into(), t[1].to_string()),                        // Dispatched
-                (0x15c, true, "0".into(), t[2].to_string()),                        // Subdued
-                (0x16e, true, "0".into(), t[3].to_string()),                        // Surrendered
-                (0x15e, false, format!("{}%", st.accuracy_pct), t[5].to_string()),  // Accuracy Rating
-                (0x15f, false, "100".into(), "100".into()),                          // Health Remaining [M :436/:487-490 the literal 100]
-                (0x161, false, "0".into(), t[8].to_string()),                       // 007 Bonus
+            let (cx1, cx2) = (421.0f32, 548.0f32);
+            let row_y = |k: usize| 157.0 + k as f32 * 16.7;
+            let put = |h: &mut Hud, k: usize, name: &str, cur: &str, tgt: &str, c: [f32; 4]| {
+                let y = my(row_y(k) + 6.0);
+                h.text(Anchor::Centre, font, -2, name, mx(100.0), y, false, c, false);
+                if !cur.is_empty() { h.text(Anchor::Centre, font, -2, cur, mx(cx1), y, true, c, false); }
+                if !tgt.is_empty() { h.text(Anchor::Centre, font, -2, tgt, mx(cx2), y, true, c, false); }
+            };
+            put(h, 0, &lbl(0x1000_0204, "Category"), &lbl(0x1000_01e1, "Current"), &lbl(0x1000_01e2, "Target"), cream);
+            let rows: [(u32, bool, String, String); 9] = [
+                (0x165, false, "0".into(), t[0].to_string()),                    // Bond Moves
+                (0x15a, false, String::new(), String::new()),                    // Opponents (no values)
+                (0x15b, true, "0".into(), t[1].to_string()),                     // Dispatched
+                (0x15c, true, "0".into(), t[2].to_string()),                     // Subdued
+                (0x16e, true, "0".into(), t[3].to_string()),                     // Surrendered
+                (0x15e, false, st.accuracy_pct.to_string(), t[5].to_string()),   // Accuracy Rating
+                (0x15f, false, "100".into(), "100".into()),                      // Health Remaining [M the literal 100]
+                (0x160, false, time_s(st.time_s), time_s(t[7])),                 // Time
+                (0x161, false, "0".into(), t[8].to_string()),                    // 007 Bonus
             ];
-            let mut y = 173.0;
-            for (id, indent, cur, tgt) in rows.iter() {
-                let x = if *indent { 98.0 + 40.0 } else { 98.0 + 30.0 };
-                if !cur.is_empty() || !tgt.is_empty() {
-                    h.text(Anchor::Centre, font, -2, &lbl(*id, ""), mx(x), my(y), false, cream, false);
-                    h.text(Anchor::Centre, font, -2, cur, mx(98.0 + 280.0), my(y), false, bright, false);
-                    h.text(Anchor::Centre, font, -2, tgt, mx(98.0 + 395.0), my(y), false, bright, false);
-                }
-                y += 19.0;
+            for (k, (id, indent, cur, tgt)) in rows.iter().enumerate() {
+                let name = if *indent { format!("  {}", lbl(*id, "")) } else { lbl(*id, "") };
+                put(h, k + 2, &name, cur, tgt, cream);
             }
-            // The game's own Time row last [M :491-494]: current ST+0x94 seconds, target 0x8c×100.
-            h.text(Anchor::Centre, font, -2, &lbl(0x160, "Time"), mx(98.0 + 30.0), my(y), false, cream, false);
-            h.text(Anchor::Centre, font, -2, &time_s(st.time_s), mx(98.0 + 280.0), my(y), false, bright, false);
-            h.text(Anchor::Centre, font, -2, &time_s(t[7]), mx(98.0 + 395.0), my(y), false, bright, false);
         }
         // fix-pause-menu2: the OBJECTIVES tab — one row per objective, a ~J (done, state 4) or
         // ~I (pending) marker then the objective's name [M C_GCPAUSE_Handler 0x204408:251-271 —
@@ -1638,15 +1666,17 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
             // pattern]].
             let rows = [0x16au32, 0x16b, 0x16c];
             let fallback = ["CONTINUE", "RESTART", "QUIT"];
+            // Centred on the list; PCSX2 07000005: row centres at y 209 / 242 / 276, the arrow at the list's x + 8
+            // (the fail list's arrow sits at its x + 8 too).
             for (i, (&id, fb)) in rows.iter().zip(fallback).enumerate() {
                 let c = if i == fe.cursor { bright } else { dim };
-                h.text(Anchor::Centre, font, -2, &lbl(id, fb), mx(153.0 + 167.0), my(183.0 + 20.0 + i as f32 * 40.0), false, c, false);
+                label(h, font, &lbl(id, fb), 153.0, 209.0 - 8.0 + i as f32 * 33.5, 334.0, 16.0, c, false, 1.0);
             }
             // fix-pause-menu2: the yellow arrow cursor left of the selected row [L the main agent's
             // PCSX2 captures 2026-10-13 — the game's list cursor; the port had none]. Drawn as a
             // small yellow triangle at the list's cursor column (the port's stand-in sprite; the
             // disc's own cursor texture was not identified — live check).
-            pause_cursor(h, 218.0, 183.0 + 20.0 + fe.cursor.min(2) as f32 * 40.0, gs(YELLOW, 0xff));
+            pause_cursor(h, 153.0 + 9.0, 209.0 + fe.cursor.min(2) as f32 * 33.5, gs(YELLOW, 0xff));
         }
     }
     // The YES/NO confirm box over the rows [L the d1=0xc text (187,188,266×16) and the d1=0xd list
@@ -1683,18 +1713,19 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
 /// [M 0x1f44d8] rendered through the same text path as the hint bars — so the port reuses hint_bar's
 /// tokenizer at a row pen (hint_bar already walks ~tokens with the SPECIALCHAR table).
 fn glyph_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y640: f32, c: [f32; 4]) {
-    hint_bar(h, font, text, x640, y640, c);
+    hint_row(h, font, text, x640, y640, c, Some(x640));
 }
 
 /// The MISSION tab's row cursor: a small filled triangle pointing right at (x, y centre) [L the
 /// captures' yellow arrow; the disc's own cursor sprite was not identified — the port's stand-in,
 /// colour the title's yellow 0xfec43e [M page 0x40000009's 0x1b colour]].
 fn pause_cursor(h: &mut Hud, x: f32, y: f32, c: [f32; 4]) {
-    let (a, b, d) = (h.ndc(Anchor::Centre, mx(x), my(y - 6.0)), h.ndc(Anchor::Centre, mx(x), my(y + 6.0)), h.ndc(Anchor::Centre, mx(x + 10.0), my(y)));
+    // PCSX2's arrow is ~15 wide × 16 tall (07000005 pause/fail, 2026-10-15).
+    let (a, b, d) = (h.ndc(Anchor::Centre, mx(x), my(y - 8.0)), h.ndc(Anchor::Centre, mx(x), my(y + 8.0)), h.ndc(Anchor::Centre, mx(x + 15.0), my(y)));
     let p = |q: [f32; 2]| HudVertex { p: q, uv: [0.03, 0.03], c };
     // One triangle: the first 3 verts; the second is degenerate (the frame wants 6).
     let v = [p(a), p(b), p(d), p(a), p(d), p(d)];
-    h.ndc_quad(-3, v, c);
+    h.ndc_solid(-3, v, c);
 }
 
 /// The mission-end pages. Outcome::Failed = the fail/death menu, menu-def page 0x40000042 [M
@@ -1711,7 +1742,7 @@ fn results_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: 
             tex_quad_or_plate(h, textures, 0x0300_0070, 45.0, 107.0, 550.0, 266.0, [0.0, 0.0, 512.0, 256.0], gs(0x7f7f7f, 0xff));
             // The burning woman, as on the pause page (crate::woman; flags 0x100 additive) at the control's colour
             // 0x7f7f7f50 [L the 0x10000184 control's m0x1b/0x1c] — dimmer than full.
-            h.quad(Anchor::Centre, 0, 0x0300_00db, 1, mx(385.0), my(121.0), mx(202.0), my(218.0), [0.0, 0.0, 128.0, 128.0], (false, false), gs(0x7f7f7f, 0x50 * 2));
+            h.quad(Anchor::Centre, 0, 0x0300_00db, 1, mx(385.0), my(121.0), mx(202.0), my(218.0), [0.0, 0.0, 128.0, 128.0], (false, false), gs(0x7f7f7f, 0x50));
             // The header (105,120,431×16) LBL 0x2fd "Mission Failed", colour 0x7d6d59 [L the page's 0x10000001 control
             // m0x18/0x1b], centred in the control (Label_Update puts the label at ctrl.x + w/2 [M 0x218cb8:177-182])
             // in the same face size as the hint bar (PCSX2 07000005: the header's glyphs match the hint's).
@@ -1834,6 +1865,13 @@ fn dimmed(mut c: [f32; 4], a: u32) -> [f32; 4] { c[3] = gs(0, a)[3]; c }
 /// Centre one text row at 640-space x `xc` [M `__Font_DrawText` 0x1eee48:69-71 — the format's fe 03
 /// flag 2 applies `x -= width * 0.5`; every menu label carries fe 03 (Label_Init 0x218638:53's
 /// DAT_003096c0). The port's `text_scaled` pen starts at x, so the half-width shift lands here.]
+/// A label centred in its control rect (640-space x, y, w, h) like `Label_Update` 0x218cb8 — horizontally at
+/// x + w/2 (:177-182) and vertically on y + h/2 (:202-206). `centred`'s pen y sits ~6 units above the glyphs'
+/// middle (measured against PCSX2's pause/fail captures, 2026-10-15).
+fn label(h: &mut Hud, font: &nf_formats::hud::Font, s: &str, x: f32, y: f32, w: f32, hh: f32, c: [f32; 4], shadow: bool, scale: f32) {
+    centred(h, font, -2, s, mx(x + w / 2.0), my(y + hh / 2.0 + 6.0), c, shadow, scale);
+}
+
 fn centred(h: &mut Hud, font: &nf_formats::hud::Font, layer: i32, s: &str, xc: f32, y: f32, c: [f32; 4], shadow: bool, scale: f32) {
     // The drawn ink of one row: the glyph quads span [gx, gx + gw] (quad() maps both corners, so
     // the anchor is only an origin shift — the glyphs are left-edged at their pen x), giving
@@ -1949,6 +1987,12 @@ fn confirm_box(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, c: [f32; 4
 /// format's fe 03) — the PCSX2 captures show the footer hints centred; the port's old left edge at
 /// x=50 was the control's x, not the text's anchor].]
 fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y640: f32, c: [f32; 4]) {
+    hint_row(h, font, text, x640, y640, c, None);
+}
+
+/// One "~X label" row: centred on the 540-wide bar at `x640` (hint bars), or left-aligned with its first ink at
+/// `left` (640-space; the controls list's columns).
+fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y640: f32, c: [f32; 4], left: Option<f32>) {
     // One pass collects each item's ink span relative to the row's pen origin (text glyphs sit at
     // [p0.x − gw0/2, plast.x + gwlast/2] — the per-glyph quads centre at their pen x — and an icon's
     // quad centres at its pen x, so [−iw/2, +iw/2]); the row's ink centre then goes to the bar's
@@ -1972,7 +2016,7 @@ fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
         }
         match after.chars().nth(1).and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
             Some(&(_, tex, u, v, w, hh, adv)) => {
-                let (iw, ih) = (mx(w), my(hh));
+                let (iw, ih) = (mx(w * ICON_SCALE), my(hh * ICON_SCALE));
                 // The icon occupies [pen, pen + iw] and its word follows ~6 units after (PCSX2 07000005 fail
                 // menu 2026-10-15: "✕ Select" — a 6-unit gap; the table's advance alone overlapped the next word).
                 let _ = adv;
@@ -1996,7 +2040,7 @@ fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
     let ink_hi = items.iter().map(|i| match i { Item::Text { ink, .. } | Item::Icon { ink, .. } => ink.1 }).fold(f32::MIN, f32::max);
     // The bar's centre: ctrl.x + ctrl.w/2 = 50 + 540/2 = 320 in 640-space [L the parsed bars].
     let bar_c = mx(x640 + 270.0);
-    let pen0 = bar_c - (ink_lo + ink_hi) / 2.0;
+    let pen0 = match left { Some(lx) => mx(lx) - ink_lo, None => bar_c - (ink_lo + ink_hi) / 2.0 };
     if std::env::var_os("NF_DEBUG_HINT").is_some() { eprintln!("[hint] text={text:?} items={} ink=({ink_lo},{ink_hi}) bar_c={bar_c} pen0={pen0}", items.len()); }
     // Label_Update centres the label vertically in its 18-px control [M 0x218cb8:202-206]: PCSX2 puts every hint
     // row's centre ~y + 9 (main menu 430, pause/fail 350 of 480 — 2026-10-13/15 captures); the port's text pen
@@ -2025,8 +2069,8 @@ fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
                     let (lo, hi) = (ink.0, ink.1);
                     let _ = (lo, hi);
                 }
-                let iw = mx(w);
-                let ih = my(hh);
+                let iw = mx(w * ICON_SCALE);
+                let ih = my(hh * ICON_SCALE);
                 // The icon's ink [pen − iw/2, pen + iw/2] — same anchor as the measure pass.
                 // Level with the text's middle (PCSX2: the ✕/scroll icons sit level with their words; drawn from
                 // y − ih + 12 they hung ~8 low).
