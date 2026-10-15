@@ -107,6 +107,28 @@ pub fn laser_tick(
     (head, hit)
 }
 
+/// The laser watch's held-meter constants and tick [M HUD_UpdateAmmoPane 0x19a7f0:160-176 — while
+/// the player's view state is 0xb (the laser watch's held state, `Player_WeaponFiring` 0x1a5460's
+/// `+0x6C & 0x400` arm) the ammo pane reads a 0–100 value at the beam bullet's instance +0x110
+/// (u16) / +0x104 (f32), NOT the kind-0x1a clip percentage]. The measured drain while held:
+/// ~31/s ≈ 0.5/frame [D docs/live/2026-10-14-weapon-measurements-pcsx2.md "The laser watch 0x4e":
+/// 100 → 59 over ~1.3 s]. The game's writer of those instance fields is unlocated in the decompile
+/// (the pane reads them through the bullet walk; live check in the report) — the port stands the
+/// value in as `Sim::laser_charge`. The refill stands in the game's gadget clip regen shape (+1 per
+/// 4 frames [M Player_Update 0x193600 disasm 0x193f18-58]) — [S] for the charge itself.
+pub const LASER_CHARGE_DRAIN_PER_TICK: f32 = 31.0 / 60.0;
+pub const LASER_CHARGE_REFILL_PER_TICK: f32 = 0.25;
+
+/// One tick of the held meter: `beam_on` (the beam drew this tick) drains, an idle tick refills;
+/// clamped to 0..100.
+pub fn laser_charge_tick(charge: &mut f32, beam_on: bool) {
+    if beam_on {
+        *charge = (*charge - LASER_CHARGE_DRAIN_PER_TICK).max(0.0);
+    } else {
+        *charge = (*charge + LASER_CHARGE_REFILL_PER_TICK).min(100.0);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -141,6 +163,21 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn laser_charge_tick_drains_and_refills_the_measured_rates() {
+        let mut c = 100.0f32;
+        // 60 beam ticks = ~31 drained [D the measured ~31/s]; the floor is 0.
+        for _ in 0..60 { laser_charge_tick(&mut c, true); }
+        assert!((100.0 - c - 31.0).abs() < 0.01, "60 beam ticks drain ~31 (drained {:.2})", 100.0 - c);
+        for _ in 0..600 { laser_charge_tick(&mut c, true); }
+        assert_eq!(c, 0.0, "the charge floors at 0");
+        // 4 idle ticks = +1 (the game's +1-per-4-frames regen shape [M 0x193600]), capped at 100.
+        for _ in 0..4 { laser_charge_tick(&mut c, false); }
+        assert!((c - 1.0).abs() < 0.001, "4 idle ticks refill 1 (got {c:.3})");
+        for _ in 0..600 { laser_charge_tick(&mut c, false); }
+        assert_eq!(c, 100.0, "the charge caps at 100");
+    }
+
     fn is_laser_weapon_matches_the_laser_family() {
         // The disc records settle the ids: 0x4E/0x4F carry +0x6C & 0x100 (Draw_LaserBeam) and the
         // name label 0x05000043 "Laser"; 0x50/0x51 are the Grapple (0x4000) and 0x54/0x55 the

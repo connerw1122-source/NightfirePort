@@ -348,24 +348,37 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     // fix-ammo-pane [M 0x19a7f0:283-299]: the name sprite's label id reads weapon_data[drone+0x63]+0x38 —
     // the REQUESTED weapon — so the pending draw announces the weapon being drawn to, not the old one.
     let shown = if switching && s.gun.switch_request != 0 && s.gun.switch_request as usize != wi { s.gun.switch_request as usize } else { wi };
+    // fix-laser-watch-look: while the laser watch is HELD the pane shows the 0-100 charge instead of
+    // the clip percent [M 0x19a7f0:160-176 — the state-0xb branch (the laser's held view state,
+    // `Player_WeaponFiring` 0x1a5460's +0x6C & 0x400 arm) prints the charge and RETURNS before the
+    // kind-0x1a percent path; D the measured ~31/s drain]. The port's gate: the fire machine on a
+    // watch laser with the beam computed this frame (the game's anim+0xF4 == 0xb proxy).
+    let laser_held = nf_game::gadget::is_laser_weapon(s.gun.weapon) && s.gun.fire_state && s.laser_beam.is_some();
     if flags68 & 0x20 == 0 && !switching {
         let sp = &t.ammo[0];
         // The count text (0x19aad4 percent / 0x19ab18 "%d-%d"): kinds 0x14/0x1a → clip·100/max; kind 0x1f →
         // first transformed to the DEPLETED count clip' = min(max−clip, max−12) of max' = max−12
         // [M 0x19a7f0:129-136] — the Samurai pair's overcharge display; the rest → clip-spare.
         let cap = clip_size as u32;
-        let txt = match ammo_type as u8 {
+        let txt = if laser_held {
+            format!("{}", s.laser_charge.round() as i32)
+        } else { match ammo_type as u8 {
             0x14 | 0x1a => format!("{}", s.gun.clip * 100 / cap.max(1)),
             0x1f => { let mx = cap.saturating_sub(12); format!("{}", mx.min(cap.saturating_sub(s.gun.clip)) * 100 / mx.max(1)) }
             _ => format!("{}-{}", s.gun.clip, s.gun.spare),
-        };
+        } };
         h.text(Anchor::Right, &t.font, sp.layer as i32, &txt, AMMO_AT.0 + sp.x as f32, AMMO_AT.1 + sp.y as f32, true, gs(sp.colour >> 8, sp.colour & 0xff), sp.flags & 0x20 != 0);
     }
     if let (false, Some(&[bu, bv, bw, hpr])) = (switching, t.bullets.get(ammo_type)) {
         // The strips draw the same transformed clip'/max' for kind 0x1f [M 0x19a7f0:129-136 flows into
         // :254-269]: the filled height = clip'·px/round of the full max'·px/round column, and the filled
         // strip's v starts (max'−clip')·px/round down the bullet texture.
-        let (clip_n, max_n) = if ammo_type as u8 == 0x1f {
+        // fix-laser-watch-look: the held laser's strip shows the charge of 100 (the pane's second
+        // value reads the same instance's f32 [M 0x19a7f0:172]; the sprite layout's exact gauge is a
+        // render live check).
+        let (clip_n, max_n) = if laser_held {
+            (s.laser_charge, 100.0)
+        } else if ammo_type as u8 == 0x1f {
             let mx = (clip_size as u32).saturating_sub(12);
             (mx.min((clip_size as u32).saturating_sub(s.gun.clip)) as f32, mx as f32)
         } else { (s.gun.clip as f32, clip_size) };

@@ -396,6 +396,9 @@ pub struct Sim {
     /// `Some(true)` = the aim ray met a live guard within weapon_data+0x1c (the shot spawns and the
     /// taser beam draws), `Some(false)` = no target (no bullet, no beam), `None` = not holding fire.
     pub stunner_target: Option<bool>,
+    /// The laser watch's held-meter charge, 0–100 [S stand-in; M HUD_UpdateAmmoPane 0x19a7f0:160-176
+    /// — the state-0xb pane reads a 0–100 value, not the clip percent; D the measured ~31/s drain].
+    pub laser_charge: f32,
     /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
     /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
@@ -1736,6 +1739,17 @@ impl Sim {
         // target test) → Player_CollisionHandler 0x1949a8:189-191 → Player_MuzzleFlash 0x1a4298 →
         // Draw_LaserBeam/Draw_TaserBeam — everything rides the refire that actually spent a round,
         // so at clip 0 the beam stops (the user's PCSX2 capture) and nothing burns while switching.
+        // fix-laser-watch-look: the laser watch's held meter — a tick where the beam ran drains the
+        // 0–100 charge ~31/s [D docs/live/2026-10-14-weapon-measurements-pcsx2.md "The laser watch
+        // 0x4e": 100 → 59 over ~1.3 s, ≈0.5/frame]; idle ticks refill it (the game's gadget regen
+        // shape, +1 per 4 frames [M Player_Update 0x193600 disasm 0x193f18-58] — [S] for the charge
+        // itself, live check in the report). The watch lasers only: the stunner fires in view state
+        // 9 (its +0x6C & 0x400 = 0 [L weapon_data 0x4a]), so 0x19a7f0's state-0xb pane — the charge
+        // read — never shows for it. Read at the top of the tick against the PREVIOUS tick's beam
+        // (the beam computes at the end of the shot tick), so every tick pays exactly once.
+        if nf_game::gadget::is_laser_weapon(self.gun.weapon) {
+            nf_game::gadget::laser_charge_tick(&mut self.laser_charge, self.laser_beam.is_some());
+        }
         self.laser_beam = None;
         self.stunner_target = None;
         self.smoke.retain(|s| !s.dead());
@@ -5379,7 +5393,7 @@ impl Scene {
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
-                wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
+                wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, laser_charge: 100.0, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,
                 view_alert: false,
                 prev_aiming: false,
@@ -5560,9 +5574,13 @@ impl Scene {
                     let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
                     let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
                     if len < 1e-4 { return far; }
-                    let dir = [d[0] / len, d[1] / len, d[2] / len];
-                    let yaw = dir[0].atan2(dir[2]);
-                    let pitch = -dir[1].atan2((dir[0] * dir[0] + dir[2] * dir[2]).sqrt());
+                    // fix-laser-watch-look: PositionBeam 0x1a9400 stores the spherical of (start − end)
+                    // with the elevation negated — the same +z-backward convention as Draw_LaserBeam
+                    // [M 0x1a9400 tail], whose −z geometry [D the "watch_lazer" mesh 0x2000133:
+                    // z ∈ [−1.0, 0]] flows start→end. The old +z pointed start→end.
+                    let v = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+                    let yaw = v[0].atan2(v[2]);
+                    let pitch = -v[1].atan2((v[0] * v[0] + v[2] * v[2]).sqrt());
                     let mut m = nf_formats::placement::object_matrix([pitch, yaw, 0.0], a);
                     for k in 0..3 { m[2][k] *= len; }
                     return m;
@@ -5579,19 +5597,33 @@ impl Scene {
                     };
                     if slot as usize != want { return far; }
                     let Some((mut a, b)) = s.laser_beam else { return far };
-                    // The beam leaves the view model's bone 0 (AnimGetBoneWorldTrans(BLData+0x7e8, 0, 0)
-                    // [M 0x1a4560:20]) — the posed view model's root, which is where the watch sits.
+                    // fix-laser-watch-look: the beam leaves the view model's POSED BONE 0 —
+                    // AnimGetBoneWorldTrans(BLData+0x7e8, 0, 0) [M 0x1a4560:20] — composed with the
+                    // object matrix (the first-person gun transform), the same composition the
+                    // attachment draw below uses. The old read took the Character's STATIC creation
+                    // matrix (identity) — the beam started at the WORLD ORIGIN and the user never
+                    // saw it ("the laser isnt visible").
                     if s.first_person {
                         if let Some(vm) = self.view_models.get(&s.gun.weapon) {
-                            if let Some(c) = self.characters.get(*vm) { a = [c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]]; }
+                            if let Some((_, world, m)) = &posed[*vm] {
+                                let bm = anim::mul(&world[0], m);
+                                a = [bm[3][0], bm[3][1], bm[3][2]];
+                            }
                         }
                     }
                     let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
                     let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
                     if len < 1e-4 { return far; }
-                    let dir = [d[0] / len, d[1] / len, d[2] / len];
-                    let yaw = dir[0].atan2(dir[2]);
-                    let pitch = -dir[1].atan2((dir[0] * dir[0] + dir[2] * dir[2]).sqrt());
+                    // fix-laser-watch-look: the game's angles are the spherical of (start − end) with
+                    // the elevation negated [M 0x1a4560:44-62; the same tail in PositionBeam
+                    // 0x1a9400] — the object's +z points from the hit BACK to the watch, and the
+                    // sprite's geometry extends along −z [D the "lazer" mesh 0x2000131 on 07000005:
+                    // z ∈ [−1.0198, 0.00016]], so the wide origin end sits at the watch and the beam
+                    // tapers to the hit. The old +z pointed start→end: the −z sprite stretched
+                    // BACKWARDS through the camera ("The laser watch sucks").
+                    let v = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+                    let yaw = v[0].atan2(v[2]);
+                    let pitch = -v[1].atan2((v[0] * v[0] + v[2] * v[2]).sqrt());
                     let mut m = nf_formats::placement::object_matrix([pitch, yaw, 0.0], a);
                     for k in 0..3 { m[2][k] *= len; }
                     return m;
