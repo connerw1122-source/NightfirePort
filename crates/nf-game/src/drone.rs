@@ -8835,6 +8835,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // row 6 reads; the port writes it once per tick (the game's last write wins too).
             self.progress.log_health(ms, self.health.health);
         }
+        // fix-scores-handoff (G-045 remainder): the level-end score-row production. When the
+        // level-exit latch stands at the tick's end (the trigger LOAD_LEVELs, the
+        // mission-complete LevelEnd the viewer latches, the fail-menu paths), the Sim produces
+        // the rows the game would hand to the end-of-level results screen — the fold above is
+        // done, so the snapshot is the run's final tally. The production is the read-mode
+        // scoring (no best/last commit — the results page's own GetScore(0) does that
+        // [M 0x208e78:77]); re-running while the latch stands is inert (the same inputs score
+        // the same rows).
+        if self.level_exit.is_some() {
+            let (base, dif) = (self.mission.base_map, self.difficulty);
+            self.progress.finish_level(base, dif);
+        }
         // `UpdateMusicalEvents` 0x114e70 — once per tick, after the drones (their script requests and the
         // mission's pulses are this tick's EventList) [M]. The audio layer feeds `iop_section`.
         self.prev_event2 = self.music.events[2];
