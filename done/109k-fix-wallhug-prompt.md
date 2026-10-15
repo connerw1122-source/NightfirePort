@@ -35,3 +35,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox1 at 2026-10-15T04:01Z
+
+---
+## Report (done, 2026-10-15T05:27Z)
+
+Closed by the driver: the report is on `s/fix-wallhug-prompt` (docs/reports/fix-wallhug-prompt.md); the worker didn't run finish.sh.
