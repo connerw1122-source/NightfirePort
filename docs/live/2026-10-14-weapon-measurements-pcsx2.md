@@ -118,3 +118,15 @@ Frames 120 ms apart:
   not the gadget cycle (the user: "you have it set to the watch rather than the alternate fire of the mine").
 - **Fire on the detonator blows the mine at once** (a full-screen blast the next frame), then the view returns to the
   mine ("Grenade").
+
+## The AIMS-20 0x1a / 0x1b (07000014, picked up in the armoury at (-32.2, 1.7–2.3, 31–35))
+
+- **The side lights:** a row of four round lights on the left side of the receiver, **lit red from the moment it is
+  drawn** (no delay) and staying lit while idle. They are a display, not decoration: with grenade rounds 0 → pattern
+  red, red, dark, red; after picking up 90 9mm rounds in Burst mode → red, dark, red, red; in Grenade mode with 4 rounds
+  → all four lit. (The user on the port: "lights on the aim 20 arent on", "The lights aren't working on the gun".)
+- **The mode press (○) only swaps when the grenade twin has ammo:** with no grenade rounds the press did nothing (held
+  stays 0x1a, "Burst"); after picking up the 0x1b rounds (4) the press swapped to 0x1b, HUD "4-0 Grenade". (The user's
+  "Ames 20 wouldn't swap modes" may be this gate if the port's give didn't fill the grenade slot — check both.)
+- **The scope (aim, L1 held):** the whole screen goes dark red with a circular reticle in the centre and green-white
+  boot text at the lower left: "COMMAND.COM / LOAD BIOS / MEMORY SET / SYSTEM STATUS / OK"; the view model is hidden.
