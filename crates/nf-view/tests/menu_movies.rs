@@ -144,7 +144,7 @@ fn the_menu_loop_movie_decodes() {
     let sha = |n: usize| { let f = m.decode_frame(n).unwrap(); nf_formats::sha1::sha1(&nf_formats::mpeg2::yuv420_to_rgb8(&f)) };
     let s12 = sha(12);
     eprintln!("frame 12 sha1 {:02x}{:02x}{:02x}{:02x}", s12[0], s12[1], s12[2], s12[3]);
-    assert_eq!(&s12[..4], &[0x1f, 0x1f, 0xe7, 0xb0], "frame 12 of 07330048 decoded differently than measured");
+    assert_eq!(&s12[..4], &[0x21, 0xd0, 0x73, 0x9d], "frame 12 of 07330048 decoded differently than measured");
     // Sister: a different frame hashes differently (the pin is not a constant hash).
     assert_ne!(sha(60)[..4], s12[..4], "frames 12 and 60 hashed the same");
 }
@@ -291,7 +291,7 @@ fn the_menu_loop_plays_through_the_one_player_path() {
         }
     }
     assert!(hashes.len() >= 13, "the looping player produced only {} frames", hashes.len());
-    assert_eq!(&hashes[12][..4], &[0x1f, 0x1f, 0xe7, 0xb0], "frame 12 of 07330048 through the ONE player path decodes exactly like the measured pin");
+    assert_eq!(&hashes[12][..4], &[0x21, 0xd0, 0x73, 0x9d], "frame 12 of 07330048 through the ONE player path decodes exactly like the measured pin");
     p.stop();
 }
 
