@@ -14,7 +14,7 @@ fn rng_matches_the_game_bit_for_bit() {
     for (x, y) in [(0x0659_5adbu32, 0x208a_5de8u32), (0xffff_ffff, 0x8000_0001), (1, 2)] {
         m.poke(0x30d0a0, &x.to_le_bytes()).unwrap();
         m.poke(0x30d0a4, &y.to_le_bytes()).unwrap();
-        let mut ours = Rng { x, y };
+        let mut ours = Rng { x, y, ..Default::default() };
         for k in 0..2000u32 {
             if k % 3 == 0 {
                 m.call(0x1e3738, 37, 0, 1 << 40).unwrap();
@@ -31,7 +31,7 @@ fn rng_matches_the_game_bit_for_bit() {
         assert_eq!(seeds, (ours.x, ours.y));
     }
     // Sister: a different multiplier would not match.
-    let mut wrong = Rng { x: 1, y: 2 };
+    let mut wrong = Rng { x: 1, y: 2, ..Default::default() };
     wrong.x = 18001u32.wrapping_mul(wrong.x & 0xffff).wrapping_add(wrong.x >> 16);
-    assert_ne!(wrong.x, { let mut r = Rng { x: 1, y: 2 }; r.frand(1.0); r.x });
+    assert_ne!(wrong.x, { let mut r = Rng { x: 1, y: 2, ..Default::default() }; r.frand(1.0); r.x });
 }
