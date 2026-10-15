@@ -13371,3 +13371,10 @@ Work Log (drive-crp-format):
 - Tests: mp_menu_flow.rs 9 headless (flow + back-outs + locks + bots + start checks + Quick Game +
   loader handover, each with a sister assertion) + mp_menu_lists_live.rs 5 ISO-gated (the five
   tables + the side bytes vs the disc's ACTION.ELF). 14/14 green; suite run on the final tree.
+
+## drive-car-models (s/drive-car-models)
+
+Started 2026-10-15 ~20:05 UTC. Task: decode the driving missions' car models from the
+`DRIVING/*.VIV` archives (format, LODs, textures, wheel attachment points), a `nf_formats`
+module + an `nf-extract` OBJ dump command, goldens (per-model vertex/triangle counts +
+buffer SHA-1s), format doc in docs/formats/. No renderer work.
