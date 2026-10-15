@@ -1288,6 +1288,7 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
     if args.iter().any(|a| a == "--confirm") {
         fe.confirming_quit = fe.cursor == 2;
         fe.confirming_restart = fe.cursor == 1;
+        fe.confirming_default_profile = fe.page == menu::Page::Codename;
     }
     // The pause page is a MISSION page: give the flow a mission level so open_pause's guard matches
     // (the game opens it over a running mission [M Player_Update 0x193600:73]).

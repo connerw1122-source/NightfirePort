@@ -1392,9 +1392,12 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             // The confirm box: the game pops it for "Play without saving" [M C_SBNFCN 0x20b390:19-21
             // Menu_CreateOptionBox(0x10000bb, 9, 1, 1); the plate 0x100001f2].
             if fe.confirming_default_profile {
-                confirm_box(&mut h, font, &bind(0x100_00bb), bright);
+                confirm_box(&mut h, font, &bind(0x100_00bb), &hint(0x100_01d6, "Press ~A to continue or ~B to cancel."), bright);
             }
-            hint_bar(&mut h, font, &hint(0x216, "~A Select  ~Y Create  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
+            // The box takes the footer's place (PCSX2 m07: no hint while it shows).
+            if !fe.confirming_default_profile {
+                hint_bar(&mut h, font, &hint(0x216, "~A Select  ~Y Create  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
+            }
             logo_stamp(&mut h);
         }
         Page::Difficulty => {
@@ -1696,7 +1699,9 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
             let fallback = ["CONTINUE", "RESTART", "QUIT"];
             // Centred on the list; PCSX2 07000005: row centres at y 209 / 242 / 276, the arrow at the list's x + 8
             // (the fail list's arrow sits at its x + 8 too).
-            for (i, (&id, fb)) in rows.iter().zip(fallback).enumerate() {
+            // The confirm hides the list (PCSX2 m27: only the question and YES/NO show).
+            let confirming = fe.confirming_restart || fe.confirming_quit;
+            for (i, (&id, fb)) in rows.iter().zip(fallback).enumerate().filter(|_| !confirming) {
                 let c = if i == fe.cursor { bright } else { dim };
                 label(h, font, &lbl(id, fb), 153.0, 209.0 - 8.0 + i as f32 * 33.5, 334.0, 16.0, c, false, 1.0);
             }
@@ -1704,7 +1709,7 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
             // PCSX2 captures 2026-10-13 — the game's list cursor; the port had none]. Drawn as a
             // small yellow triangle at the list's cursor column (the port's stand-in sprite; the
             // disc's own cursor texture was not identified — live check).
-            pause_cursor(h, 153.0 + 9.0, 209.0 + fe.cursor.min(2) as f32 * 33.5, gs(YELLOW, 0xff));
+            if !confirming { pause_cursor(h, 153.0 + 9.0, 209.0 + fe.cursor.min(2) as f32 * 33.5, gs(YELLOW, 0xff)); }
         }
     }
     // The YES/NO confirm box over the rows [L the d1=0xc text (187,188,266×16) and the d1=0xd list
@@ -1713,12 +1718,15 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
     // [L m0x1d:1; M :181/204 re-sends msg 0x1d=1].]
     if fe.confirming_restart || fe.confirming_quit {
         let text = if fe.confirming_quit { lbl(0x200, "QUIT: ARE YOU SURE?") } else { lbl(0x1ff, "RESTART: ARE YOU SURE?") };
-        h.text(Anchor::Centre, font, -2, &text, mx(187.0 + 133.0), my(188.0 + 8.0), false, bright, false);
+        // Each centred in its control (PCSX2 m27, 2026-10-15: the question's middle y 197, YES 237, NO 270, the
+        // arrow at the list's x + 9 like the MISSION list).
+        label(h, font, &text, 187.0, 188.0, 266.0, 16.0, bright, false, 1.0);
         let yn = [0x5dfu32, 0x5e0];
         for (i, &id) in yn.iter().enumerate() {
             let c = if i == fe.confirm_sel { bright } else { dim };
-            h.text(Anchor::Centre, font, -2, &lbl(id, if i == 0 { "YES" } else { "NO" }), mx(238.0 + 82.0), my(210.0 + 12.0 + i as f32 * 36.0), false, c, false);
+            label(h, font, &lbl(id, if i == 0 { "YES" } else { "NO" }), 238.0, 237.0 - 8.0 + i as f32 * 33.5, 165.0, 16.0, c, false, 1.0);
         }
+        pause_cursor(h, 238.0 + 9.0, 237.0 + fe.confirm_sel.min(1) as f32 * 33.5, gs(YELLOW, 0xff));
     }
     // The hint bar (45,341,550×18) — the TAB's own label [M C_GCPAUSE_Handler 0x204408 swaps the
     // hint per tab on entry: MISSION 0x201 (:275), OBJECTIVES 0x202 (:239), CONTROLS 0x204 (:501),
@@ -2026,11 +2034,24 @@ fn logo_stamp(h: &mut Hud) {
 
 /// The "Play without saving" confirm box [M the pages' plate controls (50,301,540×113) LBL
 /// runtime-filled; the text Txt 0x10000bb].
-fn confirm_box(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, c: [f32; 4]) {
-    plate(h, mx(50.0), my(301.0), mx(540.0), my(113.0), gs(0x201008, 0xe0));
-    for (i, line) in wrap_px(text, font, 500.0).iter().take(4).enumerate() {
-        centred(h, font, -1, line, mx(320.0), my(306.0 + i as f32 * 22.0), c, true, 1.0);
+fn confirm_box(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, opt: &str, c: [f32; 4]) {
+    // PCSX2 m07 (2026-10-15): a translucent grey box (51..589 × 146..333) centred on y 240 over the page, the lines
+    // centred on x 320 at pitch 19 (blank lines kept), wrapped near 470 units; then the option line (~A/~B glyphs
+    // inline) 37 below the last [M Menu_CreateOptionBox 0x1f9608: ok-only box, option 0x10001d6; height = memo +
+    // options·0x15 + 0x36, centred vertically: (448 − h)/2].
+    let lines = wrap_px(text, font, mx(470.0));
+    let n = lines.len().min(9) as f32;
+    let hh = n * 19.0 + 18.0 + 55.0;
+    let top = 240.0 - hh / 2.0;
+    let (a, b) = (h.ndc(Anchor::Centre, mx(51.0), my(top)), h.ndc(Anchor::Centre, mx(589.0), my(top + hh)));
+    let gc = [0.5, 0.5, 0.5, 0.45];
+    let q = |p: [f32; 2]| HudVertex { p, uv: [0.0, 0.0], c: gc };
+    h.ndc_solid(-1, [q([a[0], a[1]]), q([b[0], a[1]]), q([b[0], b[1]]), q([a[0], a[1]]), q([b[0], b[1]]), q([a[0], b[1]])], gc);
+    for (i, line) in lines.iter().take(9).enumerate() {
+        let mid = top + 22.0 + i as f32 * 19.0;
+        hint_row(h, font, line, 50.0, mid - 9.0, c, None);
     }
+    hint_row(h, font, opt, 50.0, top + 22.0 + (n - 1.0) * 19.0 + 37.0 - 9.0, c, None);
 }
 
 /// The hint bar with the game's button glyphs [M the bars at (50,419,540×21); the strings carry ~A/~B/
