@@ -240,18 +240,27 @@ impl Pickup {
         }
     }
 
-    /// `+0x38` spin [M 0x18e148:193-201]: while set, `obj+0x90` gets `RotMatrix((0, REC_FRAME_RATE, 0))`
-    /// concatenated per tick — about +Y by 1/60 rad.
+    /// `+0x38` spin [M 0x18e148:193-201]: while set, the object matrix gets `RotMatrix((0, REC_FRAME_RATE, 0))`
+    /// (0x1e2368) concatenated per tick — about +Y by 1/60 rad. The R elements come from the bit-exact
+    /// `placement::object_matrix` (the same RotMatrix, G-017; REC_FRAME_RATE = 0x30d0dc = 0x3c888889 [D
+    /// symtab+ELF]) and the concat is `Concat(obj+0x90, R)` 0x1e4a90's row-wise product with `Mat_CopyRot`
+    /// 0x1e3370 copying the three rotation rows back (the translation row untouched — Concat's Vec_Add(R.t=0)
+    /// plus the row-3 skip): products chopped, running sums guard-bit, the psiBuildMatrixPalette pattern
+    /// [M anim::mul]. The game's R carries the PS2Sinf factors (R[0][0] = cosB·C0, R[1][1] = C0·C0 with
+    /// C0 = PS2Sinf(π/2) = 1.0000001) the old host `sin_cos` pair lacked (G-046).
     pub fn spin_tick(&mut self) {
         if !self.spin { return; }
-        let a = 1.0f32 / 60.0;
-        let (s, c) = a.sin_cos();
-        // Rotate the matrix's x/z rows about Y, keeping the translation row.
-        for r in 0..3 {
-            let (x, z) = (self.m[r][0], self.m[r][2]);
-            self.m[r][0] = x * c + z * s;
-            self.m[r][2] = z * c - x * s;
+        let r = nf_formats::placement::object_matrix([0.0, f32::from_bits(0x3c88_8889), 0.0], [0.0; 3]);
+        let mut prod = [[0.0f32; 4]; 4];
+        for i in 0..3 {
+            for j in 0..4 {
+                let mut acc = nf_formats::ps2float::mul(self.m[i][0], r[0][j]);
+                acc = nf_formats::ps2float::add(acc, nf_formats::ps2float::mul(self.m[i][1], r[1][j]));
+                acc = nf_formats::ps2float::add(acc, nf_formats::ps2float::mul(self.m[i][2], r[2][j]));
+                prod[i][j] = acc;
+            }
         }
+        for i in 0..3 { self.m[i] = prod[i]; }
     }
 
 
@@ -800,5 +809,126 @@ mod tests {
         assert_eq!(inv.take(&w, &p, false, &mut armour, 1), Some(Taken::Label { label: 0x2000036 }));
         let p0 = Pickup::create(&[[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0; 4]], 0, 0, kind::LABEL, 0, Model { centre: [0.0; 3], radius: 0.5 });
         assert_eq!(inv.take(&w, &p0, false, &mut armour, 1), Some(Taken::Label { label: 0 }), "sister: label 0 rides too (no message at the caller)");
+    }
+}
+
+/// G-046 exact-sine tests: `spin_tick` against the game's own arithmetic (fail-first on the host
+/// `sin_cos(1/60)` pair).
+#[cfg(test)]
+mod exact_sine_tests {
+    use super::*;
+    use nf_formats::ps2float as pf;
+
+    /// `RotMatrix((0, REC_FRAME_RATE, 0))` 0x1e2368 transcribed from the disassembly (0x1e2368-0x1e2470):
+    /// PS2Sinf3(A+π/2, A, B+π/2) → (cosA, sinA, cosB); PS2Sinf3(C+π/2, C, B) → (cosC, sinC, sinB); the nine
+    /// elements from the mul.s/add.s/sub.s chain. Then `Concat(obj.m, R)` 0x1e4a90's row-wise product
+    /// (products chopped, running sum guard-bit — the psiBuildMatrixPalette pattern [M anim::mul]) and
+    /// `Mat_CopyRot` 0x1e3370 (memcpy of the three rotation rows back; the translation row is untouched —
+    /// Concat's Vec_Add(R.t=0) + the row-3 skip). REC_FRAME_RATE = 0x30d0dc = 0x3c888889 [D symtab+ELF].
+    fn game_spin(m: &Mat4, ticks: u32) -> Mat4 {
+        let half = f32::from_bits(0x3fc9_0fdb);
+        let cr = f32::from_bits(0x3c88_8889);
+        let (a, b, c) = (0.0f32, cr, 0.0f32);
+        let sinf = nf_formats::anim::sinf;
+        let m32 = pf::mul;
+        let fadd = |x, y| pf::add_noguard(x, y, true);
+        let fsub = |x: f32, y: f32| pf::add_noguard(x, -y, true);
+        let (c_a, s_a) = (sinf(fadd(a, half)), sinf(a));
+        let (c_b, s_b) = (sinf(fadd(b, half)), sinf(b));
+        let (c_c, s_c) = (sinf(fadd(c, half)), sinf(c));
+        let r = [
+            [m32(c_b, c_c), fadd(m32(m32(s_a, s_b), c_c), m32(c_a, s_c)), fadd(m32(m32(c_a, -s_b), c_c), m32(s_a, s_c)), 0.0],
+            [m32(c_b, -s_c), fsub(m32(c_a, c_c), m32(m32(s_a, s_b), s_c)), fsub(m32(s_a, c_c), m32(m32(c_a, -s_b), s_c)), 0.0],
+            [s_b, m32(-s_a, c_b), m32(c_a, c_b), 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        let mut m = *m;
+        for _ in 0..ticks {
+            // Concat: row_i of the product, k over the rotation rows (chopped products, guard-bit sums).
+            let mut prod = [[0f32; 4]; 4];
+            for i in 0..3 {
+                for j in 0..4 {
+                    let mut acc = pf::mul(m[i][0], r[0][j]);
+                    acc = pf::add(acc, pf::mul(m[i][1], r[1][j]));
+                    acc = pf::add(acc, pf::mul(m[i][2], r[2][j]));
+                    prod[i][j] = acc;
+                }
+            }
+            for i in 0..3 { m[i] = prod[i]; }
+        }
+        m
+    }
+
+    fn spinning(m: Mat4) -> Pickup {
+        Pickup {
+            kind: 3, weapon: 0x47, rounds: 50, model: 0,
+            bounds: Model { centre: [0.0; 3], radius: 0.5 },
+            m, start: [0.0; 3], vel: [0.0; 3], state: 1, lifetime: 0, switch_channel: 0,
+            sound: None, hidden: false, gone: false, from: None, obj: None, respawn: 0,
+            respawn_ticks: 0, spin: true, label: 0,
+        }
+    }
+
+    #[test]
+    fn spin_matches_rotmatrix_and_concat_bit_for_bit() {
+        // A skewed starting rotation (not axis-aligned) so every element moves.
+        let m0: Mat4 = [
+            [0.6, 0.0, -0.8, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.8, 0.0, 0.6, 0.0],
+            [12.5, 3.25, -7.75, 1.0],
+        ];
+        let mut p = spinning(m0);
+        let want = game_spin(&m0, 7);
+        for _ in 0..7 { p.spin_tick(); }
+        for i in 0..4 {
+            for j in 0..4 {
+                assert_eq!(p.m[i][j].to_bits(), want[i][j].to_bits(), "spin tick 7 m[{i}][{j}]: {:e} vs {:e}", p.m[i][j], want[i][j]);
+            }
+        }
+        // One tick from identity: the y column carries R's 1.0000001² and ±0 elements too.
+        let mut q = spinning([
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [1.0, 2.0, 3.0, 1.0],
+        ]);
+        let want1 = game_spin(&[
+            [1.0, 0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0, 0.0],
+            [1.0, 2.0, 3.0, 1.0],
+        ], 1);
+        q.spin_tick();
+        for i in 0..4 {
+            for j in 0..4 {
+                assert_eq!(q.m[i][j].to_bits(), want1[i][j].to_bits(), "spin tick 1 m[{i}][{j}]");
+            }
+        }
+    }
+
+    #[test]
+    fn spin_sister_host_pair_differs_from_the_game() {
+        // The pre-fix single host (s, c) pair applied 2-D: must differ from the game's RotMatrix+Concat on
+        // some tick, else this test could not have failed on the old code.
+        let m0: Mat4 = [
+            [0.6, 0.0, -0.8, 0.0],
+            [0.0, 1.0, 0.0, 0.0],
+            [0.8, 0.0, 0.6, 0.0],
+            [12.5, 3.25, -7.75, 1.0],
+        ];
+        let game = game_spin(&m0, 5);
+        let mut old = m0;
+        let a = 1.0f32 / 60.0;
+        let (s, c) = a.sin_cos();
+        for _ in 0..5 {
+            for r in 0..3 {
+                let (x, z) = (old[r][0], old[r][2]);
+                old[r][0] = x * c + z * s;
+                old[r][2] = z * c - x * s;
+            }
+        }
+        let diff = (0..3).any(|i| (0..4).any(|j| old[i][j].to_bits() != game[i][j].to_bits()));
+        assert!(diff, "sister: the host-pair spin must differ from the game's");
     }
 }

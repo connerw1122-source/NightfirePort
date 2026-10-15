@@ -57,14 +57,10 @@ impl Wire {
     pub fn create(p: &Placement, obj: Option<&MapObject>) -> Option<Wire> {
         let o = obj?;
         let yaw = p.rotation[1];
-        let (s, c) = yaw.sin_cos();
         // The world sphere: the glist bounds centre through the yaw-only object matrix + translation
-        // (the same computation as `Ladder::create` / `Bond::sphere_centre`) [M 0x133070].
-        let centre = [
-            p.translation[0] + o.centre[0] * c + o.centre[2] * s,
-            p.translation[1] + o.centre[1],
-            p.translation[2] - o.centre[0] * s + o.centre[2] * c,
-        ];
+        // (the same computation as `Ladder::create` / `Bond::sphere_centre`) [M 0x133070; G-046: the exact
+        // `View_RotTransMatrix` 0x1e5168 + `Control_BuildWorldSph` VU0 chain via `trig::world_sph_centre`].
+        let centre = crate::trig::world_sph_centre(o.centre, yaw, p.translation);
         let scale = p.scale();
         let s_max = scale.iter().fold(1.0f32, |a, &v| a * v.max(1e-6).abs());
         // The wire-only rot.z negation [M 0x198208-0x198214].
@@ -201,14 +197,10 @@ pub fn icons(level: &Level) -> Vec<Icon> {
             let obj = obj.and_then(|(om, oi)| level.maps.get(om).and_then(|map| map.objects.get(oi)));
             let Some(o) = obj else { continue };
             // The world sphere through the yaw-only object matrix + translation (the same
-            // computation as `Wire::create`) [M Control_BuildWorldSph 0x133070, via 0x1c9680:40].
+            // computation as `Wire::create`) [M Control_BuildWorldSph 0x133070, via 0x1c9680:40;
+            // G-046: the exact chain via `trig::world_sph_centre`].
             let yaw = p.rotation[1];
-            let (s, c) = yaw.sin_cos();
-            let centre = [
-                p.translation[0] + o.centre[0] * c + o.centre[2] * s,
-                p.translation[1] + o.centre[1],
-                p.translation[2] - o.centre[0] * s + o.centre[2] * c,
-            ];
+            let centre = crate::trig::world_sph_centre(o.centre, yaw, p.translation);
             let scale = p.scale();
             let s_max = scale.iter().fold(1.0f32, |a, &v| a * v.max(1e-6).abs());
             out.push(Icon {

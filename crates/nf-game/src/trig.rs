@@ -218,6 +218,40 @@ pub fn rotate_to_bearing(cur: f32, target: f32, speed: f32, max: f32) -> f32 {
     if d.abs() < 1e-4 { target } else { cur + d * speed }
 }
 
+/// The world-sphere centre (`obj+0x80`) for a yaw-only object: `View_RotTransMatrix` 0x1e5168 with the euler
+/// (0, yaw, 0) composed with `Control_BuildWorldSph` 0x133070's VU0 transform of the local bounds centre
+/// (G-046). Disassembly-pinned arithmetic: `PS2Sinf3(0+π/2, 0, yaw+π/2)` gives (C0, 0, cos yaw) and
+/// `PS2Sinf3(0+π/2, 0, yaw)` gives (C0, 0, sin yaw) where **C0 = PS2Sinf(1.5707964) = 1.0000001 — one ulp
+/// above 1.0** [L probe, this file's tests] — so every non-±0 element carries a C0 factor (the old host
+/// `sin_cos` form had none). Matrix rows (the ±0 elements are the game's own products with 0):
+/// `[c·C0, 0, −(C0·s)] / [0−0, C0·C0, c·0 + (C0·s)·0] / [C0·s + (c·0)·0, −(C0·0), C0·c − (0·s)·0]`
+/// (mul.s/add.s/sub.s on the EE FPU). Then the centre transform, the VU0 MAC chain the
+/// `psiBuildMatrixPalette` port uses (chopped products, guard-bit running sums [M anim::mul]):
+/// `ACC = row0·cx; ACC += row1·cy; ACC += row2·cz; ACC += trans·1` — the fourth broadcast is the centre
+/// quad's w read as 1.0 (the computed centres match the live `obj+0x80` values [L ee_start_05.bin, cited at
+/// `Bond::sphere_centre`]). `local` = the glist bounds centre (or M_CONTROL+0x80 for the player), `trans` =
+/// the object translation.
+pub fn world_sph_centre(local: [f32; 3], yaw: f32, trans: [f32; 3]) -> [f32; 3] {
+    use nf_formats::ps2float as pf;
+    let m = pf::mul;
+    let fadd = |a, b| pf::add_noguard(a, b, true);
+    let fsub = |a: f32, b: f32| pf::add_noguard(a, -b, true);
+    let c0 = cosf(0.0); // PS2Sinf(0 + 1.5707964) = 1.0000001 [L probe]
+    let s0 = sinf(0.0); // +0.0
+    let c = cosf(yaw);
+    let s = sinf(yaw);
+    let (m00, m01, m02) = (m(c, c0), s0, -m(c0, s));
+    let (m10, m11, m12) = (fsub(m(s0, s), m(m(c0, c), s0)), m(c0, c0), fadd(m(c, s0), m(m(c0, s), s0)));
+    let (m20, m21, m22) = (fadd(m(c0, s), m(m(c, s0), s0)), -m(c0, s0), fsub(m(c0, c), m(m(s0, s), s0)));
+    let chain = |r0: f32, r1: f32, r2: f32, tr: f32| {
+        let acc = m(r0, local[0]);
+        let acc = pf::add(acc, m(r1, local[1]));
+        let acc = pf::add(acc, m(r2, local[2]));
+        pf::add(acc, tr) // trans·1.0: chop(x·1.0) = x
+    };
+    [chain(m00, m10, m20, trans[0]), chain(m01, m11, m21, trans[1]), chain(m02, m12, m22, trans[2])]
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

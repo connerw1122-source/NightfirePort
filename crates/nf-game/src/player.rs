@@ -285,10 +285,9 @@ impl Bond {
     pub fn sphere_centre(&self) -> V3 {
         // [L] M_CONTROL+0x80 (ee_start_05.bin, player 0 standing).
         const LOCAL: V3 = [-0.1347, -0.1267, 0.2402];
-        let (s, c) = self.yaw.sin_cos();
-        // The object matrix rows [cos,0,−sin / 0,1,0 / sin,0,cos] (+ translation = pos), as read live
-        // [L 0x16cefe0+0x90..0xc8] and matching `Bond::look`'s convention.
-        [self.pos[0] + LOCAL[0] * c + LOCAL[2] * s, self.pos[1] + LOCAL[1], self.pos[2] - LOCAL[0] * s + LOCAL[2] * c]
+        // G-046: the exact `View_RotTransMatrix` 0x1e5168 + `Control_BuildWorldSph` 0x133070 VU0 chain
+        // (the PS2Sinf pair and its C0 = PS2Sinf(π/2) = 1.0000001 factors) via `trig::world_sph_centre`.
+        crate::trig::world_sph_centre(LOCAL, self.yaw, self.pos)
     }
 
     /// The view direction (pitch applied to the forward axis).
@@ -1636,12 +1635,10 @@ pub fn hints(level: &nf_formats::level::Level) -> Vec<Hint> {
             let obj = obj.and_then(|(om, oi)| level.maps.get(om).and_then(|map| map.objects.get(oi)));
             let Some(o) = obj else { continue };
             let yaw = p.rotation[1];
-            let (s, c) = yaw.sin_cos();
-            let centre = [
-                p.translation[0] + o.centre[0] * c + o.centre[2] * s,
-                p.translation[1] + o.centre[1],
-                p.translation[2] - o.centre[0] * s + o.centre[2] * c,
-            ];
+            // G-046: the exact world-sphere chain (`Control_BuildWorldSph` 0x133070 →
+            // `View_RotTransMatrix` 0x1e5168) via `trig::world_sph_centre` — the same computation as
+            // `Wire::create` / `Ladder::create`.
+            let centre = crate::trig::world_sph_centre(o.centre, yaw, p.translation);
             let scale = p.scale();
             let s_max = scale.iter().fold(1.0f32, |a, &v| a * v.max(1e-6).abs());
             out.push(Hint {
@@ -1830,5 +1827,82 @@ mod tests {
         let mut b = Bond::new([0.0, 30.0, 0.0], 0.0);
         for _ in 0..30 { b.tick(&w, &Input::default()); }
         assert!(b.pos[1] < 30.0 - 1.0 && !b.grounded);
+    }
+}
+
+/// G-046 exact-sine tests: `Bond::sphere_centre` against the game's own arithmetic (fail-first on the host
+/// `sin_cos` yaw pair).
+#[cfg(test)]
+mod exact_sine_tests {
+    use super::*;
+    use nf_formats::ps2float as pf;
+
+    /// `Control_BuildWorldSph` 0x133070 (the player's `flags2 & 8` branch) composed with
+    /// `View_RotTransMatrix` 0x1e5168 for the yaw-only euler (0, yaw, 0), transcribed from the disassembly:
+    /// PS2Sinf3(0+π/2, 0, yaw+π/2) → (C0 = PS2Sinf(π/2) = 1.0000001, 0, cos yaw); PS2Sinf3(0+π/2, 0, yaw) →
+    /// (C0, 0, sin yaw); the matrix rows [M0] = [cosyaw·C0, 0, −(C0·sinyaw)], [M1] = [0−0, C0·C0, ±0],
+    /// [M2] = [C0·sinyaw + 0, −(C0·0), C0·cosyaw − 0]; then the VU0 centre transform (ACC = row0·cx;
+    /// + row1·cy; + row2·cz; + trans·1 — chopped products, guard-bit sums [M anim::mul pattern]).
+    /// The local centre is M_CONTROL+0x80 = (−0.1347, −0.1267, 0.2402) [L ee_start_05.bin].
+    fn game_world_sph(local: [f32; 3], yaw: f32, t: [f32; 3]) -> [f32; 3] {
+        let half = f32::from_bits(0x3fc9_0fdb);
+        let m32 = pf::mul;
+        let fadd = |x, y| pf::add_noguard(x, y, true);
+        let fsub = |x: f32, y: f32| pf::add_noguard(x, -y, true);
+        let c0 = nf_formats::anim::sinf(fadd(0.0, half));
+        let s0 = nf_formats::anim::sinf(0.0);
+        let c = nf_formats::anim::sinf(fadd(yaw, half));
+        let s = nf_formats::anim::sinf(yaw);
+        let m00 = m32(c, c0);
+        let m01 = s0;
+        let m02 = -m32(c0, s);
+        let m10 = fsub(m32(s0, s), m32(m32(c0, c), s0));
+        let m11 = m32(c0, c0);
+        let m12 = fadd(m32(c, s0), m32(m32(c0, s), s0));
+        let m20 = fadd(m32(c0, s), m32(m32(c, s0), s0));
+        let m21 = -m32(c0, s0);
+        let m22 = fsub(m32(c0, c), m32(m32(s0, s), s0));
+        let chain = |r0: f32, r1: f32, r2: f32, tr: f32| {
+            let acc = m32(r0, local[0]);
+            let acc = pf::add(acc, m32(r1, local[1]));
+            let acc = pf::add(acc, m32(r2, local[2]));
+            pf::add(acc, tr)
+        };
+        [chain(m00, m10, m20, t[0]), chain(m01, m11, m21, t[1]), chain(m02, m12, m22, t[2])]
+    }
+
+    /// The pre-fix port formula (host sin_cos, no C0 factors): the sister.
+    fn host_world_sph(local: [f32; 3], yaw: f32, t: [f32; 3]) -> [f32; 3] {
+        let (s, c) = yaw.sin_cos();
+        [t[0] + local[0] * c + local[2] * s, t[1] + local[1], t[2] - local[0] * s + local[2] * c]
+    }
+
+    #[test]
+    fn sphere_centre_matches_control_buildworldsph_bit_for_bit() {
+        const LOCAL: [f32; 3] = [-0.1347, -0.1267, 0.2402];
+        let spots: [([f32; 3], f32); 6] = [
+            ([104.95, 24.98, 108.83], -4.369),          // the 07000005 start area
+            ([0.0, 0.0, 0.0], 0.0),
+            ([10.5, -3.25, 77.125], 0.7853942),
+            ([-40.75, 12.5, 3.5], 2.3561945),
+            ([1000.0, 200.0, -1000.0], 3.1415927),
+            ([5.0, 5.0, 5.0], 1.0),
+        ];
+        for (pos, yaw) in spots {
+            let b = Bond::new(pos, yaw);
+            let got = b.sphere_centre();
+            let want = game_world_sph(LOCAL, yaw, pos);
+            for k in 0..3 {
+                assert_eq!(got[k].to_bits(), want[k].to_bits(), "yaw {yaw} comp {k}: {:e} vs {:e}", got[k], want[k]);
+            }
+        }
+        // Sister: the host formula must differ somewhere, else the test could not have failed pre-fix.
+        let mut diff = false;
+        for (_, yaw) in spots {
+            let want = game_world_sph(LOCAL, yaw, [104.95, 24.98, 108.83]);
+            let old = host_world_sph(LOCAL, yaw, [104.95, 24.98, 108.83]);
+            if (0..3).any(|k| old[k].to_bits() != want[k].to_bits()) { diff = true; }
+        }
+        assert!(diff, "sister: the host world-sphere formula must differ from the game's");
     }
 }
