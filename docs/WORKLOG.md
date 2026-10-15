@@ -13004,3 +13004,11 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
   (slim ISO) + the no-GPU pylon set ×3 (fix_0c_pylon_live ×2 + probe_pylon_render, wgpu
   "adapter: NotFound" — the sandbox has no GPU adapter; same set WORKLOG fix-death-retry-boost
   recorded). The required final-tree suite restarted on the merge (totals in the report).
+- drive-elf-map (start 16:20 UTC): research phase 3 of docs/atlas/driving.md — the DRIVING.ELF
+  map. Deliverable docs/atlas/driving-elf.md: the main loop from FUN_00174bf0 0x174bf0 (per-frame
+  order + timestep), a function inventory by subsystem (CARP physics, Act* actors, AI, camera,
+  HUD, audio, loader, transfer/return) with DRIVING.SYM hints matched where shapes agree ([S]
+  until checked), shape-matches of the functions ACTION.ELF shares (math, BIGF, sound) so the
+  port can reuse its versions, and §7 open question 5 answered from code: the .crp track's
+  consumer. Docs only, no gameplay code. Branch s/drive-elf-map cut from origin/master 0bcd8077;
+  full suite started in background 16:17 UTC.
