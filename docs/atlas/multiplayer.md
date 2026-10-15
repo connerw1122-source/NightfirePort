@@ -175,6 +175,24 @@ objective, min-range from `weapon_data[w*0x10C+8]`; announces via `MP_sendBotMes
 **Difficulty stats** — aggression mult 0.3–1.0 (×3 point-blank), speed mult 0.7/1.0/1.3, regen +5 HP
 flag, stun = stats[8]×2/3 frames, armour pool BOT_vars+0x769, per-bot 360° vision [M].
 
+**Status (mp-bots-states 2026-10-15).** The dispatch targets are ported behind `mp-bots`
+(`crates/nf-game/src/mp/bots.rs` §6): the goal machine (`initGoal` 0x1294c0, `uninitGoal` 0x129438,
+`setGoalComplete` 0x129510, `getActiveGoal` 0x129548, `setGoalPickPrefs` 0x128298 with the
+(1−hp/max)·25 auto-derive, `pickGoal` 0x126b88's pickup passes + the MP_PICKUP+0x80 visit decay
+(×max(|now−visit|·50, 1), ×4500 future-stamp), `gotoGoal` 0x1278a8 with the `VIDEO_FRAME_RATE*5`
+deadline and the subtype wander rolls, `processGoals` 0x127c78 with the 20.25/|Δz|<2 melee gate),
+the hub states 0xF9 `BotIdle` 0x171b80 and 0xEB `BotGotoGoalPosition` 0x171240 (0xF6 door detour,
+no 0xE9 transition exists — BotStuck 0x175220 is an orphan stub), the attack pair 0xCF 0x16f198 /
+0xD2 0x16f5e8 (the Rand_Rand(3) re-routers, the latch routing verbatim, the NextBulletTime burst
+arithmetic 0x179d40), the trait switch 0x128b50, and the msg-3 heartbeat of 0xC5 `BotGlobal`
+(the forced-to-0xC5 delivery of `RouteMsgDCV` 0x171df8:78-86). Corrections this pass: the goal
+duration is 300.0 (not 5 s — see bot-vars.md +0x28); `+0x76E` is the last-pickup index (reader
+found); the mode-objective bitmask is `MPGame+0x1A8+team*2` (not MPSettings+0x1A4); `pickGoal`'s
+class-2 objects are never scored. Not ported yet (gaps in docs/reports/mp-bots-states.md): the
+cover family, the move states 0xD4/0xD5/0xDB/0xDC (chooseCombatMove's targets — the roll consumes
+the RNG and the bot stays 0xCF), the death branch, the weapon re-choice chain, the AINetwork
+route wiring for the arenas (the port walks straight-line at the stats' speed multiplier).
+
 **Bot vs campaign drone** — shared: perception (`setOtherPlayerInfo` inside
 `NDrone2_ControlSTANDARD`), movement, cover, impacts. Bot-only: the goal layer, traits, opponent
 history, the BOTWEAP weapon-choice layer, messages, team objective locking
