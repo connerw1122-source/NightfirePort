@@ -109,3 +109,10 @@ Branch `s/credits-data`, task 613. Everything below cites the decompile; the fac
       with the frame counter would pin the entry period exactly.
 - [ ] With GameState[0x52] = 1 (a saved game with a medal), the 0x1000023c control's alpha word
       reads 0x404040ff at the credits' enter (watch the msg 0x1a send at 0x2152b0:87).
+
+## ntfy failed
+
+All three fallbacks hit ntfy.sh's daily message quota (2026-10-15 ~19:20 UTC):
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit 8 (server error response, 429)
