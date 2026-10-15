@@ -4,10 +4,18 @@
 //! checked against the live layout in `work/ee_start_05.bin` [L] (5 doors on 07000005: 4 `Door_Locked_3/4`
 //! sliders without an anim and lock channel 200, 1 `Door_UNLocked` swing door with a 3-key anim).
 //!
-//! Not ported: the text labels 0x2000003 / 0x200000b
-//! (`Door_Update`'s unlock note, `Door_DoMsg` — no text system yet), and the collision-proxy list of
-//! `Door_ReactToHit` (`obj+0xD0`, as U-041): the proxy scan is stood in for by the same bounding-sphere test
-//! `Door_Update`'s proximity check uses.
+//! The collide path (fix-door-react-path, G-035): `Door_ReactToHit` is the class-0x1C COLLIDE function
+//! (`control_funcs[0x1C·0xC+4]` @0x26f9e0 [ELF, trigger-port-check #3]), dispatched by `Collide_Update`
+//! 0x1ea398:59-64 after the control walk + movement pass (docs/atlas/object.md step 7). The contacts it
+//! reads are the door's `obj+0xD0` hit list, which `Collide_Update` fills by forwarding each picker's
+//! `Collide_PickObj` hits to the hit object (+0x58 = the hitter) [M 0x1ea398:160-233]; the doors are picked
+//! because `build_LinkToRoom` 0x1c9680:63-66 puts `obj+0xF0 & 0x20000000` objects on the global `ForcedList`
+//! (0x270590), which every picker with `HITTEST+0x98` without bit 0x10 tests [M `Collide_Pick` 0x1eb320:369-375].
+//! The player's pick is mode 0x800 [M `Player_Collision` 0x194df0 writes BLData+0x7D4 = 0x800 in the
+//! substate arms]: the segment-vs-sphere test — `sqdist(live obj+0x80 sphere centre, closest point on the
+//! pick capsule) < (1.5·r_obj + r_pick)²` [M `Collide_PickObj` 0x1eae80:152-168, the ×1.5 at :160].
+//! Ported as `Doors::collide_step` (called from the collide caller in `Drones::tick`, before `Doors_Calc`) —
+//! the sphere stand-in in the old `react_to_hit` is gone: the pick above IS the game's test.
 
 use crate::triggers::Channels;
 use crate::trig::sinf;
@@ -221,10 +229,12 @@ pub struct Doors {
     /// The previous tick's `switch_channels` (`switch_channels_prev`) for the lock channel's rising edge.
     prev_channels: [u8; 256],
     hold_channels: [u8; 256],
+    /// Per door, this tick's `obj+0xD0` contacts (the collide step's forwards). Cleared by `collide_step`.
+    contacts: Vec<Vec<DoorContact>>,
 }
 
 impl Default for Doors {
-    fn default() -> Doors { Doors { list: Vec::new(), group_states: [0; 101], prev_channels: [0; 256], hold_channels: [0; 256] } }
+    fn default() -> Doors { Doors { list: Vec::new(), group_states: [0; 101], prev_channels: [0; 256], hold_channels: [0; 256], contacts: Vec::new() } }
 }
 
 /// The main map's door placements in creation order (create and nf-view).
@@ -256,6 +266,32 @@ fn visible_actors(actors: &[DoorActor]) -> impl Iterator<Item = (V3, f32)> + '_ 
 
 /// A sound `Door_SetState` / `Door_Activate` asks for: id and position.
 pub type SoundEvent = (u16, V3);
+
+/// One picker in the door collide step (a `Collide_Update` mover whose pick reaches the doors). The
+/// fields are the HITTEST pieces the door path reads: the pick capsule `HITTEST+0x20/+0x30` (the
+/// per-substate vertical segment at the root [M `Player_Collision` 0x194df0's switch: walk 0/6
+/// A = pos+up·0.55, B = pos+up·(0.275−cc), r = 0.275; swim 3 A = pos+up·(0.1−(cc−0.55)),
+/// B = pos+up·(0.45−cc), r = 0.55; default A = pos+up·0.275, B = pos+up·(0.55−cc), r = 0.55 —
+/// the port's `Ladder::pick_hit` arms]), the pick radius `HITTEST+0x8C`, and the world sphere
+/// centre `obj+0x80` the kind-0 reversal transforms [M 0x135980:80].
+#[derive(Clone, Copy, Debug)]
+pub struct DoorMover {
+    pub a: V3,
+    pub b: V3,
+    pub radius: f32,
+    pub centre: V3,
+    /// class 3 — the player: the contact selection takes it unconditionally [M 0x135980:65].
+    pub player: bool,
+    /// The class-2 gate's verdict [M 0x135980:53-60]: `(ext+0x4F8 & 0x600) == 0 && (ext+0x4F8 & 0x100)
+    /// != 0 && ext+0xAC > 0.0 && !(obj+0xFE & 1)`. The port maps it to present ∧ non-corpse ∧ health > 0
+    /// (no `+0x4F8` in the port; the 0x600 bits are death/stun states, 0x100 active — live checks #3).
+    pub valid: bool,
+}
+
+/// One `obj+0xD0` contact: the copy `Collide_Update` appends to the hit object, `+0x58` = the hitter,
+/// of whose world sphere centre the door's kind-0 reversal reads [M 0x1ea398:176-193, 0x135980:80].
+#[derive(Clone, Copy, Debug)]
+struct DoorContact { centre: V3, player: bool, valid: bool }
 
 impl Doors {
     /// The per-door `Door_IsClosed` (0x1367b0) snapshot, indexed by `list` position — what the cel
@@ -324,7 +360,8 @@ impl Doors {
             }
             list.push(d);
         }
-        Doors { list, group_states: [0; 101], prev_channels: [0; 256], hold_channels: [0; 256] }
+        let n = list.len();
+        Doors { list, group_states: [0; 101], prev_channels: [0; 256], hold_channels: [0; 256], contacts: (0..n).map(|_| Vec::new()).collect() }
     }
 
     /// A door that starts open sets its open channel at create (`Door_Create`'s tail).
@@ -546,41 +583,84 @@ impl Doors {
         self.set_state(i, OPENING, channels, frame, sounds);
     }
 
-    /// `Door_ReactToHit` [M 0x135980], the proxy scan stood in for by the sphere test: a moving door that meets
-    /// an actor reverses (the anti-crush). Waits the 2-tick activation timer out; kind 1 doors ignore it.
-    /// NOT called from `Door_Update` (A-11b) — the game calls this from `Collide_Update` via the proxy list
-    /// (obj+0xD0). Kept for the future proxy-list port (U-041); currently unused.
-    #[allow(dead_code)]
-    fn react_to_hit(&mut self, i: usize, actors: &[DoorActor], channels: &mut Channels, frame: u32, sounds: &mut Vec<SoundEvent>) {
-        if self.list[i].timer != 0 || self.list[i].state & 0x18 == 0 { return; }
-        let Some(act) = visible_actors(actors).find(|a| blocked((self.list[i].pos, self.list[i].sph.1), *a)).map(|a| a.0) else { return };
-        let (kind, state, swing, pos01, dir) = {
-            let d = &self.list[i];
-            (d.kind, d.state, d.swing, d.pos01, d.dir)
-        };
-        match kind {
-            0 => {
-                // The collider in the door's current space: `f = local.z · swing`, negated past half travel.
-                let local = transform(&rigid_inverse(&self.list[i].matrix), act);
-                let mut f = local[2] * swing;
-                if pos01 > 0.5 { f = -f; }
-                if state & 0x10 == 0 {
-                    if state & 8 == 0 || f <= HIT_EPS { return; }
+    /// The door collide step: `Collide_Update` 0x1ea398's pick + forward, then the class-0x1C dispatch
+    /// `Door_ReactToHit` 0x135980. The caller (the collide caller in `Drones::tick`) runs it after the
+    /// control walk, before `Doors_Calc` — the game's order (atlas/object.md steps 6-7, `Doors_Calc`
+    /// at 0x1336f8:23) — so a reversal's busy marker clears in the same tick's calc, exactly as the
+    /// game's next-frame `Doors_Calc` would, and the 2-tick timer (`ext+0x6C`) still gates it.
+    ///
+    /// Pick [M `Collide_PickObj` 0x1eae80:152-168, mode 0x800 — the player's `BLData+0x7D4`, written by
+    /// `Player_Collision` 0x194df0's substate arms]: for every mover × every door (the ForcedList is
+    /// global — `Collide_Pick` 0x1eb320:369-375 — no cel filter), the LIVE world sphere (`obj+0x80`,
+    /// rebuilt by the moved pass after `Door_Interp` [M 0x1336f8; the port's `transform(matrix,
+    /// sph_centre)`]): `sqdist(centre, closest point on the pick capsule, t clamped to [0,1]) <
+    /// (1.5·r_door + r_pick)²`. On hit, the contact forwards to the door's `obj+0xD0` (+0x58 = the
+    /// hitter) [M `Collide_Update` 0x1ea398:160-233]. Returns the `Door_SetState` sounds.
+    pub fn collide_step(&mut self, movers: &[DoorMover], channels: &mut Channels, frame: u32) -> Vec<SoundEvent> {
+        let mut sounds = Vec::new();
+        if self.contacts.len() != self.list.len() { self.contacts.resize_with(self.list.len(), Vec::new); }
+        for h in self.contacts.iter_mut() { h.clear(); }   // the clear pass: every +0xD0 to the pool [M 0x1ea398:25-53]
+        for m in movers {
+            let ab = [m.b[0] - m.a[0], m.b[1] - m.a[1], m.b[2] - m.a[2]];
+            for i in 0..self.list.len() {
+                let c = transform(&self.list[i].matrix, self.list[i].sph_centre);
+                let r = self.list[i].sph.1 * 1.5 + m.radius;
+                let ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                let t = if ab2 > 0.0 {
+                    (((c[0] - m.a[0]) * ab[0] + (c[1] - m.a[1]) * ab[1] + (c[2] - m.a[2]) * ab[2]) / ab2).clamp(0.0, 1.0)
+                } else { 0.0 };
+                let dx = m.a[0] + ab[0] * t - c[0];
+                let dy = m.a[1] + ab[1] * t - c[1];
+                let dz = m.a[2] + ab[2] * t - c[2];
+                if dx * dx + dy * dy + dz * dz < r * r {
+                    self.contacts[i].push(DoorContact { centre: m.centre, player: m.player, valid: m.valid });
+                }
+            }
+        }
+        // The dispatch [M 0x1ea398:59-64]: `control_funcs[class·0xC+4](obj)` — doors run `Door_ReactToHit`.
+        for i in 0..self.list.len() {
+            if !self.contacts[i].is_empty() { self.react_to_hit(i, channels, frame, &mut sounds); }
+        }
+        sounds
+    }
+
+    /// `Door_ReactToHit` [M 0x135980] over this tick's contacts (`obj+0xD0`). Guards [M :44]: `ext+0x6C == 0`
+    /// (the 2-tick lockout `Door_Update`'s head decrements — 0x1363c8:22-23). Selection [M :47-72]: walk the
+    /// contacts in list order; class 3 (the player) qualifies outright, class 2 (a drone) only through the
+    /// `+0x4F8`/`+0xAC`/`+0xFE` gate; the first qualifier's `obj+0x80` is the hitter. Then:
+    /// kind 1: nothing; kind 0 animating (`obj+0xF4 & 0x18`): the hitter's centre in the door's live space
+    /// (`f = local.z · ext+0x5C`, negated past half travel `ext+0x50 > 0.5`) — `f < −0.0002` while CLOSING
+    /// reverses to OPENING, `f > +0.0002` while OPENING reverses to CLOSING (the anti-crush), other cases
+    /// return early (no tail); kind 2 while CLOSING (`& 0x10`) reverses to OPENING. Kind 0 idle falls through
+    /// to the tail. Tail [M :109-111]: `Door_Interp(…, 0)` re-pose, `ext+0x6C = 2`, busy `ext+0x70 |= 0x10`.
+    fn react_to_hit(&mut self, i: usize, channels: &mut Channels, frame: u32, sounds: &mut Vec<SoundEvent>) {
+        if self.list[i].timer != 0 { return; }
+        let Some(hit) = self.contacts[i].iter().find(|c| c.player || c.valid).map(|c| c.centre) else { return };
+        let (kind, state, dir) = { let d = &self.list[i]; (d.kind, d.state, d.dir) };
+        if kind == 1 { return; }
+        if kind < 2 {
+            if kind == 0 && state & 0x18 != 0 {
+                let local = transform(&rigid_inverse(&self.list[i].matrix), hit);
+                let mut f = local[2] * self.list[i].swing;
+                if self.list[i].pos01 > 0.5 { f = -f; }
+                if state & 0x10 == 0 || f >= -HIT_EPS {
+                    if state & 8 == 0 { return; }
+                    if f <= HIT_EPS { return; }
                     self.list[i].dir = -dir;
                     self.set_state(i, CLOSING, channels, frame, sounds);
                 } else {
-                    if f >= -HIT_EPS { return; }
                     self.list[i].dir = -dir;
                     self.set_state(i, OPENING, channels, frame, sounds);
                 }
             }
-            2 => {
-                if state & 0x10 == 0 { return; }
-                self.list[i].dir = -dir;
-                self.set_state(i, OPENING, channels, frame, sounds);
-            }
-            _ => return,
+        } else if kind == 2 {
+            if state & 0x10 == 0 { return; }
+            self.list[i].dir = -dir;
+            self.set_state(i, OPENING, channels, frame, sounds);
+            self.interp(i, false, channels, frame, sounds);   // the kind-2 arm's own Door_Interp(0) [M :107]
         }
+        // The tail [M :109-111]: Door_Interp(obj, ext, 0), timer = 2, busy.
+        self.interp(i, false, channels, frame, sounds);
         let d = &mut self.list[i];
         d.timer = 2;
         d.flags |= 0x10;
@@ -977,5 +1057,97 @@ mod tests {
         assert_eq!(doors.list[1].state, OPENING, "the group member follows");
         assert_eq!(doors.list[1].pos01, doors.list[0].pos01);
         assert_eq!(doors.list[0].flags & 0x10, 0, "calc clears the busy markers");
+    }
+
+    /// A kind-2 slide door closing on the player's pick capsule reverses to OPENING through the
+    /// collide step [M Door_ReactToHit 0x135980 kind-2 arm, fed by Collide_Update's obj+0xD0 forward].
+    fn slide_door(state: u16, dir: f32) -> Doors {
+        let mut doors = Doors::default();
+        doors.list.push(Door {
+            placement: 0, kind: 2, group: 0, ch_open: 0, ch_lock: 0, straddle: false,
+            snd_open: 0xffff, snd_close: 0xffff, snd_hit: 0xffff, flags: 0, approach: 0, locked_flag: 0,
+            keys: None, frames: 0xffff, state, pos01: if state & 4 != 0 { 1.0 } else { 0.0 },
+            speed: 1.0 / 30.0, dir, swing: 0.0, timer: 0, open_timer: 0, msg_shown: false,
+            matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
+            inv_closed: [[0.0; 4]; 4], pos: [10.0, 0.0, 0.0], sph: ([10.0, 1.1, 0.0], 1.28), sph_centre: [10.0, 1.1, 0.0], glist: 8,
+        });
+        doors
+    }
+
+    /// The standing walk pick capsule at the door's threshold (the 0x194df0 case-0/6 arm).
+    fn player_at(x: f32, z: f32) -> crate::door::DoorMover {
+        let p = [x, 0.0, z];
+        crate::door::DoorMover { a: [p[0], p[1] + 0.55, p[2]], b: [p[0], p[1] + 0.275 - 1.0347, p[2]], radius: 0.275, centre: p, player: true, valid: false }
+    }
+
+    #[test]
+    fn the_collide_step_reverses_a_closing_slide_door_on_the_player() {
+        let mut doors = slide_door(CLOSING, -1.0);
+        let mut ch = channels();
+        // Bond in the doorway: the pick capsule crosses the door's live sphere ×1.5.
+        let evs = doors.collide_step(&[player_at(10.0, 0.0)], &mut ch, 0);
+        let d = &doors.list[0];
+        assert_eq!(d.state, OPENING, "the kind-2 reversal: CLOSING → OPENING [M 0x135980]");
+        assert_eq!(d.dir, 1.0, "dir flipped");
+        assert_eq!(d.timer, 2, "the 2-tick tail [M 0x135980:110]");
+        assert_eq!(d.flags & 0x10, 0x10, "the busy marker [M 0x135980:111]");
+        // Sister: an open door ignores the contact (the kind-2 arm needs CLOSING).
+        let mut open = slide_door(OPEN, 1.0);
+        let evs2 = open.collide_step(&[player_at(10.0, 0.0)], &mut ch, 0);
+        assert_eq!(open.list[0].state, OPEN, "an open slide door does not reverse");
+        assert!(evs.is_empty() && evs2.is_empty(), "no sounds (0xffff ids)");
+        // And a far player makes no contact at all.
+        let mut away = slide_door(CLOSING, -1.0);
+        away.collide_step(&[player_at(30.0, 20.0)], &mut ch, 0);
+        assert_eq!(away.list[0].state, CLOSING, "no contact, no reversal");
+    }
+
+    #[test]
+    fn the_drone_gate_selects_only_a_valid_guard() {
+        let mut ch = channels();
+        // A dead guard's contact (invalid) does not reverse; a live one behind it does [M 0x135980:53-60].
+        let mut doors = slide_door(CLOSING, -1.0);
+        let dead = crate::door::DoorMover { a: [10.0, 0.0, 0.0], b: [10.0, 0.0, 0.0], radius: 0.4, centre: [10.0, 0.9, 0.0], player: false, valid: false };
+        let alive = crate::door::DoorMover { a: [10.0, 0.0, 0.0], b: [10.0, 0.0, 0.0], radius: 0.4, centre: [10.0, 0.9, 0.0], player: false, valid: true };
+        doors.collide_step(&[dead], &mut ch, 0);
+        assert_eq!(doors.list[0].state, CLOSING, "an invalid (dead) drone contact never reverses");
+        doors.collide_step(&[dead, alive], &mut ch, 0);
+        assert_eq!(doors.list[0].state, OPENING, "the first valid drone in list order reverses it");
+        // The 2-tick lockout: an immediate re-run does nothing (timer != 0) [M 0x135980:44].
+        let mut doors2 = slide_door(CLOSING, -1.0);
+        doors2.collide_step(&[alive], &mut ch, 0);
+        assert_eq!(doors2.list[0].state, OPENING);
+        doors2.collide_step(&[alive], &mut ch, 0);
+        assert_eq!(doors2.list[0].state, OPENING, "still OPENING (the reversal fired once; the timer gates the tail)");
+        assert_eq!(doors2.list[0].timer, 2, "the tail did not re-fire");
+    }
+
+    #[test]
+    fn kind1_ignores_contacts_and_kind0_reverses_by_the_swing_plane() {
+        let mut ch = channels();
+        // Kind 1: contacts but nothing happens [M 0x135980:75].
+        let mut k1 = slide_door(CLOSING, -1.0);
+        k1.list[0].kind = 1;
+        k1.collide_step(&[player_at(10.0, 0.0)], &mut ch, 0);
+        assert_eq!(k1.list[0].state, CLOSING);
+        assert_eq!(k1.list[0].timer, 0, "kind 1 never reaches the tail");
+        // Kind 0 swing, CLOSING (pos01 0.6 heading down, dir −1 — Door_Activate's close path), the
+        // hitter where the leaf closes into (local.z·swing = +2, negated past half travel → f < −eps)
+        // → OPENING [M 0x135980:95-98].
+        let mut doors = swing_door();
+        doors.list[0].state = CLOSING;
+        doors.list[0].pos01 = 0.6;
+        doors.list[0].dir = -1.0;
+        doors.collide_step(&[player_at(0.0, -2.0)], &mut ch, 0);
+        assert_eq!(doors.list[0].state, OPENING, "the swing anti-crush reopens");
+        assert_eq!(doors.list[0].dir, 1.0, "dir flipped");
+        // Sister: the same door with nobody near finishes the close in update (state → CLOSED).
+        let mut alone = swing_door();
+        alone.list[0].state = CLOSING;
+        alone.list[0].pos01 = 0.6;
+        alone.list[0].dir = -1.0;
+        let far = [([100.0, 1.0, 100.0], 0.4f32, false)];
+        for _ in 0..12 { alone.update(0, &mut ch, &far, 0); alone.calc(); }
+        assert_eq!(alone.list[0].state, CLOSED, "a door with nobody in it closes");
     }
 }

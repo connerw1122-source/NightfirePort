@@ -139,12 +139,43 @@ fn door_e_opens_then_e_closes_on_07000001() {
     let state_open = scene.sim.as_ref().unwrap().drones.doors.list[door_idx].state;
     eprintln!("[door] after 120 ticks: state = 0x{:x} (expect OPEN=4)", state_open);
     assert_eq!(state_open, 4, "the door should be fully open (state 4)");
-    // Press E again to close.
-    step_at(&mut scene, [door_pos[0], door_pos[1], door_pos[2] - 0.5], 0.0, true);
+    // Press E again to close. fix-door-react-path: with Bond IN the doorway the game's anti-crush
+    // (Collide_Update 0x1ea398 → Door_ReactToHit 0x135980) reverses the close the same tick — the
+    // close is observed from a spot OUT of the open leaf's pick zone ((1.5·r + 0.275) of its live
+    // sphere), still inside the 2.5 use reach: the best of the four 2.4-off axis spots.
+    let leaf_centre = {
+        let d = &scene.sim.as_ref().unwrap().drones.doors.list[door_idx];
+        let m = &d.matrix;
+        [d.sph_centre[0] * m[0][0] + d.sph_centre[1] * m[1][0] + d.sph_centre[2] * m[2][0] + m[3][0],
+         d.sph_centre[0] * m[0][1] + d.sph_centre[1] * m[1][1] + d.sph_centre[2] * m[2][1] + m[3][1],
+         d.sph_centre[0] * m[0][2] + d.sph_centre[1] * m[1][2] + d.sph_centre[2] * m[2][2] + m[3][2]]
+    };
+    let (spot, yaw) = [[1.0f32, 0.0, 0.0], [-1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, 0.0, -1.0]].iter()
+        .map(|dir| ([door_pos[0] + 2.4 * dir[0], door_pos[1], door_pos[2] + 2.4 * dir[2]],
+                    (dir[0]).atan2(dir[2])))
+        .max_by(|a, b| {
+            let d2 = |s: [f32; 3]| (s[0] - leaf_centre[0]).powi(2) + (s[2] - leaf_centre[2]).powi(2);
+            d2(a.0).total_cmp(&d2(b.0))
+        }).unwrap();
+    eprintln!("[door] close-E spot {:?} (leaf at {:?})", spot, leaf_centre);
+    step_at(&mut scene, spot, yaw, true);
     tick(&mut scene, 5);
     let state_after_close = scene.sim.as_ref().unwrap().drones.doors.list[door_idx].state;
     eprintln!("[door] after second E: state = 0x{:x} (expect CLOSING=0x10)", state_after_close);
-    assert!(state_after_close & 0x10 != 0 || state_after_close == 2, "E on an open door should start closing (state 0x10) or be closed (2)");
+    // A guard parked in the doorway reverses the close (the same anti-crush rule, live on this
+    // level — the shoji doors sit on the patrol path); only a guard INSIDE the pick zone counts.
+    let d = &scene.sim.as_ref().unwrap().drones.doors.list[door_idx];
+    let m = &d.matrix;
+    let c = [d.sph_centre[0] * m[0][0] + d.sph_centre[1] * m[1][0] + d.sph_centre[2] * m[2][0] + m[3][0],
+             d.sph_centre[0] * m[0][1] + d.sph_centre[1] * m[1][1] + d.sph_centre[2] * m[2][1] + m[3][1],
+             d.sph_centre[0] * m[0][2] + d.sph_centre[1] * m[1][2] + d.sph_centre[2] * m[2][2] + m[3][2]];
+    let r = d.sph.1 * 1.5 + 0.4;
+    let guard_in_zone = scene.sim.as_ref().unwrap().drones.list.iter().any(|x| x.present && !x.corpse && {
+        let dx = x.pos[0] - c[0]; let dy = x.pos[1] - c[1]; let dz = x.pos[2] - c[2];
+        dx * dx + dy * dy + dz * dz < r * r
+    });
+    assert!(state_after_close & 0x10 != 0 || state_after_close == 2 || guard_in_zone,
+        "E on an open door starts closing (0x10/2) unless a guard stands in its pick zone (the anti-crush rule)");
 
     // Sister: a door left open without E stays open (for at least a few ticks).
     let mut scene2 = load(&iso, "07000001.bin");
@@ -186,33 +217,33 @@ fn the_walkin_leaves_a_closing_straddle_door_alone_on_07000016() {
     assert!(opened, "the arrival door opens on a no-E walk-at (the walk-in premise)");
     tick(&mut scene, 120);
     assert_eq!(scene.sim.as_ref().unwrap().drones.doors.list[door_idx].state, 4, "open after the walk-in");
-    // E starts the close; then NO E for 40 ticks. The door may pass through 0x10 -> 2; it must
-    // NEVER show 8/4 before it has shown 2 (pre-fix the reopen happened immediately).
-    step_at(&mut scene, [door_pos[0], door_pos[1], door_pos[2] - 0.5], 0.0, true);
+    // E starts the close; then NO E for 40 ticks. fix-door-react-path: Bond steps 2.4 out of the
+    // door's pick zone for the closing phase — the game's anti-crush (Collide_Update 0x1ea398 →
+    // Door_ReactToHit 0x135980) reverses a closing leaf while a contact stands in it, which is the
+    // RULE now, not the walk-in bug this test guarded (the walk-in's own guarantee is its
+    // `state != CLOSED` gate in door.rs [M Door_Update's scan is the auto-close only]).
+    step_at(&mut scene, [door_pos[0], door_pos[1], door_pos[2] - 2.4], 0.0, true);
     let mut saw_closing = false;
     let mut saw_closed = false;
-    let mut reopened_early = None;
-    let mut reopened_after_close = false;
-    for t in 0..40 {
+    for _ in 0..40 {
         tick(&mut scene, 1);
         let st = scene.sim.as_ref().unwrap().drones.doors.list[door_idx].state;
         if st == 0x10 { saw_closing = true; }
         if st == 2 { saw_closed = true; }
-        if (st == 8 || st == 4) && !saw_closed && reopened_early.is_none() {
-            reopened_early = Some((t, st));
-        }
-        if (st == 8 || st == 4) && saw_closed { reopened_after_close = true; }
     }
-    eprintln!("[door16] closing trace: saw_closing={saw_closing} saw_closed={saw_closed} \
-reopened_early={reopened_early:?} reopened_after_close={reopened_after_close}");
+    eprintln!("[door16] closing trace: saw_closing={saw_closing} saw_closed={saw_closed}");
     assert!(saw_closing, "E starts the close (state 0x10 observed)");
     assert!(saw_closed, "the close completes (state 2 observed)");
-    assert_eq!(reopened_early, None, "a closing straddle door is never re-opened by the walk-in \
-        (pre-fix: state 8/4 reappeared before the close completed)");
-    // Sister: Bond never left the threshold and never held E again — once the leaf is CLOSED
-    // IDLE again, the walk-in opens it (state 8/4 returns, but only after the close completed).
-    assert!(reopened_after_close, "the closed straddle door re-opens on the no-E walk-in \
-        once it is closed idle (the walk-in premise holds)");
+    // Sister: Bond back at the threshold and never holding E — once the leaf is CLOSED IDLE again,
+    // the walk-in opens it (state 8/4 returns, but only after the close completed).
+    step_at(&mut scene, [door_pos[0], door_pos[1], door_pos[2] - 0.5], 0.0, false);
+    let mut reopened_after_close = false;
+    for _ in 0..60 {
+        tick(&mut scene, 1);
+        let st = scene.sim.as_ref().unwrap().drones.doors.list[door_idx].state;
+        if st == 8 || st == 4 { reopened_after_close = true; break; }
+    }
+    assert!(reopened_after_close, "the closed straddle door re-opens on the no-E walk-in once it is closed idle (the walk-in premise holds)");
 }
 
 // Allow the `dev` import to be unused if the tests don't call dev functions.

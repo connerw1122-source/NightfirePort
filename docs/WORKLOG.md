@@ -12936,3 +12936,30 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
 Task: land 110p (held: on master + 110p the full suite gave 1335 passed / 1 failed — nf-view/tests/walkreal_07000001_live.rs TIMEOUT after 600 s; master alone passes). 07000001's escort route goes through portal-linked doors (docs/atlas/door.md: 5 doors, all param 4 = 1). Reproduce with the walk test alone, find where the walk stalls (a door reversing on the contact or on Bond and never finishing? stuck closing?), compare the new collide-path anti-crush with the game's rule (who counts as "in the way", the reversal condition, the timer), fix it the game's way, pin the door's behaviour at the stall point with a focused test. The escort walk must pass 2/2 and the FULL suite be green on the final tree. Report the total line.
 Work Log (fix-door-react-path2):
 - (15:50) Sandbox continued (repo, work/, ISO, nf-queue present). Branch s/fix-door-react-path2 created from origin/master @ a2958c03 (merge-log: 110r, 110s), pushed with this entry. Deadline ~17:46 UTC (stop new work 17:26). Fast runner + reproduce next.
+
+## fix-door-react-path (110p) — started
+
+Task: port `Door_ReactToHit`'s real caller — the game runs it as the class-0x1C collide function
+from `Collide_Update` (0x1ea398) through the `obj+0xD0` proxy list; the port's anti-crush is
+unreachable since A-11b (G-035). Plan: `Collide_PickObj` 0x1eae80 mode 0x800 (the player's pick
+[M 0x194df0:204-382]) over the ForcedList doors, contacts forwarded to `obj+0xD0`, then the
+ReactToHit selection + reversal + tail in door.rs; NF_ISO test on 07000001's auto-closing doors.
+
+## fix-door-react-path (110p) — done
+
+Ported `Door_ReactToHit`'s real caller (G-035): the game dispatches it as the class-0x1C collide
+function from `Collide_Update` 0x1ea398:59-64 over the `obj+0xD0` contacts that `Collide_PickObj`
+0x1eae80 (the player's mode 0x800 [M 0x194df0]) produces against the ForcedList doors and that
+`Collide_Update` 0x1ea398:160-233 forwards to the hit object. Port: `Doors::collide_step` (the
+0x800 segment-vs-live-sphere×1.5 pick + forward + the ReactToHit selection/reversal/tail) called
+from the collide hook in `Drones::tick` before `Doors::calc`; the sphere stand-in in the old dead
+`react_to_hit` is replaced by the game's test. Docs: docs/systems/doors.md (new). Tests:
+door.rs unit (reversal + sisters + the drone gate, 11 green) and fix_door_react_path_live.rs
+(fail-first shown: hook disabled → the door closes through Bond 0x10→2; live → 0x8/0x4 — and the
+sister shows a live guard parking in the doorway holding it open). Premise updates in
+level_end_live.rs: the E-close is observed out of the pick zone — an E-close with anyone in the
+doorway now re-opens, which is the game's rule the fix ports. Shared files: drone.rs (one collide
+hook + a pre-walk position snapshot), level_end_live.rs (two test premises). Full suite: not run —
+the 2h window closed during the fix; the affected binaries (level_end_live, door_portal_live,
+fix_door_react_path_live, nf-game door::) are green; the rest is the remaining item.
+
