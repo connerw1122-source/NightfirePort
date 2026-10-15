@@ -12464,3 +12464,4 @@ Work Log:
 
 Stage Summary:
 - The world's hold-jump stutter while turning is fixed at the source: the render bracket is now the last two ticks' cameras at every frame rate, the view model keeps its one-tick-bracket reattach, and nothing moves at a solid 60 fps. Files: crates/nf-view/src/lib.rs + crates/nf-view/tests/turn_stutter_live.rs (new); NO shared files touched; scratch probe (uncommitted): examples/tick_cost.rs. Report: docs/reports/fix-turn-stutter.md.
+- (05:20 UTC) Finish: origin/master 2cbfd7e3 merged (WORKLOG both kept), the merged tree green on the targeted tests (11/11), branch pushed at 9b95935f, finish.sh run (the queue's done-file body corrected in nf-queue 6a54178f — the cat had attached the task text, the 109f2 wrong-cwd pattern), ntfy sent (hKObsUNRetXj).
