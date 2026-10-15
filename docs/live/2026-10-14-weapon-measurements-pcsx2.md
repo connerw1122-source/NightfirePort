@@ -41,8 +41,20 @@ Frames 70 ms apart from the press (the count 9 → 8 shows on the press frame):
 **The grenade leaves the hand ≈ 0.3 s (≈ 18–21 game frames) after the press**, after the pin pull. (The user, three
 times: the port releases it "while I'm still pulling the pin".)
 
-## The stunner 0x4a
+## The stunner 0x4a (07000005, the spawn, selected through the gadget cycle)
 
-Not measured yet. A first attempt equipped it by poking the held-weapon byte; the HUD read "Stunner" but the
-watch was not in Bond's hands (the user caught it), so that capture was invalid and was removed. The stunner must be
-selected through the watch's gadget cycle (D-pad) before measuring.
+The gadget cycle on 07000005 (D-pad Up from the P2K): **Stunner → Laser → Grapple**. On 07000015 the cycle is Laser →
+Micro-Camera → Decryptor — **no stunner on 15**. (A first attempt poked the stunner's owned byte on 15: the HUD read
+"Stunner" with nothing in Bond's hands — a record the level doesn't carry; the user caught it. Never equip gadgets by
+poking; cycle them.)
+
+The stunner is a **handheld device** (not the watch). Frames 80 ms apart, nothing in front of it:
+
+- Idle: held upright in the right hand; HUD blue meter, "100 Stunner".
+- **The press (the first frame after it): the device swings forward and its tip lights blue.** It stays forward with
+  the blue tip for as long as fire is held.
+- The release: it swings back upright.
+- With no target the meter stays 100 (no charge spent) and nothing flies.
+
+So the real stunner **activates on the press** and holds while the button is held; the port activates on release
+(the user: "It only really activates on releasing the key"). The hit on a guard is still to be measured.
