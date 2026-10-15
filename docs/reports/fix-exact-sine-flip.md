@@ -128,4 +128,5 @@ file changed, so no re-pin, no seed change, no RNG draws.
 
 ## ntfy
 
-(sent after the report; see below if it failed)
+Sent via curl (first attempt, 09:45 UTC 2026-10-15) — delivery confirmed by the server response
+(id AdWS0Ps8Z6yd, topic nightfire-yoda-8k3x). No fallback needed.
