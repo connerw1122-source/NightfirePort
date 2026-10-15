@@ -12848,3 +12848,18 @@ Work Log (fix-death-retry-boost):
 - Reproduce: pre-fix probe (zz_boost_probe, scratch) — the port's RamLoad equivalent (`restore`) gave a 10.0 buffer back at 10.0 where the game's boost arm gives 50.0; the App-level symptom was masked by the viewer's hardcoded 50.0 (that is why the old comment said "not ported"). Post-fix: `fix_death_retry_boost_live.rs` 4/4 — the max-not-set rule + the difficulty pick + armour (pure), the real-input restart (drop to 10 → entry checkpoint → die → ✕ → `fail_choose_restart` → the serve floors to 50 → the reload comes back at 50.0) and the sister (the trigger-exit carry keeps 10.0).
 - Final tree (merge 302f7b34, master 0b91e999 incl. 109r's player.rs loadout work — auto-merged, no conflicts): the suite ran in foreground chunks (this sandbox reaps background jobs) — 324 unique binaries, **1275 passed / 6 failed / 66 ignored**, the 6 = the 3 allowed disc_golden + the pylon-render trio (2 fix_0c_pylon_live + probe_pylon_render, documented pre-existing on master by the fix-laser-watch-look stashed re-run). Final-tree re-runs after the merge: nf-game lib 168/0, my 4/4, fix_restart_health 8/0, fix_restart_target 3/0+1i, fix_death_restart 2/0, fix_start_loadouts (109r's) 6/0.
 - Files: crates/nf-game/src/player.rs (the boost + docs), crates/nf-game/src/death.rs (doc), crates/nf-view/src/lib.rs (the serve delegates — shared file, one call + doc), docs/systems/mission.md §8, crates/nf-view/tests/fix_death_retry_boost_live.rs (new). Report: docs/reports/fix-death-retry-boost.md (live checks for the main agent inside).
+
+## fix-switch-after-cold-load (2026-10-15, branch s/fix-switch-after-cold-load) — started 12:39 UTC
+Task 110n: a weapon switch is IGNORED after a cold load (main agent, merging 109r): cold
+nf_view::load of 07000016.bin (kit 0x11, `loadout: ... switch request 17`), give the P2K
+(inventory.equip_weapon(&wd, 2, 7, true) → true, owned[2]), then step with
+Input { switch_to: Some(2), .. } — gun.weapon stays 0x11 after 90 ticks (switch_request still
+0x11, state 0); setting sim.gun.switch_request = 2 directly switches. Number keys + the dev panel
+ride switch_to, so a player pressing 2 during the level-start draw gets no switch. Reproduce on
+07000016 + 07000012 (kit 0x10) headlessly, find the cause against Player_WeaponChange 0x1a6f80 /
+the anim+0x63 request handling, fix to the game's behaviour, sister-test the settled and
+first-possible-tick cases. Files: crates/nf-view/src/scene.rs or crates/nf-game/src/gun.rs, the
+new test. Branch cut from origin/master 96405b35. (Prior task 110i finished and pushed: report
+docs/reports/fix-death-anim-events.md, fix_death_anim_events_live 2/2, the final-tree suite
+partials 1017 passed / 6 failed — disc_golden ×3 + the no-GPU pylon set ×3 — / 44 ignored over
+the binaries the window fit.)
