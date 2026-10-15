@@ -914,6 +914,13 @@ pub struct Drone {
     /// The shot-hit-enemy tally outbox (count this tick): `NDrone2_HitDamage` 0x145558:57-60's
     /// `PlrStat_LogShotHitEnemy` (the team-1 + hit-by-the-player gate) — folded by the tick.
     pub hit_log: u32,
+    /// `Drone+0x42` — the detection latch of `DroneVision_LogSeenOpponent` 0x1780a8:35: set (with
+    /// `PlrStat_LogEnemyDetectedPlayer(0)`) the first tick the drone has the player past its
+    /// reaction time and the +0x44/team and (on 0x07000007) the weapon gates pass. No clearer in
+    /// ACTION.ELF [M grep], so it counts once per drone per life; the game's drone structs are
+    /// zeroed heap allocations, so a respawn (a fresh struct) counts again. Outboxed like the
+    /// other `PlrStat_Log*` outboxes and folded into `Drones.progress` by the tick.
+    pub detected_logged: bool,
 }
 
 /// Normalise a vector (the grenade throw direction helper).
@@ -990,6 +997,7 @@ impl Drone {
             // fix-progress tally outboxes (fields on their own lines — merge lesson 4):
             surrender_logged: false,
             hit_log: 0,
+            detected_logged: false,
             hip_anim: 1.0,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
@@ -6521,7 +6529,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let pitch = look[1].clamp(-1.0, 1.0).asin();
         let wf = d.weapons.records.get(weapon as usize).map_or(100.0, |w| f32::from_le_bytes(w[0x14..0x18].try_into().unwrap()));
         let diff = match self.difficulty { 1 => t.Autoaim_EasyMul, 3 | 4 => t.Autoaim_HardMul, _ => t.Autoaim_NormalMul };
-        let mut best = t.Autoaim_Range;
+        // The initial cap: `Autoaim_Range` (25.0 [L], `ReadTuningVars` 0x1d3a80:20, stored at
+        // 0x1d3bcc) — except the Q-Claw (0x50/0x51), whose cap is its own record's +0x1c
+        // [M `Player_AutoAim` 0x1a7c98 disasm 0x1a7d54-0x1a7d68 `lwc1 $f0, 0x1c($v0)` from
+        // `weapon_data + type·0x10c`; L ee_start_05: 50.0 / 100.0]. (The per-difficulty
+        // MAX_AUTO_AIM_DIST_NEAR/MIDL that `Player_InitWeapon` 0x1a7ef8 writes are never read
+        // in ACTION.ELF — see the fix-progress-remainder report.)
+        let mut best = if matches!(weapon, 0x50 | 0x51) {
+            d.weapons.records.get(weapon as usize).map_or(t.Autoaim_Range, |w| f32::from_le_bytes(w[0x1c..0x20].try_into().unwrap()))
+        } else { t.Autoaim_Range };
         let mut found = None;
         for (i, dr) in self.list.iter().enumerate() {
             // `Check_AutoAim` (0x1a73f8): skip drawn==0 (`obj+0xFC`), dead (`+0xAC <= 0`), voice set 0xB (`+0xD8`),
@@ -7120,6 +7136,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         // The hearing list is drained BEFORE the gate so sounds made during a freeze don't burst out on re-enable.
         let sounds = std::mem::take(&mut self.sounds);
+        // The `PlrStat_LogEnemyDetectedPlayer` outbox count (the LogSeenOpponent latches set below,
+        // folded at the tally fold; declared here — the fold sits outside the `npc_enabled` block).
+        let mut detected = 0u32;
         // `Drone_InitComms`' shared passes — `ProcessDroneSight`, `FindAlertedDrones`, the 0x97 check,
         // `HandleSoundAlerts`/`Sound_ZeroAlertness` and the ch 0x96 alarm rebroadcast — sit inside the
         // `NPCGlobals != 0` block [M 0x139520:124-284]: a cut-scene that fired event 5 freezes all of these.
@@ -7160,6 +7179,26 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             dr.index, dr.seen_ticks, dr.reaction_time(d.level), dr.dist, dr.state);
                     }
                     dr.seen = true; dr.ever_seen = true;
+                    // `DroneVision_HaveOpponentSight` 0x175ef0:20-25 (the reaction gate, then
+                    // `+0x228 |= 4` and the call — every LOS tick [M ProcessDroneSight 0x176a28:
+                    // 216-231]) → `DroneVision_LogSeenOpponent` 0x1780a8: the opponent is the
+                    // player (the port's LOS is player-only [0x175ef0's `+0x170 == glb_players`]),
+                    // the +0x42 latch not yet set, team +0x44 != 2, team 3 (civilians/hostages/
+                    // allies) only on 0x07000009/0x0700000A (`GameState+0x12 − 0x07000009 < 2`),
+                    // and on 0x07000007 only while Bond's current weapon class (obj+0xdc → +0x62,
+                    // the port's `self.bond_weapon` — the same chain `Player_AutoAim` 0x1a7c98:
+                    // 0x1a7d04 reads, with `Player_WeaponSelect` 0x1a2cc0's mid-switch semantics)
+                    // is not in the excluded band: skip iff `b ∉ [0x6a..0x71] && b > 1 && b >= 0x47`
+                    // (the byte compares are signed char [M 0x1780a8:25-26]; weapon ids < 0x80, so
+                    // unsigned matches). Then `+0x42 = 1` + `PlrStat_LogEnemyDetectedPlayer(0)`
+                    // 0x199960.
+                    if !dr.detected_logged && dr.team != 2
+                        && (dr.team < 3 || matches!(d.level, 0x0700_0009 | 0x0700_000a)) {
+                        let b = self.bond_weapon;
+                        let counted = d.level != 0x0700_0007
+                            || b <= 1 || b < 0x47 || (0x6a..=0x71).contains(&b);
+                        if counted { dr.detected_logged = true; detected += 1; }
+                    }
                 }
             } else {
                 dr.seen_ticks = 0;
@@ -8732,6 +8771,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             for _ in 0..disabled { self.progress.log_enemy_disabled(ms); }
             for _ in 0..surrendered { self.progress.log_enemy_surrender(ms); }
             for _ in 0..hit { self.progress.log_shot_hit_enemy(ms); }
+            // `PlrStat_LogEnemyDetectedPlayer` 0x199960 (fix-progress-remainder): the sight loop's
+            // LogSeenOpponent latch outboxes, folded here like the other Log counters.
+            for _ in 0..detected { self.progress.log_detected(ms); }
             // `Trigger_Calc` 0x1b1900:12-17: channels 0x65..0x6E on → `PlrStat_DoneBondMoment(0, ch)`
             // (the BondMoments gate makes repeats inert).
             for id in 0x65u32..=0x6E { if self.channels.on(id) { self.progress.done_bond_moment(ms, id); } }
@@ -8764,7 +8806,7 @@ mod tests {
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0,
             grenade_weapon: 0x35, grenade_count: 0, pending_grenade: false, shots: Vec::new(),
-            surrender_logged: false, hit_log: 0,
+            surrender_logged: false, hit_log: 0, detected_logged: false,
             hip_anim: 1.0,
             log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, start_script: 0, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
             damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
