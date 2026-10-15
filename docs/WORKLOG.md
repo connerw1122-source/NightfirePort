@@ -13246,3 +13246,34 @@ Work Log (fix-scores-handoff):
   PlrMissionStats/progress.rs, Target from the level table, TOTAL scoring formulas + difficulty
   bonus, formatting (SeparateNumber, mm:ss, ----, %), stats_rows() getter (strings + ids),
   headless mission-end test + 07000005 PCSX2 golden numbers. Docs first, no drawing.
+
+## nfstats-model (2026-10-15, branch s/nfstats-model)
+- (18:53-19:15) Research: P_NFSTATS_Handler 0x209938 (the page id is 0x40000037 via
+  Handler_HandleMessage 0x2029e0:448), PlrStat_GetScore 0x1984b0 (the scorer), SeparateNumber
+  0x1dec78, Timer_Seconds2String 0x1deaa8, Menu_AddRow 0x201c10 / Menu_AddRowPercentage 0x201df0,
+  the results page's case 0x5e/0x5d key arms (0x208e78:216-229), Button_Update 0x1ef948 (msg map:
+  0x4b confirm / 0x5d back / 0x5e side). The page: header 0x1000204/0x10001e1/0x10001e2/0x163, the
+  label-only Opponents row 0x15a + the blank spacer 0x30d2d8, the stealth trio gated on the entry's
+  +0x38 flag.
+- (19:15-19:30) docs/systems/mission-stats.md + crates/nf-game/src/stats.rs (separate_number,
+  timer_string, StatsRow, stats_rows — the handler's exact order/formats) + the flow: Page::Stats
+  (0x40000037), FrontEnd::stats_enter/mission_stats, results Side → stats, results Back → dossier
+  [M 0x208e78 case 0x5d], stats Back → results [S the script target unparsed].
+- (19:30-19:45) THREE scorer misports found and fixed in get_score (each caught by a test, the
+  golden capture is the disproof): (1) the time row under-par capped at max — the game computes
+  ceil(max × par / max(elapsed_s, 1)) in BOTH branches [M 0x1984b0:118-170; 01:19/09:00 → 170,887];
+  (2) row 4 stealth within par scored 0 via the proportional fall-through — the game awards the
+  FULL max [M :225-233]; (3) the accuracy value started at 0 with no shots — the game copies the
+  par (100) [M :74-78]. Plus the missing ceil₁ₑ₋₅ on the generic/stealth raws [M :181-185/:213-218]
+  and the ratio from raw/max on row 7 [M :234-253].
+- (19:45-19:55) Test updates where the old misports were locked in: progress.rs lib tests ×4,
+  progress_remainder_live (the driving row-7 ratio → the 2-decimal grid), fix_scores_handoff_live
+  (row 4 within-par full, row 7 ceil, expect_generic ceil).
+- (19:55) Suite (the sandbox reaps background jobs — the nohup suite.py died in <60 s, canary
+  checked; foreground chunks): nf-game 188 lib + 35/4/1/2/2 integration green; nf-formats 9+1+2+1+73
+  green with exactly the 3 allowed disc_golden fails; nf-audio green; nf-view lib 9 + menus_flow 36
+  + mission_stats_flow 3 + front_end_chain 1 + fix_progress_live 3 + fix_progress_detected_hook 2 +
+  fix_scores_handoff_live 1 + progress_remainder_live 4 + progress_remainder_failfirst 3 +
+  menu_live 12 + menu_backdrop_still 1 + menu_movies 2 + menu_woman_live 5 + dev_menu_flow 1 green.
+  New tests: nf-game mission_stats_rows 7 (incl. the 07000005 PCSX2 golden numbers) + nf-view
+  mission_stats_flow 3.
