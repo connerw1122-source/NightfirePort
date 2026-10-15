@@ -13275,3 +13275,23 @@ Stage Summary:
   the 3 slim-ISO disc_golden allows. Full background sweep impossible in this sandbox (jobs
   killed between tool calls). Report docs/reports/drive-elf-map.md pushed; finish.sh acked
   (OK done 501-drive-elf-map); ntfy 429 on all three fallbacks (recorded in the report).
+
+## live-backlog (2026-10-15, branch s/live-backlog) — started 17:30 UTC
+- Docs-only task: one ledger of every open question that needs the real game, harvested from all 204 reports
+  carrying "Live checks" sections (docs/reports/*.md) plus the UNKNOWNS/GAPS rows needing live play.
+- docs/live/backlog.md: 814 rows (L-001..L-786 from the reports in four harvest blocks, L-801..L-835 from
+  UNKNOWNS U-xxx / GAPS G-xxx). Row anatomy: id | source | type (pcsx2/render/both) | level | Q | HOW
+  (level, --pos/--bond spot, tool, what to read) | EXP (expected answers + what each changes in the port) |
+  EV (for/against with citations) | ST (open/answered/obsolete/settled-in-report) | SETTLED (where recorded).
+- Answered rows marked from docs/live/2026-10-13-portal-ground-truth.md, 2026-10-13-weapon-modes-pcsx2.md,
+  2026-10-14-weapon-measurements-pcsx2.md, the merge log and WORKLOG (52 settled lines: portal ground truth,
+  weapon modes/measurements, the 05 gate-door icon 0xFF, menu captures, guard first shot, spawner p7, EE FPU
+  model, eye-cel 15, radar, armour ring, ...). 19 obsolete framings recorded (forced-objects theory, p7 arm
+  reading, mine "→0x39", Square-as-mode-button, sbs.ps1 crop artifact, ...).
+- Open rows ordered by value in "what to run next": 12 clusters, each one PCSX2 session segment (escort 01
+  cluster unblocking the held walkreal line; guard RNG/fire cluster; the 4a lift cluster; the 0c vent/hatch
+  cluster; portal leftovers; weapon-matrix W/D cells; the UNKNOWNS High AI rows; MP; front-end; weapon/UX
+  grab-bag; audio/lighting; long tail). A generated level/spot index at the end groups all 814 rows per level
+  so one session clears a column.
+- docs/live/README.md added with the new rule: new reports add their live checks to the backlog with an id,
+  not only in the report; answered rows get ST: answered + SETTLED: pointer.
