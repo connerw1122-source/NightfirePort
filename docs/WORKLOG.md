@@ -13473,3 +13473,14 @@ Work Log (credits-data):
 - Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
   0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
   the PAL base note).
+## drive-physics (2026-10-15, branch s/drive-physics) — DONE 21:25 UTC
+- Added the real-file tests: the shipped vanquish.atr and Physics\Rigid\default.tun, extracted from
+  MIS01.VIV through the repo's BIGF+RefPack readers (gated on /home/z/driving-refpack, override
+  NF_DRIVING_VIV; no game bytes committed) — parse to exactly the ported constants. 13/13 green.
+- Merged origin/master (WORKLOG both kept). Suite slice on the final tree: drive_physics + the four
+  crates' unit binaries → 315 passed / 0 failed; all 353 test binaries built clean. The per-level
+  NF_ISO binaries didn't fit the window (background processes die here — foreground slices).
+- Report docs/reports/drive-physics.md with 5 live checks (shift points + top speed, the ground-damping
+  predicate, the turn-rate pair, the −13 gravity on camera, the Friction tun's dead keys) and the ntfy
+  429 record. What's left for the next message: the VU0 macro (.vutext 0x324800), car↔world collision
+  vs the track quads, suspension/world colliders, handbrake in the step, the Friction name normalizer.
