@@ -23,3 +23,8 @@ ISO-gated where they read the disc, each with a sister assertion that can fail).
 
 ---
 claimed-by: sandbox1 at 2026-10-15T19:20Z
+
+---
+## Report (done, 2026-10-15T20:39Z)
+
+Closed by the driver: the report is on `s/objective-hints` (docs/reports/objective-hints.md); the worker didn't run finish.sh.
