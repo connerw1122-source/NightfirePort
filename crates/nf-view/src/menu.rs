@@ -103,16 +103,23 @@ pub const PAGE_OPTIONS: u32 = 0x4000_0068;
 pub const PAGE_CN_SELECT: u32 = 0x4000_001b;
 /// "Edit <name>": the codename options wheel [L page 0x4000001d; C_SBCNOPTIONS_Handler 0x213528, table 0x2dfc28].
 pub const PAGE_CN_MENU: u32 = 0x4000_001d;
+/// The codename-entry / Secret Unlocks page [M Handler_HandleMessage 0x2029e0:372-374 routes
+/// 0x40000020 to P_CNNAME_Handler 0x213790; C_SBCNOPTIONS_Handler 0x213528 case 0 opens it].
+/// Entered from the codename wheel (0x4000001d) it runs in cheat mode [M 0x213790:31-38] — the
+/// Secret Unlocks letter grid; its model is [`SecretEntry`]. From Select Codename 0x40000025 /
+/// Edit Codename 0x4000001b it is the PROFILE-name entry — the validator + create flow in the
+/// `cn_*` API [M C_KEYBOARD_Handler 0x213a98:45-65].
+/// Advanced Options [L page 0x4000002d; P_CNOPTIONS_Handler 0x213f08].
+pub const PAGE_CN_NAME: u32 = 0x4000_0020;
 /// Advanced Options [L page 0x4000002d; P_CNOPTIONS_Handler 0x213f08].
 pub const PAGE_CN_ADVANCED: u32 = 0x4000_002d;
 /// Multiplayer Options [L page 0x4000002e; P_CNMPOPTIONS_Handler 0x2144d8].
 pub const PAGE_CN_MP: u32 = 0x4000_002e;
+/// Screen Adjust — the picture-offset subscreen of AV Options [L page 0x40000047; C_SBCNOPTIONS
+/// 0x213528's row 0x10000137 → Manager 0x44 0x40000047 [M 0x214818:117-126]]. Aux movie 0 [L PAGE record].
+pub const PAGE_SCREEN_ADJUST: u32 = 0x4000_0047;
 /// AV Options [L page 0x40000031; P_CNAVOPTIONS_Handler 0x214818].
 pub const PAGE_CN_AV: u32 = 0x4000_0031;
-/// The name-entry page — "New Codename" and the cheat entry's letter grid [M Handler_HandleMessage
-/// 0x2029e0:372-373 maps 0x40000020 → P_CNNAME_Handler 0x213790; its grid control 0x10000074 runs
-/// C_KEYBOARD_Handler 0x213a98].
-pub const PAGE_CN_NAME: u32 = 0x4000_0020;
 /// The IN-GAME pause page [M Player_Update 0x193600:73 — pressing Start in a mission runs
 /// `MenuManager_Create(0x80000002, 0x4000004b, …, 0x1e, 1, 3)` + `GS_PauseGame(1)`; the page lives in
 /// the MISSION archives' own kind-8 menu def (entry 08000001 of each level archive, e.g. 07000001.bin
@@ -125,6 +132,47 @@ pub const PAGE_PAUSE: u32 = 0x4000_004b;
 pub const PAGE_FAIL_MENU: u32 = 0x4000_0042;
 pub const PAGE_RESULTS: u32 = 0x4000_0036;
 pub const PAGE_RESULTS_QUIT_TARGET: u32 = 0x4000_001c;
+
+// ── mp-menu-flow: the multiplayer front-end pages ─────────────────────────────────────────────
+// All 13 PAGE records verified in the disc's menu-def (08000002 in 07000048.bin, parsed 2026-10-15 —
+// every one kind 0 with the list pages' aux movie 0x07350048); the handlers are the decomp files
+// named per constant.
+/// Join Game [M C_GOMULTIPLAYER 0x216a78:18 — the main menu's Multiplayer row sends the delayed
+/// msg 0x44 (page change) to 0x40000019; the page's handler is P_MPJOIN 0x20ca00].
+pub const PAGE_MP_JOIN: u32 = 0x4000_0019;
+/// Select Scenario [M C_RBMPSTART 0x20d048's ready arm → `Manager_SendMessage(0x44, 0x4000001a)`;
+/// P_MPSCENARIO 0x217348. Also C_MPDBG 0x217860's post-debriefing target.]
+pub const PAGE_MP_SCENARIO: u32 = 0x4000_001a;
+/// Select Map [M C_SBMPSCEN 0x20c600's confirm: disasm 0x20c9a8-0x20c9b4 `lui 0x4000; ori 0x13` —
+/// the decompiler dropped the constant; P_MPMAP 0x217468, its open checks source == 0x4000001a
+/// (disasm 0x217494-0x217498)].
+pub const PAGE_MP_MAP: u32 = 0x4000_0013;
+/// The per-agent team/character page [M C_SBMPMAP 0x217538's confirm: disasm 0x217638-0x217644
+/// `ori 0x51`; P_MPSETUP 0x20d7a8. P_MPOPTIONS 0x217678:12 checks it as the source.]
+pub const PAGE_MP_SETUP: u32 = 0x4000_0051;
+/// The MP options hub [M C_SBMPOPTIONS 0x20e818's row cases; P_MPBOTS 0x217790's open checks
+/// source == 0x40000012].
+pub const PAGE_MP_OPTIONS: u32 = 0x4000_0012;
+/// Game Rules (Duration + Points/Lives) [M C_SBMPOPTIONS case 2 → 0x40000014; P_MPRULES 0x20f790].
+pub const PAGE_MP_RULES: u32 = 0x4000_0014;
+/// Player Mods [M C_SBMPOPTIONS case 3 → 0x40000017; P_MPPLAYERMODS 0x2104d0].
+pub const PAGE_MP_PLAYERMODS: u32 = 0x4000_0017;
+/// Enviro-Mods [M C_SBMPOPTIONS case 4 → 0x40000028; P_MPENVIROMODS 0x210030].
+pub const PAGE_MP_ENVIROMODS: u32 = 0x4000_0028;
+/// The AI Bots list [M C_SBMPOPTIONS case 1 → Menu_ChangePageCloseIris 0x40000027; P_MPBOTS
+/// 0x217790 / C_SBBOTS 0x210a08].
+pub const PAGE_MP_BOTS: u32 = 0x4000_0027;
+/// The bot character wheel [M C_SBBOTS 0x210a08:23 → 0x4000003f; P_MPBOTCHOOSE 0x210cd8 /
+/// C_SBMPBTCHOOSE 0x210f08].
+pub const PAGE_MP_BOTCHOOSE: u32 = 0x4000_003f;
+/// The per-bot stats page [M C_SBMPBTCHOOSE 0x210f08's confirm → 0x4000002c; P_MPBOTSETUP 0x211270].
+pub const PAGE_MP_BOTSETUP: u32 = 0x4000_002c;
+/// The match summary [M C_SBMPOPTIONS row 0 → 0x40000049 (disasm context :105); also Quick Game's
+/// landing (C_SBMPSCEN disasm 0x20c978-0x20c984). P_MPCONFIRM 0x20ec00 starts the match.]
+pub const PAGE_MP_CONFIRM: u32 = 0x4000_0049;
+/// The post-match debriefing [M C_GCPAUSE 0x204408:146 — quitting a match (+0x180 != 0) sets
+/// GameState+0x28 = 0x40000033; P_MPDEBRIEFING 0x212198 / C_MPDBG 0x217860].
+pub const PAGE_MP_DEBRIEFING: u32 = 0x4000_0033;
 
 /// The GameState stack machine's fields [M addresses in the doc comment].
 #[derive(Clone, Debug, Default)]
@@ -366,6 +414,11 @@ pub fn aux_movie_for(page_id: u32) -> u32 {
         PAGE_MAIN => 0x0733_0048,
         PAGE_START | PAGE_CODENAME | PAGE_DIFFICULTY | PAGE_MISSION_SELECT | PAGE_DOSSIER | PAGE_RESULTS
         | PAGE_CN_SELECT | PAGE_CN_MENU | PAGE_CN_ADVANCED | PAGE_CN_MP | PAGE_CN_AV => 0x0735_0048,
+        // mp-menu-flow: every MP page's PAGE record carries the same list backdrop (the menu-def
+        // dump 2026-10-15: all 13 MP pages aux 0x07350048 [L]).
+        PAGE_MP_JOIN | PAGE_MP_SCENARIO | PAGE_MP_MAP | PAGE_MP_SETUP | PAGE_MP_OPTIONS | PAGE_MP_RULES
+        | PAGE_MP_PLAYERMODS | PAGE_MP_ENVIROMODS | PAGE_MP_BOTS | PAGE_MP_BOTCHOOSE | PAGE_MP_BOTSETUP
+        | PAGE_MP_CONFIRM | PAGE_MP_DEBRIEFING => 0x0735_0048,
         _ => 0,
     }
 }
@@ -414,7 +467,9 @@ pub const INTRO_TICKS: u32 = 850;
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnAdvanced, CnMp, CnAv, CodenameEntry }
+pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnName, CnAdvanced, CnMp, CnAv, ScreenAdjust,
+    // mp-menu-flow: the multiplayer front end (page ids in the PAGE_MP_* constants below).
+    MpJoin, MpScenario, MpMap, MpSetup, MpOptions, MpRules, MpPlayerMods, MpEnviroMods, MpBots, MpBotChoose, MpBotSetup, MpConfirm, MpDebriefing, Credits }
 
 impl Page {
     pub fn id(self) -> u32 {
@@ -423,8 +478,14 @@ impl Page {
             Page::Difficulty => PAGE_DIFFICULTY, Page::MissionSelect => PAGE_MISSION_SELECT,
             Page::Dossier => PAGE_DOSSIER, Page::Records => PAGE_RECORDS,
             Page::Options => PAGE_OPTIONS, Page::Pause => PAGE_PAUSE, Page::Results => PAGE_RESULTS,
-            Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnAdvanced => PAGE_CN_ADVANCED,
-            Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV, Page::CodenameEntry => PAGE_CN_NAME,
+            Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnName => PAGE_CN_NAME, Page::CnAdvanced => PAGE_CN_ADVANCED,
+            Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV, Page::ScreenAdjust => PAGE_SCREEN_ADJUST,
+            Page::MpJoin => PAGE_MP_JOIN, Page::MpScenario => PAGE_MP_SCENARIO, Page::MpMap => PAGE_MP_MAP,
+            Page::MpSetup => PAGE_MP_SETUP, Page::MpOptions => PAGE_MP_OPTIONS, Page::MpRules => PAGE_MP_RULES,
+            Page::MpPlayerMods => PAGE_MP_PLAYERMODS, Page::MpEnviroMods => PAGE_MP_ENVIROMODS,
+            Page::MpBots => PAGE_MP_BOTS, Page::MpBotChoose => PAGE_MP_BOTCHOOSE, Page::MpBotSetup => PAGE_MP_BOTSETUP,
+            Page::MpConfirm => PAGE_MP_CONFIRM, Page::MpDebriefing => PAGE_MP_DEBRIEFING,
+            Page::Credits => crate::credits::PAGE_CREDITS,
         }
     }
     fn from_id(id: u32) -> Option<Page> {
@@ -433,8 +494,14 @@ impl Page {
             PAGE_DIFFICULTY => Page::Difficulty, PAGE_MISSION_SELECT => Page::MissionSelect,
             PAGE_DOSSIER => Page::Dossier, PAGE_RECORDS => Page::Records,
             PAGE_OPTIONS => Page::Options, PAGE_PAUSE => Page::Pause, PAGE_RESULTS => Page::Results,
-            PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_ADVANCED => Page::CnAdvanced,
-            PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv, PAGE_CN_NAME => Page::CodenameEntry,
+            PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_NAME => Page::CnName, PAGE_CN_ADVANCED => Page::CnAdvanced,
+            PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv, PAGE_SCREEN_ADJUST => Page::ScreenAdjust,
+            PAGE_MP_JOIN => Page::MpJoin, PAGE_MP_SCENARIO => Page::MpScenario, PAGE_MP_MAP => Page::MpMap,
+            PAGE_MP_SETUP => Page::MpSetup, PAGE_MP_OPTIONS => Page::MpOptions, PAGE_MP_RULES => Page::MpRules,
+            PAGE_MP_PLAYERMODS => Page::MpPlayerMods, PAGE_MP_ENVIROMODS => Page::MpEnviroMods,
+            PAGE_MP_BOTS => Page::MpBots, PAGE_MP_BOTCHOOSE => Page::MpBotChoose, PAGE_MP_BOTSETUP => Page::MpBotSetup,
+            PAGE_MP_CONFIRM => Page::MpConfirm, PAGE_MP_DEBRIEFING => Page::MpDebriefing,
+            crate::credits::PAGE_CREDITS => Page::Credits,
             _ => return None,
         })
     }
@@ -445,6 +512,44 @@ impl Page {
 /// 0x21c3d8] and skips movies through action 0x19 [M 0x1c98c8 case 6].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action { Up, Down, Confirm, Back, Side, Left, Right }
+
+/// One cell of the Secret Unlocks letter grid. The character cells carry their char; the three
+/// control cells use the ids the game's keyboard sends [M C_KEYBOARD_Handler 0x213a98: id 1000
+/// (0x3e8) deletes the last char, id 1001 (0x3e9) appends the space, id 0x3ea submits].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecretKey { Char(char), Space, Delete, Submit }
+
+/// The grid's cells, digits then letters then the three control cells (0-9, A-Z, ← → ✓ [D the
+/// page's cell set; the model order here is the port's — the drawn layout is the main agent's]).
+pub static SECRET_GRID: [SecretKey; 39] = {
+    let mut keys: [SecretKey; 39] = [SecretKey::Char('0'); 39];
+    let mut i = 0;
+    let mut c = b'0';
+    while c <= b'9' { keys[i] = SecretKey::Char(c as char); i += 1; c += 1; }
+    let mut c = b'A';
+    while c <= b'Z' { keys[i] = SecretKey::Char(c as char); i += 1; c += 1; }
+    keys[36] = SecretKey::Delete;
+    keys[37] = SecretKey::Space;
+    keys[38] = SecretKey::Submit;
+    keys
+};
+
+/// The Secret Unlocks entry model: the grid cursor, the typed string (the game's buffer 0x34e028,
+/// capped at 8 chars [M 0x213a98:29-31]), the feedback flag (the 0x100029d option box a valid code
+/// opens [M 0x213a98:71-72]; an invalid one gives no feedback [M :68-70]) and the submit request
+/// the host drains with [`FrontEnd::secret_submit`] (the action handler owns no Progress — the
+/// same split as `results_enter`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SecretEntry {
+    /// The grid cell the cursor stands on (into [`SECRET_GRID`]).
+    pub cursor: usize,
+    /// The typed string so far.
+    pub typed: String,
+    /// The valid-code option box (label 0x100029d) is up.
+    pub accepted: bool,
+    /// The Submit cell was pressed; the host must run [`FrontEnd::secret_submit`].
+    pub pending_submit: bool,
+}
 
 /// One option row of the codename option pages: the row control, its label, its y (640 space), the value items
 /// (label id — 0 for a literal — the literal, the value), and its kind.
@@ -481,7 +586,7 @@ pub const AV_ROWS: &[OptRow] = &[
     OptRow { ctrl: 0x1000_0134, label: 0x193, y: 114.0, items: &[], kind: OptKind::Slider },
     OptRow { ctrl: 0x1000_0136, label: 0x2b5, y: 142.0, items: ON_OFF, kind: OptKind::List },
     OptRow { ctrl: 0x1000_019a, label: 0x2b8, y: 170.0, items: &[(0x2ba, "Horizontal", 0), (0x2b9, "Vertical", 1)], kind: OptKind::List },
-    OptRow { ctrl: 0x1000_0198, label: 0x195, y: 198.0, items: &[(0x393, "Mono", 0), (0x394, "Stereo", 1), (0x395, "Pro Logic", 4)], kind: OptKind::List },
+    OptRow { ctrl: 0x1000_0198, label: 0x195, y: 198.0, items: &[(0x393, "Mono", 0), (0x394, "Stereo", 1), (0x395, "Surround", 4)], kind: OptKind::List },   // 0x395 = "Surround" [D USATxt.dat]
     OptRow { ctrl: 0x1000_0223, label: 0x5b8, y: 227.0, items: ON_OFF, kind: OptKind::List },
     OptRow { ctrl: 0x1000_0137, label: 0x2b6, y: 256.0, items: &[], kind: OptKind::Action },
     OptRow { ctrl: 0x1000_01a3, label: 0x37e, y: 284.0, items: &[], kind: OptKind::Action },
@@ -519,6 +624,265 @@ pub const CN_MENU: [(u32, u32, u32); 7] = [
     (0x0300_013b, 0x100_02d4, 0x100_02d7), (0x0300_0121, 0x1f3, 0x100_0051), (0x0300_0121, 0x27e, 0x100_0052),
     (0x0300_0124, 0x37a, 0x100_0053), (0x0300_0123, 0x199, 0x100_0054), (0x0300_011f, 0x2bb, 0x100_0055), (0x0300_0125, 0x1f4, 0x100_0056),
 ];
+
+// ── mp-menu-flow: the multiplayer wheels' own tables ──────────────────────────────────────────
+// The game's wheel tables share the campaign's 0x18-byte record {+0x00 preview texture, +0x04 name
+// label, +0x08 description label, +0x0C id, +0x10 unlocked flag, +0x14 locked-description} [M
+// Menu_UpdateWheel 0x1f8388:94-234]. All four MP tables were dumped from the disc's ACTION.ELF
+// .data (vaddr = file offset + 0x106100, the single PT_LOAD) 2026-10-15 and pinned by
+// mp_menu_lists_live.rs against the ISO.
+/// `mp_scenario` @0x2df508 (file 0x1d9408), 13 × 0x18 — the Select Scenario wheel's rows [M
+/// C_SBMPSCEN 0x20c600:33-36 walks it; symtab name/size pinned]. `+0x0C` is the scenario word
+/// MPSettings+0x1A4 gets (0 = Quick Game, the special row — see `FrontEnd::mp_quick_start`);
+/// +0x10 is the SHIPPED unlock byte — `Menu_UnlockMPSettings` 0x1ff698:53-104 zeroes rows
+/// 4/6/7/9/10/12 and re-derives them from the campaign rewards (0x38 Assassination, 0x39 Uplink,
+/// 0x3a Team KOTH, 0x3b Demolition, 0x3c Protection, 0x3d GoldenEye Strike), so the port carries
+/// those as the reward ids in the last field (0 = always open). Locked rows show +0x14
+/// (0x010000ab "This scenario is locked.") and refuse Confirm [M C_SBMPSCEN:40-42].
+pub const MP_SCENARIO_ROWS: [(u32, u32, u32, u32, u32); 13] = [
+    // (preview, name, desc, scenario word, reward that unlocks; the shipped +0x10 bytes match)
+    (0x0300_013a, 0x100_02dd, 0x100_02de, 0x0000_0000, 0), // Quick Game
+    (0x0300_0099, 0x1cb, 0x1cc, 0x0000_0001, 0),          // Arena (Deathmatch)
+    (0x0300_009a, 0x1cd, 0x1ce, 0x2000_0002, 0),          // Team Arena
+    (0x0300_009b, 0x1cf, 0x1d0, 0x2000_0004, 0),          // Capture The Flag
+    (0x0300_00a4, 0x1d1, 0x1d2, 0x6000_0008, 0x39),       // Uplink
+    (0x0300_009c, 0x1d3, 0x1d4, 0x0000_0010, 0),          // Top Agent (the death-limit FFA)
+    (0x0300_009d, 0x1d7, 0x1d8, 0x2000_0040, 0x3b),       // Demolition
+    (0x0300_009e, 0x1d9, 0x1da, 0x2000_0080, 0x3c),       // Protection
+    (0x0300_009f, 0x1db, 0x1dc, 0x2000_0100, 0),          // Industrial Espionage (BluePrint)
+    (0x0300_00a0, 0x1dd, 0x1de, 0x2000_0200, 0x3d),       // GoldenEye Strike
+    (0x0300_00a1, 0x1df, 0x1e0, 0x0000_0400, 0x38),       // Assassination
+    (0x0300_00a2, 0x1e1, 0x1e2, 0x4000_0800, 0),          // King of the Hill
+    (0x0300_00a3, 0x1e3, 0x1e4, 0x6000_1000, 0x3a),       // Team King of the Hill
+];
+/// The locked row's description [L mp_scenario +0x14 = 0x010000ab on every row; USATxt "This
+/// scenario is locked."].
+pub const MP_LOCKED_SCENARIO_DESC: u32 = 0x0100_00ab;
+/// `mp_level` @0x2df400 (file 0x1d9300), 8 × 0x18 — the Select Map wheel [M C_SBMPMAP 0x217538:34-36;
+/// symtab]. +0x0C is the arena's level code (MPSettings+0x1A8 gets it on Confirm [M disasm
+/// 0x217654/0x21765c]); every shipped +0x10 flag is 1 and every +0x14 locked-desc is 0 — no map is
+/// ever locked on retail [L the .data dump], the lock check is a no-op [M C_SBMPMAP:12-14].
+/// The codes are exactly the on-foot ISO's arenas 0x07000023..0x29 + 0x0700004b (Ravine) [D
+/// docs/atlas/multiplayer.md §1; 0x21/0x22/0x4c are absent from the table].
+pub const MP_MAP_ROWS: [(u32, u32, u32, u32); 8] = [
+    // (preview, name, desc, level code)
+    (0x0300_0086, 0x0300_0024, 0x0300_0026, 0x0700_0024), // Skyrail
+    (0x0300_008b, 0x0300_0025, 0x0300_0027, 0x0700_0027), // Fort Knox
+    (0x0300_00ba, 0x0300_0028, 0x0300_0029, 0x0700_0029), // Snow Blind
+    (0x0300_00b9, 0x0300_002a, 0x0300_002b, 0x0700_0026), // Phoenix Base
+    (0x0300_00b8, 0x0300_002c, 0x0300_002d, 0x0700_0023), // Atlantis
+    (0x0300_00b7, 0x0300_002e, 0x0300_002f, 0x0700_0028), // Missile Silo
+    (0x0300_00b6, 0x0300_0030, 0x0300_0031, 0x0700_0025), // Sub Pen
+    (0x0300_00b5, 0x0300_0032, 0x0300_0033, 0x0700_004b), // Ravine
+];
+/// `mp_options` @0x2dfbb0 (file 0x1d9ab0), 5 × 0x18 — the MP options hub's rows [M C_SBMPOPTIONS
+/// 0x20e818:41-43; symtab]. +0x0C = the row index the confirm switches on. Row 1 (AI Bots)'s +0x10
+/// byte is cleared at page open when the map is Ravine [M P_MPOPTIONS 0x217678:20-25 —
+/// `MPSettings._424_4_ == 0x700004b → mp_options[0x28] = 0`], with locked-desc 0x010000ae "You
+/// can't have bots play the Ravine map." [L].
+pub const MP_OPTIONS_ROWS: [(u32, u32, u32, u32); 5] = [
+    // (preview, name, desc, id)
+    (0x0300_013a, 0x171, 0x0100_001c, 0), // Continue
+    (0x0300_0136, 0x1ad, 0x0100_0020, 1), // AI Bots
+    (0x0300_0139, 0x19b, 0x0100_001d, 2), // Game Rules
+    (0x0300_0138, 0x19d, 0x0100_001e, 3), // Player Mods
+    (0x0300_0137, 0x19e, 0x0100_001f, 4), // Enviro-Mods
+];
+/// `mp_bots` @0x2dfd30 (file 0x1d9c30), 5 × 0x18 — the AI Bots list's rows [M C_SBBOTS 0x210a08:61-62;
+/// symtab; the .data names/descs; C_SBBOTS:40-59 rebuilds rows 1-4 at runtime with the "%s : %s"
+/// Playing/Yes-No status (0x295/0x181/0x182) and the character's preview]. +0x0C is 0 (the rows are
+/// addressed by index; Confirm row 0 = Continue/back, rows 1-4 pick the bot slot).
+pub const MP_BOTS_ROWS: [(u32, u32, u32); 5] = [
+    (0x0300_013a, 0x171, 0), // Continue
+    (0x0300_0099, 0x284, 0), // Setup Bot 1
+    (0x0300_0099, 0x285, 0), // Setup Bot 2
+    (0x0300_0099, 0x286, 0), // Setup Bot 3
+    (0x0300_0099, 0x287, 0), // Setup Bot 4
+];
+/// `mp_characters` @0x2df640 (file 0x1d9540), 29 × 0x18 — the bot/human character table [L the
+/// .data dump 2026-10-15; symtab]. +0x0C == the row index == the `default_bot_stats` preset index
+/// [M Menu_UnlockMPSkins 0x1ff2f8:113-187's reward map and P_MPBOTCHOOSE's selection]. The reward
+/// column mirrors the shipped +0x10 bytes: rows 0-11 always open, 12-28 need the campaign reward
+/// id shown (UnlockMPSkins's map; the .data flags are 0 for all of them). Locked rows show
+/// 0x010000ad "This character is locked." [L every row's +0x14].
+pub const MP_CHARACTERS: [(u32, u32, u32, u32); 29] = [
+    // (preview, name, desc, reward; 0 = always unlocked)
+    (0x0300_010a, 0x21a, 0x0100_0038, 0),      // Bond
+    (0x0300_010e, 0x21b, 0x0100_0039, 0),      // Drake
+    (0x0300_0119, 0x21c, 0x0100_003a, 0),      // Rook
+    (0x0300_0112, 0x21d, 0x0100_003b, 0),      // Kiko
+    (0x0300_0107, 0x21e, 0x0100_003c, 0),      // Alura
+    (0x0300_010d, 0x21f, 0x0100_003d, 0),      // Dominique
+    (0x0300_011b, 0x220, 0x0100_003e, 0),      // Snow Guard
+    (0x0300_0109, 0x221, 0x0100_003f, 0),      // Black Ops
+    (0x0300_011e, 0x222, 0x0100_0040, 0),      // Yakuza
+    (0x0300_010c, 0x223, 0x0100_0041, 0),      // Phoenix Commando
+    (0x0300_016c, 0x224, 0x0100_0042, 0),      // Phoenix Soldier
+    (0x0300_0115, 0x225, 0x0100_0043, 0),      // Ninja
+    (0x0300_0147, 0x39f, 0x0100_01f2, 0x27),   // Bond (tuxedo)
+    (0x0300_0148, 0x3a0, 0x0100_01f3, 0x36),   // Drake (suit)
+    (0x0300_0194, 0x100_01ee, 0x0100_01f0, 0x37), // Bond (space suit)
+    (0x0300_0110, 0x226, 0x0100_0044, 0x2f),   // Goldfinger
+    (0x0300_0118, 0x227, 0x0100_004e, 0x34),   // Renard
+    (0x0300_011a, 0x228, 0x0100_0046, 0x28),   // Scaramanga
+    (0x0300_0117, 0x229, 0x0100_0047, 0x33),   // Pussy Galore
+    (0x0300_010b, 0x22a, 0x0100_004c, 0x32),   // Christmas Jones
+    (0x0300_011c, 0x22b, 0x0100_01f4, 0x2d),   // Wai Lin
+    (0x0300_011d, 0x22c, 0x0100_0049, 0x2e),   // Xenia Onatopp
+    (0x0300_0113, 0x22d, 0x0100_004a, 0x31),   // May Day
+    (0x0300_010f, 0x22e, 0x0100_004b, 0x30),   // Elektra King
+    (0x0300_0111, 0x22f, 0x0100_0048, 0x2b),   // Jaws
+    (0x0300_0108, 0x230, 0x0100_004d, 0x2a),   // Baron Samedi
+    (0x0300_0116, 0x231, 0x0100_0045, 0x2c),   // Oddjob
+    (0x0300_0114, 0x2ff, 0x0100_01f5, 0x29),   // Nick Nack
+    (0x0300_0196, 0x100_01ef, 0x0100_01f1, 0x35), // Max Zorin
+];
+/// Each character's side, from `default_bot_stats` @0x26D2F0 (file 0x1671f0) byte +0x09 [M
+/// `Menu_IsBotGood` 0x2027a8 = `BOT_getDefaultStats(id)[9] == 0`; the bot record's +0x0F team gets
+/// 1 (MI6) for those and 0 (Phoenix) otherwise — C_SBMPBTCHOOSE 0x210f08:26-33]. Presets 15-28
+/// (the reward characters) also have stats+0x0D = 0 — the Bot Setup page locks their stat rows
+/// [M P_MPBOTSETUP 0x211270:23-48 `character >= 0x0F`].
+pub const MP_CHARACTER_SIDE_MI6: [bool; 29] = [
+    true, false, false, false, true, true, false, false, false, false, false, false,  // 0-11
+    true, false, true, false, false, false, true, true, true, false, false, false,     // 12-23
+    false, false, false, false, false,                                                 // 24-28
+];
+/// The weapon-set names, indexed by MPSettings+0x1B4 0..10 [M P_MPPLAYERMODS 0x2104d0:26-49's
+/// label switch — the same list P_MPCONFIRM 0x20ec00's +0x1B4 switch binds].
+pub const MP_WEAPON_SETS: [u32; 11] = [0x1a0, 0x1a2, 0x1a4, 0x1a6, 0x1a8, 0x24f, 0x3db, 0x3dc, 0x3dd, 0x3de, 0x1b2];
+/// The P_MPSETUP per-agent prompt labels [M P_MPSETUP 0x20d7a8: state 2 (team) binds 0x37c, state
+/// 3 (character) binds 0x37d; USATxt "Choose Team"/"Choose Character"].
+pub const MP_SETUP_TEAM_PROMPT: u32 = 0x37c;
+pub const MP_SETUP_CHAR_PROMPT: u32 = 0x37d;
+/// The Bot Setup page's row titles in its own y order [L the menu-def's msg-0x18 b fields on page
+/// 0x4000002c — see the row_label comment].
+pub const MP_BOT_SETUP_LABELS: [u32; 8] = [0x295, 0x247, 0x232, 0x246, 0x15e, 0x1c6, 0x23a, 0x249];
+/// The pages' headers [L the menu-def's header control (50,40,376×17) msg-0x18 b field per page;
+/// the confirm 0x40000049 and debriefing 0x40000033 pages bind no static header].
+pub const MP_JOIN_HEADER: u32 = 0x29e;
+pub const MP_SCENARIO_HEADER: u32 = 0x2c3;
+pub const MP_MAP_HEADER: u32 = 0x158;
+pub const MP_SETUP_HEADER: u32 = 0x29e;
+pub const MP_OPTIONS_HEADER: u32 = 0x2c4;
+pub const MP_BOTS_HEADER: u32 = 0x294;
+pub const MP_RULES_HEADER: u32 = 0x19b;
+pub const MP_PLAYERMODS_HEADER: u32 = 0x19d;
+pub const MP_ENVIROMODS_HEADER: u32 = 0x19e;
+pub const MP_BOTSETUP_HEADER: u32 = 0x294;
+
+/// One Join-Game panel's state [M mpjoin 0x2dee68 entry (4 × 0x10: +0x00 joined, +0x01 ready,
+/// +0x04 team, +0x08 skin) and mp_stuff+0x360+slot·4 — the game's state values, kept verbatim:
+/// 0 = "Press ~A to join" (0x1e8), 1 = "Choose Codename" (0x37b), 5 = joined (the codename
+/// chosen; C_RBMPSTART then binds 0x39c "Player Ready")]. `codename` is the name the page puts
+/// in MPSettings+slot·0x30 [M C_RBMPCNAME 0x20d448: the template default is "Player N" — Txt
+/// 0x1c3 + sprintf "%s %d" @0x30d388 with slot+1 — and a saved row's codename otherwise].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MpJoinAgent {
+    /// mp_stuff+0x360+slot·4: 0 / 1 / 5 (then P_MPSETUP's 2/3/4 continue the same cells).
+    pub state: u32,
+    /// mpjoin+slot·0x10 +0x00.
+    pub joined: bool,
+    /// mpjoin+slot·0x10 +0x01 — the "ready" flag [M C_RBMPSTART 0x20d048's state-5 arm].
+    pub ready: bool,
+    /// mpjoin+slot·0x10 +0x04 (0 Phoenix / 1 MI6; the game fills it on the setup page).
+    pub team: u32,
+    /// mpjoin+slot·0x10 +0x08 — the chosen character (mp_characters_small id).
+    pub skin: u32,
+    /// The codename row the ◀ ▶ list is on (the game's list control 0x1000022b's selection).
+    pub codename_row: usize,
+    /// The chosen codename (the MPSettings+slot·0x30 name).
+    pub codename: String,
+}
+impl Default for MpJoinAgent {
+    fn default() -> Self { MpJoinAgent { state: 0, joined: false, ready: false, team: 0, skin: 0, codename_row: 0, codename: String::new() } }
+}
+
+/// One bot's 0x12-byte config record — `mpbots` 0x2deea8's records at +2+slot·0x12 (= 0x2DEEAA in
+/// the game) [M the record layout from mp-bots-data: +0x0E enabled, +0x0F team, +0x10 character,
+/// +0x11 dirty; the stats the Bot Setup page edits are the record's +0x00..0xC view of
+/// `default_bot_stats` 0x26D2F0]. Fresh records carry the game's msg-0x51 defaults (characters
+/// 6/7/8/9 for slots 0-3 [M C_SBMPOPTIONS 0x20e818's init]) and enabled = 0.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MpBot {
+    /// record+0x00: aggression ("Skill" — Poor→8 / Average→5 / Good→3 / Very Good→1 [M
+    /// P_MPBOTSETUP 0x211270:49-59]).
+    pub skill: i32,
+    /// record+0x02 (u16): aim (Normal→2 / High→3 / Very High→4 [M :60-68]).
+    pub aim: i32,
+    /// record+0x04 (u16): hit points 50..300 [M :69-80].
+    pub hit_points: i32,
+    /// record+0x06: speed (Slow→0 / Normal→1 / Fast→2 [M :81-89]).
+    pub speed: i32,
+    /// record+0x07: recovery 1 (50..200) [M :117-126].
+    pub recovery1: i32,
+    /// record+0x08: recovery 2 (50..200) [M :127-135].
+    pub recovery2: i32,
+    /// record+0x0B: the trait (None→0; MI6: Collector 1/Guardian 2/Team Player 3/Judge 4; Phoenix:
+    /// Berserker 5/Greedy 6/Vengeful 7/Assassin 8 [M :90-116]).
+    pub trait_id: i32,
+    /// record+0x0E: enabled.
+    pub enabled: bool,
+    /// record+0x0F: the team — `Menu_IsBotGood(char)` (the preset's +0x09 side byte == 0) [M
+    /// C_SBMPBTCHOOSE 0x210f08:26-33].
+    pub team_mi6: bool,
+    /// record+0x10: the character (the mp_characters row id = the default_bot_stats preset).
+    pub character: u32,
+    /// record+0x11: dirty — the stats were hand-edited [M C_SBMPBTCHOOSE's nav resets them from
+    /// the preset only when !dirty].
+    pub dirty: bool,
+}
+impl MpBot {
+    /// A fresh record: the game's defaults for `slot` — character 6/7/8/9, enabled = 0, stats from
+    /// the character's preset [M the msg-0x51 init + BOT_getDefaultStats].
+    pub fn fresh(slot: usize) -> Self {
+        let character = 6 + slot as u32;   // [M DAT_002deeba=6, 0x2deecc=7, 0x2deede=8, 0x2deef0=9]
+        let (skill, aim, hp, speed, r1, r2, trait_id) = Self::preset(character as usize);
+        MpBot { skill, aim, hit_points: hp, speed, recovery1: r1, recovery2: r2, trait_id, enabled: false, team_mi6: !MP_CHARACTER_SIDE_MI6[character as usize], character, dirty: false }
+    }
+    /// `default_bot_stats` @0x26D2F0's stats for a preset — (aggr, aim, HP, speed, rec1, rec2,
+    /// trait) [L the table dump 2026-10-15, verified by mp_menu_lists_live.rs; weapon class +0x0A
+    /// is preset-only — no menu edits it (P_MPBOTSETUP has no row for it)]. The port needs the
+    /// presets the SETUP page can reset to; only the side (+0x09, in MP_CHARACTER_SIDE_MI6) and
+    /// these seven come through the menu.
+    pub fn preset(character: usize) -> (i32, i32, i32, i32, i32, i32, i32) {
+        //        skill aim hp  spd r1  r2  trait
+        const T: [(i32, i32, i32, i32, i32, i32, i32); 29] = [
+            (1, 4, 150, 2, 150, 50, 0),   // Bond
+            (5, 2, 100, 1, 100, 100, 6),  // Drake
+            (3, 3, 150, 1, 100, 50, 7),   // Rook
+            (3, 3, 100, 1, 150, 100, 0),  // Kiko
+            (3, 3, 100, 1, 125, 100, 2),  // Alura
+            (5, 2, 100, 1, 100, 100, 3),  // Dominique
+            (8, 2, 100, 1, 100, 100, 0),  // Snow Guard
+            (3, 3, 125, 1, 125, 75, 0),   // Black Ops
+            (5, 2, 100, 1, 100, 100, 5),  // Yakuza
+            (3, 3, 150, 1, 125, 75, 0),   // Phoenix Commando
+            (3, 2, 100, 1, 100, 100, 0),  // Phoenix Soldier
+            (3, 3, 200, 2, 150, 50, 8),   // Ninja
+            (1, 4, 150, 2, 150, 50, 0),   // Bond Tux
+            (5, 2, 100, 1, 100, 100, 6),  // Drake Suit
+            (1, 4, 150, 2, 150, 50, 0),   // Bond Spacesuit
+            (5, 3, 100, 1, 100, 100, 6),  // Goldfinger
+            (3, 4, 250, 1, 100, 50, 7),   // Renard
+            (1, 4, 150, 1, 150, 100, 8),  // Scaramanga
+            (5, 2, 100, 1, 100, 100, 1),  // Pussy Galore
+            (5, 2, 100, 1, 100, 100, 3),  // Christmas Jones
+            (3, 3, 200, 2, 200, 50, 4),   // Wai Lin
+            (3, 4, 200, 1, 125, 75, 0),   // Xenia Onatopp
+            (3, 3, 150, 2, 200, 50, 8),   // May Day
+            (5, 2, 100, 1, 100, 100, 0),  // Elektra King
+            (8, 3, 300, 0, 50, 200, 0),   // Jaws
+            (5, 2, 150, 2, 150, 100, 0),  // Baron Samedi
+            (3, 3, 150, 1, 100, 150, 0),  // Oddjob
+            (3, 3, 100, 2, 125, 75, 0),   // Nick Nack
+            (3, 4, 150, 1, 125, 75, 6),   // Max Zorin
+        ];
+        T[character.min(T.len() - 1)]
+    }
+    /// The presets' stats-editable flag (+0x0D = 1 for characters 0-14) [M P_MPBOTSETUP
+    /// 0x211270:23-48 locks the stat rows for character >= 0x0F].
+    pub fn stats_editable(character: u32) -> bool { character < 15 }
+}
 
 
 /// The end-of-mission outcome the results page shows [M P_NFRESULTS is reached with +0x28 = 0x40000036
@@ -682,6 +1046,94 @@ pub struct FrontEnd {
     /// (52 names at 0x308578, strcmp, unlock masks into sp_level+0x10) is not ported (reported);
     /// the port records that the check ran and creates nothing [M C_KEYBOARD 0x213a98:67-73].
     pub cn_cheat_checked: bool,
+    /// The page's PROFILE-name mode — cn_open(from != 0x4000001d) runs the validator/create
+    /// flow; the wheel's entry is the cheat grid (SecretEntry) [M 0x213790:33].
+    pub cn_profile_mode: bool,
+    /// secret-codes: the Secret Unlocks letter-grid model (page 0x40000020 in cheat mode). The
+    /// grid cursor + typed string + the valid-code box flag [M C_KEYBOARD_Handler 0x213a98].
+    pub secret: SecretEntry,
+    /// The picture offset — `PS2ScreenXPos` 0x30c75c / `PS2ScreenYPos` 0x30c760 [M symtab], edited
+    /// by the Screen Adjust page and saved in the global settings blob [M LS_MakeGlobalSettings
+    /// 0x1cd9d0; docs/systems/screen-adjust.md §3/§5]. (Each field on its own line [WORKLOG lesson 4].)
+    pub screen_x: i32,
+    pub screen_y: i32,
+    /// The Screen Adjust page's enter snapshot — `PS2OldX`/`PS2OldY` 0x30d578/0x30d57c, taken by
+    /// msg 0x4c and restored by the msg 0x6b close [M P_SCREENADJUST 0x217a58].
+    pub screen_saved_x: i32,
+    pub screen_saved_y: i32,
+    /// The AV page's own snapshot — `screen_adjust_x/y` 0x30d8e8/0x30d8ec [M P_CNAVOPTIONS
+    /// 0x214818:29/135], restored by the page's Back (msg 0x4d) [M :79-85].
+    pub screen_av_saved_x: i32,
+    pub screen_av_saved_y: i32,
+    // ── mp-menu-flow: the multiplayer front end (each new field on its own line [WORKLOG lesson 4]) ──
+    /// The four Join-Game panels [M mpjoin 0x2dee68 (4 × 0x10: +0x00 joined, +0x01 ready,
+    /// +0x04 team, +0x08 skin) and mp_stuff+0x360+slot·4 (the per-slot state: 0 = press ✕ to
+    /// join, 1 = choose codename, 5 = joined) — the port keeps the game's own values]. Agents
+    /// 2-4 stay unjoined: the game joins them through their own pads (msg 0x6a) [M P_MPJOIN
+    /// 0x20ca00], and the port has no pads (keyboard only, agent 1 — the task's scope).
+    pub mp_join: [MpJoinAgent; 4],
+    /// MPSettings+0x1A4 — the selected scenario word (0 = none yet; Quick Game keeps 0 until its
+    /// own quick-start writes Deathmatch) [M C_SBMPSCEN's confirm store].
+    pub mp_scenario: u32,
+    /// MPSettings+0x1A8 — the selected arena's level code [M C_SBMPMAP's confirm store].
+    pub mp_level: u32,
+    /// The scenario wheel's cursor [M C_SBMPSCEN 0x20c600's msg-0x40 selection over mp_scenario].
+    pub mp_scenario_row: usize,
+    /// The map wheel's cursor [M C_SBMPMAP 0x217538's selection over mp_level].
+    pub mp_map_row: usize,
+    /// The options hub's cursor [M C_SBMPOPTIONS 0x20e818's selection over mp_options].
+    pub mp_options_row: usize,
+    /// The AI Bots list's cursor [M C_SBBOTS 0x210a08's selection over mp_bots; opens on
+    /// mp_stuff[0x37a]+1].
+    pub mp_bots_row: usize,
+    /// mp_stuff[0x37a] (byte @0x2df2da) — the bot slot (0..3) the Bots pages configure [M
+    /// C_SBBOTS 0x210a08:20 `mp_stuff[0x37a] = sel-1`].
+    pub mp_bot_slot: usize,
+    /// The bot-choose wheel's cursor — the slot's current character on open [M P_MPBOTCHOOSE
+    /// 0x210cd8: the selection = record+0x10].
+    pub mp_bot_char: usize,
+    /// The four bots' 0x12-byte config records [M mpbots 0x2deea8: [+1] = the count, the records
+    /// at +2+slot·0x12 (0x2DEEAA in the game); the fields' game offsets are in MpBot]. Fresh
+    /// records have the game's default characters 6/7/8/9 [M C_SBMPOPTIONS 0x20e818's msg-0x51
+    /// init writes DAT_002deeba=6, 0x2deecc=7, 0x2deede=8, 0x2deef0=9] and enabled = 0.
+    pub mp_bots: [MpBot; 4],
+    /// P_MPSETUP's per-agent state for agent 1: 2 = Choose Team (team games), 3 = Choose
+    /// Character (FFA), 4 = chosen [M P_MPSETUP 0x20d7a8 sets mp_stuff+0x360 to 2/3 from the
+    /// scenario's 0x20000000 bit; C_RBMPSETUP 0x20de58:4b steps 2 → 3 and 3 → 4].
+    pub mp_setup_state: u32,
+    /// The setup page's agent-1 list selection: the team (0 Phoenix / 1 MI6) or the character id
+    /// [M C_RBMPSETUP 0x20de58's msg-0x35 reads; the team list's items are Phoenix(0x1c7)/MI6(0x1c8)].
+    pub mp_setup_sel: usize,
+    /// MPSettings+0x1A0 — the time limit in minutes, −1 = Unlimited [M P_MPRULES 0x20f790:12; the
+    /// game's confirm multiplies by 60 before handing the match over].
+    pub mp_time_limit: i32,
+    /// MPSettings+0x19C — the frag/points/lives limit [M P_MPRULES 0x20f790:13].
+    pub mp_frag_limit: i32,
+    /// MPSettings+0x198 — friendly fire [M P_MPPLAYERMODS 0x2104d0:12].
+    pub mp_friendly_fire: u32,
+    /// MPSettings+0x1B4 — the weapon set 0..10 [M P_MPPLAYERMODS 0x2104d0:13,26-49].
+    pub mp_weapon_set: u32,
+    /// MPSettings+0x1C4 — radar [M P_MPPLAYERMODS 0x2104d0:16].
+    pub mp_radar: u32,
+    /// The Player-Mods toggles beyond ff/weapon set/radar, in page order (+0x1BC, +0x1C8) [M
+    /// P_MPPLAYERMODS 0x2104d0:14-15].
+    pub mp_player_mods: [u32; 2],
+    /// The Enviro-Mods rows in page order (+0x1C0 view distance, +0x1B8, +0x1D4, +0x1D0, +0x1CC)
+    /// [M P_MPENVIROMODS 0x210030:12-16, 20-27, 35-61].
+    pub mp_envmods: [u32; 5],
+    /// The start checks' error-box label id, 0 = none [M C_SBMPOPTIONS 0x20e818:84-114 — 0x1000311
+    /// (FFA with more than one "good" side), 0x389 (an empty team), 0x39e (one player total)].
+    pub mp_error: u32,
+    /// The match config the confirm page hands the host — the port's `MpSettings` mirror of
+    /// P_MPCONFIRM 0x20ec00:53-94's writes. None until the confirm's Confirm runs.
+    pub mp_match_settings: Option<nf_game::mp::MpSettings>,
+    /// credits-data: the credits roll's state (crate::credits::CreditsRoll — the handler's own
+    /// statics frame_518/name_520/index_519/fading_517/page_from_523/music_vol_524) [M
+    /// P_CREDITS_Handler 0x2152b0]. The main agent draws `self.credits.visible()`.
+    pub credits: crate::credits::CreditsRoll,
+    /// credits-data: the page the credits were opened from, as a Page when it is a ported one
+    /// (AV Options; the win page 0x40000053 is not ported and stays None) [M page_from_523].
+    pub credits_from: Option<Page>,
 }
 
 impl FrontEnd {
@@ -723,7 +1175,60 @@ impl FrontEnd {
             cn_delete_row: None,
             cn_reserved: Vec::new(),
             cn_exit: None,
-            cn_cheat_checked: false }
+            cn_cheat_checked: false,
+            cn_profile_mode: false,
+            // secret-codes: the letter-grid model starts empty (the game's buffer 0x34e028 begins
+            // empty on every page enter [M P_CNNAME 0x213790:46 re-binds the empty buffer]).
+            secret: SecretEntry::default(),
+            // screen-adjust-model (each new field on its own line [WORKLOG lesson 4]): the game
+            // boots the offset at 0/0 (.sbss) [M psiRestoreScreenPos 0x10b940's reset value].
+            screen_x: 0,
+            screen_y: 0,
+            screen_saved_x: 0,
+            screen_saved_y: 0,
+            screen_av_saved_x: 0,
+            screen_av_saved_y: 0,
+
+            // mp-menu-flow (each new field on its own line [WORKLOG lesson 4]).
+            mp_join: std::array::from_fn(|_| MpJoinAgent::default()),
+            mp_scenario: 0,
+            mp_level: 0,
+            mp_scenario_row: 0,
+            mp_map_row: 0,
+            mp_options_row: 0,
+            mp_bots_row: 1,
+            mp_bot_slot: 0,
+            mp_bot_char: 0,
+            mp_bots: std::array::from_fn(|slot| MpBot::fresh(slot)),
+            mp_setup_state: 2,
+            mp_setup_sel: 0,
+            mp_time_limit: 10,
+            mp_frag_limit: 10,
+            mp_friendly_fire: 0,
+            mp_weapon_set: 0,
+            mp_radar: 1,
+            mp_player_mods: [0, 0],
+            mp_envmods: [1, 0, 0, 0, 0],
+            mp_error: 0,
+            mp_match_settings: None,
+            // credits-data (each new field on its own line [WORKLOG lesson 4]): the credits roll's
+            // state (crate::credits::CreditsRoll = the handler's own statics) and the opener.
+            credits: crate::credits::CreditsRoll::new(crate::credits::PAGE_CN_AV, 100, false),
+            credits_from: None }
+    }
+
+    /// credits-data: opens the credits page 0x40000030 — the AV Options Credits row's page change
+    /// and the win path's (P_WINGAME 0x215100:48 sends msg 0x44 with 0x40000030 after the
+    /// 0x073f0048 movie). `from_page` = the opener's id (the game's page_from 0x523 param),
+    /// `music_vol` = `SFXMusicGetVolume()` at enter, `bonus_flag` = GameState[0x52] [M the 0x4c
+    /// case 0x2152b0:72-94]. Returns false when credits are already up.
+    pub fn open_credits(&mut self, from_page: u32, music_vol: i32, bonus_flag: bool) -> bool {
+        if self.page == Page::Credits { return false; }
+        self.credits_from = Page::from_id(from_page);
+        self.credits = crate::credits::CreditsRoll::new(from_page, music_vol, bonus_flag);
+        self.page = Page::Credits;
+        self.cursor = 0;
+        true
     }
 
     pub fn rows(&self) -> usize {
@@ -747,12 +1252,16 @@ impl FrontEnd {
             Page::Options => 3,                    // the options page stubs three rows [S]
             Page::CnSelect => 2 + self.profiles.len(),
             Page::CnMenu => CN_MENU.len(),
+            Page::CnName => 1, // the grid is not a row list; its cursor lives in `secret.cursor`
             Page::CnAdvanced => ADV_ROWS.len(),
             Page::CnMp => MP_ROWS.len(),
             Page::CnAv => AV_ROWS.len(),
-            // The name-entry page has no wheel rows (the grid is `CN_GRID`; the typed name is
-            // `cn_typed_name`) — 1 keeps the wheel arithmetic harmless.
-            Page::CodenameEntry => 1,
+            // credits-data: the credits page has no wheel rows (the two list controls are the
+            // roll itself) [M P_CREDITS_Handler 0x2152b0 has no cursor code].
+            Page::Credits => 0,
+            // The Screen Adjust page's two sliders (the vertical and the horizontal bar) [L page
+            // 0x40000047's two 0x100001eb controls, d1 0 = vertical / 1 = horizontal].
+            Page::ScreenAdjust => 2,
             // The MISSION tab's rows [L page 0x4000004b's d1=6 list (153,183,334×120) binds labels
             // 0x16a CONTINUE / 0x16b RESTART / 0x16c QUIT via its m0x11 messages].
             Page::Pause => 3,
@@ -760,6 +1269,29 @@ impl FrontEnd {
             // COMPLETED results page (P_NFRESULTS 0x208e78) has NO row list — the page's own
             // action is the hint's ~A Continue (Confirm anywhere).
             Page::Results => if self.outcome == Outcome::Complete { 1 } else { 2 },
+            // ── mp-menu-flow ──
+            // The four Join panels — the cursor walks the agents; agents 2-4 stay unjoined (no
+            // pads in the port; the game joins them through their own controllers [M msg 0x6a]).
+            Page::MpJoin => 4,
+            Page::MpScenario => MP_SCENARIO_ROWS.len(),
+            Page::MpMap => MP_MAP_ROWS.len(),
+            // The setup page drives agent 1's single pick row (the game's per-agent lists live on
+            // the four panel controls; keyboard = agent 1).
+            Page::MpSetup => 1,
+            Page::MpOptions => MP_OPTIONS_ROWS.len(),
+            // Duration + Points/Lives [M P_MPRULES 0x20f790's two list controls 0x10000008/0x100000f6].
+            Page::MpRules => 2,
+            // Friendly fire, Weapon Set, +0x1BC, +0x1C8, Radar [M P_MPPLAYERMODS 0x2104d0:12-16].
+            Page::MpPlayerMods => 5,
+            // View distance, +0x1B8, +0x1D4, +0x1D0, vehicles [M P_MPENVIROMODS 0x210030:12-16].
+            Page::MpEnviroMods => 5,
+            Page::MpBots => MP_BOTS_ROWS.len(),
+            Page::MpBotChoose => MP_CHARACTERS.len(),
+            // Enabled, Skill, Aim, Hit points, Speed, Trait, Recovery 1, Recovery 2 [M P_MPBOTSETUP
+            // 0x211270's eight list controls].
+            Page::MpBotSetup => 8,
+            Page::MpConfirm => 1,        // the summary page's own Confirm (the hint's ~A Start)
+            Page::MpDebriefing => 1,
         }
     }
 
@@ -785,11 +1317,10 @@ impl FrontEnd {
             Page::CnSelect if row >= 2 => self.profiles.get(row - 2).cloned().unwrap_or_default(),
             Page::CnSelect => bind([0x29b, 0x211][row.min(1)]),   // def_codename 0x2e1b18 [L docs/reports/fix-save-profile.md]
             Page::CnMenu => bind(CN_MENU[row.min(CN_MENU.len() - 1)].1),
+            Page::CnName => String::new(), // the grid has no row labels (the model draws its own)
             Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().get(row).map_or(String::new(), |r| bind(r.label)),
-            // The name-entry page's texts are the handler's runtime binds (the title 0x1f5 / the
-            // cheat title 0x10002d4 [M P_CNNAME 0x213790:37/41], the typed buffer itself) — the
-            // draw code reads `cn_typed_name`, not this table.
-            Page::CodenameEntry => String::new(),
+            // credits-data: no rows — the roll's text lives in fe.credits.visible() [M].
+            Page::Credits => String::new(),
             // The pause rows are the page data's own labels [L page 0x4000004b's d1=6 list m0x11:
             // 0x16a/0x16b/0x16c — the game's letter-spaced strings]. The ACTIONS are the handler's
             // [M C_GCPAUSE_Handler 0x204408: d1=6 case 0 → MenuManager_Delete (resume), case 1 → the
@@ -805,13 +1336,135 @@ impl FrontEnd {
                 ["Restart level", "Restart mission", "Quit to menu"][row.min(2)].into(),
             // The COMPLETED page draws no rows (P_NFRESULTS has none [L page 0x40000036's
             // controls]); rows() is 1 for the wheel arithmetic only.
-            Page::Results => String::new(),
+            // The Screen Adjust page's bars carry no text — the game's page data has no label
+            // controls on it, only the two slider bars, the picture and the hint [L page 0x40000047].
+            Page::ScreenAdjust | Page::Results => String::new(),
+            // ── mp-menu-flow: the wheels' own labels (the tables above) ──
+            // The join panels: agent 1's states bind 0x1e8/0x37b/0x1e9 [M C_RBMPSTART 0x20d048's
+            // 0x5c/0x4b arms — 0x1e8 "Press ~A to join", 0x37b "Choose Codename", 0x1e9 "Press ~A
+            // when ready", 0x39c "Player Ready"]; agents 2-4 show the same 0x1e8 prompt (the
+            // port's stand-in — the game's insert-controller text needs a pad [M
+            // Menu_UpdateMPControllers 0x1f8d90]).
+            Page::MpJoin => match self.mp_join.get(row).map_or(0, |a| a.state) {
+                0 => bind(0x1e8),
+                1 => bind(0x37b),
+                5 => if self.mp_join[row.min(3)].ready { bind(0x39c) } else { bind(0x1e9) },
+                _ => bind(0x1e8),
+            },
+            Page::MpScenario => {
+                let r = row.min(MP_SCENARIO_ROWS.len() - 1);
+                if self.mp_scenario_locked(r) { bind(MP_LOCKED_SCENARIO_DESC) } else { bind(MP_SCENARIO_ROWS[r].1) }
+            }
+            Page::MpMap => bind(MP_MAP_ROWS.get(row).map_or(0, |r| r.1)),
+            // The setup page's one row is agent 1's pick: the team (the game's list items are
+            // Phoenix 0x1c7 / MI6 0x1c8 [M P_MPSETUP 0x20d7a8]) or the character name.
+            Page::MpSetup => {
+                if self.mp_setup_state == 2 {
+                    bind([0x1c7, 0x1c8][self.mp_setup_sel.min(1)])
+                } else {
+                    bind(MP_CHARACTERS[self.mp_setup_sel.min(MP_CHARACTERS.len() - 1)].1)
+                }
+            }
+            Page::MpOptions => bind(MP_OPTIONS_ROWS.get(row).map_or(0, |r| r.1)),
+            // The two list rows' static titles [L the menu-def's msg-0x18 b fields on page
+            // 0x40000014: Duration 0x156, Points 0x24c]; the handler re-binds row 1 to 0x3d3
+            // "Lives" for the death-limit scenario 0x10 [M P_MPRULES 0x20f790:78-95].
+            Page::MpRules => bind([0x156, if self.mp_rules_lives() { 0x3d3 } else { 0x24c }][row.min(1)]),
+            // The rows' static titles in page order [L the menu-def msg-0x18 b fields on page
+            // 0x40000017: 0x1ae (Friendly Fire, +0x198), 0x24d (Weapon Set, +0x1B4), 0x1ac (+0x1BC),
+            // 0x24e (+0x1C8), 0x1e5 (Radar, +0x1C4)].
+            Page::MpPlayerMods => bind([0x1ae, 0x24d, 0x1ac, 0x24e, 0x1e5][row.min(4)]),
+            // [L page 0x40000028's msg-0x18 b fields: 0x1af (View Distance, +0x1C0), 0x1ab (+0x1B8),
+            // 0x1aa (+0x1D4 — the reward-locked row), 0x328 (+0x1D0), 0x5b9 (vehicles, +0x1CC)].
+            Page::MpEnviroMods => bind([0x1af, 0x1ab, 0x1aa, 0x328, 0x5b9][row.min(4)]),
+            Page::MpBots => {
+                let r = row.min(MP_BOTS_ROWS.len() - 1);
+                if r == 0 { bind(0x171) }
+                else {
+                    // The runtime row: "Setup Bot N : Playing Yes/No" — the game sprintf's it per
+                    // scroll [M C_SBBOTS 0x210a08:40-59]; the port composes the same labels.
+                    let b = &self.mp_bots[r - 1];
+                    format!("{} : {} {}", bind(MP_BOTS_ROWS[r].1), bind(0x295), bind(if b.enabled { 0x181 } else { 0x182 }))
+                }
+            }
+            Page::MpBotChoose => bind(MP_CHARACTERS.get(row).map_or(0, |r| r.1)),
+            // The Bot Setup page's row titles in its own y order (85..309) [L the menu-def's
+            // msg-0x18 b fields on page 0x4000002c: 0x295 (Enabled), 0x247 (Speed), 0x232 (Trait),
+            // 0x246 (Aim), 0x15e (Skill), 0x1c6 (Hit points), 0x23a (Recovery 1), 0x249 (Recovery 2)].
+            Page::MpBotSetup => bind(MP_BOT_SETUP_LABELS[row.min(7)]),
+            Page::MpConfirm | Page::MpDebriefing => String::new(),
         }
     }
 
     /// The option page's rows (empty off the option pages).
     pub fn opt_rows(&self) -> &'static [OptRow] {
         match self.page { Page::CnAdvanced => ADV_ROWS, Page::CnMp => MP_ROWS, Page::CnAv => AV_ROWS, _ => &[] }
+    }
+
+    // --- The picture offset (AV Options → Screen Adjust) [M docs/systems/screen-adjust.md §3] ---
+
+    /// `psiAdjustScreenPos(dx, dy)` 0x10b890: X += dx·12 clamped ±0x1b0 (±432), Y += dy·4 clamped
+    /// ±0x30 (±48). `dx`/`dy` are the slider's −1..1 steps (C_SBSCREEN 0x217b08 msg 0x49 passes the
+    /// slider value; d1 0 = vertical/Y, d1 1 = horizontal/X).
+    pub fn screen_adjust(&mut self, dx: i32, dy: i32) {
+        self.screen_y = (self.screen_y + dy * 4).clamp(-0x30, 0x30);
+        self.screen_x = (self.screen_x + dx * 12).clamp(-0x1b0, 0x1b0);
+    }
+
+    /// P_SCREENADJUST's msg 0x4c (page enter): `psiGetScreenPos(&PS2OldX, &PS2OldY)` 0x217a58:8-10 —
+    /// the offset the Cancel path restores [M; Cancel rides the manager's msg 0x6b close
+    /// notification, which the ✕ path's 0x5f(1) skips — §2 of the doc].
+    pub fn screen_adjust_open(&mut self) {
+        self.screen_saved_x = self.screen_x;
+        self.screen_saved_y = self.screen_y;
+    }
+
+    /// P_SCREENADJUST's msg 0x6b (closed without Confirm): `psiSetScreenPos(PS2OldX, PS2OldY)`
+    /// 0x217a58:16-18 [M].
+    pub fn screen_adjust_cancel(&mut self) {
+        self.screen_x = self.screen_saved_x;
+        self.screen_y = self.screen_saved_y;
+    }
+
+    /// `psiRestoreScreenPos` 0x10b940 — the Restore Defaults row's offset reset [M 0x214818:107].
+    pub fn screen_restore_defaults(&mut self) {
+        self.screen_x = 0;
+        self.screen_y = 0;
+    }
+
+    /// P_CNAVOPTIONS' screen snapshot (`screen_adjust_x/y` 0x30d8e8/ec): taken at page enter and
+    /// RE-taken on every re-enter (0x214818:29, 135) — so returning from Screen Adjust updates the
+    /// baseline the page's Back restores [M].
+    pub fn av_screen_snapshot(&mut self) {
+        self.screen_av_saved_x = self.screen_x;
+        self.screen_av_saved_y = self.screen_y;
+    }
+
+    /// P_CNAVOPTIONS' msg 0x4d Back: `psiSetScreenPos(screen_adjust_x, screen_adjust_y)` 0x214818:82 [M].
+    pub fn av_screen_restore(&mut self) {
+        self.screen_x = self.screen_av_saved_x;
+        self.screen_y = self.screen_av_saved_y;
+    }
+
+    /// The picture offset in the menu's 640×480 authoring space: the visible line is 2560 X-units
+    /// (MAGH 5 × 512) so 640-space x = X/4; 448 field lines make 480-space y = Y·480/448 = Y·15/14
+    /// [M VBlankInt 0x124088 + sceGsSetDefDispEnv 0x226370; the derivation is §3 of the doc].
+    pub fn screen_offset_640(&self) -> (f32, f32) {
+        (self.screen_x as f32 / 4.0, self.screen_y as f32 * 15.0 / 14.0)
+    }
+
+    /// The picture offset as fractions of the visible picture: (X/2560, Y/448) [M §3]. The renderer
+    /// multiplies by its own viewport size; the DIRECTION of the shift on the TV is the report's
+    /// live check (DISPLAY's DX/DY select where the read starts).
+    pub fn screen_offset_frac(&self) -> (f32, f32) {
+        (self.screen_x as f32 / 2560.0, self.screen_y as f32 / 448.0)
+    }
+
+    /// The view aspect the game's camera writes at viewer+0x114: 16/9 (0x3fe38e39) with the
+    /// widescreen option set, 4/3 (0x3faaaaab) otherwise [M Camera_CalcViewAngles 0x1baf70:28-32].
+    /// Split-screen's ×0.5 / ×2 (two viewers) is not modelled — no split-screen view.
+    pub fn view_aspect(&self) -> f32 {
+        if self.opt_value(0x1000_0223) == 1 { 16.0 / 9.0 } else { 4.0 / 3.0 }
     }
 
     /// The current value of an option row.
@@ -853,6 +1506,20 @@ impl FrontEnd {
         if self.intro_playing && self.flow.get_state() != ST_MOVIE {
             self.intro_playing = false;
             self.intro_index = 0;
+        }
+        // credits-data: the credits page's 0x50 tick; the delayed 0x44/0x5f exit routes the page
+        // [M P_CREDITS_Handler 0x2152b0:103-195 — ToMain = msg 0x44/0x40000002 after the win path,
+        // PopBack = msg 0x5f back to the opener].
+        if self.page == Page::Credits {
+            if let Some(exit) = self.credits.tick() {
+                match exit {
+                    crate::credits::CreditsExit::ToMain => { self.page = Page::Main; self.cursor = 0; }
+                    crate::credits::CreditsExit::PopBack(from) => {
+                        self.page = Page::from_id(from).unwrap_or(Page::Main);
+                        self.cursor = 0;
+                    }
+                }
+            }
         }
         // The title/main 240-frame flash [M 0x20a408's delayed 0x100000fa toggle at 0xf0 frames].
         if matches!(self.page, Page::Start | Page::Main) {
@@ -1158,7 +1825,11 @@ impl FrontEnd {
     /// entry (DAT_0030d2d8 [L] :36); the ✓ cell holds the focus [M :47-48]; the first press clears
     /// (del_when_keypressed [M 0x213a98:18-27]).
     pub fn cn_open(&mut self, from: u32) {
-        self.page = Page::CodenameEntry;
+        self.page = Page::CnName;
+        // The mode flag: PROFILE-name entry (from Select Codename / Edit Codename) runs the
+        // validator/create flow; the wheel's entry (0x4000001d) is the cheat/secret grid [M
+        // P_CNNAME 0x213790:33 cheat_mode = param_6 == 0x4000001d].
+        self.cn_profile_mode = from != PAGE_CN_MENU;
         self.cn_from = from;
         self.cn_cell = Self::CN_KEY_CONFIRM;
         self.cn_clear_on_key = true;
@@ -1230,7 +1901,7 @@ impl FrontEnd {
         // The ✓ opens a NEW box (or none) — a refusal's box does not survive the next press
         // [M Menu_CreateOptionBox 0x202218 opens per-press; the game holds one active box].
         self.cn_box = None;
-        if self.cn_from == PAGE_CN_MENU {
+        if !self.cn_profile_mode {
             // cheat_mode: Menu_SpecialCodenameCheck 0x200238 (52 strcmp names from 0x308578,
             // unlock masks into sp_level+0x10, Menu_SetBonus) — not ported (reported). The
             // game creates nothing on a miss [M C_KEYBOARD 0x213a98:67-73] and neither do we.
@@ -1325,9 +1996,11 @@ impl FrontEnd {
             }
             return false;
         }
-        // ◀ / ▶ change values on the option pages; on the name-entry grid they move the cursor;
-        // elsewhere they keep the old Back / Confirm meaning.
-        let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv | Page::CodenameEntry)) {
+        // ◀ / ▶ change values on the option pages and the MP value pages and move the Secret Unlocks
+        // grid cursor; elsewhere they keep the old Back / Confirm meaning. The MP wheels
+        // (scenario/map/options/bots) keep the remap.
+        let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv | Page::CnName
+            | Page::MpJoin | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup | Page::ScreenAdjust)) {
             (Action::Left, false) => Action::Back,
             (Action::Right, false) => Action::Confirm,
             (a, _) => a,
@@ -1375,16 +2048,18 @@ impl FrontEnd {
             Page::CnMenu => match a {
                 Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
                 Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
-                // [M C_SBCNOPTIONS_Handler 0x213528:32-60: rows 3/4/5 → pages 0x4000002d/2e/31; the
+                // [M C_SBCNOPTIONS_Handler 0x213528:32-60: row 0 → page 0x40000020 (Secret
+                // Unlocks / the codename entry); rows 3/4/5 → pages 0x4000002d/2e/31; the
                 // LAST row (6) is Save Codename: a default re-maps and leaves [M case 6 —
                 // Menu_UpdateDefaultCodename + Menu_ChangePageCloseIris], a saved codename saves
                 // through box mode 1 = LS_Save(0x2e1ae8) [M 0x1f7de8:21-29] — the port writes the
                 // active profile in place.]
                 Action::Confirm => {
                     match self.cursor {
-                        3 => { self.opts_saved = Some(self.opts.clone()); self.page = Page::CnAdvanced; self.cursor = 0; return true; }
-                        4 => { self.opts_saved = Some(self.opts.clone()); self.page = Page::CnMp; self.cursor = 0; return true; }
-                        5 => { self.opts_saved = Some(self.opts.clone()); self.page = Page::CnAv; self.cursor = 0; return true; }
+                        0 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.cn_open(PAGE_CN_MENU); self.cursor = 0; return true; }
+                        3 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.page = Page::CnAdvanced; self.cursor = 0; return true; }
+                        4 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.page = Page::CnMp; self.cursor = 0; return true; }
+                        5 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.page = Page::CnAv; self.cursor = 0; return true; }
                         6 => {
                             if self.profiles.iter().any(|p| *p == self.cn_name) {
                                 self.save_profile();
@@ -1399,6 +2074,44 @@ impl FrontEnd {
                 Action::Back => { self.page = Page::CnSelect; self.cursor = 1; return true; }
                 _ => return false,
             },
+            Page::CnName => {
+                // codename-entry: the PROFILE-name mode (cn_open from 0x40000025 / 0x4000001b)
+                // runs the validator/create flow [M C_KEYBOARD 0x213a98:45-65]; the cheat entry
+                // (from the wheel) falls through to the Secret Unlocks grid below [M 0x213790:33].
+                if self.cn_profile_mode {
+                    match a {
+                        Action::Left => { self.cn_move(-1, 0); return true; }
+                        Action::Right => { self.cn_move(1, 0); return true; }
+                        Action::Up => { self.cn_move(0, -1); return true; }
+                        Action::Down => { self.cn_move(0, 1); return true; }
+                        Action::Confirm => {
+                            if self.cn_box.is_some() { self.cn_dismiss_box(); return true; }
+                            let cell = self.cn_cell;
+                            return self.cn_press(cell);
+                        }
+                        Action::Back if self.cn_box.is_some() => { self.cn_dismiss_box(); return true; }
+                        Action::Back => {
+                            self.page = Page::from_id(self.cn_from).unwrap_or(Page::Main);
+                            self.cursor = 0;
+                            return true;
+                        }
+                        _ => return false,
+                    }
+                }
+                // The letter grid [M C_KEYBOARD_Handler 0x213a98]: cells append (8-char cap),
+                // Delete truncates, Space appends ' ', Submit validates through
+                // `nf_game::secret_codes::submit` (Menu_SpecialCodenameCheck 0x200238's port);
+                // a match opens the 0x100029d box, a miss is silent [M :67-73].
+                match a {
+                    Action::Left if self.secret.cursor > 0 => { self.secret.cursor -= 1; return true; }
+                    Action::Right if self.secret.cursor + 1 < SECRET_GRID.len() => { self.secret.cursor += 1; return true; }
+                    Action::Up if self.secret.cursor >= 8 => { self.secret.cursor -= 8; return true; }
+                    Action::Down if self.secret.cursor + 8 < SECRET_GRID.len() => { self.secret.cursor += 8; return true; }
+                    Action::Confirm => { self.secret_press(); return true; }
+                    Action::Back => { self.secret = SecretEntry::default(); self.page = Page::CnMenu; self.cursor = 1; return true; }
+                    _ => return false,
+                }
+            }
             Page::CnAdvanced | Page::CnMp | Page::CnAv => {
                 let rows = self.opt_rows();
                 let back_row = match self.page { Page::CnAdvanced => 3, Page::CnMp => 4, _ => 5 };
@@ -1407,45 +2120,92 @@ impl FrontEnd {
                     Action::Down if self.cursor + 1 < rows.len() => { self.cursor += 1; return true; }
                     Action::Left => { let r = &rows[self.cursor]; self.opt_step(r, -1); return true; }
                     Action::Right => { let r = &rows[self.cursor]; self.opt_step(r, 1); return true; }
-                    // Restore Defaults [M P_CNAVOPTIONS 0x214818:100-106 resets the rows]; the other action rows
-                    // (Screen Adjust, Credits, the trailer) open pages not ported yet.
+                    // The action rows [M P_CNAVOPTIONS 0x214818 msg 0x4b]: Screen Adjust (0x10000137)
+                    // pushes page 0x40000047 (:117-126); Restore Defaults (0x100001a3) runs the full
+                    // reset list (:96-110); Credits (0x10000138) opens the credits page 0x40000030 (credits-data); the
+                    // trailer (0x10000222) opens a page not ported yet (:91-94, 112-115).
                     Action::Confirm if rows[self.cursor].kind == OptKind::Action => {
-                        if rows[self.cursor].ctrl == 0x1000_01a3 {
-                            let d = default_opts();
-                            for r in AV_ROWS { if let Some(v) = d.get(&r.ctrl) { self.opts.insert(r.ctrl, *v); } }
-                            return true;
+                        match rows[self.cursor].ctrl {
+                            0x1000_0137 => {
+                                self.screen_adjust_open();          // the subscreen's own 0x4c snapshot [M 0x217a58:8-10]
+                                self.page = Page::ScreenAdjust;
+                                self.cursor = 0;                    // the vertical bar first [L page data's d1 0 arm]
+                                return true;
+                            }
+                            0x1000_01a3 => {
+                                // The game's own reset list [M 0x214818:97-110]: music slider 0xe →
+                                // volume 70, sfx 0x14 → 100, subtitles per LanguageToLoad (NTSC-U's
+                                // language 0 → Off), split 0, speaker 1, widescreen 0, and
+                                // psiRestoreScreenPos. (Not default_opts — the Default profile's
+                                // music 80 is a different thing.)
+                                self.opts.insert(0x1000_0135, 70);
+                                self.opts.insert(0x1000_0134, 100);
+                                self.opts.insert(0x1000_0136, 0);
+                                self.opts.insert(0x1000_019a, 0);
+                                self.opts.insert(0x1000_0198, 1);
+                                self.opts.insert(0x1000_0223, 0);
+                                self.screen_restore_defaults();
+                                return true;
+                            }
+                            0x1000_0138 => {
+                                let vol = self.opts.get(&0x1000_0135).copied().unwrap_or(100);
+                                return self.open_credits(crate::credits::PAGE_CN_AV, vol, false);
+                            }
+                            _ => return false,
                         }
-                        return false;
                     }
-                    Action::Confirm => { self.opts_saved = None; self.page = Page::CnMenu; self.cursor = back_row; return true; }
+                    // Any other row's ✕ commits: the option globals keep the edits and the offset's
+                    // cancel baseline re-snapshots [M 0x214818:127-136 — psiGetScreenPos at :135],
+                    // then the page closes back to the wheel (Manager 0x5f(0,0)).
+                    Action::Confirm => {
+                        self.opts_saved = None;
+                        if self.page == Page::CnAv { self.av_screen_snapshot(); }
+                        self.page = Page::CnMenu; self.cursor = back_row; return true;
+                    }
                     Action::Back => {
                         if let Some(o) = self.opts_saved.take() { self.opts = o; }
+                        // The game's Back restores the offset snapshot too (msg 0x4d) — but only
+                        // when no subscreen was opened; a subscreen trip re-snapshots on re-enter,
+                        // so the stored baseline is always the right one [M 0x214818:79-85].
+                        if self.page == Page::CnAv { self.av_screen_restore(); }
                         self.page = Page::CnMenu; self.cursor = back_row; return true;
                     }
                     _ => return false,
                 }
             }
-            // The name-entry grid: the cursor walks CN_GRID, Confirm presses the focused cell,
-            // Back pops to the from-page [M the manager's 0x5f pop; the game's 0x6b close query
-            // has no modified-name guard on this page].
-            Page::CodenameEntry => match a {
-                Action::Left => { self.cn_move(-1, 0); return true; }
-                Action::Right => { self.cn_move(1, 0); return true; }
-                Action::Up => { self.cn_move(0, -1); return true; }
-                Action::Down => { self.cn_move(0, 1); return true; }
-                Action::Confirm => {
-                    if self.cn_box.is_some() { self.cn_dismiss_box(); return true; }
-                    let cell = self.cn_cell;
-                    return self.cn_press(cell);
+            // The Screen Adjust page [M P_SCREENADJUST 0x217a58 + C_SBSCREEN 0x217b08]: two sliders
+            // (row 0 vertical/Y, row 1 horizontal/X — the page data's d1 0/1); a slider step calls
+            // psiAdjustScreenPos with the −1..1 value (X step 12, Y step 4); ✕ keeps (Manager 0x5f(1)
+            // skips the restore notification [M 0x21c858 case 0x5f]) and ○/Back restores the enter
+            // snapshot (the msg 0x6b path, the page hint's "Cancel" [L 0x67b]).
+            Page::ScreenAdjust => {
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                    Action::Left => {
+                        if self.cursor == 0 { self.screen_adjust(0, -1); } else { self.screen_adjust(-1, 0); }
+                        return true;
+                    }
+                    Action::Right => {
+                        if self.cursor == 0 { self.screen_adjust(0, 1); } else { self.screen_adjust(1, 0); }
+                        return true;
+                    }
+                    Action::Confirm => {
+                        self.av_screen_snapshot();   // the AV page's re-enter re-snapshots [M 0x214818:135]
+                        self.page = Page::CnAv;
+                        self.cursor = 6;             // the Screen Adjust row [L page data y=256 is the 7th row]
+                        return true;
+                    }
+                    Action::Back => {
+                        self.screen_adjust_cancel();
+                        self.av_screen_snapshot();
+                        self.page = Page::CnAv;
+                        self.cursor = 6;
+                        return true;
+                    }
+                    _ => return false,
                 }
-                Action::Back if self.cn_box.is_some() => { self.cn_dismiss_box(); return true; }
-                Action::Back => {
-                    self.page = Page::from_id(self.cn_from).unwrap_or(Page::Main);
-                    self.cursor = 0;
-                    return true;
-                }
-                _ => return false,
-            },
+            }
             Page::Start => {
                 if a == Action::Confirm {
                     // → the intro movie, then the main menu [M P_INTRO 0x209e88 plays 0x07370048
@@ -1467,7 +2227,10 @@ impl FrontEnd {
                 // page; the driver's observed order NightFire → Select Codename → Select Difficulty →
                 // Single Player].
                 (Action::Confirm, 0) => { self.page = Page::Codename; self.cursor = 0; return true; }
-                (Action::Confirm, 1) => { return false; }   // Multiplayer: not ported (reported)
+                // Multiplayer → the Join page [M C_GOMULTIPLAYER 0x216a78 sends the delayed
+                // msg 0x44 → 0x40000019 after 0x13 frames; the port flips at once like the other
+                // page changes].
+                (Action::Confirm, 1) => { self.page = Page::MpJoin; self.cursor = 0; return true; }
                 // Codenames → Edit Codename, on the Default row [M C_GOCODENAMES 0x216b38:37 → page 0x4000001b; L PCSX2 m29].
                 (Action::Confirm, 2) => { self.page = Page::CnSelect; self.cursor = 1; return true; }
                 (Action::Back, _) => { self.page = Page::Start; self.cursor = 0; return true; }
@@ -1725,8 +2488,313 @@ impl FrontEnd {
                 }
                 Action::Back => { self.cursor = 1; return true; }
             },
+            // ── mp-menu-flow: the multiplayer front end ──
+            // Join Game [M P_MPJOIN 0x20ca00 + C_RBMPSTART 0x20d048 + C_RBMPCNAME 0x20d448].
+            // Keyboard = agent 1 only: the game joins agents 2-4 through their own pads (msg 0x6a
+            // with the controller id), which the port has none of. The panel cursor picks the
+            // agent; Confirm is that agent's ✕. The port folds the game's two ✕ presses after the
+            // codename (C_RBMPCNAME's 0x4b then C_RBMPSTART's 0x4b on state 5) into: Confirm on
+            // state 1 chooses the codename (state 5), Confirm again readies (mpjoin+1).
+            Page::MpJoin => {
+                let slot = self.cursor.min(3);
+                let can_join = slot == 0;   // keyboard = agent 1 [S — the task's scope; see mp_join doc]
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < 4 => { self.cursor += 1; return true; }
+                    Action::Left if can_join && self.mp_join[0].state == 1 => {
+                        // ◀ ▶ move the codename list [M C_RBMPCNAME's list control 0x1000022b; the
+                        // rows are the two defaults ("Player N" via Menu_MapDefaultCodename) then
+                        // the card's codenames [M Menu_PutCodenamesIntoControl 0x1f79c0]].
+                        self.mp_join[0].codename_row = self.mp_join[0].codename_row.saturating_sub(1);
+                        return true;
+                    }
+                    Action::Right if can_join && self.mp_join[0].state == 1 => {
+                        self.mp_join[0].codename_row = (self.mp_join[0].codename_row + 1).min(self.mp_codename_rows() - 1);
+                        return true;
+                    }
+                    Action::Confirm if can_join => {
+                        match self.mp_join[0].state {
+                            // ✕ on the idle panel: join, prompt "Choose Codename" (0x37b) [M
+                            // C_RBMPSTART 0x20d048's 0x4b state-0 arm: mpjoin[slot·0x10] = 1,
+                            // mp_stuff+0x360 = 1].
+                            0 => { self.mp_join[0].state = 1; self.mp_join[0].joined = true; return true; }
+                            // ✕ on the codename list: pick it [M C_RBMPCNAME 0x20d448's 0x4b: the
+                            // template rows 0/1 map to the default codename, the name lands in
+                            // MPSettings+slot·0x30, mp_stuff+0x360 = 5]. The port's rows beyond
+                            // the two defaults would open the game's keyboard page (not ported —
+                            // the join flow's defaults are what Quick Game itself uses).
+                            1 => {
+                                self.mp_join[0].codename = self.mp_codename_at(self.mp_join[0].codename_row);
+                                self.mp_join[0].state = 5;
+                                return true;
+                            }
+                            // ✕ once joined: "Player Ready" [M C_RBMPSTART's 0x4b state-5 arm sets
+                            // mpjoin+1 = 1 and fades; P_MPJOIN's msg-0x50 arm checks
+                            // Menu_MPAreWeReady → page 0x4000001a].
+                            5 if !self.mp_join[0].ready => { self.mp_join[0].ready = true; self.page = Page::MpScenario; self.cursor = 0; return true; }
+                            _ => {}
+                        }
+                    }
+                    // △ leaves [M C_RBMPSTART's 0x6b arm un-joins state-1 agents; C_RBMPCNAME's
+                    // 0x6b un-chooses codenames].
+                    Action::Back if can_join && self.mp_join[0].state != 0 => {
+                        self.mp_join[0] = MpJoinAgent::default();
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            // Select Scenario [M P_MPSCENARIO 0x217348 + C_SBMPSCEN 0x20c600].
+            Page::MpScenario => {
+                match a {
+                    Action::Up if self.mp_scenario_row > 0 => { self.mp_scenario_row -= 1; return true; }
+                    Action::Down if self.mp_scenario_row + 1 < MP_SCENARIO_ROWS.len() => { self.mp_scenario_row += 1; return true; }
+                    Action::Back => { self.page = Page::Main; self.cursor = 1; return true; }  // [M P_MPSCENARIO:29 → 0x40000002]
+                    Action::Confirm => {
+                        let row = self.mp_scenario_row.min(MP_SCENARIO_ROWS.len() - 1);
+                        // Locked rows refuse [M C_SBMPSCEN:40-42 — the +0x10 gate, unless
+                        // menu_unlock_everything].
+                        if self.mp_scenario_locked(row) { return false; }
+                        // Row 0 = Quick Game: the fixed quick-start config then straight to the
+                        // confirm page [M C_SBMPSCEN:48-145].
+                        if MP_SCENARIO_ROWS[row].3 == 0 { self.mp_quick_start(); return true; }
+                        // Confirm stores the scenario word [M disasm 0x20c9c8 `sw 0x4944($t0)`]
+                        // and opens the map page [M 0x20c9a8-0x20c9b4 → 0x40000013].
+                        self.mp_scenario = MP_SCENARIO_ROWS[row].3;
+                        self.page = Page::MpMap;
+                        self.mp_map_row = self.mp_map_row.min(MP_MAP_ROWS.len() - 1);
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            // Select Map [M P_MPMAP 0x217468 + C_SBMPMAP 0x217538].
+            Page::MpMap => {
+                match a {
+                    Action::Up if self.mp_map_row > 0 => { self.mp_map_row -= 1; return true; }
+                    Action::Down if self.mp_map_row + 1 < MP_MAP_ROWS.len() => { self.mp_map_row += 1; return true; }
+                    Action::Back => { self.page = Page::MpScenario; return true; }   // [M the wheel's back — C_SBMPSCEN's page again; the game's own back is msg 0x63]
+                    Action::Confirm => {
+                        let row = self.mp_map_row.min(MP_MAP_ROWS.len() - 1);
+                        // [M C_SBMPMAP:12-14's lock gate — a no-op on retail data (all +0x10 = 1).]
+                        // Confirm writes the level code to MPSettings+0x1A8 AND GameState+0x08
+                        // [M disasm 0x217654/0x21765c] and opens the setup page [M
+                        // 0x217638-0x217644 → 0x40000051].
+                        self.mp_level = MP_MAP_ROWS[row].3;
+                        self.page = Page::MpSetup;
+                        // P_MPSETUP picks the prompt from the scenario's team bit [M 0x20d7a8].
+                        self.mp_setup_state = if self.mp_scenario & 0x2000_0000 != 0 { 2 } else { 3 };
+                        self.mp_setup_sel = 0;
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            // The per-agent team/character page [M P_MPSETUP 0x20d7a8 + C_RBMPSETUP 0x20de58].
+            // Keyboard = agent 1: ◀ ▶ move the pick, ✕ confirms (state 3 → 4 team, 2 → 3 character
+            // — the game's C_RBMPSETUP:0x4b steps 2 → 3 and 3 → 4).
+            Page::MpSetup => {
+                let n = if self.mp_setup_state == 2 { 2usize } else { MP_CHARACTERS.len() };
+                match a {
+                    Action::Left if self.mp_setup_sel > 0 => { self.mp_setup_sel -= 1; return true; }
+                    Action::Right if self.mp_setup_sel + 1 < n => { self.mp_setup_sel += 1; return true; }
+                    Action::Confirm => {
+                        if self.mp_setup_state == 2 {
+                            // The team list: the selection IS the team [M P_MPSETUP's items
+                            // Phoenix(0x1c7) = 0 / MI6(0x1c8) = 1 → mpjoin+4].
+                            self.mp_join[0].team = self.mp_setup_sel as u32;
+                            self.mp_setup_state = 3;
+                            self.mp_setup_sel = 0;
+                            return true;
+                        }
+                        // The character list [M C_RBMPSETUP's msg-0x35 → mp_characters_small row;
+                        // mpjoin+8 = the id]. All picked → the options hub (P_MPOPTIONS expects
+                        // 0x40000051 as its source [M 0x217678:12]).
+                        self.mp_join[0].skin = self.mp_setup_sel as u32;
+                        self.mp_setup_state = 4;
+                        self.page = Page::MpOptions;
+                        self.cursor = 0;
+                        self.mp_options_row = 0;
+                        return true;
+                    }
+                    Action::Back => { self.page = Page::MpMap; return true; }
+                    _ => {}
+                }
+            }
+            // The options hub [M P_MPOPTIONS 0x217678 + C_SBMPOPTIONS 0x20e818].
+            Page::MpOptions => {
+                match a {
+                    Action::Up if self.mp_options_row > 0 => { self.mp_options_row -= 1; return true; }
+                    Action::Down if self.mp_options_row + 1 < MP_OPTIONS_ROWS.len() => { self.mp_options_row += 1; return true; }
+                    Action::Back => { self.page = Page::MpSetup; return true; }
+                    Action::Confirm => {
+                        let row = self.mp_options_row.min(MP_OPTIONS_ROWS.len() - 1);
+                        // AI Bots is locked on Ravine [M P_MPOPTIONS 0x217678:20-25].
+                        if row == 1 && !self.unlock_all && self.mp_level == 0x0700_004b { return false; }
+                        match row {
+                            // Continue: the start checks then the confirm page [M C_SBMPOPTIONS
+                            // 0x20e818:50-130 — the team/FFA checks, then 0x40000049 or the
+                            // error box].
+                            0 => { return self.mp_start_checks(); }
+                            1 => { self.page = Page::MpBots; self.mp_bots_row = self.mp_bot_slot + 1; return true; }  // [M :116 → 0x40000027; the cursor = mp_stuff[0x37a]+1]
+                            2 => { self.page = Page::MpRules; return true; }    // [M :119 → 0x40000014]
+                            3 => { self.page = Page::MpPlayerMods; return true; }  // [M :122 → 0x40000017]
+                            _ => { self.page = Page::MpEnviroMods; return true; }  // [M :125 → 0x40000028]
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            // Game Rules [M P_MPRULES 0x20f790: two list rows; Confirm reads both and closes].
+            Page::MpRules => {
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < 2 => { self.cursor += 1; return true; }
+                    Action::Left => { self.mp_rules_step(-1); return true; }
+                    Action::Right => { self.mp_rules_step(1); return true; }
+                    // Confirm AND Back close the page (the game's confirm reads both rows; the
+                    // 0x5f close is the same manager pop either way [M :14 → Manager 0x5f]).
+                    Action::Confirm | Action::Back => { self.page = Page::MpOptions; self.cursor = 0; return true; }
+                    _ => {}
+                }
+            }
+            // Player Mods [M P_MPPLAYERMODS 0x2104d0: five list rows, Confirm reads all five].
+            Page::MpPlayerMods => {
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < 5 => { self.cursor += 1; return true; }
+                    Action::Left => { self.mp_playermods_step(-1); return true; }
+                    Action::Right => { self.mp_playermods_step(1); return true; }
+                    Action::Confirm | Action::Back => { self.page = Page::MpOptions; self.cursor = 0; return true; }
+                    _ => {}
+                }
+            }
+            // Enviro-Mods [M P_MPENVIROMODS 0x210030: five list rows].
+            Page::MpEnviroMods => {
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < 5 => { self.cursor += 1; return true; }
+                    Action::Left => { self.mp_envmods_step(-1); return true; }
+                    Action::Right => { self.mp_envmods_step(1); return true; }
+                    Action::Confirm | Action::Back => { self.page = Page::MpOptions; self.cursor = 0; return true; }
+                    _ => {}
+                }
+            }
+            // The AI Bots list [M P_MPBOTS 0x217790 + C_SBBOTS 0x210a08].
+            Page::MpBots => {
+                match a {
+                    Action::Up if self.mp_bots_row > 0 => { self.mp_bots_row -= 1; return true; }
+                    Action::Down if self.mp_bots_row + 1 < MP_BOTS_ROWS.len() => { self.mp_bots_row += 1; return true; }
+                    Action::Back => { self.page = Page::MpOptions; self.cursor = 1; return true; }  // row 0 = Continue [M C_SBBOTS:15 → Manager 0x5f]
+                    Action::Confirm => {
+                        // Row 0 closes [M C_SBBOTS:15]; rows 1-4 pick the slot [M :20 `mp_stuff[0x37a]
+                        // = sel-1`] and open the bot choose wheel [M :23 → 0x4000003f].
+                        if self.mp_bots_row == 0 { self.page = Page::MpOptions; self.cursor = 1; return true; }
+                        self.mp_bot_slot = self.mp_bots_row - 1;
+                        self.mp_bot_char = self.mp_bots[self.mp_bot_slot].character as usize;
+                        self.page = Page::MpBotChoose;
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            // The bot character wheel [M P_MPBOTCHOOSE 0x210cd8 + C_SBMPBTCHOOSE 0x210f08].
+            Page::MpBotChoose => {
+                match a {
+                    Action::Up if self.mp_bot_char > 0 => { self.mp_bot_char -= 1; return true; }
+                    Action::Down if self.mp_bot_char + 1 < MP_CHARACTERS.len() => { self.mp_bot_char += 1; return true; }
+                    Action::Back => { self.page = Page::MpBots; self.mp_bots_row = self.mp_bot_slot + 1; return true; }
+                    Action::Confirm => {
+                        let ch = self.mp_bot_char.min(MP_CHARACTERS.len() - 1);
+                        // Locked characters refuse [M C_SBMPBTCHOOSE:18-20's unlock gate].
+                        if self.mp_character_locked(ch) { return false; }
+                        // [M C_SBMPBTCHOOSE:26-43 — record+0x10 = the character, +0x0F team =
+                        // Menu_IsBotGood (the preset's side), the name into MPSettings+slot·0x30+0xC0,
+                        // +0x0E enabled = 1; then page 0x4000002c.]
+                        let b = &mut self.mp_bots[self.mp_bot_slot.min(3)];
+                        b.character = ch as u32;
+                        b.team_mi6 = MP_CHARACTER_SIDE_MI6[ch];
+                        b.enabled = true;
+                        b.dirty = false;
+                        let (skill, aim, hp, speed, r1, r2, trait_id) = MpBot::preset(ch);
+                        (b.skill, b.aim, b.hit_points, b.speed, b.recovery1, b.recovery2, b.trait_id) = (skill, aim, hp, speed, r1, r2, trait_id);
+                        self.page = Page::MpBotSetup;
+                        self.cursor = 0;
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            // The per-bot stats [M P_MPBOTSETUP 0x211270: eight list rows; the reward characters
+            // (>= 15) lock all seven stat rows [M :23-48] and Confirm still closes [M :138-169]].
+            Page::MpBotSetup => {
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < 8 => { self.cursor += 1; return true; }
+                    Action::Left => { self.mp_botsetup_step(-1); return true; }
+                    Action::Right => { self.mp_botsetup_step(1); return true; }
+                    // [M :138-169 — the values store back, +0x11 dirty = 1, Manager 0x5f twice =
+                    // back to the Bots list.]
+                    Action::Confirm | Action::Back => {
+                        self.mp_bots[self.mp_bot_slot.min(3)].dirty = true;
+                        self.page = Page::MpBots;
+                        self.mp_bots_row = self.mp_bot_slot + 1;
+                        self.cursor = 0;
+                        return true;
+                    }
+                    _ => {}
+                }
+            }
+            // The match summary [M P_MPCONFIRM 0x20ec00: the enter builds the lines, Confirm
+            // starts the match].
+            Page::MpConfirm => {
+                if a == Action::Confirm { return self.mp_confirm_start(); }
+                if a == Action::Back { self.page = Page::MpOptions; self.cursor = 0; return true; }
+            }
+            // The debriefing [M P_MPDEBRIEFING 0x212198 + C_MPDBG 0x217860: Confirm restores the
+            // MPSettings backup and returns to the scenario page; the rematch arm (msg 0x5d)
+            // reloads the level — the port has no in-match host loop for it yet (reported)].
+            Page::MpDebriefing => {
+                if a == Action::Confirm { self.page = Page::MpScenario; self.mp_scenario_row = 0; return true; }
+            }
+            // credits-data: the credits take no input — the handler has no input cases at all
+            // (the roll cannot be skipped) [M P_CREDITS_Handler 0x2152b0's message cases].
+            Page::Credits => {}
         }
         false
+    }
+
+    /// secret-codes: press the grid cell the cursor stands on. Characters append (the 8-char cap
+    /// [M 0x213a98:29-31]), Delete truncates [M :39-43], Space appends ' ' [M :28-36/:75-85],
+    /// Submit flags the drain [M :67-74 — the handler calls Menu_SpecialCodenameCheck; the port
+    /// splits it so the host supplies the Progress, like `results_enter`].
+    pub fn secret_press(&mut self) -> bool {
+        self.secret.accepted = false;
+        match SECRET_GRID[self.secret.cursor.min(SECRET_GRID.len() - 1)] {
+            SecretKey::Char(c) => {
+                if self.secret.typed.chars().count() >= 8 { return false; }
+                self.secret.typed.push(c);
+                true
+            }
+            SecretKey::Space => {
+                if self.secret.typed.chars().count() >= 8 { return false; }
+                self.secret.typed.push(' ');
+                true
+            }
+            SecretKey::Delete => { self.secret.typed.pop(); true }
+            SecretKey::Submit => { self.secret.pending_submit = true; true }
+        }
+    }
+
+    /// secret-codes: the host drains a pending Submit here — `Menu_SpecialCodenameCheck`
+    /// 0x200238's port applies the unlock to the live progress; `true` opens the 0x100029d box
+    /// [M 0x213a98:67-73], `false` is the game's silent miss.
+    pub fn secret_submit(&mut self, progress: &mut nf_game::progress::Progress) -> bool {
+        if !self.secret.pending_submit { return false; }
+        self.secret.pending_submit = false;
+        let hit = nf_game::secret_codes::submit(progress, &self.secret.typed);
+        self.secret.accepted = hit;
+        hit
     }
 
     /// The menu-def page the screen is: `Page::Results` is TWO pages — the fail menu 0x40000042 (a mission
@@ -1755,6 +2823,297 @@ impl FrontEnd {
             if self.unlocked_row(r as usize) { return r as usize; }
         }
         self.cursor
+    }
+
+    // ── mp-menu-flow: the multiplayer front end's helpers ────────────────────────────────────
+
+    /// mp_scenario[row]+0x10 with `menu_unlock_everything`: the shipped flag is 1 for the
+    /// always-open rows and 0 for the reward rows, which `Menu_UnlockMPSettings` 0x1ff698:53-104
+    /// re-derives from the campaign rewards (the port carries the reward ids in the rows' last
+    /// field and gates on the profile's rewards — None here means a fresh profile [S the reward
+    /// tracking is the results page's job, not yet wired to MP]).
+    pub fn mp_scenario_locked(&self, row: usize) -> bool {
+        let (_, _, _, _, reward) = MP_SCENARIO_ROWS[row.min(MP_SCENARIO_ROWS.len() - 1)];
+        reward != 0 && !self.unlock_all
+    }
+
+    /// mp_characters[row]+0x10 with the same unlock [M Menu_UnlockMPSkins 0x1ff2f8:113-187].
+    pub fn mp_character_locked(&self, row: usize) -> bool {
+        MP_CHARACTERS[row.min(MP_CHARACTERS.len() - 1)].3 != 0 && !self.unlock_all
+    }
+
+    /// The Join page's codename list length: the two defaults then the card's rows [M
+    /// Menu_PutCodenamesIntoControl 0x1f79c0:15-23 — def_codename's two rows, then the saves].
+    pub fn mp_codename_rows(&self) -> usize { 2 + self.profiles.len() }
+
+    /// The codename at `row` [M C_RBMPCNAME 0x20d448: the template rows map through
+    /// Menu_MapDefaultCodename and the name becomes "Player N" — Txt 0x1c3 + slot+1 through
+    /// sprintf "%s %d" @0x30d388; a card row is the codename itself].
+    pub fn mp_codename_at(&self, row: usize) -> String {
+        match row {
+            0 | 1 => format!("Player {}", self.cursor.min(3) + 1),
+            r => self.profiles.get(r - 2).cloned().unwrap_or_else(|| format!("Player {}", self.cursor.min(3) + 1)),
+        }
+    }
+
+    /// P_MPRULES's row-1 unit: "Lives" for the death-limit scenario (Top Agent 0x10), "Points"
+    /// otherwise [M P_MPRULES 0x20f790:78-95].
+    pub fn mp_rules_lives(&self) -> bool { self.mp_scenario == 0x10 }
+
+    /// P_MPRULES's Duration list: 1..10, 15, 20, 30, 45, 60 minutes then Unlimited (-1) [M
+    /// 0x20f790:20-42 — the static strings "1".."60" at 0x30d3f8, then 0x3ca "Unlimited" at
+    /// index -1]; the Points list goes to 120 [M :65-76]. Steps by `dir`.
+    fn mp_rules_step(&mut self, dir: i32) {
+        const TIMES: [i32; 13] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 30];
+        if self.cursor.min(1) == 0 {
+            // Duration: the list walks 1..60 then Unlimited [M the strings' order].
+            let unlimited = self.mp_time_limit == -1;
+            let idx = TIMES.iter().position(|&t| t == self.mp_time_limit);
+            self.mp_time_limit = match (idx, dir) {
+                (None, -1) => 30,                       // from Unlimited back to 30
+                (None, _) => 1,                          // fresh: 1 minute
+                (Some(i), 1) if i + 1 < TIMES.len() => TIMES[i + 1],
+                (Some(12), 1) => -1,                     // 30 → 45 → 60 → Unlimited
+                (Some(i), -1) => TIMES[i.saturating_sub(1)],
+                (_, _) => self.mp_time_limit,
+            };
+            if unlimited && dir == -1 { self.mp_time_limit = 30; }
+        } else {
+            // Points/Lives: 1..120, no Unlimited [M :65-76].
+            self.mp_frag_limit = (self.mp_frag_limit + dir).clamp(1, 120);
+        }
+    }
+
+    /// P_MPPLAYERMODS's rows: friendly fire (On/Off), weapon set (0..10), +0x1BC, +0x1C8 (On/Off),
+    /// radar (On/Off) [M 0x2104d0:12-16, 20-61].
+    fn mp_playermods_step(&mut self, dir: i32) {
+        match self.cursor.min(4) {
+            0 => { self.mp_friendly_fire = (self.mp_friendly_fire as i32 ^ 1) as u32; }   // the two-item list wraps
+            1 => { self.mp_weapon_set = (self.mp_weapon_set as i32 + dir).rem_euclid(11) as u32; }
+            2 => { self.mp_player_mods[0] = (self.mp_player_mods[0] as i32 ^ 1) as u32; }
+            3 => { self.mp_player_mods[1] = (self.mp_player_mods[1] as i32 ^ 1) as u32; }
+            _ => { self.mp_radar = (self.mp_radar as i32 ^ 1) as u32; }
+        }
+    }
+
+    /// P_MPENVIROMODS's rows: view distance (Near 0/Far 1/Random 2), +0x1B8, +0x1D4 (the
+    /// reward-locked row), +0x1D0 (On/Off), vehicles (Off 0/Tanks 1/Helicopters 2/Random 3) [M
+    /// 0x210030:12-16, 20-27, 35-61].
+    fn mp_envmods_step(&mut self, dir: i32) {
+        match self.cursor.min(4) {
+            0 => { self.mp_envmods[0] = (self.mp_envmods[0] as i32 + dir).rem_euclid(3) as u32; }
+            1 => { self.mp_envmods[1] = (self.mp_envmods[1] as i32 ^ 1) as u32; }
+            2 => { self.mp_envmods[2] = (self.mp_envmods[2] as i32 ^ 1) as u32; }
+            3 => { self.mp_envmods[3] = (self.mp_envmods[3] as i32 ^ 1) as u32; }
+            _ => { self.mp_envmods[4] = (self.mp_envmods[4] as i32 + dir).rem_euclid(4) as u32; }
+        }
+    }
+
+    /// P_MPBOTSETUP's rows in page order (the y order of MP_BOT_SETUP_LABELS): Enabled, Speed,
+    /// Trait, Aim, Skill, Hit points, Recovery 1, Recovery 2 — the value lists of P_MPBOTSETUP
+    /// 0x211270:17-135.
+    fn mp_botsetup_step(&mut self, dir: i32) {
+        let b = &mut self.mp_bots[self.mp_bot_slot.min(3)];
+        let (list, len): (&[i32], i32) = match self.cursor.min(7) {
+            0 => return,                                              // Enabled is not a stat row here (the game's own list Yes/No)
+            1 => (&[0, 1, 2], 3),                                     // Speed
+            2 => (&[0, 1, 2, 3, 4, 5, 6, 7, 8], 9),                   // Trait 0..8
+            3 => (&[2, 3, 4], 3),                                     // Aim
+            4 => (&[1, 3, 5, 8], 4),                                  // Skill (Very Good..Poor)
+            5 => (&[50, 75, 100, 125, 150, 175, 200, 250, 300], 9),   // Hit points
+            6 => (&[50, 75, 100, 125, 150, 175, 200], 7),             // Recovery 1
+            _ => (&[50, 75, 100, 125, 150, 175, 200], 7),             // Recovery 2
+        };
+        let _ = len;
+        let cur = match self.cursor.min(7) {
+            1 => b.speed, 2 => b.trait_id, 3 => b.aim, 4 => b.skill,
+            5 => b.hit_points, 6 => b.recovery1, _ => b.recovery2,
+        };
+        let i = list.iter().position(|&v| v == cur).unwrap_or(0);
+        let nv = list[(i as i32 + dir).rem_euclid(list.len() as i32) as usize];
+        match self.cursor.min(7) {
+            1 => b.speed = nv, 2 => b.trait_id = nv, 3 => b.aim = nv, 4 => b.skill = nv,
+            5 => b.hit_points = nv, 6 => b.recovery1 = nv, _ => b.recovery2 = nv,
+        }
+    }
+
+    /// C_SBMPOPTIONS row 0's start checks [M 0x20e818:50-130]. Returns whether the state changed:
+    /// on success the page becomes the confirm page; on failure the error-box label lands in
+    /// mp_error (the game pops Menu_CreateOptionBox with it).
+    pub fn mp_start_checks(&mut self) -> bool {
+        self.mp_error = 0;
+        let humans = self.mp_join.iter().filter(|a| a.joined).count();
+        let bots = self.mp_bots.iter().filter(|b| b.enabled).count();
+        let team = self.mp_scenario & 0x2000_0000 != 0;
+        if !team {
+            // FFA: the game refuses more than one "good" (MI6-side) player [M the uVar1 > 1 arm,
+            // Txt 0x1000311; the decomp's counting is thin — the string settles the intent].
+            let good = self.mp_join.iter().filter(|a| a.joined && a.team == 1).count();
+            if good > 1 { self.mp_error = 0x0100_0311; return false; }
+        } else {
+            // Team: both sides need someone [M the 0x389 arm with 0x1c7/0x1c8].
+            let blue = self.mp_join.iter().filter(|a| a.joined && a.team == 1).count()
+                + self.mp_bots.iter().filter(|b| b.enabled && b.team_mi6).count();
+            let red = self.mp_join.iter().filter(|a| a.joined && a.team == 0).count()
+                + self.mp_bots.iter().filter(|b| b.enabled && !b.team_mi6).count();
+            if blue == 0 || red == 0 { self.mp_error = 0x389; return false; }
+        }
+        // At least two players overall [M the 0x39e arm].
+        if humans + bots < 2 { self.mp_error = 0x39e; return false; }
+        self.page = Page::MpConfirm;
+        self.cursor = 0;
+        true
+    }
+
+    /// The Quick Game row: the fixed quick-start config then straight to the confirm page [M
+    /// C_SBMPSCEN 0x20c600:48-145 + the disassembly's stores at 0x20c72c-0x20c864: time 10,
+    /// frags 10, Deathmatch, radar on, no friendly fire, weapon set 0 (Normal), FFA, 3 bots
+    /// (Drake/Kiko/Rook, all Phoenix, default stats), the map sampled from mp_level rows 0..6,
+    /// the joined players' teams/skins fixed, humans = joined count].
+    pub fn mp_quick_start(&mut self) {
+        self.mp_time_limit = 10;
+        self.mp_frag_limit = 10;
+        self.mp_scenario = 1;                 // Deathmatch [M +0x1A4 = 1]
+        self.mp_friendly_fire = 0;            // [M +0x198 = 0]
+        self.mp_weapon_set = 0;               // [M +0x1B4 = 0]
+        self.mp_radar = 1;                    // [M +0x1C4 = 1]
+        self.mp_player_mods = [0, 0];         // [M +0x1D4 = 0, +0x1CC = 0]
+        self.mp_envmods[0] = 1;               // [M +0x1D0 = 0, +0x1C0 = Far(1)? — the quick start writes 2 at +0x1CC; view distance keeps the Far default]
+        self.mp_envmods[1] = 0;
+        self.mp_envmods[3] = 0;
+        self.mp_envmods[4] = 0;
+        // The map sample: `Rand_Random() % 7` over mp_level rows 0..6 — never Ravine [M
+        // 0x20c76c-0x20c7b4]. Headless determinism: the shared RNG is not wired here, so the port
+        // takes row 0 (Skyrail) and records the gap [S — the game's sample is random].
+        self.mp_level = MP_MAP_ROWS[0].3;
+        // The joined players: slot 0 → team MI6 (1) / skin Bond (0); the unjoined slots carry the
+        // game's placeholder skins 6/7/8 [M disasm 0x20c7f8-0x20c834].
+        self.mp_join[0].team = 1;
+        self.mp_join[0].skin = 0;
+        self.mp_join[0].joined = true;
+        self.mp_join[0].state = 5;
+        self.mp_join[0].codename = "Player 1".into();
+        // The bots: count byte 0x2DEEA9 = 3, MPSettings+0x1B0 = 3; characters 1/3/2 (Drake, Kiko,
+        // Rook), teams Phoenix, enabled, fresh stats [M the quick start's bot setup].
+        for (slot, ch) in [1usize, 3, 2].iter().enumerate() {
+            let b = &mut self.mp_bots[slot];
+            b.character = *ch as u32;
+            b.team_mi6 = MP_CHARACTER_SIDE_MI6[*ch];
+            b.enabled = true;
+            b.dirty = false;
+            let (skill, aim, hp, speed, r1, r2, trait_id) = MpBot::preset(*ch);
+            (b.skill, b.aim, b.hit_points, b.speed, b.recovery1, b.recovery2, b.trait_id) = (skill, aim, hp, speed, r1, r2, trait_id);
+        }
+        for b in self.mp_bots.iter_mut().skip(3) { b.enabled = false; }
+        self.page = Page::MpConfirm;          // [M 0x20c978-0x20c984 → 0x40000049]
+        self.cursor = 0;
+    }
+
+    /// The joined humans [M P_MPCONFIRM's compaction counts mpjoin != 0].
+    pub fn mp_human_count(&self) -> usize { self.mp_join.iter().filter(|a| a.joined).count() }
+    /// The enabled bots [M Menu_PrepareBots 0x1f94a0 compacts the enabled records; MPSettings
+    /// +0x1B0 = the count, or 0 on Ravine [M :85-88]].
+    pub fn mp_bot_count(&self) -> usize {
+        if self.mp_level == 0x0700_004b { return 0; }   // [M P_MPOPTIONS's gate + Menu_PrepareBots' zeroing]
+        self.mp_bots.iter().filter(|b| b.enabled).count()
+    }
+
+    /// The confirm page's Confirm — P_MPCONFIRM 0x20ec00:53-94: `Menu_StoreMPSettings` (the port
+    /// has no MP card — the backup/restore pair is the debriefing's own [S]); the joined players'
+    /// records compact; `+0x1A0 != -1 → ×60` (minutes → seconds); `+0x1D4 &= 1`; `+0x180 = 1`;
+    /// `GameState+0x08 = +0x1A8`; `+0x1AC = joined`; `ResetMap_LevelToLoad(+0x1A8, 0, 0)` +
+    /// `GameFlow_PushState(80.0f, 7, 0xff)` + `SFXFadeDown` + `MenuManager_Delete`. The port's
+    /// handover: the level request rides the existing `requested_level`/load machinery, the
+    /// match config lands in `mp_match_settings` for the host's MP core.
+    pub fn mp_confirm_start(&mut self) -> bool {
+        let humans = self.mp_human_count();
+        if humans == 0 { return false; }
+        let time = if self.mp_time_limit == -1 { -1 } else { self.mp_time_limit * 60 };   // [M the ×0x3c]
+        let bots = self.mp_bot_count() as u32;
+        let mut s = nf_game::mp::MpSettings::deathmatch(self.mp_level);
+        s.scenario = self.mp_scenario;
+        s.gametype_mask = self.mp_scenario;       // [M the same word — see the atlas correction]
+        s.level_code = self.mp_level;
+        s.frag_limit = self.mp_frag_limit;
+        s.time_limit = time;
+        s.human_count = humans as u32;
+        s.player_count = humans as u16;           // [M +0x1AC = the joined count]
+        s.bot_count = bots;
+        s.weapon_set = self.mp_weapon_set;
+        s.radar = self.mp_radar;
+        s.master = 1;                             // [M +0x180 = 1]
+        s.total_players = humans as u32 + bots;   // [M MP_Start 0x183a50:164]
+        s.team_game = (self.mp_scenario >> 29) & 1;   // [M MP_Init 0x183438:41 — the core re-derives]
+        for (i, slot) in self.mp_join.iter().enumerate().take(4) {
+            if !slot.joined { continue; }
+            s.players[i] = nf_game::mp::MpPlayer { team: slot.team, skin: slot.skin, armor_bonus: 0 };
+        }
+        self.mp_match_settings = Some(s);
+        // [M the match-start calls] — the level request + the fade push; MenuManager_Delete is
+        // the host closing the overlay once the load leaves the front-end map.
+        self.requested_level = Some(self.mp_level);
+        self.flow.reset_map_level_to_load(self.mp_level, false, false);
+        self.flow.push_state(ST_FADE_HOLD);
+        true
+    }
+
+    /// A summary line's value text for the confirm page [M P_MPDEBRIEFING — no: P_MPCONFIRM's
+    /// enter builds the lines with sprintf "%s : %s" @0x30d3e8: Map 0x3d4, Scenario 0x3d5,
+    /// Weapon Set 0x24d, the limit line 0x3d8/0x3d7 (0x3ca Unlimited), Duration 0x3d6 (0x3ca),
+    /// Friendly Fire 0x3da (0x1b7/0x1b6)].
+    pub fn mp_confirm_lines(&self, lang: Option<&Lang>) -> [(u32, String); 6] {
+        let bind = |id: u32| lang.and_then(|l| l.bind(id)).map(str::to_string).unwrap_or_else(|| format!("<{id:#x}>"));
+        let pair = |a: u32, b: String| (a, b);
+        let map_row = MP_MAP_ROWS.iter().find(|r| r.3 == self.mp_level);
+        let scen_row = MP_SCENARIO_ROWS.iter().find(|r| r.3 == self.mp_scenario);
+        let limit = if self.mp_rules_lives() { 0x3d7 } else { 0x3d8 };
+        [
+            pair(0x3d4, map_row.map_or(String::new(), |r| bind(r.1))),
+            pair(0x3d5, scen_row.map_or(String::new(), |r| bind(r.1))),
+            pair(0x24d, bind(MP_WEAPON_SETS[self.mp_weapon_set.min(10) as usize])),
+            pair(limit, if self.mp_frag_limit >= 0 { self.mp_frag_limit.to_string() } else { bind(0x3ca) }),
+            pair(0x3d6, if self.mp_time_limit == -1 { bind(0x3ca) } else { self.mp_time_limit.to_string() }),
+            pair(0x3da, bind(if self.mp_friendly_fire != 0 { 0x1b7 } else { 0x1b6 })),
+        ]
+    }
+
+    /// The wheel rows' preview texture for the draw code (the game's msg-0x24 binds) — the
+    /// scenario/map/options/bots/character wheels' per-row previews.
+    pub fn mp_row_preview(&self, row: usize) -> u32 {
+        match self.page {
+            Page::MpScenario => MP_SCENARIO_ROWS.get(row).map_or(0, |r| r.0),
+            Page::MpMap => MP_MAP_ROWS.get(row).map_or(0, |r| r.0),
+            Page::MpOptions => MP_OPTIONS_ROWS.get(row).map_or(0, |r| r.0),
+            Page::MpBots if row == 0 => MP_BOTS_ROWS[0].0,
+            Page::MpBots => self.mp_bots.get(row - 1).map_or(0, |b| MP_CHARACTERS.get(b.character as usize).map_or(0, |c| c.0)),
+            Page::MpBotChoose => MP_CHARACTERS.get(row).map_or(0, |r| r.0),
+            _ => 0,
+        }
+    }
+    /// The wheel rows' description label (the game's msg-0x18 bind of +0x08, or +0x14 when
+    /// locked [M Menu_UpdateWheel 0x1f8388:114-147]; the bots list binds none [M C_SBBOTS's
+    /// UpdateWheel call passes 0]).
+    pub fn mp_row_desc(&self, row: usize) -> u32 {
+        match self.page {
+            Page::MpScenario => if self.mp_scenario_locked(row) { MP_LOCKED_SCENARIO_DESC } else { MP_SCENARIO_ROWS.get(row).map_or(0, |r| r.2) },
+            Page::MpMap => MP_MAP_ROWS.get(row).map_or(0, |r| r.2),
+            Page::MpOptions if row == 1 && !self.mp_options_ai_bots_open() => 0x0100_00ae,
+            Page::MpOptions => MP_OPTIONS_ROWS.get(row).map_or(0, |r| r.2),
+            Page::MpBotChoose => if self.mp_character_locked(row) { 0x0100_00ad } else { MP_CHARACTERS.get(row).map_or(0, |r| r.2) },
+            _ => 0,
+        }
+    }
+    /// The AI Bots row's enable byte [M P_MPOPTIONS 0x217678:20-25 — 0 on Ravine].
+    pub fn mp_options_ai_bots_open(&self) -> bool { !(self.mp_level == 0x0700_004b && !self.unlock_all) }
+    /// The per-row locked flag for the draw code's dimming [M Menu_UpdateWheel's locked colour
+    /// 0x60606060 vs 0x808080ff].
+    pub fn mp_row_locked(&self, row: usize) -> bool {
+        match self.page {
+            Page::MpScenario => self.mp_scenario_locked(row),
+            Page::MpOptions => row == 1 && !self.mp_options_ai_bots_open(),
+            Page::MpBotChoose => self.mp_character_locked(row),
+            _ => false,
+        }
     }
 }
 
@@ -1868,6 +3227,12 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
         plate(&mut h, 0.0, 0.0, MW, MH, gs(0x180c08, 0xff));
     }
     match fe.page {
+        // mp-menu-flow: the multiplayer pages draw from the same getters the other wheels use
+        // (mp_row_preview/mp_row_desc/mp_row_locked + row_label); the drawing itself is the main
+        // agent's task (no drawing in this task's scope) — the overlay leaves them empty here.
+        Page::MpJoin | Page::MpScenario | Page::MpMap | Page::MpSetup | Page::MpOptions | Page::MpRules
+        | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBots | Page::MpBotChoose | Page::MpBotSetup
+        | Page::MpConfirm | Page::MpDebriefing => {}
         Page::Start => {
             // The title [M menu-def page 0x40000009: the art control 0x10000196 (0,0,640,480) TEX
             // 0x03000074; the prompt control 0x100000fa (131,309,379×16) LBL 0x1c9, colours 0x7f621fff;
@@ -1914,10 +3279,6 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             hint_bar(&mut h, font, &hint(0x54e, "~V Scroll  ~A Select"), 50.0, 419.0, cream);
             // No logo or stamp: the page's only art is its aux FMV.
         }
-        // codename-entry: the name-entry page's data lives in the FrontEnd (CN_GRID, the typed
-        // buffer, the focused cell) — the main agent draws it from those getters; the port ships
-        // no layout of its own (the page's grid control data is unparsed).
-        Page::CodenameEntry => {}
         Page::Codename => {
             // Select Codename [M menu-def page 0x40000025 (parsed 2026-10-14): header 0x10000001
             // (50,40,376×17) LBL 0x1f2; the panel 0x10000001 (50,53,590×295) TEX 0x030000b3; the
@@ -2080,6 +3441,27 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             hint_bar(&mut h, font, &hint(0x5cb, "~A Select  ~V Scroll  ~B Cancel"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
+        Page::CnName => {
+            // The Secret Unlocks letter grid (the model side; the drawn layout is the stub until
+            // the drawing task lands — the main agent owns the page's look).
+            page_header(&mut h, hfont, &bind(0x1000_02d4)); // cheat_mode's prompt label [M 0x213790:37]
+            panel(&mut h);
+            let mut grid = String::new();
+            for (i, k) in SECRET_GRID.iter().enumerate() {
+                let ch = match k { SecretKey::Char(c) => *c, SecretKey::Space => '_', SecretKey::Delete => '<', SecretKey::Submit => '+' };
+                if i == fe.secret.cursor { grid.push('['); }
+                grid.push(ch);
+                if i == fe.secret.cursor { grid.push(']'); }
+                grid.push(' ');
+            }
+            h.text_scaled_tex(Anchor::Centre, font, -1, 0x0300_0005, &fe.secret.typed, mx(320.0), my(150.0), false, cream, true, 1.3);
+            h.text_scaled_tex(Anchor::Centre, font, -1, 0x0300_0005, &grid, mx(320.0), my(190.0), false, bright, true, 0.9);
+            if fe.secret.accepted {
+                h.text_scaled_tex(Anchor::Centre, font, -1, 0x0300_0005, "CODE ACCEPTED", mx(320.0), my(300.0), false, bright, true, 1.1); // label 0x100029d's text [S]
+            }
+            hint_bar(&mut h, font, &hint(0x5cb, "~A Select  ~H Move  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
         Page::CnAdvanced | Page::CnMp | Page::CnAv => {
             let header = match fe.page { Page::CnAdvanced => 0x37a, Page::CnMp => 0x199, _ => 0x2bb };
             page_header(&mut h, hfont, &bind(header));
@@ -2087,8 +3469,24 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             hint_bar(&mut h, font, &hint(0x217, "~A Confirm  ~V Scroll  ~H Change  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
+        Page::ScreenAdjust => {
+            // The Screen Adjust page's own controls [L page 0x40000047 walk 2026-10-15]: the
+            // fullscreen reference picture TEX 0x3000074 (the msg-0x24 control (0,0,640,480)); the
+            // two slider bars — vertical (304,176,32,128) d1 0, horizontal (256,224,128,32) d1 1,
+            // both named 0x100001eb; the hint bar (50,419) LBL 0x67b. The main agent compares this
+            // against PCSX2 — the bars here are the page data's plates with the focused one bright.
+            quad640(&mut h, 0x0300_0074, 0.0, 0.0, MW, MH, [0.0, 0.0, 512.0, 512.0], gs(0x7f7f7f, 0xff));
+            let (bar_v, bar_h) = (gs(0x73330f, 0xc0), gs(0x73330f, 0xc0));
+            let hot = cream;
+            plate(&mut h, 304.0, 176.0, 32.0, 128.0, if fe.cursor == 0 { hot } else { bar_v });
+            plate(&mut h, 256.0, 224.0, 128.0, 32.0, if fe.cursor == 1 { hot } else { bar_h });
+            hint_bar(&mut h, font, &hint(0x67b, "~A Confirm  ~B Cancel"), 50.0, 419.0, cream);
+        }
         Page::Pause => pause_page(&mut h, fe, font, lang, textures, cream, bright, dim),
         Page::Results => results_page(&mut h, fe, font, lang, textures, cream, bright, dim),
+        // credits-data: the main agent draws the roll from fe.credits.visible() (the game's
+        // own line list + y positions) — nothing here yet.
+        Page::Credits => {}
     }
     h.finish()
 }
@@ -2979,4 +4377,71 @@ pub fn loading_overlay(font: &nf_formats::hud::Font, lang: Option<&Lang>, textur
         }
     }
     h.finish()
+}
+
+#[cfg(test)]
+mod secret_grid_tests {
+    use super::*;
+
+    /// The grid flow: type BOWLER through the cells, submit, and the unlock lands in the
+    /// progress's bonus[0] bit 38 (the sister: a miss leaves it zero [M 0x213a98:67-73]).
+    #[test]
+    fn grid_types_and_submits_a_code() {
+        let mut fe = FrontEnd::new();
+        fe.page = Page::CnName;
+        let mut p = nf_game::progress::Progress::default();
+        // The cursor walks to B (cell 10), presses, and the letter appends.
+        for (want, cell) in [('B', 11), ('O', 24), ('W', 32), ('L', 21), ('E', 14), ('R', 27)] {
+            fe.secret.cursor = cell;
+            assert!(matches!(SECRET_GRID[cell], SecretKey::Char(c) if c == want));
+            assert!(fe.secret_press());
+        }
+        assert_eq!(fe.secret.typed, "BOWLER");
+        fe.secret.cursor = 38; // the Submit cell [M 0x213a98:45-74]
+        assert!(fe.secret_press());
+        assert!(fe.secret.pending_submit);
+        assert!(fe.secret_submit(&mut p));
+        assert!(fe.secret.accepted);
+        assert_eq!(p.bonus[0], 1 << 38);
+        // The miss path: a wrong string drains silently and unlocks nothing.
+        let mut q = nf_game::progress::Progress::default();
+        fe.secret = SecretEntry::default();
+        fe.page = Page::CnName;
+        fe.secret.cursor = 10; // 'B'
+        fe.secret_press();
+        fe.secret.cursor = 38;
+        fe.secret_press();
+        assert!(fe.secret_submit(&mut q) == false);
+        assert!(!fe.secret.accepted);
+        assert_eq!(q.bonus[0], 0);
+    }
+
+    /// The 8-char cap [M 0x213a98:29-31] and the Delete cell [M :39-43].
+    #[test]
+    fn grid_caps_and_deletes() {
+        let mut fe = FrontEnd::new();
+        fe.secret.cursor = 10;
+        for _ in 0..9 { fe.secret_press(); }
+        assert_eq!(fe.secret.typed.chars().count(), 8);
+        fe.secret.cursor = 36; // Delete
+        assert!(fe.secret_press());
+        assert_eq!(fe.secret.typed.chars().count(), 7);
+        fe.secret.cursor = 37; // Space
+        assert!(fe.secret_press());
+        assert_eq!(fe.secret.typed.chars().count(), 8);
+    }
+
+    /// The wheel routes row 0 to the grid page [M C_SBCNOPTIONS 0x213528 case 0] and Back
+    /// returns to it.
+    #[test]
+    fn cnmenu_row0_opens_the_grid() {
+        let mut fe = FrontEnd::new();
+        fe.page = Page::CnMenu;
+        fe.cursor = 0;
+        assert!(fe.action(Action::Confirm));
+        assert_eq!(fe.page, Page::CnName);
+        assert_eq!(fe.page_id(), PAGE_CN_NAME);
+        assert!(fe.action(Action::Back));
+        assert_eq!(fe.page, Page::CnMenu);
+    }
 }

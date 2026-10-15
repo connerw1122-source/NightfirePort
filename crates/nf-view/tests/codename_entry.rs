@@ -34,7 +34,7 @@ fn type_name(fe: &mut FrontEnd, s: &str) {
 fn open_seeds_the_game_s_proposals() {
     let mut fe = FrontEnd::new();
     fe.cn_open(0x4000_0025);
-    assert_eq!(fe.page, Page::CodenameEntry);
+    assert_eq!(fe.page, Page::CnName);
     assert_eq!(fe.page.id(), 0x4000_0020, "the page id is the game's own [M 0x2029e0:372]");
     assert_eq!(fe.cn_typed_name(), "BOND", "the non-cheat proposal [M 0x213790:43-44]");
     assert_eq!(fe.cn_cursor_cell(), 1002, "the ✓ holds the focus on open [M 0x213790:47]");

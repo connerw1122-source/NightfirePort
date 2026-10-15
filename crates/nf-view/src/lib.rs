@@ -23,6 +23,7 @@ pub mod gamepad;
 pub mod dev;
 pub mod devwin;
 pub mod hud;
+pub mod credits;
 pub mod menu;
 pub mod movie;
 pub mod scene;
@@ -1280,8 +1281,8 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             "mpoptions" => menu::Page::CnMp,
             "avoptions" => menu::Page::CnAv,
             // codename-entry: the name-entry grid renders headless too (cn_open seeds the proposal).
-            "cnname" => { fe.cn_open(menu::PAGE_CN_SELECT); menu::Page::CodenameEntry }
-            "cncheat" => { fe.cn_open(menu::PAGE_CN_MENU); menu::Page::CodenameEntry }
+            "cnname" => { fe.cn_open(menu::PAGE_CN_SELECT); menu::Page::CnName }
+            "cncheat" => { fe.cn_open(menu::PAGE_CN_MENU); menu::Page::CnName }
             // fix-pause-menu: the in-game pages render headless too (the pause page over the
             // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
             // picks the pause tab, `--confirm` arms the pause confirm.
