@@ -39,3 +39,5 @@ claimed-by: sandbox4 at 2026-10-15T15:13Z
 ---
 ## Report (blocked, 2026-10-15T16:53Z)
 
+report: docs/reports/fix-door-react-path2.md @ 9106e5ab + report commit (branch s/fix-door-react-path2)
+result: walkreal_07000001_live 2/2 in 522.79s (the hold cracked: the class-2 contact gate gains 0x4F8&0x100, use_door walks through open doorways); the full suite on the final tree is the remaining item (window closed)
