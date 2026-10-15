@@ -53,7 +53,7 @@ fn the_list_pages_backdrop_still_decodes_a_frame() {
 
 /// Frame 12 lives in the SECOND closed-GOP chunk (10 pictures per GOP) — the still must walk
 /// chunks past the first, and what it decodes must be the SAME picture the whole-ES decode pins
-/// (`menu_movies::the_menu_loop_movie_decodes`: RGB8 SHA-1 `1f1fe7b0…`).
+/// (`menu_movies::the_menu_loop_movie_decodes`: RGB8 SHA-1 `21d0739d…` (re-measured after the BT.601 limited-range CSC fix)).
 #[cfg(feature = "movies")]
 #[test]
 fn the_backdrop_still_frame12_matches_the_whole_es_decode() {
@@ -64,7 +64,7 @@ fn the_backdrop_still_frame12_matches_the_whole_es_decode() {
     };
     let sha = nf_formats::sha1::sha1(&img.rgba);
     assert_eq!(
-        &sha[..4], &[0x1f, 0x1f, 0xe7, 0xb0],
+        &sha[..4], &[0x21, 0xd0, 0x73, 0x9d],
         "frame 12 of 07330048 differs from the whole-ES decode's pin — the chunk walk reorders or rescales pictures"
     );
     // Sister: frame 13 hashes differently (the walk advances, not repeats).
