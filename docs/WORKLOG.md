@@ -12872,6 +12872,46 @@ Work Log (fix-world-gravity):
 - (11:05-11:18) The disc table (all 36 archives parse): 30 carry type-0x24 starts — 0700001b is the disc's ONLY zero-g level (p3 == 2, placement #112); 07000014 carries p3 == 3 (the third arm, pose 4 + BL+0x90c = 0.45); every other start p3 == 0. No type-0x24 start: 07000023/26 (the MP arenas — matches mp-core's note), 07000048/4b/0500/0999. Doc: docs/systems/player-physics.md (the writers, the rule, the full table, the live checks).
 - (11:00-11:16) The port: Bond.world_gravity [f32;3] (constructor default = the game's default write) + Bond::death_script() (0x60008e0 iff world_gravity[1] == 0.0, else 0x6000151) [M 0x190630:68-73]; the fall reads world_gravity[1]/60 (bit-exact −9.8/60 kept); the jump launch stays the constant (Player_HandleJump 0x1916b0:169-183 is facing-derived, NOT gravity-derived); LevelStart.p3 + the load path sets sim.bond.world_gravity from the PICKED start's p3 (lib.rs, the Player_Init analogue). FAIL-FIRST recorded on the stashed pre-fix tree: 0700001b, one airborne tick → vel[1] = −0.16333334 (the hard-coded −9.8/60), the zero-g assertion FAILED; post-fix the same tick reads 0.0. Tests: crates/nf-view/tests/fix_world_gravity_live.rs 5/5 (the disc table + the EE snapshot legs + death_script sisters + the real-path fall on 05 kept bit-exact + the 1b zero-g float).
 - (11:20) Merged origin/master (0b91e999, the 109r/109z + start-loadouts entries; WORKLOG both kept). Next: the full suite on this tree, then the report.
+
+## fix-switch-after-cold-load (2026-10-15, branch s/fix-switch-after-cold-load) — started 12:39 UTC
+Task 110n: a weapon switch is IGNORED after a cold load (main agent, merging 109r): cold
+nf_view::load of 07000016.bin (kit 0x11, `loadout: ... switch request 17`), give the P2K
+(inventory.equip_weapon(&wd, 2, 7, true) → true, owned[2]), then step with
+Input { switch_to: Some(2), .. } — gun.weapon stays 0x11 after 90 ticks (switch_request still
+0x11, state 0); setting sim.gun.switch_request = 2 directly switches. Number keys + the dev panel
+ride switch_to, so a player pressing 2 during the level-start draw gets no switch. Reproduce on
+07000016 + 07000012 (kit 0x10) headlessly, find the cause against Player_WeaponChange 0x1a6f80 /
+the anim+0x63 request handling, fix to the game's behaviour, sister-test the settled and
+first-possible-tick cases. Files: crates/nf-view/src/scene.rs or crates/nf-game/src/gun.rs, the
+new test. Branch cut from origin/master 96405b35. (Prior task 110i finished and pushed: report
+docs/reports/fix-death-anim-events.md, fix_death_anim_events_live 2/2, the final-tree suite
+partials 1017 passed / 6 failed — disc_golden ×3 + the no-GPU pylon set ×3 — / 44 ignored over
+the binaries the window fit.)
+- (12:44-12:55) The decompile chain: the number-key-equivalent request write is the anim+0x63
+  byte — the cycle write is refused in view states {1,3,5,6,7,8,9,0xb,0xd,0xe,0xf,0x10} and
+  ALLOWED in {0,2,4,0xa,0xc,≥0x11} [M Player_WeaponChange 0x1a6f80:24-40, the (state−1) case
+  list]; Player_SetWeaponAnimObj 0x1a2e38 case 4 (the draw anim playing) re-checks +0x63 != +0x62
+  EVERY tick and retargets (LAB_001a39c8:492-497: AnimScriptSetPlayDirection(2) reverses the draw
+  → state 2; case 2's tail: +0x62 = +0x63 → state 3 draws the new) [M 0x1a2e38:309-315]; the swap
+  button path needs state 0 [M 0x1a24c8:210-211]. The cold load: Player_InitWeapon 0x1a7ef8:62
+  zeroes the view state and writes +0x63 = the kit — the game opens with a draw. FAIL-FIRST
+  shown: both tests fail pre-fix (the presses during the port's start switch are dropped; tick 1
+  prints state 1 request 0x11 weapon 0x2). FIX (scene.rs only): the switch_to request write
+  allowed while switch_state == 3 (the game's allowed draw state; 1/8 stay refused, the cycle
+  arms keep the idle gate) + the game's case-4 mid-draw retarget in the state-3 arm (reverse the
+  draw, saved_weapon = the being-drawn weapon, new port state 2 = the reversed-draw wait; its end
+  flushes clip/spare, swaps to the request, draws at 1.25x — mirroring the holst end's
+  bookkeeping) + the view_time floor for the reverse. fix_switch_after_cold_load_live 2/2
+  (07000016 mash + the first-possible-tick single press + the settled press; 07000012 kit 0x10
+  the same). Next: merge master, restart the suite on the final tree.
+- (13:05-13:35) Final-tree verification: merged origin/master (815714d6, WORKLOG both kept); the
+  refinement pushed (the request write also allowed during the retarget's reverse — the game's
+  case list allows state 2 and case 2's tail applies the LATEST +0x63 at the stop [M 0x1a2e38
+  case 2/0xe's tail]); fix_switch_after_cold_load_live 2/2 on it. Foreground sweep of the
+  switch-affected binaries on the final tree: fire_modes3_live 5/0/4, fix_weapon_fire_modes_live
+  5/0, fix_weapon_modes_live 6/0, fix_samurai_fire_live 3/0, fix_weapons_all_live 4/0,
+  weapon_switch_live 2/0 (nf-game), tuning_live 2/0 (nf-game). The fast suite on the final tree
+  running (started 12:58); fix_switch_after_cold_load_live passed inside it as well.
 ## fix-progress-detected-hook (2026-10-15, branch s/fix-progress-detected-hook) — started 12:57 UTC
 Task: G-045's two remaining pieces. (1) The detected counter's live hook: PlrMissionStats has a "times detected" stat but the port never increments it — find the vision-log call site in the decompile (PlrStat_Log* callers in DroneVision_*/NDrone2_*), port the increment, pin with a test (07000005 guard spotting Bond raises the counter exactly once per detection event). (2) Player_InitWeapon 0x1a7ef8's per-difficulty autoaim distances: the port uses fixed values — read the difficulty arms, port keyed on GameState+0x40, test each difficulty. Checked origin/s/fix-progress-remainder (110d, merged @ a958d179): it did neither part (G-045 on master still lists both as remaining). Files: crates/nf-game/src/progress.rs, the vision call site, crates/nf-game/src/player.rs, new tests, docs/fields/player-stats.md.
 

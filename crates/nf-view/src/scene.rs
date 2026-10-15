@@ -2038,7 +2038,19 @@ impl Sim {
             }
         }
         self.drones.weapon_switch_request = None;
-        if self.gun.switch_state == 0 && self.gun.reload_state == 0 && !fire_busy {
+        // fix-switch-after-cold-load: the request write is allowed while idle, while the DRAW plays
+        // (the port's state 3 ≈ the game's states 3+4) and during the retarget's reverse (the port's
+        // state 2): `Player_WeaponChange` 0x1a6f80:24-40 refuses only the view states {1, 3, 5, 6,
+        // 7, 8, 9, 0xb, 0xd, 0xe, 0xf, 0x10} — states 0 / 2 / 4 (the draw anim playing) are allowed,
+        // and `Player_SetWeaponAnimObj` 0x1a2e38 case 4 polls `+0x63` every tick mid-draw and
+        // retargets (case 2's tail applies the LATEST +0x63 at the stop). The pre-fix gate (idle
+        // only) dropped a number-key press during the level-start draw forever (switch_to is
+        // per-tick). The cycle arms keep the idle gate below (the game's states 0xa/0xc have no
+        // port counterpart).
+        let idle = self.gun.switch_state == 0;
+        let can_request = (idle || self.gun.switch_state == 2 || self.gun.switch_state == 3)
+            && self.gun.reload_state == 0 && !fire_busy;
+        if can_request {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();
             let clip = clip_view(&self.weapons, &self.drones.inventory.clip);
@@ -2060,10 +2072,10 @@ impl Sim {
             let target = if let Some(id) = input.switch_to {
                 if id != self.gun.weapon && owned.get(id as usize).copied().unwrap_or(false)
                     && weapons.first_person(id as usize) != 0 { Some(id) } else { None }
-            } else if input.weapon_cycle != 0 {
+            } else if idle && input.weapon_cycle != 0 {
                 let t = self.gun.toggle_back(nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable, base_of);
                 t.or_else(|| self.gun.cycle(input.weapon_cycle, nf_game::gun::CycleMode::Weapons, &owned, has_ammo, selectable))
-            } else if input.gadget_cycle != 0 {
+            } else if idle && input.gadget_cycle != 0 {
                 let t = self.gun.toggle_back(nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable, base_of);
                 t.or_else(|| self.gun.cycle(input.gadget_cycle, nf_game::gun::CycleMode::Gadgets, &owned, has_ammo, selectable))
             } else { None };
@@ -2077,7 +2089,7 @@ impl Sim {
                 if std::env::var_os("NF_SOUNDLOG").is_some() {
                     eprintln!("[weapon-switch] tick {}: requesting switch from {:#x} to {:#x}", self.drones.frame, self.gun.weapon, id);
                 }
-            } else if input.weapon_cycle != 0 || input.gadget_cycle != 0 {
+            } else if idle && (input.weapon_cycle != 0 || input.gadget_cycle != 0) {
                 // The cycle found nothing: go to hands, then try GetBestWeapon [M Player_WeaponNone + Player_GetBestWeapon].
                 const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
                 self.gun.go_to_hands();
@@ -2798,13 +2810,54 @@ impl Sim {
                         self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
                         (self.view_time, self.view_speed) = (0.0, 1.0);
                         self.gun.switch_state = 0;
+                    } else if self.gun.switch_request != self.gun.weapon {
+                        // fix-switch-after-cold-load [M 0x1a2e38 case 4:309-315 + LAB_001a39c8:492-497]:
+                        // a request written while the draw plays REVERSES the draw anim
+                        // (`AnimScriptSetPlayDirection(2)`) and drops to the wait state — when the
+                        // reversed anim reaches its start, the machine swaps to the request and draws
+                        // it (case 2's tail: `+0x62 = +0x63`, state 3). The retarget saves the
+                        // being-drawn weapon for the toggle-back (`+0x64 = +0x62`).
+                        if log_switch { eprintln!("[weapon-switch] tick {}: state 3→2 retarget {:#x}→{:#x} (reverse the draw)", self.drones.frame, self.gun.weapon, self.gun.switch_request); }
+                        self.gun.saved_weapon = self.gun.weapon;
+                        self.gun.switch_state = 2;
+                        self.view_speed = -self.view_speed;
+                    }
+                }
+                2 => {
+                    // fix-switch-after-cold-load: the reversed draw reached its start — the retarget
+                    // applies [M 0x1a2e38 case 2/0xe's tail: `+0x62 = +0x63`, state 3; case 3 starts
+                    // the new draw at 1.25x]. The same clip/spare flush the holst end does: the live
+                    // magazine returns to the being-drawn weapon's slot and the request's is read.
+                    if self.view_time <= 0.0 {
+                        if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
+                        if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
+                        if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
+                        if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
+                        self.gun.weapon = self.gun.switch_request;
+                        let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
+                        if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
+                        let draw = self.weapons.draw_script(self.gun.weapon as usize);
+                        if draw != 0 {
+                            if log_switch { eprintln!("[weapon-switch] tick {}: state 2→3 draw {:08x} (weapon {:#x})", self.drones.frame, draw, self.gun.weapon); }
+                            self.view_script = draw;
+                            (self.view_time, self.view_speed) = (0.0, 1.25);
+                            self.gun.switch_state = 3;
+                        } else {
+                            if log_switch { eprintln!("[weapon-switch] tick {}: state 2→0 idle (no draw script) {:#x}", self.drones.frame, self.gun.weapon); }
+                            self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
+                            (self.view_time, self.view_speed) = (0.0, 1.0);
+                            self.gun.switch_state = 0;
+                        }
+                        let s = if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { 0x281 } else { 0x282 };  // gadgets 0x281, weapons 0x282 [M disasm 0x1a385c]
+                        self.drones.audio.play(s);
                     }
                 }
                 _ => {}
             }
-            // Advance the view script while switching.
+            // Advance the view script while switching (the retarget's reverse runs it back to 0 —
+            // fix-switch-after-cold-load: floored, like the game's reversed script).
             let len = len_of(self.view_script);
-            self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
+            self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0)).max(0.0);
         }
 
         let can_fire = !switching;
