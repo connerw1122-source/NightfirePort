@@ -13134,3 +13134,5 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   head_look_live/ai_traces_live/fix_weapon_effects_live/anim_events_live/fix_searchlight_remainder_live/
   drone_portcheck_live/exact_vs_host_probe = 37/0/1. Total 102 passed / 0 failed / 5 ignored; the full suite
   didn't fit the window (background jobs die here), the affected paths are covered.
+## playtest-spots (2026-10-15, branch s/playtest-spots)
+- Started: writing docs/playtest/spots.md (--bond spot + --give list per playtest feature, sourced from existing tests/evidence) and crates/nf-view/tests/playtest_spots_live.rs (headless check per spot: load level, place Bond, 60 ticks, grounded + object within reach with distance/LOS). In progress.
