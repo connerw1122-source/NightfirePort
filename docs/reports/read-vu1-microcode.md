@@ -89,6 +89,16 @@ was a read task.
    log vi14 and vf02-vf05 to identify the 14 unknown encodings.
 5. nf-view `--bond` spots: none — no renderer changes, nothing visible asserted.
 
-## ntfy
+## ntfy failed
 
-(sent after this report; see the finish step)
+All three fallbacks were tried in order and all failed with the server's daily
+quota limit (HTTP 429):
+
+1. curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota
+   reached; increase your limits with a paid plan, see https://ntfy.sh",
+   "link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. wget: exit code 8 (server error), empty body.
+
+The report is pushed on `s/read-vu1-microcode` and the queue `done` marker
+(done/110v-read-vu1-microcode.md) carries the same content.
