@@ -1031,6 +1031,32 @@ pub fn overlay_for(scene: &scene::Scene, aspect: f32) -> gpu::HudFrame {
     if cutscene { gpu::HudFrame::default() } else { hud::overlay(scene, aspect) }
 }
 
+/// The cut-scene frame (fix-cutscene-letterbox): while a script camera runs the port shows the
+/// game's own picture — the projection narrowed to the console's 4:3 aspect and the render
+/// confined to the band that fits the window (pillar-boxed black on a wider window); the game's
+/// letterbox bars ride INSIDE the band (`hud::script_overlay`, `gpu::render`'s viewport). The
+/// game rendered every cut-scene at the console's 4:3 frame — the port's widescreen projection
+/// showed more at the sides than the game's frame (the main agent's PCSX2 compare, frame 400:
+/// Dominique waiting in the left doorway visible in the port, outside the game's frame).
+/// Gameplay keeps the window's full widescreen. Returns (projection aspect, the band [x, y, w, h]
+/// in target pixels).
+pub fn cutscene_frame(win_w: f32, win_h: f32) -> (f32, [f32; 4]) {
+    const GAME: f32 = 4.0 / 3.0;
+    let (bw, bh) = if win_w / win_h > GAME { (win_h * GAME, win_h) } else { (win_w, win_w / GAME) };
+    (GAME, [(win_w - bw) * 0.5, (win_h - bh) * 0.5, bw, bh])
+}
+
+/// The HUD frame the headless `--shot` render draws (fix-cutscene-letterbox): the gameplay
+/// overlay (`overlay_for` — empty while a script camera runs) PLUS the script player's overlay —
+/// the fade, the letterbox bars and the op-0x14 sprites (`Scene::script_overlay_hud`). The shot
+/// path used to draw `overlay_for` alone, so the Kimiko-scene compare frames showed no letterbox
+/// bars; the window path always appended the script overlay (App redraw) and now both do.
+pub fn shot_hud(scene: &scene::Scene, aspect: f32, menu: Option<&gpu::HudFrame>) -> gpu::HudFrame {
+    let mut f = menu.map_or_else(|| overlay_for(scene, aspect), |m| m.clone());
+    f.append(&scene.script_overlay_hud(aspect));
+    f
+}
+
 /// The camera's screen axes for the corona billboards (same basis as the snow quads).
 fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
     let f = cam.dir();
@@ -1161,7 +1187,11 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     opts.right = opts_right;
     opts.up = opts_up;
     let mut r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog);
-    let (vp_shot, _) = cam.view_proj(w as f32 / h as f32);
+    // fix-cutscene-letterbox: a live script camera frames the shot at the game's own 4:3 aspect
+    // and pillar-boxes the render into the band; gameplay keeps the window's widescreen.
+    let cut = scene.sim.as_ref().is_some_and(|s| s.script_camera().is_some());
+    let (proj_aspect, band) = if cut { cutscene_frame(w as f32, h as f32) } else { (w as f32 / h as f32, [0.0; 4]) };
+    let (vp_shot, _) = cam.view_proj(proj_aspect);
     let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot, scene.sim.as_ref().map(|s| &s.world));
     r.update_skin(&queue, scene, choice, time, opts, vis_shot.as_deref());
     r.lights = scene.frame_lights();
@@ -1189,12 +1219,12 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     });
     let view = target.create_view(&Default::default());
     let depth = gpu::depth_view(&device, w, h);
-    let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
+    let (vp, vp_rot) = cam.view_proj(proj_aspect);
     let snow = snow_for(scene, cam);
-    let overlay_owned = menu.map_or_else(|| overlay_for(scene, w as f32 / h as f32), |m| m.clone());
-    let hud = &overlay_owned;
+    let hud_owned = shot_hud(scene, proj_aspect, menu);
+    let hud = &hud_owned;
     let movie_arg = movie.map(|(w, h, rgba)| (*w, *h, rgba.as_slice()));
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud, movie_arg);
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud, movie_arg, if cut { Some(band) } else { None });
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -2246,7 +2276,13 @@ impl ApplicationHandler for App {
                 let alpha0 = if interp0 { self.anim_time.fract() } else { 1.0 };
                 let draw_cam = match (self.cam_prev, self.cam_cur) { (Some(a), Some(b)) if interp0 => lerp_cam(&a, &b, alpha0), _ => self.cam };
                 let aspect0 = g.config.width as f32 / g.config.height as f32;
-                let (vp0, _) = draw_cam.view_proj(aspect0);
+                // fix-cutscene-letterbox: a live script camera frames the view at the game's own
+                // 4:3 aspect and pillar-boxes the render into the band (the game's letterbox bars
+                // ride inside it). Gameplay keeps the window's widescreen. Same condition the HUD
+                // gate (`overlay_for`) drives the cut-scene HUD blank from.
+                let cutscene = self.scene.sim.as_ref().is_some_and(|s| s.script_camera().is_some());
+                let (proj_aspect, band) = if cutscene { cutscene_frame(g.config.width as f32, g.config.height as f32) } else { (aspect0, [0.0; 4]) };
+                let (vp0, _) = draw_cam.view_proj(proj_aspect);
                 // One visibility walk per frame, shared by the palette's object cull and render's
                 // World cull (fix-portal): the eye's cel from `Camera_CheckLocation` 0x1bae90's
                 // persistent state, the walk from it [M 0x1e86e8].
@@ -2301,7 +2337,7 @@ impl ApplicationHandler for App {
                     _ => { g.window.request_redraw(); return; }
                 };
                 let view = frame.texture.create_view(&Default::default());
-                let aspect = aspect0;
+                let aspect = proj_aspect;
                 let (_, vp_rot) = draw_cam.view_proj(aspect);
                 let vp = vp0;
                 let snow = snow_for(&self.scene, &draw_cam);
@@ -2373,7 +2409,7 @@ impl ApplicationHandler for App {
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
                 hud.append(&self.scene.script_overlay_hud(aspect));
                 g.renderer.lights = self.scene.frame_lights();
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud, movie_frame);
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud, movie_frame, if cutscene { Some(band) } else { None });
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
                 if let Some(w) = self.devwin.as_mut() { w.tick(); }

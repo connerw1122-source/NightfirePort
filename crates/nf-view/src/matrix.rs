@@ -129,6 +129,13 @@ pub struct Cell {
     pub mode_label_after: u32,
     /// The guided-missile camera rode a live missile this cell (`Sim::missile_cam` is Some).
     pub guided: bool,
+    /// weapon-matrix5b: the state-9 proxy was HONEST after the fire settle — `gun.fire_state`
+    /// clear with the switch/reload machines at 0. The game's view state returns to 0 when the
+    /// fire anim stops [M Player_SetWeaponAnimObj case 9 0x1a2e38:449-456] and a script-less
+    /// record never enters state 9 at all [M Player_SetFiringAnim 0x1a3c70 tail: the `+0xf4 = 9`
+    /// store is inside the `hash != 0` branch]. The old unconditional latch (gun.rs) wedged this
+    /// false forever for the watch pair and shut the mode block [M 0x1a24c8:199-201].
+    pub machine_idle: bool,
     /// Ticks from the first grenade spawn to the first explosion (0 = no explosion seen). The
     /// impact records blast on contact (a few ticks of flight), the fused ones at 210/300/420.
     pub expl_gap: u32,
@@ -362,7 +369,14 @@ fn god(scene: &mut Scene, pre: bool) {
 
 /// One matrix step: the god refill around the REAL input path (`Sim::step_bond`). Every stepping
 /// the runner does goes through here, so no cell is ever measured from a hurt or dead Bond.
-fn step(scene: &mut Scene, input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
+/// weapon-matrix5: the step also carries the REAL input path's own invariant — lib.rs feeds
+/// `fire: self.trigger` into `Input` AND the same value as the trigger arg (lib.rs's input build),
+/// so the fire action is ONE bit feeding both the fire path and the readers that take it from
+/// `Input` (the watch pair 0x54/0x55's mode block ORs it in [M `Player_Weapon` 0x1a24c8:
+/// `bVar5 |= Input_Action(slot,9,4)`]). The old harness fed only the trigger arg, so the port's
+/// watch arm never saw the edge the game's own input carries on every fire press.
+fn step(scene: &mut Scene, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
+    input.fire = trigger;
     god(scene, true);
     scene.sim.as_mut().expect("step: no sim").step_bond(input, trigger, reload, use_key);
     god(scene, false);
@@ -672,6 +686,35 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
     // finished script on the way. This re-syncs the reload check to the idle view.
     wait_idle(scene, fire_settle_ticks(scene) + 20);
 
+    // weapon-matrix5b: the honest state-9 check (the sister of the mode press below) — after the
+    // settle the machine must be IDLE. The game's view state returns to 0 when the fire anim
+    // stops [M 0x1a2e38 case 9:449-456]; a script-less record (the watch pair 0x54/0x55,
+    // +0xB0/+0xB4 = 0 [D probe dump]) never enters state 9 at all [M 0x1a3c70 tail]. The old
+    // unconditional `fire_state = true` latch (gun.rs's round) kept the proxy stuck at 9 here —
+    // the mode block's `anim+0xf4 == 0` gate [M 0x1a24c8:199-201] then refused every press.
+    c.machine_idle = { let sim = scene.sim.as_ref().unwrap();
+        !sim.gun.fire_state && sim.gun.switch_state == 0 && sim.gun.reload_state == 0 };
+
+    // weapon-matrix5: ride out the GUIDED-MISSILE CAMERA before the reload/mode/away phases —
+    // after the Sentinel's missile dies the game sets the owner's +0x944 = 0xf [M `Bullet_Delete`
+    // 0x12e660:27-29: the guided +0x6C & 4 owner gets `+0x878 = 0; +0x944 = 0xf`],
+    // `Player_Update` case 10 counts it down and only then restores the camera and the saved
+    // substate [M 0x193600:242-256: `Player_SetCamMode(BLData, 0)` +
+    // `Player_ChangeSubState(+0x942)`]; the substate-10 player runs no weapon arms (the port
+    // zeroes the input — scene.rs's missile_cam block), so a reload pulse, a mode press or an
+    // away switch sent under the camera is eaten whole (the 0x2c W — and the M under it, the
+    // 4.5 press eaten the same way). The wait is bounded 700 ticks (flight + restore + margin)
+    // so a missile that never dies cannot hang the cell — the cell then records the honest mark.
+    if scene.sim.as_ref().map_or(false, |s| s.missile_cam.is_some()) {
+        for _ in 0..700 {
+            if scene.sim.as_ref().map_or(false, |s| s.missile_cam.is_none()) { break; }
+            step(scene, Default::default(), false, false, false);
+        }
+        // The 15-tick restore the game counts down on the owner (+0x944 = 0xf [M 0x12e660:28])
+        // + the machine's idle tick.
+        for _ in 0..17 { step(scene, Default::default(), false, false, false); }
+    }
+
     // 4. Reload (gadgets have none): pulse the R edge, ride the 5/6/7 machine back to 0. The ride
     //    budget is the game's own reload lengths (start + clip×shell + end), not a fixed count.
     //    A record with NO reload scripts (+0xA8/+0xA4/+0xAC all 0 — the mine/pickup family 0x38
@@ -756,7 +799,13 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
             sample(&mut c, scene);
             let after = { let sim = scene.sim.as_ref().unwrap();
                 (sim.gun.weapon, sim.drones.inventory.fire_mode.get(id as usize).copied().unwrap_or(0)) };
-            if after.0 != id || after.1 != before.1 {
+            // Landed = the machine MOVED across the press (the equipped weapon or the mode byte).
+            // weapon-matrix5: the watch pair 0x54/0x55's own fire presses are mode presses too
+            // ([M 0x1a24c8] — action 9 ORs into the mode block), so the held record at this point
+            // may already be the TWIN (0x55) — a press that moves 0x55→0x54 IS the twin chain
+            // operating, and the old `after.0 != id` test read it as a refusal. `after != before`
+            // is the same test for every weapon whose fire phase left `id` held (before.0 == id).
+            if after != before {
                 landed = true;
                 c.mode_label_after = { let sim = scene.sim.as_ref().unwrap();
                     let w = after.0 as usize;
@@ -777,6 +826,8 @@ fn run_cell(scene: &mut Scene, id: u8, snap: &Snap) -> Cell {
     //    [M Player_EquipWeapon 0x1a8a58:39-41]) and from the away P2K the mode press only bounces
     //    the 0x02↔0x03 family — the B-mass of the earlier sweeps was the press budget expiring on
     //    a route that could never arrive. A base record (mode-count chain) switches directly.
+    //    (The guided-camera ride-out lives above the reload phase — the reload pulse, the mode
+    //    press and this away switch are all eaten under the substate-10 player equally.)
     give_via_panel(scene, AWAY, None);
     c.away_ok = switch_to(scene, AWAY, false);
     for _ in 0..25 { if c.away_ok { step(scene, Default::default(), false, false, false); sample(&mut c, scene); } }
