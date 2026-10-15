@@ -13604,3 +13604,5 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   plus rng_live/ai_live/drone_portcheck_live/fields_live/pickup_live/trig_live/tuning_live/
   level_live/diff_calls/spawner_kill = 65/65), 0 failed; the first full-suite pass failed only the
   2 no-GPU fix_0c_pylon_live render tests (wgpu request_adapter panic — lesson 6, unrelated).
+
+## net-online-lobby (2026-10-15, branch s/net-online-lobby)
