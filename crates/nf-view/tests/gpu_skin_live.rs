@@ -7,8 +7,23 @@ use nf_view::scene::{Scene, SkinAttr, ViewOpts};
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
-/// The shader's vertex step, on the CPU.
-fn apply(p: &[[[f32; 4]; 4]], a: &SkinAttr, pos: [f32; 3]) -> [f32; 3] {
+/// The shader's vertex step, on the CPU — including fix-gpu-facial-morphs' morph term (`SkinIt`
+/// 0x10bf30's `pos += Σ_m weight[m] × target[morph + m]` before the blend, read from the same
+/// buffers the shader gets: the weight blocks and the concatenated targets).
+fn apply(p: &[[[f32; 4]; 4]], a: &SkinAttr, pos0: [f32; 3], wts: &[f32], tgt: &[f32]) -> [f32; 3] {
+    let mut pos = pos0;
+    if a.mtb >= 0 {
+        let (mwb, cnt, tend) = (a.mwb as usize, a.cnt as usize, a.tend as usize);
+        for m in 0..cnt {
+            let w = wts[(mwb + m / 4) * 4 + m % 4];
+            if w != 0.0 {
+                let e = a.mtb as usize + m * 3;
+                if e + 2 < tend {
+                    for k in 0..3 { pos[k] += w * tgt[e + k]; }
+                }
+            }
+        }
+    }
     let pa = transform(&p[a.a as usize], pos);
     let pb = transform(&p[a.b as usize], pos);
     [0, 1, 2].map(|k| a.w * pa[k] + (1.0 - a.w) * pb[k])
@@ -22,12 +37,14 @@ fn check(scene: &mut Scene, ticks: u32) {
     let cpu_v = scene.posed_vertices(None, t, opts);
     let (layout, attrs) = scene.skin_layout();
     let (pal, cols) = scene.skin_palette(&layout, None, t, opts, None);
+    let wts = scene.skin_morph_weights(&layout);
+    let tgt_f: Vec<f32> = scene.morph_target_blob().chunks_exact(4).map(|c| f32::from_le_bytes(c.try_into().unwrap())).collect();
     assert_eq!(attrs.len(), scene.char_verts.len());
     assert_eq!(cpu.len(), scene.char_verts.len());
     let (mut worst, mut at) = (0f32, 0usize);
     let mut col_bad = 0usize;
     for (i, (a, cv)) in attrs.iter().zip(&scene.char_verts).enumerate() {
-        let g = apply(&pal, a, cv.pos);
+        let g = apply(&pal, a, cv.pos, &wts, &tgt_f);
         let e = (0..3).map(|k| (g[k] - cpu[i][k]).abs()).fold(0f32, f32::max);
         if e > worst { worst = e; at = i; }
         // Colour: the CPU path rounds rgba·m to a byte; the GPU multiplies in float. Allow one step.
@@ -64,7 +81,7 @@ fn sister_a_wrong_palette_is_caught() {
     let (mut pal, _) = scene.skin_palette(&layout, None, 1.0, opts, None);
     for m in pal.iter_mut() { m[3][1] += 1.0; }
     let i = attrs.iter().position(|a| a.a != a.b).expect("a blended vertex");
-    let g = apply(&pal, &attrs[i], scene.char_verts[i].pos);
+    let g = apply(&pal, &attrs[i], scene.char_verts[i].pos, &[], &[]);
     assert!((g[1] - cpu[i][1]).abs() > 0.5, "a shifted palette must move the vertex");
 }
 
