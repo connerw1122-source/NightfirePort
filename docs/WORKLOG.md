@@ -13139,3 +13139,29 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
 - Started: multiplayer front-end flow and its data (no drawing) — porting the MP page flow, lists and state into
   nf-view's FrontEnd/Page/action, headless-testable. Reading the ACTION.ELF handlers and the menu-def 07000048.bin
   kind-8 08000002 entry; deliverable: docs/systems/mp-menus.md + Page variants + tests.
+
+## mp-menu-flow (2026-10-15, branch s/mp-menu-flow)
+- The MP front end is ported into nf-view's menu.rs: 13 new Page::Mp* variants (ids 0x40000019/
+  1a/13/51/12/14/17/28/27/3f/2c/49/33 — every one a kind-8 PAGE record in 07000048.bin with aux
+  0x07350048 [L the menu-def dump]), the full action() graph (Join → Scenario → Map → Setup →
+  Options hub → Rules/PlayerMods/EnviroMods/Bots{Choose,Setup} → Confirm → match start, plus the
+  debriefing), and the game's own tables lifted to MP_SCENARIO_ROWS (mp_scenario @0x2df508, 13
+  rows), MP_MAP_ROWS (mp_level @0x2df400, 8), MP_OPTIONS_ROWS (@0x2dfbb0, 5), MP_BOTS_ROWS
+  (@0x2dfd30, 5), MP_CHARACTERS (@0x2df640, 29) + the Menu_IsBotGood side bytes from
+  default_bot_stats+0x09 @0x26D2F0 [L .data dumps, pinned row-for-row by mp_menu_lists_live.rs].
+- Key decompile findings: the atlas's "MPSettings+0x420/424/428/432" are DECIMAL prints — the real
+  offsets are +0x1A4/+0x1A8/+0x1AC/+0x1B0; the confirm (P_MPCONFIRM 0x20ec00:53-94) converts the
+  time limit minutes→seconds (×0x3c), sets +0x180=1, +0x1AC=joined, GameState+0x08=level, and
+  runs ResetMap_LevelToLoad(level,0,0) + the 80f fade + MenuManager_Delete; Quick Game
+  (C_SBMPSCEN 0x20c600:48-145) sets Deathmatch/10 min/10 frags/radar/no-FF/3 bots (Drake/Kiko/
+  Rook, Phoenix) and jumps straight to 0x40000049; Ravine (0x0700004b) zeroes the AI Bots row
+  (P_MPOPTIONS 0x217678:20-25) and the bot count (Menu_PrepareBots 0x1f94a0:85-88).
+- The port hands the match over as nf_game::mp::MpSettings (mp_match_settings) + the level request
+  through the existing loader (verified headless to reach the arena); keyboard-only, agent 1 joins
+  (the game joins 2-4 through their pads, msg 0x6a). Drawing is NOT in scope: the overlay's MP arms
+  are empty for the main agent, fed by rows()/row_label()/mp_row_preview/mp_row_desc/mp_row_locked/
+  mp_confirm_lines. Deliverable doc: docs/systems/mp-menus.md (page graph, every list's rows with
+  label/preview/desc ids and unlocks, the confirm handover, live checks).
+- Tests: mp_menu_flow.rs 9 headless (flow + back-outs + locks + bots + start checks + Quick Game +
+  loader handover, each with a sister assertion) + mp_menu_lists_live.rs 5 ISO-gated (the five
+  tables + the side bytes vs the disc's ACTION.ELF). 14/14 green; suite run on the final tree.
