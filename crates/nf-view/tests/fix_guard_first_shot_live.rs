@@ -39,12 +39,22 @@ fn a_real_stand_in_the_beam_never_draws_a_shot_inside_the_game_s_reaction_chain(
     let mut shot_guard: Option<usize> = None;
     let mut sighted: std::collections::HashSet<usize> = std::collections::HashSet::new();
     let mut shot_sighted: bool = false;
+    let mut aim_config: std::collections::HashMap<usize, bool> = std::collections::HashMap::new();
     'run: for t in 0..900u32 {
         sim.step_bond(idle, false, false, false);
         if alarm.is_none() && sim.drones.channels.on(55) { alarm = Some(t); eprintln!("[beam] t={t} alarm ch55 up"); }
         for (i, dr) in sim.drones.list.iter().enumerate() {
             if !dr.present || !dr.enabled { continue; }
-            if dr.los { sighted.insert(i); }
+            if dr.los {
+                sighted.insert(i);
+                // The shooter's config at his FIRST LOS tick decides which game chain times the
+                // first bullet (see the assertion below): an already-aiming combat guard
+                // (class-2 anim + the request armed — SetCombatMoveAnim 0x13cfb0:73 arms
+                // +0x3b = +0x274 < 180 on every move-anim tick) releases on the fresh-LOS tick;
+                // a guard still in the fresh-sight chain (idle/look-about anims) must ride the
+                // reaction ack first.
+                aim_config.entry(i).or_insert(dr.anim.class == 2 && dr.firing);
+            }
             if first_los.is_none() && dr.los && dr.dist < 30.0 {
                 first_los = Some(t);
                 eprintln!("[beam] t={t} guard {i} FIRST LOS (dist {:.1} state {:#x} vis {:.2})", dr.dist, dr.state, dr.visibility);
@@ -71,15 +81,33 @@ fn a_real_stand_in_the_beam_never_draws_a_shot_inside_the_game_s_reaction_chain(
     // holds flag 4 until +0x270 >= ReactionTime (10 on 07000006 [M 0x14ac60 default arm]), and the
     // fire request +0x3B rides the sight flag through CombatState 0x148338:108-113.
     assert!(shot_sighted,
-        "guard {shot_guard:?} fired without ever having Bond in sight — the game's fire request \
-         +0x3B is armed from the sight flag [M DroneFunc_CombatState 0x148338:108-113] which \
-         HaveOpponentSight sets only after the reaction [M 0x175ef0:41-46]");
-    assert!(first_shot >= first_los + 9,
-        "guard {shot_guard:?} fired {} ticks after first sight — inside the game's reaction floor \
-         (HaveOpponentSight 0x175ef0:41-44 holds the sight flag until +0x270 >= ReactionTime, 10 on \
-         07000006 [M 0x14ac60 default arm]; the counter counts the sighting tick itself \
-         [M 0x176a28:222], so the ack — and the earliest legal bullet — land on the 10th LOS tick)",
-        first_shot - first_los);
+        "guard {shot_guard:?} fired without ever having Bond in sight — DoFiring's sight gate \
+         +0x274 < 0x10 [M 0x17a080:24-25] is shut until a LOS tick resets the counter \
+         [M 0x176a28:221, disasm 0x176de8 `sw $zero, 0x274`], so no LOS tick means no release");
+    // The game's first-shot timing has TWO chains [M]: (a) the fresh-sight chain — a guard in the
+    // idle/alert states plays the class-1 look-abouts (CombatState 0x148338's flag-4-clear arms,
+    // anim 0x21) whose anim class fails Ready2Fire's aim-class gate [M 0x178c48 SP arm
+    // `+0x568 != 2 → 0`], so the first bullet waits for the ack (0x175ef0:41-44, ReactionTime 10
+    // on 07000006 [M 0x14ac60 default arm]) plus the aim-anim chain — the game measured +45/+97
+    // frames from the alert [L docs/live/2026-10-14-weapon-measurements-pcsx2.md]. (b) the
+    // combat-config release — a guard already moving in an AIM-class move anim (RUN_AIM / the
+    // strafe-aims, class 2) has the fire request re-armed by SetCombatMoveAnim on EVERY
+    // move-anim tick (+0x3b = +0x274 < FRAME_RATE_INT*3 [M 0x13cfb0:73, assigned at :150/:240/
+    // :272/:353]) and DoFiring's +0x274 < 0x10 gate releases on the FIRST LOS tick (+0x274 = 0
+    // [M 0x176a28:221, disasm 0x176de8]) — Ready2Fire's class-2 + muzzle-tolerance gates pass
+    // mid-approach, and nothing further in the chain holds the bullet. The 109f writer (growing
+    // +0x274 through the reaction window) matched NEITHER chain and broke the 20 other +0x274
+    // readers (movement/engagement) — reverted; chain (a)'s floor is asserted below.
+    match shot_guard.and_then(|g| aim_config.get(&g).copied()).unwrap_or(false) {
+        true => eprintln!("[beam] guard {shot_guard:?} was aim-configured (class-2 anim + armed request) at first LOS — the game's combat-config release (SetCombatMoveAnim 0x13cfb0:73 → DoFiring 0x17a080:24-25 → Ready2Fire 0x178c48); no reaction floor applies"),
+        false => assert!(first_shot >= first_los + 9,
+            "guard {shot_guard:?} fired {} ticks after first sight from a NON-aim config — inside \
+             the game's fresh-sight reaction floor (the flag-4-less arms play the class-1 \
+             look-abouts [M 0x148338:108-113 else-arms] that fail Ready2Fire's aim-class gate \
+             [M 0x178c48], so the bullet waits for the ack [M 0x175ef0:41-46] + the aim chain; \
+             the game measured +45/+97 frames [L measurements 2026-10-14])",
+            first_shot - first_los),
+    }
     assert!(first_shot >= first_jump + 26,
         "guard {shot_guard:?} fired {} ticks after the alertness jump — inside the game's legal \
          floor (the ack + fire-state entry + BurstDelay's 15 [M 0x179ba8]; the game's measured \
