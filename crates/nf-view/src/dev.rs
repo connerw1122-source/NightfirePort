@@ -175,9 +175,29 @@ impl Dev {
                     }
                 }
                 let wi = sim.gun.weapon as usize;
-                let cs = sim.weapons.clip_size(wi);
-                if self.no_reload && cs > 0 {
-                    if let Some(c) = sim.drones.inventory.clip.get_mut(wi) { *c = (*c).max(cs); }
+                // fix-hud-ammo-odd: the pin's slot and cap are the twin-RESOLVED record's
+                // [M Player_AmmoIndex 0x1a9148: +0x05 set and the +0x90 types equal → the base's
+                // slot], the same pick the pane's own clip read makes (scene.rs `clip_slot`). The
+                // held detonator 0x38's own +0x92 is 500 while the game's pane reads the mine's
+                // shared slot 0x37 (cap 1 [L ee_snapshot]) — the old held-record pin maxed the live
+                // clip to 500 ("500-4") and kept in step with the give's twin-fill junk in
+                // clip[0x38]. The Samurai charge (base 0x33) drains the SAME shared slot.
+                let slot = sim.clip_slot(wi);
+                let cs = sim.weapons.clip_size(slot);
+                // fix-hud-ammo-odd: the Phoenix Samurai's charge drain (`Player_WeaponFiring`
+                // 0x1a5460:197-201, the scene.rs port) is not a `Player_RoundToFire` spend — the
+                // game's ammo flag (DAT_002a3740) never blocks it — and the kind-0x1f pane climbs
+                // with it [M HUD_UpdateAmmoPane 0x19a7f0:129-136 + disasm 0x19a914-0x19a934; L the
+                // fix-fire-modes3 PCSX2 pass's "the HUD number climbs 0 → 100"]. The every-tick pin
+                // re-maxed the clip to cap and froze the pane at the full-charge "0"; skip the pin
+                // while a charge script (the record's +0xB0) is the playing view script.
+                let charging = matches!(sim.gun.weapon, 0x32 | 0x33) && sim.gun.fire_state
+                    && sim.weapons.records.get(sim.gun.weapon as usize).is_some_and(|r| {
+                        let h = u32::from_le_bytes(r[0xb0..0xb4].try_into().unwrap());
+                        h != 0 && sim.view_script == h
+                    });
+                if self.no_reload && cs > 0 && !charging {
+                    if let Some(c) = sim.drones.inventory.clip.get_mut(slot) { *c = (*c).max(cs); }
                 }
                 // fix-silencer-modes: with infinite ammo the CURRENT weapon's clip stays at its
                 // `weapon_data+0x92` size EVERY tick (both the live `gun.clip` and the inventory slot).
@@ -188,13 +208,13 @@ impl Dev {
                 // the clip pinned the refire is the table's +0x40 (120 frames) with no reload gap. The
                 // clip size is the record's own; the spares keep the trace-cheat's best-seen shape (no
                 // ammo cap touched, so pickups still take).
-                if self.infinite_ammo && cs > 0 {
-                    if let Some(c) = sim.drones.inventory.clip.get_mut(wi) { *c = (*c).max(cs); }
+                if self.infinite_ammo && cs > 0 && !charging {
+                    if let Some(c) = sim.drones.inventory.clip.get_mut(slot) { *c = (*c).max(cs); }
                     sim.gun.clip = sim.gun.clip.max(cs as u32);
                 }
                 // Keep the gun's HUD copies in step with the refilled inventory (the HUD and the title read
                 // `gun.clip`/`gun.spare`; `Sim::run` re-reads them from the inventory next tick anyway).
-                if let (Some(&c), Some(&n)) = (sim.drones.inventory.clip.get(wi), sim.drones.inventory.carried.get(sim.weapons.ammo_type(wi))) {
+                if let (Some(&c), Some(&n)) = (sim.drones.inventory.clip.get(slot), sim.drones.inventory.carried.get(sim.weapons.ammo_type(wi))) {
                     sim.gun.clip = sim.gun.clip.max(c.max(0) as u32);
                     sim.gun.spare = sim.gun.spare.max(n.max(0) as u32);
                 }
