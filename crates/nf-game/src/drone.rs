@@ -7137,6 +7137,27 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             self.rng.rand(20000);
             env.update(&mut self.rng, &mut self.fill_rng, player.eye, atan2_approx(player.aim[0], player.aim[2]));
         }
+        // `Drone_ProcessCoverNodes` (every 5 frames from the first, counter −2 / < 1 → 10 [M 0x138e78:11-13]):
+        // for Bond, walk the nodes from the shared cursor until one casts a line-of-sight ray. The game's 8
+        // target slots share one cursor and the walk runs per slot; the port models the single-player slot 0
+        // (Bond) only — *deviation*: always run (the game skips unallocated slots without casting). Order inside
+        // `Drone_InitComms` [M 0x139520:150-162]: `ProcessCoverNodes` FIRST, then `ProcessOpponents` (0x1390c0)
+        // and `ProcessDroneSight` — the port used to run it after the vision pass and the nav-node cache
+        // (fix-search-cover-g028); nothing in the port's tick mutates the walk's inputs (switch channels, Bond's
+        // position/eye, the collision world, the node owners) between the two positions, so the move is a
+        // conformance fix with no observable delta — asserted by the unchanged cover suite.
+        if self.npc_enabled {
+            if self.cover_rt.len() != d.covers.len() { self.cover_rt = vec![Default::default(); d.covers.len()]; }
+            self.cover_counter -= 2;
+            if self.cover_counter < 1 && !d.covers.is_empty() {
+                self.cover_counter = 10;
+                for _ in 0..d.covers.len() {
+                    let i = self.cover_cursor;
+                    self.cover_cursor = (self.cover_cursor + 1) % d.covers.len();
+                    if d.covers[i].usable(&mut self.cover_rt[i], d.world, &self.channels, d.level, player.pos, player.eye) { break; }
+                }
+            }
+        }
         // `Drone_ProcessOpponents` (0x1390c0): Bond's visibility factor from the AI volumes holding him (crouching
         // ×0.75 is not modelled: the port's Bond does not crouch), then each drone's opponent info. Inside
         // `Drone_InitComms`' `NPCGlobals != 0` block [M 0x139520:124-284] — frozen drones keep their last state.
@@ -7371,7 +7392,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         self.prev_player = Some(player.pos);
         // `NDrone2_NavNodeCache` / `BuildAITarget`: the player's goal nodes per navigation path, rebuilt when he has
         // moved 2.0 or more (search radius 6 = min(engage range, 6) for these guards); `AINetwork_ClearLinkFlags`.
-        // Target rebuild + the cover-node walk are `Drone_InitComms` shared passes — gated on `NPCGlobals` [M 0x139520].
+        // A `Drone_InitComms` shared pass after the vision pass [M 0x139520:202] — gated on `NPCGlobals`.
         let moved = self.npc_enabled && (self.target.stamp == 0 || {
             let q = self.target.pos;
             (q[0] - player.pos[0]).powi(2) + (q[1] - player.pos[1]).powi(2) + (q[2] - player.pos[2]).powi(2) >= 4.0
@@ -7384,20 +7405,6 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }).collect();
         }
         self.used = d.nav.paths.iter().map(|p| vec![0; p.links.len()]).collect();
-        // `Drone_ProcessCoverNodes` (every 5 frames from the first): for Bond, walk the nodes from the shared cursor
-        // until one casts a line-of-sight ray. *Deviation*: always run (the game only for allocated target slots).
-        if self.npc_enabled {
-            if self.cover_rt.len() != d.covers.len() { self.cover_rt = vec![Default::default(); d.covers.len()]; }
-            self.cover_counter -= 2;
-            if self.cover_counter < 1 && !d.covers.is_empty() {
-                self.cover_counter = 10;
-                for _ in 0..d.covers.len() {
-                    let i = self.cover_cursor;
-                    self.cover_cursor = (self.cover_cursor + 1) % d.covers.len();
-                    if d.covers[i].usable(&mut self.cover_rt[i], d.world, &self.channels, d.level, player.pos, player.eye) { break; }
-                }
-            }
-        }
         let positions: Vec<Option<V3>> = self.list.iter().map(|x| x.enabled.then_some(x.pos)).collect();
         // The armed-peer distances for `NDrone2_NearArmedDrone`'s calls (fix-actors): the nearest
         // started, alive, team-1 drone (positions only here; the per-drone team/started filter runs
