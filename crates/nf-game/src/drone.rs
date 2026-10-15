@@ -5796,6 +5796,17 @@ pub struct Drones {
     /// `Player_IsBetterWeapon` → `anim+0x63 = id`]. The view applies it to the draw machine
     /// (gun.switch_request).
     pub weapon_switch_request: Option<u16>,
+    /// profile-options: the loaded profile's runtime option snapshot (`profile::Options::of`) —
+    /// the game reads the same bytes in place out of `PlayerSetting[slot]` / `MPSettings` / the
+    /// GSET globals [M the readers in the Options doc comment]. The front end sets it when a
+    /// codename is chosen. Field on its own line (merge lesson 4).
+    pub options: crate::profile::Options,
+    /// profile-options: `BL+0x8BC`, the HUD pane fade timer [M Player_Update 0x193600:414-425 —
+    /// pinned at 1.0 while `PlayerSetting+0xB` (hud_auto_hide) is 0, else decayed by
+    /// 0.0020833334·FRAME_RATE_MUL per tick toward 0; HUD_UpdateHealthPane 0x19b9c8:118 scales the
+    /// panes off it; Player_HandlePain resets it]. The HUD's alpha use is the draw side (GAPS in
+    /// docs/systems/profile-options.md). Field on its own line (merge lesson 4).
+    pub hud_fade: f32,
     /// The grapple points (placement 0x3A, `Grapple_Create` 0x198298; fix-gadgets).
     pub grapple_points: Vec<crate::gadget::GrapplePoint>,
     /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
@@ -5943,6 +5954,12 @@ impl Drones {
             // fix-pickups-remainder: the pickup auto-switch request (fields on their own lines —
             // merge lesson 4).
             weapon_switch_request: None,
+            // profile-options: the loaded profile's runtime option snapshot + the HUD pane fade
+            // timer BL+0x8BC (fields on their own lines — merge lesson 4). The defaults are the
+            // game's boot values (Input_Init 0x17edd8 / bootup 0x1c7e78); the front end overwrites
+            // `options` when a codename is chosen (crates/nf-game/src/profile.rs::Options::of).
+            options: crate::profile::Options::defaults(),
+            hud_fade: 1.0,
             worldobjs: Default::default(),
             // fix-world-fx: the presentation FX (fields on their own lines — merge lesson 4).
             fx: Default::default(),
@@ -6258,6 +6275,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 self.play_pain_grunt(player_pos);
             }
             self.player_hits.push((frame, owner, before - self.health.health));
+            // profile-options: the pain pops the HUD pane timer back [M the 0x3f800000 write,
+            // HUD_UpdateHealthPane 0x19b9c8:121 / Player_HandlePain 0x1902c8's BL+0x8BC arm].
+            self.hud_fade = 1.0;
         }
         // Drones: `Drone_ExplosiveHit` → msg 9 (the port routes through `on_bullet` as an impact).
         for (di, ddmg) in hits.drones {
@@ -7022,7 +7042,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // is the view's held weapon (one tick stale at most).
                     if matches!(t, crate::pickup::Taken::Weapon { .. }) {
                         let id = crate::pickup::Inventory::upgrade_weapon(p.weapon, 0, clock);
-                        if crate::pickup::Inventory::is_better_weapon(d.weapons, self.bond_weapon, id) {
+                        // profile-options: the +0x0A auto-switch gate — Player_EquipWeapon's tail
+                        // only fires when the flag is set [M 0x1a8a58's DAT_002a38d2∧IsBetterWeapon].
+                        if self.options.auto_equip_best
+                            && crate::pickup::Inventory::is_better_weapon(d.weapons, self.bond_weapon, id)
+                        {
                             self.weapon_switch_request = Some(id);
                         }
                     }
@@ -7079,6 +7103,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let prof_pre = crate::prof::scope("drones: shared passes");
         self.frame += 1;
         self.player_pos = player.pos;
+        // profile-options: the HUD pane fade timer BL+0x8BC [M Player_Update 0x193600:414-425] —
+        // pinned at 1.0 while the profile's +0x0B (hud_auto_hide) is 0 ("HUD Always On"), else
+        // decayed by 0.0020833334·FRAME_RATE_MUL per tick (FRAME_RATE_MUL = 1 at 60 Hz), twice
+        // subtracted per tick like the decompile's double write.
+        if self.options.hud_auto_hide {
+            let step = 0.002_083_333_4;
+            let mut v = self.hud_fade - step;
+            if v >= 0.0 { v -= step; }
+            self.hud_fade = v.max(0.0);
+        } else {
+            self.hud_fade = 1.0;
+        }
         // The route-node → door binding (`NDrone_InitDoorNodes` 0x139a70), on the first tick: every
         // door-flagged node binds the nearest door (the scan takes its first candidate
         // unconditionally, so effectively the nearest overall); a node with no door never binds.
@@ -7602,6 +7638,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             self.play_pain_grunt(player.pos);
                         }
                         self.player_hits.push((frame, usize::MAX, before - self.health.health));
+                        self.hud_fade = 1.0; // profile-options: the pain pops the pane timer [M 0x19b9c8:121].
                         let _ = at;
                     }
                 }

@@ -343,6 +343,11 @@ pub struct Sim {
     /// REVERSE — the port plays it forward, deviation documented) on the aim-off edge, from the
     /// fully idle machine).
     pub prev_aiming: bool,
+    // profile-options: the Manual Aim (+0x03) toggle mode's edge state — the press edge flips the
+    // latch, free-aim rides the latch instead of the button [M Player_Weapon 0x1a24c8:45-52's
+    // toggle arm]. Fields on their own lines (merge lesson 4).
+    pub aim_prev: bool,
+    pub aim_latch: bool,
     /// fix-weapon-anims + fix-aim-raise2: the aim raise/lower script currently playing
     /// (`Player_Weapon` 0x1a24c8:121-152 — the raise +0xB8 @1.25 is the game's state 0xF, the
     /// lower +0xBC @1.25 (or +0xB8 reversed) is state 0x10). Some(hash): the hash this anim plays;
@@ -1911,7 +1916,19 @@ impl Sim {
         let scoped = self.weapons.records.get(self.gun.weapon as usize)
             .and_then(|w| w.get(0x68..0x6c)).map_or(false, |b| u32::from_le_bytes(b.try_into().unwrap()) & 0x40 != 0);
         let aiming = self.aim_gate(input.aiming || (input.scope && scoped));
-        self.free_aim = aiming && input.aiming;
+        // profile-options: the Manual Aim mode +0x03 [M Player_Weapon 0x1a24c8:45-52] — hold
+        // (byte 0, the port's old behaviour): free-aim rides the button; toggle (1): the press
+        // edge flips the latch.
+        if self.drones.options.manual_aim_toggle {
+            if input.aiming && !self.aim_prev { self.aim_latch = !self.aim_latch; }
+            self.aim_prev = input.aiming;
+            self.free_aim = self.aim_latch;
+        } else {
+            self.free_aim = aiming && input.aiming;
+        }
+        // profile-options: the auto-aim flag +0x01 seeds the lock path [M Player_AutoAim
+        // 0x1a7c98:41]; the port's flag used to be a dead `false` (no profile existed).
+        self.auto_aim = self.drones.options.auto_aim;
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
         // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
         // The weapon/gadget split: mouse wheel / Q cycles weapons (mode=0, 1..0x47); G cycles gadgets (mode=1,
@@ -2187,7 +2204,7 @@ impl Sim {
             let water = bond_cel.and_then(|cell| self.room_cell.iter().position(|&c| c == Some(cell)))
                 .map(|r| self.cels[r].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
-            let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink, creepwalls: &self.creepwalls };
+            let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink, creepwalls: &self.creepwalls, crouch_toggle: self.drones.options.crouch_toggle };
             // The third-icon context [M ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22]:
             // the tick starts with +0x95F = 0xFF (none), then every ENABLED icon (its param-1 channel on,
             // or param 1 == 0 = always [M ThirdIcon_Create 0x197070:27-32]) whose straddle-cel set holds
@@ -5872,6 +5889,9 @@ impl Scene {
                 view_aim_anim: None,
                 view_aim_raising: false,
                 mp: None,
+                // profile-options: the Manual Aim (+0x03) toggle mode's edge state (fields on
+                // their own lines — merge lesson 4).
+                aim_prev: false, aim_latch: false,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));

@@ -74,10 +74,14 @@ pub struct LadderCtx<'a> {
     pub sink: bool,
     /// The level's creepwall objects (class 0x2B '+', placement 0x3F), in placement order.
     pub creepwalls: &'a [crate::creepwall::CreepWall],
+    /// profile-options: the crouch action mode from `PlayerSetting+0x04` [M Player_SSCrouch
+    /// 0x1924c0:85 — toggle (1) flips on the press edge, hold (0) is the level]. Default true =
+    /// the game's Input_Init default.
+    pub crouch_toggle: bool,
 }
 
 impl Default for LadderCtx<'_> {
-    fn default() -> Self { LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[] } }
+    fn default() -> Self { LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[], crouch_toggle: true } }
 }
 
 /// One tick of player input as game actions: `forward` (action 2), `strafe` (action 1; + = left), `turn` (radians
@@ -241,6 +245,9 @@ pub struct Bond {
     /// `vel += WldGravity·REC_FRAME_RATE`) and `Player_ChangeSubState` 0x190630 case 0xd/0xe
     /// (the death-anim pick, see `death_script`). fix-world-gravity.
     pub world_gravity: [f32; 3],
+    /// profile-options: the crouch key's state last tick (the +0x04 toggle mode's edge detector,
+    /// `Player_SSCrouch` 0x1924c0:85's toggle arm). Field on its own line (merge lesson 4).
+    pub crouch_prev: bool,
 }
 
 impl Bond {
@@ -255,6 +262,9 @@ impl Bond {
             prev_pos: pos,
             creep: None,
             world_gravity: [0.0, -9.8, 0.0],
+            // profile-options: the crouch key's state last tick (the +0x04 toggle mode's edge
+            // detector). Field on its own line (merge lesson 4).
+            crouch_prev: false,
         }
     }
 
@@ -1008,13 +1018,25 @@ impl Bond {
         };
         let (vs, vf0) = (axis(self.local[0], target_s) * k, axis(self.local[1], target_f) * k);
         // `Player_HandleJump`: crouch (toggle) and jump. Case 3 (swim) doesn't call it [M].
+        // profile-options: +0x04 picks the crouch action mode [M Player_SSCrouch 0x1924c0:85 —
+        // toggle (1) = the mode-1 press edge flips, hold (0) = the mode-4 level (crouched while
+        // held, stands on the release). Jump stands either way (the game's stand-on-jump arm).
         let headroom = |w: &CollisionWorld| w.line_of_sight(self.pos, [prev[0], prev[1] + 0.95, prev[2]]);
+        let crouch_down = if ctx.crouch_toggle {
+            input.crouch && !self.crouch_prev
+        } else {
+            input.crouch
+        };
+        // Hold mode stands on the RELEASE (the level low); toggle mode stands on the next press
+        // edge. Jump stands either way (the game's stand-on-jump arm).
+        let crouch_up = if ctx.crouch_toggle { crouch_down } else { !input.crouch };
+        self.crouch_prev = input.crouch;
         if swimming {
-        } else if !self.crouched && self.jump == 0 && input.crouch && self.lockout == 0 {
+        } else if !self.crouched && self.jump == 0 && crouch_down && self.lockout == 0 {
             self.crouched = true;
             self.cc = CROUCH_ROOT_HEIGHT;
             self.lockout = 60;
-        } else if self.crouched && (input.crouch || input.jump) && self.lockout == 0 && !self.head_bump && headroom(world) {
+        } else if self.crouched && (crouch_up || input.jump) && self.lockout == 0 && !self.head_bump && headroom(world) {
             self.crouched = false;
             self.cc = ROOT_HEIGHT;
             self.lockout = 60;
@@ -1676,7 +1698,7 @@ mod tests {
     fn the_ladder_grab_gate_excludes_only_climb_and_grapple() {
         let world = CollisionWorld::from_triangles(Vec::new());
         let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
-        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: Some(2.0), sink: false, creepwalls: &[] };
+        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: Some(2.0), sink: false, creepwalls: &[], crouch_toggle: true };
         // SWIM grabs: one tick in the water context attaches (pre-fix it stayed SS_SWIM).
         let mut b = Bond::new([10.0, 3.0, 20.5], lad.yaw + std::f32::consts::PI);
         b.substate = SS_SWIM;
@@ -1700,7 +1722,7 @@ mod tests {
     #[test]
     fn swim_moves_along_the_look_direction_and_the_surface_clamps() {
         let world = CollisionWorld::from_triangles(Vec::new());
-        let ctx = LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: Some(3.0), sink: false, creepwalls: &[] };
+        let ctx = LadderCtx { ladders: &[], wires: &[], wire_anims: None, water: Some(3.0), sink: false, creepwalls: &[], crouch_toggle: true };
         let mut b = Bond::new([0.0, 2.7, 0.0], 0.0); // below surface − 0.3? 2.7 < 2.7 is false — at the ceiling
         b.substate = SS_SWIM;
         // Look down-ish (pitch −0.5: dir = (0, −sin π/4, cos π/4)), swim forward: the position must
@@ -1731,7 +1753,7 @@ mod tests {
     fn climb_look_turns_within_the_ladder_window_and_pitch_is_free() {
         let world = CollisionWorld::from_triangles(Vec::new());
         let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
-        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[] };
+        let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[], crouch_toggle: true };
         let mut b = Bond::new([10.0, 3.0, 20.0 + 0.5], lad.yaw + std::f32::consts::PI);
         b.substate = SS_CLIMB;
         b.ladder = Some(0);

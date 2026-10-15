@@ -86,9 +86,11 @@ pub struct PlayerOptions {
     pub auto_aim: bool,
     /// +0x02 — the auto-aim variant [M Player_AutoAim 0x1a7c98:44 reads it otherwise].
     pub auto_aim_alt: bool,
-    /// +0x03 — gates the manual weapon action (action 0x13) [M Player_Weapon 0x1a24c8:45;
-    /// the reload-vs-manual semantics are [S]].
-    pub reload_manual: bool,
+    /// +0x03 — the Manual Aim mode: Toggle (1) / Hold (0) [M P_CNOPTIONS_Handler 0x213f08:42-53
+    /// row 0x126 → DAT_002a38cb, value labels 0x2A2 Toggle / 0x2A3 Hold; Player_Weapon 0x1a24c8:45
+    /// takes the Hold arm when the byte is 0: level+0x60 bit 0 clears, action 0x13 re-sets it while
+    /// held]. (The old `reload_manual` name was the [S] guess this page row resolves.)
+    pub manual_aim_toggle: bool,
     /// +0x0a — equip the better weapon on pickup [M Player_EquipWeapon 0x1a8a58:76].
     pub auto_equip_best: bool,
     /// +0x04 — crouch toggle vs hold [M Player_SSCrouch 0x1924c0:85 picks action mode 1 or 4].
@@ -97,12 +99,21 @@ pub struct PlayerOptions {
     pub rumble: bool,
     /// +0x08 — crosshair shown [M HUD_UpdateCrossHair 0x19e6d0:96].
     pub crosshair: bool,
-    /// +0x0c — a 2-bit enum with no ACTION.ELF reader beyond Input_Init's default 1
-    /// [M 0x17edd8:14] and the PTP hand-off [M 0x1c8198:32]. Save bits 16-17.
-    pub aux_style: u8,
-    /// +0x0b — gates a decaying per-tick timer (1.0 − 0.0020833·MUL) in Player_Update
-    /// [M 0x193600:414; the timer's meaning is [S]]. Save bit 18.
-    pub decay_gate: bool,
+    /// +0x0C — Flashing Objects: interactive-highlight objects (def flag 0x80000) within 4 u of the
+    /// viewer flash [M View_SetupRenderModes_Tweak 0x1e5888:24 `DAT_002a38d4 != 0` + the < 16.0
+    /// square-distance; P_CNOPTIONS row 0x226 → DAT_002a38d4, On/Off]. Default 1 [M Input_Init
+    /// 0x17edd8:14]. The save packs a second bit after it (LS_MakePlrSettings bit 17) — reserved.
+    pub flashing_objects: bool,
+    /// The reserved second bit of +0x0C's saved pair (bit 17; unparsed by ACTION.ELF [M the only
+    /// reads of 0x2a38d4 are the page, the save pair and the render tweak]).
+    pub reserved_aux: bool,
+    /// +0x0B — the HUD auto-hide gate, byte 0 = "HUD Always On" (the page's items are inverted:
+    /// [M P_CNOPTIONS 0x213f08:66-71 row 0x23B → DAT_002a38d3, 0x1B7 On with value 0 / 0x1B6 Off
+    /// with value 1]). 0 pins the pane timer BL+0x8BC at 1.0 every tick; 1 lets it decay by
+    /// 0.0020833334·FRAME_RATE_MUL/tick [M Player_Update 0x193600:414-425]; the panes scale off it
+    /// [M HUD_UpdateHealthPane 0x19b9c8:118] and Player_HandlePain resets it [M 0x1902c8].
+    /// (The old `decay_gate` name was the [S] guess this resolves.)
+    pub hud_auto_hide: bool,
 }
 
 impl PlayerOptions {
@@ -115,13 +126,14 @@ impl PlayerOptions {
             ptp_option: 0,
             auto_aim: true,
             auto_aim_alt: false,
-            reload_manual: false,
+            manual_aim_toggle: false,
             auto_equip_best: true,
             crouch_toggle: true,
             rumble: true,
             crosshair: true,
-            aux_style: 1,
-            decay_gate: false,
+            flashing_objects: true,
+            reserved_aux: false,
+            hud_auto_hide: false,
         }
     }
 
@@ -134,13 +146,14 @@ impl PlayerOptions {
             push_bits(buf, pos, self.ptp_option as u64, 4);
             push_bits(buf, pos, self.auto_aim as u64, 1);
             push_bits(buf, pos, self.auto_aim_alt as u64, 1);
-            push_bits(buf, pos, self.reload_manual as u64, 1);
+            push_bits(buf, pos, self.manual_aim_toggle as u64, 1);
             push_bits(buf, pos, self.auto_equip_best as u64, 1);
             push_bits(buf, pos, self.crouch_toggle as u64, 1);
             push_bits(buf, pos, self.rumble as u64, 1);
             push_bits(buf, pos, self.crosshair as u64, 1);
-            push_bits(buf, pos, self.aux_style as u64, 2);
-            push_bits(buf, pos, self.decay_gate as u64, 1);
+            push_bits(buf, pos, self.flashing_objects as u64, 1);
+            push_bits(buf, pos, self.reserved_aux as u64, 1);
+            push_bits(buf, pos, self.hud_auto_hide as u64, 1);
         })
     }
 
@@ -153,13 +166,14 @@ impl PlayerOptions {
         self.ptp_option = pull_bits(payload, pos, 4) as u16;
         self.auto_aim = pull_bits(payload, pos, 1) != 0;
         self.auto_aim_alt = pull_bits(payload, pos, 1) != 0;
-        self.reload_manual = pull_bits(payload, pos, 1) != 0;
+        self.manual_aim_toggle = pull_bits(payload, pos, 1) != 0;
         self.auto_equip_best = pull_bits(payload, pos, 1) != 0;
         self.crouch_toggle = pull_bits(payload, pos, 1) != 0;
         self.rumble = pull_bits(payload, pos, 1) != 0;
         self.crosshair = pull_bits(payload, pos, 1) != 0;
-        self.aux_style = pull_bits(payload, pos, 2) as u8;
-        self.decay_gate = pull_bits(payload, pos, 1) != 0;
+        self.flashing_objects = pull_bits(payload, pos, 1) != 0;
+        self.reserved_aux = pull_bits(payload, pos, 1) != 0;
+        self.hud_auto_hide = pull_bits(payload, pos, 1) != 0;
     }
 }
 
@@ -170,30 +184,32 @@ pub struct MpOptions {
     /// +0x28 — the MP radar toggle [M MP_GetRadarObjects 0x189840:22 / HUD_RadarUpdate
     /// 0x19f6e8:102 test it]. Save bit 1 [L the snapshot's MPSG payload starts 01].
     pub radar: bool,
-    /// +0x2c — extra spawn health [M Player_Init 0x1910f8:129 / MP_ReSpawn 0x185368:72 /
-    /// HUD_UpdateMPHealthPane 0x19b630:69 add it to 100.0]. Save bits 2-33 (32 bits).
-    pub health_extra: u32,
+    /// +0x2c — the spawn-health handicap added to 100.0 as a SIGNED value: the MP options page's
+    /// items run −75…+100 [M P_CNMPOPTIONS_Handler 0x2144d8:26-33 — the literals at 0x30d390..
+    /// carry −0x4b/−0x32/−0x19/0/0x19/0x32/0x4b/0x64]; Player_Init 0x1910f8:129 / MP_ReSpawn
+    /// 0x185368:72 / HUD_UpdateMPHealthPane 0x19b630:69 add it. Save bits 2-33 (32 raw bits).
+    pub health_handicap: i32,
 }
 
 impl MpOptions {
     /// The boot defaults [M bootup 0x1c7e78:50-52 writes +0x28 = 1, +0x2c = 0] = the template's
     /// values [L def-codename template 0 +0x1a = 1, +0x1c = 0].
     pub fn defaults() -> Self {
-        MpOptions { radar: true, health_extra: 0 }
+        MpOptions { radar: true, health_handicap: 0 }
     }
 
     /// `LS_MakeMPSettings` 0x1ce508: 1 + 32 bits → a 13-byte block [L the snapshot's MPSN size].
     fn make(&self) -> Vec<u8> {
         make_block(ID_MPSG, 33, |buf, pos| {
             push_bits(buf, pos, self.radar as u64, 1);
-            push_bits(buf, pos, self.health_extra as u64, 32);
+            push_bits(buf, pos, self.health_handicap as u32 as u64, 32);
         })
     }
 
     /// `LS_LoadMPSettings` 0x1ce5f0.
     fn load(&mut self, payload: &[u8], pos: &mut usize) {
         self.radar = pull_bits(payload, pos, 1) != 0;
-        self.health_extra = pull_bits(payload, pos, 32) as u32;
+        self.health_handicap = pull_bits(payload, pos, 32) as u32 as i32;
     }
 }
 
@@ -361,8 +377,8 @@ impl Profile {
             plr: {
                 let mut plr = PlayerOptions::input_init_defaults();
                 // The template's own bytes [L 0x2e1b18+0x1e..+0x2d]: exists 0, style 7, ptp 0,
-                // auto_aim 1, alt 0, reload_manual 0, crouch 1, rumble 1, crosshair 1,
-                // aux 1, decay 0 — only the style differs from Input_Init's 0.
+                // auto_aim 1, alt 0, manual-aim hold 0, crouch 1, rumble 1, crosshair 1,
+                // flashing 1, hud-auto-hide 0 — only the style differs from Input_Init's 0.
                 plr.controller_style = 7;
                 plr
             },
@@ -525,14 +541,14 @@ mod tests {
         assert!(!p.plr.exists);
         assert_eq!(p.plr.controller_style, 0);
         assert_eq!(p.plr.ptp_option, 0);
-        assert!(p.plr.auto_aim && !p.plr.auto_aim_alt && !p.plr.reload_manual);
+        assert!(p.plr.auto_aim && !p.plr.auto_aim_alt && !p.plr.manual_aim_toggle);
         assert!(p.plr.auto_equip_best && p.plr.crouch_toggle);
         assert!(p.plr.rumble && p.plr.crosshair);
-        assert_eq!(p.plr.aux_style, 1);
-        assert!(!p.plr.decay_gate);
+        assert!(p.plr.flashing_objects && !p.plr.reserved_aux);
+        assert!(!p.plr.hud_auto_hide);
         // MPSG [L payload 01 00 00 00 00]:
         assert!(p.mpsg.radar);
-        assert_eq!(p.mpsg.health_extra, 0);
+        assert_eq!(p.mpsg.health_handicap, 0);
         // GSET [L]: music 70, sfx 100, language 6, screen 0,0, version tag 4.
         assert_eq!(p.gset.music_volume, 70);
         assert_eq!(p.gset.sfx_volume, 100);
@@ -584,7 +600,7 @@ mod tests {
         let mut p = Profile::default_codename("BOND");
         p.plr.controller_style = 2;
         p.plr.crosshair = false;
-        p.mpsg.health_extra = 100;
+        p.mpsg.health_handicap = 100;
         p.gset.subtitles = true;
         p.gset.music_volume = 33;
         p.chet.cheat_ammo = true;
@@ -638,5 +654,77 @@ mod tests {
             Profile::check_codename(&"X".repeat(40), &[]),
             Err(CodenameError::TooLong)
         );
+    }
+}
+
+/// The runtime snapshot of one profile's option fields — the values the Sim and the view read
+/// every tick (`Drones::options`). The game reads the same bytes in place out of
+/// `PlayerSetting[slot]` 0x2a38c8 / `MPSettings[slot]` 0x2a47a0 / the GSET globals [M the field
+/// doc comments above carry each reader]. Built by the front end when a codename is chosen; the
+/// defaults are `PlayerOptions::input_init_defaults` + `GlobalOptions::defaults` +
+/// `MpOptions::defaults` [M Input_Init 0x17edd8 / bootup 0x1c7e78].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Options {
+    /// +0x01 — `Player_AutoAim` 0x1a7c98:41 (SP; +0x02 is the MP variant the MP page writes).
+    pub auto_aim: bool,
+    /// +0x08 — `HUD_UpdateCrossHair` 0x19e6d0:96 gates the crosshair draw.
+    pub crosshair: bool,
+    /// +0x04 — `Player_SSCrouch` 0x1924c0:85 picks the crouch action mode (toggle 1 / hold 4).
+    pub crouch_toggle: bool,
+    /// +0x03 — `Player_Weapon` 0x1a24c8:45's hold/toggle arms for the aim action 0x13.
+    pub manual_aim_toggle: bool,
+    /// +0x0A — `Player_EquipWeapon` 0x1a8a58's auto-switch tail (the port's weapon_switch_request).
+    pub auto_equip_best: bool,
+    /// +0x0B — the HUD auto-hide gate (byte 0 = always on): Player_Update 0x193600:414-425's
+    /// BL+0x8BC decay, HUD_UpdateHealthPane 0x19b9c8:118's read.
+    pub hud_auto_hide: bool,
+    /// +0x0C — View_SetupRenderModes_Tweak 0x1e5888:24's near-object flash.
+    pub flashing_objects: bool,
+    /// +0x09 — rumble (stored; the port drives no force-feedback).
+    pub rumble: bool,
+    /// +0x02 — the MP-page auto-aim variant (the MP context reads it, Player_AutoAim 0x1a7c98:44).
+    pub mp_auto_aim: bool,
+    /// MPSettings+0x28 — the radar (MP only).
+    pub radar: bool,
+    /// MPSettings+0x2c — the signed spawn-health handicap (MP only).
+    pub health_handicap: i32,
+    /// GSET — `SFXMusicSetVolume` 0x116cf8's 0..100 (the AV page's slider ×5).
+    pub music_volume: u32,
+    /// GSET — `SFXSetVolume` 0x116d98's 0..100.
+    pub sfx_volume: u32,
+    /// GSET — GameState+0x60 (Sound_DoSubtitle 0x1dde58:21's gate).
+    pub subtitles: bool,
+    /// GSET — GameState+0x5C (the render's aspect).
+    pub widescreen: bool,
+    /// GSET — `SFXSetMode` 0x117078 (0 mono / 1 stereo / 4 pro-logic; the page's items).
+    pub sfx_mode: u32,
+}
+
+impl Options {
+    /// The snapshot of a full profile.
+    pub fn of(p: &Profile) -> Self {
+        Options {
+            auto_aim: p.plr.auto_aim,
+            crosshair: p.plr.crosshair,
+            crouch_toggle: p.plr.crouch_toggle,
+            manual_aim_toggle: p.plr.manual_aim_toggle,
+            auto_equip_best: p.plr.auto_equip_best,
+            hud_auto_hide: p.plr.hud_auto_hide,
+            flashing_objects: p.plr.flashing_objects,
+            rumble: p.plr.rumble,
+            mp_auto_aim: p.plr.auto_aim_alt,
+            radar: p.mpsg.radar,
+            health_handicap: p.mpsg.health_handicap,
+            music_volume: p.gset.music_volume,
+            sfx_volume: p.gset.sfx_volume,
+            subtitles: p.gset.subtitles,
+            widescreen: p.gset.widescreen,
+            sfx_mode: p.gset.sfx_mode,
+        }
+    }
+
+    /// The boot defaults (no profile loaded).
+    pub fn defaults() -> Self {
+        Options::of(&Profile::default_codename("BOND"))
     }
 }

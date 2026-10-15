@@ -1144,6 +1144,11 @@ fn snow_for(scene: &scene::Scene, cam: &Camera) -> Vec<scene::Vertex> {
 /// `pub` so the headless tests drive the exact function the winit loop runs (the fix-gpu-skinning precedent).
 pub fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     let (pos, f) = (sim.bond.head(), sim.bond.look());
+    // profile-options: the AV page's volume sliders — SFXSetVolume 0x116d98 / SFXMusicSetVolume
+    // 0x116cf8 write the driver's masters (SfxMasterVolume 0x30c95c / MusicMasterVolume 0x30c958
+    // [M symtab; the driver's defaults already match the profile's 70/100]).
+    s.driver.master = sim.drones.options.sfx_volume as i32;
+    s.driver.music_master = sim.drones.options.music_volume as i32;
     // Row 0 of the view matrix: up × forward, the screen-left axis (snapshot: dir (−0.839, 0, −0.545) → (−0.545, 0, 0.839)).
     let norm = { let l = (f[0] * f[0] + f[2] * f[2]).sqrt().max(1e-6); [f[2] / l, 0.0, -f[0] / l] };
     sim.drones.map_sounds.update(&mut sim.drones.audio, pos);
