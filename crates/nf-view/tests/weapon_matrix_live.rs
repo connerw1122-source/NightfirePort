@@ -211,6 +211,26 @@ fn upgraded_runner_checks_the_new_behaviours_on_07000005() {
     assert!(a.expl_gap > 0 && a.expl_gap <= 90, "0x2a blasts on contact, gap {} ticks", a.expl_gap);
     // The Sentinel 'Guided' 0x2c rides the missile camera (weapon +0x6C & 4 [L ee_start_05.bin]).
     assert!(cell(0x2c).guided, "0x2c: the guided camera must ride a live missile");
+    // weapon-matrix5 (the missile-cam ride-out, [M Bullet_Delete 0x12e660:27-29 sets the owner's
+    // +0x944 = 0xf; Player_Update 0x193600 case 10 counts it down before the substate restores]):
+    // the cell survives its own guided camera — the reload/mode/away phases run after the ride-out,
+    // so the away switch and the back land. Fail-first: the pre-fix runner's 0x2c cell here was W
+    // (the away switch eaten under the substate-10 player) with the mode-press M hidden under it.
+    let sentinel = cell(0x2c);
+    assert!(sentinel.away_ok && sentinel.back_ok, "0x2c: away {}/back {} — the cell must ride out the guided camera",
+        sentinel.away_ok, sentinel.back_ok);
+    // weapon-matrix5 (the watch OR, [M Player_Weapon 0x1a24c8: the mode block reads action 12 |
+    // action 9 for 0x54/0x55]): the Micro-Camera's twin chain operates — the plain mode press or
+    // the OR'd fire presses land the swap. The OR arm's own fail-first is examples/probe_watch.rs
+    // (style b: "no swap" pre-fix, "SWAP landed 0x54→0x55" post-fix — the fire press IS a mode
+    // press on this pair now).
+    assert!(cell(0x54).mode_ok, "0x54: the watch's twin chain must operate (action 12, or the OR'd fire press)");
+    // weapon-matrix5b sister ([M Player_SetFiringAnim 0x1a3c70 tail — the `+0xf4 = 9` store sits
+    // inside the `hash != 0` branch; a script-less record never enters state 9]): after the fire
+    // settle the machine must be IDLE. The unconditional `fire_state = true` latch wedged the
+    // proxy at 9 forever for the watch pair (no fire script ever plays, the clear needs
+    // `view_script == +0xB0`) and shut the mode block [M 0x1a24c8:199-201].
+    assert!(cell(0x54).machine_idle, "0x54: the state-9 proxy must be honest after the fire settle (a script-less record never enters state 9)");
     // The mode press: a twin-linked record lands its twin (or cycles the mode byte) and both
     // labels resolve [M Player_Weapon 0x1a24c8:204-260; HUD_UpdateAmmoPane 0x19a7f0].
     let two = cell(0x02);

@@ -514,10 +514,11 @@ pub struct HudState {
     pub msgs: std::collections::VecDeque<Msg>,
     /// How many `drones.taken` events `hud_tick` has converted into messages.
     pub taken_seen: usize,
-    /// `BL+0x95E`: 60 ticks after a weapon whose record's +2 word changed; the ammo pane shows the
-    /// fire-mode label bright while it runs, then the weapon name (`HUD_UpdateAmmoPane` 0x19a7f0).
+    /// `BL+0x95E`: re-set to 60 every frame a differing switch request is pending, then −1/frame;
+    /// while it runs the ammo pane shows the weapon name alone (`HUD_UpdateAmmoPane` 0x19a7f0).
     pub weapon_label_timer: u8,
-    /// `obj+0x63`: the weapon id the HUD last saw (the timer's change test) [M 0x19a7f0:206-213].
+    /// Retired by fix-ammo-pane: the timer arms on the pending request (drone+0x63 vs +0x62), not
+    /// on a last-seen weapon id. Kept so existing saves/replays keep their layout.
     pub hud_weapon: u8,
     /// The health pane's `CrouchIconTimer` (60 after Bond stands; fades sprite 19 over the last 30)
     /// [M `HUD_UpdateHealthPane` 0x19b9c8:305-328].
@@ -1812,12 +1813,15 @@ impl Sim {
         // +0x05) switch to their twin through the normal switch request; the rest cycle the mode byte
         // (the Inventory's `fire_mode`, `BL + w*0xC + 0x1BB`) up to the record's mode count (+0x2E).
         // For the watch pair 0x54/0x55 the fire press ORs in (the game reads action 9 mask 4 there) —
-        // the port tracks the trigger's press edge in `prev_trigger`.
-        if input.mode_switch {
-            let watch = matches!(self.gun.weapon, 0x54 | 0x55);
-            let fire_new = input.fire && !self.prev_trigger;
-            let toggled = if watch { fire_new } else { false };
-            if (input.mode_switch || toggled)
+        // the port tracks the trigger's press edge in `prev_trigger`. The game enters the block on the
+        // OR'd variable alone [M 0x1a24c8: `bVar5 = Input_Action(slot,0xc,4); if (*w - 0x54 < 2)
+        // bVar5 |= Input_Action(slot,9,4); if (bVar5 != 0 && anim+0xf4 == 0) ...`] — a fire press with
+        // the mode button untouched reaches it for this pair (weapon-matrix5: the old outer
+        // `if input.mode_switch` made the OR arm dead code; the harness's fire presses never swapped).
+        let watch = matches!(self.gun.weapon, 0x54 | 0x55);
+        let fire_new = input.fire && !self.prev_trigger;
+        let toggled = watch && fire_new;
+        if (input.mode_switch || toggled)
                 && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state && !fire_busy
                 && !(aiming && self.weapons.flags(self.gun.weapon as usize) & 0x40 != 0)
             {
@@ -1852,7 +1856,6 @@ impl Sim {
                         if let Some(fm) = self.drones.inventory.fire_mode.get_mut(self.gun.weapon as usize) { *fm = m; }
                     }
                 }
-            }
         }
         self.prev_trigger = input.fire;
         // The pickup auto-switch, LIVE (fix-auto-switch re-opens the fix-pickups-remainder gate)
@@ -3139,7 +3142,15 @@ impl Sim {
                         self.shot_tick = true;
                         // The hearing sound: the P2K's 0x403 by default, or the remapped op-1 id for other weapons.
                         // The drones' hearing list uses the sfx table's entry for this id.
+                        // fix-melee: the melee swings are NOT gunshots — the fists' fire scripts' op-1 is
+                        // 0x142 (the whoosh, frames 7/9 of 0x060006de/0x060006dd [D 07000005.bin dump]),
+                        // whose SFXOutputData hearing entry weighs 0 (inner 5, outer 30, weight 0.0 [L]) —
+                        // a punch alerts nobody until the victim screams or sees Bond. The taser-CC twins
+                        // 0x4b/0x4d swing on 0x0600048d, which carries no op-1 at all [D] — equally silent.
+                        // The old `_` arm fed both the 0x403 gunshot (weight 65, outer 40 [L]): every
+                        // punch alerted the room like a P2K shot.
                         let hearing_id = match self.gun.weapon {
+                            1 | 0x4b | 0x4d => 0x142,
                             7 | 9 => 2,
                             3 | 5 => 2,
                             0x14 => 0x1fb,
@@ -3335,17 +3346,21 @@ impl Sim {
     /// `Text_AddMsg` 0x1b0c30; `Text_UpdateMsg` 0x1b11d8 decrements the head's time by FRAME_RATE_MUL
     /// = 1 and deletes it at ≤ 0).
     fn hud_tick(&mut self) {
-        // The weapon-name timer: set to 60 when the HUD's weapon id differs from the last seen one and
-        // the two records' +2 words differ [M 0x19a7f0:206-213]; counts down every frame.
+        // The weapon-name timer (`HUD_UpdateAmmoPane` 0x19a7f0:212-217): while a switch request
+        // differs from the current weapon (drone+0x63 vs +0x62) and the two records' +2 words
+        // differ, the timer is RE-SET to FRAME_RATE (60) every pending frame — the name covers the
+        // whole draw animation plus the 60-tick decay [M]. fix-ammo-pane: the old arm-on-flip fired
+        // once at the completion tick, so the port's name window missed the pending draw entirely
+        // and ran 60 ticks from there; the game arms through it.
         let w = self.gun.weapon;
-        if self.hud.hud_weapon != w && w != 0 {
-            let changed = match (self.weapons.records.get(self.hud.hud_weapon as usize), self.weapons.records.get(w as usize)) {
+        let req = self.gun.switch_request;
+        if req != 0 && req != w {
+            let changed = match (self.weapons.records.get(w as usize), self.weapons.records.get(req as usize)) {
                 (Some(a), Some(b)) => a[2..4] != b[2..4],
                 _ => false,
             };
             if changed { self.hud.weapon_label_timer = 60; }
         }
-        self.hud.hud_weapon = w;
         self.hud.weapon_label_timer = self.hud.weapon_label_timer.saturating_sub(1);
         // The crouch icon: the timer holds 60 while crouched, then fades after standing
         // [M 0x19b9c8:305-328].
@@ -3398,9 +3413,10 @@ impl Sim {
                 nf_game::pickup::Taken::Bonus => lang.bind(0x200_004A).unwrap_or("").to_string(),
                 // Case 5 [M 0x18e650:229-233 + the shared tail]: message 0x2000013.
                 nf_game::pickup::Taken::Message => lang.bind(0x200_0013).unwrap_or("").to_string(),
-                // Case 4 [M 0x18e650]: the pickup's own label (PICKUPINFO+0x34); the port's pickups
-                // do not carry it, and the only kind-4 pickup on the disc data so far labels 0.
-                nf_game::pickup::Taken::Label => String::new(),
+                // Case 4 [M 0x18e650]: the pickup's own label (PICKUPINFO+0x34) bound and shown when
+                // non-zero — 0700000b's id-0x47 item carries 0x2000036 [D the placement params]; the
+                // 07000008 briefcase's label is 0 → no message.
+                nf_game::pickup::Taken::Label { label } => if *label != 0 { lang.bind(*label).unwrap_or("").to_string() } else { String::new() },
             };
             if !text.is_empty() { new_msgs.push_back(Msg::new(text, 180.0)); }
         }
@@ -3902,7 +3918,7 @@ type Groups = BTreeMap<(Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u
 /// this way [D the level-bin script; the parked 0xF0 placements sit 10 units east, inside the east
 /// wall]. Scans `level.nis` sorted by hashcode (deterministic); pack scripts (07x00008) are not in
 /// the level archive and fall back to the runtime's no-slot push (takeable, by-hash mesh).
-fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::WeaponData, models: &std::collections::HashMap<u32, nf_game::pickup::Model>) -> (Vec<nf_game::pickup::Pickup>, Vec<((u32, u8), usize)>) {
+fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::WeaponData, models: &std::collections::HashMap<u32, nf_game::pickup::Model>, level_id: u32) -> (Vec<nf_game::pickup::Pickup>, Vec<((u32, u8), usize)>) {
     let mut out = Vec::new();
     let mut slots = Vec::new();
     let mut hashes: Vec<u32> = level.nis.keys().copied().collect();
@@ -3919,9 +3935,11 @@ fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::Weapo
             let Some(&m0) = models.get(&obj_.hashcode) else { continue };
             let key = nis.keys.get(st.first_key as usize).map(|k| k.pos).unwrap_or([0.0; 4]);
             let Some(mut pk) = nf_game::pickup::Pickup::create_placed(
-                [key[0], key[1], key[2]], [0.0; 3], p(0) as u16, p(1) as u16, p(2) as u16 as i16,
+                [key[0], key[1], key[2]], [0.0; 3], p(0) as u16, p(1) as u16,
+                nf_game::pickup::Pickup::create_rounds_override(level_id, p(1) as u16, p(2) as u16 as i16),
                 p(3) as u16, p(4) as u16, p(5) as u16, 0, obj_.hashcode,
                 nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, weapons, models) else { continue };
+            pk.label = p(6); // the kind-4 label word (`Pickup_Create` param_13 → +0x34)
             pk.gone = true; // reserved: inert until the script spawns it
             pk.obj = Some((om, oi));
             slots.push(((hash, si as u8), out.len()));
@@ -4245,7 +4263,10 @@ impl Scene {
                     let param = |idx: u32| -> u32 { p.params.iter().find(|(i, _)| *i == idx).map(|(_, v)| *v).unwrap_or(0) };
                     let type_ = param(0) as u16;
                     let id = param(1) as u16;
-                    let rounds = param(2) as i16;
+                    // `Pickup_Create`'s level-conditional rounds override [M 0x18dda0: GameState+0x12 ==
+                    // 0x7000008 && id == 0x2c → rounds = 4]: the vault's rocket placement says 5 [D],
+                    // the game creates 4.
+                    let rounds = nf_game::pickup::Pickup::create_rounds_override(drones.map(|d| d.level_id).unwrap_or(0), id, param(2) as i16);
                     let switch_channel = param(3) as u16;
                     let sound = param(4) as u16;
                     let respawn = param(5) & 0xFFFF;
@@ -4264,6 +4285,7 @@ impl Scene {
                             nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, (om, oi)))
                     })?;
                     let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn as u16, lifetime, model, bounds, &placed_weapons, &hoist_models)?;
+                    p2.label = param(6); // the kind-4 label (`Pickup_Create` param_13 → +0x34; 0700000b's item: 0x2000036 [D])
                     p2.obj = Some(obj);
                     Some(p2)
                 })
@@ -4271,7 +4293,7 @@ impl Scene {
             // fix-safe08: the scripts' obj_type-0xF0 Entity spawns reserve slots after the placed
             // pickups, in the SAME order the sim build appends them (the draw slot k must equal the
             // sim's pickups[k]).
-            let (reserved, _render_slots) = script_pickup_reservations(level, &placed_weapons, &hoist_models);
+            let (reserved, _render_slots) = script_pickup_reservations(level, &placed_weapons, &hoist_models, drones.map(|d| d.level_id).unwrap_or(0));
             let reserved_len = reserved.len();
             let mut placed_pickups = placed_pickups;
             placed_pickups.extend(reserved);
@@ -4538,13 +4560,19 @@ impl Scene {
             let mut seen = BTreeSet::new();
             let players: Vec<nf_game::nis::Player> = level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9)
                 .filter_map(|(i, p)| nf_game::nis::Player::from_placement(i, p)).collect();
-            // The explosion script (`Explode_Create` 0x17cbd0 Script_Loads 0x6000052 on every disc caller
-            // [M 0x12cd98/0x12ce80/0x17ffa0/0x180498/0x1c350-calls]): the sim spawns it per blast
-            // (`Drones`' grenade explode), so its entity streams need attachments exactly like a placed
-            // player's. 0x6000027/0x600004F (Destroy_Smash's types) stay unported — the port's destroyables
-            // don't explode yet.
+            // The explosion scripts (`Explode_Create` 0x17cbd0 loads a per-source effect script —
+            // its `Script_Load` arg a3): 0x6000052 from the fuse/contact call sites [M 0x12cd98/
+            // 0x12ce80 disasm], 0x60007c4 from the Samurai bolt's 0x100000/0x200000 arms [M
+            // 0x12d0e8-0x12d188; fix-cutscene-actors's read of 0x12ce80:212-231 is the same arms —
+            // ONE path, the sim's per-blast spawn feeds this sweep], 0x6000027/0x600004f/0x6000052
+            // from `Destroy_Smash` by the tag's type byte [M 0x12bc50-0x12bd20]. All four ship in
+            // every story archive [D disc census]; 0x60007c4's entity streams (Laser_Blast_frame_1/2,
+            // Vertical_smoke, After_glow_test, cloud_1, smoke) resolve in every archive [D] but no
+            // placement references the script, so without this sweep the impact models could never
+            // draw. The sim spawns them per blast, so their entity streams need attachments exactly
+            // like a placed player's. (fix-blast-scripts: the port pre-registered only 0x06000052.)
             let hashes: Vec<u32> = players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0)
-                .chain(std::iter::once(0x0600_0052)).collect();
+                .chain([0x0600_0052u32, 0x0600_0027, 0x0600_004f, 0x0600_07c4]).collect();
             for h in hashes {
                 let Some(nis) = level.nis.get(&h) else { continue };
                 for (si, st) in nis.streams.iter().enumerate() {
@@ -5288,7 +5316,10 @@ impl Scene {
                     let param = |idx: u32| -> u32 { p.params.iter().find(|(i, _)| *i == idx).map(|(_, v)| *v).unwrap_or(0) };
                     let type_ = param(0) as u16;
                     let id = param(1) as u16;
-                    let rounds = param(2) as i16;
+                    // `Pickup_Create`'s level-conditional rounds override [M 0x18dda0: GameState+0x12 ==
+                    // 0x7000008 && id == 0x2c → rounds = 4]: the vault's rocket placement says 5 [D],
+                    // the game creates 4.
+                    let rounds = nf_game::pickup::Pickup::create_rounds_override(d.level_id, id, param(2) as i16);
                     let switch_channel = param(3) as u16;
                     let sound = param(4) as u16;
                     let respawn = param(5) & 0xFFFF;
@@ -5308,11 +5339,12 @@ impl Scene {
                             nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, (om, oi)))
                     })?;
                     let mut p2 = nf_game::pickup::Pickup::create_placed(p.translation, p.rotation, type_, id, rounds, switch_channel, sound, respawn as u16, lifetime, model, bounds, &weapons, &pickup_models)?;
+                    p2.label = param(6); // the kind-4 label (`Pickup_Create` param_13 → +0x34; 0700000b's item: 0x2000036 [D])
                     p2.obj = Some(obj);
                     Some(p2)
                 })
                 .collect();
-            let (reserved, sim_slots) = script_pickup_reservations(level, &weapons, &pickup_models);
+            let (reserved, sim_slots) = script_pickup_reservations(level, &weapons, &pickup_models, d.level_id);
             drones.pickups.extend(placed_pickups);
             drones.pickups.extend(reserved);
             drones.script_pickup_slots = sim_slots.into_iter().collect();
@@ -5747,7 +5779,18 @@ impl Scene {
             if !opts.firing || tick % 8 >= 2 { return collapse(&datum); }
             muzzle_flash_matrix(&datum, (tick / 8) ^ (k as u32).wrapping_mul(0x9e37_79b9))
         }).collect();
-        let hidden: Vec<bool> = self.characters.iter().enumerate().map(|(ci, c)| hidden(c, ci)).collect();
+        let mut hidden: Vec<bool> = self.characters.iter().enumerate().map(|(ci, c)| hidden(c, ci)).collect();
+        // fix-sentinel-camera-play: the guided ride draws no view model — the game's player
+        // substate 10 cleared the anim set [M `Player_ChangeSubState(10)`, `Player_Update`
+        // 0x193600:242-256; L PCSX2 "no view model, no crosshair"] — the palette collapse (the
+        // port's established not-drawn state) does it, and it restores when the ride ends.
+        if self.sim.as_ref().is_some_and(|s| s.missile_cam.is_some()) {
+            if let Some(s) = self.sim.as_ref() {
+                if let Some(&vm) = self.view_models.get(&s.gun.weapon) {
+                    if let Some(h) = hidden.get_mut(vm) { *h = true; }
+                }
+            }
+        }
         FrameState { posed, attach, hidden }
     }
 
