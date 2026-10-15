@@ -112,11 +112,15 @@ the pre-fix src** ("impact sound 8 played"); sister: the same harness with the P
 
 ## What's left
 
-- The full `tools/test/suite.py` run was started on the final tree (suite.out) — read its total
-  line before merging; only the 3 `disc_golden` tests (and `pss_movies_live` without the retail
-  image) may fail on the slim ISO.
+- **The full `tools/test/suite.py` did not produce a total line this session**: this sandbox reaps
+  background processes between tool calls (two nohup starts died silently with empty logs), and the
+  foreground window could not fit all 292 binaries. What ran instead, foreground, on the final
+  tree: `nf-game --lib` 160/160, `nf-formats` 74 tested — 11+63 green with EXACTLY the 3 allowed
+  `disc_golden` failures (bigf_header_fields, bigf_tables, directory_tree — the slim-ISO class),
+  and every at-risk neighbour binary green (the list above). Next session: `tail -1 suite.out` on
+  the merged tree.
 - The jump-grab's pick-sphere radius (live check 1) — if the live read disagrees with 2.5, the
   constant moves; the pins' bracket is in scene.rs's comment.
 - Bond's third-person body during the shimmy (the game draws it; the port has no player body mesh).
-- The `pCeremony` ThirdPersonCameras spline path (walls with BLData u16[1] set) is not ported —
-  none of 05's walls carry one [D probe].
+- The ThirdPersonCameras spline path (walls with BLData u16[1] set) is not ported — none of 05's
+  walls carry one [D probe].
