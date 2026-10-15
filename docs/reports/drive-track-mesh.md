@@ -100,3 +100,13 @@ the SHA-1 of the relocated module image (e.g. paris 494 articles / 1899 parts / 
 3. **`crp-mesh` spot check**: `nf-extract crp-mesh DRIVING MIS01.VIV out/` — the paris TSV's first
    row should be `S6_CustomLowRBnknRoad` with bbox ≈ min(−10.06,−7.5,−10.06) max(18.33,0.5,15.0)
    [D measured].
+
+## ntfy failed
+
+All three notification attempts failed with the ntfy.sh daily-quota error:
+
+- `curl`: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- `python3 urllib.request`: `HTTPError: HTTP Error 429: Too Many Requests`
+- `wget --post-data`: silent (exit 0, no body; same 429 server-side)
+
+The queue (finish.sh) and the branch push both succeeded, so the completion is recorded there.
