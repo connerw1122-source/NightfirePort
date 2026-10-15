@@ -12485,3 +12485,11 @@ Stage Summary:
   kind-5 voice [M 0x1d9860 case 5] and flushes the dialogue [M 0x1dac78:26-30] with the catch-up
   adds dropped [S]. Report: docs/reports/fix-ladder-water.md (the live checks: the regrab writes,
   the Sound_Stop-during-free watch, the 04 skip gate, the no-input drift).
+
+---
+Task: fix-ladder-water2 (109i2)
+Agent: worker
+Task: redo the ladder-into-water fix without breaking the walk-on grab — the merge suite caught a regression with 109i (walking into a ladder on dry ground no longer grabs it; fix_ladder2_live's walk tests fail at "never attached"); find which part of the new pick rejects the walk-on case, fix it against the decompile, keep 109i's own tests passing; add script: false to the two Msg-literal tests (fix_objective_banner_live.rs, fix_objective_messages_live.rs).
+
+Work Log:
+- 05:2x UTC: branch s/fix-ladder-water2 from origin/master (2cbfd7e3), merged origin/s/fix-ladder-water (WORKLOG both kept), pushed.
