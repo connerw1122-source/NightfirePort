@@ -897,7 +897,10 @@ fn wanted_weapon_models(level: &Level, wd: &nf_formats::weapon::WeaponData, casi
         if h != 0 && h != u32::MAX && !level.by_hash.contains_key(&h) && !needed.contains(&h) { needed.push(h); }
     };
     for r in &wd.records {
-        for off in [0x80usize, 0x4c, 0x48, 0x5c] {
+        // fix-silencer-visual: the view-entity mesh (+0x7C, `AnimDatumSetEntity(vm, 0, weapon+0x7C,
+        // 0xff)` per tick on the 0x800 records — `Player_WeaponFiring` 0x1a5460:96-110) rides the
+        // give/merge path too, or a foreign-level give of a silenced twin misses the tube.
+        for off in [0x80usize, 0x4c, 0x48, 0x5c, 0x7c] {
             want(u32::from_le_bytes(r[off..off + 4].try_into().unwrap()), &mut needed);
         }
     }
@@ -2639,11 +2642,29 @@ pub fn run() -> Result<()> {
                 let v: Vec<f32> = args.get(i + 1).context("--bond needs x,y,z")?.split(',').map(|t| t.parse()).collect::<Result<_, _>>()?;
                 sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; }
             }
+            // `--draw <id>`: equip that weapon (the `--give` path's equip) and switch to it before the ticks, so a
+            // headless render can show a fire script frame by frame (`--draw 0x34 --pull 60 --frame 70`).
+            let mut draw: Option<u8> = None;
+            if let Some(i) = args.iter().position(|a| a == "--draw") {
+                let t = args.get(i + 1).context("--draw needs a weapon id")?;
+                let id = match t.strip_prefix("0x") { Some(h) => usize::from_str_radix(h, 16)?, None => t.parse()? };
+                let wd = sim.weapons.clone();
+                let rounds = wd.clip_size(id).max(1);
+                if sim.drones.inventory.equip_weapon(&wd, id, rounds, true) { sim.drones.inventory.equip_ammo(&wd, id, rounds * 3); }
+                draw = Some(id as u8);
+            }
             // `--skip-cutscenes`: hold the game's own skip while a script camera runs (`Script_FFwd` 0x1dac78), for image pairs.
             let skip_cuts = args.iter().any(|a| a == "--skip-cutscenes");
+            let modes: Vec<u32> = match args.iter().position(|a| a == "--mode") {
+                Some(i) => args.get(i + 1).context("--mode needs ticks")?.split(',').map(|t| t.parse()).collect::<Result<_, _>>()?,
+                None => Vec::new(),
+            };
+            if let Some(w) = draw { sim.step_bond(nf_game::player::Input { switch_to: Some(w), ..shot_input }, false, false, false); }
             for t in 1..=time as u32 {
                 if skip_cuts && sim.disabled { sim.drones.scripts.skip_request = true; }
-                if walk { sim.step_bond(shot_input, pulls.contains(&t), false, false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
+                // `--mode 70,90`: the fire-mode press (the B key) on those ticks.
+                let mode_now = modes.contains(&t);
+                if walk { sim.step_bond(nf_game::player::Input { mode_switch: mode_now, ..shot_input }, pulls.contains(&t), false, false); } else { sim.step([cam.pos.x, cam.pos.y, cam.pos.z], cam.dir().to_array(), pulls.contains(&t), false); }
             }
             // With `--skip-cutscenes`, a skipped cut-scene's hand-back moves Bond: put him back on the `--bond` spot (and
             // let one tick settle) so the image pair matches the real game's placement.
