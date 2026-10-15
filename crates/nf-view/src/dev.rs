@@ -206,60 +206,82 @@ impl Dev {
     }
 
     /// Spawn a guard at `pos` with the picked type/mode, the way the game's spawner does (`Action::Spawn` → present +
-    /// enabled + llist). Also adds a `Character` (skin + skeleton + matrix) and a `char_drone` entry so the
-    /// renderer draws the guard — without this the drone exists in the AI but is invisible (the user's Round 7
-    /// report: "spawning a guard doesn't work in the viewer, even though the test passes"). B-12.
-    pub fn spawn_guard(&self, scene: &mut Scene, pos: [f32; 3], yaw: f32) -> Option<usize> {
-        let sim = scene.sim.as_mut()?;
-        let d = sim.data();
-        // B-12: pick the skin of the first active guard on the level (guarantees the mesh is in the level archive).
-        // The old hardcoded skins (0x05000006 / 0x05000019) aren't in 07000005's skin table, so spawn returned None.
-        let skin = sim.drones.list.iter()
-            .find(|x| x.present && x.enabled && !x.corpse && x.health > 0.0 && x.drawn)
-            .map(|x| x.skin)
-            .unwrap_or(0x0500_0006);
+    /// enabled + llist), from the level's own NPC pool (the skin-row path's mechanism, `panel::spawn_npc`).
+    ///
+    /// Why the pool and not a fresh `Character` (fix-dev-spawn-visible): the renderer's character
+    /// geometry is uploaded at build time (`Scene::char_verts`, the tail of `vertices` from the
+    /// Character-layer draw groups) — a `Character` pushed here after the build gets palette slots
+    /// (the renderer rebuild in `App::apply_menu_action` covers `char_base`) but has NO vertices in
+    /// the buffer, so nothing draws no matter what the palette carries (the main agent's dry run:
+    /// "[dev] guard #16: spawned (normal) at (101.2,24.3,106.4)" and no guard anywhere). The pool
+    /// copies are ordinary build-time characters (their meshes ARE in the buffer), bound to the drone
+    /// through `Sim::char_drone`, and `frame_state` poses a bound character at the drone's position.
+    ///
+    /// The drone inits through the level loader's own path (`Drone::new`, `NDrone2_DefaultInit`
+    /// 0x14b300) with the SLOT's real placement parameter block — `Drone_Create` 0x136be0 copies
+    /// `placement+0x2C` and the reads take param 9 (the weapon selector), param 14 (the sight class),
+    /// param 11 (the alert block) — the old zero-filled closure (`|k| match k { 0 => skin, 16/21 =>
+    /// mode, _ => 0 }`) gave the guard weapon selector 0 and sight class 0. Only params 16/21 (the
+    /// mode) are overridden and 3/4 zeroed (a dev spawn is active at once: no switch channel to wait
+    /// on, no spawner group), exactly like `panel::spawn_npc`. The guard faces Bond (the skin rows'
+    /// own convention — `yaw = atan2(eye − pos)`), so his sight cone can take Bond in.
+    pub fn spawn_guard(&self, scene: &mut Scene, pos: [f32; 3], _yaw: f32) -> Option<usize> {
+        // B-12: pick the skin of the first active guard on the level (guarantees the pool has the
+        // skin — the pool is built per skin from the level's first drone placement of that skin).
+        // The old hardcoded skins (0x05000006 / 0x05000019) aren't in 07000005's skin table.
+        let skin = {
+            let sim = scene.sim.as_ref()?;
+            sim.drones.list.iter()
+                .find(|x| x.present && x.enabled && !x.corpse && x.health > 0.0 && x.drawn)
+                .map(|x| x.skin)
+                .unwrap_or(0x0500_0006)
+        };
         let mode = match self.spawn {
             SpawnPick::Normal => 0u32,
             SpawnPick::Sniper => 2u32,
             SpawnPick::Ambush => 0x10u32,
         };
-        let mut rng = Rng::new(0xdead_beef);
-        let param = |k: u32| match k { 0 => skin, 16 => mode, 21 => mode, _ => 0 };
-        let mut dr = Drone::new(&d, pos, yaw, param, &mut rng);
-        dr.present = true;
-        dr.enabled = true;
-        dr.started = false;
-        dr.grenade_weapon = 0x35;
-        dr.grenade_count = 5;
-        let idx = sim.drones.list.len();
-        sim.drones.list.push(dr);
-        sim.drones.llist.push(idx);
-        // B-12: add a Character (mesh + skeleton) so the renderer draws the spawned guard. The skin is resolved
-        // by hashcode from the level's skin table; the skeleton from the skin's skeleton id. slot_bones is empty
-        // (no weapon-attachment bones — the guard's held weapon won't draw, but the body will). This mirrors how
-        // `Scene::build` creates a Character for each placement (scene.rs:1114).
-        let (skin_obj, skeleton_obj) = {
-            let skin_ref = sim.skins.get(&skin)?;
-            let skeleton_ref = sim.skeletons.get(&skin_ref.skeleton)?;
-            (skin_ref.clone(), skeleton_ref.clone())
+        // A free pool slot of that skin: its characters' char_drone entries are all None.
+        let slot = {
+            let sim = scene.sim.as_ref()?;
+            scene.npc_pool.iter()
+                .find(|s| s.skin == skin && s.chars.iter().all(|&c| sim.char_drone.get(c).copied().flatten().is_none()))
+                .cloned()?
         };
-        let matrix = nf_formats::placement::object_matrix([0.0, yaw, 0.0], pos);
-        let char_idx = scene.characters.len();
-        scene.characters.push(crate::scene::Character {
-            matrix,
-            skin: skin_obj,
-            skeleton: skeleton_obj,
-            slot_bones: Vec::new(), // no weapon slots — body draws, held weapon does not
-            start: None,
-            role: nf_formats::drone::SpawnRole::Placed,
-            floor: None,
-            script: None,
-            morph_targets: None,
-        });
-        // char_drone maps character index → drone index. The renderer's `animate()` uses this to find the drone
-        // for each character; without it, the spawned character would pose in the bind pose (not the drone's state).
-        sim.char_drone.push(Some(idx));
-        let _ = char_idx; // the character is now at scene.characters[char_idx]; char_drone[char_idx] == Some(idx)
+        let params = slot.params.clone();
+        let param = |k: u32| match k {
+            16 | 21 => mode,
+            // A dev spawn is active at once: no switch channel to wait on (3), no spawner group (4).
+            3 | 4 => 0,
+            _ => params.iter().find(|(i, _)| *i == k).map_or(0, |&(_, v)| v),
+        };
+        // Face the guard at Bond (the skin rows' convention), so a normal-mode guard's sight cone
+        // can take the player the playtest checks put him in front of.
+        let yaw = {
+            let sim = scene.sim.as_ref()?;
+            let b = sim.bond.pos;
+            (b[0] - pos[0]).atan2(b[2] - pos[2])
+        };
+        // A separate RNG seed for the dev spawn: the game's own stream is untouched.
+        let mut rng = Rng::new(0xdead_beef ^ scene.sim.as_ref()?.drones.list.len() as u32);
+        let idx = {
+            let sim = scene.sim.as_mut()?;
+            let mut dr = {
+                let d = sim.data();
+                Drone::new(&d, pos, yaw, param, &mut rng)
+            };
+            dr.present = true;
+            dr.enabled = true;
+            dr.started = false;
+            let idx = sim.drones.list.len();
+            sim.drones.list.push(dr);
+            sim.drones.llist.push(idx);
+            idx
+        };
+        for &c in &slot.chars {
+            if let Some(cd) = scene.sim.as_mut()?.char_drone.get_mut(c) { *cd = Some(idx); }
+            if let Some(a) = scene.sim.as_mut()?.char_ambient.get_mut(c) { *a = [0xff; 3]; }
+        }
         Some(idx)
     }
 
@@ -905,7 +927,13 @@ pub fn apply_menu_action_to_scene(dev: &mut Dev, scene: &mut Scene, action: Menu
         MenuAction::Spawn(pick) => {
             let look = { let s = scene.sim.as_ref(); match s { Some(sim) => sim.bond.look(), None => [0.0, 0.0, 1.0] } };
             let hit = scene.sim.as_ref().and_then(|s| s.world.segment(eye, [eye[0] + look[0] * 30.0, eye[1] + look[1] * 30.0, eye[2] + look[2] * 30.0]));
-            let pos = hit.map_or([eye[0] + look[0] * 5.0, eye[1], eye[2] + look[2] * 5.0], |t| [eye[0] + (look[0] * 30.0) * t, eye[1] + (look[1] * 30.0) * t, eye[2] + (look[2] * 30.0) * t]);
+            // fix-dev-spawn-visible: the drone's ROOT sits at floor + hip (1.0) — the collision snap's
+            // own convention (`Drone_CollisionHandler` 0x140968 port: `pos.y = floor + self.hip()`, the
+            // hip 1.0). A root AT the hit surface puts the feet 1 m underground: the grounding ray
+            // (`feet_on_point`, 1.6 down from the root) starts past the surface, the guard falls
+            // through the world and settles on whatever is far below — the main agent's dry run saw
+            // no guard "there or anywhere around Bond".
+            let pos = hit.map_or([eye[0] + look[0] * 5.0, eye[1], eye[2] + look[2] * 5.0], |t| [eye[0] + (look[0] * 30.0) * t, eye[1] + (look[1] * 30.0) * t + 1.0, eye[2] + (look[2] * 30.0) * t]);
             dev.spawn = pick;
             let gi = dev.spawn_guard(scene, pos, yaw);
             let kind = match pick { SpawnPick::Normal => "normal", SpawnPick::Sniper => "sniper", SpawnPick::Ambush => "ambush" };
