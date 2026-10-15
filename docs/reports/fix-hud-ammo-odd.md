@@ -134,3 +134,15 @@ nf-view render spots (no GPU here — the main agent renders before merging):
 - `crates/nf-view/tests/fix_hud_ammo_odd_live.rs` — new: the three NF_ISO tests + the pane-text
   decoder.
 - `docs/WORKLOG.md` — the task entry (appended).
+
+## Note: commit 9524abf3 also carries the stranded fix-silencer-visual work
+
+This sandbox's repo was the previous task's checkout (s/fix-silencer-visual). That task's final
+session-end changes were sitting UNPUSHED in the working tree when this task started (its queue
+entry says done, but its report `docs/reports/fix-silencer-visual.md`, its test
+`fix_silencer_visual_live.rs` and its lib.rs/scene.rs/hud.rs view-model hooks were never committed to
+any branch). The stale-index commit 9524abf3 picked them up along with this task's report; they are
+that task's own authored work (described in its WORKLOG entry: the +0x7C view-model mesh attach, the
+lib.rs wanted-merge), they build and pass — every suite chunk above ran on the tree WITH them. Left
+in rather than deleted: deleting would destroy the only copy of that finished task's final work.
+The main agent may want to land them via the silencer branch or this one.
