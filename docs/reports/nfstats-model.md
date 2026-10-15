@@ -89,3 +89,10 @@ Plus the missing `ceil₁ₑ₋₅` on the generic/stealth raws [M :181-185/:213
 - The rest of the nf-view integration suite (~180 live binaries) unreached in this window —
   the sandbox kills background jobs, so the sweep needs the driver's runner; the change is
   additive to nf-game/nf-view with every touched binary run green above.
+
+## ntfy failed
+
+All three fallbacks hit ntfy.sh's daily quota (HTTP 429), 19:48 UTC 2026-10-15:
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit 8 (the server error response; empty body)
