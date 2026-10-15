@@ -98,3 +98,17 @@ fn the_pad_aim_button_still_enters_free_aim() {
     let s = scene.sim.as_ref().unwrap();
     assert!(s.aiming && s.free_aim, "the P2K (no raise script) aims at once on the pad button and enters free-aim");
 }
+
+/// The user (2026-10-14, right-click on the pistol): "why is manual aim a thing". The mouse scope button reaches the
+/// aim bit only on a scoped weapon (+0x68 bit 0x40); on the PP7 it does nothing — no aim stance, no zoom.
+#[test]
+fn the_mouse_scope_button_does_nothing_on_an_unscoped_gun() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso);
+    give_and_settle(&mut scene, 0x02);
+    let z = hold_mouse_scope(&mut scene, 90);
+    let s = scene.sim.as_ref().unwrap();
+    assert!(!s.aiming, "right-click raised the PP7 into the aim stance");
+    assert!(!s.free_aim, "right-click entered free aim on the PP7");
+    assert_eq!(z, 1.0, "right-click zoomed the PP7");
+}

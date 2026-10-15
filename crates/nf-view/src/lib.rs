@@ -82,34 +82,6 @@ pub fn ticks_for_frame(anim_time: &mut f32, dt: f32, max_ticks: u32) -> u32 {
     *anim_time += dt * 60.0;
     (*anim_time as u32).saturating_sub(before).min(max_ticks)
 }
-/// The render camera bracket after a frame's ticks (fix-turn-stutter): `cam_prev`/`cam_cur` must
-/// stay the LAST TWO TICKS' cameras — exactly one tick apart — so that `lerp_cam` at
-/// `anim_time.fract()` draws the camera at one tick behind the sim clock, the fixed-step scheme's
-/// invariant. Extracted verbatim from the pair update the `RedrawRequested` handler ran so the
-/// headless turn-stutter test drives the same arithmetic the winit loop runs (the
-/// `ticks_for_frame` precedent). `second_last`/`last` are the per-tick camera captures (recorded
-/// after each `step_bond`); `ran` = the ticks the frame actually executed (a replay exhaustion
-/// break runs none; noclip ticks record no camera).
-pub fn update_cam_bracket(cam_prev: &mut Option<Camera>, cam_cur: &mut Option<Camera>, ran: u32, second_last: Option<Camera>, last: Option<Camera>) {
-    match ran {
-        // Nothing ran this frame (the pause page, the dev menu, a replay exhausted): the pair
-        // stays — the draw keeps blending the last two ticks, which is still what the alpha
-        // spans.
-        0 => {}
-        // The solid-60 frame: exactly one tick — the previous frame's camera and the new one,
-        // the one-tick-behind pair the scheme has always drawn.
-        1 => { *cam_prev = *cam_cur; *cam_cur = last; }
-        // THE FIX: a loaded frame ran 2+ ticks. The old pair update kept the previous FRAME's
-        // camera as `cam_prev`, so the bracket spanned every tick the frame ran while the blend
-        // alpha (`anim_time.fract()`) only spans one — the drawn camera crawled through the wide
-        // bracket, then jumped at the boundary: the world's hold-jump stutter while turning
-        // (playtest 1015; the view model, pinned to the draw camera by the reattach, stayed
-        // smooth and unmasked it). The bracket is the LAST TWO TICKS' cameras — one tick apart —
-        // so `lerp_cam` at `anim_time.fract()` draws exactly one tick behind the sim clock at
-        // every frame rate (turn_stutter_live::loaded_frames_render_one_tick_behind_exactly).
-        _ => { *cam_prev = second_last; *cam_cur = last; }
-    }
-}
 /// The palette half of the G-043 interpolation: the draw loop blends the previous tick's skin
 /// palette into the latest one while `lerp_cam` blends the camera by angle. fix-interp-ghosting:
 /// world matrices blend as ROTATION (slerp of the rotation part [M `Quat_Slerp_Acc` 0x1e4188] — a
@@ -378,6 +350,74 @@ pub fn load_with_carry_weapons(iso: &str, archive: &str, all: bool, save: Option
 /// `--dev` level transition: the carry-over load with the dev view-model merge.
 pub fn load_with_carry_dev(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
     load_impl(iso, archive, all, save, true, &[])
+}
+
+/// The fail/death menu's Restart serve — the reload loop's `level_exit_restart` branch
+/// (`fix-restart-health`). `P_ENDMISSION_Handler` 0x216618:19-21 = `ResetMap_LevelToLoad(current,
+/// 1, 1)` + `Player_RamLoad(Bond, 1)`; `Player_RamLoad` 0x1957a8 floors the health at the
+/// difficulty's `ContinueHealthBoost*` — 50.0 on all three [L ACTION.ELF 0x30cc34-3c] — and the
+/// disasm writes the max BACK INTO the buffer (`swc1 $f12, 0x5fc` at 0x1958e4) before
+/// `Player_SetHealth` (jal 0x1960b8 at 0x1958e8, $f12 = the floored value, $a0 = BLData). The
+/// reload's `Player_InitWeapon` then re-runs the level's entry arm over that buffer and re-saves
+/// it [M 0x1a7ef8:325]. So the serve is the ENTRY checkpoint — the buffer as of this level's load
+/// — with the 50.0 floor: after a COLD load the buffer holds the fresh load's health 100
+/// (`Player_Init` 0x1910f8:128-138 sets it; the `Player_RamLoad` body is gated on `IsWarmReset`
+/// [M 0x1957a8:9], so nothing overwrites it; the unconditional re-save captures it) — the user's
+/// "if I die ... I should be at full health". `entry = None` = no load has completed yet (the
+/// game's BSS zeros — unreachable in play, since every load ends in the 0x1a7ef8:325 re-save): the
+/// shapes are zeroed at the live sizes and the floor keeps the health at 50.0.
+pub fn fail_restart_save(entry: Option<&nf_game::player::RamSave>, sim: &scene::Sim) -> nf_game::player::RamSave {
+    let mut s = entry.cloned().unwrap_or_else(|| {
+        let mut z = nf_game::player::RamSave::capture(
+            &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels);
+        z.health = 0.0; z.armour = 0.0;
+        for v in z.carried.iter_mut() { *v = 0; }
+        for v in z.clip.iter_mut() { *v = 0; }
+        for o in z.owned.iter_mut() { *o = false; }
+        for k in z.keys.iter_mut() { *k = false; }
+        for c in z.channels.iter_mut() { *c = 0; }
+        for t in z.ch_time.iter_mut() { *t = 0; }
+        z
+    });
+    s.health = s.health.max(50.0); // [L ACTION.ELF 0x30cc34-3c, all three 50.0]
+    // fix-objective-messages: the mission record states ride the game's `.data` and the restart
+    // resets only the player (`P_ENDMISSION_Handler` 0x216618:19-21 — no mission reinit), so the
+    // LIVE mission states ride the serve (the reloaded level's fresh `Mission` must not re-announce
+    // the earlier parts' objectives).
+    // The payload must be the shape the game's `Mission_Init(level, 1)` LEAVES the `.data` in when
+    // the reload runs it: previous parts keep their states, current + future parts reset (enable →
+    // 1, else 0) [M 0x182270:68-129]. The port applies the carried snapshot AFTER its
+    // `Mission_Init` latch (drone.rs), so the dying run's dirt (the monitor's 2/3 on the fired
+    // condition channels, the fail states) must be reset HERE — the game's RamLoad does not touch
+    // the states, Mission_Init's reset is the last writer.
+    let mut ms = sim.drones.mission.snapshot();
+    {
+        let mut off = 0usize;
+        for l in nf_game::mission::LEVELS.iter() {
+            let n = l.objectives.len();
+            if l.mission == sim.drones.mission.base_map && l.part >= sim.drones.mission.order {
+                for (j, o) in l.objectives.iter().enumerate() {
+                    ms.states[off + j] = if o.enable != 0 { 1 } else { 0 }; // [M 0x182270:98-105]
+                }
+            }
+            off += n;
+        }
+    }
+    s = s.with_mission_snapshot(ms);
+    s
+}
+
+/// The entry checkpoint a later fail-Restart restores: the buffer as of level ENTRY. The game
+/// re-saves it with the POST-load state on EVERY load — `Player_InitWeapon`'s unconditional
+/// `Player_RamSave` [M 0x1a7ef8:325] — cold loads included: `Player_Init`'s health 100 / armour 0
+/// [M 0x1910f8:128-138] stand (the `Player_RamLoad` body is skipped when `IsWarmReset == 0` [M
+/// 0x1957a8:9]) and the per-level arm's loadout/armour are what a restart gets back. On a warm
+/// load the restored state is captured unchanged (health = the carried exit health [M 0x1957a8
+/// SetHealth call], the arm's re-equips included).
+pub fn entry_checkpoint_save(sim: &scene::Sim) -> nf_game::player::RamSave {
+    nf_game::player::RamSave::capture(
+        &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
+        .with_mission(&sim.drones.mission)
 }
 
 fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8]) -> Result<scene::Scene> {
@@ -1344,12 +1384,15 @@ struct App {
     /// the tick loop answers it with a warm same-level reload (`load_with_carry_weapons`) that
     /// merges the weapon's assets, then re-places Bond and re-issues the switch request.
     pending_weapon_assets: Option<u8>,
-    /// fix-restart-target: the ENTRY checkpoint — the RamSave the current level was LOADED with
-    /// (`Player_RamSave` 0x195670's buffer 0x2b9440, which the game keeps across level changes).
-    /// The fail/death menu's Restart re-serves it (`P_ENDMISSION_Handler` 0x216618:21's
-    /// `Player_RamLoad(Bond, 1)`) instead of capturing the dying state — the entry checkpoint's
-    /// channels predate the fail, so the reload cannot re-fail (the 07000007 loop). `None` after a
-    /// cold load (the game's buffer then holds stale/zero data; the boost still floors the health).
+    /// fix-restart-target: the ENTRY checkpoint — the RamSave buffer 0x2b9440 the game keeps
+    /// across level changes. The fail/death menu's Restart re-serves it (`P_ENDMISSION_Handler`
+    /// 0x216618:21's `Player_RamLoad(Bond, 1)`) instead of capturing the dying state — the entry
+    /// checkpoint's channels predate the fail, so the reload cannot re-fail (the 07000007 loop).
+    /// fix-restart-health: re-captured with the POST-load state after EVERY load
+    /// (`entry_checkpoint_save` — the game's `Player_InitWeapon` re-save [M 0x1a7ef8:325]; cold
+    /// loads included, whose capture holds `Player_Init`'s health 100). The old model kept the
+    /// save the level was loaded with — `None` after a cold load — and the restart served the
+    /// zeroed buffer: health 50.0, the playtest's "half health".
     entry_save: Option<nf_game::player::RamSave>,
     /// The `--all` flag (draw dynamic entities at their placements, not only 0x8000 cels) — reused on level reload.
     all: bool,
@@ -1367,12 +1410,6 @@ struct App {
     prev_lock_ch: bool,
     /// Render interpolation state: the cameras and palettes of the last two ticks, and whether a tick ran this frame.
     ticked: bool,
-    /// fix-turn-stutter: the tick count of the frame that last rebuilt the palette/bracket pair.
-    /// The view model's camera-space reattach needs the palette pair and the camera pair from the
-    /// SAME one-tick bracket; a 2+ tick frame's palette spans its wide bracket while the cameras
-    /// span one, so there the reattach keeps the plain world blend (the pre-ghosting behavior
-    /// under load).
-    bracket_ticks: u32,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -2067,50 +2104,27 @@ impl ApplicationHandler for App {
                     // 0x216618:19-21, menu 0x40000042's row 0) is a WARM reload of the CURRENT level on
                     // the ENTRY checkpoint: `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` +
                     // `Player_RamLoad(Bond, 1)`. The game does NOT capture the dying state — it re-serves
-                    // the RamSave buffer as of level entry (the previous level's exit `Player_RamSave`
-                    // [M 0x1b2318:115]), whose ch 99/100 predate the fail, so the reload cannot re-fail
-                    // (the 07000007 replay loop). The boost arg 1 floors the health at the difficulty's
-                    // `ContinueHealthBoost*` — 50.0 on all three [L ee_start_05.bin 0x30cc34-3c].
+                    // the RamSave buffer as of level entry (re-saved with the post-load state by
+                    // `Player_InitWeapon` [M 0x1a7ef8:325]), whose ch 99/100 predate the fail, so the
+                    // reload cannot re-fail (the 07000007 replay loop). The boost arg 1 floors the health
+                    // at the difficulty's `ContinueHealthBoost*` — 50.0 on all three [L ELF 0x30cc34-3c].
                     // The PAUSE menu's Restart stays the COLD arm to BaseMap (`C_GCPAUSE_Handler`
                     // 0x204408:139 — `level_exit_cold`, save = None).
                     let cold = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_cold);
                     let restart = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_restart);
                     let save = if cold { None } else if restart {
-                        // The entry checkpoint (+ the health floor). A cold-loaded level has none:
-                        // the game's buffer then holds the BSS zeros [S — RamLoad restores them and
-                        // the per-level InitWeapon re-equips], so the port zeroes the arrays at the
-                        // live shapes (an empty RamSave would wipe/panic the restore).
-                        let mut s = self.entry_save.clone().unwrap_or_else(|| {
-                            let sim = self.scene.sim.as_ref().unwrap();
-                            let mut z = nf_game::player::RamSave::capture(
-                                &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels);
-                            z.health = 0.0; z.armour = 0.0;
-                            for v in z.carried.iter_mut() { *v = 0; }
-                            for v in z.clip.iter_mut() { *v = 0; }
-                            for o in z.owned.iter_mut() { *o = false; }
-                            for k in z.keys.iter_mut() { *k = false; }
-                            for c in z.channels.iter_mut() { *c = 0; }
-                            for t in z.ch_time.iter_mut() { *t = 0; }
-                            z
-                        });
-                        s.health = s.health.max(50.0); // [L ee_start_05.bin 0x30cc34-3c, all three 50.0]
-                        // fix-objective-messages: the mission record states ride the game's `.data`
-                        // and the restart resets only the player (`P_ENDMISSION_Handler` 0x216618:19-21
-                        // = `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)`;
-                        // no mission reinit) — the port's restart used to reload with NO mission carry,
-                        // so the reloaded level's fresh `Mission` re-announced the earlier parts'
-                        // objectives at the first monitor tick (the playtest's "NEW OBJECTIVE / Find a
-                        // way inside to the party" on 07000007 during the Cover Lost fail). Carry the
-                        // LIVE mission states (the `.data` as of the restart).
-                        if let Some(sim) = self.scene.sim.as_ref() { s = s.with_mission(&sim.drones.mission); }
-                        Some(s)
+                        // The ENTRY checkpoint (+ the health floor) — `fail_restart_save` carries the
+                        // evidence (`P_ENDMISSION_Handler` 0x216618:19-21 + `Player_RamLoad`'s floored
+                        // buffer). fix-restart-health: the entry save is the POST-load capture the
+                        // load arm below makes (`Player_InitWeapon`'s unconditional `Player_RamSave`
+                        // [M 0x1a7ef8:325]) — after a cold load it holds health 100, the user's "I
+                        // should be at full health" (the old zero-buffer fallback served 50.0).
+                        Some(fail_restart_save(self.entry_save.as_ref(), self.scene.sim.as_ref().unwrap()))
                     } else {
                         self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
                             &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
                             .with_mission(&sim.drones.mission))
                     };
-                    // The loaded level's checkpoint is what a later Restart restores.
-                    self.entry_save = save.clone();
                     let name = level_archive_name(next);
                     eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
                     let load = if self.dev.is_some() { load_with_carry_dev } else { load_with_carry };
@@ -2131,6 +2145,16 @@ impl ApplicationHandler for App {
                             if let Some(g) = &mut self.gfx {
                                 g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
                             }
+                            // fix-restart-health: the loaded level's checkpoint is what a later
+                            // fail-Restart restores — the game re-saves the buffer with the POST-load
+                            // state on EVERY load (`Player_InitWeapon`'s unconditional `Player_RamSave`
+                            // [M 0x1a7ef8:325]), cold loads included (the `Player_RamLoad` body is
+                            // gated on `IsWarmReset` [M 0x1957a8:9], so `Player_Init`'s health 100 /
+                            // armour 0 [M 0x1910f8:128-138] stand and the arm's loadout/armour are
+                            // captured). The old model kept the save the level was LOADED with —
+                            // `None` after a cold load — and the restart then served the zeroed
+                            // buffer: health 50.0, the playtest's "half health".
+                            self.entry_save = Some(entry_checkpoint_save(self.scene.sim.as_ref().unwrap()));
                             eprintln!("level: loaded {name}");
                         }
                         Err(e) => eprintln!("level: failed to load {name}: {e}"),
@@ -2156,10 +2180,6 @@ impl ApplicationHandler for App {
                 if self.noclip || self.scene.sim.is_none() { self.cam.pos += mv * speed; }
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 self.ticked = false;
-                // fix-turn-stutter: the per-tick camera captures (the render bracket's raw
-                // material) and the tick count the frame actually executed. Declared here so the
-                // pair update below the tick gate can hand them to `update_cam_bracket`.
-                let (mut last_cam, mut second_last, mut ran) = (None, None, 0u32);
                 self.poll_panel();
                 // fix-pause-audio: the pause page holds the sound. `MenuManager_Create` with
                 // `pause_sound` runs `SFXPause` (batch op 9) + `SFXPauseAllStreams` (op 0x16) and
@@ -2274,15 +2294,6 @@ impl ApplicationHandler for App {
                             }
                             self.prev_lock_ch = on;
                             if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
-                            // fix-turn-stutter: the camera is captured at EVERY tick — the render
-                            // bracket is the LAST TWO ticks' cameras (`update_cam_bracket`), so
-                            // the loop must record each one, not just the frame's last.
-                            let h = sim.bond.head();
-                            let mut c = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV / sim.zoom };
-                            if let Some((p, yaw, pitch, fov)) = sim.script_camera() { c = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov }; }
-                            second_last = last_cam;
-                            last_cam = Some(c);
-                            ran += 1;
                         }
                         // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
                         // (Moved below the sim borrow — see the end of this block.)
@@ -2369,10 +2380,8 @@ impl ApplicationHandler for App {
                     let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts, vis.as_deref());
                     self.pal_prev = self.pal_cur.take();
                     self.pal_cur = Some(new);
-                    // fix-turn-stutter: the bracket comes from the per-tick captures through
-                    // `update_cam_bracket` (extracted; the headless test drives the same code).
-                    update_cam_bracket(&mut self.cam_prev, &mut self.cam_cur, ran, second_last, last_cam);
-                    self.bracket_ticks = ran;
+                    self.cam_prev = self.cam_cur;
+                    self.cam_cur = Some(self.cam);
                 }
                 let interp = interp0;
                 let alpha = alpha0;
@@ -2386,14 +2395,7 @@ impl ApplicationHandler for App {
                             // uses for the view — so mid-turn the gun cannot swim against the
                             // view. With a live script camera the tick cams are not Bond's: the
                             // gun keeps the plain world blend there.
-                            // fix-interp-ghosting's reattach needs the palette pair and the
-                            // camera pair from the SAME one-tick bracket (fix-turn-stutter): a
-                            // 2+ tick frame rebuilt the palette across its wide bracket while
-                            // `update_cam_bracket` closed the cameras to the last two ticks —
-                            // reattaching there would pose the gun from mismatched ticks. Those
-                            // frames keep the plain world blend (the pre-ghosting behavior under
-                            // load).
-                            if self.bracket_ticks == 1 && self.scene.sim.as_ref().map_or(true, |s| s.script_camera().is_none()) {
+                            if self.scene.sim.as_ref().map_or(true, |s| s.script_camera().is_none()) {
                                 if let (Some(entries), Some(cp), Some(cc)) =
                                     (view_model_entries(&self.scene, &g.renderer.skin_layout), self.cam_prev, self.cam_cur) {
                                     reattach_view_model(&mut blended, pp, pal, alpha, &cp, &cc, &draw_cam, &entries);
@@ -2688,7 +2690,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, bracket_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, };
     if dev {
@@ -2780,6 +2782,12 @@ pub fn run() -> Result<()> {
             if let Some(id) = first { sim.gun.switch_request = id; }
         }
     }
+    // fix-restart-health: the level opened from the command line is a load too — the game re-saves
+    // the RamSave buffer with the post-load state on EVERY load [M `Player_InitWeapon` 0x1a7ef8:325],
+    // so a fail-Restart serves health 100. Only the in-play level change set `entry_save`; the
+    // first level kept None and its Restart served the zero buffer's 50 floor (the main agent's
+    // dry run on 07000005). Taken after `--give` so the restart keeps the given gear.
+    app.entry_save = app.scene.sim.as_ref().map(entry_checkpoint_save);
     // B-5: start the recorder AFTER the scenario is applied (so the header captures the post-scenario starting state:
     // Bond near a guard, the RNG seed, etc.). On replay, the same starting state is reproduced.
     if let Some(path) = record_path {
