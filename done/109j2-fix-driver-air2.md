@@ -48,3 +48,7 @@ claimed-by: sandbox4 at 2026-10-15T05:13Z
 ## Report (done, 2026-10-15T06:22Z)
 
 Closed by the driver: the report is on `s/fix-driver-air2` (docs/reports/fix-driver-air2.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T07:07Z)
+
