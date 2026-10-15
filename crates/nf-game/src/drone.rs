@@ -5289,6 +5289,11 @@ pub struct Drones {
     /// 0x1a2e38:41-57 increments it while the view state is idle and resets on any anim/fire). Gates the
     /// view model's side lights (blink > 15, off > 45 [M Player_WeaponFiring 0x1a5460:264, 348]).
     pub aims_idle: u16,
+    /// fix-aims20-modes-lights: the game's `BLData+0x93e`, the weapon-raise cooldown the AIMS-20's
+    /// bone-9 light reads (`Player_WeaponFiring` 0x1a5460:275-281: dark when it has drained to 0).
+    /// `Player_SetWeaponAnimObj` 0x1a2e38:47-57 decrements it while the view anim is idle and
+    /// refills it to FRAME_RATE_INT·0x14 = 1200 on every non-idle tick [L ee_start_05 BL+0x93e = 1200].
+    pub aims_raise: u16,
     /// fix-death-restart: the pre-menu auto-restart. While 180-fix-menus has no drawing, the port
     /// answers the 0x40000042 menu with Restart immediately (`fail_choose_restart`); the flag turns
     /// that off so the view can answer instead.
@@ -5483,6 +5488,8 @@ impl Drones {
             // — the shared-constructor collisions, merge lesson 4).
             letterbox: false, view_fade: None, script_msgs: Vec::new(),
             death: Default::default(), bond_fire: false, aims_idle: 0, auto_restart: true, level_exit_cold: false,
+            // fix-aims20-modes-lights: BL+0x93e starts at the refill value [L ee_start_05].
+            aims_raise: 1200,
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
             pending_blasts: Vec::new(),
