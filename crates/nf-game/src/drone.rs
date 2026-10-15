@@ -5419,6 +5419,12 @@ pub struct Drones {
     /// fix-impacts: ejected shell casings (`Bullet_InitCasingLists` 0x12fd48's 32-slot pool,
     /// `crates/nf-game/src/casing.rs`).
     pub casings: crate::casing::Casings,
+    /// fix-sg5-casings: the shooter's view-model gun bone world matrix, handed in by the caller for
+    /// the next `fire_player` (`Bullet_init_casing_ex` 0x12f678 re-positions the casing to
+    /// `AnimGetBoneWorldTrans(shooter, weapon_datum)`'s VECTOR out via
+    /// `Vec_Copy2(bone_pos, obj+0x30, obj+0x40)` — the game ejects at the gun bone, not the eye).
+    /// Consumed (reset to None) by the shot; `None` falls back to the aim-basis stand-in.
+    pub eject_gun: Option<[[f32; 4]; 4]>,
     /// Bond's previous position and the tick he started moving (`DoOpponentTargetting` +0x1DC / +0x1DD).
     prev_player: Option<V3>,
     moved_since: Option<u32>,
@@ -5780,6 +5786,8 @@ impl Drones {
             smoke_clouds: Vec::new(),
             // fix-satchel-tripbomb: the tripbomb beams (own line — merge lesson 4).
             tripbomb_beams: Vec::new(),
+            // fix-sg5-casings: the caller's view-model gun bone for the next shot's eject (own line).
+            eject_gun: None,
     };
         drones
     }
@@ -6025,12 +6033,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         // `Bullet_init_casing` 0x12fde0 (Player_WeaponInitBullet 0x1a4bf0:306, right after the
         // bullet's spread draws): one shell per shot, ejected from the view model after the weapon's
-        // +0x78-tick delay. [S] the eject origin is the muzzle `from` and the bone rotation stands in
-        // for the view-model matrix (the game reads `AnimGetBoneWorldTrans(obj, 1|5, 0)` — the main
-        // agent's render check owns the visual).
+        // +0x78-tick delay. fix-sg5-casings [M Bullet_init_casing_ex 0x12f678:160
+        // `Vec_Copy2(bone_pos, obj+0x30, obj+0x40)`]: the game ejects at the WEAPON DATUM's bone
+        // world position (`AnimGetBoneWorldTrans(shooter, datum)`'s VECTOR out — the view-model gun,
+        // on the record's +0xE0 offset [L ee_start_05 @0x2bf150, e.g. the SG5's (0.028, 0.203,
+        // −0.244)]), not at the eye — at the eye the shell draws at distance ≈ 0 and fills the frame
+        // (the playtest's "casings flying across my screen, like super large"). The caller hands the
+        // posed gun matrix (`Sim::gun_matrix`, the port's Player_PositionGun 0x1a3b40); without it
+        // the old aim-basis stand-in at `from` runs (the muzzle — guards and direct callers).
         let yaw = dir[0].atan2(dir[2]);
         let pitch = dir[1].clamp(-1.0, 1.0).asin();
-        self.casings.eject(&d.surfaces.map(|s| &s.ammo).unwrap_or(&Default::default()), w, from, yaw, pitch, from[1], &mut self.rng);
+        match self.eject_gun.take() {
+            Some(bone) => self.casings.eject_bone(&d.surfaces.map(|s| &s.ammo).unwrap_or(&Default::default()), w, &bone, from[1], &mut self.rng),
+            None => self.casings.eject(&d.surfaces.map(|s| &s.ammo).unwrap_or(&Default::default()), w, from, yaw, pitch, from[1], &mut self.rng),
+        }
         // Heard by the drones; the audible shot comes from the gun's fire script (op 1), played by the player's owner.
         if !sound.looped { self.sounds.push(Sound { id: sound.id, pos: from, inner: sound.inner, outer: sound.outer, weight: sound.weight }); }
     }
