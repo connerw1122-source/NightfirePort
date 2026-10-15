@@ -33,3 +33,6 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 **Branch:** `s/stunner-press`.
 
 **PCSX2 ground truth (main agent, 2026-10-14):** read `docs/live/2026-10-14-weapon-measurements-pcsx2.md` on master first — it has the measured numbers for this task.
+
+---
+claimed-by: sandbox4 at 2026-10-15T00:59Z
