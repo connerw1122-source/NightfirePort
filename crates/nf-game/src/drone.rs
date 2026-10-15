@@ -920,16 +920,47 @@ pub struct Drone {
 fn norm(v: V3) -> V3 { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(); if l > 0.0 { [v[0] / l, v[1] / l, v[2] / l] } else { v } }
 
 /// Rodrigues' rotation about the unit `axis` by `ang` radians, as a 4×4 (the pose rotations of
-/// `AnimObjectHeadTrack` 0x1bf618 / `AnimObjectAimAt` 0x1bfe58 — the game builds the same rotation with
-/// `Quat_AxisAngleToQuat` 0x1becb8 + `Quat_QuatToMat`).
+/// `AnimObjectHeadTrack` 0x1bf618 / `AnimObjectAimAt` 0x1bfe58). exact-sine-sites-2 (G-046): the
+/// rotation now goes through the game's own quaternion path — `Quat_AxisAngleToQuat` 0x1e3f20
+/// (PS2Sinf2 lanes; EE adds/muls) + `Quat_QuatToMat` 0x1e3e80 — instead of host `sin`/`cos`.
+/// The game's AA2Q is the standard (axis·sinf(θ/2), cosf(θ/2)) quat (the out[3] slot takes the
+/// θ/2 + 1.5707964 lane, the xyz the θ/2 lane [M 0x1e3f50-0x1e3f90, interpreter-verified]), and
+/// `Quat_QuatToMat` emits the column-form TRANSPOSE of the rotation (its +2zw off-diagonal terms),
+/// so the port's Rodrigues-convention angle is handed over as −θ; the bridge is the port's [S]
+/// mapping — see docs/reports/exact-sine-sites-2.md.
 fn axis_angle_mat(axis: [f32; 3], ang: f32) -> nf_formats::anim::Mat4 {
-    let (s, c) = (ang.sin(), ang.cos());
-    let t = 1.0 - c;
-    let [x, y, z] = axis;
+    quat_quat_to_mat(quat_axis_angle_to_quat(axis, -ang))
+}
+
+/// `Quat_AxisAngleToQuat` (0x1e3f20), bit-exact: input (axis.xyz, angle θ), output the standard
+/// (axis·sinf(θ/2), sinf(θ/2 + 1.5707964)) — the θ/2 + 1.5707964 lane lands in out[3] (a0 = &out[3]
+/// is PS2Sinf2's FIRST out pointer, 0x1e3f50) and the θ/2 lane scales xyz (0x1e3f64 lwc1 $f2, ($sp)).
+/// PS2Sinf2 (0x11f968) reduces and folds each lane exactly like `PS2Sinf`, so `trig::sinf` is its
+/// per-lane exact form (interpreter-verified bit-for-bit).
+pub fn quat_axis_angle_to_quat(axis: [f32; 3], ang: f32) -> [f32; 4] {
+    let mul = nf_formats::ps2float::mul;
+    let half = mul(ang, 0.5);
+    let sn = crate::trig::sinf(half);
+    let cs = crate::trig::sinf(crate::trig::ee_add(half, 1.5707964));
+    [mul(sn, axis[0]), mul(sn, axis[1]), mul(sn, axis[2]), cs]
+}
+
+/// `Quat_QuatToMat` (0x1e3e80), bit-exact: the 9 rotation elements written in the game's order with
+/// EE adds/muls — 2y/2z as doubling adds, (2x)·x and (2x)·w, the diagonal as 1 − (sum) [M :15-31].
+/// The game writes only the three rotation rows; the port's 4×4 carries the neutral bottom row.
+pub fn quat_quat_to_mat(q: [f32; 4]) -> nf_formats::anim::Mat4 {
+    let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
+    let add = crate::trig::ee_add;
+    let sub = crate::trig::ee_sub;
+    let mul = nf_formats::ps2float::mul;
+    let a = add(y, y); // fVar1 = 2y [M :18]
+    let b = add(z, z); // fVar2 = 2z [M :20]
+    let c = mul(add(x, x), x); // fVar6 = (2x)·x [M :21]
+    let d = mul(add(x, x), w); // fVar8 = (2x)·w [M :22]
     [
-        [t * x * x + c, t * x * y - s * z, t * x * z + s * y, 0.0],
-        [t * x * y + s * z, t * y * y + c, t * y * z - s * x, 0.0],
-        [t * x * z - s * y, t * y * z + s * x, t * z * z + c, 0.0],
+        [sub(1.0, add(mul(a, y), mul(b, z))), add(mul(a, x), mul(b, w)), sub(mul(b, x), mul(a, w)), 0.0],
+        [sub(mul(a, x), mul(b, w)), sub(1.0, add(c, mul(b, z))), add(mul(b, y), d), 0.0],
+        [add(mul(b, x), mul(a, w)), sub(mul(b, y), d), sub(1.0, add(c, mul(a, y))), 0.0],
         [0.0, 0.0, 0.0, 1.0],
     ]
 }
@@ -2410,14 +2441,16 @@ impl Drone {
         let a = self.aim_yaw;
         if (a.abs() > 1e-4 || self.aim_pitch.abs() > 1e-4) && world.len() > 2 {
             let pivot = world[2][3];
-            let (sn, cs) = (a.sin(), a.cos());
+            // exact-sine-sites-2 (G-046): the yaw rotation's sin/cos are the game's PS2Sinf lanes
+            // (the aim rotation is AA2Q + QuatToMat material, AnimObjectAimAt 0x1bfe58), not host sin/cos.
+            let (sn, cs) = (crate::trig::sinf(a), crate::trig::cosf(a));
             let rot_y: nf_formats::anim::Mat4 = [[cs, 0.0, -sn, 0.0], [0.0, 1.0, 0.0, 0.0], [sn, 0.0, cs, 0.0], [0.0, 0.0, 0.0, 1.0]];
             // The pitch axis: the aim direction's horizontal right (forward = (sin θ, 0, cos θ) → right =
             // (cos θ, 0, −sin θ), the game's cross(up, forward)). Positive rotation about +right pitches the
             // forward DOWN, and `aim_pitch` is positive up, so the matrix angle is negated. Composed as
             // R = R_yaw · R_pitch (the game's q_yaw ⊗ q_pitch ⊗ q_bone premultiply).
-            let th = self.yaw + a;
-            let rp = axis_angle_mat([th.cos(), 0.0, -th.sin()], -self.aim_pitch);
+            let th = crate::trig::ee_add(self.yaw, a);
+            let rp = axis_angle_mat([crate::trig::cosf(th), 0.0, -crate::trig::sinf(th)], -self.aim_pitch);
             let rot = nf_formats::anim::mul(&rot_y, &rp);
             let below = |b: usize| { let mut p = Some(b); while let Some(x) = p { if x == 2 { return true; } p = skin.parent(x); } false };
             for b in 0..world.len() {
@@ -5316,15 +5349,29 @@ pub fn steer_missile(dir: &mut V3, yaw_in: f32, pitch_in: f32) {
     const POLE: f32 = 0.995;      // [M 0x12e7b0:191-202]
     let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
     let (x, y, z) = (dir[0] / len, dir[1] / len, dir[2] / len);
-    let pole_lim = POLE.asin(); // 1.4706 rad
-    let pitch = (y.clamp(-POLE, POLE)).asin();
+    let pole_lim = POLE.asin(); // 1.4706 rad — the port's angle-space form of the game's ±0.995 gate [S]
+    // exact-sine-sites-2 (G-046): the game's spherical pitch is atan2f(y, √(x²+z²)) — the PS2 libm
+    // atan2f (0x2339f8, jal'd from vecutil_cartesian_to_spherical_acc 0x1e3a70:9), NOT asin and NOT
+    // ATAN2_APPROX 0x1e4528. The √ is the EE sqrt (ps2float::sqrt), the sum EE adds.
+    let pitch = crate::trig::atan2f_libm(
+        y,
+        nf_formats::ps2float::sqrt(crate::trig::ee_add(
+            nf_formats::ps2float::mul(x, x),
+            nf_formats::ps2float::mul(z, z),
+        )),
+    );
     // The pole gate: an input that would drive past ±0.995 of vertical is dropped [M :191-202].
     let dp = (-pitch_in * K).clamp(-pole_lim - pitch, pole_lim - pitch);
-    let p2 = pitch + dp;
-    let yaw = x.atan2(z) - yaw_in * K;
-    let (sp, cp) = p2.sin_cos();
-    let (sy, cy) = yaw.sin_cos();
-    *dir = [cp * sy, sp, cp * cy];
+    let p2 = crate::trig::ee_add(pitch, dp);
+    // The yaw: atan2f(x, z) [M 0x1e3a70:11], the yaw input subtracted with EE ops
+    // [M 0x12eb74 sub.s f1, f1, f2 = yaw − input·K, K = 0.024543693 · FRAME_RATE_MUL].
+    let yaw = crate::trig::ee_sub(crate::trig::atan2f_libm(x, z), nf_formats::ps2float::mul(yaw_in, K));
+    // The rebuild's sine/cosine are the game's PS2Sinf lanes (RotMatrixZYX 0x1e25a8 evaluates
+    // PS2Sinf3(θ+1.5707964, θ, …)), not host sin_cos.
+    let (sp, cp) = (crate::trig::sinf(p2), crate::trig::cosf(p2));
+    let (sy, cy) = (crate::trig::sinf(yaw), crate::trig::cosf(yaw));
+    let mul = nf_formats::ps2float::mul;
+    *dir = [mul(cp, sy), sp, mul(cp, cy)];
     let nl = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
     *dir = [dir[0] / nl, dir[1] / nl, dir[2] / nl];
 }
