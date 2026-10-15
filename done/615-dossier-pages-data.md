@@ -30,8 +30,6 @@ claimed-by: sandbox3 at 2026-10-15T18:50Z
 
 
 ---
-## Report from the worker (done, 2026-10-15T19:57Z)
-
 # dossier-pages-data — the Dossier's Rewards / Gadgets / Weapons pages
 
 Branch `s/dossier-pages-data` (cut from origin/master 0157588d, finished merged with origin/master
@@ -124,6 +122,15 @@ the Rewards page's gold gate depend on this.
 4. The scroll clamp — on the Weapons wheel, hold Up at row 0 / Down at row 26: no wrap, sound only
    [M 0x2221b20:186-210].
 5. ✕ on the pages does nothing (no handler arm); ○/△ return to the Dossier.
+
+## ntfy failed
+
+All three fallbacks hit the daily quota (429):
+
+- `curl -sS -m 20 -H "Title: NightfirePort" -d … https://ntfy.sh/nightfire-yoda-8k3x` →
+  `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh"}`
+- `python3 urllib.request` → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- `wget -q -O- --post-data …` → exit 8 (server error), no output
 
 ## Shared files touched (for the merge)
 
