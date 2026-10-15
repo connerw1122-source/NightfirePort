@@ -13134,3 +13134,8 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   head_look_live/ai_traces_live/fix_weapon_effects_live/anim_events_live/fix_searchlight_remainder_live/
   drone_portcheck_live/exact_vs_host_probe = 37/0/1. Total 102 passed / 0 failed / 5 ignored; the full suite
   didn't fit the window (background jobs die here), the affected paths are covered.
+
+## mp-menu-flow (2026-10-15, branch s/mp-menu-flow)
+- Started: multiplayer front-end flow and its data (no drawing) — porting the MP page flow, lists and state into
+  nf-view's FrontEnd/Page/action, headless-testable. Reading the ACTION.ELF handlers and the menu-def 07000048.bin
+  kind-8 08000002 entry; deliverable: docs/systems/mp-menus.md + Page variants + tests.
