@@ -12682,3 +12682,6 @@ Task: SG5 casings fly huge across the screen while walking forward (user 05 play
 
 Stage Summary:
 - Branch s/fix-laser-watch-look @ the report commit; the laser watch's beam visibility/geometry/drain matched to the measured game on the real input path.
+
+## fix-gate-guard-truck (2026-10-15, branch s/fix-gate-guard-truck) — started 08:46 UTC
+Task: GAPS G-037 — the 07000005 truck-ride exit's gate guard (channel 0x22, U-048). The script-created trigger + MuxIn + ScriptPlayer + event 0x11 + LOAD_LEVEL chain is ported; the missing link is the gate-guard drone at its post (channel 0x72) and what sets channel 0x22 (the guard's activation). Find the writer in the level's scripts/triggers/drone params + decompile, port it, add the full truck-ride integration test (start → LOAD_LEVEL 07000006) through the real input path. Files: drone.rs, triggers.rs, a new test file. Plan: push this checkpoint, read docs/UNKNOWNS.md U-048 + the atlas/port map, start the fast suite after the first merge, reproduce, then fix.
