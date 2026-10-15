@@ -97,13 +97,19 @@ user saw.
 
 ## Suite
 
-- Baseline (branch point, started at task start): see `suite.out` in the sandbox (the pre-task
-  run's tail: the run was still in flight at the wrap-up mark).
-- Final tree (merged with origin/master): `suite_grenade_release.out` — started at the wrap-up;
-  **the total line was not available before the deadline** — read `tail -1` of that file for the
-  verdict. On the slim ISO only the 3 `disc_golden` tests may fail.
 - The two new tests + the touched suites (`fix_grenade_throw_live` 4/4, `fix_grenade_types_live`,
   the fire-modes suite) ran green individually on the merged tree.
+- Final tree, measured (background runs are killed between tool calls in this sandbox, so these
+  are foreground chunks; `--no-fail-fast`):
+  - `nf-view` (the only crate this task's code touches): **300 passed / 2 failed** before the
+    time cap cut the run. The 2 failures are `fix_0c_pylon_live`'s view-framing pair — verified
+    PRE-EXISTING on `origin/master` (38c88df1's own scene.rs fails them identically; not this
+    task's regression).
+  - `nf-game` + `nf-formats` + `nf-audio`: **87 passed / 3 failed** before the run's abort — the
+    3 are the slim-ISO's allowed `disc_golden` trio (bigf_header_fields, bigf_tables,
+    directory_tree).
+  - The 3 allowed `disc_golden` failures + the 2 pre-existing pylon failures are the only red in
+    everything that ran.
 
 ## Shared files touched
 
