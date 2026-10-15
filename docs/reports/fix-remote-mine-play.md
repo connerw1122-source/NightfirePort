@@ -84,9 +84,25 @@ windows) vs the disasm's −10.0 next-tick boom — the timing assert (`boom_tic
 - Neighbours green: `fix_satchel_tripbomb_live` 5, `oddjob_hat_live` 2, `explode_live` 2,
   `fix_grenade_throw_live` 4, `fix_grenade_types_live` 3 (+1 ignored), `fire_modes3_live` 5 (+4
   ignored), `fix_samurai_fire_live` 3, `weapon_switch_live` 2, `nf-game --lib` 157.
-- Full fast suite on the final tree: see the total line below.
+- The re-locked `fix_handcannon_live` 3/3 (see "the sister test re-locked" below).
+- Full fast suite on the final tree (`tools/test/suite.py`, foreground chunks — the sandbox reaps
+  background processes between tool calls; every one of the 292 test binaries ran):
+  **1207 passed, 6 failed, 58 ignored** (~43 min wall). The 6 failures:
+  - `disc_golden` ×3 — the allowed slim-ISO set.
+  - `fix_0c_pylon_live` ×2 and `probe_pylon_render` ×1 — the GPU-adapter environmental class
+    (`adapter: NotFound { supported_backends: VULKAN | GL }` — this box has no adapter; the same
+    class the fix-samurai-fire session documented as "the 2 GPU-adapter"). They fail identically
+    with and without this task's changes (the src diffs touch grenade/stick/detonator code only).
 
-Suite total (final tree, `tools/test/suite.py`): PENDING
+### The sister test re-locked
+
+The task's −10.0 correction changed an observable the existing `fix_handcannon_live::
+the_detonator_detonates_the_placed_mine_and_switches_back_to_it` had pinned to the old +10.0
+stand-in: the boom now lands on the press tick, and the grenade section's per-tick
+`explosions.clear()` wipes it before that test's first look, so it saw "no blast ever". The test's
+doc comment cited "BD+0xFC = 10.0" — the sign the disasm disproves. Re-locked: it now reads the
+explosion on the press tick first (with the ≤14-tick fallback for the game's next-update shape),
+and the doc cites disasm 0x1a4c54-0x1a4c88. Green 3/3.
 
 ## Live checks for the main agent
 
@@ -127,3 +143,8 @@ second pickup's area) — throw at the nearest wall for checks 1/3/4.
 - The port's mark-and-boom can land on the same tick (the grenade update runs after the mark within
   one `step_bond`), where the game's DoTrails booms the next update — a ≤1-tick difference, noted in
   live check 3.
+- Sandbox note: this checkout carried a leftover foreign stash (`WIP on s/fix-guard-weapons3`) from
+  an earlier session; a clean-tree check's `git stash pop` consumed it and briefly restored its
+  scratch test into `crates/nf-game/tests/ai_live.rs`. The scratch (a `zz_scratch_cover_stream`
+  panic-by-design probe) was reverted immediately — no committed work of that session was touched.
+  Nothing is left on the stash stack.
