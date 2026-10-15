@@ -1676,12 +1676,16 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
         // ACTION.ELF .data 0x30d2e0 "~J" / 0x30d2e8 "~I"; the specialchar 'J'/'I' glyphs draw
         // them [L]]. The host fills fe.pause_objectives from the sim's mission states.
         1 => {
-            plate(h, 153.0, 183.0, 334.0, 120.0, gs(0x1e1210, 0x60));
-            for (i, (label, done)) in fe.pause_objectives.iter().enumerate().take(5) {
-                let y = 192.0 + i as f32 * 22.0;
+            // The list (98,147,445×190) [L page 0x4000004b d1=8]: rows from its top, the marker column then the label
+            // (PCSX2 m22, 2026-10-15: "• Breach the castle walls", the bullet at x 137, the text at 149, middle y 159);
+            // the list's selection is the last row [M :271 msg 0x1d = count−1] — the yellow arrow at x ~107.
+            let n = fe.pause_objectives.len().min(8);
+            for (i, (label, done)) in fe.pause_objectives.iter().enumerate().take(8) {
+                let y = 159.0 + i as f32 * 22.0;
                 let marker = if *done { "~J" } else { "~I" };
-                glyph_row(h, font, &format!("{marker} {}", lbl(*label, "(objective)")), 170.0, y, if *done { dim } else { bright });
+                glyph_row(h, font, &format!("{marker} {}", lbl(*label, "(objective)")), 135.0, y - 9.0, bright);
             }
+            if n > 0 { pause_cursor(h, 107.0, 159.0 + (n - 1) as f32 * 22.0, gs(YELLOW, 0xff)); }
         }
         // The MISSION tab (default [L the page's initial state — the d1=6 list is the enabled one]).
         _ => {
@@ -1729,7 +1733,8 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
         (2, false) => "~A Invert  ~V Scroll  ~H Next",
         _ => "~A Select  ~V Scroll  ~H Next",
     };
-    hint_bar(h, font, &hint_wrap(lang, hint_id, hint_fb), 45.0, 341.0, cream);
+    // Dark words without a shadow on the bright bar (PCSX2 m21–m24, 2026-10-15).
+    hint_row_s(h, font, &hint_wrap(lang, hint_id, hint_fb), 45.0, 341.0, gs(0x0d0904, 0xff), None, false);
 }
 
 /// fix-pause-menu2: a menu-space text row with the specialchar glyphs inline (the "~A Label" rows of
@@ -2043,6 +2048,12 @@ fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
 /// One "~X label" row: centred on the 540-wide bar at `x640` (hint bars), or left-aligned with its first ink at
 /// `left` (640-space; the controls list's columns).
 fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y640: f32, c: [f32; 4], left: Option<f32>) {
+    hint_row_s(h, font, text, x640, y640, c, left, true);
+}
+
+/// `hint_row` with the text shadow switchable (the pause bar's dark words have none).
+#[allow(clippy::too_many_arguments)]
+fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y640: f32, c: [f32; 4], left: Option<f32>, shadow: bool) {
     // One pass collects each item's ink span relative to the row's pen origin (text glyphs sit at
     // [p0.x − gw0/2, plast.x + gwlast/2] — the per-glyph quads centre at their pen x — and an icon's
     // quad centres at its pen x, so [−iw/2, +iw/2]); the row's ink centre then goes to the bar's
@@ -2050,6 +2061,8 @@ fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
     enum Item { Text { x: f32, ink: (f32, f32) }, Icon { tex: u32, uv: [f32; 4], w: f32, hh: f32, ink: (f32, f32) } }
     let mut items: Vec<Item> = Vec::new();
     let mut adv_sum = 0.0f32;
+    // A word that follows an icon starts ~6 units after the icon's ink (PCSX2 m03/m06/m23, 2026-10-15: 6–8 units).
+    let mut after_icon: Option<f32> = None;
     let mut rest = text;
     while let Some(t) = rest.find('~') {
         let (before, after) = rest.split_at(t);
@@ -2059,6 +2072,7 @@ fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
                 (Some(p0), Some(pl)) => (p0.x, pl.x + font.glyphs[pl.glyph].w as f32),
                 _ => (0.0, nat),
             };
+            if let Some(e) = after_icon.take() { adv_sum = e + mx(6.0) - a; }
             items.push(Item::Text { x: adv_sum, ink: (adv_sum + a, adv_sum + b) });
             // A word's trailing spaces don't advance the pen far enough before the next icon: PCSX2 leaves ~10 units
             // from the word's last ink to the icon (07000005 fail menu, 2026-10-15).
@@ -2071,6 +2085,7 @@ fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
                 // menu 2026-10-15: "✕ Select" — a 6-unit gap; the table's advance alone overlapped the next word).
                 let _ = adv;
                 items.push(Item::Icon { tex, uv: [u, v, w, hh], w: iw, hh: ih, ink: (adv_sum, adv_sum + iw) });
+                after_icon = Some(adv_sum + iw);
                 adv_sum += iw + mx(6.0);
             }
             _ => { adv_sum += mx(16.0); }
@@ -2084,6 +2099,7 @@ fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
             (Some(p0), Some(pl)) => (p0.x, pl.x + font.glyphs[pl.glyph].w as f32),
             _ => (0.0, nat),
         };
+        if let Some(e) = after_icon.take() { adv_sum = e + mx(6.0) - a; }
         items.push(Item::Text { x: adv_sum, ink: (adv_sum + a, adv_sum + b) });
     }
     let ink_lo = items.iter().map(|i| match i { Item::Text { ink, .. } | Item::Icon { ink, .. } => ink.0 }).fold(f32::MAX, f32::min);
@@ -2106,8 +2122,9 @@ fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
     while let Some(t) = rest.find('~') {
         let (before, after) = rest.split_at(t);
         if !before.is_empty() {
+            if let Item::Text { x, .. } = &items[ti.min(items.len() - 1)] { seg_pen = *x; }
             let x = pen0 + seg_pen;
-            h.text(Anchor::Centre, font, -2, before, x, y, false, c, true);
+            h.text(Anchor::Centre, font, -2, before, x, y, false, c, shadow);
             let (placed, nat) = font.layout(before, 0.0, 0.0);
             let ink_end = placed.last().map_or(nat, |pl| pl.x + font.glyphs[pl.glyph].w as f32);
             seg_pen = (seg_pen + nat).max(seg_pen + ink_end + mx(10.0));
@@ -2124,7 +2141,11 @@ fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
                 // The icon's ink [pen − iw/2, pen + iw/2] — same anchor as the measure pass.
                 // Level with the text's middle (PCSX2: the ✕/scroll icons sit level with their words; drawn from
                 // y − ih + 12 they hung ~8 low).
-                h.quad(Anchor::Centre, -2, tex, 0, pen0 + seg_pen, y - ih + my(3.5), iw, ih, [u, v, w, hh], (false, false), c);
+                // The icons keep their own colours when the words are dark (the pause bar).
+                let ic = if shadow { c } else { gs(0x7f7f7f, 0xff) };
+                // Centred on the words' middle (the pen y sits ~6.5 below it): the 20-unit buttons land where they did, the small
+                // objective bullets level with their text (PCSX2 m22).
+                h.quad(Anchor::Centre, -2, tex, 0, pen0 + seg_pen, y - my(6.5) - ih / 2.0, iw, ih, [u, v, w, hh], (false, false), ic);
                 let _ = adv;
                 seg_pen += iw + mx(6.0);
                 ti += 1;
@@ -2135,7 +2156,8 @@ fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
         if rest.starts_with(' ') { rest = &rest[1..]; seg_pen += 4.0; }
     }
     if !rest.is_empty() {
-        h.text(Anchor::Centre, font, -2, rest, pen0 + seg_pen, y, false, c, true);
+        if let Some(Item::Text { x, .. }) = items.last() { seg_pen = *x; }
+        h.text(Anchor::Centre, font, -2, rest, pen0 + seg_pen, y, false, c, shadow);
     }
 }
 

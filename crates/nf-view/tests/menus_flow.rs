@@ -325,7 +325,9 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
     let has = |page: u32, tex: u32| saw[&page].iter().any(|&t| t == tex);
     assert!(has(0x4000_0034, 0x0300_0074), "the title draws the full-screen art [M page 0x40000009 control 0x10000196]");
     assert!(has(0x4000_0025, 0x0300_00b3), "the codename page draws the panel [M page 0x40000025 control (50,53) TEX 0x030000b3]");
-    assert!(has(0x4000_0025, 0x0300_00bf), "the codename page draws the ring emblem [M control 0x10000103]");
+    // The ring 0x030000bf only masks the preview: PCSX2 shows no rim or square of its own (07000048 m06,
+    // 2026-10-15), so the port clips the preview to the disc and draws no ring quad.
+    assert!(!has(0x4000_0025, 0x0300_00bf), "the codename page draws no ring overlay (PCSX2 m06)");
     // The codename preview follows the cursor [M Menu_UpdateCodenameWheel 0x1f89f0:80-99 — the
     // create row 0x300013b, the default row 0x3000135; the page's static 0x030000b6 is the boot look].
     assert!(has(0x4000_0025, 0x0300_013b), "the codename page draws the create row's preview [M 0x1f89f0:80-99]");
@@ -340,7 +342,9 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
     // the page's static 0x030000c4 is the Gadgets row].]
     assert!(has(0x4000_002b, 0x0300_019b), "the dossier draws its Records row's preview [L table 0x2dfcd0]");
     assert!(has(0x4000_001c, 0x0300_016d), "the list pages draw the logo [M control (434,38,156×43) TEX 0x0300016d]");
-    assert!(has(0x4000_0023, 0x0300_014c), "the list pages draw the stamp [M control 0x10000224 TEX 0x0300014c]");
+    // The stamp control 0x10000224 (539,393, f1 0x2d) shows nothing in PCSX2's list pages (07000048 m06/m10/m12,
+    // 2026-10-15); the port's quad at (340,198) drew a ring arc across the description, so it is gone.
+    assert!(!has(0x4000_0023, 0x0300_014c), "the list pages draw no stamp ring (PCSX2 m10)");
     // The hint bars draw the game's own specialchar icon font [M specialchar 0x2dd8d8: every entry's
     // texture is 0x03000075] — not the 64×64 atlas 0x03000042 the port guessed before, and the ✕ is
     // the table's (235,1,19×19) tile, not the font's letter X.
@@ -774,8 +778,8 @@ fn the_footer_hints_are_centred_in_their_bars() {
     }
 }
 
-/// The header label centres in its (50,40,376×17) band [M the pages' header CONTROL records;
-/// Label_Update 0x218cb8:177-182/:202-206] — the old draw centred the text AT x=50, half off-screen.
+/// The header label starts at its (50,40,376×17) band's x: PCSX2 draws every header's ink from x 51 (07000048
+/// m06/m10/m12/m15, 2026-10-15) — the band-centred draw sat ~100 units right.
 #[test]
 fn the_page_headers_are_centred_in_their_bands() {
     let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
@@ -789,17 +793,16 @@ fn the_page_headers_are_centred_in_their_bands() {
             Some(match acc { Some((x0, x1)) => (x0.min(a), x1.max(b)), None => (a, b) })
         }).expect("the header draws");
         eprintln!("[hdr] {page:?} band {band:?} rows {:?}", rows.rows);
-        let centre = (band.0 + band.1) / 2.0;
-        let want = (50.0 + 376.0 / 2.0) * 512.0 / 640.0;   // 190.9 HUD
-        assert!((centre - want).abs() < 5.0, "{page:?}: header centre {centre}, want {want} (ctrl.x + ctrl.w/2 [M Label_Update])");
+        let want = 50.0 * 512.0 / 640.0;   // 40 HUD
+        assert!((band.0 - want).abs() < 3.0, "{page:?}: header starts at {}, want {want} (PCSX2: x 51/640)", band.0);
         // Sister: the header text is the page data's own LBL.
         let s = lang.as_ref().and_then(|l| l.bind(header)).unwrap_or("");
         assert!(!s.is_empty(), "{page:?}: header LBL {header:#x} binds");
     }
 }
 
-/// The wheel rows centre in their controls: slot centres = ctrl.x + ctrl.w/2 [L the parsed rows:
-/// (323,123,317) (333,152,307) (304,182,336) (333,211,307) (323,241,317)].
+/// The wheel rows start at their controls' x [L the parsed rows: (323,123,317) (333,152,307) (304,182,336)
+/// (333,211,307) (323,241,317)]; PCSX2 left-aligns them (07000048 m06/m10/m12: ink from x 303 / 331).
 #[test]
 fn the_wheel_rows_center_in_their_controls() {
     let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
@@ -809,14 +812,16 @@ fn the_wheel_rows_center_in_their_controls() {
     let (frame, n) = frame_with_font(&fe, lang.as_ref(), 4.0 / 3.0);
     let rows = text_rows(&frame, n, 4.0 / 3.0);
     let wheel_y = [123.0f32, 152.0, 182.0, 211.0, 241.0];
-    let wheel_cx = [(323.0 + 317.0 / 2.0) * 512.0 / 640.0, (333.0 + 307.0 / 2.0) * 512.0 / 640.0, (304.0 + 336.0 / 2.0) * 512.0 / 640.0, (333.0 + 307.0 / 2.0) * 512.0 / 640.0, (323.0 + 317.0 / 2.0) * 512.0 / 640.0];
+    let wheel_x = [323.0f32 * 512.0 / 640.0, 333.0 * 512.0 / 640.0, 304.0 * 512.0 / 640.0, 333.0 * 512.0 / 640.0, 323.0 * 512.0 / 640.0];
+    let mut seen = 0;
     for (slot, y) in wheel_y.iter().enumerate() {
         let hy = y * 448.0 / 480.0 + 8.0;
         if let Some(band) = rows.band(hy) {
-            let centre = (band.0 + band.1) / 2.0;
-            assert!((centre - wheel_cx[slot]).abs() < 5.0, "slot {slot}: row centre {centre}, want {}", wheel_cx[slot]);
+            seen += 1;
+            assert!((band.0 - wheel_x[slot]).abs() < 4.0, "slot {slot}: row starts at {}, want {}", band.0, wheel_x[slot]);
         }
     }
+    assert!(seen >= 2, "the wheel rows draw");
     // Sister: every text row on the page lies inside the screen.
     assert!(rows.all_inside_the_screen(), "a text row left the 512×448 screen");
 }
@@ -914,9 +919,9 @@ fn the_records_page_draws_the_score_table() {
     let mut fe = FrontEnd::new();
     fe.page = Page::Records;
     let (frame, n) = frame_with_font(&fe, Some(&lang), 4.0 / 3.0);
-    // The medal image is the page data's own texture control.
+    // No profile → no medal earned: the medal controls stay hidden [M C_RBDSRECORDS 0x20bf00:58-110; PCSX2 m15].
     let idx = menu::MENU_TEXTURES.iter().position(|&t| t == 0x0300_013d).expect("medal tex listed") + 1;
-    assert!(frame.runs.iter().any(|r| r.0 == idx), "the medal image 0x0300013d draws");
+    assert!(!frame.runs.iter().any(|r| r.0 == idx), "no medal draws without one earned");
     // The three score-row labels + the medal label bind from the language bank.
     for id in [0x302u32, 0x165, 0x305, 0x307] {
         let s = lang.bind(id).unwrap_or("");

@@ -1296,6 +1296,9 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
         fe.mission = 1;
         fe.open_pause();
     }
+    if fe.page == menu::Page::Pause {
+        if let Some(sim) = scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); }
+    }
     // Tick through the boot load and let the page's timers run (the flash cycle etc.).
     for _ in 0..3 { fe.flow.main_tick(); let _ = fe.flow.load_tick(); }
     fe.press_start_on = true;
@@ -2586,14 +2589,7 @@ impl ApplicationHandler for App {
                             }
                         }
                         if fe.page == menu::Page::Pause {
-                            if let Some(sim) = self.scene.sim.as_ref() {
-                                fe.pause_objectives = nf_game::mission::LEVELS.iter().enumerate()
-                                    .find(|(_, l)| l.level == sim.level)
-                                    .map(|(li, l)| l.objectives.iter().enumerate().map(|(oi, o)| {
-                                        let done = sim.drones.mission.states.get(li).and_then(|s| s.get(oi)).map(|&s| s == 4).unwrap_or(false);
-                                        (o.text, done)
-                                    }).collect()).unwrap_or_default();
-                            }
+                            if let Some(sim) = self.scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); }
                         }
                         let mut f = match &self.scene.hud {
                             Some(tables) => menu::menu_overlay(fe, &tables.font, &tables.font_header, lang, &self.scene.hud_textures, aspect),
@@ -2990,3 +2986,15 @@ pub fn run() -> Result<()> {
 
 /// Leak a `String` to a `&'static str` (the scenario name lives for the program's life).
 fn leak_str(s: &str) -> &'static str { Box::leak(s.to_string().into_boxed_str()) }
+
+/// The pause OBJECTIVES tab's rows: (label, done) for each VISIBLE objective of the running level [M C_GCPAUSE_Handler
+/// 0x204408:251-268 lists `Mission_NumVisObjectives` rows; 0x182540 counts the objectives whose state (record+0x14)
+/// is > 1 or < 0; a row is done at state 4].
+fn pause_objective_rows(sim: &scene::Sim) -> Vec<(u32, bool)> {
+    nf_game::mission::LEVELS.iter().enumerate()
+        .find(|(_, l)| l.level == sim.level)
+        .map(|(li, l)| l.objectives.iter().enumerate().filter_map(|(oi, o)| {
+            let st = sim.drones.mission.states.get(li).and_then(|s| s.get(oi)).copied().unwrap_or(0) as i32;
+            (st > 1 || st < 0).then_some((o.text, st == 4))
+        }).collect()).unwrap_or_default()
+}
