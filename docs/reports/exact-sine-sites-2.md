@@ -75,16 +75,18 @@ the game core differs from host libm on 2000-sample sweeps). `cargo test -p nf-f
 
 ## Suite (foreground chunks — this sandbox reaps background jobs)
 
-**406 passed / 0 failed** on this branch: nf-game all test binaries **289/289** (the AI-fight and
-drone live tests with the changed pose bits — none flipped), nf-view 117 across four batches: the
-alphabetical prefix through dump_drone3 (62, cut by a chunk timeout, no failures), then targeted
-batches — dump_drone4/probe_drone4/fix_drone3_live/fix_drone4_live/head_look_live/fix_aim_raise_live/
-fps_determinism_live (22), walk_07000005 (the AT-420 level)/walk_07000006/walk_07000007/
-fix_ai_remainder_live/fix_guard_misc_live (13), models_characters_live/models_weapons_live (its
-re-pinned golden holds)/fix_guest_reactions_live/weapon_anims_live (20). Not run: the nf-view
-walk/walkreal sweeps and portal/cutscene tails (no plausible coupling to the two sites), nf-audio
-(untouched), nf-formats integration (lib 64/64 done). Run the fast runner on the merged tree before
-merging per the standing rule.
+**477 passed / 0 failed** on this branch: nf-game all test binaries **289/289** (the AI-fight and
+drone live tests with the changed pose bits — none flipped) and nf-view **188/188** in foreground
+chunks (this sandbox reaps background jobs): the alphabetical prefix through dump_drone3 (62, cut by
+a chunk timeout, no failures), then targeted batches — dump_drone4/probe_drone4/fix_drone3_live/
+fix_drone4_live/head_look_live/fix_aim_raise_live/fps_determinism_live (22); walk_07000005 (the
+AT-420 level)/06/07 + fix_ai_remainder_live/fix_guard_misc_live (13); models_characters_live/
+models_weapons_live (its re-pinned golden holds)/fix_guest_reactions_live/weapon_anims_live (20);
+fix_weapon_fire_modes_live (the guided-cam weapons)/sentinel_camera_live/walkreal_07000005/
+fix_weapons_all_live/walk_07000008-0a (21); the rest of the walk sweep 0b-4b (23+13), mp_core_live
+included; walkreal_07000001-1b (5+6+3, realtime input walks). Not run: nf-view's remaining
+portal/cutscene/probe tails (no plausible coupling to the two sites) and nf-audio (untouched);
+nf-formats lib 64/64. Run the fast runner on the merged tree before merging per the standing rule.
 
 ## What's left / [S] notes
 - **[S] steer rebuild structural factors**: the game's dir row carries `sinf(π/2)` = 0x3f800001
