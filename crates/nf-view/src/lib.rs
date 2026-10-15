@@ -876,6 +876,10 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                 // `Player_Init(0, pos, rot, params)` creates the player object at the entry; the port
                 // stands him on the floor below (the level start convention, `Bond::stand_at`).
                 sim.bond = nf_game::player::Bond::stand_at(&sim.world, s.pos, s.yaw);
+                // `Player_Init` 0x1910f8:152-172 [M]: the default WldGravity write (0, −9.8, 0),
+                // then p3 == 2 → `Vec_Zero(&WldGravity)` (the spacewalk starts; disasm 0x19151c-
+                // 0x191550 the default, 0x191618 the zero). fix-world-gravity.
+                sim.bond.world_gravity = if s.p3 == 2 { [0.0; 3] } else { [0.0, -9.8, 0.0] };
                 scene.start = Some((s.pos, s.yaw));
             }
         } else if let Some((pos, yaw)) = scene.start {
@@ -1046,6 +1050,8 @@ fn level_starts(level: &Level) -> Vec<nf_game::player::LevelStart> {
             pos: p.translation,
             yaw: p.rotation[1],
             gate: p.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v as u16),
+            // The zero-g selector (level_tag+0x38 = placement param 3) [M Player_Init 0x1910f8].
+            p3: p.params.iter().find(|(i, _)| *i == 3).map_or(0, |&(_, v)| v),
         })
         .collect()
 }
