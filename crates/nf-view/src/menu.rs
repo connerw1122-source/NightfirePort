@@ -2810,7 +2810,48 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             hint_bar(&mut h, font, &hint(0x49b, "~A Confirm  ~V Change  ~B Back"), 50.0, 419.0, cream);
             quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
         }
-        Page::MpSetup | Page::MpOptions | Page::MpRules
+        // The MP wheels with the codename wheel's layout [L pages 0x40000012 (header 0x2c4 Scenario Options),
+        // 0x40000027 / 0x4000003f (header 0x294 Multiplayer Bot Setup); hint 0x218; PCSX2 m55, m56, m57, m61, m63].
+        Page::MpOptions | Page::MpBots | Page::MpBotChoose => {
+            let (hdr, n, cur) = match fe.page {
+                Page::MpOptions => (0x2c4, MP_OPTIONS_ROWS.len(), fe.mp_options_row),
+                Page::MpBots => (0x294, MP_BOTS_ROWS.len(), fe.mp_bots_row),
+                _ => (0x294, MP_CHARACTERS.len(), fe.mp_bot_char),
+            };
+            let cur = cur.min(n - 1);
+            page_header(&mut h, hfont, &bind(hdr));
+            panel(&mut h);
+            let c = if fe.mp_row_locked(cur) { gs(0x7f7f7f, 0x60) } else { gs(0x7f7f7f, 0xff) };
+            emblem_col(&mut h, fe.mp_row_preview(cur), 0x0300_00bf, c, c);
+            let page = fe.page;
+            // The wheels' rows: the bots list's rows 1-4 read "Setup Bot N" (PCSX2 m57); the others the getters' labels.
+            let name = |r: usize| -> String {
+                match page {
+                    Page::MpOptions => bind(MP_OPTIONS_ROWS[r].1),
+                    Page::MpBotChoose => bind(MP_CHARACTERS[r].1),
+                    _ => bind(MP_BOTS_ROWS[r].1),
+                }
+            };
+            wheel_at(&mut h, font, n, cur, name, |r| fe.mp_row_locked(r), cream);
+            let desc = match fe.page {
+                // [PCSX2 m57/m63: "Playing : No" / "Playing : Yes" for the slot's enabled byte]
+                Page::MpBots if cur > 0 => format!("{} : {}", bind(0x295), bind(if fe.mp_bots[cur - 1].enabled { 0x181 } else { 0x182 })),
+                Page::MpBots => String::new(),
+                // [PCSX2 m61: the character's description, then "Team : Phoenix" (the preset's side)]
+                Page::MpBotChoose => format!("{}\n{} : {}", bind(fe.mp_row_desc(cur)), "Team", bind(if MP_CHARACTER_SIDE_MI6[cur] { 0x1c8 } else { 0x1c7 })),
+                _ => bind(fe.mp_row_desc(cur)),
+            };
+            let lines: Vec<String> = desc.split('\n').flat_map(|p| wrap_px(p, font, mx(505.0))).collect();
+            let nl = lines.len().min(4) as f32;
+            for (i, line) in lines.iter().take(4).enumerate() {
+                // The description plate's lines at pitch 28 (PCSX2 m56/m61, like the other wheel pages' desc_block).
+                let mid = 366.0 + (i as f32 - (nl - 1.0) / 2.0) * 28.0;
+                centred(&mut h, font, -2, line, mx(320.0), my(mid + 6.0), bright, true, 1.0);
+            }
+            hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        Page::MpSetup | Page::MpRules
         | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBots | Page::MpBotChoose | Page::MpBotSetup
         | Page::MpConfirm | Page::MpDebriefing => {}
         Page::Start => {
