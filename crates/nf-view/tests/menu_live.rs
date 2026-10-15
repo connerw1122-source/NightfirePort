@@ -141,11 +141,14 @@ fn menu_spawn_normal_guard_does_not_panic() {
     assert!(dr.drawn, "spawned guard not drawn (obj+0xFC) - it wouldn't be visible in play");
     assert!(sim.drones.llist.contains(&gi), "spawned guard not in the llist - the game wouldn't run its AI");
     assert!(dr.grenade_count > 0, "spawned guard has no grenades (spawn_guard gives 5)");
-    // B-12: the Character + char_drone (the renderer's link from character to drone).
-    assert_eq!(scene.characters.len(), n_chars_before + 1, "spawn did not add a Character (mesh) - the guard would be invisible");
-    assert_eq!(sim.char_drone.len(), n_char_drone_before + 1, "spawn did not add a char_drone entry - the renderer can't link the character to the drone");
-    assert_eq!(sim.char_drone.last().copied().flatten(), Some(gi), "char_drone entry does not point to the spawned drone");
-    eprintln!("[menu_test] spawn Normal: guard #{gi} present+drawn+in-llist, {} grenades, Character+char_drone added, at {:?}", dr.grenade_count, dr.pos);
+    // fix-dev-spawn-visible: the guard is drawn by one of the level's NPC POOL characters (build-time
+    // meshes, in the vertex buffer) bound to the new drone through char_drone — a Character pushed after
+    // the build had no vertices and drew nothing. No new Character, and a pool character points at it.
+    assert_eq!(scene.characters.len(), n_chars_before, "the spawn reuses a pool character (no post-build Character)");
+    assert_eq!(sim.char_drone.len(), n_char_drone_before, "char_drone keeps its length (pool characters are already in it)");
+    let bound = scene.npc_pool.iter().flat_map(|s| s.chars.iter()).any(|&c| sim.char_drone.get(c).copied().flatten() == Some(gi));
+    assert!(bound, "a pool character is bound to the spawned drone — the renderer draws it");
+    eprintln!("[menu_test] spawn Normal: guard #{gi} present+drawn+in-llist, {} grenades, pool character bound, at {:?}", dr.grenade_count, dr.pos);
     // Tick 60 frames; the new drone's first tick (set_state, anim, vision) must not panic.
     tick(&mut scene, 60);
     let dr = &scene.sim.as_ref().unwrap().drones.list[gi];
