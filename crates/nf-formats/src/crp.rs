@@ -83,7 +83,8 @@ pub struct Record {
 }
 
 impl Record {
-    fn parse(data: &[u8], offset: usize) -> Result<Record> {
+    /// Parses one 16-byte record (public for the mesh layer's window walks, `crp_mesh`).
+    pub fn parse(data: &[u8], offset: usize) -> Result<Record> {
         let b = data.get(offset..offset + 16)
             .ok_or_else(|| FormatError::Invalid(format!("record at {offset:#x} past the end ({})", data.len())))?;
         let le = |o: usize| u32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);

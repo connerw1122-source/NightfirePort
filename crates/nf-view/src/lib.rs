@@ -1280,6 +1280,19 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             "advanced" => menu::Page::CnAdvanced,
             "mpoptions" => menu::Page::CnMp,
             "avoptions" => menu::Page::CnAv,
+            // codename-entry: the name-entry grid renders headless too (cn_open seeds the proposal).
+            "cnname" => { fe.cn_open(menu::PAGE_CN_SELECT); menu::Page::CnName }
+            "cncheat" => { fe.cn_open(menu::PAGE_CN_MENU); menu::Page::CnName }
+            "mpscenario" => menu::Page::MpScenario,
+            "mpmap" => menu::Page::MpMap,
+            "mpjoin" => menu::Page::MpJoin,
+            "mpscenopts" => menu::Page::MpOptions,
+            "mpbots" => menu::Page::MpBots,
+            "mpbotchoose" => menu::Page::MpBotChoose,
+            "mprules" => menu::Page::MpRules,
+            "mpplayermods" => menu::Page::MpPlayerMods,
+            "mpenviromods" => menu::Page::MpEnviroMods,
+            "mpbotsetup" => menu::Page::MpBotSetup,
             // fix-pause-menu: the in-game pages render headless too (the pause page over the
             // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
             // picks the pause tab, `--confirm` arms the pause confirm.
@@ -1289,6 +1302,14 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier|pause|results|complete)"); return (None, None); }
         };
     }
+    // The MP wheels keep their own row counters: `--cursor N` picks the row there too.
+    if fe.page == menu::Page::MpScenario { fe.mp_scenario_row = fe.cursor; }
+    if fe.page == menu::Page::MpMap { fe.mp_map_row = fe.cursor; }
+    if fe.page == menu::Page::MpOptions { fe.mp_options_row = fe.cursor; }
+    if fe.page == menu::Page::MpBots { fe.mp_bots_row = fe.cursor; }
+    if fe.page == menu::Page::MpBotChoose { fe.mp_bot_char = fe.cursor; }
+    // Join Game: `--cursor` is agent 1's panel state (0 press to join, 1 choose codename, 5 joined).
+    if fe.page == menu::Page::MpJoin { fe.mp_join[0].state = fe.cursor as u32; fe.mp_join[0].joined = fe.cursor > 0; fe.cursor = 0; }
     if let Some(i) = args.iter().position(|a| a == "--pause-tab") {
         fe.pause_tab = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0);
     }
@@ -1306,6 +1327,15 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
     }
     if fe.page == menu::Page::Pause {
         if let Some(sim) = scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); }
+        // objective-hints: pre-open the ✕ hint box for the render (the row the cursor stands on) —
+        // the same state `FrontEnd::action`'s Confirm sets on the OBJECTIVES tab [M 0x204408
+        // 0x205b98-0x205c34: control 1's activation reads control 8's row and opens the ok-only
+        // box; 0xffffffff → 0x31d]. After the fill above (the rows must exist).
+        if args.iter().any(|a| a == "--pause-hint") && fe.pause_tab == 1 && !fe.pause_objectives.is_empty() {
+            let sel = fe.pause_objectives_sel.min(fe.pause_objectives.len() - 1);
+            let hint = fe.pause_objectives[sel].hint;
+            fe.pause_hint = Some(if hint == 0xffff_ffff { 0x31d } else { hint });
+        }
     }
     // Tick through the boot load and let the page's timers run (the flash cycle etc.).
     for _ in 0..3 { fe.flow.main_tick(); let _ = fe.flow.load_tick(); }
@@ -1566,9 +1596,62 @@ struct App {
     audio_paused: bool,
     /// The loading screens' pictures (07000500.bin, crate::loading), read on the first level change.
     loading_art: Option<std::collections::HashMap<u32, (u32, u32, Vec<u8>)>>,
+    /// The pointer in the menu's 640×480 space (PC mouse support).
+    menu_pointer: Option<(f32, f32)>,
 }
 
 impl App {
+    /// One menu action from the keyboard or the mouse (PC mouse support, 2026-10-15): the movie skip, the pause page's
+    /// Back = resume, the page's own handling, then the level request / close the page asked for.
+    fn menu_input(&mut self, a: menu::Action) {
+        if self.fe.is_none() { return; }
+        use menu::Action as MA;
+        let fe = self.fe.as_mut().unwrap();
+        // State 6: only the skip action matters [M GameFlow_Main 0x1c98c8 case 6
+        // reads Input_Action(-1, 0x19, 1) and nothing else — the menu pages are not
+        // up during a movie]. The port's Confirm keys (Enter/Space) stand in for
+        // the pad's X/Start [S docs/systems/input.md §3].
+        if fe.flow.get_state() == menu::ST_MOVIE {
+            if a == MA::Confirm { fe.flow.skip_movie(); }
+            return;
+        }
+        if fe.page == menu::Page::Pause && a == MA::Back {
+            self.fe = None; // resume [S: the game's resume is its own row; Back resumes too]
+            if self.scene.sim.is_some() { self.grab(true); }
+            return;
+        }
+        fe.action(a);
+        self.menu_after();
+    }
+
+    /// After a menu action (key or click): the level the page requested and the page's close.
+    fn menu_after(&mut self) {
+        let Some(fe) = self.fe.as_mut() else { return };
+        let closed = fe.closed;
+        if let Some(code) = fe.requested_level.take() {
+            // The menu picked a level: through the same reload path a LOAD_LEVEL uses. A cold pick
+            // (the pause page's RESTART [M 0x204408:139]) loads fresh, not with the current state.
+            if !fe.flow.warm_reset { if let Some(sim) = self.scene.sim.as_mut() { sim.drones.level_exit_cold = true; } }
+            self.pending_level = Some(code);
+        }
+        // The pause page's Resume row (cursor 0) closes the menu [M C_GCPAUSE_Handler
+        // 0x204408 — the game's resume is its own row]: the host consumes the flag and
+        // leaves the menu (the sound hold lifts through the diff below).
+        if closed {
+            self.fe = None;
+            if self.scene.sim.is_some() { self.grab(true); }
+        }
+    }
+
+    /// The menu's 640×480 space for a window pixel: the menus draw as a centred 4:3 picture (Anchor::Centre).
+    fn menu_space(&self, px: f64, py: f64) -> Option<(f32, f32)> {
+        let g = self.gfx.as_ref()?;
+        let (w, h) = (g.config.width as f32, g.config.height.max(1) as f32);
+        let (bw, bh) = if w / h >= 4.0 / 3.0 { (h * 4.0 / 3.0, h) } else { (w, w * 3.0 / 4.0) };
+        let (bx, by) = ((w - bw) / 2.0, (h - bh) / 2.0);
+        Some(((px as f32 - bx) / bw * 640.0, (py as f32 - by) / bh * 480.0))
+    }
+
     /// Draws the level's loading screen and presents it before the (blocking) load [M ResetMap_Load 0x1d6360 state 3 →
     /// ResetMap_GenLoadScreen 0x1d5de0, skipped for the front end 0x07000048]. The load blocks this thread, so the
     /// dots show their first state; the game's vblank animation is not reproduced.
@@ -1997,7 +2080,9 @@ impl ApplicationHandler for App {
         // switching (next/prev). Up = previous row / next weapon (−1 direction, matching the old
         // weapon-cycle mapping: wheel up = next).
         if let DeviceEvent::MouseWheel { delta: MouseScrollDelta::LineDelta(_x, y) } = event {
-            if self.dev.as_deref().is_some_and(|d| d.menu) {
+            if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) {
+                if y > 0.0 { self.menu_input(menu::Action::Up); } else if y < 0.0 { self.menu_input(menu::Action::Down); }
+            } else if self.dev.as_deref().is_some_and(|d| d.menu) {
                 if let Some(d) = self.dev.as_deref_mut() {
                     let n = dev::menu_items(d, Some(&self.scene)).len();
                     if n > 0 {
@@ -2040,6 +2125,17 @@ impl ApplicationHandler for App {
             }
             // Left button: grab the mouse, then fire (action 9) while held. With the dev menu open (F2), a left click
             // selects a menu item instead (WORKLOG 0081).
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+                if state == ElementState::Pressed {
+                    if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) {
+                        if fe.flow.get_state() == menu::ST_MOVIE { self.menu_input(menu::Action::Confirm); }
+                        else if fe.mouse_click(x, y) { self.menu_after(); }
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+                self.menu_input(menu::Action::Back);
+            }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 if self.dev.as_deref().is_some_and(|d| d.menu) {
                     if state == ElementState::Pressed { self.dev_menu_click(); }
@@ -2050,6 +2146,10 @@ impl ApplicationHandler for App {
                 if self.grabbed { self.zoom = state == ElementState::Pressed; }
             }
             // Cursor moves: track the NDC position for the dev menu's click hit-test (when the menu is open).
+            WindowEvent::CursorMoved { position, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+                self.menu_pointer = self.menu_space(position.x, position.y);
+                if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) { fe.mouse_move(x, y); }
+            }
             WindowEvent::CursorMoved { position, .. } => if let (Some(g), Some(d)) = (&self.gfx, self.dev.as_deref_mut()) {
                 if d.menu {
                     let (w, h) = (g.config.width as f32, g.config.height as f32);
@@ -2081,38 +2181,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if event.state == ElementState::Pressed && self.fe.is_some() {
-                    if let Some(a) = menu::key_action(k) {
-                        use menu::Action as MA;
-                        let fe = self.fe.as_mut().unwrap();
-                        // State 6: only the skip action matters [M GameFlow_Main 0x1c98c8 case 6
-                        // reads Input_Action(-1, 0x19, 1) and nothing else — the menu pages are not
-                        // up during a movie]. The port's Confirm keys (Enter/Space) stand in for
-                        // the pad's X/Start [S docs/systems/input.md §3].
-                        if fe.flow.get_state() == menu::ST_MOVIE {
-                            if a == MA::Confirm { fe.flow.skip_movie(); }
-                            return;
-                        }
-                        if fe.page == menu::Page::Pause && a == MA::Back {
-                            self.fe = None; // resume [S: the game's resume is its own row; Back resumes too]
-                            if self.scene.sim.is_some() { self.grab(true); }
-                            return;
-                        }
-                        fe.action(a);
-                        let closed = fe.closed;
-                        if let Some(code) = fe.requested_level.take() {
-                            // The menu picked a level: through the same reload path a LOAD_LEVEL uses. A cold pick
-                            // (the pause page's RESTART [M 0x204408:139]) loads fresh, not with the current state.
-                            if !fe.flow.warm_reset { if let Some(sim) = self.scene.sim.as_mut() { sim.drones.level_exit_cold = true; } }
-                            self.pending_level = Some(code);
-                        }
-                        // The pause page's Resume row (cursor 0) closes the menu [M C_GCPAUSE_Handler
-                        // 0x204408 — the game's resume is its own row]: the host consumes the flag and
-                        // leaves the menu (the sound hold lifts through the diff below).
-                        if closed {
-                            self.fe = None;
-                            if self.scene.sim.is_some() { self.grab(true); }
-                        }
-                    }
+                    if let Some(a) = menu::key_action(k) { self.menu_input(a); }
                     return;
                 }
                 // fix-ingame-dev-menu: while the dev menu is open, the keys drive the menu and never the game
@@ -2969,7 +3038,7 @@ pub fn run() -> Result<()> {
     let pad_backend = gamepad::Backend::new(&iso);
     let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
-        audio_paused: false, loading_art: None, };
+        audio_paused: false, loading_art: None, menu_pointer: None, };
     if dev {
         // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
         // menu carries ALL of its functions now (through the same `panel::apply` command layer).
@@ -3082,14 +3151,17 @@ pub fn run() -> Result<()> {
 /// Leak a `String` to a `&'static str` (the scenario name lives for the program's life).
 fn leak_str(s: &str) -> &'static str { Box::leak(s.to_string().into_boxed_str()) }
 
-/// The pause OBJECTIVES tab's rows: (label, done) for each VISIBLE objective of the running level [M C_GCPAUSE_Handler
+/// The pause OBJECTIVES tab's rows: the mission's visible objectives (label / hint / done) [M C_GCPAUSE_Handler
 /// 0x204408:251-268 lists `Mission_NumVisObjectives` rows; 0x182540 counts the objectives whose state (record+0x14)
 /// is > 1 or < 0; a row is done at state 4].
-fn pause_objective_rows(sim: &scene::Sim) -> Vec<(u32, bool)> {
-    nf_game::mission::LEVELS.iter().enumerate()
-        .find(|(_, l)| l.level == sim.level)
-        .map(|(li, l)| l.objectives.iter().enumerate().filter_map(|(oi, o)| {
-            let st = sim.drones.mission.states.get(li).and_then(|s| s.get(oi)).copied().unwrap_or(0) as i32;
-            (st > 1 || st < 0).then_some((o.text, st == 4))
-        }).collect()).unwrap_or_default()
+fn pause_objective_rows(sim: &scene::Sim) -> Vec<menu::PauseObjective> {
+    // objective-hints [M C_GCPAUSE_Handler 0x204408:251-271]: the rows come from
+    // Mission_NumVisObjectives 0x182540 + Mission_ObjectiveState 0x182630 — the WHOLE mission's
+    // announced objectives in LEVELS order (prior parts included, future parts and unannounced
+    // rows excluded), not just the current level's record. state 4 = the ~J done marker; the
+    // hint stays 0xffffffff for hint-less records (the view's ✕ applies the 0x31d fallback).
+    let m = &sim.drones.mission;
+    (0..m.num_vis_objectives()).filter_map(|i| m.objective_state(i))
+        .map(|o| menu::PauseObjective { text: o.text, hint: o.hint, done: o.state == 4 })
+        .collect()
 }

@@ -106,7 +106,9 @@ pub const PAGE_CN_MENU: u32 = 0x4000_001d;
 /// The codename-entry / Secret Unlocks page [M Handler_HandleMessage 0x2029e0:372-374 routes
 /// 0x40000020 to P_CNNAME_Handler 0x213790; C_SBCNOPTIONS_Handler 0x213528 case 0 opens it].
 /// Entered from the codename wheel (0x4000001d) it runs in cheat mode [M 0x213790:31-38] — the
-/// Secret Unlocks letter grid; its model is [`SecretEntry`].
+/// Secret Unlocks letter grid; its model is [`SecretEntry`]. From Select Codename 0x40000025 /
+/// Edit Codename 0x4000001b it is the PROFILE-name entry — the validator + create flow in the
+/// `cn_*` API [M C_KEYBOARD_Handler 0x213a98:45-65].
 /// Advanced Options [L page 0x4000002d; P_CNOPTIONS_Handler 0x213f08].
 pub const PAGE_CN_NAME: u32 = 0x4000_0020;
 /// Advanced Options [L page 0x4000002d; P_CNOPTIONS_Handler 0x213f08].
@@ -511,6 +513,20 @@ impl Page {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action { Up, Down, Confirm, Back, Side, Left, Right }
 
+/// objective-hints: one OBJECTIVES-tab row — the game's OBJ_STATE as the pause populate
+/// (C_GCPAUSE_Handler 0x204408:251-271) uses it: the row text (record+0x00), the ✕ hint box's
+/// label (record+0x08; 0xffffffff = none, the view substitutes 0x31d [M 0x205bd0-0x205bdc]) and
+/// the ~J (done, state 4) / ~I (pending) marker [M the strings .rodata 0x30d2e0/0x30d2e8].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PauseObjective {
+    /// The row's text label (bank 4).
+    pub text: u32,
+    /// The hint box's label (record+0x08), 0xffffffff = none.
+    pub hint: u32,
+    /// state 4 → the ~J done marker [M the populate's `if (state == 4)`].
+    pub done: bool,
+}
+
 /// One cell of the Secret Unlocks letter grid. The character cells carry their char; the three
 /// control cells use the ids the game's keyboard sends [M C_KEYBOARD_Handler 0x213a98: id 1000
 /// (0x3e8) deletes the last char, id 1001 (0x3e9) appends the space, id 0x3ea submits].
@@ -591,9 +607,32 @@ pub const AV_ROWS: &[OptRow] = &[
     OptRow { ctrl: 0x1000_0138, label: 0x198, y: 312.0, items: &[], kind: OptKind::Action },
     OptRow { ctrl: 0x1000_0222, label: 0x550, y: 340.0, items: &[], kind: OptKind::Action },
 ];
-/// The option pages' descriptions per (row control, current value) — i32::MIN matches any value [L ee_snapshot
-/// 0x2e4a18: 12-byte {control, value, label} records, 0xf0f0f0f0 = any].
+/// The option pages' descriptions per (row control, current value) — i32::MIN matches any value, the first matching
+/// record wins [L ee_snapshot 0x2e4610..0x2e4c28: 12-byte {control, value, label} records, 0xf0f0f0f0 = any; the main
+/// menu rows, the MP rules / player-mods / enviro-mods / bot-setup rows, then the codename option pages'].
 const OPT_DESC: &[(u32, i32, u32)] = &[
+    (0x1000_0002, i32::MIN, 0x100_0000), (0x1000_0003, i32::MIN, 0x100_0001), (0x1000_0004, i32::MIN, 0x100_0002), (0x1000_0008, 0, 0x100_002f),
+    (0x1000_00f6, 0, 0x100_002f), (0x1000_0081, 1, 0x100_0021), (0x1000_0081, 0, 0x100_0022), (0x1000_0084, 0, 0x100_0023),
+    (0x1000_0084, 1, 0x100_0024), (0x1000_0084, 2, 0x100_0025), (0x1000_0084, 3, 0x100_0026), (0x1000_0084, 4, 0x100_0027),
+    (0x1000_0084, 5, 0x100_0028), (0x1000_0084, 6, 0x100_0200), (0x1000_0084, 7, 0x100_0201), (0x1000_0084, 8, 0x100_0202),
+    (0x1000_0084, 9, 0x100_0203), (0x1000_0084, 10, 0x100_0327), (0x1000_0080, 1, 0x100_002a), (0x1000_0080, 0, 0x100_0029),
+    (0x1000_008c, 1, 0x100_002c), (0x1000_008c, 0, 0x100_002b), (0x1000_008d, 1, 0x100_002d), (0x1000_008d, 0, 0x100_002e),
+    (0x1000_00a2, 0, 0x100_002f), (0x1000_00a2, 1, 0x100_0030), (0x1000_00a2, 2, 0x100_0031), (0x1000_009f, 1, 0x100_0033),
+    (0x1000_009f, 0, 0x100_0032), (0x1000_019b, 0, 0x100_0034), (0x1000_019b, 1, 0x100_0035), (0x1000_019b, 16, 0x100_0295),
+    (0x1000_0227, 1, 0x100_0037), (0x1000_0227, 0, 0x100_0036), (0x1000_0228, 0, 0x100_01dd), (0x1000_0228, 1, 0x100_0325),
+    (0x1000_0228, 2, 0x100_0326), (0x1000_0228, 3, 0x100_01dc), (0x1000_0008, i32::MIN, 0x100_030d), (0x1000_00f6, i32::MIN, 0x100_030e),
+    (0x1000_0116, 1, 0x100_0079), (0x1000_0116, 0, 0x100_007a), (0x1000_0115, 1, 0x100_007b), (0x1000_0115, 0, 0x100_007c),
+    (0x1000_018c, 0, 0x100_007d), (0x1000_018c, 1, 0x100_007e), (0x1000_018c, 2, 0x100_007f), (0x1000_0195, 0, 0x100_02da),
+    (0x1000_0195, 4, 0x100_0083), (0x1000_0195, 1, 0x100_0080), (0x1000_0195, 2, 0x100_0081), (0x1000_0195, 3, 0x100_0082),
+    (0x1000_0195, 5, 0x100_0084), (0x1000_0195, 6, 0x100_0085), (0x1000_0195, 7, 0x100_0087), (0x1000_0195, 8, 0x100_0086),
+    (0x1000_0185, 2, 0x100_0088), (0x1000_0185, 3, 0x100_0089), (0x1000_0185, 4, 0x100_008a), (0x1000_0186, 8, 0x100_008b),
+    (0x1000_0186, 5, 0x100_008c), (0x1000_0186, 3, 0x100_008d), (0x1000_0186, 1, 0x100_008e), (0x1000_0187, 50, 0x100_008f),
+    (0x1000_0187, 75, 0x100_0090), (0x1000_0187, 100, 0x100_0091), (0x1000_0187, 125, 0x100_0092), (0x1000_0187, 150, 0x100_0093),
+    (0x1000_0187, 175, 0x100_0094), (0x1000_0187, 200, 0x100_0095), (0x1000_0187, 250, 0x100_0328), (0x1000_0187, 300, 0x100_0329),
+    (0x1000_0188, 50, 0x100_0096), (0x1000_0188, 75, 0x100_0097), (0x1000_0188, 100, 0x100_0098), (0x1000_0188, 125, 0x100_0099),
+    (0x1000_0188, 150, 0x100_009a), (0x1000_0188, 175, 0x100_009b), (0x1000_0188, 200, 0x100_009c), (0x1000_018a, 50, 0x100_009d),
+    (0x1000_018a, 75, 0x100_009e), (0x1000_018a, 100, 0x100_009f), (0x1000_018a, 125, 0x100_00a0), (0x1000_018a, 150, 0x100_00a1),
+    (0x1000_018a, 175, 0x100_00a2), (0x1000_018a, 200, 0x100_00a3),
     (0x1000_011a, 1, 0x100_030f), (0x1000_011a, 0, 0x100_0310), (0x1000_011b, 1, 0x100_0057), (0x1000_011b, 0, 0x100_0058),
     (0x1000_0124, 1, 0x100_0059), (0x1000_0124, 0, 0x100_005a), (0x1000_0125, 0, 0x100_005b), (0x1000_0125, 1, 0x100_005c),
     (0x1000_0126, 0, 0x100_005d), (0x1000_0126, 1, 0x100_005e), (0x1000_01cb, 1, 0x100_0061), (0x1000_01cb, 0, 0x100_0062),
@@ -981,10 +1020,20 @@ pub struct FrontEnd {
     /// The pause page's tab: 0 MISSION / 1 OBJECTIVES / 2 CONTROLS / 3 SCORE [L page 0x4000004b's
     /// four type-1 controls LBL 0x167/0x176/0x168/0x169].
     pub pause_tab: usize,
-    /// fix-pause-menu2: the OBJECTIVES tab's rows — (label id, done) per visible objective, filled
-    /// by the host each frame from the sim's mission state [M C_GCPAUSE_Handler 0x204408:251-271
-    /// fills the game's list from Mission_ObjectiveState; state 4 = the ~J done marker].
-    pub pause_objectives: Vec<(u32, bool)>,
+    /// objective-hints: one OBJECTIVES row — the game's OBJ_STATE as the populate uses it: the
+    /// row text label (record+0x00), the ✕ hint box's label (record+0x08, 0xffffffff = none —
+    /// the VIEW applies the 0x31d fallback [M C_GCPAUSE_Handler 0x204408 0x205bd0-0x205bdc]), and
+    /// the ~J/~I marker (state 4 = done [M 0x204408:251-271; the strings .rodata 0x30d2e0/0x30d2e8]).
+    pub pause_objectives: Vec<PauseObjective>,
+    /// objective-hints: control 8's selected row — starts at the LAST row on every tab entry
+    /// (the populate's msg 0x1d = numVis−1 [M 0x204408 0x204840-0x204850]) and moves with ~V.
+    pub pause_objectives_sel: usize,
+    /// objective-hints: the ✕ hint box — Some(label) while the modal ok-only option box is up
+    /// (label 0x31d already applied) [M 0x204408 case 1 → Menu_CreateOptionBox 0x202218 with
+    /// box_id 10, ok_only 1; the box's OK row / a cancel pop it [M C_LBMSGOPTIONS 0x2022a0] and
+    /// the page handler re-shows the list on msg 0x50 [M P_PAUSE_Handler 0x203c28:19-24 —
+    /// `option_return != 0` → control 8 0x2b(0)] — the port just clears the field].
+    pub pause_hint: Option<u32>,
     /// fix-save-profile: the port's memory card — the profiles dir next to the port's config,
     /// one file per codename [M Menu_UpdateMessageBox 0x1f7de8:19/28 passes the codename buffer
     /// 0x2e1ae8 to LS_Load/LS_Save as the file name]. The host points it at the dir; None keeps
@@ -1020,6 +1069,40 @@ pub struct FrontEnd {
     /// :74-79]: the page's Confirm routes to the bonus page 0x40000038 while it stands (not
     /// ported — reported).
     pub new_reward: bool,
+    // codename-entry (each field on its own line [WORKLOG lesson 4]).
+    /// The name-entry page's typed buffer — the game's `buffer` at 0x34e028, shown by the draw
+    /// code through `cn_typed_name` [M C_KEYBOARD_Handler 0x213a98 appends/erases it].
+    pub cn_typed: String,
+    /// The focused grid cell id — the game opens on the ✓ 1002 [M P_CNNAME_Handler 0x213790:47].
+    pub cn_cell: u32,
+    /// The page the name entry opened FROM — the 0x4c init's param_6 [M Manager_SendMessage
+    /// 0x21c858:344-345]; 0x4000001d (the wheel) is the cheat-codename entry [M 0x213790:33].
+    pub cn_from: u32,
+    /// `del_when_keypressed` — the first press after open (or after a refused name) clears the
+    /// proposal first, and the SPACE key's press is swallowed [M C_KEYBOARD 0x213a98:18-27].
+    pub cn_clear_on_key: bool,
+    /// The option box awaiting dismissal as `(box id, label id)`: (6, 0x2c0) reserved / (6, 0x3bc)
+    /// empty are the validator's refusals [M C_KEYBOARD 0x213a98:47-51], (4, 0) the overwrite
+    /// question the card flow asks on P_CNNAME's tick [M P_CNNAME 0x213790:62-76].
+    pub cn_box: Option<(u32, u32)>,
+    /// The Edit Codename list row awaiting its delete confirm — the game's ~X asks through the
+    /// card flow, then mode 3 runs psiDeleteData [M C_SBCNSELECT 0x212f58 case 0x5e].
+    pub cn_delete_row: Option<usize>,
+    /// The reserved codenames the validator strstr's against — the def_codename labels 0x29b /
+    /// 0x211 resolved through the language bank [M Menu_IsValidCodename 0x1f9930:63-76]. The host
+    /// fills them (headless they are empty, so nothing is reserved).
+    pub cn_reserved: Vec<String>,
+    /// The page id the game changes to after an accepted name — DAT_002e1ad8 = 0x4000001d [M
+    /// C_KEYBOARD 0x213a98:58]; the wheel's own init then forwards to Controls 0x40000022 [M
+    /// P_CNMENU 0x213288:38-40, not ported].
+    pub cn_exit: Option<u32>,
+    /// The cheat entry's ✓ ran the special-codename check — Menu_SpecialCodenameCheck 0x200238
+    /// (52 names at 0x308578, strcmp, unlock masks into sp_level+0x10) is not ported (reported);
+    /// the port records that the check ran and creates nothing [M C_KEYBOARD 0x213a98:67-73].
+    pub cn_cheat_checked: bool,
+    /// The page's PROFILE-name mode — cn_open(from != 0x4000001d) runs the validator/create
+    /// flow; the wheel's entry is the cheat grid (SecretEntry) [M 0x213790:33].
+    pub cn_profile_mode: bool,
     /// secret-codes: the Secret Unlocks letter-grid model (page 0x40000020 in cheat mode). The
     /// grid cursor + typed string + the valid-code box flag [M C_KEYBOARD_Handler 0x213a98].
     pub secret: SecretEntry,
@@ -1137,6 +1220,9 @@ impl FrontEnd {
             pause_tab: 0,
             // fix-pause-menu2 (each new field on its own line [WORKLOG lesson 4]).
             pause_objectives: Vec::new(),
+            // objective-hints (each new field on its own line [WORKLOG lesson 4]).
+            pause_objectives_sel: 0,
+            pause_hint: None,
             // fix-save-profile (each new field on its own line [WORKLOG lesson 4]).
             profile_dir: None,
             profiles: Vec::new(),
@@ -1149,6 +1235,17 @@ impl FrontEnd {
             results: None,
             just_completed: false,
             new_reward: false,
+            // codename-entry (each on its own line [WORKLOG lesson 4]).
+            cn_typed: String::new(),
+            cn_cell: 0,
+            cn_from: 0,
+            cn_clear_on_key: false,
+            cn_box: None,
+            cn_delete_row: None,
+            cn_reserved: Vec::new(),
+            cn_exit: None,
+            cn_cheat_checked: false,
+            cn_profile_mode: false,
             // secret-codes: the letter-grid model starts empty (the game's buffer 0x34e028 begins
             // empty on every page enter [M P_CNNAME 0x213790:46 re-binds the empty buffer]).
             secret: SecretEntry::default(),
@@ -1378,6 +1475,119 @@ impl FrontEnd {
         }
     }
 
+    // ── PC mouse support (the user, 2026-10-15: "mouse support for menu navigation") ──
+    // Every page keeps the keyboard's actions; the mouse maps onto them: hovering a list row selects it, a left click
+    // on the selected row (or anywhere on single-action pages) is Confirm, a click on a wheel's neighbour row scrolls
+    // the wheel to it, the ◀ ▶ columns of a value row are Left / Right, right click is Back and the wheel scrolls
+    // (Up / Down). Coordinates are the menu's 640×480 space.
+
+    /// The row cursor of the current page (the MP wheels keep their own counters).
+    fn page_row(&self) -> usize {
+        match self.page {
+            Page::MpScenario => self.mp_scenario_row, Page::MpMap => self.mp_map_row, Page::MpOptions => self.mp_options_row,
+            Page::MpBots => self.mp_bots_row, Page::MpBotChoose => self.mp_bot_char, _ => self.cursor,
+        }
+    }
+    fn set_page_row(&mut self, r: usize) {
+        match self.page {
+            Page::MpScenario => self.mp_scenario_row = r, Page::MpMap => self.mp_map_row = r, Page::MpOptions => self.mp_options_row = r,
+            Page::MpBots => self.mp_bots_row = r, Page::MpBotChoose => self.mp_bot_char = r, _ => self.cursor = r,
+        }
+    }
+    /// The value-list rows' y (640 space) on the list pages, or None off them.
+    fn list_rows_y(&self) -> Option<Vec<f32>> {
+        Some(match self.page {
+            Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().iter().map(|r| r.y).collect(),
+            Page::MpRules => vec![191.0, 223.0],
+            Page::MpPlayerMods => vec![143.0, 175.0, 207.0, 239.0, 271.0],
+            Page::MpEnviroMods => vec![143.0, 177.0, 209.0, 241.0, 273.0],
+            Page::MpBotSetup => (0..8).map(|i| 85.0 + 32.0 * i as f32).collect(),
+            _ => return None,
+        })
+    }
+    fn is_wheel_page(&self) -> bool {
+        matches!(self.page, Page::Codename | Page::Difficulty | Page::MissionSelect | Page::Dossier | Page::CnSelect | Page::CnMenu
+            | Page::MpScenario | Page::MpMap | Page::MpOptions | Page::MpBots | Page::MpBotChoose)
+    }
+
+    /// The pointer moved to (x, y): hovering a list row selects it. Returns whether the selection changed.
+    pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
+        let pick = |rows: &[(f32, f32)], x0: f32, x1: f32| rows.iter().position(|&(a, b)| y >= a && y < b && x >= x0 && x < x1);
+        let before = (self.page_row(), self.confirm_sel);
+        match self.page {
+            Page::Main => if let Some(i) = pick(&(0..3).map(|i| (262.0 + 32.0 * i as f32, 290.0 + 32.0 * i as f32)).collect::<Vec<_>>(), 167.0, 473.0) { self.cursor = i; },
+            Page::Pause if self.confirming_restart || self.confirming_quit => {
+                if let Some(i) = pick(&[(220.0, 254.0), (254.0, 288.0)], 238.0, 403.0) { self.confirm_sel = i; }
+            }
+            Page::Pause if self.pause_tab == 0 => {
+                if let Some(i) = pick(&(0..3).map(|i| (192.0 + 33.5 * i as f32, 225.5 + 33.5 * i as f32)).collect::<Vec<_>>(), 153.0, 487.0) { self.cursor = i; }
+            }
+            Page::Results if self.outcome == Outcome::Failed => {
+                if let Some(i) = pick(&[(200.0, 235.0), (235.0, 273.0)], 197.0, 443.0) { self.cursor = i; }
+            }
+            _ => {
+                if let Some(ys) = self.list_rows_y() {
+                    let rows: Vec<(f32, f32)> = ys.iter().map(|&y0| (y0 - 6.0, y0 + 22.0)).collect();
+                    if let Some(i) = pick(&rows, 40.0, 600.0) { self.cursor = i; }
+                }
+            }
+        }
+        (self.page_row(), self.confirm_sel) != before
+    }
+
+    /// A left click at (x, y), as the keyboard action it stands for. Returns whether anything happened.
+    pub fn mouse_click(&mut self, x: f32, y: f32) -> bool {
+        // Hover first, so a click lands on the row under the pointer.
+        self.mouse_move(x, y);
+        // The pause tabs [L page 0x4000004b's four type-1 controls at y 120].
+        if self.page == Page::Pause && !(self.confirming_restart || self.confirming_quit) && (110.0..140.0).contains(&y) {
+            let tabs = [(84.0, 191.0), (199.0, 331.0), (339.0, 457.0), (465.0, 555.0)];
+            if let Some(t) = tabs.iter().position(|&(a, b)| x >= a && x < b) {
+                if t != self.pause_tab {
+                    self.pause_tab = t;
+                    if t == 1 { self.pause_objectives_sel = self.pause_objectives.len().saturating_sub(1); }
+                }
+                return true;
+            }
+        }
+        // Wheels: a neighbour row scrolls the wheel to it, the centre row confirms.
+        if self.is_wheel_page() && x >= 290.0 {
+            for (slot, &wy) in WHEEL_Y.iter().enumerate() {
+                if y >= wy - 6.0 && y < wy + 23.0 {
+                    let d = slot as i32 - 2;
+                    if d == 0 { return self.action(Action::Confirm); }
+                    let r = self.page_row() as i32 + d;
+                    if r >= 0 && (r as usize) < self.rows() { self.set_page_row(r as usize); return true; }
+                    return false;
+                }
+            }
+            return false;
+        }
+        // Value rows: the ◀ / ▶ columns step the value; the rest of an action row confirms.
+        if let Some(ys) = self.list_rows_y() {
+            if !ys.iter().any(|&y0| y >= y0 - 6.0 && y < y0 + 22.0) { return false; }
+            let is_action = matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv)
+                && self.opt_rows().get(self.cursor).is_some_and(|r| r.kind == OptKind::Action);
+            if is_action { return self.action(Action::Confirm); }
+            if (340.0..400.0).contains(&x) { return self.action(Action::Left); }
+            if (400.0..600.0).contains(&x) { return self.action(Action::Right); }
+            return true;
+        }
+        match self.page {
+            // Pages whose rows are hovered: only a click ON a row confirms.
+            Page::Main => if (167.0..473.0).contains(&x) && (262.0..358.0).contains(&y) { return self.action(Action::Confirm); },
+            Page::Pause if self.confirming_restart || self.confirming_quit => if (238.0..403.0).contains(&x) && (220.0..288.0).contains(&y) { return self.action(Action::Confirm); },
+            Page::Pause if self.pause_tab == 0 => if (153.0..487.0).contains(&x) && (192.0..293.0).contains(&y) { return self.action(Action::Confirm); },
+            Page::Pause => {}
+            Page::Results if self.outcome == Outcome::Failed => if (197.0..443.0).contains(&x) && (200.0..273.0).contains(&y) { return self.action(Action::Confirm); },
+            // The letter grid and the MP setup panels keep the keyboard (typing / the per-agent steps).
+            Page::CnName | Page::MpSetup => {}
+            // Single-action pages (the title, the results page, the credits, the Join panel, the summary): a click is ✕.
+            _ => return self.action(Action::Confirm),
+        }
+        false
+    }
+
     /// The option page's rows (empty off the option pages).
     pub fn opt_rows(&self) -> &'static [OptRow] {
         match self.page { Page::CnAdvanced => ADV_ROWS, Page::CnMp => MP_ROWS, Page::CnAv => AV_ROWS, _ => &[] }
@@ -1523,6 +1733,10 @@ impl FrontEnd {
             self.confirming_restart = false;
             self.confirming_quit = false;
             self.confirm_sel = 1;   // the YES/NO list opens on NO [L m0x1d:1; M 0x204408:181/204]
+            // objective-hints: a fresh pause has no hint box up and the objectives list's
+            // selection comes from the tab's populate (per-entry reset [M 0x204840-0x204850]).
+            self.pause_hint = None;
+            self.pause_objectives_sel = 0;
             true
         } else { false }
     }
@@ -1695,6 +1909,23 @@ impl FrontEnd {
         true
     }
 
+    /// codename-entry: the Edit Codename list's data load — the file read half of `load_codename`
+    /// without the play flow's page change [M C_SBCNSELECT 0x212f58 case 0x4b sel ≥ 2: slot = sel,
+    /// strcpy(0x2e1ae8, name), box mode 0 = LS_Load 0x1f7de8:15-17 — then the Edit wheel opens].
+    fn load_profile_data(&mut self, row: usize) -> bool {
+        let Some(name) = self.profiles.get(row.wrapping_sub(2)).cloned() else { return false };
+        let Some(dir) = self.profile_dir.clone() else { return false };
+        let path = nf_game::profile::Profile::path_in(&dir, &name);
+        let Ok(profile) = nf_game::profile::Profile::load_file(&path) else { return false };
+        let status = profile.progress.nightfire_status();
+        for (i, u) in self.unlocked.iter_mut().enumerate() {
+            *u = status & (1 << i) != 0;
+        }
+        self.active_profile = Some(name);
+        self.profile = Some(profile);
+        true
+    }
+
     /// The results save [M P_NFRESULTS 0x208e78 awards the level, then the save prompt's
     /// Menu_UpdateMessageBox 0x1f7de8 case 1 writes the chain under the codename]: mirror the
     /// front-end unlock bits into the profile's progress and write the file. The host syncs
@@ -1750,6 +1981,202 @@ impl FrontEnd {
     /// The intro movie the P_INTRO run currently shows [M 0x209e88's movie_283 counter].
     pub fn intro_movie_code(&self) -> u32 { INTRO_MOVIES[self.intro_index.min(INTRO_MOVIES.len() - 1)] }
 
+    // ── codename-entry: the name-entry page 0x40000020 (P_CNNAME_Handler 0x213790 + the grid's
+    // C_KEYBOARD_Handler 0x213a98) ──────────────────────────────────────────────────────────────
+
+    /// The grid's special keys [M C_KEYBOARD_Handler 0x213a98 keys on the pressed cell's id
+    /// (ctrl+0x20): 1000 = remove the last typed character (:39-42), 1001 = the SPACE cell (the
+    /// character at DAT_0030d380 = 0x20 [L ee_snapshot] :28-36), 1002 = the ✓ confirm (:45-65);
+    /// P_CNNAME_Handler 0x213790:47 focuses 1002 on open].
+    pub const CN_KEY_DELETE: u32 = 1000;
+    pub const CN_KEY_SPACE: u32 = 1001;
+    pub const CN_KEY_CONFIRM: u32 = 1002;
+    /// The four cells P_CNNAME re-labels at init [M 0x213790:50-57 — `__Menu_SendEx(grid
+    /// 0x10000074, cell, 0x18, string)` with the single bytes 0xc4/0xc2/0xc6/0xc0 written to
+    /// 0x30d8d8/da/dc/de; which glyphs the menu font draws there is the draw code's question].
+    pub const CN_GLYPH_CELLS: [u32; 4] = [100, 101, 102, 103];
+
+    /// The name-entry grid as rows of cell ids. Digit/letter cells carry their ASCII code and
+    /// type it [M 0x213a98:79-85 appends the first byte of the cell's text]; the last row is the
+    /// four glyph cells + ← (delete) → (space) ✓ (confirm). The ROW PACKING is the port's [S] —
+    /// the game's packing sits in page 0x40000020's grid data, which the port has not parsed;
+    /// the ids and the three special keys are the game's own [M].
+    pub const CN_GRID: [&[u32]; 5] = [
+        &[0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39],       // 0-9
+        &[0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49],             // A-I
+        &[0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x52],             // J-R
+        &[0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a],                   // S-Z
+        &[100, 101, 102, 103, Self::CN_KEY_DELETE, Self::CN_KEY_SPACE, Self::CN_KEY_CONFIRM],  // glyphs + ← → ✓
+    ];
+
+    /// The typed name's capacity [M C_KEYBOARD_Handler 0x213a98:75-77 — an append is refused once
+    /// strlen(&buffer) > 7, so the buffer at 0x34e028 holds 8 characters + NUL].
+    pub const CN_MAX_CHARS: usize = 8;
+
+    /// Opens the name-entry page. `from` is the page it came from — the 0x4c init's param_6 [M
+    /// Manager_SendMessage 0x21c858:344-345 passes the OLD page's id to the new page's init].
+    /// 0x4000001d (the wheel) opens the cheat-codename entry (cheat_mode [M P_CNNAME 0x213790:33]).
+    /// The typed buffer starts at the game's proposals: "BOND" for a profile name (DAT_0030d530
+    /// [L ee_snapshot] — P_CNNAME 0x213790:43-44 copies it over `buffer`) or empty for the cheat
+    /// entry (DAT_0030d2d8 [L] :36); the ✓ cell holds the focus [M :47-48]; the first press clears
+    /// (del_when_keypressed [M 0x213a98:18-27]).
+    pub fn cn_open(&mut self, from: u32) {
+        self.page = Page::CnName;
+        // The mode flag: PROFILE-name entry (from Select Codename / Edit Codename) runs the
+        // validator/create flow; the wheel's entry (0x4000001d) is the cheat/secret grid [M
+        // P_CNNAME 0x213790:33 cheat_mode = param_6 == 0x4000001d].
+        self.cn_profile_mode = from != PAGE_CN_MENU;
+        self.cn_from = from;
+        self.cn_cell = Self::CN_KEY_CONFIRM;
+        self.cn_clear_on_key = true;
+        self.cn_box = None;
+        self.cn_delete_row = None;
+        self.cn_exit = None;
+        self.cn_cheat_checked = false;
+        self.cn_typed = if from == PAGE_CN_MENU { String::new() } else { "BOND".into() };
+    }
+
+    /// The typed name (the game's `buffer` 0x34e028) for the draw code.
+    pub fn cn_typed_name(&self) -> &str { &self.cn_typed }
+
+    /// The focused grid cell id.
+    pub fn cn_cursor_cell(&self) -> u32 { self.cn_cell }
+
+    /// The (row, column) of a cell id in [`CN_GRID`].
+    fn cn_find(cell: u32) -> Option<(usize, usize)> {
+        Self::CN_GRID.iter().enumerate().find_map(|(r, row)| row.iter().position(|&c| c == cell).map(|c| (r, c)))
+    }
+
+    /// Moves the cursor by (dx, dy) within [`CN_GRID`], clamped at the edges.
+    pub fn cn_move(&mut self, dx: i32, dy: i32) {
+        let Some((r0, c0)) = Self::cn_find(self.cn_cell) else { return };
+        let r = (r0 as i32 + dy).clamp(0, Self::CN_GRID.len() as i32 - 1) as usize;
+        let c = (c0 as i32 + dx).clamp(0, Self::CN_GRID[r].len() as i32 - 1) as usize;
+        self.cn_cell = Self::CN_GRID[r][c];
+    }
+
+    /// Types one character through the C_KEYBOARD append path [M 0x213a98:75-85 — the cell's
+    /// text's first byte joins `buffer` unless strlen > 7]. Also the direct-keyboard path's
+    /// core (the port's own addition [S]; the game's grid stays the reference).
+    pub fn cn_type_char(&mut self, ch: char) -> bool {
+        if self.cn_typed.chars().count() >= Self::CN_MAX_CHARS { return false; }
+        self.cn_typed.push(ch);
+        true
+    }
+
+    /// Presses a grid cell — C_KEYBOARD_Handler 0x213a98's msg-0x4b path. Returns true when the
+    /// press was consumed.
+    pub fn cn_press(&mut self, cell: u32) -> bool {
+        if cell == Self::CN_KEY_CONFIRM {
+            return self.cn_confirm();
+        }
+        // The first press after open (or after a refused name) clears the proposal first; the
+        // SPACE key's press is swallowed by that clear [M del_when_keypressed 0x213a98:18-27 —
+        // `buffer` resets to DAT_0030d2d8 and the 0x3e9 arm returns before typing].
+        if self.cn_clear_on_key {
+            self.cn_clear_on_key = false;
+            self.cn_typed.clear();
+            if cell == Self::CN_KEY_SPACE { return true; }
+        }
+        match cell {
+            Self::CN_KEY_DELETE => { self.cn_typed.pop(); true }               // [M :39-42]
+            Self::CN_KEY_SPACE => self.cn_type_char(' '),                      // [M :28-36]
+            // The letter/digit cells type their character [M 0x213a98:79-85]; the four glyph
+            // cells carry the menu font's slots 0xc4/0xc2/0xc6/0xc0 [M P_CNNAME 0x213790:50-57].
+            100 => self.cn_type_char('\u{c4}'),
+            101 => self.cn_type_char('\u{c2}'),
+            102 => self.cn_type_char('\u{c6}'),
+            103 => self.cn_type_char('\u{c0}'),
+            id if (0x20..=0x7e).contains(&id) => self.cn_type_char(char::from_u32(id).unwrap_or('?')),
+            _ => false,
+        }
+    }
+
+    /// The ✓ confirm — C_KEYBOARD_Handler 0x213a98:45-65 + P_CNNAME_Handler 0x213790:59-79.
+    fn cn_confirm(&mut self) -> bool {
+        // The ✓ opens a NEW box (or none) — a refusal's box does not survive the next press
+        // [M Menu_CreateOptionBox 0x202218 opens per-press; the game holds one active box].
+        self.cn_box = None;
+        if !self.cn_profile_mode {
+            // cheat_mode: Menu_SpecialCodenameCheck 0x200238 (52 strcmp names from 0x308578,
+            // unlock masks into sp_level+0x10, Menu_SetBonus) — not ported (reported). The
+            // game creates nothing on a miss [M C_KEYBOARD 0x213a98:67-73] and neither do we.
+            self.cn_cheat_checked = true;
+            return true;
+        }
+        let reserved: Vec<String> = self.cn_reserved.clone();
+        let reserved: Vec<&str> = reserved.iter().map(String::as_str).collect();
+        match nf_game::profile::Profile::check_codename(&self.cn_typed, &reserved) {
+            // The validator's refusals bind their message label onto box 6 [M 0x213a98:47-51 —
+            // Menu_CreateOptionBox(player, Menu_IsValidCodename's return, 6, 1, 0)] and the
+            // next press clears again [M :50 del_when_keypressed = 1].
+            Err(nf_game::profile::CodenameError::Empty) => {
+                self.cn_box = Some((6, 0x3bc)); self.cn_clear_on_key = true; false
+            }
+            Err(nf_game::profile::CodenameError::Reserved) => {
+                self.cn_box = Some((6, 0x2c0)); self.cn_clear_on_key = true; false
+            }
+            Err(_) => false,
+            Ok(normalized) => {
+                // The validator uppercases + trims the buffer in place [M Menu_IsValidCodename
+                // 0x1f9930:60-77 strcpy(param_1, acStack_a0)].
+                self.cn_typed = normalized.clone();
+                match self.create_codename(&normalized, &reserved) {
+                    Ok(name) => {
+                        // The accept [M 0x213a98:53-65]: the working name 0x2e1ae8, the save
+                        // through the message box (mode 1 = LS_Save 0x1f7de8:21-29), then the
+                        // wheel 0x4000001d (DAT_002e1ad8 :58) whose init forwards to Controls
+                        // 0x40000022 [M P_CNMENU 0x213288:38-40 — not ported; the port lands
+                        // on the wheel].
+                        self.cn_name = name;
+                        self.cn_exit = Some(PAGE_CN_MENU);
+                        self.page = Page::CnMenu;
+                        self.cursor = 1;
+                        true
+                    }
+                    Err(nf_game::profile::CodenameError::Exists) => {
+                        // The card flow's overwrite question — P_CNNAME's 0x50 tick watches
+                        // box 4 and saves on YES [M 0x213790:62-76]. The port refuses [M
+                        // MemCard_ASK_OVERWRITE 0x10ee38, create_codename's own note]; the
+                        // box stands for the host to answer.
+                        self.cn_box = Some((4, 0));
+                        false
+                    }
+                    Err(_) => false,
+                }
+            }
+        }
+    }
+
+    /// Dismisses the pending option box (the game's Confirm/Back both close the validator's box;
+    /// box 4's YES would re-save [M P_CNNAME 0x50:62-76] — the port only dismisses).
+    pub fn cn_dismiss_box(&mut self) {
+        self.cn_box = None;
+    }
+
+    /// The Edit Codename list's ~X Delete request on a saved row [M C_SBCNSELECT 0x212f58 case
+    /// 0x5e — sel > 1, box mode 3 psiDeleteData 0x1f7de8:38-57 under the card-flow confirm;
+    /// P_CNSELECT 0x212ad0 case 0x6e re-enumerates after]. Confirm = YES, Back = NO.
+    pub fn cn_delete_begin(&mut self, row: usize) -> bool {
+        if row < 2 || row >= 2 + self.profiles.len() { return false; }
+        self.cn_delete_row = Some(row);
+        true
+    }
+
+    /// The delete confirm's YES [M the mode-3 box → psiDeleteData(0x2e1ae8)].
+    pub fn cn_delete_confirm(&mut self) -> bool {
+        let Some(row) = self.cn_delete_row.take() else { return false };
+        let Some(name) = self.profiles.get(row - 2).cloned() else { return false };
+        let Some(dir) = self.profile_dir.clone() else { return false };
+        let gone = nf_game::profile::Profile::delete_in(&dir, &name);
+        self.reload_profiles();
+        self.cursor = self.cursor.min(self.rows().saturating_sub(1));
+        gone
+    }
+
+    /// The delete confirm's NO [M the card-flow box's cancel path].
+    pub fn cn_delete_cancel(&mut self) { self.cn_delete_row = None; }
+
     /// One menu action. Returns true when the action changed the state.
     pub fn action(&mut self, a: Action) -> bool {
         self.no_input_frames = 0; // [M Menu_ResetNoInputCount on every handled input]
@@ -1769,7 +2196,7 @@ impl FrontEnd {
         // grid cursor; elsewhere they keep the old Back / Confirm meaning. The MP wheels
         // (scenario/map/options/bots) keep the remap.
         let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv | Page::CnName
-            | Page::MpJoin | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup | Page::ScreenAdjust)) {
+            | Page::MpJoin | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup | Page::ScreenAdjust | Page::Pause)) {
             (Action::Left, false) => Action::Back,
             (Action::Right, false) => Action::Confirm,
             (a, _) => a,
@@ -1778,10 +2205,35 @@ impl FrontEnd {
             Page::CnSelect => match a {
                 Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
                 Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                // The ~X Delete on a saved codename asks first [M C_SBCNSELECT 0x212f58 case 0x5e
+                // — sel > 1 → box mode 3 psiDeleteData 0x1f7de8:38-57 under the card-flow
+                // confirm; P_CNSELECT 0x212ad0 case 0x6e re-enumerates after].
+                Action::Side if self.cursor >= 2 && self.cn_delete_row.is_none() => {
+                    self.cn_delete_begin(self.cursor);
+                    return true;
+                }
+                // The delete confirm's YES/NO [M the card-flow box].
+                Action::Confirm if self.cn_delete_row.is_some() => {
+                    self.cn_delete_confirm();
+                    return true;
+                }
+                Action::Back if self.cn_delete_row.is_some() => {
+                    self.cn_delete_cancel();
+                    return true;
+                }
+                // Row 0 "New Codename" opens the name entry [M C_SBCNSELECT 0x212f58 case 0x4b
+                // sel 0 — Menu_MapDefaultCodename(0,0,0xff) then page 0x40000020 with the
+                // return-page send to 0x10000100].
+                Action::Confirm if self.cursor == 0 => {
+                    self.cn_open(PAGE_CN_SELECT);
+                    return true;
+                }
                 // Edit: the default row or a codename opens its options wheel [M C_SBCNSELECT 0x212f58 → page
-                // 0x4000001d]; New Codename's name entry is not ported.
+                // 0x4000001d]; the picked codename loads first [M case 0x4b sel ≥ 2 — box mode 0 =
+                // LS_Load 0x1f7de8:15-17], so the wheel's Save Codename writes the loaded data.
                 Action::Confirm if self.cursor >= 1 => {
                     self.cn_name = if self.cursor == 1 { "Default".into() } else { self.profiles.get(self.cursor - 2).cloned().unwrap_or_default() };
+                    if self.cursor >= 2 { self.load_profile_data(self.cursor); }
                     self.page = Page::CnMenu;
                     self.cursor = 1; // the wheel opens on Controller Setup [L PCSX2 m30]
                     return true;
@@ -1793,21 +2245,55 @@ impl FrontEnd {
                 Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
                 Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
                 // [M C_SBCNOPTIONS_Handler 0x213528:32-60: row 0 → page 0x40000020 (Secret
-                // Unlocks / the codename entry); rows 3/4/5 → pages 0x4000002d/2e/31; row 6 accepts]
+                // Unlocks / the codename entry); rows 3/4/5 → pages 0x4000002d/2e/31; the
+                // LAST row (6) is Save Codename: a default re-maps and leaves [M case 6 —
+                // Menu_UpdateDefaultCodename + Menu_ChangePageCloseIris], a saved codename saves
+                // through box mode 1 = LS_Save(0x2e1ae8) [M 0x1f7de8:21-29] — the port writes the
+                // active profile in place.]
                 Action::Confirm => {
-                    let to = match self.cursor { 0 => Page::CnName, 3 => Page::CnAdvanced, 4 => Page::CnMp, 5 => Page::CnAv, 6 => Page::CnSelect, _ => return false };
-                    self.opts_saved = Some(self.opts.clone());
-                    // P_CNAVOPTIONS' page enter (msg 0x4c) snapshots the offset the page's Back
-                    // restores [M 0x214818:29; re-entered only from the wheel 0x4000001d, :21].
-                    self.av_screen_snapshot();
-                    self.page = to;
-                    self.cursor = if to == Page::CnSelect { 1 } else { 0 };
-                    return true;
+                    match self.cursor {
+                        0 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.cn_open(PAGE_CN_MENU); self.cursor = 0; return true; }
+                        3 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.page = Page::CnAdvanced; self.cursor = 0; return true; }
+                        4 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.page = Page::CnMp; self.cursor = 0; return true; }
+                        5 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.page = Page::CnAv; self.cursor = 0; return true; }
+                        6 => {
+                            if self.profiles.iter().any(|p| *p == self.cn_name) {
+                                self.save_profile();
+                            }
+                            self.page = Page::CnSelect;
+                            self.cursor = 1;
+                            return true;
+                        }
+                        _ => return false,
+                    }
                 }
                 Action::Back => { self.page = Page::CnSelect; self.cursor = 1; return true; }
                 _ => return false,
             },
             Page::CnName => {
+                // codename-entry: the PROFILE-name mode (cn_open from 0x40000025 / 0x4000001b)
+                // runs the validator/create flow [M C_KEYBOARD 0x213a98:45-65]; the cheat entry
+                // (from the wheel) falls through to the Secret Unlocks grid below [M 0x213790:33].
+                if self.cn_profile_mode {
+                    match a {
+                        Action::Left => { self.cn_move(-1, 0); return true; }
+                        Action::Right => { self.cn_move(1, 0); return true; }
+                        Action::Up => { self.cn_move(0, -1); return true; }
+                        Action::Down => { self.cn_move(0, 1); return true; }
+                        Action::Confirm => {
+                            if self.cn_box.is_some() { self.cn_dismiss_box(); return true; }
+                            let cell = self.cn_cell;
+                            return self.cn_press(cell);
+                        }
+                        Action::Back if self.cn_box.is_some() => { self.cn_dismiss_box(); return true; }
+                        Action::Back => {
+                            self.page = Page::from_id(self.cn_from).unwrap_or(Page::Main);
+                            self.cursor = 0;
+                            return true;
+                        }
+                        _ => return false,
+                    }
+                }
                 // The letter grid [M C_KEYBOARD_Handler 0x213a98]: cells append (8-char cap),
                 // Delete truncates, Space appends ' ', Submit validates through
                 // `nf_game::secret_codes::submit` (Menu_SpecialCodenameCheck 0x200238's port);
@@ -1960,6 +2446,13 @@ impl FrontEnd {
                         self.load_codename(self.cursor);
                         return true;
                     }
+                    if self.cursor == 0 {
+                        // Row 0 "New Codename" opens the game's name entry [M C_SBNFCN
+                        // 0x20b390:46-49 — Menu_MapDefaultCodename(0,0,0xff) then
+                        // Menu_ChangePageCloseIris(0x40000020) with the return-page send].
+                        self.cn_open(PAGE_CODENAME);
+                        return true;
+                    }
                     if self.cursor == 1 {
                         if !self.confirming_default_profile {
                             self.confirming_default_profile = true;
@@ -2105,11 +2598,57 @@ impl FrontEnd {
                         Action::Side => return false,
                     }
                 }
+                // objective-hints: the ✕ hint box is modal (option-box page 0x4000002f pushed
+                // over the pause [M Menu_CreateOptionBox 0x1f9608:45]). Its OK row (0x4b) or a
+                // cancel (0x6d) pops it [M C_LBMSGOPTIONS_Handler 0x2022a0]; the page handler
+                // then re-shows the list on msg 0x50 [M P_PAUSE_Handler 0x203c28:19-24 —
+                // option_return != 0 → control 8 0x2b(0); the ok-only box returns 3 on OK and 4
+                // on cancel, both non-zero] — the port just clears the field. Everything else
+                // idles.
+                if self.pause_hint.is_some() {
+                    match a {
+                        Action::Confirm | Action::Back => { self.pause_hint = None; return true; }
+                        _ => return false,
+                    }
+                }
+                // objective-hints: the OBJECTIVES tab's own list — ~V scrolls ITS selection and
+                // ✕ shows the selected objective's hint (control 1's 0x4b activation [M
+                // 0x204408 0x205b98-0x205c34]; the MISSION rows' cursor is idle here).
+                if self.pause_tab == 1 {
+                    let n = self.pause_objectives.len();
+                    match a {
+                        Action::Confirm => {
+                            if n == 0 { return false; }
+                            let sel = self.pause_objectives_sel.min(n - 1);
+                            let hint = self.pause_objectives[sel].hint;
+                            // No-hint records (−1 = 0xffffffff) show label 0x31d instead
+                            // [M 0x204408 `if (iStack_304 == -1) iStack_304 = 0x31d`].
+                            self.pause_hint = Some(if hint == 0xffff_ffff { 0x31d } else { hint });
+                            return true;
+                        }
+                        Action::Up if n > 0 => { if self.pause_objectives_sel > 0 { self.pause_objectives_sel -= 1; } return true; }
+                        Action::Down if n > 0 => { if self.pause_objectives_sel + 1 < n { self.pause_objectives_sel += 1; } return true; }
+                        _ => {}
+                    }
+                }
                 match a {
-                    Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
+                    // PC: ← / → switch tabs (the hint's ~H Next is the D-pad left/right on the pad).
+                    Action::Left | Action::Right => {
+                        self.pause_tab = if a == Action::Right { (self.pause_tab + 1) % 4 } else { (self.pause_tab + 3) % 4 };
+                        if self.pause_tab == 1 { self.pause_objectives_sel = self.pause_objectives.len().saturating_sub(1); }
+                        return true;
+                    }
                     // ~H Next: the tab cycle [L the page hint 0x201 "~A Select ~V Scroll ~H Next";
-                    // the four tabs are the page's type-1 controls].
-                    Action::Side => { self.pause_tab = (self.pause_tab + 1) % 4; return true; }
+                    // the four tabs are the page's type-1 controls]. Every entry re-populates the
+                    // tab — the OBJECTIVES list re-selects its LAST row (msg 0x1d = numVis−1
+                    // [M 0x204408 0x204840-0x204850]).
+                    Action::Side => {
+                        self.pause_tab = (self.pause_tab + 1) % 4;
+                        if self.pause_tab == 1 {
+                            self.pause_objectives_sel = self.pause_objectives.len().saturating_sub(1);
+                        }
+                        return true;
+                    }
                     Action::Up => { self.cursor = (self.cursor + 2) % 3; return true; }
                     Action::Down => { self.cursor = (self.cursor + 1) % 3; return true; }
                     Action::Back => { self.closed = true; return true; }   // resume [M the d1=6 case-0 arm → MenuManager_Delete]
@@ -3047,9 +3586,190 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
         // mp-menu-flow: the multiplayer pages draw from the same getters the other wheels use
         // (mp_row_preview/mp_row_desc/mp_row_locked + row_label); the drawing itself is the main
         // agent's task (no drawing in this task's scope) — the overlay leaves them empty here.
-        Page::MpJoin | Page::MpScenario | Page::MpMap | Page::MpSetup | Page::MpOptions | Page::MpRules
-        | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBots | Page::MpBotChoose | Page::MpBotSetup
-        | Page::MpConfirm | Page::MpDebriefing => {}
+        // Select Scenario / Select Map [L pages 0x4000001a (header 0x2c3) / 0x40000013 (header 0x158): the codename
+        // wheel's layout — panel, emblem, five wheel rows, the description plate, hint 0x218; PCSX2 m45-m48].
+        Page::MpScenario | Page::MpMap => {
+            let (hdr, n, cur) = if fe.page == Page::MpScenario { (0x2c3, MP_SCENARIO_ROWS.len(), fe.mp_scenario_row) } else { (0x158, MP_MAP_ROWS.len(), fe.mp_map_row) };
+            let cur = cur.min(n - 1);
+            page_header(&mut h, hfont, &bind(hdr));
+            panel(&mut h);
+            let c = if fe.mp_row_locked(cur) { gs(0x7f7f7f, 0x60) } else { gs(0x7f7f7f, 0xff) };
+            emblem_col(&mut h, fe.mp_row_preview(cur), 0x0300_00bf, c, c);
+            // Locked rows still show their name, greyed (PCSX2 m48: "Uplink", "Demolition"); the locked text is the description.
+            let name = |r: usize| -> String { if fe.page == Page::MpScenario { bind(MP_SCENARIO_ROWS[r].1) } else { fe.row_label(lang, r) } };
+            wheel_at(&mut h, font, n, cur, name, |r| fe.mp_row_locked(r), cream);
+            desc_block(&mut h, font, &bind(fe.mp_row_desc(cur)), bright);
+            hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        // Join Game [L page 0x40000019 (parsed 2026-10-15): header 0x29e, hint 0x49b; four panels TEX 0x03000199
+        // (50/328, 103/253, 262×134) titled 0x5f0..0x5f3 at (70/346, 105/255); each panel's message box
+        // (55/332, 135/285, 253×70); agent 1's codename prompt 0x37b (70,132), its emblem (117,150,128×64) and the
+        // codename spinner 0x1000022b (70,215,226×16). PCSX2 m42-m44.]
+        Page::MpJoin => {
+            page_header(&mut h, hfont, &bind(0x29e));
+            let panels = [(50.0f32, 103.0f32), (328.0, 103.0), (50.0, 253.0), (328.0, 253.0)];
+            for (i, &(px, py)) in panels.iter().enumerate() {
+                quad640(&mut h, 0x0300_0199, px, py, 262.0, 134.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+                label(&mut h, font, &bind(0x5f0 + i as u32), px + 20.0, py + 2.0, 226.0, 16.0, bright, true, 1.0);
+                let a = &fe.mp_join[i];
+                let (bx, by) = (px + 5.0, py + 32.0);
+                // The message lines, centred in the box at pitch 19 (PCSX2: middles 152/171/190 in a box from 135).
+                let lines_at = |h: &mut Hud, text: &str, mid: f32| {
+                    let lines: Vec<String> = text.split('\n').flat_map(|p| wrap_px(p, font, mx(240.0))).collect();
+                    let n = lines.len() as f32;
+                    // A text with a button glyph spaces its lines wider (PCSX2 m44: "Press ✕" / "when ready" 29 apart; the
+                    // plain wrapped lines 19).
+                    let pitch = if text.contains('~') && n > 1.0 { 29.0 } else { 19.0 };
+                    for (k, l) in lines.iter().enumerate() {
+                        let m = mid + (k as f32 - (n - 1.0) / 2.0) * pitch;
+                        hint_row(h, font, l, bx + 126.5 - 270.0, m - 8.5, cream, None);
+                    }
+                };
+                // hint_row centres on its x640 + 270 and puts the words' middle at y640 + 8.5.
+                let _ = by;
+                match (i, a.state) {
+                    (0, 1) => {
+                        label(&mut h, font, &bind(0x37b), 70.0, 132.0, 226.0, 16.0, cream, true, 1.0);
+                        // [M C_RBMPSTART 0x20d048:51-53: the image control gets TEX 0x030001a0, uv (0,0)-(127,63)]
+                        quad640(&mut h, 0x0300_01a0, 117.0, 150.0, 128.0, 64.0, [0.0, 0.0, 128.0, 64.0], gs(0x7f7f7f, 0xff));
+                        label(&mut h, font, &fe.mp_codename_at(a.codename_row), 70.0, 215.0, 226.0, 16.0, cream, true, 1.0);
+                        let yellow = gs(0xfec43e, 0xff);
+                        for (cx, left) in [(80.0f32, true), (284.0, false)] {
+                            let cy = 223.0;
+                            let (p0, p1, p2) = if left { ((cx + 6.0, cy - 6.0), (cx + 6.0, cy + 6.0), (cx - 6.0, cy)) } else { ((cx - 6.0, cy - 6.0), (cx - 6.0, cy + 6.0), (cx + 6.0, cy)) };
+                            let q = |p: (f32, f32), h: &Hud| HudVertex { p: h.ndc(Anchor::Centre, mx(p.0), my(p.1)), uv: [0.0, 0.0], c: yellow };
+                            let v = [q(p0, &h), q(p1, &h), q(p2, &h), q(p0, &h), q(p2, &h), q(p2, &h)];
+                            h.ndc_solid(-3, v, yellow);
+                        }
+                    }
+                    (0, _) => { let t = fe.row_label(lang, 0); lines_at(&mut h, &t, py + 32.0 + 43.0); }
+                    // Agents 2-4: the game's insert-controller texts (the port has one input) [L USATxt 0x3c0 / 0x4a2;
+                    // PCSX2 m42: port 2 for agent 2, the multitap line for 3 and 4].
+                    (1, _) => { let t = bind(0x3c0).replace("%s", "2"); lines_at(&mut h, &t, py + 32.0 + 36.0); }
+                    _ => { let t = bind(0x4a2); lines_at(&mut h, t.trim_end(), py + 32.0 + 36.0); }
+                }
+            }
+            hint_bar(&mut h, font, &hint(0x49b, "~A Confirm  ~V Change  ~B Back"), 50.0, 419.0, cream);
+            quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+        }
+        // The MP wheels with the codename wheel's layout [L pages 0x40000012 (header 0x2c4 Scenario Options),
+        // 0x40000027 / 0x4000003f (header 0x294 Multiplayer Bot Setup); hint 0x218; PCSX2 m55, m56, m57, m61, m63].
+        Page::MpOptions | Page::MpBots | Page::MpBotChoose => {
+            let (hdr, n, cur) = match fe.page {
+                Page::MpOptions => (0x2c4, MP_OPTIONS_ROWS.len(), fe.mp_options_row),
+                Page::MpBots => (0x294, MP_BOTS_ROWS.len(), fe.mp_bots_row),
+                _ => (0x294, MP_CHARACTERS.len(), fe.mp_bot_char),
+            };
+            let cur = cur.min(n - 1);
+            page_header(&mut h, hfont, &bind(hdr));
+            panel(&mut h);
+            let c = if fe.mp_row_locked(cur) { gs(0x7f7f7f, 0x60) } else { gs(0x7f7f7f, 0xff) };
+            emblem_col(&mut h, fe.mp_row_preview(cur), 0x0300_00bf, c, c);
+            let page = fe.page;
+            // The wheels' rows: the bots list's rows 1-4 read "Setup Bot N" (PCSX2 m57); the others the getters' labels.
+            let name = |r: usize| -> String {
+                match page {
+                    Page::MpOptions => bind(MP_OPTIONS_ROWS[r].1),
+                    Page::MpBotChoose => bind(MP_CHARACTERS[r].1),
+                    _ => bind(MP_BOTS_ROWS[r].1),
+                }
+            };
+            wheel_at(&mut h, font, n, cur, name, |r| fe.mp_row_locked(r), cream);
+            let desc = match fe.page {
+                // [PCSX2 m57/m63: "Playing : No" / "Playing : Yes" for the slot's enabled byte]
+                Page::MpBots if cur > 0 => format!("{} : {}", bind(0x295), bind(if fe.mp_bots[cur - 1].enabled { 0x181 } else { 0x182 })),
+                Page::MpBots => String::new(),
+                // [PCSX2 m61: the character's description, then "Team : Phoenix" (the preset's side)]
+                Page::MpBotChoose => format!("{}\n{} : {}", bind(fe.mp_row_desc(cur)), "Team", bind(if MP_CHARACTER_SIDE_MI6[cur] { 0x1c8 } else { 0x1c7 })),
+                _ => bind(fe.mp_row_desc(cur)),
+            };
+            let lines: Vec<String> = desc.split('\n').flat_map(|p| wrap_px(p, font, mx(505.0))).collect();
+            let nl = lines.len().min(4) as f32;
+            for (i, line) in lines.iter().take(4).enumerate() {
+                // The description plate's lines at pitch 28 (PCSX2 m56/m61, like the other wheel pages' desc_block).
+                let mid = 366.0 + (i as f32 - (nl - 1.0) / 2.0) * 28.0;
+                centred(&mut h, font, -2, line, mx(320.0), my(mid + 6.0), bright, true, 1.0);
+            }
+            hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        // The MP value-list pages [L pages 0x40000014 Game Rules (header 0x19b), 0x40000017 Player Mods (0x19d),
+        // 0x40000028 Enviro-Mods (0x19e), 0x4000002c Bot Setup (0x294); hint 0x217; labels at x 54, values centred on
+        // the value controls, the description plate (50,355,540×40); the value labels per row from the handlers
+        // (P_MPRULES 0x20f790, P_MPPLAYERMODS 0x2104d0, P_MPENVIROMODS 0x210030, P_MPBOTSETUP 0x211270); PCSX2
+        // m58-m60, m62].
+        Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup => {
+            let onoff = |v: bool| bind(if v { 0x1b7 } else { 0x1b6 });
+            let num = |v: i32| v.to_string();
+            // (label, value text, row y, control, value)
+            let rows: Vec<(u32, String, f32, u32, i32)> = match fe.page {
+                Page::MpRules => {
+                    let t = fe.mp_time_limit;
+                    vec![(0x156, if t < 0 { bind(0x3ca) } else { num(t) }, 191.0, 0x1000_0008, t),
+                         (if fe.mp_rules_lives() { 0x3d3 } else { 0x24c }, num(fe.mp_frag_limit), 223.0, 0x1000_00f6, fe.mp_frag_limit)]
+                }
+                Page::MpPlayerMods => {
+                    const SETS: [u32; 11] = [0x1a0, 0x1a2, 0x1a4, 0x1a6, 0x1a8, 0x24f, 0x3db, 0x3dc, 0x3dd, 0x3de, 0x1b2];
+                    vec![(0x1ae, onoff(fe.mp_friendly_fire != 0), 143.0, 0x1000_0081, fe.mp_friendly_fire as i32),
+                         (0x24d, bind(SETS[(fe.mp_weapon_set as usize).min(10)]), 175.0, 0x1000_0084, fe.mp_weapon_set as i32),
+                         (0x1ac, onoff(fe.mp_player_mods[0] != 0), 207.0, 0x1000_0080, fe.mp_player_mods[0] as i32),
+                         (0x24e, onoff(fe.mp_player_mods[1] != 0), 239.0, 0x1000_008c, fe.mp_player_mods[1] as i32),
+                         (0x1e5, onoff(fe.mp_radar != 0), 271.0, 0x1000_008d, fe.mp_radar as i32)]
+                }
+                Page::MpEnviroMods => {
+                    let e = fe.mp_envmods;
+                    vec![(0x1af, bind([0x1b0, 0x1b1, 0x1b2][(e[0] as usize).min(2)]), 143.0, 0x1000_00a2, e[0] as i32),
+                         (0x1ab, onoff(e[1] != 0), 177.0, 0x1000_009f, e[1] as i32),
+                         (0x1aa, if e[2] == 0x10 { bind(0x100_0076) } else { onoff(e[2] != 0) }, 209.0, 0x1000_019b, e[2] as i32),
+                         (0x328, onoff(e[3] != 0), 241.0, 0x1000_0227, e[3] as i32),
+                         (0x5b9, bind([0x1b6, 0x100_02d8, 0x100_02d9, 0x1b2][(e[4] as usize).min(3)]), 273.0, 0x1000_0228, e[4] as i32)]
+                }
+                _ => {
+                    let b = &fe.mp_bots[fe.mp_bot_slot.min(3)];
+                    let pick = |v: i32, t: &[(i32, u32)]| t.iter().find(|x| x.0 == v).map_or(num(v), |x| bind(x.1));
+                    vec![(0x295, bind(if b.enabled { 0x181 } else { 0x182 }), 85.0, 0x1000_0116, b.enabled as i32),
+                         (0x247, pick(b.speed, &[(0, 0x23c), (1, 0x23d), (2, 0x23e)]), 117.0, 0x1000_018c, b.speed),
+                         (0x232, pick(b.trait_id, &[(0, 0x100_02d0), (1, 0x233), (2, 0x234), (3, 0x235), (4, 0x24a), (5, 0x237), (6, 0x238), (7, 0x239), (8, 0x24b)]), 149.0, 0x1000_0195, b.trait_id),
+                         (0x246, pick(b.aim, &[(2, 0x3bd), (3, 0x31b), (4, 0x31c)]), 181.0, 0x1000_0185, b.aim),
+                         (0x15e, pick(b.skill, &[(8, 0x241), (5, 0x242), (3, 0x243), (1, 0x244)]), 213.0, 0x1000_0186, b.skill),
+                         (0x1c6, num(b.hit_points), 245.0, 0x1000_0187, b.hit_points),
+                         (0x23a, num(b.recovery1), 277.0, 0x1000_0188, b.recovery1),
+                         (0x249, num(b.recovery2), 309.0, 0x1000_018a, b.recovery2)]
+                }
+            };
+            let hdr = match fe.page { Page::MpRules => 0x19b, Page::MpPlayerMods => 0x19d, Page::MpEnviroMods => 0x19e, _ => 0x294 };
+            page_header(&mut h, hfont, &bind(hdr));
+            let on = gs(CREAM, 0xff);
+            let off = gs(0x73330f, 0xc0);
+            let yellow = gs(0xfec43e, 0xff);
+            let cur = fe.cursor.min(rows.len() - 1);
+            for (i, (lbl, val, y, _, _)) in rows.iter().enumerate() {
+                let c = if i == cur { on } else { off };
+                let mid = y + 8.0;
+                left_text(&mut h, font, &bind(*lbl), mx(54.0), my(mid + 6.0), c, true, 1.3);
+                centred(&mut h, font, -2, val, mx(457.0), my(mid + 6.0), c, true, 1.3);
+                if i == cur {
+                    for (cx, left) in [(357.0f32, true), (555.0, false)] {
+                        let (p0, p1, p2) = if left { ((cx + 7.0, mid - 7.0), (cx + 7.0, mid + 7.0), (cx - 7.0, mid)) } else { ((cx - 7.0, mid - 7.0), (cx - 7.0, mid + 7.0), (cx + 7.0, mid)) };
+                        let q = |p: (f32, f32), h: &Hud| HudVertex { p: h.ndc(Anchor::Centre, mx(p.0), my(p.1)), uv: [0.0, 0.0], c: yellow };
+                        let v = [q(p0, &h), q(p1, &h), q(p2, &h), q(p0, &h), q(p2, &h), q(p2, &h)];
+                        h.ndc_solid(-3, v, yellow);
+                    }
+                }
+            }
+            if let Some(&(_, _, _, ctrl, v)) = rows.get(cur) {
+                if let Some(dl) = opt_desc(ctrl, v) {
+                    let plate_mid = if fe.page == Page::MpBotSetup { 375.0 } else { 375.0 };
+                    centred(&mut h, font, -2, &bind(dl), mx(320.0), my(plate_mid + 6.0), gs(CREAM, 0xff), true, 1.0);
+                }
+            }
+            hint_bar(&mut h, font, &hint(0x217, "~A Confirm  ~V Scroll  ~H Change  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        // Not drawn yet: the per-agent setup step (PCSX2 m52-m54 — the Join Game panels with Choose Team / Choose
+        // Character / Health Handicap), the Start summary (m65) and the debriefing.
+        Page::MpSetup | Page::MpConfirm | Page::MpDebriefing => {}
         Page::Start => {
             // The title [M menu-def page 0x40000009: the art control 0x10000196 (0,0,640,480) TEX
             // 0x03000074; the prompt control 0x100000fa (131,309,379×16) LBL 0x1c9, colours 0x7f621fff;
@@ -3403,29 +4123,21 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
                 // Behind the labels (a higher layer draws first); a translucent dark band in the capture.
                 h.ndc_solid(-1, v, [0.06, 0.02, 0.02, 0.5]);
             }
-            let yellow = gs(0xfec43e, 0xff);
-            for (dy, up) in [(-8.0f32, true), (8.0, false)] {
-                let (cx, cy) = (96.0f32, 169.0 + dy);
-                let (a, b, d) = if up { ((cx - 9.0, cy + 6.0), (cx + 9.0, cy + 6.0), (cx, cy - 6.0)) } else { ((cx - 9.0, cy - 6.0), (cx + 9.0, cy - 6.0), (cx, cy + 6.0)) };
-                let q = |p: (f32, f32)| HudVertex { p: h.ndc(Anchor::Centre, mx(p.0), my(p.1)), uv: [0.03, 0.03], c: yellow };
-                let v = [q(a), q(b), q(d), q(a), q(d), q(d)];
-                h.ndc_solid(-3, v, yellow);
-            }
+            // PC port: the tab lists the port's keyboard + mouse bindings (the keys lib.rs reads) under the game's own
+            // action labels, instead of the PlayStation pad styles (the user, 2026-10-15: "the controller layout is
+            // for Playstation controllers. But this is a PC port"). The game's style spinner and Y-Axis row have no
+            // keyboard meaning and are not drawn.
             let left_label = |h: &mut Hud, s: &str, x: f32, yc: f32, c: [f32; 4]| h.text(Anchor::Centre, font, -2, s, mx(x), my(yc + 6.0), false, c, false);
-            left_label(h, &lbl(0x100_019a, "Classic Bond"), 114.0, 169.0, bright);
-            left_label(h, &lbl(0x492, "Y-Axis"), 404.0, 168.0, cream);
-            left_label(h, &lbl(0x3bd, "Normal"), 466.0, 168.0, gs(0x694646, 0xff));
-            // The rows: PCSX2 07000005 (2026-10-15) — row centres 199 + 21·i, the left column's icons at x 98, the
-            // right column's at 329.
-            let rows: [(&str, u32, &str, u32); 6] = [
-                ("~A", 0x100_01a7, "~B", 0x100_01a4), ("~Y", 0x100_01a3, "~X", 0x100_01a5), ("~C", 0x100_019c, "~D", 0x100_01a1),
-                ("~L", 0x100_019d, "~R", 0x100_01a2), ("~F", 0x100_01a0, "~E", 0x100_01a8), ("~H", 0x100_019f, "~V", 0x100_019e)];
-            for (i, (g0, l0, g1, l1)) in rows.iter().enumerate() {
-                let y = 199.0 + i as f32 * 21.0 - 9.0;
-                glyph_row(h, font, &format!("{g0} {}", lbl(*l0, "")), 98.0, y, cream);
-                glyph_row(h, font, &format!("{g1} {}", lbl(*l1, "")), 329.0, y, cream);
+            left_label(h, "Keyboard & Mouse", 104.0, 169.0, bright);
+            for (i, (key, label, fb)) in PC_CONTROLS.iter().enumerate() {
+                let (col, row) = (i / 7, i % 7);
+                let x = if col == 0 { 98.0 } else { 329.0 };
+                let yc = 199.0 + row as f32 * 21.0;
+                draw_keycap(h, font, KeyCap::Text(key), mx(x), my(yc), cream);
+                let kw = keycap_w(font, KeyCap::Text(key));
+                let name = if *label == 0 { fb.to_string() } else { lbl(*label, fb) };
+                h.text(Anchor::Centre, font, -2, &name, mx(x) + kw + mx(6.0), my(yc + 6.0), false, cream, false);
             }
-            glyph_row(h, font, &format!("~T {}", lbl(0x100_01ce, "Vision Mode")), 98.0, 199.0 + 6.0 * 21.0 - 9.0, cream);
         }
         // fix-pause-menu2: the SCORE tab — the stats list box (98,147,445×190) [L the d1=8 control]
         // filled exactly as the game's msg-0x4e case-3 arm does [M 0x204408:447-498]: the
@@ -3477,14 +4189,16 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
         1 => {
             // The list (98,147,445×190) [L page 0x4000004b d1=8]: rows from its top, the marker column then the label
             // (PCSX2 m22, 2026-10-15: "• Breach the castle walls", the bullet at x 137, the text at 149, middle y 159);
-            // the list's selection is the last row [M :271 msg 0x1d = count−1] — the yellow arrow at x ~107.
+            // the list's selection starts on the LAST row [M :271 msg 0x1d = count−1] and moves with ~V — the
+            // yellow arrow follows fe.pause_objectives_sel (objective-hints).
             let n = fe.pause_objectives.len().min(8);
-            for (i, (label, done)) in fe.pause_objectives.iter().enumerate().take(8) {
+            for (i, o) in fe.pause_objectives.iter().enumerate().take(8) {
                 let y = 159.0 + i as f32 * 22.0;
-                let marker = if *done { "~J" } else { "~I" };
-                glyph_row(h, font, &format!("{marker} {}", lbl(*label, "(objective)")), 135.0, y - 9.0, bright);
+                let marker = if o.done { "~J" } else { "~I" };
+                glyph_row(h, font, &format!("{marker} {}", lbl(o.text, "(objective)")), 135.0, y - 9.0, bright);
             }
-            if n > 0 { pause_cursor(h, 107.0, 159.0 + (n - 1) as f32 * 22.0, gs(YELLOW, 0xff)); }
+            let sel = fe.pause_objectives_sel.min(n.saturating_sub(1));
+            if n > 0 { pause_cursor(h, 107.0, 159.0 + sel as f32 * 22.0, gs(YELLOW, 0xff)); }
         }
         // The MISSION tab (default [L the page's initial state — the d1=6 list is the enabled one]).
         _ => {
@@ -3538,7 +4252,9 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
         _ => "~A Select  ~V Scroll  ~H Next",
     };
     // Dark words without a shadow on the bright bar (PCSX2 m21–m24, 2026-10-15).
-    hint_row_s(h, font, &hint_wrap(lang, hint_id, hint_fb), 45.0, 341.0 + 2.5, gs(0x0d0904, 0xff), None, false); // middle 352 (m21–m27)
+    // PC: the CONTROLS tab's hint is the keyboard's (the pad's "○ Invert" has no meaning here).
+    let hint_text = if tab == 2 && !(fe.confirming_restart || fe.confirming_quit) { "~H Next  ~B Back".to_string() } else { hint_wrap(lang, hint_id, hint_fb) };
+    hint_row_s(h, font, &hint_text, 45.0, 341.0 + 2.5, gs(0x0d0904, 0xff), None, false); // middle 352 (m21–m27)
 }
 
 /// fix-pause-menu2: a menu-space text row with the specialchar glyphs inline (the "~A Label" rows of
@@ -3679,6 +4395,33 @@ fn wheel(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<
     wheel_dim(h, fe, font, lang, label, |_, _| false, base);
 }
 
+/// The multiplayer wheels' preview textures, loaded after MENU_TEXTURES so the fixed indices stay put [L the MP
+/// row tables' +0x00 hashes].
+pub fn mp_textures() -> &'static [u32] {
+    static T: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let mut v: Vec<u32> = MP_SCENARIO_ROWS.iter().map(|r| r.0).chain(MP_MAP_ROWS.iter().map(|r| r.0))
+            .chain(MP_CHARACTERS.iter().map(|r| r.0)).chain(MP_OPTIONS_ROWS.iter().map(|r| r.0)).chain(MP_BOTS_ROWS.iter().map(|r| r.0))
+            .chain([0x0300_0199u32, 0x0300_0159, 0x0300_015c, 0x0300_0169, 0x0300_01a0])   // the Join Game panels + slot images [L page 0x40000019]
+            .filter(|h| *h != 0 && !MENU_TEXTURES.contains(h)).collect();
+        v.sort_unstable(); v.dedup(); v
+    })
+}
+
+/// A wheel over `n` rows centred on `cursor` (the MP pages keep their own row counters).
+#[allow(clippy::too_many_arguments)]
+fn wheel_at(h: &mut Hud, font: &nf_formats::hud::Font, n: usize, cursor: usize, label: impl Fn(usize) -> String, locked: impl Fn(usize) -> bool, base: [f32; 4]) {
+    for d in -2i32..=2 {
+        let r = cursor as i32 + d;
+        if r < 0 || r >= n as i32 { continue; }
+        let row = r as usize;
+        let slot = (d + 2) as usize;
+        let (mut c, scale) = match d { 0 => (base, 1.25), -1 | 1 => (dimmed(base, 0x80), 1.0), _ => (dimmed(base, 0x40), 1.0) };
+        if locked(row) { c = gs(0x484848, match d { 0 => 0x80, -1 | 1 => 0x40, _ => 0x20 }); }
+        left_text(h, font, &label(row), mx(WHEEL_X[slot]), my(WHEEL_Y[slot] + 8.5 + 6.0), c, true, scale);
+    }
+}
+
 fn wheel_dim(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, _lang: Option<&Lang>, label: impl Fn(&FrontEnd, usize) -> String, locked: impl Fn(&FrontEnd, usize) -> bool, base: [f32; 4]) {
     for (row, d) in fe.wheel() {
         let slot = (d + 2) as usize;
@@ -3705,8 +4448,9 @@ fn dimmed(mut c: [f32; 4], a: u32) -> [f32; 4] { c[3] = gs(0, a)[3]; c }
 /// A wheel page's description, wrapped to 500 units and centred in its plate (50,301,540×113): the lines' middles at
 /// pitch 28 around y 366 (PCSX2 07000048 codename/difficulty/missions, 2026-10-15: two lines at 352/380, one at 366).
 fn desc_block(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, c: [f32; 4]) {
-    // The wrap width is 520 640-space units (PCSX2's codename text breaks after "able to", a 502-unit line).
-    let lines = wrap_px(text, font, mx(520.0));
+    // The wrap width is 505 640-space units: PCSX2 keeps the 502-unit codename line ("…not be able to") and breaks the
+    // 509-unit Skyrail line before "deserted" (m06, m47).
+    let lines = wrap_px(text, font, mx(505.0));
     let n = lines.len().min(4);
     for (i, line) in lines.iter().take(4).enumerate() {
         let mid = 366.0 + (i as f32 - (n as f32 - 1.0) / 2.0) * 28.0;
@@ -3930,6 +4674,86 @@ fn hint_row(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
 
 /// `hint_row` with the text shadow switchable (the pause bar's dark words have none).
 #[allow(clippy::too_many_arguments)]
+/// The port's keyboard + mouse bindings as the pause CONTROLS tab lists them: (key, the game's action label — 0 for a
+/// port-only action, the fallback text). Keep in step with the key handling in lib.rs (`KeyCode::*` reads and the
+/// mouse buttons) — W/S/A/D move, the mouse looks, left button fires, right button zooms, Space jumps, C/Ctrl
+/// crouch, R reloads, E acts, B toggles the alt-fire mode, Q/the wheel cycle weapons, G cycles gadgets, Esc pauses.
+pub const PC_CONTROLS: [(&str, u32, &str); 13] = [
+    ("W A S D", 0x100_01ad, "Move/Strafe"), ("Mouse", 0x100_01b9, "Look/Turn"), ("L Click", 0x100_01a2, "Fire"),
+    ("R Click", 0, "Aim / Zoom"), ("Space", 0x100_01a4, "Jump"), ("C", 0x100_019c, "Crouch"), ("R", 0, "Reload"),
+    ("E", 0, "Action"), ("B", 0x100_01a3, "Alt. Fire"), ("Wheel / Q", 0, "Cycle Weapon"),
+    ("G", 0x100_019f, "Cycle Gadget"), ("1 2 3", 0, "Select Weapon"), ("Esc", 0x100_01aa, "Pause"),
+];
+
+/// The PC port's key for a menu hint token: the game's ~A/~B/... button glyphs are PlayStation pad buttons
+/// (`specialchar` 0x2dd8d8); on PC the hint bars name the keyboard key `key_action` maps to that action instead (the
+/// user, 2026-10-15: "the controller layout is for Playstation controllers. But this is a PC port"). The objective
+/// bullets ~I/~J are not buttons and keep the game's glyphs.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum KeyCap { Text(&'static str), UpDown, LeftRight }
+pub fn pc_key(token: char) -> Option<KeyCap> {
+    Some(match token {
+        'A' => KeyCap::Text("Enter"),     // ✕ — Action::Confirm (Enter / Space)
+        'B' => KeyCap::Text("Esc"),       // △ — Action::Back (Esc / Backspace)
+        'V' => KeyCap::UpDown,            // the D-pad scroll — the arrow keys / W S
+        'H' => KeyCap::LeftRight,         // the D-pad left/right — change a value / next tab
+        'Y' => KeyCap::Text("Tab"),       // □ — Action::Side (Tab / E)
+        'X' => KeyCap::Text("Del"),       // ○ — delete / invert
+        'S' => KeyCap::Text("Enter"),     // Start
+        _ => return None,
+    })
+}
+const KEYCAP_SCALE: f32 = 0.8;
+fn keycap_w(font: &nf_formats::hud::Font, cap: KeyCap) -> f32 { keycap_w_k(font, cap, 1.0) }
+fn keycap_w_k(font: &nf_formats::hud::Font, cap: KeyCap, k: f32) -> f32 {
+    match cap {
+        KeyCap::Text(t) => (font.layout(t, 0.0, 0.0).1 * KEYCAP_SCALE + mx(10.0)) * k,
+        KeyCap::UpDown | KeyCap::LeftRight => mx(22.0) * k,
+    }
+}
+/// A keyboard keycap at screen x `x` (its left edge), centred on screen y `ymid`: a dark key face with a light rim
+/// and the key's name (or arrows) on it.
+fn draw_keycap(h: &mut Hud, font: &nf_formats::hud::Font, cap: KeyCap, x: f32, ymid: f32, c: [f32; 4]) { draw_keycap_k(h, font, cap, x, ymid, c, 1.0) }
+fn draw_keycap_k(h: &mut Hud, font: &nf_formats::hud::Font, cap: KeyCap, x: f32, ymid: f32, c: [f32; 4], k: f32) {
+    let w = keycap_w_k(font, cap, k);
+    let hh = my(18.0);
+    let (x0, y0, x1, y1) = (x, ymid - hh / 2.0, x + w, ymid + hh / 2.0);
+    let rect = |h: &mut Hud, a: (f32, f32), b: (f32, f32), col: [f32; 4]| {
+        let (pa, pb) = (h.ndc(Anchor::Centre, a.0, a.1), h.ndc(Anchor::Centre, b.0, b.1));
+        let q = |p: [f32; 2]| HudVertex { p, uv: [0.0, 0.0], c: col };
+        h.ndc_solid(-2, [q([pa[0], pa[1]]), q([pb[0], pa[1]]), q([pb[0], pb[1]]), q([pa[0], pa[1]]), q([pb[0], pb[1]]), q([pa[0], pb[1]])], col);
+    };
+    // The key face is always dark with a cream label; the rim takes the row's colour (dark on the pause page's bright
+    // bar, cream elsewhere).
+    let rim = [c[0], c[1], c[2], c[3] * 0.85];
+    let face = gs(0x0e0a08, 0xe0);
+    let c = gs(CREAM, 0xff);
+    let t = mx(1.2);
+    rect(h, (x0, y0), (x1, y1), rim);
+    rect(h, (x0 + t, y0 + t), (x1 - t, y1 - t), face);
+    match cap {
+        KeyCap::Text(label) => {
+            let lw = font.layout(label, 0.0, 0.0).1 * KEYCAP_SCALE * k;
+            h.text_scaled(Anchor::Centre, font, -2, label, x0 + (w - lw) / 2.0, ymid + my(7.5 * KEYCAP_SCALE), false, c, false, KEYCAP_SCALE * k);
+        }
+        KeyCap::UpDown | KeyCap::LeftRight => {
+            let (cx, cy, a) = ((x0 + x1) / 2.0, ymid, my(4.0));
+            let tri = |h: &mut Hud, p: [(f32, f32); 3]| {
+                let q = |pt: (f32, f32), h: &Hud| HudVertex { p: h.ndc(Anchor::Centre, pt.0, pt.1), uv: [0.0, 0.0], c };
+                let v = [q(p[0], h), q(p[1], h), q(p[2], h), q(p[0], h), q(p[2], h), q(p[2], h)];
+                h.ndc_solid(-2, v, c);
+            };
+            if cap == KeyCap::UpDown {
+                tri(h, [(cx - a, cy - my(1.0)), (cx + a, cy - my(1.0)), (cx, cy - my(1.0) - a)]);
+                tri(h, [(cx - a, cy + my(1.0)), (cx + a, cy + my(1.0)), (cx, cy + my(1.0) + a)]);
+            } else {
+                tri(h, [(cx - mx(1.5), cy - a), (cx - mx(1.5), cy + a), (cx - mx(1.5) - a, cy)]);
+                tri(h, [(cx + mx(1.5), cy - a), (cx + mx(1.5), cy + a), (cx + mx(1.5) + a, cy)]);
+            }
+        }
+    }
+}
+
 fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y640: f32, c: [f32; 4], left: Option<f32>, shadow: bool) {
     // One pass collects each item's ink span relative to the row's pen origin (text glyphs sit at
     // [p0.x − gw0/2, plast.x + gwlast/2] — the per-glyph quads centre at their pen x — and an icon's
@@ -3954,6 +4778,16 @@ fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, 
             // A word's trailing spaces don't advance the pen far enough before the next icon: PCSX2 leaves ~10 units
             // from the word's last ink to the icon (07000005 fail menu, 2026-10-15).
             adv_sum = (adv_sum + nat).max(adv_sum + b + mx(10.0));
+        }
+        let tok = after.chars().nth(1).unwrap_or(' ');
+        if let Some(cap) = pc_key(tok) {
+            let iw = keycap_w(font, cap);
+            items.push(Item::Icon { tex: 0, uv: [0.0; 4], w: iw, hh: my(18.0), ink: (adv_sum, adv_sum + iw) });
+            after_icon = Some(adv_sum + iw);
+            adv_sum += iw + mx(6.0);
+            rest = &after[2.min(after.len())..];
+            if rest.starts_with(' ') { rest = &rest[1..]; adv_sum += 4.0; }
+            continue;
         }
         match after.chars().nth(1).and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
             Some(&(_, tex, u, v, w, hh, adv)) => {
@@ -3983,7 +4817,9 @@ fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, 
     let ink_hi = items.iter().map(|i| match i { Item::Text { ink, .. } | Item::Icon { ink, .. } => ink.1 }).fold(f32::MIN, f32::max);
     // The bar's centre: ctrl.x + ctrl.w/2 = 50 + 540/2 = 320 in 640-space [L the parsed bars].
     let bar_c = mx(x640 + 270.0);
-    let pen0 = match left { Some(lx) => mx(lx) - ink_lo, None => bar_c - (ink_lo + ink_hi) / 2.0 };
+    // A centred row wider than its 540-unit bar shrinks to fit (the PC keycaps are wider than the pad icons).
+    let k = if left.is_none() && ink_hi - ink_lo > mx(530.0) { mx(530.0) / (ink_hi - ink_lo) } else { 1.0 };
+    let pen0 = match left { Some(lx) => mx(lx) - ink_lo, None => bar_c - (ink_lo + ink_hi) * k / 2.0 };
     if std::env::var_os("NF_DEBUG_HINT").is_some() { eprintln!("[hint] text={text:?} items={} ink=({ink_lo},{ink_hi}) bar_c={bar_c} pen0={pen0}", items.len()); }
     // Label_Update centres the label vertically in its 18-px control [M 0x218cb8:202-206]: PCSX2 puts every hint
     // row's centre ~y + 9 (main menu 430, pause/fail 350 of 480 — 2026-10-13/15 captures); the port's text pen
@@ -4000,12 +4836,22 @@ fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, 
         let (before, after) = rest.split_at(t);
         if !before.is_empty() {
             if let Item::Text { x, .. } = &items[ti.min(items.len() - 1)] { seg_pen = *x; }
-            let x = pen0 + seg_pen;
-            h.text(Anchor::Centre, font, -2, before, x, y, false, c, shadow);
+            let x = pen0 + seg_pen * k;
+            h.text_scaled(Anchor::Centre, font, -2, before, x, y, false, c, shadow, k);
             let (placed, nat) = font.layout(before, 0.0, 0.0);
             let ink_end = placed.last().map_or(nat, |pl| pl.x + font.glyphs[pl.glyph].w as f32);
             seg_pen = (seg_pen + nat).max(seg_pen + ink_end + mx(10.0));
             ti += 1;
+        }
+        let tok = after.chars().nth(1).unwrap_or(' ');
+        if let Some(cap) = pc_key(tok) {
+            if let Item::Icon { ink, .. } = &items[ti.min(items.len() - 1)] { seg_pen = ink.0; }
+            draw_keycap_k(h, font, cap, pen0 + seg_pen * k, y - my(6.5), c, k);
+            seg_pen += keycap_w(font, cap) + mx(6.0);
+            ti += 1;
+            rest = &after[2.min(after.len())..];
+            if rest.starts_with(' ') { rest = &rest[1..]; seg_pen += 4.0; }
+            continue;
         }
         match after.chars().nth(1).and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
             Some(&(_, tex, u, v, w, hh, adv)) => {
@@ -4022,7 +4868,7 @@ fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, 
                 let ic = if shadow { c } else { gs(0x7f7f7f, 0xff) };
                 // Centred on the words' middle (the pen y sits ~6.5 below it): the 20-unit buttons land where they did, the small
                 // objective bullets level with their text (PCSX2 m22).
-                h.quad(Anchor::Centre, -2, tex, 0, pen0 + seg_pen, y - my(6.5) - ih / 2.0, iw, ih, [u, v, w, hh], (false, false), ic);
+                h.quad(Anchor::Centre, -2, tex, 0, pen0 + seg_pen * k, y - my(6.5) - ih * k / 2.0, iw * k, ih * k, [u, v, w, hh], (false, false), ic);
                 let _ = adv;
                 seg_pen += iw + mx(6.0);
                 ti += 1;
@@ -4034,7 +4880,7 @@ fn hint_row_s(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, 
     }
     if !rest.is_empty() {
         if let Some(Item::Text { x, .. }) = items.last() { seg_pen = *x; }
-        h.text(Anchor::Centre, font, -2, rest, pen0 + seg_pen, y, false, c, shadow);
+        h.text_scaled(Anchor::Centre, font, -2, rest, pen0 + seg_pen * k, y, false, c, shadow, k);
     }
 }
 
