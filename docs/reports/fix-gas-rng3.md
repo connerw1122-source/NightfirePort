@@ -84,6 +84,9 @@ was closed first (the driver had already moved it to done/ with the report attac
 3. nf-view render (`--bond` spots, after the guard puff visual lands): a guard firing at the gate in
    07000001 — a small kind-7 puff at the guard's muzzle bone for ~2 s.
 
-## ntfy
+## ntfy failed
 
-(sent at finish; see the WORKLOG line if it failed)
+All three fallbacks returned HTTP 429 ("limit reached: daily message quota reached") — curl, the
+python urllib form and wget (19:58 UTC). The exact outputs are in docs/WORKLOG.md's final
+fix-gas-rng3 entry; the finish.sh step completed before it ("OK already closed in done/, report
+attached").
