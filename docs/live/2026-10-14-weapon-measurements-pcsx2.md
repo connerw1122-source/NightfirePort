@@ -161,3 +161,20 @@ health/armour held by the measurement client (one PINE client). By game frame (6
 
 So in the real game a guard that spots Bond fires its first shot ~1.6 s later, not on the next frames. (The user on
 the port: "Shots are still happening instantly" — task 109f.)
+
+## The stunner on a guard (07000005, the gate-trench guard 0x16ea150 at (99.7, 16.9, 101.6), god mode on)
+
+Selected through the gadget cycle (D-pad Up), Bond placed ~1 unit behind the guard. Held fire; per game frame:
+
+- The press: the device swings forward, the tip glows blue (as with no target).
+- **The stunner only acts in contact range.** At ~2 units with the crosshair beside or on the guard's shoulder it did
+  nothing to him: the charge just pulses 100 → 99 → 100 per discharge. At ~1 unit (touching) it connects:
+- 40811: the guard (state 0x4 idle) reacts (state 0x72 — alerted by the contact), turns toward Bond.
+- **The charge drains while it connects:** 100 → 98 (41011) → 92 → 89 → 79 → 69 (41106) — ~32 per second.
+- 41106: the guard enters **state 0x4a**, then 0x4b (41138): stunned — he **drops his weapon** (Bond picks it up:
+  "Picked up Winter Covert Sniper") and staggers.
+- While connected the screen flashes red (Bond takes the guard's hits; god mode kept him at 100).
+- After release the charge refills (68 → 70 …).
+
+So: press-activated, contact-range, drains ~32/s while touching a target, and the target is stunned (0x4a/0x4b) and
+disarmed after ~1.5 s of contact. (The user on the port: "It only really activates on releasing the key" — 109b.)
