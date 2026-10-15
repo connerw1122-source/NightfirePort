@@ -81,7 +81,8 @@ pub enum Request {
     /// overlay (colour 0x000000ff: RGB 0, alpha target 0xff) whose alpha ramps |1/f| per tick on the
     /// viewer; f < 0 starts at alpha 1 and fades in, f > 0 starts at 0 and fades out. Suppressed
     /// while `SCRIPTINFO+0xAB5` bit 0 (the skip latch) is set [M 0x1db3d0:10-12].
-    Fade { ticks: f32 },
+    /// `viewer`: `Camera_SetFade`'s last argument — 0 the cut-scene (script camera) viewer, 1 the gameplay viewer.
+    Fade { ticks: f32, viewer: u8 },
     /// Op 0x1e: `Script_TextStart` 0x1db2b8 → `Text_AddMsg(-1, 0, 4, Txt_BindLabel(label, 0), 0,
     /// time)` — a HUD message from the text bank shown for `time` frames [M 0x1db2b8:9-12]. The raw
     /// label travels (the Lang table lives above nf-game); nf-view binds it like the pickup messages.
@@ -316,7 +317,7 @@ impl Script {
                 // The game's own fade-out in the last 20 ticks of a camera script [M :53-71]:
                 // `Camera_SetFade(40, 4, 0xff, 0)` — 40 ticks to black — unless the hash is in the
                 // no-fade set. It re-arms every tick; the drain's in-progress guard debounces.
-                if !no_fade { out.push(Request::Fade { ticks: 40.0 }); }
+                if !no_fade { out.push(Request::Fade { ticks: 40.0, viewer: 0 }); }
             }
             // The fade bookkeeping [M :84-98]: the skip's fade advances one frame per tick; past its length it
             // sets the freeze flag (bit 5).
@@ -331,7 +332,7 @@ impl Script {
         // the GAMEPLAY viewer — `Camera_SetFade(0xc1b00000, 0, 0xff, 1)` [L 0xc1b00000 = -22.0: 22 ticks from
         // black], clear the fade clock, play bit 4 and the skip latch.
         if self.fade_clock > self.fade_len as f32 && !self.playing() {
-            out.push(Request::Fade { ticks: -22.0 });
+            out.push(Request::Fade { ticks: -22.0, viewer: 1 });
             self.fade_clock = 0.0;
             self.play &= !0x10;
             self.fade_flags &= !1;
@@ -451,7 +452,7 @@ impl Script {
                         // alpha 1 and fades in, f > 0 fades out) unless the skip latch (+0xAB5 bit 0)
                         // is set [M 0x1db3d0:10-12].
                         let Some(t) = rd(0, 4) else { self.streams[i].pc = None; return };
-                        if self.fade_flags & 1 == 0 { out.push(Request::Fade { ticks: -f32::from_bits(t) }); }
+                        if self.fade_flags & 1 == 0 { out.push(Request::Fade { ticks: -f32::from_bits(t), viewer: 0 }); }
                         next = pc + 6;
                     }
                     0x14 => {

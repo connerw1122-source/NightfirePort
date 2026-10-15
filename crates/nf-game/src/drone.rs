@@ -5480,6 +5480,12 @@ pub struct Drones {
     /// state's exact lifecycle — who clears +0x235 — is not decoded; the port parks the alpha at the
     /// target and re-arms only from an empty state].
     pub view_fade: Option<ViewFade>,
+    /// The running fade is on the cut-scene viewer (`Camera_SetFade(.., 0)`): it belongs to the script camera's
+    /// view and ends with it — the gameplay view the camera hands back to never had it (the Kimiko scene's
+    /// near-end fade left the screen black after the hand-back, playtest 1015-0046).
+    pub view_fade_script: bool,
+    /// The script camera ran last tick (the hand-back edge for `view_fade_script`).
+    pub script_cam_prev: bool,
     /// Op 0x1e script messages (`Text_AddMsg(-1, 0, 4, Txt_BindLabel(label), 0, time)`, drained to
     /// the HUD like `taken`): (label, display frames).
     pub script_msgs: Vec<(u32, u16)>,
@@ -5762,7 +5768,7 @@ impl Drones {
             gas: Default::default(),
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
-            letterbox: false, view_fade: None, script_msgs: Vec::new(),
+            letterbox: false, view_fade: None, view_fade_script: false, script_cam_prev: false, script_msgs: Vec::new(),
             death: Default::default(), bond_fire: false, aims_idle: 0, auto_restart: true, level_exit_cold: false,
             // fix-aims20-modes-lights: BL+0x93e starts at the refill value [L ee_start_05].
             aims_raise: 1200,
@@ -6712,7 +6718,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // re-arms only when nothing is running [S: the viewer state's exact lifecycle is not
                 // decoded]. The same state carries the script's auto-fades (Script_Update's
                 // length−20 fade-out and the −22 handback fade-in) and nf-view draws it.
-                crate::nis::Request::Fade { ticks } => {
+                crate::nis::Request::Fade { ticks, viewer } => {
                     // `Camera_SetFade(duration, 4, 0xff, 0)` [M 0x1bbdd8]: rate = 1/duration per tick;
                     // a NEGATIVE duration starts at alpha 1.0 and fades in, a positive one starts at
                     // 0.0 and fades out (op 0x13 passes the script f32 negated, so a script fade of
@@ -6720,6 +6726,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     if self.view_fade.is_none() {
                         let (alpha, rate) = if ticks < 0.0 { (1.0, 1.0 / ticks) } else if ticks > 0.0 { (0.0, 1.0 / ticks) } else { (0.0, 0.0) };
                         self.view_fade = Some(ViewFade { alpha, rate });
+                        self.view_fade_script = viewer == 0;
                     }
                 }
                 // Op 0x1e: `Text_AddMsg(-1, 0, 4, Txt_BindLabel(label, 0), 0, time)` [M 0x1db2b8] —
@@ -7289,6 +7296,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             if f.rate > 0.0 { f.alpha = (f.alpha + f.rate).min(1.0); }
             else if f.rate < 0.0 { f.alpha = (f.alpha + f.rate).max(0.0); }
         }
+        // The hand-back: when the script camera stops, a fade running on the cut-scene viewer ends with it — the
+        // game draws it on that viewer only (`Camera_SetFade(.., 0)`), the gameplay viewer never had it.
+        let cam_now = self.scripts.camera().is_some();
+        if self.script_cam_prev && !cam_now && self.view_fade_script { self.view_fade = None; self.view_fade_script = false; }
+        self.script_cam_prev = cam_now;
         // Script objects with collision data join the collision world where they now are: animations' discrete
         // parts and drawn entities (`Collide_PickObj`; triggers and AI volumes are not obstacles).
         // Id: object index · 64 + part (stable while the object lives) for the ride (`ground_motion`).
