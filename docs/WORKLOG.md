@@ -12003,3 +12003,16 @@ Work Log:
 - 22:10-22:45: the implementation (grenade.rs: the `StuckGadget` phase box, the generalized stuck tick, the tail; drone.rs: the consumer arms 0x446/0x27c/0x447, the beam pass + the char-crossing trigger + the 6-cap, the throw fuse arm; scene.rs: the family fuse formula, the stuck draw alignment, the beam slots TRACER_SLOTS+3/+4, the digit pools kinds 4/5). Tests: 3 unit (the stick+300 fuse+beeps/digits, the non-210 fuse, the tripbomb arm 121) + 4 live through step_bond (the stick+blast+0x6000052, the countdown+beeps, the arm/beam/trigger + the off-beam sister, the 6-cap).
 - 22:47: checkpoint pushed. 22:52: the pre-fix probe (git checkout HEAD~1 -- crates): stuck=false, boom_at=300 (bounced, never stuck) — the live tests fail on the pre-fix tree as required; restored.
 - 22:56: the full suite started on the final tree (tools/test/suite.py); the report + the finish steps follow.
+---
+Task: fix-ammo-pane2
+Agent: worker (sandbox web-2cf47bf2)
+Task: the ammo-pane tests (crates/nf-view/tests/ammo_pane_live.rs) read the local PCSX2 snapshot work/ee_snapshot.bin (panic at :17 in merge checkouts — the file isn't in the repo; CLAUDE.md: tests may depend only on NF_ISO). Re-source every game number from the disc through the port's own loaders, keep every assertion, make anything that truly needs the snapshot an #[ignore]d probe with a reason.
+
+Work Log:
+- 23:55 UTC: branch s/fix-ammo-pane2 = origin/s/fix-ammo-pane + origin/master merged (WORKLOG conflict resolved keeping both), pushed. Sandbox survived: work/, ISO, nf-queue present; fast suite started in background.
+- 00:03: repro'd the held symptom — with work/ee_snapshot.bin + work/elf/ACTION.ELF hidden (the merge-checkout condition), the_four_weapons… and the_kind_1f… panic at ammo_pane_live.rs:17 "No such file or directory"; the timer test (NF_ISO-only) passes.
+- 00:12: the fix. weapon numbers → WeaponData::from_action_elf over the ISO's ACTION.ELF (the port runs the game's own boot initialiser _GLOBAL_$I$weapon_data 0x1b9900 — docs/formats/weapon-data.md; the sim's s.weapons vs a fresh disc parse keeps the label-id cross-checks meaningful); BulletImg.189 rows → raw slices from the disc's ACTION.ELF (0x2BEA38−0x106100+kind·16); every assertion kept. The boot-memory cross-check is now #[ignore = "needs the local PCSX2 EE snapshot…"] probe_weapon_table_matches_the_boot_snapshot.
+- 00:14: verified: 3/3 pass with work/ ABSENT (the fix's point); the probe passes with the snapshot present (all 115 records × the pane fields equal boot memory).
+
+Stage Summary:
+- ammo_pane_live.rs no longer reads work/ — depends only on NF_ISO; all assertions kept, one new #[ignore]d probe. No production code touched, no shared files touched. Suite total goes in docs/reports/fix-ammo-pane2.md.
