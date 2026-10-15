@@ -1,6 +1,8 @@
 # The driving atlas — DRIVING.ELF and the driving missions (research phase)
 
-Status: **first map, research-only** (task `research-driving`). The port covers ACTION.ELF; this
+Status: **first map, research-only** (task `research-driving`) + **the handover block ported**
+(task `drive-ptp`: `crates/nf-game/src/ptp.rs` + the nf-view level-transition hook — see §2's
+"Ported" note). The port covers ACTION.ELF; this
 file is the starting map for a later driving phase. Evidence tags: [M] code (function+address),
 [D] disc bytes, [L] EE snapshot, [S] suggested. Nothing here is committed from memory.
 
@@ -74,6 +76,32 @@ The round trip is now measured on both ends: ACTION launches DRIVING.ELF directl
 (`RunNextModule`), DRIVING launches **BASE.ELF** back (§3), and the boot loader re-dispatches from
 the block at 0x100000 (its read of the block is the remaining [S] — decompile in
 `work/decomp/SLUS_205.79/`).
+
+**Ported (drive-ptp)** — the handover itself now runs in the port:
+
+- `crates/nf-game/src/ptp.rs` models the PTP block as `PtpBlock`: every field `Boot_GetPTPData`
+  0x1c8198 writes and `Boot_LoadPTPData` 0x1c8560 mirrors, plus the DRIVING-side readers
+  (+0x4b4 ended gate, +0x4f4 level key, +0x540/48 language file, +0x960 valid magic, +0x974
+  index, +0x97c result, +0x984 status) and the 12 `PlrStats` driving slots (`DrivingStats`, the
+  0x2bbda0 table's record+8 values, boot state all zero [L ee_start_05.bin]).
+- The port's `Mission_Update` case 6 fires `LevelEnd { next: 0x0730xxxx }`; the view's LevelEnd
+  arm (`Sim::ptp_handover` in nf-view's scene.rs) builds the block from the Sim's state, stands
+  in for the drive with a dev-chosen result (`Drones.driving_result`, default Success — the
+  success path writes result 1 → `Mission_SetStatus(6)`, the abort path result 0 → status 3
+  [M 0x174bf0:315-323 + 0x1c8560:12-20]), and arms the resume at §2's return target
+  (`ResetMap_LevelToLoad(0x7000048, 0, 0)` [M 0x1c8560 tail]) as a cold load; lib.rs applies
+  `Boot_LoadPTPData`'s mirror to the new session (the mission status + the 12 slots).
+- Tests: `crates/nf-game/src/ptp.rs`'s unit tests (the block built from a known state, the key
+  table, the return mapping, the stats round trip) and
+  `crates/nf-view/tests/walk_07000004_ptp_live.rs` (the 07000004 kill route through the real
+  `nf_view::load` + `Sim::step_bond` path: mission complete → the 0x0730004 interlude → the
+  handover → the resume armed; the Fail sister; the slots' carry).
+- **Open [S], live check wanted**: the interlude-code → drive-index pairing
+  (`ptp::interlude_drive_index`) — the retail flow consults the hub menu's mission list
+  (`sp_level`, `Menu_GetLevelIndex` 0x2023e8) before `ResetMap_LevelToLoad(0x900000X)` pushes
+  GameFlow state 9 [M 0x1d3800:106]; the table is not read yet. The port pairs the 8 interludes
+  in `Mission_Update`'s order with the 8 drives in DRIVING's table order [D 0x25c948] (the
+  castle's 0x7300004 → 1, paris_mis01 — the task's own example).
 
 ## 3. Main, the boot sequence and the game loop
 

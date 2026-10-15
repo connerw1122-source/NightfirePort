@@ -13175,6 +13175,23 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   trailer / New Codename entry and the Multiplayer menus are not ported (611-613 queued for their data).
 - Renderer: the movie plane keeps the 4:3 picture centred with black bars (every menu movie and briefing was
   stretched a third too wide on 16:9).
+---
+Task ID: drive-ptp (checkpoint 1)
+Agent: drive-ptp worker
+Task: port the PTP handover block (Boot_GetPTPData 0x1c8198), the 12 PlrStats driving slots, and the ACTION↔DRIVING level-transition hook
+
+Work Log:
+- Measured Boot_GetPTPData 0x1c8198 (968 B) field-by-field: every PTP offset it writes (block at 0x31c090, size 0xa50)
+- Measured the return mirror Boot_LoadPTPData 0x1c8560: Mission_SetStatus from PTP+0x978 (0→6, 4→3, else→2), GameState+0x28 codes (0→0x40000036, 1/2/4→0x4000001c), resume = ResetMap_LevelToLoad(0x7000048) always
+- Measured DRIVING main 0x174bf0: PTP+0x960 valid gate, PTP+0x974 mission index drives the key switch (1=paris_mis01, 2=uw_mis11, 3=junglea_mis13a, 4=jungleb_mis13b, 5=snow1a_mis3, 6=snow2a_mis4, 7=junglec_mis13c, 8=snow2a_race, default=paris_map) [D strings at 0x374da8..]
+- Measured Mission_Update 0x182c60 case 6: the 8 on-foot→interlude pairs (0x7000004→0x7300004 … 0x700001b→0x730001b)
+- Measured ResetMap_LevelToLoad 0x1d3800: only 0x900000X ids push GameFlow state 9 (the launch); PTP+0x974 = GameState._8_4_ - 0x9000000 [M 0x1c8198]
+- Measured PlrStats_Get/SetDrivingData 0x199ac8/0x199b18: 12 entries, stride 0x3c, +0x00 record ptr, +0x18 id; values at record+8; table root PTR 0x2bc658 → table 0x2bbda0..0x2bc5c8 [L ee_start_05.bin: all rec+8 = 0]
+- Found psiGetDrivingData 0x120a88 / Boot_LoadPTPData 0x1c8560 (the return path) and psiLaunchDriving 0x120af0 (writes PTP+0x97c = 1 after the copy)
+
+Stage Summary:
+- Next: write crates/nf-game/src/ptp.rs + the nf-view hook + tests + driving.md update
+- Open ([S], live check listed): the interlude-code → drive-index link lives in the hub menu (sp_level table) — not read in this window; the port uses the task's own example (castle 0x07000004 → index 1, paris_mis01) and flags it [S]
 - (15:38-15:53) Final tree: merged origin/master a2958c03 (WORKLOG/GAPS both kept on the append conflicts); the
   fast runner on the affected binaries: ai_live/fix_ai_remainder_live/trig_live/fix_portonly_review_live/
   tuning_live/fire_modes3_live/fix_weapon_fire_modes_live/weapon_switch_live/fix_weapons_all_live/
@@ -13200,6 +13217,26 @@ Work Log (fix-scores-handoff):
 - (16:00-16:15) The port: `Progress::finish_level(base_map, difficulty)` (progress.rs) — the results-path formula at status 6, READ-mode (commit=false: a mid-mission part exit must not stamp best/last; the results page's results_enter commit stays the game's), producing `FinishedLevel` (the 9 scored rows + base/dif/bonus/last/medal + the PlrMissionStats snapshot) mirrored on `Progress::finished`. The additive tick-end hook in drone.rs: when the level-exit latch stands, produce for mission.base_map at Drones::difficulty. Unit tests: finish_level_handoff_no_kills_zero_rows (the task's sister — the zero rows, the read-mode no-commit, the idempotent re-run, the unknown-hash None) + finish_level_handoff_kill_run — 2/2 green with the existing 9 progress tests.
 - (16:15-16:25) The NF_ISO pin: crates/nf-view/tests/fix_scores_handoff_live.rs — the 07000005 truck-ride exit through the real input path (the gate_guard_truck helpers): the exit tick's hand-off equals the formula recomputed from the snapshot tally (rows 1/2/3/4/5/8 zero — the vanilla ride is the no-kill run; row 6 health/row 7 elapsed from the snapshot; base=Σ raw, bonus=base×dif, last=base+bonus, the medal chain), the entry's last/best untouched. FAIL-FIRST recorded: the hook disabled → the test dies at the missing rows (the port's NULL-path abort, exactly the task's symptom); restored → ok (16.3 s; base 100000 = the moments row 50000 + the time row 50000, medal 1 at difficulty 1). Checkpoint pushed @ 16:07 (code+test) — suite runner note: the background suite.py died on the sandbox's reaping (empty suite.out); foreground chunks instead.
 - (16:26-16:35) Merged origin/master 0bcd8077 (corona + find-corona-creator's docs; WORKLOG both kept) → 39924dab. Merged-tree verify: nf-game lib 177/177, fix_scores_handoff_live 1/1. Foreground suite chunks on the final tree (the bg runner is reaped by this sandbox): nf-game lib 177/177; nf-formats 77+11 with exactly the 3 allowed disc_golden fails; nf-audio green; nf-view lib 8/8; progress_remainder_live 4/4 + failfirst 3/3; level_reload_live + fix_progress_live 9/9; levels_sweep_live 3/3 (185 s — every level 600 ticks with the hook live); fix_scores_handoff_live 1/1. Report + finish steps next.
+
+---
+Task ID: drive-ptp
+Agent: drive-ptp worker
+Task: port the PTP handover block (Boot_GetPTPData 0x1c8198), the 12 PlrStats driving slots, and the ACTION↔DRIVING level-transition hook (nf-view)
+
+Work Log:
+- Measured the full handover chain: Boot_GetPTPData 0x1c8198 (every PTP offset it writes, block 0x31c090 size 0xa50), psiLaunchDriving 0x120af0 (copy to 0x100000, +0x97c = 1), DRIVING main 0x174bf0 (the +0x960 gate, the +0x974 index → key switch with the 8 [D] strings, the +0x984 status map 1→0/2→1/3,4→2, the exit tail: next index + next key + FUN_00300058(0x100000, flag)), FUN_00300058 0x300058 (the +0x4b4 gate, +0x97c = result, BASE.ELF), Boot_LoadPTPData 0x1c8560 (the return mirror: +0x978 → Mission_SetStatus 0→6/4→3/else→2, GameState+0x28 = 0x40000036/0x4000001c/0x40000043, resume = ResetMap_LevelToLoad(0x7000048) ALWAYS, PlrStats_SetDrivingData)
+- Measured ResetMap_LevelToLoad 0x1d3800 (only 0x900000X ids push GameFlow state 9 — PTP+0x974 = GameState._8_4_ − 0x9000000) and Mission_Update 0x182c60 case 6's 8 on-foot→interlude pairs
+- Measured PlrStats_Get/SetDrivingData 0x199ac8/0x199b18: 12 entries, stride 0x3c, +0x00 record ptr, +0x18 id, values at record+8; table 0x2bbda0..0x2bc5c8; boot state all-zero [L ee_start_05.bin]
+- Wrote crates/nf-game/src/ptp.rs: PtpBlock (every field both sides touch, offsets in the doc comments), DrivingStats, DriveResult/DriveReturn (the dev stand-in), interlude_drive_index [S], 9 unit tests
+- nf-view hook: the LevelEnd arm's interlude branch → pub Sim::ptp_handover (scene.rs); lib.rs applies the stashed DriveReturn to the reloaded session (the mission status + the 12 slots, Boot_LoadPTPData's mirror)
+- Drones: three additive fields (driving_stats/driving_result/driving_return), own lines per merge lesson 4
+- Tests: walk_07000004_ptp_live (4, NF_ISO, the real load+step_bond path) — the kill route now runs the banner into the handover (resume armed at 0x07000048 cold, result 1 → MissionState 6, key paris_mis01); the Fail sister; the slots' carry. Pre-fix the first two fail (the handover never ran) — the reproduce-first record
+- docs/atlas/driving.md: the §2 "Ported (drive-ptp)" status block + the header status
+- Suite on the final merged tree (a1cb5b36), foreground chunks: 886 passed / 3 failed / 26 ignored + 1 OOM crash — the 3 = the known no-GPU pylon set, the crash = fix_death_restart_live OOM (dmesg global_oom, 4 GB box, does not intersect the change)
+
+Stage Summary:
+- The ACTION↔DRIVING handover now runs end to end in the port: a mission-complete on an arc-ending level builds the PTP block, skips the drive with a dev-chosen result, and resumes ACTION at the front end with the status and stats carried
+- Open [S] with live checks in docs/reports/drive-ptp.md: the interlude→drive-index pairing (the hub menu's sp_level table, unread) and PTP+0x978's DRIVING-side writer
 - (16:40-17:00) driving-viv.md: the decompressor section (opcode table + the divergence note) + the size correction 6,825,216 → 6,826,240 with the [D] bytes. Report drafted. Suite started in chunks (this sandbox reaps even setsid-detached background jobs — canary verified): chunk 1 85 binaries green but the no-GPU pylon trio; chunk 2 core (nf_game/nf_formats/nf_audio/nf_view libs + driving_golden + disc_golden + facial_probe + pss_movies_live) 289 passed / 3 failed = the allowed slim-ISO disc_golden set; chunk 3 49 more, zero failures. ~196 integration/live binaries unreached (documented in the report; the change is additive to nf-formats only). driving_golden re-run with NF_DRIVING_REFPACK inside the window: 6/6.
 ## drive-refpack (2026-10-15, branch s/drive-refpack) — final
 - (17:25-17:30) Report docs/reports/drive-refpack.md (done/verified/left + live checks for the main agent), finish steps: push → finish.sh → ntfy. Disk pressure handled: target/debug (312M, unused) and the stale /home/z/nf-master checkout (720M) deleted; the 8 mission VIVs live in /home/z/driving-refpack/DRIVING (outside the repo, never committed).
@@ -13277,3 +13314,173 @@ Work Log (fix-scores-handoff):
   menu_live 12 + menu_backdrop_still 1 + menu_movies 2 + menu_woman_live 5 + dev_menu_flow 1 green.
   New tests: nf-game mission_stats_rows 7 (incl. the 07000005 PCSX2 golden numbers) + nf-view
   mission_stats_flow 3.
+## drive-crp-format (2026-10-15, branch s/drive-crp-format) — started 17:00 UTC
+
+Task: driving phase 1 — decode the .crp container (chunks, tables, the track mesh, the car model and its parts) from the data and DRIVING.ELF's consumer (task 501's map names it, or find it from the BIGF read of the track entry), write docs/formats/crp.md, and add a parser with golden numbers for every .crp in the 23 archives (NF_DRIVING or the full retail image). Files: crates/nf-formats/src/crp.rs (new), crates/nf-formats/tests/driving_golden.rs. Merge s/drive-refpack if not on master (done: merged 5a0e53f9). Deadline: stop new work 18:32 UTC, sandbox expires ~18:52 UTC.
+
+Work Log (drive-crp-format):
+- (16:55-17:00) Sandbox reused from prior finished sessions (fix-gas-rng2 / driving-input-path clones + work/ decomp + ISO + nf-queue all present). Disk was 100% full (57M free): removed stale clone /home/z/my-project/NightfirePort, /tmp/my-project/nf (kept ONE ISO copy, moved to repo root), browser/venv caches → 6.8G free. Token refreshed, fetched. refpack NOT on master → merged origin/s/drive-refpack (no conflicts; brings refpack.rs 0x10FB decompressor + driving_refpack.tsv 1,126-stream goldens + driving_golden.rs). Branch s/drive-crp-format created from origin/master a1cb5b36, pushed with this entry.
+- (17:05-17:33) Research: found the .crp consumer chain [M]: boot chain FUN_00174198 0x174198 prints "Loading track file", FUN_0022f898 0x22f898 opens data\track\<key>.crp from the mission VIV, scans the decompressed root table for tag 0x44424e20 ("DBN ") and registers the DBN payload string as the track name. Format decoded [M+D]: after RefPack (or plain) every .crp starts "CARP" (0x43415250); 16-byte records {tag u32 BE 4-char, flags u32, count i32, dref i32}; root flags bit1 = dref relative, bits 5+ = pool size (records), count = directory size; resolve = flags&2 ? rec+dref : dref — VERIFIED IN DISASM (0x2d6940: lw 4/andi 2/beq/lw 12/addu — the C's "*0x10" is a decompiler artifact); window walk [0x2d5a10/0x2d5920]: [resolve(root) + (flags>>5)*16 .. +count*16); flags bit0 = short tag (low half = instance index, normalize |0x2020 — "ns  "); payload size = flags>>8 [M 0x1a9600 ELF loader: FUN_0029f7c8/0029f820(elf, size, ELFr, 1)]. Pool tags [M 0x2dc1b0]: "Arti" (articles, each scanned for a "Name" 0x4e616d65 record), "Shar"=Shared, "CDat"=Collision, "RNgp"=RoadNetwork, "Map " ; chunk tags: "DBN " (track name), "ELFd" (a real 32-bit LE MIPS ET_REL object — \x7fELF found at rec+dref), "ELFr" (relocs), "MapN", "Sect", "ns  " (instance-indexed). Census [D]: 89 .crp entries over the 23 archives (8 track: DBN+MapN+RNgp+CDat; ~30 car + ~10 weapon models: no DBN/MapN; MISC.VIV's 5 cars are plain PRAC, the rest RefPack). paris_mis01 ELFd = 0x3BE810 = 3,929,104 B. NF_DRIVING extracted (Nightfire-driving.7z 428,903,899 B → DRIVING/ at repo root). Next: crp.rs + goldens + doc.
+- (17:33-17:52) crp.rs written (CARP parser: parse/Record/pool/directory/find/find_instance/payload/track_name/article_name; 3 unit tests on a hand-built container). FALSE START corrected by disassembly: the C's "*0x10" in FUN_002d6940 looked like a decompiler artifact (my ad-hoc disassembler printed the SLL's rs field instead of sa) — the raw word 0x00021100 at 0x2d6954 is `sll $v0,$v0,4`, so table refs DO scale dref by 16 while the chunk consumers' inline payload resolution adds raw bytes; crp.rs models both (Record::table vs Record::data_addr). driving_golden.rs extended with crp_canonical (key/entry/dec/sha1/root_flags/pool/chunks/elf/name/elfd_sha1) + structure test (8 tracks with DBN+MapN+RNgp+CDat, 5 plain MISC cars, 89 ELF modules); golden/crp_golden.tsv generated over all 89 .crp entries (python generator cross-checks the Rust canonicalization byte-for-byte). All 8 driving_golden tests green with NF_DRIVING; nf-formats --lib 76/76. lib.rs: one-line `pub mod crp;`. docs/formats/crp.md written. Pushed 2a846296.
+- (17:53-18:18) Merged origin/master (29 new commits, ee1619d1; clean, WORKLOG both kept) → final tree 9ef63124. Suite runner needed the full audio env (reused from the old env.sh: PKG_CONFIG_PATH + RUSTFLAGS="-L native=/tmp/alsa/prefix/usr/lib/x86_64-linux-gnu" + LD_LIBRARY_PATH incl. the lavapipe VK ICD — without RUSTFLAGS the nf-audio test links fail `unable to find library -lasound`); suite restarted in the background on the final tree with NF_ISO + NF_DRIVING. Report drafted at docs/reports/drive-crp-format.md.
+
+## verify-ledger (s/verify-ledger, started 2026-10-15 ~17:10 UTC)
+- Task 600: extend the bit-exact call-verification machinery (045n) into a ledger: docs/verify/ledger.md
+  (one row per ported sim function: address, name, port fn, status), replay tests in diff_calls.rs style
+  for anything replayable without the emulator, gdbcall.py --spec recording requests for the rest, and a
+  test that fails if a row claims bit-exact without recording+replay behind it.
+- Plan: seed the ledger from the port map + atlas (hot paths first), wire existing recordings, write spec
+  requests for the missing ones, add the guard test, run the touched crates + full suite, push, report.
+- Done: docs/verify/ledger.md (474 rows: 3 verified + 17 hot paths with gdbcall specs + 454 appendix rows from
+  the port maps), the guard test ledger_claims_match_the_recordings + its sister in diff_calls.rs (status
+  grammar, recording/adapter backing, N >= claimed, no dupes), call-traces.md harness section now points at the
+  ledger. diff_calls 6/6 green on the merged tree. No gameplay code changes.
+## live-backlog (2026-10-15, branch s/live-backlog) — started 17:30 UTC
+- Docs-only task: one ledger of every open question that needs the real game, harvested from all 204 reports
+  carrying "Live checks" sections (docs/reports/*.md) plus the UNKNOWNS/GAPS rows needing live play.
+- docs/live/backlog.md: 814 rows (L-001..L-786 from the reports in four harvest blocks, L-801..L-835 from
+  UNKNOWNS U-xxx / GAPS G-xxx). Row anatomy: id | source | type (pcsx2/render/both) | level | Q | HOW
+  (level, --pos/--bond spot, tool, what to read) | EXP (expected answers + what each changes in the port) |
+  EV (for/against with citations) | ST (open/answered/obsolete/settled-in-report) | SETTLED (where recorded).
+- Answered rows marked from docs/live/2026-10-13-portal-ground-truth.md, 2026-10-13-weapon-modes-pcsx2.md,
+  2026-10-14-weapon-measurements-pcsx2.md, the merge log and WORKLOG (52 settled lines: portal ground truth,
+  weapon modes/measurements, the 05 gate-door icon 0xFF, menu captures, guard first shot, spawner p7, EE FPU
+  model, eye-cel 15, radar, armour ring, ...). 19 obsolete framings recorded (forced-objects theory, p7 arm
+  reading, mine "→0x39", Square-as-mode-button, sbs.ps1 crop artifact, ...).
+- Open rows ordered by value in "what to run next": 12 clusters, each one PCSX2 session segment (escort 01
+  cluster unblocking the held walkreal line; guard RNG/fire cluster; the 4a lift cluster; the 0c vent/hatch
+  cluster; portal leftovers; weapon-matrix W/D cells; the UNKNOWNS High AI rows; MP; front-end; weapon/UX
+  grab-bag; audio/lighting; long tail). A generated level/spot index at the end groups all 814 rows per level
+  so one session clears a column.
+- docs/live/README.md added with the new rule: new reports add their live checks to the backlog with an id,
+  not only in the report; answered rows get ST: answered + SETTLED: pointer.
+## playtest-spots (2026-10-15, branch s/playtest-spots)
+- Started: writing docs/playtest/spots.md (--bond spot + --give list per playtest feature, sourced from existing tests/evidence) and crates/nf-view/tests/playtest_spots_live.rs (headless check per spot: load level, place Bond, 60 ticks, grounded + object within reach with distance/LOS). In progress.
+## playtest-spots (2026-10-15, branch s/playtest-spots) — DONE
+- docs/playtest/spots.md: all 13 requested features covered (18 spots) — level, --bond x,y,z,yaw,pitch, --give, the object in reach with the game's own constant (laser 4.0 / Q-Claw bolt 50.0 / E 2.5 / Q-Worm shot 2.0), per-row sources. 02's "vent" documented as non-existent (bathhouse SS props #308/#309 [D kind-census]); the real crawl vent row is 05's wall-hug window #35.
+- crates/nf-view/tests/playtest_spots_live.rs: 18 headless NF_ISO tests, one per level; each spot placed via the window's --bond contract (Bond::new + raw pitch), 60 ticks, grounded (SS_SWIM in the pond; 07 skips grounded — the cut-scene freezes Bond airborne) + distance + clear eye ray where the game's path needs one, plus functional reach proofs through the real input path (16 door opens on E, 12 buttons ch 0x59 on E, 0a worm installs ch 0x48 on fire, 0c hinge #14 burns under the held beam, 06 alarm ch 55 rises, 07 scene ch 0x48). 18/18 green, re-run green on the final tree merged with origin/master (d76a4b73).
+- Findings: the fix-melee guard-2 stand (60.4,27.1,100.4) has no floor in the sim — the Scorpion row uses the [L] chase-trace stand (79.86,22.92,96.0; guard 19.3 out in view); the 0c upper-walkway spot is walled off from the vent (end wall z −110.02, opening 3.2 up) — the doc's hatch row uses the burn stance (6.0,12.94,−110.5, floor 11.84 [L]); the 0a cubicle blocker is Bond-body only (eye ray blocked t≈0.46, the shot installs clean; fire straight after spawning — a settled Bond slides ~1.1 off the desk-edge spot).
+- Suite: this sandbox kills detached processes between tool calls (3 attempts) and OOM'd/disk-filled at the suite's -j4 build (3 GB RAM; pruned 2.4 GB of stale target artifacts) — the suite ran in foreground chunks against the 555 s tool cap: 94 binaries through chunk 0 (93 ok, 1 FAILED = probe_pylon_render: wgpu finds no GPU in this sandbox — environment, not code), 25 more ok in chunk 1 (cut mid-run). ~220 long NF_ISO binaries didn't fit the window. No failure attributable to this task (two new files only; no shared file touched).
+- Report: docs/reports/playtest-spots.md. Live checks for the main agent listed there + in spots.md (Q-Claw draw on cold 05, 0a walk-in, 0c ascent, 14 approach, 02 bathhouse hatches, 06 siren).
+## secret-codes (s/secret-codes)
+
+- (18:15) Sandbox reused (repo/work/ISO/nf-queue all present, build tools kept). Branch s/secret-codes created from origin/master @ 4bd64a03, pushed with this entry. Background suite.py started at 18:14 UTC (deadline ~20:13 UTC; stop new work 19:53 UTC).
+
+## secret-codes (s/secret-codes)
+
+- (18:14-18:15) Sandbox reused (repo/work/ISO/nf-queue/build env all present). Branch s/secret-codes created from origin/master @ 4bd64a03, pushed with the first entry. Background suite.py started (deadline ~20:13 UTC; stop new work 19:53 UTC).
+- (18:15-18:45) Research through the decomp + the ACTION.ELF disassembly (capstone): the Secret Unlocks page is 0x40000020 (P_CNNAME 0x213790) in cheat mode [M 0x213790:31-38]; the grid is the keyboard control (C_KEYBOARD_Handler 0x213a98: chars append, id 1000 delete, 1001 space, 0x3ea submit, 8-char cap); submit runs Menu_SpecialCodenameCheck 0x200238 — 52 × 0x38-byte stack entries {char code[16]; u32 level_flags @+0x20; u64 cheat_mask @+0x28}, strcmp match → the 12 sp_level+0x10 flags from level_flags bit i [M 0x201890-0x2018ac] + Menu_SetBonus(mask, 0, 0) whose zero-overwrite arm ORs [M 0x2018b4/b8 + 0x1ff898:79-84]. C_KEYPAD 0x216810 is the in-game door-keypad widget, not this page. The grant codes run Menu_UpgradeCheat 0x1fffe8 (two passes, id = the raw desc bit); the kind-4 groups widen per 0x199210:58-77 — the 12 gold-group ids 0,1,2/3/6/9,10/12/15/18/21/24 exactly cover the (id,count) call list. Strings + addresses dumped from .rodata 0x308578..0x3087a0; every bit re-verified against the raw words (Ghidra mis-folded several: BITESIZE/JOELWADE share bit 41 via one ori/dsll/xor triple; HUGE EGO shares BLIMP's bit 53; NUMBER 1 really is bit 54 via dsll32 7).
+- (19:00-19:15) The port: crates/nf-game/src/secret_codes.rs (the 52-code SECRET_CODES table with per-entry .rodata citations, submit() = the validator's port, upgrade_cheat() = the two-pass grant with the widened-bit walk) + lib.rs hook. 8 lib tests (valid/invalid sisters, PASSPORT, toggles, grant fill order, Q LAB, PARTY, medal-bits survival). FAIL-FIRST recorded: the first grant run awarded bits 2/10/15 instead of 0/9/15 — the widened_bit rank walk counted matches AFTER the target entry (fixed: stop at the entry), then 8/8 green.
+- (19:15-19:30) The FrontEnd: crates/nf-view/src/menu.rs — Page::CnName (0x40000020) + SecretEntry {cursor, typed, accepted, pending_submit} + SECRET_GRID (39 cells: 0-9, A-Z, Delete, Space, Submit) + secret_press (8-char cap/delete/space/flag) + secret_submit(&mut Progress) (the host drains — no Progress in the action handler, same split as results_enter); the wheel's row 0 routes to the page [M 0x213528 case 0]; the overlay draws a stub grid (the drawing task owns the look). 3 grid tests (type BOWLER + submit, the cap + delete, the routing). nf-game lib 196/196, nf-view lib 12/12.
+- (19:30-19:35) Merged origin/master (crp/refpack + WORKLOG conflict resolved keeping both) → nf-game 205/205, nf-view 12/12 on the merged tree. Suite restarted in background with the env (the first bg run died on the missing cargo PATH). Doc: docs/systems/secret-codes.md (the table, the flow, the save, the bit semantics, the open items). Report + finish steps next.
+- (19:35-19:53) Suite on the merged tree: build ok 347 binaries in 346 s; through 19:50 UTC the FAILED/CRASH lines are exactly the environmental/allowed set — 3 disc_golden (slim ISO), probe_pylon_render + fix_0c_pylon_live ×2 (no-GPU pylon set), fix_death_restart_live exit -9 (OOM in the 3 GB sandbox). No secret-codes failure. The total line prints only at the end and did not land before the sandbox expired — recorded in the report. Report amended (ntfy 429 quota on all three fallbacks) and pushed; finish.sh re-run.
+## screen-adjust-model (2026-10-15, branch s/screen-adjust-model) — started 19:21 UTC
+- Task: AV Options → Screen Adjust. Port P_SCREENADJUST_Handler 0x217a58 / C_SBSCREEN_Handler 0x217b08 (the
+  picture-offset page: what offsets it edits, ranges/steps, how they save into the profile, what they change on
+  screen), the AV Restore Defaults reset list (P_CNAVOPTIONS_Handler 0x214818:100-106), and document Widescreen /
+  Speaker / Split-screen runtime effects (implement Widescreen 16:9 view aspect if simple: Camera_CalcViewAngles
+  0x1baf70 writes 16/9 when DAT_002a37c4 is set). Deliver docs/systems/screen-adjust.md first, then state/flow/
+  getters in nf-view menu.rs or nf_game, tests with sister assertions, report docs/reports/screen-adjust-model.md.
+## screen-adjust-model (2026-10-15, branch s/screen-adjust-model) — implementation + tests 20:03 UTC
+- docs/systems/screen-adjust.md: the Screen Adjust page (menu-def 0x40000047 [L walk 2026-10-15]: two
+  0x100001eb slider bars d1 0 vertical / 1 horizontal, picture TEX 0x3000074, hint 0x67b), P_SCREENADJUST
+  0x217a58 (0x4c snapshots PS2OldX/Y 0x30d578/57c; 0x4b → Manager 0x5f(1) which SKIPS the 0x6b restore
+  notification [M 0x21c858 case 0x5f] so ✕ keeps; 0x6b restores), C_SBSCREEN 0x217b08 (0x49 slider value →
+  psiAdjustScreenPos by axis d1; 0x51 = control-created, sets the −1..1 range), psiAdjustScreenPos 0x10b890
+  (X += dx·12 clamp ±0x1b0, Y += dy·4 clamp ±0x30), VBlankInt 0x124088's DISPLAY2 write decoded against
+  sceGsSetDefDispEnv 0x226370 (DX = X+0x27c, DY = Y+0x32, MAGH 5 → 2560 X-units/line, 448 field lines), the
+  profile blob (LS_Make/LoadGlobalSettings 0x1cd9d0/0x1cdbc8 carry screen X/Y as 32-bit signed + the
+  subtitles/widescreen/drawinfo bits), the AV Restore Defaults list (0x214818:96-110 — music 0xe→70, sfx
+  0x14→100, subtitles per LanguageToLoad, split 0, speaker 1, widescreen 0, psiRestoreScreenPos), and the
+  runtime effects (widescreen 16/9 viewer+0x114 [M 0x1baf70:28-32], split DrawInfo, subtitles
+  DAT_002a37c8, speaker SFXSetMode 0x117078).
+- crates/nf-view/src/menu.rs: Page::ScreenAdjust (0x40000047) with 2 slider rows + action() (Left/Right step
+  psiAdjustScreenPos, ✕ keeps, Back cancels); CnAv row ✕ on 0x1000_0137 pushes it (snapshot), 0x1000_01a3
+  runs the game's own reset list (NOT default_opts — music 70 not 80), commit/Back re-snapshot/restore the
+  AV offset baseline; FrontEnd fields screen_x/y + screen_saved_x/y (PS2OldX/Y) + screen_av_saved_x/y
+  (0x30d8e8/ec), methods screen_adjust/open/cancel/restore_defaults/av_screen_snapshot/av_screen_restore/
+  screen_offset_640 (X/4, Y·15/14)/screen_offset_frac (X/2560, Y/448)/view_aspect (16/9 vs 4/3 from the
+  widescreen opt); AV_ROWS "Pro Logic" → "Surround" [D USATxt 0x395]; minimal ScreenAdjust draw arm (the
+  main agent owns the final look).
+- crates/nf-view/src/scene.rs: Sim.view_aspect (default 4/3, field on its own line) fed into gun_matrix's
+  gy term (the port's one viewer+0x114 consumer); FrontEnd::view_aspect() is the host's feed.
+- crates/nf-view/tests/screen_adjust.rs: 9 tests (6 headless flow/number tests with sister assertions; 3
+  ISO-gated: the menu-def page's two sliders d1 0/1 + d3 0xa + picture 0x3000074, the label binds incl.
+  "Surround"/"~A Confirm  ~B Cancel", Sim.view_aspect 4/3 default driving gun_matrix). 9/9 green; menus_flow
+  3/3, menu_movies 3/3, fix_hud_zoom_tilt_live 36/36 green on the same tree.
+
+## mpeg2-interlaced-decode (s/mpeg2-interlaced-decode, started 2026-10-15 ~18:40 UTC)
+- Task 605: the menu backdrop movie 07350048 (512x448 interlaced MP@ML, I/P/B) decodes as a ghost/smear in the
+  port vs a crisp picture in PCSX2 — suspected wrong interlaced predicted-picture reconstruction in
+  oxideav-mpeg12video or our use of it. Plan: PSNR the port vs an independent ffmpeg decode per frame/picture
+  type, find the cause, fix, pin with an NF_ISO test + sister.
+- Done: the decode itself was NEVER wrong — whole-ES PSNR port vs ffmpeg on the real 07350048 (range-fetched
+  from the retail image on the file host, SHA-1 verified against the golden manifest): 62.5–69.6 dB over 120
+  frames (I 69.4+, P 62.5+), and 07100005 65.1–76.1 dB (I/P/B); the crate's own conformance suite is 1462/0
+  (field pictures, dual-prime, 16x8, qmat). The user-visible ghost was PRESENTATION: the movies are BT.601
+  limited range (07350048 Y spans 14..218) and yuv420_to_rgb8 rendered Y raw with full-range chroma gains —
+  black at RGB(16,16,16), ~86% contrast, vs the game's IPU CSC which expands to full range. Fixed the matrix
+  (black now 0), plus VideoFrame::coding_type now reports the spec codes 1/2/3 (the crate enum is 0-based;
+  I pictures reported 0/"?" and P 1/"I" before). New: mpeg2_reference.rs (NF_ISO+movies-gated: per-frame
+  exact SHA-1 pin + reference block-grid MAD <= 2.0 over 120 frames, sister tests), golden
+  mpeg2_ref_digests_07350048.tsv + mpeg2_ref_psnr_07100005.tsv, dump_mpeg2_yuv/dump_pss_es examples,
+  pss.md decode-accuracy section. Pins 1f1fe7b0 -> 21d0739d (the CSC fix legitimately changes RGB8 output);
+  menu_movies/menu_backdrop_still re-pinned and green on a 3-movie mini ISO (NF_MOVIE_ISO).
+## mp-menu-flow (2026-10-15, branch s/mp-menu-flow)
+- Started: multiplayer front-end flow and its data (no drawing) — porting the MP page flow, lists and state into
+  nf-view's FrontEnd/Page/action, headless-testable. Reading the ACTION.ELF handlers and the menu-def 07000048.bin
+  kind-8 08000002 entry; deliverable: docs/systems/mp-menus.md + Page variants + tests.
+
+## mp-menu-flow (2026-10-15, branch s/mp-menu-flow)
+- The MP front end is ported into nf-view's menu.rs: 13 new Page::Mp* variants (ids 0x40000019/
+  1a/13/51/12/14/17/28/27/3f/2c/49/33 — every one a kind-8 PAGE record in 07000048.bin with aux
+  0x07350048 [L the menu-def dump]), the full action() graph (Join → Scenario → Map → Setup →
+  Options hub → Rules/PlayerMods/EnviroMods/Bots{Choose,Setup} → Confirm → match start, plus the
+  debriefing), and the game's own tables lifted to MP_SCENARIO_ROWS (mp_scenario @0x2df508, 13
+  rows), MP_MAP_ROWS (mp_level @0x2df400, 8), MP_OPTIONS_ROWS (@0x2dfbb0, 5), MP_BOTS_ROWS
+  (@0x2dfd30, 5), MP_CHARACTERS (@0x2df640, 29) + the Menu_IsBotGood side bytes from
+  default_bot_stats+0x09 @0x26D2F0 [L .data dumps, pinned row-for-row by mp_menu_lists_live.rs].
+- Key decompile findings: the atlas's "MPSettings+0x420/424/428/432" are DECIMAL prints — the real
+  offsets are +0x1A4/+0x1A8/+0x1AC/+0x1B0; the confirm (P_MPCONFIRM 0x20ec00:53-94) converts the
+  time limit minutes→seconds (×0x3c), sets +0x180=1, +0x1AC=joined, GameState+0x08=level, and
+  runs ResetMap_LevelToLoad(level,0,0) + the 80f fade + MenuManager_Delete; Quick Game
+  (C_SBMPSCEN 0x20c600:48-145) sets Deathmatch/10 min/10 frags/radar/no-FF/3 bots (Drake/Kiko/
+  Rook, Phoenix) and jumps straight to 0x40000049; Ravine (0x0700004b) zeroes the AI Bots row
+  (P_MPOPTIONS 0x217678:20-25) and the bot count (Menu_PrepareBots 0x1f94a0:85-88).
+- The port hands the match over as nf_game::mp::MpSettings (mp_match_settings) + the level request
+  through the existing loader (verified headless to reach the arena); keyboard-only, agent 1 joins
+  (the game joins 2-4 through their pads, msg 0x6a). Drawing is NOT in scope: the overlay's MP arms
+  are empty for the main agent, fed by rows()/row_label()/mp_row_preview/mp_row_desc/mp_row_locked/
+  mp_confirm_lines. Deliverable doc: docs/systems/mp-menus.md (page graph, every list's rows with
+  label/preview/desc ids and unlocks, the confirm handover, live checks).
+- Tests: mp_menu_flow.rs 9 headless (flow + back-outs + locks + bots + start checks + Quick Game +
+  loader handover, each with a sister assertion) + mp_menu_lists_live.rs 5 ISO-gated (the five
+  tables + the side bytes vs the disc's ACTION.ELF). 14/14 green; suite run on the final tree.
+## credits-data (2026-10-15, branch s/credits-data) — started 18:31 UTC
+Task: the credits roll's content and timing (no drawing). P_WINGAME_Handler 0x215100 (end of game) and AV Options → Credits play P_CREDITS_Handler 0x2152b0. Do: (1) docs/systems/credits.md — where the lines come from (label ranges in USATxt.dat or a table, cite the address), line kinds (heading/name/gap/image), fonts/colours/positions as the handler sets them, scroll speed/timing per frame in the game's 512×448 units, the end condition and return page, any music/movie; (2) port a credits model in crates/nf-view/src/menu.rs (or a new module): the ordered line list from the game's data, a tick() giving each visible line's y at a given frame, the exit, hooked to a Page::Credits (state + getters only); (3) tests: line count/order vs the data (numbers/ids only), scroll position after N frames vs the handler's rate, roll end + return page — each with a sister assertion that can fail. Not in scope: drawing.
+
+Work Log (credits-data):
+- (18:31) Sandbox reused (repo + ISO present; work/ missing → work-slim.7z download next). Branch s/credits-data created from origin/master @ f0284f45, pushed with this entry.
+
+Work Log (credits-data):
+- (18:31-18:40) Setup: sandbox reused (repo + ISO present; work/ re-fetched via work-slim.7z + py7zr — no 7z binary). Branch s/credits-data from origin/master f0284f45, pushed with the start entry. tools/test/suite.py is NOT on master yet — foreground chunks instead.
+- (18:40-19:05) Research: P_CREDITS_Handler 0x2152b0 is page 0x40000030 [M 0x2029e0:411-413]; P_WINGAME 0x215100 = page 0x40000053, plays movie 0x073f0048 then msg 0x44/0x40000030 [M 0x215100:20-48]. The lines: Menu_SetupCredits 0x1f9a88 builds 578 (0x242) 12-byte entries on the stack, heap-copies 0x1b18 bytes and stores 0x242 at 0x30d54c (the count cell count_521, not a data table) [M 0x1f9a88:3444-3450]. Entry {left,right,kinds@8/9,wide@10}; strings = 209 Txt_BindLabel ids (bank<<24|index [M 0x1cad60:13]) + 492 ELF literals + 12 .data strings [D: 0x30d270 EUROCOM … 0x308220] + 241 gap " " (0x30d240 [D]) + 202 NULL (blank 0x30d5a8 [M 0x218890:44-47]). Fonts: kind→msg 0x23 pointers 0x30d560/68/70; kind 0 = ff 02 fe 03 + fc 64 fb 64 = DAT_003096c0 the default label format [D ELF bytes]; ff 0N = face, fe 03 = centre.
+- (19:05-19:25) Timing [M 0x2152b0:103-195]: frame++ per 0x50; every 14th frame the next line enters list slot index_519 (mod 26) of both columns at y 0x200; two-column rows: left x 0x10 w 0x100, right x 0xf0 w 0x100; wide rows: left w 0x1e0, right hidden (0x2b/1); every frame all 26 slots y −= 2 (enter frame shows 510). Music: SFXStartMusic(0x27) on enter, music_vol_524 captured, fade once 578−50 < frame/14 by (578×14 − frame)×vol/700 clamped ≥0. End once 578+18 < frame/14 (frame 8358): delayed 0x13 → msg 0x44/0x40000002 (MAIN) when page_from = 0x40000053 else msg 0x5f (pop back); delayed 0x68 + an exit process on 0x10000215 {0xe1,0xff,0} over 0xf [S: a page fade]. Background alpha: 0x1000023c gets 0xff vs 0x404040ff on GameState[0x52] (the Menu_SetLevelBonus flag [M 0x1ffa10:68]). No input cases — the roll cannot be skipped.
+- (19:25-19:50) The port: crates/nf-view/src/credits_data.rs (the parsed 578-line table; every one of the 1156 slots accounted for) + credits.rs (CreditsRoll = the handler's statics; tick() → CreditsExit; visible()/slot_y()/music_volume() getters; consts). menu.rs: Page::Credits (0x40000030), FrontEnd::credits/credits_from, open_credits(from, vol, bonus), the tick routes the delayed exit, AV Options' Credits action row 0x10000138 (label Txt 0x198) opens it. Each new field on its own line [lesson 4]; no shared file rewritten.
+- (19:50-19:56) Tests crates/nf-view/tests/credits_data.rs (11, all green): count 0x242 + order pins (entries 0/1/2 = labels 0x10002a5/a6/a7 wide; 361 = 0x1000264 kind 2; 565 = 0x10002a1; 577 = a wide gap) + the slot accounting (209/504/241/202) + scroll rate (510 on entry, −2/frame exact) + the 14-frame period/mod-26 slots + the music fade window (686@vol700 → 0 at 578×14) + the exit/return pages (AV → CnAv, win → Main, no early fire) + the AV row opens the page + the NF_ISO pin: USATxt 0x198 binds "Credits", neighbour 0x197 does not. Fail-first evidence: the order pins caught the wrong tail index (553 vs the real 565) and a reversed sign in the scroll assert before the fixes.
+- (19:56) Run on this tree: nf-view lib 9/9, credits_data 11/11, menus_flow 36/36 (the file menu.rs touches); nf-view release build clean. The full suite didn't fit the window's tail (suite.py not on master; background jobs get reaped here) — the affected crates are nf-view only (no nf-game/nf-formats/nf-audio code changed).
+- (19:25) Extended verification on the final tree: campaign_flow_live 5/5, dev_menu_flow 5/5, fix_weapon_modes_live 6/6 (all the menu-driven nf-view suites) — 72 nf-view tests green total on this branch; no nf-game/nf-formats/nf-audio code touched. Finish steps ran (queue: done/613-credits-data.md carries the report); ntfy quota-429 on all three fallbacks, recorded in the report.
+## screen-adjust-model (2026-10-15, branch s/screen-adjust-model) — DONE 20:28 UTC
+- Merged origin/master mid-task: the mp-menu-flow task's menu work had landed in master — resolved
+  docs/WORKLOG.md (both kept) and crates/nf-view/src/menu.rs (both kept: the ScreenAdjust page and the
+  13 MP page variants coexist; the Left/Right remap list carries both additions; FrontEnd fields and
+  new() inits from both sides; the row_label Results arm merged into ScreenAdjust|Results).
+- Suite (this sandbox kills detached processes — background start died empty; foreground slices on the
+  final merged tree): screen_adjust 9/9 + menus_flow/menu_movies/fix_hud_zoom_tilt_live +
+  fix_viewmodel_zoom_live/fix_interp_ghosting_live/mp_menu_flow/campaign_flow_live = 70/0; menu-family
+  slice 13/0; playtest_spots_live+sim smoke 30/0; nf_{formats,view,game,audio} unit binaries +
+  hud_playtest_live/hud_radar_live/textures_live 301/0. Total 415 passed / 0 failed / 0 TIMEOUT, all
+  351 test binaries built clean. ~330 long per-level binaries didn't fit the window.
+- Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
+  0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
+  the PAL base note).

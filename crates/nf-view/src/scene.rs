@@ -482,6 +482,11 @@ pub struct Sim {
     /// crouch-icon timer, the pickup message bar (pane 21) and how many `drones.taken` events it has
     /// converted. Stepped per tick in `hud_tick` (the game's HUD update runs per 60 Hz frame).
     pub hud: HudState,
+    /// The view aspect the game writes at viewer+0x114 (`Camera_CalcViewAngles` 0x1baf70:28-32:
+    /// 16/9 = 0x3fe38e39 with the AV options' widescreen flag set, 4/3 = 0x3faaaaab otherwise; the
+    /// host feeds it from `FrontEnd::view_aspect`). screen-adjust-model (field on its own line
+    /// [WORKLOG lesson 4]).
+    pub view_aspect: f32,
 }
 
 /// A status-pane message (`Text_AddMsg` 0x1b0c30's `TXT_MSG` node): the bound text, its remaining ticks,
@@ -2503,6 +2508,43 @@ impl Sim {
         self.first_person = !self.disabled;
     }
 
+    /// drive-ptp: the ACTION→DRIVING handover for a `0x0730xxxx` interlude — the port of
+    /// `GameFlow_Main` 0x1c98c8 case 9 (`Boot_GetPTPData` + `psiLaunchDriving`) with the drive
+    /// itself stood in by the dev choice (`driving_result`). Builds the PTP block from the Sim's
+    /// state, runs the DRIVING-side exit stand-in, and arms the resume: the level the return
+    /// names (`Boot_LoadPTPData` 0x1c8560's unconditional 0x07000048) as a COLD load, with the
+    /// return stashed for lib.rs to apply after the reload (the mission status + the 12 stats).
+    /// Pub so the headless tests drive the exact path the view's event drain runs.
+    pub fn ptp_handover(&mut self, next: u32) {
+        let index = nf_game::ptp::interlude_drive_index(next); // [S — see ptp.rs]
+        let map_id = 0x0900_0000 | index as u32; // GameState._8_4_ [M 0x1c8198:62]
+        let block = nf_game::ptp::PtpBlock::build(&nf_game::ptp::BuildInputs {
+            map_id,
+            game_state_40: self.drones.difficulty, // GameState+0x28 [M 0x1c7f88]
+            game_state_52: 0,                      // word 82 — not tracked [M-negative]
+            stats: self.drones.driving_stats,
+            result: self.drones.driving_result,
+        });
+        let ret = nf_game::ptp::drive_exit(
+            self.drones.driving_result,
+            block.drive_index as u8,
+            self.drones.driving_stats,
+        );
+        eprintln!(
+            "[ptp] drive handover: map {map_id:08x} index {} key '{}' → result {} (MissionState {}), resume {:08x}",
+            block.drive_index,
+            nf_game::ptp::key_for_index(block.drive_index as u8),
+            ret.result,
+            ret.mission_state(),
+            nf_game::ptp::RESUME_LEVEL,
+        );
+        self.drones.driving_return = Some(ret);
+        self.drones.level_exit = Some(nf_game::ptp::RESUME_LEVEL);
+        // The return is a fresh ACTION boot (BASE.ELF re-dispatch → GameFlow case 1 →
+        // Boot_LoadPTPData) — the port models it as a cold load [M 0x1c8560].
+        self.drones.level_exit_cold = true;
+    }
+
     /// The cut-scene camera, when a script runs one: position, yaw, pitch (from the matrix's +Z) and vertical field of
     /// view.
     pub fn script_camera(&self) -> Option<([f32; 3], f32, f32, f32)> {
@@ -3852,10 +3894,13 @@ impl Sim {
                 }
                 nf_game::mission::Event::PlayerDead => {} // the red fade is render-side; the menu arrives below
                 nf_game::mission::Event::LevelEnd { next } => {
-                    // `ResetMap_LevelToLoad(LevelToEndTo)` [M 0x182c60:73]. The 0x0730xxxx codes
-                    // are DRIVING.ELF levels the port cannot load — logged and skipped.
+                    // `ResetMap_LevelToLoad(LevelToEndTo)` [M 0x182c60:73]. The 0x0700xxxx codes
+                    // are the port's own levels; the 0x0730xxxx codes are the driving interludes
+                    // (the handover below).
                     if next & 0xffff_0000 == 0x0700_0000 {
                         self.drones.level_exit = Some(next);
+                    } else if nf_game::ptp::is_driving_interlude(next) {
+                        self.ptp_handover(next);
                     } else {
                         eprintln!("ission] complete → LevelToEndTo {next:08x} (driving level, not ported)");
                     }
@@ -4080,11 +4125,12 @@ impl Sim {
         let (cx, cy) = self.crosshair();
         // G-044 [M Player_WeaponRecoil 0x1a3de8:52-57]: both tilt terms divide by `glb_viewer+0x108`
         // (the zoom — `Player_PositionCamera` 0x18f5d8:129 feeds it BL+0x8D0, the port's `self.zoom`),
-        // and the x term scales by `viewer+0x114` = 4/3 on a 4:3 screen [L ee_start_05 viewer
-        // 0x1fc6c10+0x114 = 0x3faaaaab; `Camera_CalcViewAngles` 0x1baf70 writes 16/9 there in the
-        // widescreen mode the port doesn't model]. A zoomed view used to tilt the gun as if unzoomed.
+        // and the x term scales by `viewer+0x114` = 4/3 on a 4:3 screen, 16/9 with the AV options'
+        // widescreen flag [L ee_start_05 viewer 0x1fc6c10+0x114 = 0x3faaaaab; `Camera_CalcViewAngles`
+        // 0x1baf70:28-32 writes 0x3fe38e39 = 16/9 there when DAT_002a37c4 is set — screen-adjust-model
+        // feeds it through `self.view_aspect`]. A zoomed view used to tilt the gun as if unzoomed.
         let (gy, gp) = (
-            4.0 / 3.0 * cx * std::f32::consts::FRAC_PI_6 / self.zoom,
+            self.view_aspect * cx * std::f32::consts::FRAC_PI_6 / self.zoom,
             cy * std::f32::consts::FRAC_PI_6 / self.zoom,
         );
         let gf = [0, 1, 2].map(|k| fwd[k] * gp.cos() * gy.cos() - left[k] * gp.cos() * gy.sin() + up[k] * gp.sin());
@@ -5634,7 +5680,7 @@ impl Scene {
         let textures = keys.into_iter().map(|key| {
             TextureImage::from_texture(key.0, &level.maps[key.0].textures[key.1 as usize])
         }).collect();
-        let mut hud_textures: Vec<(u32, TextureImage)> = crate::hud::TEXTURES.iter().chain(crate::menu::MENU_TEXTURES.iter()).filter_map(|&h| level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == h).map(|t| {
+        let mut hud_textures: Vec<(u32, TextureImage)> = crate::hud::TEXTURES.iter().chain(crate::menu::MENU_TEXTURES.iter()).chain(crate::menu::mp_textures().iter()).filter_map(|&h| level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == h).map(|t| {
             (h, TextureImage::from_texture(mi, t))
         }))).collect();
         // fix-pause-menu2: the pause page's figure (0x030000db) keeps the standard 8bpp decode —
@@ -5877,6 +5923,9 @@ impl Scene {
                 view_aim_anim: None,
                 view_aim_raising: false,
                 mp: None,
+                // screen-adjust-model: viewer+0x114's 4:3 default; the host feeds 16/9 when the AV
+                // options' widescreen is on [M Camera_CalcViewAngles 0x1baf70:28-32].
+                view_aspect: 4.0 / 3.0,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));

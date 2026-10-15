@@ -19,7 +19,9 @@ pub struct VideoFrame {
     pub cb: Vec<u8>,
     /// Cr plane, `width/2 × height/2` samples for 4:2:0.
     pub cr: Vec<u8>,
-    /// §6.3.10 `picture_coding_type`: 1 = I, 2 = P, 3 = B.
+    /// §6.3.10 `picture_coding_type`: 1 = I, 2 = P, 3 = B. (The crate's `PictureCodingType` enum is
+    /// 0-based — Intra = 0 — so the mapping below renumbers it to the spec's codes; verbatim `as u8`
+    /// made every I picture report 0 and every P picture 1, which mislabels any per-type analysis.)
     pub coding_type: u8,
     /// §6.3.10 `temporal_reference` of the coded picture.
     pub temporal_reference: u16,
@@ -57,7 +59,12 @@ pub fn decode_video(es: &[u8]) -> crate::buf::Result<Vec<VideoFrame>> {
             y: f.frame.y.samples().to_vec(),
             cb: f.frame.cb.samples().to_vec(),
             cr: f.frame.cr.samples().to_vec(),
-            coding_type: f.picture_coding_type as u8,
+            coding_type: match f.picture_coding_type {
+                oxideav_mpeg12video::PictureCodingType::Intra => 1,
+                oxideav_mpeg12video::PictureCodingType::Predictive => 2,
+                oxideav_mpeg12video::PictureCodingType::Bidirectional => 3,
+                oxideav_mpeg12video::PictureCodingType::DcIntra => 4,
+            },
             temporal_reference: f.temporal_reference,
         })
         .collect())
@@ -74,22 +81,34 @@ pub fn pack_yuv420(f: &VideoFrame) -> Vec<u8> {
     out
 }
 
-/// Upsamples a 4:2:0 frame to RGB888 (nearest neighbour, BT.601 limited-range like the PS2's CSC).
+/// Upsamples a 4:2:0 frame to RGB888 (nearest neighbour) through the BT.601 **limited-range**
+/// expansion — the PS2 IPU's own RGBA32 CSC (movies.md: `sceMpegGetPicture` decodes straight into a
+/// 512×448 RGBA32 buffer, so the game's pixels always went through the IPU's Y 16–235 / C −112..112
+/// → full-range matrix; PCSX2's `IPU::CSC` does the same). The old raw-Y formula (Y used directly,
+/// the full-range 1.402/1.772 chroma gains) rendered black as RGB(16,16,16) and squashed every
+/// movie to ~86 % contrast — the "soft, low-contrast ghost" of the menu backdrops (measured:
+/// 07350048's Y range is 14..218, task mpeg2-interlaced-decode).
 #[cfg(feature = "movies")]
 pub fn yuv420_to_rgb8(f: &VideoFrame) -> Vec<u8> {
     let (w, h) = (f.width, f.height);
     let cw = w / 2;
+    // BT.601 limited→full, fixed point /65536: 1.1644 Y expansion, 1.5960 R, 0.3918/0.8130 G, 2.0172 B.
+    const YC: i32 = 76318;
+    const RC: i32 = 104599;
+    const GC_B: i32 = 25681;
+    const GC_R: i32 = 53288;
+    const BC: i32 = 132219;
     let mut out = vec![0u8; w * h * 4];
     for y in 0..h {
         for x in 0..w {
-            let yp = f.y[y * w + x] as i32;
+            let yp = ((f.y[y * w + x] as i32 - 16) * YC) >> 16;
             let c = f.cb[(y / 2) * cw + x / 2] as i32 - 128;
             let r = f.cr[(y / 2) * cw + x / 2] as i32 - 128;
             let cl = |v: i32| v.clamp(0, 255) as u8;
             let (r8, g8, b8) = (
-                cl(yp + ((91881 * r) >> 16)),
-                cl(yp - ((22554 * c + 46802 * r) >> 16)),
-                cl(yp + ((116130 * c) >> 16)),
+                cl(yp + ((RC * r) >> 16)),
+                cl(yp - ((GC_B * c + GC_R * r) >> 16)),
+                cl(yp + ((BC * c) >> 16)),
             );
             let at = (y * w + x) * 4;
             out[at] = r8;
