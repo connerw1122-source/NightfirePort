@@ -13238,3 +13238,11 @@ Work Log (fix-scores-handoff):
   the 3 slim-ISO disc_golden allows. Full background sweep impossible in this sandbox (jobs
   killed between tool calls). Report docs/reports/drive-elf-map.md pushed; finish.sh acked
   (OK done 501-drive-elf-map); ntfy 429 on all three fallbacks (recorded in the report).
+
+## nfstats-model (2026-10-15, branch s/nfstats-model) — start
+- (18:53 UTC) Branch s/nfstats-model cut from origin/master 0157588d (has tools/test/suite.py).
+  Task: Mission Stats page model — P_NFSTATS_Handler 0x209938: rows (Bond Moves, Opponents
+  Dispatched/Subdued/Surrendered, Stealth, Accuracy, Health, Time, 007 Bonus), Current from
+  PlrMissionStats/progress.rs, Target from the level table, TOTAL scoring formulas + difficulty
+  bonus, formatting (SeparateNumber, mm:ss, ----, %), stats_rows() getter (strings + ids),
+  headless mission-end test + 07000005 PCSX2 golden numbers. Docs first, no drawing.
