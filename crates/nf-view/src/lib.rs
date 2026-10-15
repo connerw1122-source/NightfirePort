@@ -2686,6 +2686,17 @@ pub fn run() -> Result<()> {
                 let rounds = wd.clip_size(id).max(1);
                 if sim.drones.inventory.equip_weapon(&wd, id, rounds, true) {
                     sim.drones.inventory.equip_ammo(&wd, id, (rounds * 3).max(rounds));
+                    // The panel give's twin fill (fix-aims20-modes-lights, panel.rs): a twin-linked record
+                    // (+0x05, the AIMS-20 0x1a ↔ its grenade 0x1b) needs rounds in the twin's own slot or
+                    // the mode press is refused (`Player_WeaponHasAmmo` 0x1a16c0) — the playtest check's
+                    // `--give 0x1a` left B dead and the grenade light dark.
+                    let twin = wd.records.get(id).map(|r| r[5] as i8).unwrap_or(0);
+                    if twin != 0 {
+                        let t = (id as i32 + twin as i32) as usize;
+                        if let Some(c) = sim.drones.inventory.clip.get_mut(t) {
+                            if *c == 0 { *c = wd.clip_size(t).max(1); }
+                        }
+                    }
                     first.get_or_insert(id as u8);
                     eprintln!("--give: equipped {id:#04x}");
                 } else if sim.drones.inventory.owned.get(id).copied().unwrap_or(false) {
