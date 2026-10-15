@@ -54,7 +54,20 @@ fn the_wire_icons_straddle_set_is_its_own_west_room_cel() {
     let icon = &sim.icons[0];
     assert_eq!(icon.ctx, 3, "the Hand_Over_Hand icon is the cable context [D param 0]");
     assert!((icon.radius - 1.164).abs() < 0.05, "the icon's world sphere is its object bounds (r 1.164 [D probe]), got {}", icon.radius);
-    assert_eq!(icon.centre, icon.pos, "the icon object's bounds centre is the placement origin [D probe]");
+    // G-046 (exact-sine-sites-1): the centre is the glist bounds centre through the game's
+    // View_RotTransMatrix 0x1e5168 + Control_BuildWorldSph 0x133070 VU0 chain — C0 =
+    // PS2Sinf(1.5707964) = 1.0000001 [L probe] factors every non-±0 matrix element and the chop
+    // (guard-bit-less) MAC adds accumulate ~1-2 ulps of the ~133-magnitude translation. The game
+    // never makes the world centre bit-equal to the placement origin when the local bounds centre
+    // is nonzero; the old `centre == pos` expectation was the host `sin_cos` stand-in's artifact
+    // (that path carried no C0 factors and rounded instead of chopping). The chain itself is
+    // [L]-verified against the live obj+0x80 on 07000005 (docs/reports/exact-sine-sites-1.md) and
+    // transcribed bit-for-bit in exact_sine_sites_live on 07000002+07000005, so this disc-derived
+    // value [D placement + map object] is the game's:
+    assert_eq!(icon.centre, [133.42567f32, 48.326435, -101.2065],
+        "the icon's world centre is the game-chain value, not the raw placement origin");
+    assert!((icon.centre[0] - icon.pos[0]).abs() < 1e-3 && (icon.centre[1] - icon.pos[1]).abs() < 1e-3,
+        "the exact chain moves the centre by ulps of the translation only — the same sphere for gameplay");
     assert_eq!(sim.icon_cels[0], vec![12u32 as usize].iter().map(|&v| v).collect::<Vec<_>>(),
         "the r-1.164 sphere crosses no portal: the straddle set is the icon's own cel (the west room, graph cell 12)");
     // Sisters: the FindCel cel of the two playtest sides.
