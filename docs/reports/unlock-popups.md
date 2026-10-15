@@ -58,3 +58,12 @@ per the task):**
 - The full four-crate suite ran as per-crate foreground chunks (background jobs get reaped in
   this sandbox): nf-view + nf-game fully green; nf-formats/nf-audio untouched by this branch
   (no code changed there — the branch's diff is menu.rs, progress.rs, two test files, two docs).
+
+## ntfy failed
+
+All three fallbacks hit the ntfy.sh daily quota (HTTP 429, code 42908 "limit reached: daily
+message quota reached") at 2026-10-15 ~22:28 UTC: curl printed
+`{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`,
+the urllib fallback raised `HTTPError: HTTP Error 429: Too Many Requests`, and wget returned
+empty. The finish.sh step itself succeeded (`OK already closed in done/, report attached` for
+619-unlock-popups).
