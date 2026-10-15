@@ -38,3 +38,7 @@ claimed-by: sandbox4 at 2026-10-15T16:57Z
 ## Report (done, 2026-10-15T17:57Z)
 
 Closed by the driver: the report is on `s/verify-ledger` (docs/reports/verify-ledger.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T19:34Z)
+
