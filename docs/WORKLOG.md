@@ -13275,6 +13275,45 @@ Stage Summary:
   the 3 slim-ISO disc_golden allows. Full background sweep impossible in this sandbox (jobs
   killed between tool calls). Report docs/reports/drive-elf-map.md pushed; finish.sh acked
   (OK done 501-drive-elf-map); ntfy 429 on all three fallbacks (recorded in the report).
+
+## nfstats-model (2026-10-15, branch s/nfstats-model) — start
+- (18:53 UTC) Branch s/nfstats-model cut from origin/master 0157588d (has tools/test/suite.py).
+  Task: Mission Stats page model — P_NFSTATS_Handler 0x209938: rows (Bond Moves, Opponents
+  Dispatched/Subdued/Surrendered, Stealth, Accuracy, Health, Time, 007 Bonus), Current from
+  PlrMissionStats/progress.rs, Target from the level table, TOTAL scoring formulas + difficulty
+  bonus, formatting (SeparateNumber, mm:ss, ----, %), stats_rows() getter (strings + ids),
+  headless mission-end test + 07000005 PCSX2 golden numbers. Docs first, no drawing.
+
+## nfstats-model (2026-10-15, branch s/nfstats-model)
+- (18:53-19:15) Research: P_NFSTATS_Handler 0x209938 (the page id is 0x40000037 via
+  Handler_HandleMessage 0x2029e0:448), PlrStat_GetScore 0x1984b0 (the scorer), SeparateNumber
+  0x1dec78, Timer_Seconds2String 0x1deaa8, Menu_AddRow 0x201c10 / Menu_AddRowPercentage 0x201df0,
+  the results page's case 0x5e/0x5d key arms (0x208e78:216-229), Button_Update 0x1ef948 (msg map:
+  0x4b confirm / 0x5d back / 0x5e side). The page: header 0x1000204/0x10001e1/0x10001e2/0x163, the
+  label-only Opponents row 0x15a + the blank spacer 0x30d2d8, the stealth trio gated on the entry's
+  +0x38 flag.
+- (19:15-19:30) docs/systems/mission-stats.md + crates/nf-game/src/stats.rs (separate_number,
+  timer_string, StatsRow, stats_rows — the handler's exact order/formats) + the flow: Page::Stats
+  (0x40000037), FrontEnd::stats_enter/mission_stats, results Side → stats, results Back → dossier
+  [M 0x208e78 case 0x5d], stats Back → results [S the script target unparsed].
+- (19:30-19:45) THREE scorer misports found and fixed in get_score (each caught by a test, the
+  golden capture is the disproof): (1) the time row under-par capped at max — the game computes
+  ceil(max × par / max(elapsed_s, 1)) in BOTH branches [M 0x1984b0:118-170; 01:19/09:00 → 170,887];
+  (2) row 4 stealth within par scored 0 via the proportional fall-through — the game awards the
+  FULL max [M :225-233]; (3) the accuracy value started at 0 with no shots — the game copies the
+  par (100) [M :74-78]. Plus the missing ceil₁ₑ₋₅ on the generic/stealth raws [M :181-185/:213-218]
+  and the ratio from raw/max on row 7 [M :234-253].
+- (19:45-19:55) Test updates where the old misports were locked in: progress.rs lib tests ×4,
+  progress_remainder_live (the driving row-7 ratio → the 2-decimal grid), fix_scores_handoff_live
+  (row 4 within-par full, row 7 ceil, expect_generic ceil).
+- (19:55) Suite (the sandbox reaps background jobs — the nohup suite.py died in <60 s, canary
+  checked; foreground chunks): nf-game 188 lib + 35/4/1/2/2 integration green; nf-formats 9+1+2+1+73
+  green with exactly the 3 allowed disc_golden fails; nf-audio green; nf-view lib 9 + menus_flow 36
+  + mission_stats_flow 3 + front_end_chain 1 + fix_progress_live 3 + fix_progress_detected_hook 2 +
+  fix_scores_handoff_live 1 + progress_remainder_live 4 + progress_remainder_failfirst 3 +
+  menu_live 12 + menu_backdrop_still 1 + menu_movies 2 + menu_woman_live 5 + dev_menu_flow 1 green.
+  New tests: nf-game mission_stats_rows 7 (incl. the 07000005 PCSX2 golden numbers) + nf-view
+  mission_stats_flow 3.
 ## drive-crp-format (2026-10-15, branch s/drive-crp-format) — started 17:00 UTC
 
 Task: driving phase 1 — decode the .crp container (chunks, tables, the track mesh, the car model and its parts) from the data and DRIVING.ELF's consumer (task 501's map names it, or find it from the BIGF read of the track entry), write docs/formats/crp.md, and add a parser with golden numbers for every .crp in the 23 archives (NF_DRIVING or the full retail image). Files: crates/nf-formats/src/crp.rs (new), crates/nf-formats/tests/driving_golden.rs. Merge s/drive-refpack if not on master (done: merged 5a0e53f9). Deadline: stop new work 18:32 UTC, sandbox expires ~18:52 UTC.
@@ -13604,3 +13643,26 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   plus rng_live/ai_live/drone_portcheck_live/fields_live/pickup_live/trig_live/tuning_live/
   level_live/diff_calls/spawner_kill = 65/65), 0 failed; the first full-suite pass failed only the
   2 no-GPU fix_0c_pylon_live render tests (wgpu request_adapter panic — lesson 6, unrelated).
+## nfstats-model2 (2026-10-15, branch s/nfstats-model2)
+- Started: land held 614 (s/nfstats-model dd301c6) — branch created from origin/s/nfstats-model, origin/master
+  merged (menu.rs union: Stats + CnName/ScreenAdjust/MP pages/Credits all kept; WORKLOG union). Target: the held
+  suite failure `nf-view/tests/fix_scores_handoff_live.rs:104` "row 5: the no-kill run's stat" (left 100, right 0)
+  — 614's test edit vs master's 111e PlrMissionStats handoff (progress.rs). Next: reproduce, decide from
+  P_NFSTATS_Handler 0x209938 / the results rows what row 5 shows for a no-kill run, fix code or test, verify.
+
+## nfstats-model2 (2026-10-15, branch s/nfstats-model2) — the held failure fixed
+- The verdict: the held "row 5: the no-kill run's stat (left 100, right 0)" is a TEST bug, not a code bug — the
+  game's accuracy row copies the par (count 100) into the value FIRST and only rescales when shots were fired
+  [M PlrStat_GetScore 0x1984b0 — the store rows+0x6c ← rows+0x64, the DAT_002bcc24 (PlrMissionStats+0x04 fired)
+  != 0 guard]; P_NFSTATS 0x209938:57-66 displays that value verbatim; the capture reads "Accuracy 100% / 100% /
+  50,000" [L docs/reports/nfstats-model.md:54]. 614's `else { rows[5].count }` scorer IS the game; master's
+  `else { 0 }` was the misport; 614's edit of fix_scores_handoff_live.rs missed the row-5 loop entry.
+- The fix (test-only): row 5 out of the zero-loop; assert value 100 + raw = the generic formula (the full target)
+  + raw 50,000 (the capture). Before: the merged tree failed at line 104 (left 100, right 0). After: 1/1 green
+  through the real truck-ride walk.
+- The merge (c0f48e99): menu.rs union (Stats + CnName/ScreenAdjust/MP/Credits), WORKLOG union. nf-game full green,
+  mission_stats_rows 7/7, mission_stats_flow 3/3, menus_flow 36/36.
+- Suite on the final tree (foreground runner chunks — background jobs die here): ~252/348 binaries, 1030 passed /
+  6 failed / 26 ignored — the 6 = the 3 permitted disc_golden + 3 wgpu adapter-NotFound GPU probes
+  (probe_pylon_render, fix_0c_pylon_live ×2; environmental). Not run: the walk/walkreal tails + render/weapon
+  probes (~96) — flagged for the next window.

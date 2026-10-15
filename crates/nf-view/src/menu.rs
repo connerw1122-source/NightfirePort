@@ -91,6 +91,10 @@ pub const PAGE_DIFFICULTY: u32 = 0x4000_0023;
 pub const PAGE_MISSION_SELECT: u32 = 0x4000_001c;
 /// The Dossier page [M menu-def page 0x4000002b: header Txt 0x27f].
 pub const PAGE_DOSSIER: u32 = 0x4000_002b;
+/// Mission Stats [M `Handler_HandleMessage` 0x2029e0:448 — page 0x40000037 → `P_NFSTATS_Handler`
+/// 0x209938]; the results page's side action opens it [M `P_NFRESULTS_Handler` 0x208e78 case 0x5e
+/// → `Manager_SendMessage(0x44, 0x40000037, 0)`].
+pub const PAGE_STATS: u32 = 0x4000_0037;
 /// The Dossier's Records table [M menu-def PAGE 0x4000003a (parsed 2026-10-14: header LBL 0x280,
 /// hint LBL 0x49e, the mission list 0x10000174 (132,124,376×16), the three score rows + the medal
 /// image 0x10000176 (435,282,128×64) TEX 0x0300013d); P_DOSSIER 0x216de0's rows open it
@@ -467,7 +471,7 @@ pub const INTRO_TICKS: u32 = 850;
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnName, CnAdvanced, CnMp, CnAv, ScreenAdjust,
+pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, Stats, CnSelect, CnMenu, CnName, CnAdvanced, CnMp, CnAv, ScreenAdjust,
     // mp-menu-flow: the multiplayer front end (page ids in the PAGE_MP_* constants below).
     MpJoin, MpScenario, MpMap, MpSetup, MpOptions, MpRules, MpPlayerMods, MpEnviroMods, MpBots, MpBotChoose, MpBotSetup, MpConfirm, MpDebriefing, Credits }
 
@@ -478,6 +482,7 @@ impl Page {
             Page::Difficulty => PAGE_DIFFICULTY, Page::MissionSelect => PAGE_MISSION_SELECT,
             Page::Dossier => PAGE_DOSSIER, Page::Records => PAGE_RECORDS,
             Page::Options => PAGE_OPTIONS, Page::Pause => PAGE_PAUSE, Page::Results => PAGE_RESULTS,
+            Page::Stats => PAGE_STATS,
             Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnName => PAGE_CN_NAME, Page::CnAdvanced => PAGE_CN_ADVANCED,
             Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV, Page::ScreenAdjust => PAGE_SCREEN_ADJUST,
             Page::MpJoin => PAGE_MP_JOIN, Page::MpScenario => PAGE_MP_SCENARIO, Page::MpMap => PAGE_MP_MAP,
@@ -494,6 +499,7 @@ impl Page {
             PAGE_DIFFICULTY => Page::Difficulty, PAGE_MISSION_SELECT => Page::MissionSelect,
             PAGE_DOSSIER => Page::Dossier, PAGE_RECORDS => Page::Records,
             PAGE_OPTIONS => Page::Options, PAGE_PAUSE => Page::Pause, PAGE_RESULTS => Page::Results,
+            PAGE_STATS => Page::Stats,
             PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_NAME => Page::CnName, PAGE_CN_ADVANCED => Page::CnAdvanced,
             PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv, PAGE_SCREEN_ADJUST => Page::ScreenAdjust,
             PAGE_MP_JOIN => Page::MpJoin, PAGE_MP_SCENARIO => Page::MpScenario, PAGE_MP_MAP => Page::MpMap,
@@ -1096,6 +1102,10 @@ pub struct FrontEnd {
     /// The page's PROFILE-name mode — cn_open(from != 0x4000001d) runs the validator/create
     /// flow; the wheel's entry is the cheat grid (SecretEntry) [M 0x213790:33].
     pub cn_profile_mode: bool,
+    /// nfstats-model: the Mission Stats page's rows (P_NFSTATS_Handler 0x209938's table), built
+    /// by [`FrontEnd::stats_enter`] when the page opens; None until then (the game's
+    /// `score_table == 0` arm draws nothing [M 0x209938:38-40]).
+    pub mission_stats: Option<Vec<nf_game::stats::StatsRow>>,
     /// secret-codes: the Secret Unlocks letter-grid model (page 0x40000020 in cheat mode). The
     /// grid cursor + typed string + the valid-code box flag [M C_KEYBOARD_Handler 0x213a98].
     pub secret: SecretEntry,
@@ -1227,6 +1237,8 @@ impl FrontEnd {
             cn_exit: None,
             cn_cheat_checked: false,
             cn_profile_mode: false,
+            // nfstats-model (each new field on its own line [WORKLOG lesson 4]).
+            mission_stats: None,
             // secret-codes: the letter-grid model starts empty (the game's buffer 0x34e028 begins
             // empty on every page enter [M P_CNNAME 0x213790:46 re-binds the empty buffer]).
             secret: SecretEntry::default(),
@@ -1319,6 +1331,9 @@ impl FrontEnd {
             // COMPLETED results page (P_NFRESULTS 0x208e78) has NO row list — the page's own
             // action is the hint's ~A Continue (Confirm anywhere).
             Page::Results => if self.outcome == Outcome::Complete { 1 } else { 2 },
+            // P_NFSTATS adds no row list — the page sends its table with msg 0x19/0xf cells
+            // [M 0x209938:44-123]; the port's rows come from `mission_stats`.
+            Page::Stats => 0,
             // ── mp-menu-flow ──
             // The four Join panels — the cursor walks the agents; agents 2-4 stay unjoined (no
             // pads in the port; the game joins them through their own controllers [M msg 0x6a]).
@@ -1386,9 +1401,11 @@ impl FrontEnd {
                 ["Restart level", "Restart mission", "Quit to menu"][row.min(2)].into(),
             // The COMPLETED page draws no rows (P_NFRESULTS has none [L page 0x40000036's
             // controls]); rows() is 1 for the wheel arithmetic only.
+            Page::Results => String::new(),
+            Page::Stats => String::new(),
             // The Screen Adjust page's bars carry no text — the game's page data has no label
             // controls on it, only the two slider bars, the picture and the hint [L page 0x40000047].
-            Page::ScreenAdjust | Page::Results => String::new(),
+            Page::ScreenAdjust => String::new(),
             // ── mp-menu-flow: the wheels' own labels (the tables above) ──
             // The join panels: agent 1's states bind 0x1e8/0x37b/0x1e9 [M C_RBMPSTART 0x20d048's
             // 0x5c/0x4b arms — 0x1e8 "Press ~A to join", 0x37b "Choose Codename", 0x1e9 "Press ~A
@@ -1808,6 +1825,17 @@ impl FrontEnd {
             self.save_profile();
         }
         self.results.is_some()
+    }
+
+    /// P_NFSTATS_Handler 0x209938's page enter — the Mission Stats rows against the LIVE progress
+    /// layer. The game's 0x4c build runs `PlrStat_GetScore(0)` (the commit [M 0x209938:36-38])
+    /// and adds the rows; the port mirrors it through `nf_game::stats::stats_rows` (order,
+    /// gating, formats — docs/systems/mission-stats.md). `base_map` = GameState+0x72,
+    /// `status` = `Mission_Status()` (6 on the results path), `difficulty` = GameState+0x40.
+    /// Returns whether the rows were built (the game's `score_table != 0` arm).
+    pub fn stats_enter(&mut self, progress: &mut nf_game::progress::Progress, base_map: u32, status: u32, difficulty: u32, lang: Option<&Lang>) -> bool {
+        self.mission_stats = nf_game::stats::stats_rows(progress, base_map, status, difficulty, lang);
+        self.mission_stats.is_some()
     }
 
     // ── fix-save-profile: the codename profiles (the port's memory card) ──────────────────────
@@ -2643,9 +2671,24 @@ impl FrontEnd {
             },
             Page::Results if self.outcome == Outcome::Complete => match a {
                 Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
-                Action::Side => {}
+                // Case 0x5e — the side action opens Mission Stats [M 0x208e78:224-229
+                // `Manager_SendMessage(0x44, 0x40000037, 0)`]; the host calls `stats_enter`
+                // when the page comes up (the game's 0x4c build).
+                Action::Side => {
+                    self.page = Page::Stats;
+                    self.flow.page = PAGE_STATS;
+                    return true;
+                }
+                // Case 0x5d — back goes to the Dossier [M 0x208e78:216-220
+                // `Manager_SendMessage(0x44, 0x4000002b, 0)`].
+                Action::Back => {
+                    self.page = Page::Dossier;
+                    self.flow.page = PAGE_DOSSIER;
+                    self.cursor = 0;
+                    return true;
+                }
                 // P_NFRESULTS has no row list [L page 0x40000036's controls] — the wheel keys idle.
-                Action::Up | Action::Down | Action::Back => return false,
+                Action::Up | Action::Down => return false,
                 Action::Confirm => {
                     // Case 0x4b [M 0x208e78:28-52]: a NEW reward routes to the bonus page
                     // 0x40000038, whose own Confirm lands on the mission list [M 0x209670:50-53];
@@ -2700,6 +2743,20 @@ impl FrontEnd {
                     }
                 }
                 Action::Back => { self.cursor = 1; return true; }
+            },
+            // Mission Stats 0x40000037 [M `Handler_HandleMessage` 0x2029e0:448 →
+            // P_NFSTATS_Handler 0x209938]. The handler arms ONLY the 0x4c build [M 0x209938:31-124]
+            // — no key arms — so the port idles everything but the back action: the page's △
+            // returns to the opener (the results page) [S — the game's △ plays the page's own
+            // menu-def script (Page_SendMessage 0x21ec68 case 0x5d → Script_PlayDefault), whose
+            // target is in the unparsed front-end archive; live check in the report].
+            Page::Stats => match a {
+                Action::Back => {
+                    self.page = Page::Results;
+                    self.flow.page = PAGE_RESULTS;
+                    return true;
+                }
+                Action::Up | Action::Down | Action::Confirm | Action::Side | Action::Left | Action::Right => {}
             },
             // ── mp-menu-flow: the multiplayer front end ──
             // Join Game [M P_MPJOIN 0x20ca00 + C_RBMPSTART 0x20d048 + C_RBMPCNAME 0x20d448].
@@ -3878,6 +3935,26 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
         }
         Page::Pause => pause_page(&mut h, fe, font, lang, textures, cream, bright, dim),
         Page::Results => results_page(&mut h, fe, font, lang, textures, cream, bright, dim),
+        // nfstats-model: the Mission Stats page's DATA (no art — the main agent draws the page
+        // against PCSX2). The rows from `stats_enter` in the game's order, the header quartet
+        // bound from STATS_HEADER; cells at the pause SCORE tab's column x's (the port's only
+        // measured Category/Current/Target table [L PCSX2 07000005 pause]).
+        Page::Stats => {
+            let bind = |id: u32| -> String { lang.and_then(|l| l.bind(id)).unwrap_or("").to_string() };
+            let (hc, hcu, ht, hto) = nf_game::stats::STATS_HEADER;
+            let put = |h: &mut Hud, k: usize, name: &str, cur: &str, tgt: &str, tot: &str, c: [f32; 4]| {
+                let y = my(157.0 + k as f32 * 16.7 + 6.0);
+                h.text(Anchor::Centre, font, -2, name, mx(100.0), y, false, c, false);
+                if !cur.is_empty() { h.text(Anchor::Centre, font, -2, cur, mx(421.0), y, true, c, false); }
+                if !tgt.is_empty() { h.text(Anchor::Centre, font, -2, tgt, mx(490.0), y, true, c, false); }
+                if !tot.is_empty() { h.text(Anchor::Centre, font, -2, tot, mx(560.0), y, true, c, false); }
+            };
+            put(&mut h, 0, &bind(hc), &bind(hcu), &bind(ht), &bind(hto), cream);
+            for (k, r) in fe.mission_stats.iter().flatten().enumerate() {
+                let name = if r.indented { format!("  {}", r.category) } else { r.category.clone() };
+                put(&mut h, k + 1, &name, &r.current, &r.target, &r.total, bright);
+            }
+        }
         // credits-data: the main agent draws the roll from fe.credits.visible() (the game's
         // own line list + y positions) — nothing here yet.
         Page::Credits => {}
