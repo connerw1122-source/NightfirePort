@@ -1368,7 +1368,14 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
                 let c = if i == fe.cursor { cream } else { gs(0x73330f, 0x80) };
                 centred_tex(&mut h, hfont, 0x0300_0005, -2, &bind(lbl), mx(167.0 + 153.0), my(y + 14.0 + 3.0 + 6.0), c, true, 1.0);
             }
-            label(&mut h, font, &bind(MAIN_DESCS[fe.cursor.min(2)]), 103.0, 357.0, 434.0, 42.0, cream, true, 1.0);
+            // Wrapped inside its plate, the lines centred on y 379 at pitch 16 (PCSX2 m03/m05: one line at 379, two at
+            // 371/387 breaking after "saved").
+            let lines = wrap_px(&bind(MAIN_DESCS[fe.cursor.min(2)]), font, mx(380.0));
+            let n = lines.len().min(3) as f32;
+            for (i, line) in lines.iter().take(3).enumerate() {
+                let mid = 379.0 + (i as f32 - (n - 1.0) / 2.0) * 16.0;
+                centred(&mut h, font, -2, line, mx(320.0), my(mid + 6.0), cream, true, 1.0);
+            }
             hint_bar(&mut h, font, &hint(0x54e, "~V Scroll  ~A Select"), 50.0, 419.0, cream);
             // No logo or stamp: the page's only art is its aux FMV.
         }
@@ -1742,7 +1749,7 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
         _ => "~A Select  ~V Scroll  ~H Next",
     };
     // Dark words without a shadow on the bright bar (PCSX2 m21–m24, 2026-10-15).
-    hint_row_s(h, font, &hint_wrap(lang, hint_id, hint_fb), 45.0, 341.0, gs(0x0d0904, 0xff), None, false);
+    hint_row_s(h, font, &hint_wrap(lang, hint_id, hint_fb), 45.0, 341.0 + 2.5, gs(0x0d0904, 0xff), None, false); // middle 352 (m21–m27)
 }
 
 /// fix-pause-menu2: a menu-space text row with the specialchar glyphs inline (the "~A Label" rows of
@@ -1791,7 +1798,9 @@ fn results_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: 
             // selected row. Row pitch 40 like the pause list (the capture's two rows).
             let rows = [(0x5bcu32, "REPLAY"), (0x16c, "QUIT")];
             for (i, (id, fb)) in rows.iter().enumerate() {
-                let c = if i == fe.cursor { bright } else { dim };
+                // The unselected row stays bright cream here (PCSX2 07000005 fail: REPLAY #dfe3e4, QUIT #e1dcc1), unlike
+                // the pause list's dimmed rows.
+                let c = if i == fe.cursor { bright } else { gs(0x7d6d59, 0xff) };
                 // Centred on the list (Label_Update ctrl.x + w/2 [M 0x218cb8:177-182]); PCSX2 07000005: the row centres
                 // at y 216 / 254 of 480, the arrow at x 205.
                 centred(h, font, -2, &lbl(*id, fb), mx(197.0 + 123.0), my(223.0 + i as f32 * 38.0), c, false, 1.0);
@@ -1800,7 +1809,8 @@ fn results_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: 
             // The hint (97,341,446×18) LBL 0x5c8 [L the page's 0x1000006f].
             // The hint control (97,341,446×18) is centred on x = 320 like the 540-wide bars hint_bar assumes [L]:
             // hint_bar takes the 540-bar's left edge.
-            hint_bar(h, font, &hint_wrap(lang, 0x5c8, "~A Select  ~V Scroll"), 320.0 - 270.0, 341.0, cream);
+            // Dark words on the bright bar like the pause page's, middle y 352 (PCSX2 07000005 fail, 2026-10-15).
+            hint_row_s(h, font, &hint_wrap(lang, 0x5c8, "~A Select  ~V Scroll"), 320.0 - 270.0, 341.0 + 2.5, gs(0x0d0904, 0xff), None, false);
         }
         Outcome::Complete => {
             // The results page's layout [L page 0x40000036's controls: header 0x10000001 (50,40,376×17)
@@ -2063,7 +2073,8 @@ fn confirm_box(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, opt: &str,
 /// format's fe 03) — the PCSX2 captures show the footer hints centred; the port's old left edge at
 /// x=50 was the control's x, not the text's anchor].]
 fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y640: f32, c: [f32; 4]) {
-    hint_row(h, font, text, x640, y640, c, None);
+    // The words' middle sits at the bar's y + h/2 + 2.5 (PCSX2 m03/m05/m06/m10/m12/m15: 432 for the 21-tall bars at 419).
+    hint_row(h, font, text, x640, y640 + 4.5, c, None);
 }
 
 /// One "~X label" row: centred on the 540-wide bar at `x640` (hint bars), or left-aligned with its first ink at
