@@ -12001,3 +12001,15 @@ Task: weapon matrix 5 rebuild — base s/weapon-matrix5, merge origin/master FIR
 
 Work Log:
 - 23:18 UTC: branch s/weapon-matrix5b created from origin/s/weapon-matrix5 (4cf0d3ef); origin/master (d1e8f6a7, 90 commits ahead) merged — matrix.rs/scene.rs auto-merged, WORKLOG resolved append-only (master's file kept, matrix5's entry + this one appended).
+- 23:18-00:45 UTC: the rebuild done. Merge of origin/master (90 commits) onto the matrix5 base —
+  matrix.rs/scene.rs auto-merged, WORKLOG append-only. The HELD 227 failure root-caused: the state-9
+  proxy (gun.fire_state) latched unconditionally on every round while the game's SetFiringAnim
+  0x1a3c70 enters view state 9 ONLY when the fire script exists (its tail: the +0xf4=9 store is
+  inside the `hash != 0` branch) — the script-less watch pair 0x54/0x55 wedged the mode block shut
+  forever on master's tree (fix-samurai-fire's clip-slot unification let the round actually run).
+  Fix: the latch gates on +0xB0/+0xB4 (GunParams carries them); spawn latch untouched. Runner test
+  227 panic → pass (118 s) + the machine_idle sister. In-suite binary 341.8 s (< 1200 cap), 6/0.
+  Sweep re-run: 24/24 levels passed, 0 panics; tables captured for 16/27; red list = matrix5's
+  standing findings (0x32 F, 0x38 F, 0b's 0x2c W + 0x2e/0x30 D guided-lifetime, 0d's 0x2a X
+  contact-flight) — the watch pair now clean everywhere (zero M reds). Full suite: 1136 passed /
+  3 failed (the allowed disc_golden trio). Report: docs/reports/weapon-matrix5b.md.
