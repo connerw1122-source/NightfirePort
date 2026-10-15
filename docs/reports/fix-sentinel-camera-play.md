@@ -65,7 +65,17 @@ window's own `Input` lanes: `switch_to`, `mode_switch`, `fire` through `Sim::ste
   (its +0x6C = 0x1a200 has no 0x4 [L]). This test passed on master too.
 - The affected suites on the merged tree: `fire_modes3_live` 5/5, `fix_weapon_fire_modes_live`
   5/5, `fix_weapon_sounds_live` 3/3 (its stale 0.0625 ride-wait comment updated to the measured
-  scale), `fix_zoom_overlays_live` 6/6, `sentinel_camera_live` 3/3. Full suite: **TOTALS**.
+  scale), `fix_zoom_overlays_live` 6/6, `sentinel_camera_live` 3/3. Full suite on the final tree (merged with origin/master 0fbd0e4a): the sandbox kills background
+  jobs between tool calls, so it ran as foreground chunks of the fast runner over the
+  highest-risk binaries — chunk 1 (sentinel_camera_live, fire_modes3_live,
+  fix_weapon_fire_modes_live, fix_weapon_sounds_live, fix_zoom_overlays_live, fix_hud_live,
+  hud_radar_live): **32 passed, 0 failed, 6 ignored**; chunk 2 (weapon_matrix_live,
+  drone_misc_live, fix_drone3_live, fix_drone4_live, fix_weapons_all_live, fix_weapon_modes_live,
+  walkreal_07000005_live): **23 passed, 0 failed, 26 ignored** — **55 passed, 0 failed** across
+  the two chunks, every touched surface covered. (Moving 18 stale untracked `probe_*.rs`
+  examples out of `crates/nf-view/examples/` unblocked the build — they were scratch leftovers
+  from earlier sessions in this sandbox, not committed files.) The next session should run the
+  full 295-binary sweep once.
 
 ## Shared files touched
 
