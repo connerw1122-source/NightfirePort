@@ -36,3 +36,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox4 at 2026-10-15T12:38Z
+
+---
+## Report (done, 2026-10-15T14:31Z)
+
+Closed by the driver: the report is on `s/fix-progress-detected-hook` (docs/reports/fix-progress-detected-hook.md); the worker didn't run finish.sh.
