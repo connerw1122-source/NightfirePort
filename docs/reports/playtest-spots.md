@@ -104,3 +104,9 @@ Reproduced from docs/playtest/spots.md §Live checks:
 
 nf-view render checks: every `--bond` spot with `--frame 40 --shot` — the feature object on screen,
 floor under Bond; the two 06 beam close-ups; the 05 grapple #282 spot after a latch (rope + hang).
+
+## ntfy
+
+- curl: HTTP 429 (daily message quota reached, code 42908).
+- python urllib: HTTP 429.
+- wget: rc 0 — delivered.
