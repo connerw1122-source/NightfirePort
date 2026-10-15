@@ -13335,6 +13335,40 @@ Work Log (drive-crp-format):
 - (19:15-19:30) The FrontEnd: crates/nf-view/src/menu.rs — Page::CnName (0x40000020) + SecretEntry {cursor, typed, accepted, pending_submit} + SECRET_GRID (39 cells: 0-9, A-Z, Delete, Space, Submit) + secret_press (8-char cap/delete/space/flag) + secret_submit(&mut Progress) (the host drains — no Progress in the action handler, same split as results_enter); the wheel's row 0 routes to the page [M 0x213528 case 0]; the overlay draws a stub grid (the drawing task owns the look). 3 grid tests (type BOWLER + submit, the cap + delete, the routing). nf-game lib 196/196, nf-view lib 12/12.
 - (19:30-19:35) Merged origin/master (crp/refpack + WORKLOG conflict resolved keeping both) → nf-game 205/205, nf-view 12/12 on the merged tree. Suite restarted in background with the env (the first bg run died on the missing cargo PATH). Doc: docs/systems/secret-codes.md (the table, the flow, the save, the bit semantics, the open items). Report + finish steps next.
 - (19:35-19:53) Suite on the merged tree: build ok 347 binaries in 346 s; through 19:50 UTC the FAILED/CRASH lines are exactly the environmental/allowed set — 3 disc_golden (slim ISO), probe_pylon_render + fix_0c_pylon_live ×2 (no-GPU pylon set), fix_death_restart_live exit -9 (OOM in the 3 GB sandbox). No secret-codes failure. The total line prints only at the end and did not land before the sandbox expired — recorded in the report. Report amended (ntfy 429 quota on all three fallbacks) and pushed; finish.sh re-run.
+## screen-adjust-model (2026-10-15, branch s/screen-adjust-model) — started 19:21 UTC
+- Task: AV Options → Screen Adjust. Port P_SCREENADJUST_Handler 0x217a58 / C_SBSCREEN_Handler 0x217b08 (the
+  picture-offset page: what offsets it edits, ranges/steps, how they save into the profile, what they change on
+  screen), the AV Restore Defaults reset list (P_CNAVOPTIONS_Handler 0x214818:100-106), and document Widescreen /
+  Speaker / Split-screen runtime effects (implement Widescreen 16:9 view aspect if simple: Camera_CalcViewAngles
+  0x1baf70 writes 16/9 when DAT_002a37c4 is set). Deliver docs/systems/screen-adjust.md first, then state/flow/
+  getters in nf-view menu.rs or nf_game, tests with sister assertions, report docs/reports/screen-adjust-model.md.
+## screen-adjust-model (2026-10-15, branch s/screen-adjust-model) — implementation + tests 20:03 UTC
+- docs/systems/screen-adjust.md: the Screen Adjust page (menu-def 0x40000047 [L walk 2026-10-15]: two
+  0x100001eb slider bars d1 0 vertical / 1 horizontal, picture TEX 0x3000074, hint 0x67b), P_SCREENADJUST
+  0x217a58 (0x4c snapshots PS2OldX/Y 0x30d578/57c; 0x4b → Manager 0x5f(1) which SKIPS the 0x6b restore
+  notification [M 0x21c858 case 0x5f] so ✕ keeps; 0x6b restores), C_SBSCREEN 0x217b08 (0x49 slider value →
+  psiAdjustScreenPos by axis d1; 0x51 = control-created, sets the −1..1 range), psiAdjustScreenPos 0x10b890
+  (X += dx·12 clamp ±0x1b0, Y += dy·4 clamp ±0x30), VBlankInt 0x124088's DISPLAY2 write decoded against
+  sceGsSetDefDispEnv 0x226370 (DX = X+0x27c, DY = Y+0x32, MAGH 5 → 2560 X-units/line, 448 field lines), the
+  profile blob (LS_Make/LoadGlobalSettings 0x1cd9d0/0x1cdbc8 carry screen X/Y as 32-bit signed + the
+  subtitles/widescreen/drawinfo bits), the AV Restore Defaults list (0x214818:96-110 — music 0xe→70, sfx
+  0x14→100, subtitles per LanguageToLoad, split 0, speaker 1, widescreen 0, psiRestoreScreenPos), and the
+  runtime effects (widescreen 16/9 viewer+0x114 [M 0x1baf70:28-32], split DrawInfo, subtitles
+  DAT_002a37c8, speaker SFXSetMode 0x117078).
+- crates/nf-view/src/menu.rs: Page::ScreenAdjust (0x40000047) with 2 slider rows + action() (Left/Right step
+  psiAdjustScreenPos, ✕ keeps, Back cancels); CnAv row ✕ on 0x1000_0137 pushes it (snapshot), 0x1000_01a3
+  runs the game's own reset list (NOT default_opts — music 70 not 80), commit/Back re-snapshot/restore the
+  AV offset baseline; FrontEnd fields screen_x/y + screen_saved_x/y (PS2OldX/Y) + screen_av_saved_x/y
+  (0x30d8e8/ec), methods screen_adjust/open/cancel/restore_defaults/av_screen_snapshot/av_screen_restore/
+  screen_offset_640 (X/4, Y·15/14)/screen_offset_frac (X/2560, Y/448)/view_aspect (16/9 vs 4/3 from the
+  widescreen opt); AV_ROWS "Pro Logic" → "Surround" [D USATxt 0x395]; minimal ScreenAdjust draw arm (the
+  main agent owns the final look).
+- crates/nf-view/src/scene.rs: Sim.view_aspect (default 4/3, field on its own line) fed into gun_matrix's
+  gy term (the port's one viewer+0x114 consumer); FrontEnd::view_aspect() is the host's feed.
+- crates/nf-view/tests/screen_adjust.rs: 9 tests (6 headless flow/number tests with sister assertions; 3
+  ISO-gated: the menu-def page's two sliders d1 0/1 + d3 0xa + picture 0x3000074, the label binds incl.
+  "Surround"/"~A Confirm  ~B Cancel", Sim.view_aspect 4/3 default driving gun_matrix). 9/9 green; menus_flow
+  3/3, menu_movies 3/3, fix_hud_zoom_tilt_live 36/36 green on the same tree.
 
 ## mpeg2-interlaced-decode (s/mpeg2-interlaced-decode, started 2026-10-15 ~18:40 UTC)
 - Task 605: the menu backdrop movie 07350048 (512x448 interlaced MP@ML, I/P/B) decodes as a ghost/smear in the
