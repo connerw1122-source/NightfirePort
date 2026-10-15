@@ -2822,7 +2822,11 @@ impl Sim {
                 // and every refire tick re-queues the script through AnimScriptAdd — which DELETES the
                 // playing script and starts fresh [M 0x1c6d40] — keeping the beam + loop alive while held.
                 let script = self.gun.firing_anim_script(flags, u16::from_le_bytes([w[2], w[3]]), self.gun.clip, rd(0xb0), rd(0xb4), &mut self.drones.rng);
-                if script != 0 && !(was_fire_state && flags & 0x100400 != 0 && fire_anim_len != 0) {
+                // The hold applies to the laser/stunner family too (+0x68 & 0x400, +0x44 = 0): measured in PCSX2
+                // (07000005, held 1.5 s, per frame) the stunner's fire script plays 1→11 once and HOLDS at its last
+                // frame while held (the laser 1→16), with the meter draining every frame — no restart. The port's
+                // per-refire re-queue kept restarting the push-forward (the user: "still not pushing forward").
+                if script != 0 && !(was_fire_state && flags & 0x100400 != 0) {
                     self.view_script = script;
                     // [M `Player_WeaponFiring` 0x1a5460:676-685]: a record with +0x6C & 0x400 and a +0xB4
                     // script enters view state 0xb and the just-queued fire script plays at 1.5×
@@ -2832,6 +2836,12 @@ impl Sim {
                     // hand still on the pin (the user's report, four rounds).
                     let speed = if rd(0x6c) & 0x400 != 0 && rd(0xb4) != 0 { 1.5 } else { 1.0 };
                     (self.view_time, self.view_speed) = (0.0, speed);
+                } else if script != 0 && was_fire_state && flags & 0x400 != 0 && fire_anim_len == 0 {
+                    // The held laser/stunner fires EVERY tick, so this branch runs every tick and the shared
+                    // advance below never would: tick the held script here (`AnimScriptTick` runs on the anim
+                    // object regardless [M 0x1c2630]), parking at its last frame (`AnimScriptEnd`).
+                    let len = self.scripts.get(&self.view_script).map_or(0.0, |s| s.length as f32);
+                    self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
                 }
             } else if self.gun.reload_state != 0 && was_reloading == 0 {
                 // Reload just started [M Player_WeaponFiring's shared tail 0x1a6250-0x1a631c]: state 6
@@ -2888,11 +2898,15 @@ impl Sim {
                 // [M 0x1a5460:677-679]. The port kept fire_state through the +0xB4 play so its own
                 // finish lands in the idle arm below (the game's case 0xc → 0 does the same).
                 let fire_last = rd(0xb4);
-                if self.gun.fire_state && (self.view_script == rd(0xb0) || (fire_last != 0 && self.view_script == fire_last))
+                // The laser/stunner family holds its fire script's last frame while the trigger is held and plays
+                // the release script only on release, at 1.0 [L PCSX2: release → a 27-frame script at +1.0/frame,
+                // then idle; the port played it at 1.5 the moment the script ended, trigger or not].
+                let holding = flags & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) && trigger;
+                if self.gun.fire_state && !holding && (self.view_script == rd(0xb0) || (fire_last != 0 && self.view_script == fire_last))
                     && self.view_time >= len - 1.0 {
                     if flags & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) {
                         self.view_script = fire_last;
-                        (self.view_time, self.view_speed) = (0.0, 1.5);
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
                     } else if rd(0x6c) & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) {
                         // The grenades' state 0xb [M `Player_SetWeaponAnimObj` 0x1a2e38 case 0xb]: the fire
                         // script stopped → `AnimScriptAdd(+0xB4)` (the next grenade coming up) at its own
