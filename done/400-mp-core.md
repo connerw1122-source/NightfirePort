@@ -33,3 +33,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox4 at 2026-10-15T06:28Z
+
+---
+## Report (done, 2026-10-15T07:59Z)
+
+Closed by the driver: the report is on `s/mp-core` (docs/reports/mp-core.md); the worker didn't run finish.sh.
