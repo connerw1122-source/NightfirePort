@@ -13152,3 +13152,14 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   head_look_live/ai_traces_live/fix_weapon_effects_live/anim_events_live/fix_searchlight_remainder_live/
   drone_portcheck_live/exact_vs_host_probe = 37/0/1. Total 102 passed / 0 failed / 5 ignored; the full suite
   didn't fit the window (background jobs die here), the affected paths are covered.
+
+## profile-options (610)
+- (17:55) Started. Task: the codename options' data + effects (no drawing) — profile-options.md
+  (per page: rows, value labels, the profile byte each row reads/writes + defaults + the runtime
+  readers), an options model on the port's profile saved/loaded with the existing code, runtime
+  effects wired (auto-aim, crosshair, crouch toggle/hold, manual-aim hold/toggle, weapon
+  auto-switch, HUD always-on, volumes into nf-audio), tests per effect + save/load round-trips.
+  Pages: P_CNMENU_Handler 0x213288 / C_SBCNOPTIONS_Handler 0x213528 (the Edit wheel),
+  P_CNOPTIONS_Handler 0x213f08 (Advanced), P_CNAVOPTIONS_Handler 0x214818 (AV),
+  P_CNMPOPTIONS_Handler 0x2144d8 (MP), P_CNNAME_Handler 0x213790 / C_KEYBOARD_Handler 0x213a98
+  (the letter grid). Menu-def page records: 07000048.bin kind-8 08000002.
