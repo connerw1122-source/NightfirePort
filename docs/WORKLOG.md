@@ -12072,6 +12072,10 @@ Work Log:
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
 
+## fix-aims20-modes-lights (2026-10-15, branch s/fix-aims20-modes-lights)
+- Task: AIMS-20 0x1a/0x1b mode swap on the B press (the twin rules, the shared clip slot) and the four side lights on the view model (BL+0x93a gate, 0x1a5460:264/314, the aims_light slots) — playtest 1014-1725: "Ames 20 wouldn't swap modes", "lights on the aim 20 arent on".
+- Started: ground truth docs/live/2026-10-14-weapon-measurements-pcsx2.md (AIMS-20 section), decomp Player_WeaponFiring 0x1a5460 (the 0x2000132 slot-8..11 light block), bldata.md +0x93A/+0x93E. Suite started in background.
+
 ---
 Task: fix-guard-weapons3
 Agent: worker (sandbox web-2cf47bf2)
@@ -12426,3 +12430,9 @@ Stage Summary:
 - The blast "thin wall": FIXED. The game billboards flag-0x8-glist entities (`Control_SetGList` 0x134960 copies celglist+0x44 into obj+0xF0; `View_DrawObjectGlist` 0x1e6780:43-65 draws them with the viewer's rotation, keeping the interp translation and the interp scale obj+0xE8 = key scale × the radius). The port drew the raw interp matrix — flat puff quads edge-on. Fix: `Scene::script_billboards` (collected at build) + the camera-basis swap in frame_state's script-entity arm; the op-0x1b sub-script walk added over fix-blast-scripts's sweep (the live blast's puffs are 0x06000052's SUB-script 0x06000047, src.0 [L]).
 - Tests: fix_grenade_release_live.rs — the_frag_leaves_the_hand_on_the_release_frame_after_the_pin_pull (07000015, real input, release frame 26 exact) + the_blast_puffs_draw_camera_facing (billboard set + real explosion + camera-facing axes), both green on the merged tree; pre-fix compile failure documented. Shared files: scene.rs only (3 additive hooks). The full final-tree suite was still running at the deadline — read suite_grenade_release.out.
 - Report: docs/reports/fix-grenade-release.md (live checks: the held-fire auto-repeat in PCSX2, the blast billboard --bond spots A/B).
+
+## fix-aims20-modes-lights (2026-10-15, branch s/fix-aims20-modes-lights) — final
+- Lights: the idle counter's analog-input reset (Input_Update 0x17ee88 sets DAT_002a3a1c on any deflected stick; SetWeaponAnimObj 0x1a2e38:41-44 resets +0x93a) was missing — in play the row crossed the 15/45 gates 0.75 s into any move ("lights on the aim 20 arent on"). +0x93e lands as drones.aims_raise (own line); the bone-9/10/11 gates (+0x93e / clip[0x1b] / clip[0x1a] + the FlashMod low-ammo blinks, 0x1a5460:275-308) are in frame_state.
+- Swap: the variant-swap arm carried the live magazine across 0x1a→0x1b, syncing the burst slot's 30 into clip[0x1b] (30 "grenades") and the 9mm spare into carried[12]; the pair has OWN slots (+0x90 5 vs 12, Player_AmmoInGun 0x1a9190) and the ground truth's swap shows HUD "4-0 Grenade". Both variant arms now flush+re-read; same-ammo twins (P2K) are a no-op round-trip. The dev give fills the twin's slot once (the panel's affordance; the ground truth's "check both").
+- Tests: fix_aims20_modes_lights_live (3, through step_bond's real Input) — 3/3 FAILED on the pre-fix tree, green after. Regression sweep (silencer/weapon-modes/fire-modes3/weapon-fire-modes/weapon-switch/reload-hang/gadgets/weapons-all/grenade-throw/auto-switch): 43 passed, 0 failed. Full suite: the nohup died on the cargo env twice; the restarted run was still building at the deadline — no total line this session (next session: tail -1 suite.out).
+- Report: docs/reports/fix-aims20-modes-lights.md. Files: scene.rs (task), drone.rs (+1 field line), panel.rs (the give's twin fill), the new test file.

@@ -1671,7 +1671,9 @@ impl Sim {
         // fix-aim-raise2: run gets the RAW button (the view chain's queue arm reads its edge from
         // it); the gated BIT is `self.aiming`, which the consumers read.
         self.free_aim = self.aim_gate(aiming) && aiming;
-        self.run(ground, ground, camera, look, look, trigger, aiming, false, false);
+        // fix-aims20-modes-lights: the ride runs no player input arms (the game zeroes the input in the
+        // substate-10 arm [M 0x193600 case 10]) — no analog deflection reaches the idle counter.
+        self.run(ground, ground, camera, look, look, trigger, aiming, false, false, false);
     }
 
     /// One game tick with Bond walking (`Player_Update`): his input, then the world with him as the player. In aim
@@ -2261,7 +2263,9 @@ impl Sim {
         // fix-aim-raise2: the RAW button — run's edges (and the view chain's queue arm) must see
         // the ungated input, or the gated bit's rise at the raise's finish would re-fire the
         // aim-on edge and queue the raise twice.
-        self.run(self.bond.pos, self.bond.sphere_centre(), head, look, aim, trigger, input.aiming || input.scope, reload, use_key);
+        // fix-aims20-modes-lights: the analog-deflection half of the idle-counter gate [M 0x17ee88:80-84].
+        let stick = input.forward != 0.0 || input.strafe != 0.0 || input.turn != 0.0 || input.look != 0.0;
+        self.run(self.bond.pos, self.bond.sphere_centre(), head, look, aim, trigger, input.aiming || input.scope, reload, use_key, stick);
         // `Player_Zoom` (0x1a1a70): the scope zoom. Right mouse (mouse-first) zooms in; releasing returns to 1.0.
         // The zoom interpolates toward the target at the game's rate (1.025× per tick zooming in, 1.15× out).
         // The FOV is divided by the zoom factor. Scoped weapons only (`weapon_data+0x68 & 0x40`).
@@ -2321,7 +2325,7 @@ impl Sim {
         if self.weapons.shares_base_clip(id) && self.weapons.ammo_type(id) == self.weapons.ammo_type(base) { base } else { id }
     }
 
-    fn run(&mut self, pos: [f32; 3], sph: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool) {
+    fn run(&mut self, pos: [f32; 3], sph: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool, stick: bool) {
         // fix-weapon-anims + fix-aim-raise2: the aim raise/lower edges — the RAW button (the
         // param; the gated BIT is `self.aiming`, which `aim_gate` maintained before run) — before
         // the level is overwritten (the queue arm deep in the view chain reads the EDGE)
@@ -2412,23 +2416,43 @@ impl Sim {
                     (self.view_time, self.view_speed) = (0.0, 1.3);
                     self.gun.switch_state = 8;
                     switching = true;
-                    // The variant swap does NOT touch the clip/carried or the gun's live magazine:
-                    // [M 0x1a2cc0:18-29] writes only the weapon byte, the mode byte, the +0xC8 script
-                    // at 1.3x and view state 8 — the twin is the same physical gun, the magazine
-                    // continues. (The port used to round-trip gun.clip→clip[old] and clip[new]→
-                    // gun.clip here; clip[0x03] is a never-equipped slot, so the P2K's 7 live rounds
-                    // zeroed and the next tick auto-reloaded — whose +0xA4 script then overwrote the
-                    // +0xC8 variant script and left switch_state stuck at 8 forever.)
+                    // The variant swap writes only the weapon byte, the mode byte, the +0xC8 script
+                    // at 1.3x and view state 8 [M 0x1a2cc0:18-29] — the game has no separate live
+                    // magazine register to carry: the magazine IS the clip array, and which slot the
+                    // held weapon reads is `Player_AmmoInGun` 0x1a9190's pick. (The port used to
+                    // round-trip gun.clip→clip[old] and clip[new]→gun.clip here and the P2K's 7 live
+                    // rounds zeroed — clip[0x03] was a never-equipped slot then; see below.)
+                    // fix-aims20-modes-lights: the AIMS-20 pair's ammo types DIFFER (+0x90: 5 vs 12
+                    // [L ee_snapshot weapon_data]), so the twins do NOT share the slot
+                    // (`Player_AmmoInGun`'s own-slot pick; bldata.md +0x2F0=[0x1A], +0x2FC=[0x1B]) —
+                    // the ground truth's swap shows HUD "4-0 Grenade", the grenade slot's count, not
+                    // the burst slot's. Carrying gun.clip across synced the burst magazine into
+                    // clip[0x1b] (30 "grenades") and the 9mm spare into the type-12 carried — the
+                    // mode press then read the twin as loaded with the wrong ammo. Flush the live
+                    // cache to the old slot and re-read the new weapon's own: for same-ammo twins
+                    // (P2K 0x02↔0x03) `clip_slot` resolves both to the base and the round-trip is a
+                    // no-op — the magazine-continues behavior is unchanged.
+                    if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
+                    if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
                     if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                     if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
+                    let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
+                    if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
                 } else {
                     // Same base but no variant script: instant swap to idle. The game's variant path
-                    // touches no clip arrays either [M 0x1a2cc0:18-29] — same physical gun.
+                    // touches no clip arrays [M 0x1a2cc0:18-29] — the magazine is the clip array read
+                    // through `Player_AmmoInGun` 0x1a9190's slot pick, so flush the cache to the old
+                    // slot and re-read the new weapon's own (fix-aims20-modes-lights — see the state-8
+                    // arm above: the AIMS pair's slots differ).
                     if log_switch { eprintln!("[weapon-switch] tick {}: instant variant swap (no script) {:#x}→{:#x}", self.drones.frame, cur_id, req_id); }
+                    if let Some(c) = self.drones.inventory.clip.get_mut(wi) { *c = self.gun.clip as i16; }
+                    if let Some(n) = self.drones.inventory.carried.get_mut(t) { *n = self.gun.spare as i16; }
                     if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                     if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
+                    let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
+                    if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
                     let nwi = self.gun.weapon as usize;
                     self.view_script = self.weapons.idle_script(nwi);
                     (self.view_time, self.view_speed) = (0.0, 1.0);
@@ -2670,11 +2694,29 @@ impl Sim {
             // with view_aim_anim so the counter resets while the scope raises/lowers (else the
             // +0xCC fidget fires mid-raise: the sniper test caught the alert playing at tick ~20
             // of an aim hold).
-            self.drones.aims_idle = if self.gun.reload_state == 0 && self.gun.switch_state == 0 && !self.gun.fire_state && self.view_aim_anim.is_none() {
-                self.drones.aims_idle.saturating_add(1)
+            // fix-aims20-modes-lights: the missed half of the gate — DAT_002a3a1c is "an analog
+            // input is deflected this frame": `Input_Update` 0x17ee88:54 clears it per slot and
+            // 0x17ee88:80-84 sets it when any of the pad's analog inputs reads non-zero, and
+            // `Player_SetWeaponAnimObj` 0x1a2e38:41-44 RESETS +0x93a on such ticks instead of
+            // counting. The port never reset the counter on input, so in play (walking, aiming)
+            // it climbed past the 15/45 thresholds and the side lights went dark 0.75 s into any
+            // move — the user's "lights on the aim 20 arent on". The same block owns +0x93e
+            // (`aims_raise`, the bone-9 light's gate [M 0x1a5460:275-281]): decremented while the
+            // view is idle (0x1a2e38:47-50), refilled to 1200 on every non-idle tick (0x1a2e38:54-57;
+            // [L ee_start_05 BL+0x93e = 1200]).
+            let view_idle = self.gun.reload_state == 0 && self.gun.switch_state == 0
+                && !self.gun.fire_state && self.view_aim_anim.is_none();
+            if view_idle {
+                self.drones.aims_idle = if stick {
+                    0
+                } else {
+                    self.drones.aims_idle.saturating_add(1)
+                };
+                self.drones.aims_raise = self.drones.aims_raise.saturating_sub(1);
             } else {
-                0
-            };
+                self.drones.aims_idle = 0;
+                self.drones.aims_raise = 1200;
+            }
             // Advance the reload state machine [M Player_SetWeaponAnimObj cases 5/6/7].
             let new_reload_state = self.gun.reload_tick(trigger, params);
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
@@ -5734,14 +5776,32 @@ impl Scene {
                 // - idle > 15 → bone 8 blinks on GameState+0x76 % 40's 20/40 duty [M 0x1a5460:264] — the
                 //   port's frame counter stands in for GameState+0x76 [S];
                 // - idle > 45 → all four cleared [M 0x1a5460:348];
-                // - the bone-9/10/11 gates (+0x93e / +0x2fc / +0x2f0, with the FlashMod variants) are
-                //   unmeasured — live check in the report; the port keeps them lit.
+                // fix-aims20-modes-lights: the bone-9/10/11 gates, previously unmeasured/always lit —
+                // the ground truth measured the display: grenade rounds 0 → red, red, dark, red; the
+                // long-no-anim state → red, dark, red, red; all four lit with rounds present.
+                // - bone 9 dark when the raise cooldown BL+0x93e has drained [M 0x1a5460:275-281];
+                // - bone 10 (the grenade light) dark when the 0x1b clip is dry [M 0x1a5460:282-288],
+                //   blinking in grenade mode below 3 rounds on FlashMod > 0.75 [M 0x1a5460:289-294];
+                // - bone 11 (the burst light) dark when the 0x1a clip is dry [M 0x1a5460:298-304],
+                //   blinking in burst mode below 7 rounds [M 0x1a5460:305-308]. FlashMod is the
+                //   pulsing flash global — the port's `flash_mod(frame)` stands in [S], its
+                //   0.5..1.0 sweep crossing 0.75 like the game's.
                 let active = self.sim.as_ref().and_then(|s| self.view_models.get(&s.gun.weapon)) == Some(&(a.character as usize));
                 let Some(s) = self.sim.as_ref() else { return collapse(&datum) };
                 if !active { return collapse(&datum); }
                 let idle = s.drones.aims_idle;
                 if idle > 45 { return collapse(&datum); }
                 if bone == 8 && idle > 15 && s.drones.frame % 40 > 20 { return collapse(&datum); }
+                if bone == 9 && s.drones.aims_raise == 0 { return collapse(&datum); }
+                if bone == 10 || bone == 11 {
+                    let (wid, slot_of) = if bone == 10 { (0x1b_u8, 0x1b_usize) } else { (0x1a_u8, 0x1a_usize) };
+                    let rounds = s.drones.inventory.clip.get(slot_of).copied().unwrap_or(0);
+                    if rounds == 0 { return collapse(&datum); }
+                    if s.gun.weapon == wid {
+                        let low = if bone == 10 { rounds < 3 } else { rounds < 7 };
+                        if low && flash_mod(s.drones.frame) > 0.75 { return collapse(&datum); }
+                    }
+                }
                 return datum;
             }
             if a.flash.is_none() { return datum; }

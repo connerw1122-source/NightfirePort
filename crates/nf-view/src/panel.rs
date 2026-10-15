@@ -302,6 +302,22 @@ pub fn apply(scene: &mut crate::scene::Scene, q: &[(String, String)]) -> (String
             }
             let carry = (wd.clip_size(id as usize).max(1) * 3).max(rounds);
             sim.drones.inventory.equip_ammo(&wd, id as usize, carry);
+            // fix-aims20-modes-lights: a twin-linked record (+0x05, e.g. the AIMS-20 0x1a ↔ its
+            // grenade twin 0x1b) leaves the give with the twin's own clip slot dry, and the mode
+            // press is dead forever — `Player_Weapon` 0x1a24c8:246-260 gates the twin switch on
+            // `Player_WeaponHasAmmo` 0x1a16c0, and the ground truth measured the gate ("with no
+            // grenade rounds the press did nothing; after picking up the 0x1b rounds (4) the press
+            // swapped"). The give is the port's acquire affordance (the game's pickups give the
+            // twin's rounds separately — 07000014 carries the 0x1b pickups), so fill the twin's
+            // slot once (its own slot: the pair's ammo types differ, +0x90 5 vs 12 [L ee_snapshot
+            // weapon_data], the `Player_AmmoInGun` own-slot pick) the way a taken 0x1b pickup does.
+            let twin = wd.records.get(id as usize).map(|r| r[5] as i8).unwrap_or(0);
+            if twin != 0 {
+                let t = (id as i32 + twin as i32) as usize;
+                if let Some(c) = sim.drones.inventory.clip.get_mut(t) {
+                    if *c == 0 { *c = wd.clip_size(t).max(1); }
+                }
+            }
             (format!("gave weapon {id:#04x} ({name})"), Some(id as u8))
         }
         "ammo_for" => {
