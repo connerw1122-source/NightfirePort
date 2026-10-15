@@ -32,3 +32,6 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 **Branch:** `s/driver-air`.
 
 **PCSX2 ground truth (main agent, 2026-10-14):** read `docs/live/2026-10-14-weapon-measurements-pcsx2.md` on master first.
+
+---
+claimed-by: sandbox3 at 2026-10-15T03:14Z
