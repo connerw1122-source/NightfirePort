@@ -27,7 +27,7 @@ fn scroll_from_hands_finds_a_visible_weapon() {
     clip[1] = 1;  clip[2] = 7;
     let mut carried = vec![0i16; 34];
     carried[1] = 41;
-    let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, |w| wd.ammo_type(w as usize), |w| wd.flags(w as usize));
+    let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, |w| wd.ammo_type(w as usize), |w| wd.flags(w as usize), |w| nf_game::gun::Gun::ammo_in_gun_slot(w, |y| wd.base(y as usize) as u8, |y| wd.ammo_type(y as usize) as u8));
     let selectable = |w: u8| wd.selectable(w);
 
     // Gun::cycle (without the D-003 filter) finds weapon 1 (fists) from hands.
@@ -55,7 +55,7 @@ fn hands_recovery_via_get_best_weapon() {
     let clip = vec![0i16; 0x73];
     let mut carried = vec![0i16; 34];
     carried[1] = 41;
-    let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, |w| wd.ammo_type(w as usize), |w| wd.flags(w as usize));
+    let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, |w| wd.ammo_type(w as usize), |w| wd.flags(w as usize), |w| nf_game::gun::Gun::ammo_in_gun_slot(w, |y| wd.base(y as usize) as u8, |y| wd.ammo_type(y as usize) as u8));
     let base_of = |w: u8| wd.base(w as usize) as u8;
 
     let mut g = nf_game::gun::Gun::new(0x47, 0, 0);
