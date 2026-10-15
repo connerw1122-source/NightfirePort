@@ -1279,6 +1279,9 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             "advanced" => menu::Page::CnAdvanced,
             "mpoptions" => menu::Page::CnMp,
             "avoptions" => menu::Page::CnAv,
+            // codename-entry: the name-entry grid renders headless too (cn_open seeds the proposal).
+            "cnname" => { fe.cn_open(menu::PAGE_CN_SELECT); menu::Page::CodenameEntry }
+            "cncheat" => { fe.cn_open(menu::PAGE_CN_MENU); menu::Page::CodenameEntry }
             // fix-pause-menu: the in-game pages render headless too (the pause page over the
             // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
             // picks the pause tab, `--confirm` arms the pause confirm.

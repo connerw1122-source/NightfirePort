@@ -109,6 +109,10 @@ pub const PAGE_CN_ADVANCED: u32 = 0x4000_002d;
 pub const PAGE_CN_MP: u32 = 0x4000_002e;
 /// AV Options [L page 0x40000031; P_CNAVOPTIONS_Handler 0x214818].
 pub const PAGE_CN_AV: u32 = 0x4000_0031;
+/// The name-entry page — "New Codename" and the cheat entry's letter grid [M Handler_HandleMessage
+/// 0x2029e0:372-373 maps 0x40000020 → P_CNNAME_Handler 0x213790; its grid control 0x10000074 runs
+/// C_KEYBOARD_Handler 0x213a98].
+pub const PAGE_CN_NAME: u32 = 0x4000_0020;
 /// The IN-GAME pause page [M Player_Update 0x193600:73 — pressing Start in a mission runs
 /// `MenuManager_Create(0x80000002, 0x4000004b, …, 0x1e, 1, 3)` + `GS_PauseGame(1)`; the page lives in
 /// the MISSION archives' own kind-8 menu def (entry 08000001 of each level archive, e.g. 07000001.bin
@@ -410,7 +414,7 @@ pub const INTRO_TICKS: u32 = 850;
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnAdvanced, CnMp, CnAv }
+pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnAdvanced, CnMp, CnAv, CodenameEntry }
 
 impl Page {
     pub fn id(self) -> u32 {
@@ -420,7 +424,7 @@ impl Page {
             Page::Dossier => PAGE_DOSSIER, Page::Records => PAGE_RECORDS,
             Page::Options => PAGE_OPTIONS, Page::Pause => PAGE_PAUSE, Page::Results => PAGE_RESULTS,
             Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnAdvanced => PAGE_CN_ADVANCED,
-            Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV,
+            Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV, Page::CodenameEntry => PAGE_CN_NAME,
         }
     }
     fn from_id(id: u32) -> Option<Page> {
@@ -430,7 +434,7 @@ impl Page {
             PAGE_DOSSIER => Page::Dossier, PAGE_RECORDS => Page::Records,
             PAGE_OPTIONS => Page::Options, PAGE_PAUSE => Page::Pause, PAGE_RESULTS => Page::Results,
             PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_ADVANCED => Page::CnAdvanced,
-            PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv,
+            PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv, PAGE_CN_NAME => Page::CodenameEntry,
             _ => return None,
         })
     }
@@ -647,6 +651,37 @@ pub struct FrontEnd {
     /// :74-79]: the page's Confirm routes to the bonus page 0x40000038 while it stands (not
     /// ported — reported).
     pub new_reward: bool,
+    // codename-entry (each field on its own line [WORKLOG lesson 4]).
+    /// The name-entry page's typed buffer — the game's `buffer` at 0x34e028, shown by the draw
+    /// code through `cn_typed_name` [M C_KEYBOARD_Handler 0x213a98 appends/erases it].
+    pub cn_typed: String,
+    /// The focused grid cell id — the game opens on the ✓ 1002 [M P_CNNAME_Handler 0x213790:47].
+    pub cn_cell: u32,
+    /// The page the name entry opened FROM — the 0x4c init's param_6 [M Manager_SendMessage
+    /// 0x21c858:344-345]; 0x4000001d (the wheel) is the cheat-codename entry [M 0x213790:33].
+    pub cn_from: u32,
+    /// `del_when_keypressed` — the first press after open (or after a refused name) clears the
+    /// proposal first, and the SPACE key's press is swallowed [M C_KEYBOARD 0x213a98:18-27].
+    pub cn_clear_on_key: bool,
+    /// The option box awaiting dismissal as `(box id, label id)`: (6, 0x2c0) reserved / (6, 0x3bc)
+    /// empty are the validator's refusals [M C_KEYBOARD 0x213a98:47-51], (4, 0) the overwrite
+    /// question the card flow asks on P_CNNAME's tick [M P_CNNAME 0x213790:62-76].
+    pub cn_box: Option<(u32, u32)>,
+    /// The Edit Codename list row awaiting its delete confirm — the game's ~X asks through the
+    /// card flow, then mode 3 runs psiDeleteData [M C_SBCNSELECT 0x212f58 case 0x5e].
+    pub cn_delete_row: Option<usize>,
+    /// The reserved codenames the validator strstr's against — the def_codename labels 0x29b /
+    /// 0x211 resolved through the language bank [M Menu_IsValidCodename 0x1f9930:63-76]. The host
+    /// fills them (headless they are empty, so nothing is reserved).
+    pub cn_reserved: Vec<String>,
+    /// The page id the game changes to after an accepted name — DAT_002e1ad8 = 0x4000001d [M
+    /// C_KEYBOARD 0x213a98:58]; the wheel's own init then forwards to Controls 0x40000022 [M
+    /// P_CNMENU 0x213288:38-40, not ported].
+    pub cn_exit: Option<u32>,
+    /// The cheat entry's ✓ ran the special-codename check — Menu_SpecialCodenameCheck 0x200238
+    /// (52 names at 0x308578, strcmp, unlock masks into sp_level+0x10) is not ported (reported);
+    /// the port records that the check ran and creates nothing [M C_KEYBOARD 0x213a98:67-73].
+    pub cn_cheat_checked: bool,
 }
 
 impl FrontEnd {
@@ -678,7 +713,17 @@ impl FrontEnd {
             // front-end-chain (each new field on its own line [WORKLOG lesson 4]).
             results: None,
             just_completed: false,
-            new_reward: false }
+            new_reward: false,
+            // codename-entry (each on its own line [WORKLOG lesson 4]).
+            cn_typed: String::new(),
+            cn_cell: 0,
+            cn_from: 0,
+            cn_clear_on_key: false,
+            cn_box: None,
+            cn_delete_row: None,
+            cn_reserved: Vec::new(),
+            cn_exit: None,
+            cn_cheat_checked: false }
     }
 
     pub fn rows(&self) -> usize {
@@ -705,6 +750,9 @@ impl FrontEnd {
             Page::CnAdvanced => ADV_ROWS.len(),
             Page::CnMp => MP_ROWS.len(),
             Page::CnAv => AV_ROWS.len(),
+            // The name-entry page has no wheel rows (the grid is `CN_GRID`; the typed name is
+            // `cn_typed_name`) — 1 keeps the wheel arithmetic harmless.
+            Page::CodenameEntry => 1,
             // The MISSION tab's rows [L page 0x4000004b's d1=6 list (153,183,334×120) binds labels
             // 0x16a CONTINUE / 0x16b RESTART / 0x16c QUIT via its m0x11 messages].
             Page::Pause => 3,
@@ -738,6 +786,10 @@ impl FrontEnd {
             Page::CnSelect => bind([0x29b, 0x211][row.min(1)]),   // def_codename 0x2e1b18 [L docs/reports/fix-save-profile.md]
             Page::CnMenu => bind(CN_MENU[row.min(CN_MENU.len() - 1)].1),
             Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().get(row).map_or(String::new(), |r| bind(r.label)),
+            // The name-entry page's texts are the handler's runtime binds (the title 0x1f5 / the
+            // cheat title 0x10002d4 [M P_CNNAME 0x213790:37/41], the typed buffer itself) — the
+            // draw code reads `cn_typed_name`, not this table.
+            Page::CodenameEntry => String::new(),
             // The pause rows are the page data's own labels [L page 0x4000004b's d1=6 list m0x11:
             // 0x16a/0x16b/0x16c — the game's letter-spaced strings]. The ACTIONS are the handler's
             // [M C_GCPAUSE_Handler 0x204408: d1=6 case 0 → MenuManager_Delete (resume), case 1 → the
@@ -994,6 +1046,23 @@ impl FrontEnd {
         true
     }
 
+    /// codename-entry: the Edit Codename list's data load — the file read half of `load_codename`
+    /// without the play flow's page change [M C_SBCNSELECT 0x212f58 case 0x4b sel ≥ 2: slot = sel,
+    /// strcpy(0x2e1ae8, name), box mode 0 = LS_Load 0x1f7de8:15-17 — then the Edit wheel opens].
+    fn load_profile_data(&mut self, row: usize) -> bool {
+        let Some(name) = self.profiles.get(row.wrapping_sub(2)).cloned() else { return false };
+        let Some(dir) = self.profile_dir.clone() else { return false };
+        let path = nf_game::profile::Profile::path_in(&dir, &name);
+        let Ok(profile) = nf_game::profile::Profile::load_file(&path) else { return false };
+        let status = profile.progress.nightfire_status();
+        for (i, u) in self.unlocked.iter_mut().enumerate() {
+            *u = status & (1 << i) != 0;
+        }
+        self.active_profile = Some(name);
+        self.profile = Some(profile);
+        true
+    }
+
     /// The results save [M P_NFRESULTS 0x208e78 awards the level, then the save prompt's
     /// Menu_UpdateMessageBox 0x1f7de8 case 1 writes the chain under the codename]: mirror the
     /// front-end unlock bits into the profile's progress and write the file. The host syncs
@@ -1049,6 +1118,198 @@ impl FrontEnd {
     /// The intro movie the P_INTRO run currently shows [M 0x209e88's movie_283 counter].
     pub fn intro_movie_code(&self) -> u32 { INTRO_MOVIES[self.intro_index.min(INTRO_MOVIES.len() - 1)] }
 
+    // ── codename-entry: the name-entry page 0x40000020 (P_CNNAME_Handler 0x213790 + the grid's
+    // C_KEYBOARD_Handler 0x213a98) ──────────────────────────────────────────────────────────────
+
+    /// The grid's special keys [M C_KEYBOARD_Handler 0x213a98 keys on the pressed cell's id
+    /// (ctrl+0x20): 1000 = remove the last typed character (:39-42), 1001 = the SPACE cell (the
+    /// character at DAT_0030d380 = 0x20 [L ee_snapshot] :28-36), 1002 = the ✓ confirm (:45-65);
+    /// P_CNNAME_Handler 0x213790:47 focuses 1002 on open].
+    pub const CN_KEY_DELETE: u32 = 1000;
+    pub const CN_KEY_SPACE: u32 = 1001;
+    pub const CN_KEY_CONFIRM: u32 = 1002;
+    /// The four cells P_CNNAME re-labels at init [M 0x213790:50-57 — `__Menu_SendEx(grid
+    /// 0x10000074, cell, 0x18, string)` with the single bytes 0xc4/0xc2/0xc6/0xc0 written to
+    /// 0x30d8d8/da/dc/de; which glyphs the menu font draws there is the draw code's question].
+    pub const CN_GLYPH_CELLS: [u32; 4] = [100, 101, 102, 103];
+
+    /// The name-entry grid as rows of cell ids. Digit/letter cells carry their ASCII code and
+    /// type it [M 0x213a98:79-85 appends the first byte of the cell's text]; the last row is the
+    /// four glyph cells + ← (delete) → (space) ✓ (confirm). The ROW PACKING is the port's [S] —
+    /// the game's packing sits in page 0x40000020's grid data, which the port has not parsed;
+    /// the ids and the three special keys are the game's own [M].
+    pub const CN_GRID: [&[u32]; 5] = [
+        &[0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37, 0x38, 0x39],       // 0-9
+        &[0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49],             // A-I
+        &[0x4a, 0x4b, 0x4c, 0x4d, 0x4e, 0x4f, 0x50, 0x51, 0x52],             // J-R
+        &[0x53, 0x54, 0x55, 0x56, 0x57, 0x58, 0x59, 0x5a],                   // S-Z
+        &[100, 101, 102, 103, Self::CN_KEY_DELETE, Self::CN_KEY_SPACE, Self::CN_KEY_CONFIRM],  // glyphs + ← → ✓
+    ];
+
+    /// The typed name's capacity [M C_KEYBOARD_Handler 0x213a98:75-77 — an append is refused once
+    /// strlen(&buffer) > 7, so the buffer at 0x34e028 holds 8 characters + NUL].
+    pub const CN_MAX_CHARS: usize = 8;
+
+    /// Opens the name-entry page. `from` is the page it came from — the 0x4c init's param_6 [M
+    /// Manager_SendMessage 0x21c858:344-345 passes the OLD page's id to the new page's init].
+    /// 0x4000001d (the wheel) opens the cheat-codename entry (cheat_mode [M P_CNNAME 0x213790:33]).
+    /// The typed buffer starts at the game's proposals: "BOND" for a profile name (DAT_0030d530
+    /// [L ee_snapshot] — P_CNNAME 0x213790:43-44 copies it over `buffer`) or empty for the cheat
+    /// entry (DAT_0030d2d8 [L] :36); the ✓ cell holds the focus [M :47-48]; the first press clears
+    /// (del_when_keypressed [M 0x213a98:18-27]).
+    pub fn cn_open(&mut self, from: u32) {
+        self.page = Page::CodenameEntry;
+        self.cn_from = from;
+        self.cn_cell = Self::CN_KEY_CONFIRM;
+        self.cn_clear_on_key = true;
+        self.cn_box = None;
+        self.cn_delete_row = None;
+        self.cn_exit = None;
+        self.cn_cheat_checked = false;
+        self.cn_typed = if from == PAGE_CN_MENU { String::new() } else { "BOND".into() };
+    }
+
+    /// The typed name (the game's `buffer` 0x34e028) for the draw code.
+    pub fn cn_typed_name(&self) -> &str { &self.cn_typed }
+
+    /// The focused grid cell id.
+    pub fn cn_cursor_cell(&self) -> u32 { self.cn_cell }
+
+    /// The (row, column) of a cell id in [`CN_GRID`].
+    fn cn_find(cell: u32) -> Option<(usize, usize)> {
+        Self::CN_GRID.iter().enumerate().find_map(|(r, row)| row.iter().position(|&c| c == cell).map(|c| (r, c)))
+    }
+
+    /// Moves the cursor by (dx, dy) within [`CN_GRID`], clamped at the edges.
+    pub fn cn_move(&mut self, dx: i32, dy: i32) {
+        let Some((r0, c0)) = Self::cn_find(self.cn_cell) else { return };
+        let r = (r0 as i32 + dy).clamp(0, Self::CN_GRID.len() as i32 - 1) as usize;
+        let c = (c0 as i32 + dx).clamp(0, Self::CN_GRID[r].len() as i32 - 1) as usize;
+        self.cn_cell = Self::CN_GRID[r][c];
+    }
+
+    /// Types one character through the C_KEYBOARD append path [M 0x213a98:75-85 — the cell's
+    /// text's first byte joins `buffer` unless strlen > 7]. Also the direct-keyboard path's
+    /// core (the port's own addition [S]; the game's grid stays the reference).
+    pub fn cn_type_char(&mut self, ch: char) -> bool {
+        if self.cn_typed.chars().count() >= Self::CN_MAX_CHARS { return false; }
+        self.cn_typed.push(ch);
+        true
+    }
+
+    /// Presses a grid cell — C_KEYBOARD_Handler 0x213a98's msg-0x4b path. Returns true when the
+    /// press was consumed.
+    pub fn cn_press(&mut self, cell: u32) -> bool {
+        if cell == Self::CN_KEY_CONFIRM {
+            return self.cn_confirm();
+        }
+        // The first press after open (or after a refused name) clears the proposal first; the
+        // SPACE key's press is swallowed by that clear [M del_when_keypressed 0x213a98:18-27 —
+        // `buffer` resets to DAT_0030d2d8 and the 0x3e9 arm returns before typing].
+        if self.cn_clear_on_key {
+            self.cn_clear_on_key = false;
+            self.cn_typed.clear();
+            if cell == Self::CN_KEY_SPACE { return true; }
+        }
+        match cell {
+            Self::CN_KEY_DELETE => { self.cn_typed.pop(); true }               // [M :39-42]
+            Self::CN_KEY_SPACE => self.cn_type_char(' '),                      // [M :28-36]
+            // The letter/digit cells type their character [M 0x213a98:79-85]; the four glyph
+            // cells carry the menu font's slots 0xc4/0xc2/0xc6/0xc0 [M P_CNNAME 0x213790:50-57].
+            100 => self.cn_type_char('\u{c4}'),
+            101 => self.cn_type_char('\u{c2}'),
+            102 => self.cn_type_char('\u{c6}'),
+            103 => self.cn_type_char('\u{c0}'),
+            id if (0x20..=0x7e).contains(&id) => self.cn_type_char(char::from_u32(id).unwrap_or('?')),
+            _ => false,
+        }
+    }
+
+    /// The ✓ confirm — C_KEYBOARD_Handler 0x213a98:45-65 + P_CNNAME_Handler 0x213790:59-79.
+    fn cn_confirm(&mut self) -> bool {
+        // The ✓ opens a NEW box (or none) — a refusal's box does not survive the next press
+        // [M Menu_CreateOptionBox 0x202218 opens per-press; the game holds one active box].
+        self.cn_box = None;
+        if self.cn_from == PAGE_CN_MENU {
+            // cheat_mode: Menu_SpecialCodenameCheck 0x200238 (52 strcmp names from 0x308578,
+            // unlock masks into sp_level+0x10, Menu_SetBonus) — not ported (reported). The
+            // game creates nothing on a miss [M C_KEYBOARD 0x213a98:67-73] and neither do we.
+            self.cn_cheat_checked = true;
+            return true;
+        }
+        let reserved: Vec<String> = self.cn_reserved.clone();
+        let reserved: Vec<&str> = reserved.iter().map(String::as_str).collect();
+        match nf_game::profile::Profile::check_codename(&self.cn_typed, &reserved) {
+            // The validator's refusals bind their message label onto box 6 [M 0x213a98:47-51 —
+            // Menu_CreateOptionBox(player, Menu_IsValidCodename's return, 6, 1, 0)] and the
+            // next press clears again [M :50 del_when_keypressed = 1].
+            Err(nf_game::profile::CodenameError::Empty) => {
+                self.cn_box = Some((6, 0x3bc)); self.cn_clear_on_key = true; false
+            }
+            Err(nf_game::profile::CodenameError::Reserved) => {
+                self.cn_box = Some((6, 0x2c0)); self.cn_clear_on_key = true; false
+            }
+            Err(_) => false,
+            Ok(normalized) => {
+                // The validator uppercases + trims the buffer in place [M Menu_IsValidCodename
+                // 0x1f9930:60-77 strcpy(param_1, acStack_a0)].
+                self.cn_typed = normalized.clone();
+                match self.create_codename(&normalized, &reserved) {
+                    Ok(name) => {
+                        // The accept [M 0x213a98:53-65]: the working name 0x2e1ae8, the save
+                        // through the message box (mode 1 = LS_Save 0x1f7de8:21-29), then the
+                        // wheel 0x4000001d (DAT_002e1ad8 :58) whose init forwards to Controls
+                        // 0x40000022 [M P_CNMENU 0x213288:38-40 — not ported; the port lands
+                        // on the wheel].
+                        self.cn_name = name;
+                        self.cn_exit = Some(PAGE_CN_MENU);
+                        self.page = Page::CnMenu;
+                        self.cursor = 1;
+                        true
+                    }
+                    Err(nf_game::profile::CodenameError::Exists) => {
+                        // The card flow's overwrite question — P_CNNAME's 0x50 tick watches
+                        // box 4 and saves on YES [M 0x213790:62-76]. The port refuses [M
+                        // MemCard_ASK_OVERWRITE 0x10ee38, create_codename's own note]; the
+                        // box stands for the host to answer.
+                        self.cn_box = Some((4, 0));
+                        false
+                    }
+                    Err(_) => false,
+                }
+            }
+        }
+    }
+
+    /// Dismisses the pending option box (the game's Confirm/Back both close the validator's box;
+    /// box 4's YES would re-save [M P_CNNAME 0x50:62-76] — the port only dismisses).
+    pub fn cn_dismiss_box(&mut self) {
+        self.cn_box = None;
+    }
+
+    /// The Edit Codename list's ~X Delete request on a saved row [M C_SBCNSELECT 0x212f58 case
+    /// 0x5e — sel > 1, box mode 3 psiDeleteData 0x1f7de8:38-57 under the card-flow confirm;
+    /// P_CNSELECT 0x212ad0 case 0x6e re-enumerates after]. Confirm = YES, Back = NO.
+    pub fn cn_delete_begin(&mut self, row: usize) -> bool {
+        if row < 2 || row >= 2 + self.profiles.len() { return false; }
+        self.cn_delete_row = Some(row);
+        true
+    }
+
+    /// The delete confirm's YES [M the mode-3 box → psiDeleteData(0x2e1ae8)].
+    pub fn cn_delete_confirm(&mut self) -> bool {
+        let Some(row) = self.cn_delete_row.take() else { return false };
+        let Some(name) = self.profiles.get(row - 2).cloned() else { return false };
+        let Some(dir) = self.profile_dir.clone() else { return false };
+        let gone = nf_game::profile::Profile::delete_in(&dir, &name);
+        self.reload_profiles();
+        self.cursor = self.cursor.min(self.rows().saturating_sub(1));
+        gone
+    }
+
+    /// The delete confirm's NO [M the card-flow box's cancel path].
+    pub fn cn_delete_cancel(&mut self) { self.cn_delete_row = None; }
+
     /// One menu action. Returns true when the action changed the state.
     pub fn action(&mut self, a: Action) -> bool {
         self.no_input_frames = 0; // [M Menu_ResetNoInputCount on every handled input]
@@ -1064,8 +1325,9 @@ impl FrontEnd {
             }
             return false;
         }
-        // ◀ / ▶ change values on the option pages; elsewhere they keep the old Back / Confirm meaning.
-        let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv)) {
+        // ◀ / ▶ change values on the option pages; on the name-entry grid they move the cursor;
+        // elsewhere they keep the old Back / Confirm meaning.
+        let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv | Page::CodenameEntry)) {
             (Action::Left, false) => Action::Back,
             (Action::Right, false) => Action::Confirm,
             (a, _) => a,
@@ -1074,10 +1336,35 @@ impl FrontEnd {
             Page::CnSelect => match a {
                 Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
                 Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                // The ~X Delete on a saved codename asks first [M C_SBCNSELECT 0x212f58 case 0x5e
+                // — sel > 1 → box mode 3 psiDeleteData 0x1f7de8:38-57 under the card-flow
+                // confirm; P_CNSELECT 0x212ad0 case 0x6e re-enumerates after].
+                Action::Side if self.cursor >= 2 && self.cn_delete_row.is_none() => {
+                    self.cn_delete_begin(self.cursor);
+                    return true;
+                }
+                // The delete confirm's YES/NO [M the card-flow box].
+                Action::Confirm if self.cn_delete_row.is_some() => {
+                    self.cn_delete_confirm();
+                    return true;
+                }
+                Action::Back if self.cn_delete_row.is_some() => {
+                    self.cn_delete_cancel();
+                    return true;
+                }
+                // Row 0 "New Codename" opens the name entry [M C_SBCNSELECT 0x212f58 case 0x4b
+                // sel 0 — Menu_MapDefaultCodename(0,0,0xff) then page 0x40000020 with the
+                // return-page send to 0x10000100].
+                Action::Confirm if self.cursor == 0 => {
+                    self.cn_open(PAGE_CN_SELECT);
+                    return true;
+                }
                 // Edit: the default row or a codename opens its options wheel [M C_SBCNSELECT 0x212f58 → page
-                // 0x4000001d]; New Codename's name entry is not ported.
+                // 0x4000001d]; the picked codename loads first [M case 0x4b sel ≥ 2 — box mode 0 =
+                // LS_Load 0x1f7de8:15-17], so the wheel's Save Codename writes the loaded data.
                 Action::Confirm if self.cursor >= 1 => {
                     self.cn_name = if self.cursor == 1 { "Default".into() } else { self.profiles.get(self.cursor - 2).cloned().unwrap_or_default() };
+                    if self.cursor >= 2 { self.load_profile_data(self.cursor); }
                     self.page = Page::CnMenu;
                     self.cursor = 1; // the wheel opens on Controller Setup [L PCSX2 m30]
                     return true;
@@ -1088,13 +1375,26 @@ impl FrontEnd {
             Page::CnMenu => match a {
                 Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
                 Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
-                // [M C_SBCNOPTIONS_Handler 0x213528:32-60: rows 3/4/5 → pages 0x4000002d/2e/31; row 6 accepts]
+                // [M C_SBCNOPTIONS_Handler 0x213528:32-60: rows 3/4/5 → pages 0x4000002d/2e/31; the
+                // LAST row (6) is Save Codename: a default re-maps and leaves [M case 6 —
+                // Menu_UpdateDefaultCodename + Menu_ChangePageCloseIris], a saved codename saves
+                // through box mode 1 = LS_Save(0x2e1ae8) [M 0x1f7de8:21-29] — the port writes the
+                // active profile in place.]
                 Action::Confirm => {
-                    let to = match self.cursor { 3 => Page::CnAdvanced, 4 => Page::CnMp, 5 => Page::CnAv, 6 => Page::CnSelect, _ => return false };
-                    self.opts_saved = Some(self.opts.clone());
-                    self.page = to;
-                    self.cursor = if to == Page::CnSelect { 1 } else { 0 };
-                    return true;
+                    match self.cursor {
+                        3 => { self.opts_saved = Some(self.opts.clone()); self.page = Page::CnAdvanced; self.cursor = 0; return true; }
+                        4 => { self.opts_saved = Some(self.opts.clone()); self.page = Page::CnMp; self.cursor = 0; return true; }
+                        5 => { self.opts_saved = Some(self.opts.clone()); self.page = Page::CnAv; self.cursor = 0; return true; }
+                        6 => {
+                            if self.profiles.iter().any(|p| *p == self.cn_name) {
+                                self.save_profile();
+                            }
+                            self.page = Page::CnSelect;
+                            self.cursor = 1;
+                            return true;
+                        }
+                        _ => return false,
+                    }
                 }
                 Action::Back => { self.page = Page::CnSelect; self.cursor = 1; return true; }
                 _ => return false,
@@ -1125,6 +1425,27 @@ impl FrontEnd {
                     _ => return false,
                 }
             }
+            // The name-entry grid: the cursor walks CN_GRID, Confirm presses the focused cell,
+            // Back pops to the from-page [M the manager's 0x5f pop; the game's 0x6b close query
+            // has no modified-name guard on this page].
+            Page::CodenameEntry => match a {
+                Action::Left => { self.cn_move(-1, 0); return true; }
+                Action::Right => { self.cn_move(1, 0); return true; }
+                Action::Up => { self.cn_move(0, -1); return true; }
+                Action::Down => { self.cn_move(0, 1); return true; }
+                Action::Confirm => {
+                    if self.cn_box.is_some() { self.cn_dismiss_box(); return true; }
+                    let cell = self.cn_cell;
+                    return self.cn_press(cell);
+                }
+                Action::Back if self.cn_box.is_some() => { self.cn_dismiss_box(); return true; }
+                Action::Back => {
+                    self.page = Page::from_id(self.cn_from).unwrap_or(Page::Main);
+                    self.cursor = 0;
+                    return true;
+                }
+                _ => return false,
+            },
             Page::Start => {
                 if a == Action::Confirm {
                     // → the intro movie, then the main menu [M P_INTRO 0x209e88 plays 0x07370048
@@ -1164,6 +1485,13 @@ impl FrontEnd {
                     // 0x1f7de8 case 0] and continues to the difficulty page.
                     if self.cursor >= 2 {
                         self.load_codename(self.cursor);
+                        return true;
+                    }
+                    if self.cursor == 0 {
+                        // Row 0 "New Codename" opens the game's name entry [M C_SBNFCN
+                        // 0x20b390:46-49 — Menu_MapDefaultCodename(0,0,0xff) then
+                        // Menu_ChangePageCloseIris(0x40000020) with the return-page send].
+                        self.cn_open(PAGE_CODENAME);
                         return true;
                     }
                     if self.cursor == 1 {
@@ -1586,6 +1914,10 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             hint_bar(&mut h, font, &hint(0x54e, "~V Scroll  ~A Select"), 50.0, 419.0, cream);
             // No logo or stamp: the page's only art is its aux FMV.
         }
+        // codename-entry: the name-entry page's data lives in the FrontEnd (CN_GRID, the typed
+        // buffer, the focused cell) — the main agent draws it from those getters; the port ships
+        // no layout of its own (the page's grid control data is unparsed).
+        Page::CodenameEntry => {}
         Page::Codename => {
             // Select Codename [M menu-def page 0x40000025 (parsed 2026-10-14): header 0x10000001
             // (50,40,376×17) LBL 0x1f2; the panel 0x10000001 (50,53,590×295) TEX 0x030000b3; the
