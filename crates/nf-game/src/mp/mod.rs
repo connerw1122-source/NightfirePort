@@ -11,6 +11,12 @@
 //! `MP_CreateObject` (the immediate-create path) stores the record without building an object
 //! (phase 1 drives no MP objects).
 //!
+//! Match end + debriefing (mp-debriefing-data): `player_killed` (the kill/score/team rules of
+//! `MP_PlayerKilled` 0x188f70), the completed `MP_CheckForEndCondition` 0x184268 / `MP_Update`
+//! 0x184bd0 state machine (frag/time latches → states 1..6 → the 0x40000033 handover) and
+//! `debrief::MpMatch::debriefing` (the P_MPDEBRIEFING 0x212198 rows) — see
+//! `docs/systems/mp-debriefing.md`.
+//!
 //! Placement wiring ([M] `parsemap_create_dynamic_objects` 0x1d04f0 case 0x25/0x26 ←
 //! `parsemap_block_map_data_dynamic` 0x1d1b68): the dispatch passes the placement's translation,
 //! rotation and its 0xb0 params block (values written by key: value[key] lands at block+0x2c+key·4)
@@ -25,6 +31,11 @@ use crate::world::CollisionWorld;
 /// state table and the `BotGlobal` dispatch skeleton — see `bots.rs` and `docs/fields/bot-vars.md`. Nothing in
 /// the sim calls it yet; the dispatch is behind the `mp-bots` feature.
 pub mod bots;
+
+/// The debriefing data builder (mp-debriefing-data): `MpMatch::get_mp_score` /
+/// `MpMatch::debriefing` — the P_MPDEBRIEFING 0x212198 rows, ranks and result line.
+/// See `docs/systems/mp-debriefing.md` §4.
+pub mod debrief;
 
 /// The scenario words (`MPSettings+0x420`, atlas §3) — phase 1 only constructs Deathmatch; the rest
 /// name the ids the registration gates on.
@@ -54,6 +65,10 @@ pub struct MpPlayer {
     pub skin: u32,
     /// +0x2c: the armour bonus.
     pub armor_bonus: u32,
+    /// +0x00: the codename string (`C_RBMPCNAME` 0x20d448 stores it; the debriefing's name
+    /// column and the winner line read it — `MPSettings+s·0x30+0x00` [M 0x212198:169-171,
+    /// 0x212a64-0x212a7c]). The boot default is "Player N" [M bootup_bootup 0x1c7e78:50-67].
+    pub codename: String,
 }
 
 /// `MPSettings` @0x2a47a0 — the match config. Only the fields the phase reads/writes are carried;
@@ -112,7 +127,7 @@ impl MpSettings {
     /// and the derivations are the game's.
     pub fn deathmatch(level_code: u32) -> MpSettings {
         MpSettings {
-            players: std::array::from_fn(|_| MpPlayer { team: 0, skin: 0, armor_bonus: 0 }),
+            players: std::array::from_fn(|_| MpPlayer { team: 0, skin: 0, armor_bonus: 0, codename: String::new() }),
             started: false,
             gametype_mask: 0,
             player_count: 1,
@@ -231,6 +246,17 @@ pub struct MpSlot {
     pub status: u16,
     /// +0x18 (f32): the score (the death-limit copy when scenario 0x10 [M 0x183438:60-62]).
     pub score: f32,
+    /// +0x04 (i32): the kills — killer +1 unless a team-game friendly [M 0x188f70:157-163],
+    /// suicide −1 [M :150-155]. The debriefing's Victories column [M 0x212198:186-192].
+    pub kills: i32,
+    /// +0x08 (i32): the deaths — victim +1 [M 0x188f70:92-94]. The Deaths column [M 0x212198:193-198].
+    pub deaths: i32,
+    /// +0x10 (i32): the kill streak (reset on death [M 0x188f70:152/161-162, MP_ReSpawn 0x185368:55]).
+    pub streak: i32,
+    /// The caller's out-of-play flag for the Top Agent elimination (`MP_CheckForEndCondition`
+    /// 0x184268:86-119 counts slots whose obj state is 0x11/0x12 once deaths reach the lives
+    /// limit — the port takes the state as this input; *Deviation*, see mp-debriefing.md §1).
+    pub out: bool,
 }
 
 /// `MPGame` @0x2a4980 (0x1d0 bytes) — the live match state [M atlas §2; the writes in
@@ -264,12 +290,51 @@ pub struct MpGame {
     pub time_up: bool,
     /// `switch_channels[0xfd]`: the frag-limit latch [M 0x184268:170-172].
     pub frag_latched: bool,
+    /// +0x18C: the top-score scratch the frag latch compares against [M 0x184268:66-79,149-172].
+    pub top_score: i32,
+    /// `GameState+0x24 = 1` at state 3→4 [M 0x184bd0:59; disasm 0x184e6c].
+    pub handover_flag: bool,
+    /// The case-4 navigation request: `GameState+0x1C = 0x40000033` + `ResetMap_LevelToLoad`
+    /// (0x7000048) + the fade [M 0x184bd0:62-78; disasm 0x184e70-0x184e94] — the host consumes
+    /// it and opens the front end at the debriefing.
+    pub request_debriefing: bool,
+    /// The case-6 restart request: state 0 + `MP_RestartScenario` after 5 s (demo/prot)
+    /// [M 0x184bd0:79-92] — the host re-runs the scenario init.
+    pub restart_pending: bool,
+    /// The end status `MP_SortOutWhoWon` 0x1848d0 computes for the status sprite (the game
+    /// writes it straight into the string buffer; the port stores it for the HUD/debrief).
+    pub end_status: MpEndStatus,
+}
+
+/// The status line `MP_SortOutWhoWon` 0x1848d0 builds [M :21-92] — ids/texts per the USATxt bank.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum MpEndStatus {
+    /// Still playing (no sort has run).
+    #[default]
+    None,
+    /// "Player %s Won" 0x2000022 / "Game Over : %s Won" (0x2000024 + 0x2000027) — the codename.
+    Won(String),
+    /// "A Draw" 0x2000023 / "Game Over : A Draw" (0x2000024 + 0x2000023).
+    Draw,
+    /// The 0x10 fewest-deaths winner is pending a tie check (the sort ran, nobody qualified).
+    /// *Not produced by the game* — placeholder so `None` can mean "not sorted yet".
+    Pending,
 }
 
 impl MpGame {
     fn zeroed() -> MpGame {
         MpGame {
-            slots: std::array::from_fn(|_| MpSlot { pos: None, timers: [0; 2], last_killer: 0xffff, status: 0xfffe, score: 0.0 }),
+            slots: std::array::from_fn(|_| MpSlot {
+                pos: None,
+                timers: [0; 2],
+                last_killer: 0xffff,
+                status: 0xfffe,
+                score: 0.0,
+                kills: 0,
+                deaths: 0,
+                streak: 0,
+                out: false,
+            }),
             team_scores: [0.0; 2],
             state: 0,
             clock: 0.0,
@@ -280,6 +345,11 @@ impl MpGame {
             pause_stamp: -1.0,
             time_up: false,
             frag_latched: false,
+            top_score: 0,
+            handover_flag: false,
+            request_debriefing: false,
+            restart_pending: false,
+            end_status: MpEndStatus::None,
         }
     }
 }
@@ -481,9 +551,11 @@ impl MpMatch {
     /// `MP_Update` 0x184bd0 (per tick, the port's fixed 60 Hz): the master + state gates are the
     /// caller's (the sim only ticks in gameplay and never pauses); the per-slot timer decrement
     /// [M 0x184bd0:25-35], then the state machine — state 0 (playing) runs
-    /// `MP_CheckForEndCondition` [M 0x184bd0:36-41]. `MP_Pickup_Process`/`BOT_update` are phase 2+
-    /// (no pickups are driven, no bots exist). The end states (1..6) are phase 2+ except the time-up
-    /// entry, which this port latches exactly as `MP_CheckForEndCondition` does.
+    /// `MP_CheckForEndCondition` [M 0x184bd0:36-41], state 1 the win sort [M :51-53], state 2
+    /// the time-up arm (0x10 falls through to the sort [M :42-53]), state 3 the 0x10 five-second
+    /// gate + `GameState+0x24 = 1` [M :54-61], state 4 the debriefing navigation request
+    /// [M :62-78], state 6 the demo/prot restart timer [M :79-92].
+    /// `MP_Pickup_Process`/`BOT_update` are phase 2+ (no pickups are driven, no bots exist).
     pub fn update(&mut self, dt: f32, paused: bool) {
         if self.settings.master == 0 || !self.settings.started {
             return; // [M 0x184bd0:13-16]
@@ -498,24 +570,251 @@ impl MpMatch {
         if paused {
             return; // the game's GS_IsPaused branch only stamps the wall clock [M 0x184bd0:95-98]
         }
-        if self.game.state == 0 {
-            self.check_for_end_condition(dt);
+        match self.game.state {
+            0 => self.check_for_end_condition(dt), // [M 0x184bd0:37-41]
+            1 => self.sort_out_who_won(),          // [M 0x184bd0:51-53]
+            2 => {
+                // scenario 0x10 falls through to the sort; anything else goes straight on
+                // [M 0x184bd0:42-53]
+                if self.settings.scenario != scenario::DEATH_LIMIT_FFA {
+                    self.game.state = 3;
+                } else {
+                    self.sort_out_who_won();
+                }
+            }
+            3 => {
+                // non-0x10 passes immediately; 0x10 waits for the debrief timer to reach 5.0 s
+                // [M 0x184bd0:54-61]
+                let done = self.settings.scenario != scenario::DEATH_LIMIT_FFA
+                    || {
+                        self.game.debrief_timer += dt;
+                        self.game.debrief_timer >= 5.0
+                    };
+                if done {
+                    self.game.state = 4;
+                    self.game.handover_flag = true; // GameState+0x24 = 1 [M 0x184bd0:59]
+                }
+            }
+            4 => {
+                // GameState+0x1C = 0x40000033, state 5; the ResetMap(0x7000048) + fade + player
+                // pauses are the host's [M 0x184bd0:62-78; disasm 0x184e70-0x184e94]
+                self.game.request_debriefing = true;
+                self.game.state = 5;
+            }
+            6 => {
+                self.game.restart_timer += dt; // [M 0x184bd0:79-91]
+                if self.game.restart_timer > 5.0 {
+                    self.game.state = 0;
+                    self.game.restart_pending = true; // MP_RestartScenario is the host's
+                }
+            }
+            _ => {} // state 5 idles until the level change tears the match down
         }
     }
 
-    /// `MP_CheckForEndCondition` 0x184268 — the clock: the elapsed delta (the fixed tick here) adds
-    /// to `+0x412` always and to the round clock `+0x400` when not paused [M 0x184268:44-46,55,140];
-    /// a positive limit latches `switch_channels[0xfe]` when the limit is reached [M
-    /// 0x184268:57-60,142-145] — the demo/prot branch enters state 6 on the latch [M
-    /// 0x184268:57-60], the other modes' end wiring is phase 2+. The frag-limit latch
-    /// (`switch_channels[0xfd]`) is phase 2+ (no kills yet).
+    /// `MP_CheckForEndCondition` 0x184268 — the full port (mp-debriefing.md §1). The clock runs on
+    /// the fixed tick (the game samples `psiGetTimeIn100ths` — *Deviation*, the module doc). The
+    /// elapsed word always accumulates unpaused [M 0x184268:44-46]; the round clock and the
+    /// latches follow the scenario dispatch [M :50-172] and the final dispatch sets state 1/2
+    /// [M :173-184].
     fn check_for_end_condition(&mut self, dt: f32) {
-        self.game.elapsed += dt; // [M 0x184268:44-46]
-        self.game.clock += dt; // [M 0x184268:55,140]
-        if self.game.limit > 0.0 && !self.game.time_up && self.game.limit <= self.game.clock {
-            self.game.time_up = true; // switch_channels[0xfe] [M 0x184268:142-145]
-            if self.settings.scenario == scenario::DEMOLITION || self.settings.scenario == scenario::PROTECTION {
-                self.game.state = 6; // [M 0x184268:58-60]
+        self.game.elapsed += dt; // MPGame+0x19C [M 0x184268:44-46]
+        let s = self.settings.scenario;
+        if s == scenario::DEMOLITION || s == scenario::PROTECTION {
+            // the shared demo/prot tail: the state jumps straight to 6 WITHOUT latching 0xfe
+            // [M 0x184268:50-79]
+            self.game.clock += dt; // [M :55]
+            if self.game.limit > 0.0 && !self.game.time_up && self.game.limit <= self.game.clock {
+                self.game.state = 6; // [M :59]
+            }
+            self.update_top_score(true); // [M :66-79]
+        } else {
+            if s == scenario::DEATH_LIMIT_FFA {
+                self.top_agent_elimination(); // [M :85-135]
+            }
+            self.game.clock += dt; // [M :140]
+            if self.settings.time_limit != -1 && !self.game.time_up {
+                // the 0xfe latch — state is NOT set here [M :142-143]
+                self.game.time_up = self.game.limit > 0.0 && self.game.limit <= self.game.clock;
+            }
+            self.update_top_score(false); // [M :149-167]
+            if s != scenario::DEATH_LIMIT_FFA && self.settings.frag_limit != -1 {
+                // the frag latch — 0x10 skips it (its +0x19C is the lives limit) [M :168-172]
+                self.game.frag_latched = self.settings.frag_limit <= self.game.top_score;
+            }
+        }
+        // the final dispatch [M :173-184]
+        if self.game.frag_latched {
+            self.game.state = 1;
+        } else if self.game.time_up {
+            self.game.state = 2;
+        }
+    }
+
+    /// The top-score scratch `MPGame+0x18C` [M 0x184268:66-79 (demo/prot), :149-167 (others)]:
+    /// the two team scores as ints, then — always for demo/prot, otherwise only for a non-team
+    /// game — every slot's score as int. (The game's float→int casts; scores are small.)
+    fn update_top_score(&mut self, demo_prot: bool) {
+        let t0 = self.game.team_scores[0] as i32;
+        let t1 = self.game.team_scores[1] as i32;
+        let mut top = if t0 < t1 { t1 } else { t0 };
+        if demo_prot || self.settings.team_game == 0 {
+            for slot in &self.game.slots {
+                let v = slot.score as i32;
+                if top < v {
+                    top = v;
+                }
+            }
+        }
+        self.game.top_score = top;
+    }
+
+    /// The Top Agent elimination [M 0x184268:85-135]: slots whose deaths reached the lives limit
+    /// (`MPSettings+0x19C`) and whose caller-marked `out` state says they are out of play end the
+    /// match (state 1) when only one player remains or every human is out; while bots remain the
+    /// game force-flips one bot per call [M :124-135]. The game splits the outs by the player
+    /// state byte (0x12 vs 0x11/0x02) — the port carries one flag (*Deviation*, mp-debriefing.md
+    /// §1; both counters sum in the end test).
+    fn top_agent_elimination(&mut self) {
+        let lives = self.settings.frag_limit;
+        let humans = self.settings.human_count as usize;
+        let bots = self.settings.bot_count as usize;
+        let total = (self.settings.total_players as usize).max(1);
+        let outs = self.game.slots.iter().filter(|s| s.out && s.deaths >= lives).count();
+        if total - 1 <= outs || outs == humans {
+            self.game.state = 1; // [M 0x184268:120-123]
+        }
+        let bot_outs = self
+            .game
+            .slots
+            .iter()
+            .skip(humans)
+            .take(bots)
+            .filter(|s| s.out && s.deaths >= lives)
+            .count();
+        if humans <= outs && bots != 0 && bot_outs < bots - 1 {
+            if let Some(i) = self.game.slots.iter().position(|s| !s.out) {
+                self.game.slots[i].out = true; // the 0x11 flip [M :124-135]
+            }
+        }
+    }
+
+    /// `MP_SortOutWhoWon` 0x1848d0 — state 3 [M :20] + the end status [M :21-92]: 0x10 crowns the
+    /// fewest deaths among live slots with deaths < the lives limit (the game's draw quirk: any
+    /// tie at the running minimum zeroes the survivor count, so a later strict winner still
+    /// announces a draw [M :27-52]); an FFA needs EXACTLY one slot at/over the frag limit
+    /// [M :55-85]; a team game always reports the draw (the team winner is the debriefing's line)
+    /// [M :87-92]. The status prefixes differ per branch ("Player %s Won" 0x2000022 for 0x10,
+    /// "Game Over : …" 0x2000024/0x2000027/0x2000023 otherwise).
+    pub fn sort_out_who_won(&mut self) {
+        self.game.state = 3; // [M 0x1848d0:20]
+        let s = self.settings.scenario;
+        if s == scenario::DEATH_LIMIT_FFA {
+            let lives = self.settings.frag_limit;
+            let mut count: i32 = 0; // iVar10 [M 0x1848d0:23-52]
+            let mut best = 30000i32; // iVar2's start [M :23]
+            let mut winner: Option<usize> = None;
+            for (i, slot) in self.game.slots.iter().enumerate() {
+                if slot.pos.is_none() {
+                    continue; // the obj gate [M :29]
+                }
+                let d = slot.deaths;
+                if d >= lives {
+                    continue; // [M :31]
+                }
+                count += 1;
+                if d < best {
+                    best = d;
+                    winner = Some(i);
+                } else if d == best {
+                    count = 0; // the tie quirk [M :38-40]
+                }
+            }
+            self.game.end_status = match winner {
+                Some(w) if count != 0 => MpEndStatus::Won(self.settings.players[w].codename.clone()),
+                _ => MpEndStatus::Draw, // [M :49-52]
+            };
+        } else if self.settings.team_game == 0 {
+            let limit = self.settings.frag_limit as f32;
+            let mut count = 0usize;
+            let mut winner: Option<usize> = None;
+            for (i, slot) in self.game.slots.iter().enumerate() {
+                if limit <= slot.score {
+                    count += 1; // [M 0x1848d0:62-67]
+                    winner = Some(i);
+                }
+            }
+            self.game.end_status = match winner {
+                Some(w) if count == 1 => MpEndStatus::Won(self.settings.players[w].codename.clone()),
+                _ => MpEndStatus::Draw, // [M :79-84]
+            };
+        } else {
+            self.game.end_status = MpEndStatus::Draw; // [M 0x1848d0:87-92]
+        }
+    }
+
+    /// `MP_PlayerKilled` 0x188f70 — the victim's slot, the killer's slot (None = the HitByList
+    /// walk resolved nothing [M :121-217]) and the +2.0 weapon-bonus arm [M :172-177 — the
+    /// killer's weapon block +0xab == 7 with +0x76b == victim; the port takes it as a flag until
+    /// the weapon state joins the MP core]. Deaths always +1 [M :92-94]; scenario 0x10 takes the
+    /// score −1.0 [M :96-97]; the kill credit gates on the team rule [M :157-163]; the score
+    /// delta lands only when `MPSettings+0x190 == 0` and the scenario is Arena/Team Arena/KOH
+    /// [M :179-184]; the team scores move only in Team Arena [M :247-274]. The assassin's +5/+3
+    /// arms need the target globals — phase 2 [M :223-245].
+    pub fn player_killed(&mut self, victim: usize, killer: Option<usize>, double_bonus: bool) {
+        if self.settings.master == 0 {
+            return; // [M 0x188f70:84-86]
+        }
+        self.game.slots[victim].deaths += 1; // [M 0x188f70:92-94]
+        if self.settings.scenario == scenario::DEATH_LIMIT_FFA {
+            self.game.slots[victim].score -= 1.0; // [M :96-97]
+        }
+        let mut delta = 0.0f32;
+        let mut teamkill = false;
+        match killer {
+            Some(k) if k == victim => {
+                // suicide [M :150-155]
+                self.game.slots[victim].kills -= 1;
+                self.game.slots[victim].streak = 0;
+                self.game.slots[victim].last_killer = 0xffff; // [M :154]
+                delta = -1.0;
+            }
+            Some(k) => {
+                let teams_differ = self.settings.team_game == 0
+                    || self.settings.players[victim].team != self.settings.players[k].team;
+                if teams_differ {
+                    self.game.slots[k].kills += 1; // [M :157-163]
+                    self.game.slots[k].streak += 1;
+                } else {
+                    teamkill = true;
+                }
+                self.game.slots[victim].last_killer = k as u16; // [M :164]
+                delta = if double_bonus { 2.0 } else { 1.0 }; // [M :166-177]
+            }
+            None => {}
+        }
+        // the personal score delta [M :179-184]
+        if delta != 0.0
+            && self.settings.bit30 == 0
+            && matches!(
+                self.settings.scenario,
+                scenario::DEATHMATCH | scenario::TEAM_DEATHMATCH | scenario::KOTH_FFA | scenario::KOTH_TEAM
+            )
+        {
+            if let Some(k) = killer {
+                self.game.slots[k].score += delta;
+            }
+        }
+        // the team scores — Team Arena only [M :247-274]
+        if self.settings.scenario == scenario::TEAM_DEATHMATCH {
+            let vt = self.settings.players[victim].team.min(1) as usize;
+            if teamkill || killer.is_none() || killer == Some(victim) {
+                // a teamkill or a suicide: the victim's own team pays [M :249-252]
+                self.game.team_scores[vt] -= delta.abs();
+            } else {
+                // a normal kill: the killer's team = the complement of the victim's [M :262-271]
+                let kt = if vt != 0 { 0 } else { 1 };
+                self.game.team_scores[kt] += delta.abs();
             }
         }
     }
