@@ -34,3 +34,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox7 at 2026-10-15T01:02Z
+
+---
+## Report (done, 2026-10-15T02:00Z)
+
+Closed by the driver: the report is on `s/fix-remote-mine-play` (docs/reports/fix-remote-mine-play.md); the worker didn't run finish.sh.
