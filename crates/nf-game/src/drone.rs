@@ -8208,7 +8208,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 let rec = d.weapons.records.get(0x3a);
                 let radius = rec.map_or(8.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
                 let damage = rec.map_or(100.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
-                self.pending_blasts.push((pos, radius, damage, self.grenades[gi].owner, 0x3a));
+                self.pending_blasts.push((pos, radius, damage, self.grenades[gi].owner, 0x3a, 0x0600_0052, radius));
                 self.grenades[gi].state = 2;
             } else {
                 self.tripbomb_beams.push((pos, end_trig));
