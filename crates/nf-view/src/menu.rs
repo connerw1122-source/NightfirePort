@@ -2428,6 +2428,7 @@ impl FrontEnd {
                 // and the wheel showed Weapons on screen — the playtest's "the port adds Weapons"].
                 Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }   // □ Dossier
                 Action::Back => { self.page = Page::Difficulty; self.cursor = self.difficulty; return true; }
+                Action::Extra => {}
             },
             Page::Dossier => match a {
                 // The wheel CLAMPS, it never wraps [M Scroll_Update 0x2221b20:186-194 (Down at the
@@ -2456,6 +2457,7 @@ impl FrontEnd {
                 Action::Up => { self.cursor = (self.cursor + CAMPAIGN.len() - 1) % CAMPAIGN.len(); return true; }
                 Action::Down => { self.cursor = (self.cursor + 1) % CAMPAIGN.len(); return true; }
                 Action::Back | Action::Confirm | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
+                Action::Extra => {}
             },
             Page::Options => match a {
                 Action::Up => { self.cursor = (self.cursor + 2) % 3; return true; }
@@ -2511,6 +2513,7 @@ impl FrontEnd {
                             return true;
                         }
                         Action::Side => return false,
+                        Action::Extra => {}
                     }
                 }
                 // objective-hints: the ✕ hint box is modal (option-box page 0x4000002f pushed
@@ -2578,6 +2581,7 @@ impl FrontEnd {
                             _ => {}
                         }
                     }
+                    Action::Extra => {}
                 }
             },
             Page::Results if self.outcome == Outcome::Complete => match a {
@@ -2598,6 +2602,7 @@ impl FrontEnd {
                     self.flow.page = PAGE_MISSION_SELECT;
                     return true;
                 }
+                Action::Extra => {}
             },
             Page::Results => match a {
                 Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
@@ -2639,6 +2644,7 @@ impl FrontEnd {
                     }
                 }
                 Action::Back => { self.cursor = 1; return true; }
+                Action::Extra => {}
             },
             // ── mp-menu-flow: the multiplayer front end ──
             // Join Game [M P_MPJOIN 0x20ca00 + C_RBMPSTART 0x20d048 + C_RBMPCNAME 0x20d448].
@@ -3239,28 +3245,28 @@ impl FrontEnd {
     /// `MpMatch::bot_short_name_label(character)` (None → the literal "Bot").
     pub fn mp_debriefing_rows(
         &self,
-    ) -> [(u32, nf_game::mp::debrief::MpDebriefName, u32, i32, i32, i32, i32); 4] {
+    ) -> Vec<(u32, nf_game::mp::debrief::MpDebriefName, u32, i32, i32, i32, i32)> {
         let empty = nf_game::mp::debrief::MpDebriefing {
             rows: Vec::new(),
             result: nf_game::mp::debrief::MpDebriefResult::Draw,
         };
         let board = self.mp_debriefing.as_ref().unwrap_or(&empty);
-        let mut out = [
-            (0u32, nf_game::mp::debrief::MpDebriefName::Human(String::new()), 0u32, 0i32, 0, 0, 0);
-            4
-        ];
-        for (i, row) in board.rows.iter().take(4).enumerate() {
-            out[i] = (
-                nf_game::mp::debrief::RANK_LABELS[(row.rank as usize).min(3)],
-                row.name.clone(),
-                self.mp_debriefing_portrait(row.character).unwrap_or(0),
-                row.points,
-                row.victories,
-                row.deaths,
-                row.total,
-            );
-        }
-        out
+        board
+            .rows
+            .iter()
+            .take(4)
+            .map(|row| {
+                (
+                    nf_game::mp::debrief::RANK_LABELS[(row.rank as usize).min(3)],
+                    row.name.clone(),
+                    self.mp_debriefing_portrait(row.character).unwrap_or(0),
+                    row.points,
+                    row.victories,
+                    row.deaths,
+                    row.total,
+                )
+            })
+            .collect()
     }
 
     /// The result line's data [M P_MPDEBRIEFING 0x212198:220-250]: (label id, the %s argument

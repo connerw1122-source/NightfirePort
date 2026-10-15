@@ -700,12 +700,13 @@ impl MpMatch {
     }
 
     /// `MP_SortOutWhoWon` 0x1848d0 — state 3 [M :20] + the end status [M :21-92]: 0x10 crowns the
-    /// fewest deaths among live slots with deaths < the lives limit (the game's draw quirk: any
-    /// tie at the running minimum zeroes the survivor count, so a later strict winner still
-    /// announces a draw [M :27-52]); an FFA needs EXACTLY one slot at/over the frag limit
-    /// [M :55-85]; a team game always reports the draw (the team winner is the debriefing's line)
-    /// [M :87-92]. The status prefixes differ per branch ("Player %s Won" 0x2000022 for 0x10,
-    /// "Game Over : …" 0x2000024/0x2000027/0x2000023 otherwise).
+    /// fewest deaths among live slots with deaths < the lives limit — the survivor count
+    /// increments BEFORE the compare and a tie at the running minimum zeroes it, so the draw
+    /// verdict is "the last qualifier tied the minimum and nothing followed" [M :32-52]; an FFA
+    /// needs EXACTLY one slot at/over the frag limit [M :55-85]; a team game always reports the
+    /// draw (the team winner is the debriefing's line) [M :87-92]. The status prefixes differ
+    /// per branch ("Player %s Won" 0x2000022 for 0x10, "Game Over : …" 0x2000024/0x2000027/
+    /// 0x2000023 otherwise).
     pub fn sort_out_who_won(&mut self) {
         self.game.state = 3; // [M 0x1848d0:20]
         let s = self.settings.scenario;

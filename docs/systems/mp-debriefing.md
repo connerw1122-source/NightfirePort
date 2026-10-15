@@ -65,8 +65,10 @@ The switch on `MPGame+0x188` [M 0x184bd0:36-93; offsets confirmed by disasm — 
 - **1** (score end): `MP_SortOutWhoWon` 0x1848d0, which sets state **3** and writes the status
   text [M :51-53; 0x1848d0:20]:
   - 0x10: the winner is the fewest deaths (`+0x08`) among slots with an obj, counting only
-    deaths < the lives limit; a tie at the minimum (or no survivor) → "A Draw" 0x2000023, else
-    "Player %s Won" 0x2000022 with the codename at `MPSettings+slot·0x30` [M 0x1848d0:21-53].
+    deaths < the lives limit. The survivor count increments BEFORE the min-compare and a tie at
+    the running minimum zeroes it — so the verdict is "A Draw" 0x2000023 only when the LAST
+    qualifier tied the minimum (nothing followed); otherwise "Player %s Won" 0x2000022 with the
+    codename at `MPSettings+slot·0x30` [M 0x1848d0:27-53].
   - FFA (`MPSettings+0x18C == 0`): every slot whose score (`+0x18` f32) ≥ the frag limit
     (`MPSettings+0x19C` as float) qualifies; exactly one qualifier → "Game Over : %s Won" with
     the codename (0x2000024 + 0x2000027), otherwise (0 or ≥2) → "Game Over : A Draw"
@@ -190,10 +192,10 @@ menu-def** (checked all 56 pages) — a dead send [L+M 0x212198:157,214].
      game compares against an uninitialized stack pair — the port treats a 1-entry board as a
      win (*Deviation*).
    - **Team**: `(float)MPGame+0x180 < (float)MPGame+0x184` → "%s wins the match." with
-     0x1c8 "Phoenix"; `>=` → with 0x1c7 "MI6"; equal → the draw text. [S] Likely an original
+     0x1c8 "MI6"; `>=` → with 0x1c7 "Phoenix"; equal → the draw text. [S] Likely an original
      inversion: P_MPCONFIRM's panels caption MI6 0x1c8 on the left/blue side
      (0x1000023f, x=51) and Phoenix 0x1c7 on the right/red (0x1000023e, x=324), and the setup
-     lists offer Phoenix first — yet the debrief announces Phoenix when team0 (the lower
+     lists offer Phoenix first — yet the debrief announces MI6 when team0 (the lower
      index) is BEHIND. Ported literally; a live check can settle which side the announce
      names.
 
@@ -244,9 +246,9 @@ Exactly two arms (disasm: 0xa8 bytes, only 0x4b/0x5d branches; no init arm) [M :
 1. Watch `GameState+0x1C` @0x2a3784 (w) when a match ends naturally (frag limit in Arena) —
    expect 0x40000033 (disasm 0x184e80); then `GameState+0x24` @0x2a378c — expect 1.
 2. Team-announce check: play Team Arena, make team 1 (the second-picked side) win — the
-   result line should read per disasm "Phoenix wins the match." when team0 < team1. If PCSX2
-   shows "MI6" there instead, the [S] inversion note in §4 is wrong and the port flips the
-   two label ids.
+   result line should read per disasm "MI6 wins the match." when team0 < team1 (0x1c8). If
+   PCSX2 shows "Phoenix" there instead, the [S] inversion note in §4 is wrong and the port
+   flips the two label ids.
 3. `MPGame+0x188` @0x2a4b08 (w) at the end: 1 on a frag-limit end, 2 on time-up (Arena),
    6 on Demolition/Protection time-up, then 3 → 4 → 5 across ~5 s.
 4. Debriefing rows with a known 3-bot Arena game: the rank captions "1st"/"2nd"/"3rd", the

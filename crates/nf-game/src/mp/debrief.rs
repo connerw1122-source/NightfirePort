@@ -173,10 +173,10 @@ impl MpMatch {
         MpDebriefing { rows, result }
     }
 
-    /// `Menu_GetBotShortName` 0x201918: character 0..0x1c → label 0x10002e2+character
+    /// `Menu_GetBotShortName` 0x201918: character 0..0x1c → label 0x010002e2+character
     /// [M :10-94]; >= 0x1d → the literal "Bot" @0x30d290 (None here — the caller binds its
     /// own text) [M :97].
     pub fn bot_short_name_label(character: u32) -> Option<u32> {
-        (character < 0x1d).then(|| 0x1000_02e2 + character)
+        (character < 0x1d).then(|| 0x0100_02e2 + character)
     }
 }
