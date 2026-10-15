@@ -564,6 +564,8 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     //    bucket; the per-skeleton lists are order-sensitive gameplay data — the WORKLOG's warning).
     {
         let mm = level.main_map();
+        }
+        let mm = level.main_map();
         // The substitution [M 0x1be910]: 0x05000090 → the level's own variant, before anything
         // else looks the hash up. The compared word is `GameState+0xC` @0x2a3774 (the current
         // level id; the "+0x12" in older notes was the decompiler's decimal offset 12).
@@ -653,7 +655,6 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                     foreign.maps.len(), foreign.skins.len());
             }
         }
-    }
     }
     // The sleeve substitution (fix-missing-drone-skins): `AnimProcessSkinData` 0x1bd500:159-166
     // reroutes every 0x10-flagged MAIN entry through `AnimSleeveGetEntity(0)` 0x1c6590 — the first

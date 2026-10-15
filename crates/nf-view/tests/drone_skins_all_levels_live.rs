@@ -47,8 +47,12 @@ struct Row {
     /// Placements whose skin still does not resolve (skin or skeleton missing, or the scene built
     /// no character for it) after `nf_view::load` — the after count; the fix makes this 0.
     after_unresolved: usize,
-    /// Sleeve-flagged (byte-2 bit 0x10) main entries across the placed skins, as the raw archive
-    /// parses them, and how many of the raw hashes exist in the archive itself.
+    /// Sleeve-flagged (byte-2 bit 0x10) main entries across ALL the raw archive's skins, and how
+    /// many of the raw hashes exist in the archive itself. The observable cases of
+    /// `AnimProcessSkinData` 0x1bd500:159-166 live here: every story archive carries 10-31 of
+    /// them (627 disc-wide), always exactly one per skin at main[0] with a `0x0210xxxx` hash.
+    /// The PLACED drone skins carry none (verified below via `skins_of_placements`) — the
+    /// census's earlier placed-only column read 0 everywhere and hid the mechanism.
     sleeve_entries: usize,
     sleeve_raw_present: usize,
     /// Sleeve-flagged entries that STILL sit in the loaded sim's skin table (the fix reroutes
@@ -71,18 +75,22 @@ fn census(iso_path: &str, name: &str) -> Option<Row> {
             if !level.skins.contains_key(&skin) { before_missing_skin += 1; }
         }
     }
-    // Sleeve entries of the placed skins (the raw archive's own view).
+    // Sleeve entries of the raw archive (ALL its skins — the placed skins carry none; see Row).
     let (mut sleeve_entries, mut sleeve_raw_present) = (0usize, 0usize);
-    for &sk in &skins_of_placements {
-        if let Some(s) = level.skins.get(&sk) {
-            for h in s.main.iter().flatten() {
-                if nf_formats::character::Skin::is_sleeve(*h) {
-                    sleeve_entries += 1;
-                    if level.by_hash.contains_key(h) { sleeve_raw_present += 1; }
-                }
+    for s in level.skins.values() {
+        for h in s.main.iter().flatten() {
+            if nf_formats::character::Skin::is_sleeve(*h) {
+                sleeve_entries += 1;
+                if level.by_hash.contains_key(h) { sleeve_raw_present += 1; }
             }
         }
     }
+    // The placed skins themselves must stay clean (the drone render path never hits the rule).
+    let placed_sleeves = skins_of_placements.iter()
+        .filter_map(|sk| level.skins.get(sk))
+        .map(|s| s.main.iter().flatten().filter(|h| nf_formats::character::Skin::is_sleeve(**h)).count())
+        .sum::<usize>();
+    assert_eq!(placed_sleeves, 0, "{name}: a PLACED drone skin carries a sleeve-flagged main entry");
     // AFTER: the real loader path (substitution + session merge inside `nf_view::load`).
     let scene = nf_view::load(iso_path, name, false).unwrap_or_else(|e| panic!("{name}: load failed: {e}"));
     let sim = scene.sim.as_ref().unwrap_or_else(|| panic!("{name}: no sim"));

@@ -44,32 +44,38 @@ counts, the real `nf_view::load` the AFTER (skin + skeleton + built character, p
 plus the sleeve check over EVERY loaded skin: no `0x10`-flagged main entry may remain in the
 loaded table.
 
-**Per-level table** (before = raw archive; after = post-load; sleeve = sleeve-flagged main
-entries the loaded table still carried raw — pre-fix 07000005 carried **15**, all 0 post-fix):
+**Per-level table** (before = raw archive; after = post-load; sleeve = 0x10-flagged MAIN entries
+across ALL the raw archive's skins — the observable cases of the rule — with `raw present` =
+how many of the raw `0x0210xxxx` hashes the archive itself carries (always 0: they resolve only
+through `AnimSleeveGetEntity`) and `left after` = how many the loaded table still carried raw,
+all 0 post-fix):
 
 ```
-07000005: placements 16, missing skin before  0, unresolved after 0
-07000006: placements 32, missing skin before  0, unresolved after 0
-07000007: placements 58, missing skin before  0, unresolved after 0
-07000008: placements 26, missing skin before  0, unresolved after 0
-07000001: placements 20, missing skin before  0, unresolved after 0
-07000002: placements 25, missing skin before  0, unresolved after 0
-07000003: placements 20, missing skin before  0, unresolved after 0
-07000004: placements  1, missing skin before  0, unresolved after 0
-07000009: placements  6, missing skin before  0, unresolved after 0
-0700000a: placements 20, missing skin before  0, unresolved after 0
-0700000b: placements 10, missing skin before  0, unresolved after 0
-0700000c: placements 40, missing skin before  7 (0x05000090), unresolved after 0
-0700000d: placements 41, missing skin before  0, unresolved after 0
-07000011: placements 37, missing skin before  0, unresolved after 0
-07000012: placements 32, missing skin before  0, unresolved after 0
-0700004a: placements 38, missing skin before  0, unresolved after 0
-07000013: placements 12, missing skin before  0, unresolved after 0
-07000014: placements 61, missing skin before 26 (0x05000090 ×15 + 0x050000b1 ×11), unresolved after 0
-07000015: placements 20, missing skin before  0, unresolved after 0
-07000016: placements 20, missing skin before  0, unresolved after 0
-0700001b: placements 20, missing skin before  0, unresolved after 0
+07000005: placements 16, missing skin before  0, unresolved after 0, sleeve 15 (raw present 0, left after 0)
+07000006: placements 32, missing skin before  0, unresolved after 0, sleeve 15 (raw present 0, left after 0)
+07000007: placements 58, missing skin before  0, unresolved after 0, sleeve 10 (raw present 0, left after 0)
+07000008: placements 26, missing skin before  0, unresolved after 0, sleeve 12 (raw present 0, left after 0)
+07000001: placements 20, missing skin before  0, unresolved after 0, sleeve 15 (raw present 0, left after 0)
+07000002: placements 25, missing skin before  0, unresolved after 0, sleeve 15 (raw present 0, left after 0)
+07000003: placements 20, missing skin before  0, unresolved after 0, sleeve 15 (raw present 0, left after 0)
+07000004: placements  1, missing skin before  0, unresolved after 0, sleeve 16 (raw present 0, left after 0)
+07000009: placements  6, missing skin before  0, unresolved after 0, sleeve 14 (raw present 0, left after 0)
+0700000a: placements 20, missing skin before  0, unresolved after 0, sleeve 14 (raw present 0, left after 0)
+0700000b: placements 10, missing skin before  0, unresolved after 0, sleeve 17 (raw present 0, left after 0)
+0700000c: placements 40, missing skin before  7 (0x05000090), unresolved after 0, sleeve 15 (raw present 0, left after 0)
+0700000d: placements 41, missing skin before  0, unresolved after 0, sleeve 15 (raw present 0, left after 0)
+07000011: placements 37, missing skin before  0, unresolved after 0, sleeve 10 (raw present 0, left after 0)
+07000012: placements 32, missing skin before  0, unresolved after 0, sleeve 12 (raw present 0, left after 0)
+0700004a: placements 38, missing skin before  0, unresolved after 0, sleeve 12 (raw present 0, left after 0)
+07000013: placements 12, missing skin before  0, unresolved after 0, sleeve 13 (raw present 0, left after 0)
+07000014: placements 61, missing skin before 26 (0x05000090 ×15 + 0x050000b1 ×11), unresolved after 0, sleeve 16 (raw present 0, left after 0)
+07000015: placements 20, missing skin before  0, unresolved after 0, sleeve 18 (raw present 0, left after 0)
+07000016: placements 20, missing skin before  0, unresolved after 0, sleeve 18 (raw present 0, left after 0)
+0700001b: placements 20, missing skin before  0, unresolved after 0, sleeve  2 (raw present 0, left after 0)
 ```
+
+(0700000e/0f/10 have no archive in FILES.BIN — the game never loads them; the census prints the
+skip line and moves on.)
 
 The G-021 total: 7 + 26 = **33 placements on 2 levels**, exactly the GAPS count. All resolve
 after load — the whole-skin half of G-021 was fixed by the models-characters sessions
@@ -77,11 +83,44 @@ after load — the whole-skin half of G-021 was fixed by the models-characters s
 archive merge. This session's contribution is the per-level golden that pins it (the old
 tests covered only 0700000c/07000014) and the sleeve half:
 
-- **Fail-first (sleeves)**: with the substitution reverted, the census FAILED on the first
-  level — `07000005.bin: 15 sleeve-flagged main entries the loaded skins still carry raw`
-  (the weapon first-person skins' main lists; no *placed drone* skin carries one — the placed
-  skins' sleeve columns are 0 everywhere, which is why the whole-skin census passed pre-fix).
-  With the fix: the table-wide check is 0 on every level.
+**The 7 missing skins on 0700000c (the 110c hold's point 4)** — the placements whose raw skin
+0x05000090 is not in 0700000c's own archive (0x05000087 IS there, 0x05000090 is not [D]):
+
+```
+placement #262 at ( 6.95, 1.10, -182.45)
+placement #263 at ( 6.55, 12.31, -224.56)
+placement #265 at ( 0.71, 12.33, -228.02)
+placement #310 at (36.36, 12.15, -208.81)
+placement #333 at (47.12,  9.79, -148.56)
+placement #338 at (-5.37,  1.08, -184.76)
+placement #464 at (60.67,  9.79, -146.87)
+```
+
+Where the skin comes from after load: `AnimObjectNew` 0x1be910 (disasm 0x1be958-0x1be9b0)
+substitutes the placement's 0x05000090 with **0x05000087 — 0700000c's own archive's skin** —
+before the hashtable get (the compared word `GameState+0xC` @0x2a3774 == 0x0700000c); the port
+mirrors it at load, keying the variant's data under the placement's hash so every downstream
+reader (the sim's `dr.skin`, the draw caches, the scene build) resolves it. That they draw: the
+census's after-load check for each of these 7 placements requires (a) the skin data present
+under the placement's hash with a non-empty skeleton, and (b) a built character in
+`scene.characters` (the renderer's draw list) carrying that skin hash — all 7 pass on every run
+(`unresolved after load 0` for 0700000c in the table above).
+
+- **Fail-first (sleeves), re-verified on the 110c2 tree**: with the `substitute_sleeves` call
+  disabled in `nf_view::load`, the census FAILS on the first level —
+  `07000005.bin: 15 sleeve-flagged main entries the loaded skins still carry raw` — and the
+  assert cites `AnimProcessSkinData` 0x1bd500:159-166 → `AnimSleeveGetEntity(0)` 0x1c6590.
+  With the fix: `left after` is 0 on every level (the table above).
+- **Where the cases live (the 110c hold's point 2, resolved)**: the flagged entries are NOT on
+  the placed drone skins — every story archive carries 10-31 of them spread one-per-skin over
+  the archive's OTHER character skins (each flagged skin's `main[0]` is a `0x0210xxxx` hash that
+  no archive carries raw — `raw present 0` in the table). A disc-wide scan of all 118 FILES.BIN
+  archives counts **627 flagged MAIN entries across 33 archives** (23 story archives + the MP
+  arenas 07000023-29/41/46/4b), every one at `main[0]` [D the scan; the census now prints the
+  per-level counts]. The census's earlier sleeve column measured only the PLACED skins' lists —
+  always 0 — which hid the mechanism from the hold's run; the column now reads all archive
+  skins, and a new assert pins that the PLACED skins stay clean (the drone render path never
+  hits the rule).
 - The placed-skin golden (per-level counts above) is pinned; any future regression in the
   resolution order fails the per-level assertions.
 
@@ -101,8 +140,15 @@ fix — the mechanism now matches the game for every skin in the table, and the 
 
 ## Verification
 
-- The census test (above) on the final tree: **passed, all 21 archives with drone placements**
-  (21.4 s through the real loader).
+- The census test (above) on the 110c2 final tree: **passed, all 21 archives with drone
+  placements** (≈21 s through the real loader), with the corrected sleeve columns and the new
+  placed-skins-stay-clean assert.
+- **The 110c hold's point 1 (the `0700000e.bin: not in FILES.BIN` panic) does not reproduce on
+  the current test**: `census()` opens the raw archive through `open_archive`, which returns
+  `None` for an archive absent from FILES.BIN before `nf_view::load` is ever reached, and the
+  test prints the skip line — the 10:47 UTC run skipped 0700000e/0f/10 exactly so and passed.
+  (`nf_game::mission::LEVELS` still lists them; the skip is the fix, with the reason in the
+  test's comment.)
 - nf-formats unit sister `sleeve_substitution_reroutes_only_flagged_entries`: passed (nf-formats
   lib **64 passed / 0 failed**).
 - Affected suites re-run on the final tree — **100 passed / 0 failed / 7 ignored** total:
