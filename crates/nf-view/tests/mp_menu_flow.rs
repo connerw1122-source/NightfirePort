@@ -151,7 +151,8 @@ fn bots_flow_picks_and_counts() {
     fe.action(Action::Confirm);
     fe.mp_map_row = 1; // Fort Knox — bots allowed
     fe.action(Action::Confirm);
-    fe.action(Action::Confirm); // FFA character pick → options
+    fe.action(Action::Confirm); // FFA character pick → the handicap
+    fe.action(Action::Confirm); // the handicap pick → options [M 0x4b's 3 → 4 → 5]
     assert_eq!(fe.page, Page::MpOptions);
     // → AI Bots → Setup Bot 1 → the wheel opens on the record's character [M 6 = Snow Guard].
     fe.mp_options_row = 1;
@@ -193,7 +194,8 @@ fn start_checks_refuse_single_player() {
     fe.action(Action::Confirm);
     fe.mp_map_row = 1;
     fe.action(Action::Confirm);
-    fe.action(Action::Confirm);
+    fe.action(Action::Confirm); // character → handicap
+    fe.action(Action::Confirm); // handicap → options
     fe.mp_options_row = 0;
     assert!(!fe.action(Action::Confirm), "one player alone cannot start [M the 0x39e box]");
     assert_eq!(fe.mp_error, 0x39e, "the error label id lands in mp_error");

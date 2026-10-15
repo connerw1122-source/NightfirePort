@@ -248,8 +248,10 @@ in `mp_menu_flow::quick_game_lands_on_confirm_with_three_bots`), and the host wi
 
 C_SBMPSCEN row 0 (:48-145 + disasm 0x20c72c-0x20c864): `Menu_PrepareBots`, then the fixed config —
 +0x1A0 = 10 (time), +0x19C = 10 (frags), +0x1A4 = 1 (Deathmatch), +0x180 = 1, +0x198 = 0 (no
-friendly fire), +0x1C4 = 1 (radar), +0x1B4 = 0 (Normal weapons), +0x18C = 0 (FFA), +0x1CC = 0,
-+0x1D4 = 0, +0x190 = 0, +0x1D0 = 0. The map is `mp_level[Rand_Random() % 7]` — rows 0..6, never
+friendly fire), +0x1C4 = 1 (radar), +0x1B4 = 0 (Normal weapons), +0x18C = 0 (FFA), +0x1CC = 2
+(Helicopters — corrected 2026-10-15 from the store at 0x20c734; Car_Create 0x1305b0:29-40 spawns
+choppers on 2), +0x1D4 = 0, +0x190 = 0, +0x1D0 = 0 (+0x1C0 is NOT written — the boot value 2
+persists). The map is `mp_level[Rand_Random() % 7]` — rows 0..6, never
 Ravine [M 0x20c76c-0x20c7b4]. The joined players get fixed teams/skins (slot 0 → MI6/Bond, slots
 1-3 → Phoenix skins 6/7/8 [M disasm 0x20c7f8-0x20c834]); 3 bots enabled (characters 1 Drake, 3
 Kiko, 2 Rook — all Phoenix, preset stats, count byte 0x2DEEA9 = 3, MPSettings+0x1B0 = 3); then
