@@ -82,6 +82,21 @@ pub fn ticks_for_frame(anim_time: &mut f32, dt: f32, max_ticks: u32) -> u32 {
     *anim_time += dt * 60.0;
     (*anim_time as u32).saturating_sub(before).min(max_ticks)
 }
+/// The render camera bracket after a frame's ticks (fix-turn-stutter): `cam_prev`/`cam_cur` must
+/// stay the LAST TWO TICKS' cameras — exactly one tick apart — so that `lerp_cam` at
+/// `anim_time.fract()` draws the camera at one tick behind the sim clock, the fixed-step scheme's
+/// invariant. Extracted verbatim from the pair update the `RedrawRequested` handler ran so the
+/// headless turn-stutter test drives the same arithmetic the winit loop runs (the
+/// `ticks_for_frame` precedent). `second_last`/`last` are the per-tick camera captures (recorded
+/// after each `step_bond`); `ran` = the ticks the frame actually executed (a replay exhaustion
+/// break runs none; noclip ticks record no camera).
+pub fn update_cam_bracket(cam_prev: &mut Option<Camera>, cam_cur: &mut Option<Camera>, ran: u32, second_last: Option<Camera>, last: Option<Camera>) {
+    let _ = second_last;
+    if ran > 0 {
+        *cam_prev = *cam_cur;
+        *cam_cur = last;
+    }
+}
 /// The palette half of the G-043 interpolation: the draw loop blends the previous tick's skin
 /// palette into the latest one while `lerp_cam` blends the camera by angle. fix-interp-ghosting:
 /// world matrices blend as ROTATION (slerp of the rotation part [M `Quat_Slerp_Acc` 0x1e4188] — a
@@ -2104,6 +2119,10 @@ impl ApplicationHandler for App {
                 if self.noclip || self.scene.sim.is_none() { self.cam.pos += mv * speed; }
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 self.ticked = false;
+                // fix-turn-stutter: the per-tick camera captures (the render bracket's raw
+                // material) and the tick count the frame actually executed. Declared here so the
+                // pair update below the tick gate can hand them to `update_cam_bracket`.
+                let (mut last_cam, mut second_last, mut ran) = (None, None, 0u32);
                 self.poll_panel();
                 // fix-pause-audio: the pause page holds the sound. `MenuManager_Create` with
                 // `pause_sound` runs `SFXPause` (batch op 9) + `SFXPauseAllStreams` (op 0x16) and
@@ -2218,6 +2237,15 @@ impl ApplicationHandler for App {
                             }
                             self.prev_lock_ch = on;
                             if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
+                            // fix-turn-stutter: the camera is captured at EVERY tick — the render
+                            // bracket is the LAST TWO ticks' cameras (`update_cam_bracket`), so
+                            // the loop must record each one, not just the frame's last.
+                            let h = sim.bond.head();
+                            let mut c = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV / sim.zoom };
+                            if let Some((p, yaw, pitch, fov)) = sim.script_camera() { c = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov }; }
+                            second_last = last_cam;
+                            last_cam = Some(c);
+                            ran += 1;
                         }
                         // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
                         // (Moved below the sim borrow — see the end of this block.)
@@ -2295,8 +2323,9 @@ impl ApplicationHandler for App {
                     let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts, vis.as_deref());
                     self.pal_prev = self.pal_cur.take();
                     self.pal_cur = Some(new);
-                    self.cam_prev = self.cam_cur;
-                    self.cam_cur = Some(self.cam);
+                    // fix-turn-stutter: the bracket comes from the per-tick captures through
+                    // `update_cam_bracket` (extracted; the headless test drives the same code).
+                    update_cam_bracket(&mut self.cam_prev, &mut self.cam_cur, ran, second_last, last_cam);
                 }
                 let interp = interp0;
                 let alpha = alpha0;
