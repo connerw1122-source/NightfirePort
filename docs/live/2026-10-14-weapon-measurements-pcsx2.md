@@ -71,3 +71,19 @@ Frames 120 ms apart while fire is held, aimed past the trees at the gatehouse ro
 - **The meter drains while held:** 100 → 97 → 93 → 86 → 78 → 71 → 62 → 59 over ~1.3 s (≈31 per second, ≈0.5 per
   frame).
 - The user on the port's laser (08, 0c): "the laser isnt visible", "The laser watch sucks", "Still not right".
+
+## Guard reaction on 07000006 (partial — alerted by a hit, not by sight)
+
+Fresh 07000006 load, Bond at the truck start (57.2, 39.3, 22.6) with the crosshair on the stairs guard; one P2K tap.
+By game frame (PINE: drone list 0x298E14, alertness drone+0x50C, attack-start drone+0x524; new bullet objects by
+BU+0xF8):
+
+- 38471: Bond's P2K bullet object (speed 5.0).
+- 38474/38475: the hit guard (drone 0x177b870 at (68.9, 39.1, 27.3)) — attack-start frame 38474, alertness 1.0.
+- 38484: the first enemy bullet object (speed 15.35) at (44.7, 43.0, 18.0) — ~10 frames (~0.15 s) after the alert;
+  its origin is NOT the hit guard, so which guard fired it is unresolved.
+- 38492: a second drone (0x17778b0 at (66.1, 39.2, 28.9)) alerts.
+- 38655: the first damage on Bond (100 → 98.3 per hit; ~3 s after the alert).
+
+So this setup does not answer the user's report (guards firing instantly after SIGHTING Bond). The sighting-to-first-
+shot measurement still needs a guard that sees Bond unalerted (06 courtyard searchlight / walking into view).
