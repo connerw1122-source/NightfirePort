@@ -12437,3 +12437,11 @@ Work Log:
 
 Stage Summary:
 - The guided ride now takes the window's view in play, in the headless renders, with the arms and the crosshair hidden and the 15-tick restore; the Sentinel rockets fly at the measured 0.33666/0.2525 u/frame. Report: docs/reports/fix-sentinel-camera-play.md (the live checks: the guided speed gdbwatch, the other 0x200 records, the red tint).
+
+---
+Task: fix-ladder-water (109i)
+Agent: worker (sandbox web-8fb9d45a)
+Task: (1) ladder dismount into water infinitely re-latches — fix the regrab timer, the swim entry, fix-swim2's exit; (2) Script_FFwd (cut-scene skip mid-dialogue) must stop the playing NIS voice stream. Files: crates/nf-game/src/{ladder,player}.rs + the voice stop.
+
+Work Log:
+- 03:05 UTC: branch s/fix-ladder-water from origin/master (d5b22f91), setup reused, pushed.
