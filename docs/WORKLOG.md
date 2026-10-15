@@ -12016,3 +12016,8 @@ Work Log:
 
 Stage Summary:
 - ammo_pane_live.rs no longer reads work/ — depends only on NF_ISO; all assertions kept, one new #[ignore]d probe. No production code touched, no shared files touched. Suite total goes in docs/reports/fix-ammo-pane2.md.
+
+Work Log (continued, fix-ammo-pane2):
+- 00:25: independent audit (subagent): every original assertion preserved (none dropped, none weakened after the label-literal fix), no work/ read outside the #[ignore]d probe, the BulletImg raw-slice cross-check is genuinely independent (symbol-table parse vs hardcoded offset 0x2BEA38−0x106100 — disjoint mechanisms). Its two label-id assertions were initially parser-vs-itself; fixed by asserting the boot-memory [L] literals (0x06→0x0500000e/0x05000036, 0x1e→0x05000010/0x05000029, 0x2a→0x05000005/0x05000032, 0x4a→0x05000042/0x05000042) for BOTH the sim table and a fresh disc parse.
+- 00:35-00:59: full suite on the final tree. This sandbox kills background processes between tool calls (nohup + setsid both died in the compile phase), so the suite ran via a per-binary-identical foreground chunk runner (scripts/run_suite_chunks.py — same build, same --test-threads=1/NF_SILENT/240 s limit, same counting/format, resumable). All 289 binaries: 1160 passed, 7 failed, 40 ignored — the 3 disc_golden (slim ISO) + 3 pre-existing pylon + the weapon_matrix_live 240 s-cap TIMEOUT; zero new failures; ammo_pane_live 3/0/1.
+- 01:00: report docs/reports/fix-ammo-pane2.md; finish steps next.
