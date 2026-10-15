@@ -13096,3 +13096,9 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   head_look_live/ai_traces_live/fix_weapon_effects_live/anim_events_live/fix_searchlight_remainder_live/
   drone_portcheck_live/exact_vs_host_probe = 37/0/1. Total 102 passed / 0 failed / 5 ignored; the full suite
   didn't fit the window (background jobs die here), the affected paths are covered.
+## drive-crp-format (2026-10-15, branch s/drive-crp-format) — started 17:00 UTC
+
+Task: driving phase 1 — decode the .crp container (chunks, tables, the track mesh, the car model and its parts) from the data and DRIVING.ELF's consumer (task 501's map names it, or find it from the BIGF read of the track entry), write docs/formats/crp.md, and add a parser with golden numbers for every .crp in the 23 archives (NF_DRIVING or the full retail image). Files: crates/nf-formats/src/crp.rs (new), crates/nf-formats/tests/driving_golden.rs. Merge s/drive-refpack if not on master (done: merged 5a0e53f9). Deadline: stop new work 18:32 UTC, sandbox expires ~18:52 UTC.
+
+Work Log (drive-crp-format):
+- (16:55-17:00) Sandbox reused from prior finished sessions (fix-gas-rng2 / driving-input-path clones + work/ decomp + ISO + nf-queue all present). Disk was 100% full (57M free): removed stale clone /home/z/my-project/NightfirePort, /tmp/my-project/nf (kept ONE ISO copy, moved to repo root), browser/venv caches → 6.8G free. Token refreshed, fetched. refpack NOT on master → merged origin/s/drive-refpack (no conflicts; brings refpack.rs 0x10FB decompressor + driving_refpack.tsv 1,126-stream goldens + driving_golden.rs). Branch s/drive-crp-format created from origin/master a1cb5b36, pushed with this entry.
