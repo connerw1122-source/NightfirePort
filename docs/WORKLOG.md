@@ -13656,3 +13656,13 @@ Work Log (async-level-load):
 - Report docs/reports/async-level-load.md with 6 live checks (the dots' cadence on a warm
   transition, the cold + fail-Restart arms, the movie-wrapped load, the weapon-give hitch left
   synchronous, the failure path).
+
+## net-match-host (sandbox7, started 2026-10-15T23:15Z)
+
+Task 053: wire 051's UDP lockstep session into the running app (crates/nf-view/src/lib.rs, the MP match
+path from 611/402): online match start builds the same MP level with the host's settings + seed on every
+machine; the local agent's keyboard+mouse input goes to the session each frame; the sim advances one tick
+only when `ready_inputs(tick)` returns all agents' inputs; each machine renders its own agent's view, the
+others as remote characters; state hash every N ticks; desync/disconnect show the game's message box and
+return to the lobby. Tests: two app sims in one process over loopback, 1 000 ticks of scripted input end
+in the same state; a forced desync is detected. Branch s/net-match-host.
