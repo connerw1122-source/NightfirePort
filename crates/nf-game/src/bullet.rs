@@ -134,29 +134,51 @@ pub dir_bits: u8,
 /// Bullet_DoTrails 0x12d890:349] — set per blast by the dist (5→90 u) × facing × LOS falloff [M
 /// 0x12e014-0x12e0b8], decayed 1/60·10·f per tick (the BL amount [*suggested*: the game's exact fade
 /// is the view's `Camera_SetFade`, not modelled]). fix-explosions.
-pub flashbang: f32 }
+pub flashbang: f32,
+/// `BL+0x910`: the melee hit-push — `Player_DealWithObjHit` 0x194458:239-253 writes ±0.1 per
+/// melee hit (weapon 0x65 → −0.1, 0x66/99 → +0.1, gated on the record's u16 `+0x10 & 1`),
+/// `Player_Update` decays it ×0.9/tick [M disasm 0x1937a4-0x1937d8] and adds it to the move vec's
+/// Y before `obj+0x50 += move` [M disasm 0x193ccc-0x193cf0]. fix-bond-damage.
+pub hit_push: f32 }
 
-impl Default for PlayerHealth { fn default() -> Self { PlayerHealth { health: 100.0, armour: 0.0, flash: 0.0, dir_bits: 0, flashbang: 0.0 } } }
+impl Default for PlayerHealth {
+    fn default() -> Self {
+        PlayerHealth {
+            health: 100.0,
+            armour: 0.0,
+            flash: 0.0,
+            dir_bits: 0,
+            flashbang: 0.0,
+            hit_push: 0.0,
+        }
+    }
+}
 
 impl PlayerHealth {
     /// `Player_HandlePain` (single player, damage type 0): × the level's damage factor for the difficulty
     /// (`Plr_DMod_*`, `ReadTuningVars`; 4 → ×2), armour absorbs first, health floors at 0 (below 1 → 0);
     /// flash += min(d · 21.333, 128), capped at 255. [L] 07000005 at difficulty 1: SG5 hits cost 1.65 = 2.75 × 0.6.
-    pub fn pain(&mut self, damage: f32, difficulty: u32, level: u32) {
-        self.apply(damage, difficulty, level, 1.0);
+    /// Returns true when the game's 1-in-4 pain-grunt roll hits (the caller plays 0x88).
+    pub fn pain(&mut self, rng: &mut crate::drone::Rng, damage: f32, difficulty: u32, level: u32) -> bool {
+        self.apply(rng, damage, difficulty, level, 1.0)
     }
 
     /// The shared `Player_HandlePain` body. `armour_frac` is the pain type's armour fraction
     /// [M 0x1902c8:84-104]: the type switch sets 1.0 for the default/bullet arm and 0.0 for types
     /// 1..7 (the MP kill-feed writes in the 5/6/7 arms fall through to the same 0.0).
-    fn apply(&mut self, damage: f32, difficulty: u32, level: u32, armour_frac: f32) {
-        if self.health <= 0.0 || damage <= 0.0 { return; }
+    /// Returns true when the pain grunt rolls. The grunt draw sits exactly where the game puts it:
+    /// after the armour/health math, before the `+0x967`/`+0x968` writes [M 0x1902c8:110-119]. The
+    /// game skips the roll only for pain type 7 with `CheatInfo != 0` (never in SP) — the port is
+    /// single-player, so every non-early-outed pain draws.
+    fn apply(&mut self, rng: &mut crate::drone::Rng, damage: f32, difficulty: u32, level: u32, armour_frac: f32) -> bool {
+        if self.health <= 0.0 || damage <= 0.0 { return false; }
         let d = damage * damage_factor(level, difficulty);
         let absorbed = (d * armour_frac).min(self.armour);
         self.armour -= absorbed;
         self.health = (self.health - (d - absorbed)).max(0.0);
-        if self.health < 1.0 { self.health = 0.0; }
+        let grunt = rng.rand(4) == 0; // Rand_Rand(4) [M 0x1902c8:111]
         self.flash = (self.flash + (d * 21.333).min(128.0)).min(255.0);
+        grunt
     }
 
     /// `Player_HandlePain` 0x1902c8:124-130 also writes `BL+0x967`: the generic pain paths set 0xC (both
@@ -166,10 +188,10 @@ impl PlayerHealth {
     /// The armour gate follows the game's pain-type switch [M 0x1902c8:84-104]: ONLY type 0 (the
     /// default/bullet arm) lets armour absorb; types 1..7 set armourFraction 0.0 — falls (6,
     /// `Player_CollisionHandler` 0x1949a8:120), drowning (7, `Player_MonitorAir` 0x191a70:142) and
-    /// the hurt-volume types drain health alone.
-    pub fn pain_generic(&mut self, damage: f32, difficulty: u32, level: u32, pain_type: u32) {
+    /// the hurt-volume types drain health alone. Returns the grunt roll (see `apply`).
+    pub fn pain_generic(&mut self, rng: &mut crate::drone::Rng, damage: f32, difficulty: u32, level: u32, pain_type: u32) -> bool {
         self.dir_bits = if pain_type == 6 { 2 } else { 0xC };
-        self.apply(damage, difficulty, level, if (1..=7).contains(&pain_type) { 0.0 } else { 1.0 });
+        self.apply(rng, damage, difficulty, level, if (1..=7).contains(&pain_type) { 0.0 } else { 1.0 })
     }
 
     /// `Player_DealWithObjHit` 0x194458:201-226: the attacker position transformed into the viewer's frame,
@@ -177,8 +199,8 @@ impl PlayerHealth {
     /// The game reads the matrix at `glb_viewer+0x160`; the port rebuilds the two axes from Bond's yaw
     /// (right = (cos yaw, 0, −sin yaw), forward = (sin yaw, 0, cos yaw)) and takes the view's y as the
     /// attacker's height over the eye — the same x rule exactly; the y rule is [S] (the world-up
-    /// projection of a pitch-rotated frame).
-    pub fn pain_from(&mut self, damage: f32, difficulty: u32, level: u32, attacker: [f32; 3], eye: [f32; 3], yaw: f32) {
+    /// projection of a pitch-rotated frame). Returns the grunt roll (see `apply`).
+    pub fn pain_from(&mut self, rng: &mut crate::drone::Rng, damage: f32, difficulty: u32, level: u32, attacker: [f32; 3], eye: [f32; 3], yaw: f32) -> bool {
         let d = [attacker[0] - eye[0], attacker[1] - eye[1], attacker[2] - eye[2]];
         let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
         self.dir_bits = 0;
@@ -199,15 +221,27 @@ impl PlayerHealth {
                 self.dir_bits = 0xC;
             }
         }
-        self.pain(damage, difficulty, level);
+        self.pain(rng, damage, difficulty, level)
     }
 }
 
-/// `Plr_DMod_Easy/Normal/Hard` per level (`ReadTuningVars`): 0x7000001–04 0.5/0.7/1.2, 0x7000005–08 0.6/0.7/1.0,
-/// otherwise the ELF defaults 0.75/1.0/1.25; difficulty 4 doubles.
+/// `Plr_DMod_Easy/Normal/Hard` per level (`ReadTuningVars` 0x1d3a80): 0x7000001–04 0.5/0.7/1.2 (:37-42),
+/// 0x7000005–08 0.6/0.7/1.0 (:50-55), 0x7000009–b 0.6/0.8/1.0 (:97-99), 0x700000c–d 0.4/0.7/1.2
+/// (:126-127,143), 0x7000011–13+0x4a 0.5/0.6/1.0 (:168-173), 0x7000014–16 0.4/0.6/1.0 (:180-185),
+/// 0x700001b 0.6/0.7/1.0 (:190-197); otherwise the ELF boot defaults 0.75/1.0/1.25 [L 0x30cc50-58].
+/// Difficulty 4 doubles [M 0x1902c8:43-45]; difficulty 0 reads `Plr_DMod_Normal` [M 0x1902c8:29-48].
 pub fn damage_factor(level: u32, difficulty: u32) -> f32 {
-    let (e, n, h) = match level & 0xff { 0x01..=0x04 => (0.5, 0.7, 1.2), 0x05..=0x08 => (0.6, 0.7, 1.0), _ => (0.75, 1.0, 1.25) };
-    match difficulty { 1 => e, 2 => n, 3 => h, 4 => 2.0, _ => 1.0 }
+    let (e, n, h) = match level & 0xff {
+        0x01..=0x04 => (0.5, 0.7, 1.2),
+        0x05..=0x08 => (0.6, 0.7, 1.0),
+        0x09..=0x0b => (0.6, 0.8, 1.0),
+        0x0c..=0x0d => (0.4, 0.7, 1.2),
+        0x11..=0x13 | 0x4a => (0.5, 0.6, 1.0),
+        0x14..=0x16 => (0.4, 0.6, 1.0),
+        0x1b => (0.6, 0.7, 1.0),
+        _ => (0.75, 1.0, 1.25),
+    };
+    match difficulty { 1 => e, 2 | 0 => n, 3 => h, 4 => 2.0, _ => n }
 }
 
 #[cfg(test)]
@@ -220,19 +254,20 @@ mod tests {
     #[test]
     fn armour_bypass_by_pain_type() {
         // 07000005 at difficulty 1: damage_factor 0.6, so 30.0 -> 18.0 effective.
-        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0, flashbang: 0.0 };
-        h.pain_generic(30.0, 1, 0x0700_0005, 6); // fall damage
+        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, hit_push: 0.0 };
+        let mut rng = crate::drone::Rng::new(0);
+        h.pain_generic(&mut rng, 30.0, 1, 0x0700_0005, 6); // fall damage
         assert_eq!(h.armour, 50.0, "a fall must not drain armour [M 0x1902c8:84-104]");
         assert!((h.health - 82.0).abs() < 1e-4, "the fall still costs the full 18 health");
         assert_eq!(h.dir_bits, 2, "pain type 6 sets the vertical bits");
         h.health = 100.0; h.flash = 0.0;
-        h.pain_generic(30.0, 1, 0x0700_0005, 7); // drowning
+        h.pain_generic(&mut rng, 30.0, 1, 0x0700_0005, 7); // drowning
         assert_eq!(h.armour, 50.0, "drowning must not drain armour either");
         assert_eq!(h.dir_bits, 0xC);
         // Sister: type 0 (bullets, `pain`) DOES absorb — armour first, then health. Armour 10 <
         // the effective 18: it empties and the remainder 8 reaches health.
         h.health = 100.0; h.flash = 0.0; h.dir_bits = 0; h.armour = 10.0;
-        h.pain(30.0, 1, 0x0700_0005);
+        h.pain(&mut rng, 30.0, 1, 0x0700_0005);
         assert!((h.armour - 0.0).abs() < 1e-4, "bullets drain the armour first");
         assert!((h.health - 92.0).abs() < 1e-4, "the remainder 18 - 10 reaches health");
     }
@@ -244,7 +279,8 @@ mod tests {
         assert!(segment_cylinder([-5.0, 2.5, 0.0], [5.0, 2.5, 0.0], &v).is_none(), "over his head");
         assert!(segment_cylinder([-5.0, 1.0, 1.0], [5.0, 1.0, 1.0], &v).is_none(), "beside him");
         let mut h = PlayerHealth::default();
-        h.pain(2.75, 1, 0x0700_0005);
+        let mut rng = crate::drone::Rng::new(0);
+        h.pain(&mut rng, 2.75, 1, 0x0700_0005);
         assert!((h.health - (100.0 - 1.65)).abs() < 1e-4, "live: 1.65 per SG5 hit");
         assert!((h.flash - 1.65 * 21.333).abs() < 1e-3);
     }

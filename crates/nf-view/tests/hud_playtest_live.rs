@@ -113,12 +113,13 @@ fn the_crouch_icon_sits_top_left_at_48_48() {
 #[test]
 fn a_hit_from_straight_ahead_glows_both_sides() {
     let mut h = nf_game::bullet::PlayerHealth::default();
+    let mut rng = nf_game::drone::Rng::new(0);
     let eye = [0.0, 1.5, 0.0];
     // Yaw 0 faces +Z: a sniper 60 units ahead, slightly above.
-    h.pain_from(2.0, 1, 0x0700_0005, [0.0, 3.0, 60.0], eye, 0.0);
+    h.pain_from(&mut rng, 2.0, 1, 0x0700_0005, [0.0, 3.0, 60.0], eye, 0.0);
     assert_eq!(h.dir_bits, 0xC, "neither axis reaches 0.5: both sides glow");
     // Sister: a hit from the side still picks one side.
-    h.pain_from(2.0, 1, 0x0700_0005, [4.0, 1.5, 0.0], eye, 0.0);
+    h.pain_from(&mut rng, 2.0, 1, 0x0700_0005, [4.0, 1.5, 0.0], eye, 0.0);
     assert_eq!(h.dir_bits, 0x4);
 }
 

@@ -124,10 +124,14 @@ fn locked_missions_cannot_be_scrolled_to_or_picked() {
     assert!(!fe.action(Action::Confirm), "C_SBNFMAP 0x20b8d8:18-20 returns on a locked row");
     assert_eq!(fe.requested_level, None);
     // Completing mission 1 unlocks mission 2 (row 1 was already unlocked at boot [D sp_level
-    // +0x10], so row 2 is the one the unlock actually opens) [M Menu_SetLevelBonus 0x1ffa10:63-65].
+    // +0x10], so row 2 is the one the unlock actually opens) [M Menu_SetLevelBonus 0x1ffa10:63-65]
+    // — the write happens on the results page's enter [M P_NFRESULTS 0x208e78:169].
     fe.cursor = 1;
     fe.mission = 1;
     fe.mission_ended(Outcome::Complete, Stats::default());
+    let mut progress = nf_game::progress::Progress::default();
+    progress.set_nightfire_status(0x3); // the fresh profile's boot bits [D sp_level .data rows 0-1]
+    fe.results_enter(&mut progress, 0x0700_0005, 6, 2, None);
     assert!(fe.unlocked_row(2), "completing row i unlocks row i+1");
     // Back on the mission list, Down walks onto the newly unlocked row.
     fe.page = Page::MissionSelect;
@@ -195,7 +199,7 @@ fn the_pause_menu_resumes_restarts_and_quits() {
 }
 
 #[test]
-fn the_results_screen_offers_restart_continue_and_quit() {
+fn the_results_pages_split_complete_from_failed() {
     let mut fe = FrontEnd::new();
     fe.flow.current_level = 0x0700_0005;
     fe.mission = 1;
@@ -206,17 +210,28 @@ fn the_results_screen_offers_restart_continue_and_quit() {
     assert_eq!(fe.page, Page::Results);
     assert_eq!(fe.flow.get_state(), ST_FADE_HOLD, "the fade hold is pushed [M 0x182c60:74]");
     assert_eq!(fe.outcome, Outcome::Complete);
-    // Three choices in the game's arm order [M 0x216618:19-27 — `__Menu_Send`'s return IS the row:
-    // 0 = the CURRENT level warm + Player_RamLoad (fix-restart-target), 1 = BaseMap cold, 2 = quit].
+    // The COMPLETED page is P_NFRESULTS 0x208e78: no row list [L page 0x40000036's controls];
+    // Confirm continues to the mission list [M 0x208e78:39-44 — Manager_SendMessage(0x44,
+    // 0x4000001c, 1)]: a page change, not a level load.
+    assert_eq!(fe.rows(), 1);
+    assert_eq!(fe.requested_level.take(), Some(menu::FRONTEND_LEVEL),
+        "07000005 has no outro — the default arm lands on the map [M 0x182c60:89-116]");
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::MissionSelect);
+    assert_eq!(fe.flow.page, 0x4000_001c);
+    assert_eq!(fe.requested_level, None, "a page change, not a level load [M 0x208e78:43]");
+    // The FAILED page is P_ENDMISSION 0x216618: its three arms stay [M :19-27].
+    fe.mission_ended(Outcome::Failed, Stats::default());
     assert_eq!(fe.rows(), 3);
     // Cursor 0 = restart the CURRENT level, warm, on the entry checkpoint
     // [M 0x216618:19-21: ResetMap_LevelToLoad(GameState._12_4_, 1, 1) + Player_RamLoad(Bond, 1)].
+    fe.cursor = 0;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0005));
     assert!(fe.flow.warm_reset, "row 0 is the warm arm [M 0x216618:20]");
     // Cursor 1 = restart the mission from its first map, cold
     // [M 0x216618:15-17: ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)].
-    fe.mission_ended(Outcome::Complete, Stats::default());
+    fe.mission_ended(Outcome::Failed, Stats::default());
     fe.cursor = 1;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0005));

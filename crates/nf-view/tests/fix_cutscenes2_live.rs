@@ -138,11 +138,20 @@ fn the_kimiko_scene_fires_its_voice_lines() {
     assert!(!bin.is_empty(), "STREAMS.BIN must be loaded for the voices to decode");
 }
 
-/// The Kimiko scene's characters play BOTH their tracks: each anim script (060004f1/060004f2) carries
-/// two op-0 windows from frame 1 — the narrow 22-channel face track (first) and the 222-channel body
-/// track (last) [D `nf-extract script-info 07000007.bin 060004f1`]. `AnimProcessScriptCmds`
-/// (0x1c1b38) starts both; the face track keeps the bones its channels reach. The old read played the
-/// body only, so the mouths never moved (the user's playtest).
+/// The Kimiko scene's characters play BOTH their tracks, the game's way: each anim script
+/// (060004f1/060004f2) carries two op-0 windows from frame 1 — the 22-channel face track (first) and
+/// the 222-channel body track (last) [D `nf-extract script-info 07000007.bin 060004f1`]. The game
+/// classifies the face window as FACIAL by the sequence's flags bit 0x8 [M AnimProcessScriptCmds
+/// 0x1c1b38: `*(int *)(lVar6 + 0xc) >> 3 & 1` → the script node's 0x40000 flag, the +0x54 facial
+/// slot] and its channels are the skin's facial MORPH weights (`AnimFacialBlend` 0x1be648 reads the
+/// playing sequence's frame buffer as the weight array; the counts match by construction — [D
+/// measured] skin 0x0500003b facial 22 == face seq 0x04000467's 22 channels, values in [0, 1]), so
+/// the face track moves the MOUTH through the morph targets (the character carries them) and never
+/// the bones: the body track (222 = 3·73 + 3·1 channels, flags 0x00) owns every bone and its root
+/// channels hold the actor's world position. The pre-fix reads got this wrong in both directions —
+/// first-writer posed bones 0..5 from the face track's weights AND collapsed the root to the origin
+/// (the missing cast); widest-wins restored the cast but left the bone-assertion of this test
+/// failing because a facial window must not move bones at all.
 #[test]
 fn the_kimiko_scene_characters_play_their_face_tracks() {
     let Some(mut scene) = load("07000007.bin") else { return };
@@ -160,30 +169,52 @@ fn the_kimiko_scene_characters_play_their_face_tracks() {
     let char = scene.characters.iter().find(|c| c.skin.hashcode == skin && c.script == Some(src))
         .expect("the Kimiko scene's guest character must exist in the scene build");
     let script = 0x0600_04f1_u32;
+    // The face window is the FIRST op-0 window's sequence, and it carries the game's facial flag.
+    let fq = sim.scripts.get(&script).unwrap().sequences().next().unwrap().2;
+    let face_seq = &sim.seqs[&fq];
+    assert!(face_seq.flags & 0x8 != 0, "the face track must carry the game's facial flag, got flags {:#04x}", face_seq.flags);
+    assert_eq!(face_seq.channels.len(), char.skin.facial as usize,
+        "the face track's channels are the skin's facial morph weights ({} vs {})", face_seq.channels.len(), char.skin.facial);
+    assert!(char.morph_targets.is_some(), "the guest's skin carries the facial morph targets the weights drive");
+    // Sister pair 1 — the mouth animation lives in the MORPH WEIGHTS: across the face track's own
+    // frames they open wide (the measured max is 1.0 — [D the probe sweep: 312/433 sampled frames
+    // carry weight > 0.01, max 1.001]) and they MOVE (the vector at the widest frame differs from
+    // the closed frame 1). At any single frame the mouth may legitimately be closed (frame 399 is).
+    let count = char.skin.facial as usize;
+    let mut max_w = 0f32;
+    let mut max_frame = 1.0f32;
+    let mut f = 1.0f32;
+    while f <= face_seq.frames as f32 {
+        let w = nf_game::anim::facial_weights(face_seq, f, count).expect("the face track must sample weights");
+        let m = w.iter().cloned().fold(0.0f32, f32::max);
+        if m > max_w { max_w = m; max_frame = f; }
+        f += 10.0;
+    }
+    assert!(max_w > 0.5, "the mouth opens over the face track's frames (max weight {max_w:.3})");
+    let w_open = nf_game::anim::facial_weights(face_seq, max_frame, count).unwrap();
+    let w_closed = nf_game::anim::facial_weights(face_seq, 1.0, count).unwrap();
+    assert!(w_open != w_closed, "the weights move over the face track's frames — the mouth animates");
+    // The live scene path (what the renderer consumes) samples the same window at the object's
+    // frame — equal to the direct track read at that frame (the same weights, not a second source).
+    let w_live = scene.facial_weights_now(char).expect("the scene must sample the guest's facial weights right now");
+    let w_at_frame = nf_game::anim::facial_weights(face_seq, frame.max(1.0), count)
+        .expect("the face track must sample weights at the object's frame");
+    assert_eq!(w_live, w_at_frame, "the scene's live weights are the face track's weights at the object's frame");
+    // Sister pair 2 — the facial window never touches the BONE pose: the joined pose equals the
+    // body-only pose on every bone, and the root stands at the body track's library position
+    // (its channels read 83..91, 43.7, −35..−31 [D]) — the cast at the scripted world position,
+    // not the origin (the pre-cutscene-draw bug).
     let body_only = nf_game::anim::script_pose(&sim.scripts, &sim.seqs, &char.skeleton, &char.skin, script, frame)
         .expect("the body track must pose (the old path)");
     let together = nf_game::anim::script_pose_together(&sim.scripts, &sim.seqs, &char.skeleton, &char.skin, script, frame)
         .expect("the joined pose must resolve");
     assert_eq!(body_only.len(), together.len(), "both poses cover the skeleton");
-    // The face track is the FIRST op-0 window's sequence. fix-facial3: its 22 channels are the
-    // MORPH WEIGHTS (`AnimFacialBlend` 0x1be648 samples them into the weight array; docs/formats/
-    // character.md "Facial morphs") — it no longer owns any bone (the old read turned weight values
-    // into root/face-bone translations), so the joined pose is the body pose on every bone, and the
-    // face motion flows through the weights path instead.
-    let fq = sim.scripts.get(&script).unwrap().sequences().next().unwrap().2;
-    let face_seq = &sim.seqs[&fq];
-    assert_eq!(face_seq.channels.len(), char.skin.facial as usize, "the face window's channel count is the skin's facial count");
-    for b in 0..body_only.len() {
-        assert_eq!(body_only[b], together[b], "the face track must not pose bone {b} (it is a morph-weight source)");
-    }
-    // The weights source: the same window sampled as weights over its frames carries live values
-    // (the dialogue has quiet stretches, so scan — the track's own maximum is the pin).
-    let mut max_w = 0.0f32;
-    let step = (face_seq.frames / 64).max(1);
-    for f in (1..=face_seq.frames).step_by(step as usize) {
-        if let Some(w) = nf_game::anim::facial_weights(face_seq, f as f32, char.skin.facial as usize) {
-            max_w = max_w.max(w.iter().fold(0.0f32, |m, v| m.max(v.abs())));
-        }
-    }
-    assert!(max_w > 0.01, "the face track carries live morph weights over its frames (max {max_w})");
+    // fix-cutscene-faces2: the classifier is the game's own flags bit 0x8 (asserted above), not the
+    // channel count — the count matches by construction (asserted above too). The facial window
+    // must not move bones: the joined pose is the body pose on every bone (fix-facial3's per-bone
+    // loop, kept as the equality — same assertion), and the root stands at the scripted position.
+    assert_eq!(body_only, together, "the facial window must not move bones — the body track owns the pose");
+    let root = together[0].0;
+    let root_len = (root[0] * root[0] + root[1] * root[1] + root[2] * root[2]).sqrt();
+    assert!(root_len > 10.0, "the cast stands at the scripted world position (root {root:?}), not the origin");
 }
