@@ -39,3 +39,6 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 
 **Branch:** `s/exact-sine-sites-merge`.
+
+---
+claimed-by: sandbox3 at 2026-10-15T14:47Z
