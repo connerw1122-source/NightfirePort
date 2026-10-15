@@ -369,6 +369,10 @@ pub struct Sim {
     /// [M `Player_SetWeaponAnimObj` case 0xf 0x1a2e38:554-561]; without one it follows the button
     /// at once [M `Player_Weapon` 0x1a24c8:117-119]. fix-aim-raise (was: the raw button).
     pub aiming: bool,
+    /// Free-aim (the pad's aim button held with the aim bit up): the crosshair moves in its window and the
+    /// bullet rides the cursor offsets [M `Player_Aiming` 0x1a1d28]. The mouse never enters it (PLAN.md
+    /// D-002: the mouse aims directly) — the right button drives only the raise/zoom through `aiming`.
+    pub free_aim: bool,
     /// The crosshair state (BLData+0x133): 2 normal, 3 = the red "no" mark on a non-enemy target.
     /// Set by the `Check_Target` block in `run` every 6th frame, read by the HUD [M 0x1a7810, 0x19e6d0].
     pub cross_state: u8,
@@ -1665,7 +1669,7 @@ impl Sim {
         // fix-aim-raise: the harness path goes through the same aim-bit gate as the real input.
         // fix-aim-raise2: run gets the RAW button (the view chain's queue arm reads its edge from
         // it); the gated BIT is `self.aiming`, which the consumers read.
-        self.aim_gate(aiming);
+        self.free_aim = self.aim_gate(aiming) && aiming;
         self.run(ground, ground, camera, look, look, trigger, aiming, false, false);
     }
 
@@ -1746,7 +1750,11 @@ impl Sim {
         // raise's last tick. fix-aim-raise2: aim_gate owns the bit and the raise/lower advance+
         // finish (one advance); the QUEUE is the view chain's edge arm, which reads the RAW button
         // (run's aiming param) — the gated bit is `self.aiming` for the consumers below.
-        let aiming = self.aim_gate(input.aiming);
+        // The right mouse button is the scope/aim button for the mouse (lib.rs sets `scope` and `zoom`): it drives the
+        // aim bit (the raise, then the zoom) exactly like the pad's aim button; only the pad's button also
+        // enters free-aim (the cursor window), since the mouse aims directly (D-002).
+        let aiming = self.aim_gate(input.aiming || input.scope);
+        self.free_aim = aiming && input.aiming;
         // Weapon switching (`Player_WeaponChange` 0x1a6f80): only when idle (not firing/reloading/holstering). The
         // switch request (`anim+0x63`) is set here; the holster/draw cycle runs in `run` (`Player_SetWeaponAnimObj`).
         // The weapon/gadget split: mouse wheel / Q cycles weapons (mode=0, 1..0x47); G cycles gadgets (mode=1,
@@ -1818,7 +1826,11 @@ impl Sim {
                     let carried = self.drones.inventory.carried.clone();
                     let clip = clip_view(&self.weapons, &self.drones.inventory.clip);
                     let weapons = &self.weapons;
-                    let has_ammo = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                    // fix-samurai-fire: the clip half is `Player_AmmoInGun` 0x1a9190's shared-slot
+                    // pick — the Overcharge twin 0x32's dry check reads the base's clip[0x33] (the
+                    // give fills the base's slot), else the mode press is forever inert.
+                    let slot = |x: u8| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| weapons.ammo_type(y as usize) as u8);
+                    let has_ammo = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize), slot);
                     let sw = nf_game::gun::fire_mode_switch(self.gun.weapon, twin, mode_count, mode, has_ammo);
                     if let Some(new) = sw.new_weapon {
                         // The twin switch writes `obj+0x63` (the switch request) [M 0x1a24c8:246-260].
@@ -1869,7 +1881,9 @@ impl Sim {
             let weapons = &self.weapons;
             let ammo_type_of = |w: u8| weapons.ammo_type(w as usize);
             let flags_of = |w: u8| weapons.flags(w as usize);
-            let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, ammo_type_of, flags_of);
+            // fix-samurai-fire: `Player_AmmoInGun` 0x1a9190's shared-slot pick for the clip half.
+            let slot = |x: u8| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| ammo_type_of(y) as u8);
+            let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, ammo_type_of, flags_of, slot);
             let selectable = |w: u8| weapons.selectable(w);
             // D-003 REMOVED: the root cause was the missing `Player_Init` override of weapon_data[1]+0xDC
             // (the fists skin). With the override applied in main.rs, the fists skin (0x050000ab) is found
@@ -1915,7 +1929,7 @@ impl Sim {
                 }
             }
         }
-        if aiming {
+        if self.free_aim {
             let want = [self.cursor[0] - input.turn / 0.76966, self.cursor[1] + input.look * std::f32::consts::FRAC_PI_2 / 0.57724];
             let clamped = [want[0].clamp(-0.296, 0.296), want[1].clamp(-0.4, 0.4)];
             input.turn = -(want[0] - clamped[0]) * 0.76966;
@@ -2244,7 +2258,7 @@ impl Sim {
         // fix-aim-raise2: the RAW button — run's edges (and the view chain's queue arm) must see
         // the ungated input, or the gated bit's rise at the raise's finish would re-fire the
         // aim-on edge and queue the raise twice.
-        self.run(self.bond.pos, self.bond.sphere_centre(), head, look, aim, trigger, input.aiming, reload, use_key);
+        self.run(self.bond.pos, self.bond.sphere_centre(), head, look, aim, trigger, input.aiming || input.scope, reload, use_key);
         // `Player_Zoom` (0x1a1a70): the scope zoom. Right mouse (mouse-first) zooms in; releasing returns to 1.0.
         // The zoom interpolates toward the target at the game's rate (1.025× per tick zooming in, 1.15× out).
         // The FOV is divided by the zoom factor. Scoped weapons only (`weapon_data+0x68 & 0x40`).
@@ -2552,7 +2566,7 @@ impl Sim {
             // mode, so an assist acquired while hip-firing never reached an aim-mode bullet.
             // fix-aim-raise2: the gated BIT (`self.aiming`, maintained by `aim_gate` before run),
             // not the raw button — the scan runs while a raise-script weapon is still raising.
-            let dir = if self.auto_aim && !self.aiming { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else if self.aiming {
+            let dir = if self.auto_aim && !self.free_aim { self.drones.auto_aim(&d, camera, look, self.gun.weapon) } else if self.free_aim {
                 // The cursor is screen-space (cross units); the offsets are object-frame angles
                 // (a larger yaw turns LEFT, so x flips — the same flip `crosshair()` documents).
                 let (ox, oy) = (-self.cursor[0] * 0.76966, self.cursor[1] * 0.57724);
@@ -2899,7 +2913,8 @@ impl Sim {
                     let carried = self.drones.inventory.carried.clone();
                     let clip = self.drones.inventory.clip.clone();
                     let weapons = &self.weapons;
-                    let has = nf_game::gun::Gun::has_ammo(base_u8, &carried, &clip, |t| weapons.ammo_type(t as usize), |t| weapons.flags(t as usize));
+                    let has = nf_game::gun::Gun::has_ammo(base_u8, &carried, &clip, |t| weapons.ammo_type(t as usize), |t| weapons.flags(t as usize),
+                        |x| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| weapons.ammo_type(y as usize) as u8));
                     if has {
                         self.gun.switch_request = base_u8; // BL+0x63 = the mine [M 0x1a4cb8]
                     } else {
@@ -2909,7 +2924,8 @@ impl Sim {
                         const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
                         let owned = self.drones.inventory.owned.clone();
                         let base_of = |b: u8| weapons.base(b as usize) as u8;
-                        let has_ammo_fn = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                        let has_ammo_fn = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize),
+                            |x| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| weapons.ammo_type(y as usize) as u8));
                         if let Some(id) = self.gun.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo_fn) {
                             self.gun.switch_request = id; // Player_GetBestWeapon writes BL+0x63 [M 0x1a9680 tail]
                         }
@@ -3010,6 +3026,10 @@ impl Sim {
                     // owner obj+0xff == 3 arm; guard-thrown mines keep 420]. The detonator's fire
                     // re-arms the placed mines to 10.0 [M Player_WeaponInitBullet 0x1a4bf0].
                     let fuse = if wt == 0x37 { 7777.0 } else { fuse };
+                    // fix-grenade-types: the 0x69 smoke canister's fuse is 5.0 [M Bullet_init
+                    // 0x12c5a0:212-215] — it pops almost at once into its long 3600-tick cloud
+                    // (the Sim's smoke arm re-arms by type).
+                    let fuse = if wt == 0x69 { 5.0 } else { fuse };
                     // The blast damage: `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` →
                     // Explode_Create's f14 → EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15);
                     // radius = $f12/$f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the
@@ -3486,7 +3506,7 @@ impl Sim {
     /// angle over the half-screen tangents of the game's projection [L] (0.76966 across, 0.57724 up); a larger yaw
     /// turns left (+X is screen-left in the object frame), so x flips.
     pub fn crosshair(&self) -> (f32, f32) {
-        if self.aiming { return (self.cross[0], self.cross[1]); }
+        if self.free_aim { return (self.cross[0], self.cross[1]); }
         (-self.drones.aim_offset[0].tan() / 0.76966, self.drones.aim_offset[1].tan() / 0.57724)
     }
 
@@ -4107,13 +4127,19 @@ fn drone_height(hip: f32) -> f32 {
 impl Scene {
     /// The script player's overlay (fix-script-commands): the fade, the letterbox borders and the
     /// op-0x14 sprites — see `hud::script_overlay`. Appended to the HUD frame OUTSIDE the cut-scene
-    /// gate (the game draws these over the blanked HUD).
+    /// gate (the game draws these over the blanked HUD). fix-grenade-types: the flashbang whiteout
+    /// rides the same overlay — `Player_Update`'s fade is full alpha while the remaining time sits
+    /// above its half, then fades with it [M 0x193600:328-352], at `BL+0x963`'s alpha [M 0x196040].
     pub fn script_overlay_hud(&self, aspect: f32) -> crate::gpu::HudFrame {
         let Some(sim) = self.sim.as_ref() else { return Default::default() };
         let sprites: Vec<(u32, [f32; 4])> = sim.drones.scripts.objects.list.iter()
             .filter_map(|o| match o { Some(nf_game::nis::Obj::Sprite { hash, rect, .. }) => Some((*hash, *rect)), _ => None })
             .collect();
-        crate::hud::script_overlay(sim.drones.view_fade, sim.drones.letterbox, &sprites, &self.hud_textures, aspect)
+        let h = &sim.drones.health;
+        let flash = if h.flashbang <= 0.0 || h.flash_total <= 0.0 { 0.0 }
+            else if h.flashbang > h.flash_total * 0.5 { h.flash_alpha }
+            else { h.flash_alpha * (h.flashbang / (h.flash_total * 0.5)) };
+        crate::hud::script_overlay(sim.drones.view_fade, sim.drones.letterbox, &sprites, &self.hud_textures, aspect, flash)
     }
 
     /// `skeletons`: every skeleton on the disc by id; `sequences`: the level's animation archive, grouped by skeleton.
@@ -5254,7 +5280,7 @@ impl Scene {
             // 0x1c7e78:25] and the front-end boot keeps it until 180-fix-menus wires the page's
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,
                 view_alert: false,
