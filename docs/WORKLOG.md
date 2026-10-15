@@ -12157,3 +12157,16 @@ Stage Summary:
   point) on every guard/civilian drone hit by a player bullet, the Samurai bolt's energy puff
   instead, no effect on Bond (the game's own rule), walls unchanged, material 0x10 settled as
   GLASS with the decompile + table evidence.
+
+---
+Task: fix-sentinel-camera-play (109a)
+Agent: worker (sandbox web-9248268a)
+Task: the Sentinel's guided-rocket first-person camera doesn't happen in play (the merged tests ride), and the rockets are far too slow (the 0x200 speed-x0.25 read). Files: crates/nf-view/src/{scene,lib}.rs, crates/nf-game/src/drone.rs (small).
+
+Work Log:
+- 01:26 UTC: branch from origin/master (d7afed5a), setup reused, pushed. The PCSX2 measurements read first (docs/live/2026-10-14-weapon-measurements-pcsx2.md).
+- 01:30-02:05: the decompile read. [M Bullet_init 0x12c5a0:207-211] — the speed arm scales weapon_data+0x20 by 0.25 on +0x6C & 0x200 (the port implements it faithfully; the records [L ee_start_05 @ 0x2bf150]: 0x2c +0x20 = 0.25, 0x2d +0x20 = 0.3333, both 0x200) — so the port's 0.0625 is the INIT speed, but the game's flight is 0.33666 u/frame [L PCSX2] = 4.04× that. Bullet_update rewrites BU+0xF8 per tick (0x12e7b0 at 0x12ecf8, the Vec_NormaliseLen step) and the object's control integrates the move; the internal ×4.04 source is unresolved (the state-1 mover, control_movement_object_handler, FRAME_RATE_DIV=1.0/REC_FRAME_RATE=1/60 at 0x30d0d4/dc all read) — the port applies the measured ×4.04 on the measured twins (0x2c/0x2d) only, live check requested. The camera: `view_override()` had ZERO callers — the window built its camera from Bond's head (+ the script camera) only; the sim rode, the screen stayed. The mode-button hypothesis CLEARED with a test: the press reaches the twin through the real Input lane.
+- 02:06-02:35: the fix + the tests. lib.rs: view_override in the live tick block and in shot(); view_model_entries skips during the ride. scene.rs: frame_state hides the view-model character during the ride. hud.rs (one gate, listed): the crosshair skips during the ride. drone.rs: the ×4.04 measured flight scale on 0x2c/0x2d. sentinel_camera_live 3/3 through the real Input lanes; failing-first on the pre-fix src: the speed 0.06250 vs the measured 0.25250, the arms' hidden false on master. The affected suites green (fire_modes3 5/5, fix_weapon_fire_modes 5/5, fix_weapon_sounds 3/3 — its stale 0.0625 comment updated, fix_zoom_overlays 6/6); merge origin/master 0fbd0e4a (WORKLOG both kept).
+
+Stage Summary:
+- The guided ride now takes the window's view in play, in the headless renders, with the arms and the crosshair hidden and the 15-tick restore; the Sentinel rockets fly at the measured 0.33666/0.2525 u/frame. Report: docs/reports/fix-sentinel-camera-play.md (the live checks: the guided speed gdbwatch, the other 0x200 records, the red tint).
