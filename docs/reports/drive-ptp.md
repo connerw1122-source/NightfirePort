@@ -141,3 +141,10 @@ foreground chunks of `tools/test/suite.py` (background jobs die in this sandbox)
   task's changes (three additive struct fields; the death path never sees a driving interlude).
 - Not reached in the window: the ~58 binaries behind chunk D1's cut and the 231–293 tail
   (mostly the `probe_*` / `dump_*` exploratory dumps).
+
+## ntfy failed
+
+All three fallbacks hit the daily quota (429) at 2026-10-15T18:08Z:
+1. `curl` → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 urllib` → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget --post-data` → silent, exit 0 (same 429 body; no output)
