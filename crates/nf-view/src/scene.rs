@@ -2332,7 +2332,9 @@ impl Sim {
     /// set) sharing the base's ammo type, else its own [M `Player_ReloadAmmoType` 0x1a1988:18-22 —
     /// `iVar4 = base` routes `clip[0x1B8 + slot·0xC]` to the base for such twins; the give path's
     /// `pickup.rs clip_slot` is the same unification]. One physical magazine per twin family.
-    fn clip_slot(&self, id: usize) -> usize {
+    // fix-hud-ammo-odd: pub(crate) — the dev window's ammo pin (dev.rs after_tick) resolves the
+    // twin slot with the same pick [M Player_AmmoIndex 0x1a9148]; no behaviour change.
+    pub(crate) fn clip_slot(&self, id: usize) -> usize {
         let base = self.weapons.base(id) as usize;
         if self.weapons.shares_base_clip(id) && self.weapons.ammo_type(id) == self.weapons.ammo_type(base) { base } else { id }
     }
