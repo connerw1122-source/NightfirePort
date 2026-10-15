@@ -11959,3 +11959,26 @@ Task: fix-cutscene-letterbox — cut-scenes must show what the game shows: the b
 
 Work Log:
 - (23:23 UTC) Setup reused (repo, work/, ISO, nf-queue worktree). Branch s/fix-cutscene-letterbox created from origin/master (d1e8f6a7) and pushed with this entry.
+- (23:23-23:50 UTC) Setup reused (repo, work/, ISO, nf-queue). Branch s/fix-cutscene-letterbox from origin/master (d1e8f6a7). The two defects found and fixed (all in lib.rs + gpu.rs + one new test):
+  (1) the headless --shot path built its HUD from `overlay_for` ALONE, which is EMPTY while a script
+  camera runs (the gameplay-HUD gate) — the letterbox bars/fade/op-0x14 sprites never reached the
+  compare renders (the window path appended `script_overlay_hud` all along); fixed with `shot_hud`.
+  (2) both render paths projected at the window aspect — fixed: while a script camera is live the
+  projection narrows to the game's 4/3 (`cutscene_frame`) and `gpu::render` gained a `pillar` band
+  (black clear + set_viewport over every pass); gameplay keeps the widescreen. Bar evidence: the
+  two 512×64 bars at y 0/0x180, texture 0x03000002, layer 1 (no fade either way) [M 0x1d9140:49-61,
+  0x1d9860:87-93; L ee_snapshot@0x2c9468]. Two pre-existing tests (fix_0c_pylon_live,
+  probe_pylon_render) got the new trailing `None` argument (one token each).
+- (00:40 UTC) DONE on the final tree (= this branch, contains origin/master): suite in foreground
+  chunks (background jobs die between tool calls here) = 1150 passed / 6 failed / 63 ignored / 0
+  timeouts — the 6 are the 3 allowed disc_golden + the 3 pre-existing GPU-adapter pylon tests, the
+  exact baseline set. The 4 new fix_cutscene_letterbox_live tests pass (bars + flag-hold + the 4:3
+  band + the frame-400 extent geometry: 23 cast in 16:9 vs 16 in the game's frame, 7 in the added
+  side band). Report: docs/reports/fix-cutscene-letterbox.md (before/after renders are the main
+  agent's — no GPU adapter in this sandbox; the four --bond commands are in the report).
+
+Stage Summary:
+- The cut-scene picture now matches the game's: the bars draw on both render paths at the game's
+  size/timing (instant on at CameraStart, instant off at KillStream — the game has no bar fade),
+  and a script-camera frame projects at the console's 4:3, pillar-boxed on wider windows; gameplay
+  widescreen untouched.
