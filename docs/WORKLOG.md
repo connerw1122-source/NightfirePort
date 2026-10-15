@@ -13660,3 +13660,39 @@ Work Log (async-level-load):
   transition, the cold + fail-Restart arms, the movie-wrapped load, the weapon-give hitch left
   synchronous, the failure path).
 
+
+## net-online-lobby (2026-10-15, branch s/net-online-lobby) — DONE 23:55 UTC
+- The online Host / Join front end on top of 611's MP flow [S — the PS2 game has no online mode;
+  the menu-def holds no network page]: Main → Multiplayer now asks Local / Host Online / Join
+  Online on the port-only PAGE_MP_MODE 0x5000_0001 (spare 0x5000_0000 block); Local keeps the
+  game's 0x40000019 couch flow byte-for-byte. Host: PAGE_MP_HOST (port default 27420, ◀ ▶ step,
+  Start Listening) → the host's own panel joins and the game's Join page doubles as the host lobby
+  (remote agents mirror into mp_join slots 1-3 with their codenames, so the panel getters, the
+  start checks and the confirm lines all work unchanged); the usual Scenario → Map → Setup →
+  Options walk publishes every choice change on the tick diff; P_MPCONFIRM's confirm also calls
+  MpSession::start_match. Join: PAGE_MP_NETJOIN (typed digits/dots/colon, 22-char cap, Backspace,
+  Ctrl+C/V on the page's own clipboard, every other key swallowed in lib.rs) → Connecting… /
+  Connection refused / a 600-tick timeout → PAGE_MP_LOBBY mirrors the host's choices read-only
+  (mp_lobby_lines = P_MPCONFIRM's own label pairs) until match_started runs the host's confirm
+  handover on the client. Back cancels cleanly everywhere (the local Join page's previously-stuck
+  Back now pops to the mode page [M P_MPJOIN 0x20ca00's 0x6b → the delayed 0x5f pop]).
+- The session is the trait MpSession (menu.rs: MpNetLink/MpNetError/MpNetAgent/MpNetChoices +
+  poll/link/listen/connect/agents/host_choices/publish_choices/start_match/match_started/
+  set_codename/close); FrontEnd::mp_session holds any Box<dyn MpSession>. crates/nf-net was NOT
+  created and nf_game::net untouched: 051 (net-lockstep-core) owns the wire; the trait lives beside
+  its only consumer and 051's session implements (or adapts to) it. No socket anywhere; no session
+  wired in FrontEnd::new() (the pages report "No network session is wired").
+- Tests: crates/nf-view/tests/mp_net_lobby.rs, 9 headless tests over a deterministic FakeSession
+  (host flow incl. the full choices walk + start settings human_count 2 / master 1; port-busy +
+  host Back teardown; join typing/paste/gate/Connecting/lobby-mirror/handover; refused + retry;
+  the 599/600-tick timeout sisters; no-session reports; Local/Back routing; the mouse rows) — 9/9;
+  mp_menu_flow 9/9 re-verified through the mode page; menus_flow 37/37; mp_menu_lists_live 5/5;
+  mp_bots_live 2/2. Suite on the final tree (merged origin/master — async-level-load, lib.rs
+  auto-merged, WORKLOG both kept): detached background runs die between tool calls here, so
+  foreground --only chunks: chunk A (mp/menu family + the 4 lib tests) 15 binaries 415/0; chunk B
+  (rng/fields/trig/tuning/level/diff/spawner/pickup/progress/inputs + async-load + objective_state)
+  14 binaries 40/0; the two full-suite attempts added 43 binaries 0 FAILED/0 TIMEOUT before the
+  10-minute tool window killed them (the ~360-binary pass does not fit the sandbox window).
+- Deliverables: docs/systems/net-online-lobby.md (the design + evidence) and
+  docs/reports/net-online-lobby.md (the report: deviations, live checks for the main agent, and
+  the one crate ask — the system clipboard for Ctrl+V).
