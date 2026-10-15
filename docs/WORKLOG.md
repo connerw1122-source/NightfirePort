@@ -12682,3 +12682,6 @@ Task: SG5 casings fly huge across the screen while walking forward (user 05 play
 
 Stage Summary:
 - Branch s/fix-laser-watch-look @ the report commit; the laser watch's beam visibility/geometry/drain matched to the measured game on the real input path.
+
+## fix-exact-sine-flip (2026-10-15, branch s/fix-exact-sine-flip) — started 08:36 UTC
+Task: root-cause the 07000001 contact-escort damage flip when exact sine (anim::sinf / PS2Sinf 0x120700) and VU0/FPU palette math (nf_game::ps2math) are switched into placement::object_matrix + the palette path (G-017 / G-024). Guard 5 dies a round early, escort stalls. Trace the escort walk with both models tick by tick, find the first divergent tick and the call, decide by the decompile which model the game uses. Goal: exact math in everywhere the game uses it, escort walk still finishes, full suite green. Files: crates/nf-formats/src/placement.rs, crates/nf-game/src/ps2math.rs, crates/nf-formats/src/anim.rs, escort tests.
