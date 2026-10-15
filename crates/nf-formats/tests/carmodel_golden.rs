@@ -121,6 +121,12 @@ fn misc_car_models_match_the_golden() {
         "car\tparts\tmodels\tvariant.lod:vertices:v4_32_all\tbuffers\tbuffer_list_sha1\tvertices\tv4_32_all\tarticle\tsheet\n{}",
         rows.join("")
     );
+    if let Some(p) = std::env::var_os("CARMODEL_REGEN") {
+        let p = std::path::PathBuf::from(p);
+        std::fs::write(&p, &actual).unwrap();
+        eprintln!("regenerated {}", p.display());
+        return;
+    }
     let d = diff(golden, &actual);
     assert!(d.is_empty(), "{} differences:\n{}", d.len(), d.join("\n"));
     // Sister: a one-byte change to one decompressed model must be caught.
