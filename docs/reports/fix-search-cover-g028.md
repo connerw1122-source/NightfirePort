@@ -33,13 +33,14 @@ objects by fix-cover-remainder):
    `Drone_ProcessCoverNodes` (0x138e78; cadence counter −2, < 1 → 10 — port matches) FIRST, then
    `Drone_ProcessOpponents` (0x1390c0) at :151 and `DroneVision_ProcessDroneSight` (0x176a28) at :162. The
    port ran the cover-node walk after the vision pass AND after the nav-node cache. Moved to the game's
-   position in `Drones::tick` (drone.rs), before the opponents pass. **Observability**: nothing between the
-   two positions in the port's tick mutates the walk's inputs (the switch channels — use-objects/WorldObjects
-   run after both; Bond's position/eye; the collision world; the node owners — claims happen in the per-drone
-   control after both), and the game's own pass inputs are the InitComms-entry snapshot either way, so the
-   move is a conformance fix with no behavioural delta; the whole cover/AI suite is unchanged by it. No
-   failing test was written for the move because none can observe it — stated per the reproduce-first rule
-   rather than guessing at a synthetic one.
+   position in `Drones::tick` (drone.rs), before the opponents pass. **Observability**: Bond's position, the
+   collision world and the node owners do not change between the two positions, so the AI/cover suite is
+   unchanged by the move — and on the one input that does differ, the move is MORE game-accurate: the game's
+   `InitComms` runs before the object handler's switch/inverter updates, so its cover walk reads the switch
+   gates as the PREVIOUS frame's updates left them, which the new position now mirrors (the old position read
+   the current frame's use-object / world-object writes). No failing test was written for the move because
+   the 07000005 nodes carry no switch gates and nothing else observable differs — stated per the
+   reproduce-first rule rather than guessing at a synthetic one.
 2. **docs/systems/drone-ai.md** — new "Cover [M, L]" section with the addresses above (tick order, selection,
    stance, enter/leave + RNG order, port map), and the stale port-status line ("Not yet (G-026/27/28): cover,
    grenades, …") corrected to what is actually open (hearing beyond the sound-alert chain, per-target cover

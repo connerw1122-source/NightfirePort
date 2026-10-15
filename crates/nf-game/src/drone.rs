@@ -7143,9 +7143,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // (Bond) only — *deviation*: always run (the game skips unallocated slots without casting). Order inside
         // `Drone_InitComms` [M 0x139520:150-162]: `ProcessCoverNodes` FIRST, then `ProcessOpponents` (0x1390c0)
         // and `ProcessDroneSight` — the port used to run it after the vision pass and the nav-node cache
-        // (fix-search-cover-g028); nothing in the port's tick mutates the walk's inputs (switch channels, Bond's
-        // position/eye, the collision world, the node owners) between the two positions, so the move is a
-        // conformance fix with no observable delta — asserted by the unchanged cover suite.
+        // (fix-search-cover-g028). The move also restores the game's channel view: `InitComms` runs before the
+        // object handler's switch/inverter updates, so the walk reads the switch gates as the PREVIOUS frame's
+        // use-object / world-object updates left them (the old position read this frame's); Bond's position,
+        // the collision world and the node owners do not change between the two positions, so the AI/cover
+        // suite is unchanged (ai_live 35/35, cover_selection 2/2, portcheck 5/5).
         if self.npc_enabled {
             if self.cover_rt.len() != d.covers.len() { self.cover_rt = vec![Default::default(); d.covers.len()]; }
             self.cover_counter -= 2;
