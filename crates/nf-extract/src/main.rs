@@ -23,7 +23,7 @@
 //! ```
 
 use anyhow::{bail, Context, Result};
-use nf_formats::{disc, elf::Elf, iso9660::IsoImage, png, sha1, symfile};
+use nf_formats::{bigf, carmodel, crp, disc, elf::Elf, iso9660::IsoImage, png, refpack, sha1, symfile};
 use std::path::Path;
 
 fn main() -> Result<()> {
@@ -98,6 +98,7 @@ fn main() -> Result<()> {
         "level-survey" => level_survey(&IsoImage::open(a(1)?)?),
         "level-mesh-audit" => level_mesh_audit(&IsoImage::open(a(1)?)?, a(2)?),
         "kind-census" => kind_census(&IsoImage::open(a(1)?)?),
+        "carmodels" => carmodels(a(1)?, args.get(2).map(std::path::PathBuf::from).as_deref()),
         "char-textures" => char_textures(&IsoImage::open(a(1)?)?, a(2)?),
         other => bail!("unknown command {other:?} (see the module doc)"),
     }
@@ -1449,5 +1450,92 @@ fn char_textures(iso: &IsoImage, level_name: &str) -> Result<()> {
         }
     }
     if dupes == 0 { println!("\t(no duplicate main-mesh hashcodes)"); }
+    Ok(())
+}
+
+/// `nf-extract carmodels <file.crp | file.viv> [out-dir]` — decodes the driving missions' car
+/// models (docs/formats/car-model.md). Reads a car `.crp` directly, or a `DRIVING/*.VIV`
+/// archive and every `data\car\model\*.crp` in it; RefPack-decompresses when flagged
+/// (`10fb`, `nf_formats::refpack`). Prints a TSV census per car and, with an out-dir, writes
+/// the per-buffer bytes + an OBJ (vertices only — the triangle connectivity is the remaining
+/// unknown, see the doc). Nothing it writes is committed.
+fn carmodels(path: &str, out: Option<&std::path::Path>) -> anyhow::Result<()> {
+    let raw = std::fs::read(path)?;
+    let mut cars: Vec<(String, Vec<u8>)> = Vec::new();
+    if raw.starts_with(b"BIGF") {
+        let g = bigf::Bigf::parse(&raw, raw.len() as u64)?;
+        for e in &g.entries {
+            if !e.name.contains("car\\model") || !e.name.ends_with(".crp") { continue; }
+            let mut bytes = raw[e.offset as usize..(e.offset + e.size) as usize].to_vec();
+            if refpack::is_refpack(&bytes) { bytes = refpack::decompress(&bytes)?; }
+            cars.push((e.name.rsplit('\\').next().unwrap_or(&e.name).to_string(), bytes));
+        }
+        if cars.is_empty() { bail!("no data\\car\\model\\*.crp entries in {path}"); }
+    } else {
+        cars.push((std::path::Path::new(path).file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default(), raw));
+    }
+    if let Some(out) = out { std::fs::create_dir_all(out)?; }
+    println!("car\tarticle\tparts\tsheet\tmodels\tvariant.lod\tvertices\tgroups\tbuffer_sha1");
+    for (name, bytes) in &cars {
+        let m = carmodel::CarModel::parse(bytes)
+            .with_context(|| format!("{name}: not a car .crp"))?;
+        let article = m.name()?.unwrap_or("-").to_string();
+        let sk = m.skel()?;
+        let parts = sk.as_ref().map(|s| s.parts.join(",")).unwrap_or_default();
+        let sheet = m.sheet_name()?.unwrap_or("-").to_string();
+        let module = m.module_bytes()?;
+        let cm = carmodel::CarModule::parse(module)
+            .with_context(|| format!("{name}: embedded module"))?;
+        for (vi, li, v) in cm.vertices_per_model() {
+            let groups: usize = cm.models.iter().find(|x| x.variant == vi && x.lod == li)
+                .map(|x| x.groups.iter().map(|g| g.buffers.len()).sum()).unwrap_or(0);
+            println!("{name}\t{article}\t{parts}\t{sheet}\t{}\t{vi}.{li}\t{v}\t{groups}\t-",
+                cm.models.len());
+        }
+        // per-buffer rows
+        let modl = cm.models.len();
+        for b in &cm.buffers {
+            println!("{name}\t{article}\t{parts}\t{sheet}\t{modl}\t-\t{}\t-\t{}", b.census.vertices(), b.sha1);
+        }
+        if let Some(out) = out {
+            let stem = name.trim_end_matches(".crp");
+            let od = out.join(stem);
+            std::fs::create_dir_all(&od)?;
+            for b in &cm.buffers {
+                std::fs::write(od.join(format!("buf_{:05x}.bin", b.offset)), &b.bytes)?;
+            }
+            write_obj(&od.join("model.obj"), &cm)?;
+        }
+    }
+    Ok(())
+}
+
+/// OBJ with the decoded V4_32 (x,y,z,1.0) position quads of every draw buffer. Faces are
+/// omitted: the per-triangle index list is the remaining unknown (docs/formats/car-model.md).
+fn write_obj(path: &std::path::Path, cm: &carmodel::CarModule) -> anyhow::Result<()> {
+    use std::fmt::Write as _;
+    let mut s = String::from("# driving car model: vertices only (see docs/formats/car-model.md)\n");
+    for b in &cm.buffers {
+        writeln!(&mut s, "o buf_{:05x}", b.offset)?;
+        let mut i = 0x18usize;
+        let list = &b.bytes[0x18..];
+        let packets = match nf_formats::vif::parse_vif(list) { Ok(p) => p, Err(_) => continue };
+        for p in packets {
+            if !p.is_unpack() || p.vn() != 3 || p.vl() != 0 { continue; }
+            let d = p.data;
+            for q in 0..(d.len() / 16) {
+                let x = f32::from_le_bytes(d[q*16..q*16+4].try_into()?);
+                let y = f32::from_le_bytes(d[q*16+4..q*16+8].try_into()?);
+                let z = f32::from_le_bytes(d[q*16+8..q*16+12].try_into()?);
+                let w = f32::from_le_bytes(d[q*16+12..q*16+16].try_into()?);
+                if w == 1.0 && x.abs() < 1e5 && y.abs() < 1e5 && z.abs() < 1e5 {
+                    let _ = writeln!(&mut s, "v {x:.6} {y:.6} {z:.6}");
+                }
+            }
+            i = 0;
+        }
+        let _ = i;
+    }
+    std::fs::write(path, s)?;
     Ok(())
 }
