@@ -86,6 +86,9 @@ pub struct EffectRecord {
     pub debris_enable: u8,
     /// +0x83: debris count draw (count = Rand_Rand(b) + 1).
     pub debris_count: u8,
+    /// +0x84: the impact-emitter def hash — `Effect_Create` 0x1ce688's flags & 0x20 arm passes it
+    /// to `Emitter_Create` 0x17ae00 (`hashtable_getitem`; a miss → no object). 0 = none.
+    pub emitter: u32,
 }
 
 /// `ammo_data` (ACTION.ELF 0x2c69b8, 34 × 0xc): per ammo type the casing mesh at +4
@@ -131,6 +134,7 @@ impl SurfaceSounds {
                 debris_life: b.u8(o + 0x81)?,
                 debris_enable: b.u8(o + 0x82)?,
                 debris_count: b.u8(o + 0x83)?,
+                emitter: b.u32(o + 0x84)?,
             })
         }).collect::<Result<Vec<_>>>()?;
         Ok(SurfaceSounds { impact: col(0x14)?, footstep: col(0x16)?, body: col(0x18)?, effects, ammo: AmmoData::from_action_elf(data).unwrap_or_default() })

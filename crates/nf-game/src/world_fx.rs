@@ -155,6 +155,18 @@ pub struct EmitterFx {
     dead_ticks: u8,
     pub parts: Vec<EmitterParticle>,
     counter: u32,
+    /// G-041 (fix-impact-remainder): the `Effect_Create` 0x1ce688 impact arm's emitters consume
+    /// the SHARED stream (`Emitter_Update` 0x17b080's 4 × `Rand_FRandHalf(1.0)` per spawn) —
+    /// unlike the 0xf2 placements, whose counter-hash stand-in predates this task and stays.
+    pub shared_rng: bool,
+    /// The object basis `Mat_SetDir/SetNorm/SetUp` 0x1e3418/0x1e3458/0x1e3438 built from the hit
+    /// normal (`Emitter_Create` 0x17ae00): rows [Norm = v, Up = normal, Dir = u] — the spawn's
+    /// local +y rides the normal. `None` → the placement euler matrix (the 0xf2 path).
+    pub basis: Option<[[f32; 4]; 4]>,
+    /// Updates this object has already had: `Emitter_Create` runs mid-walk (the bullet's collide
+    /// phase), so the first `Emitter_Update` is the NEXT frame's — the creation tick must not
+    /// spawn [M Collide_Update 0x1ea398 vs Control_Update's class walk].
+    age_ticks: u32,
 }
 
 impl EmitterFx {
@@ -202,6 +214,7 @@ impl WorldFx {
             let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map(|&(_, v)| v).unwrap_or(0);
             let kind = p.flags & 0xff;
             let pos = p.translation;
+            let _ = &mut fx;
             match kind {
                 0x21 => {
                     // `Ripples_Create` 0x1acc90:20-30 — the s16 params, both-0 defaults.
@@ -253,6 +266,7 @@ impl WorldFx {
                         parts: (0..d.max).map(|_| EmitterParticle {
                             pos: [0.0; 3], vel: [0.0; 3], age: 99999.0, life: 0.0, rgba: [0; 4],
                         }).collect(), counter: i as u32,
+                        shared_rng: false, basis: None, age_ticks: 0,
                     });
                 }
                 _ => {}
@@ -261,9 +275,44 @@ impl WorldFx {
         fx
     }
 
+    /// The `Effect_Create` 0x1ce688 impact arm's `Emitter_Create(0, 0, EffectInfo+0x84, hit_pos,
+    /// normal, 0, 0, 0)` 0x17ae00: a def-hash lookup (a miss → NO object, the placement path's own
+    /// rule), a ONE-SHOT emitter (the rate argument is 0 → the +0x4b latch), no channels (+0x4a =
+    /// 1 from create, params 0 don't touch it), the basis from the hit normal, every slot dead.
+    /// Consumes no RNG here — the burst's draws run on the object's own update ticks.
+    pub fn spawn_impact(&mut self, def_hash: u32, pos: V3, normal: V3) {
+        let Some(d) = self.defs.get(&def_hash) else { return };
+        // `Vec_MakeOrthonormalBasis(normal)` → (u, v); Mat_SetDir(u) → row +0x20 (the spawn's
+        // local z), Mat_SetNorm(v) → row +0x00 (local x), Mat_SetUp(normal) → row +0x10 (local
+        // y) [M 0x1e3418/0x1e3458/0x1e3438]. The rows the velocity transform reads:
+        // vel = Norm_row·x + Up_row·y + Dir_row·z [M 0x17b080 _vmulabc/_vmaddabc/_vmaddbc].
+        let (u, v) = crate::effect::orthonormal_basis_pair(normal);
+        let basis = [
+            [v[0], v[1], v[2], 0.0],
+            [normal[0], normal[1], normal[2], 0.0],
+            [u[0], u[1], u[2], 0.0],
+            [0.0, 0.0, 0.0, 1.0],
+        ];
+        self.emitters.push(EmitterFx {
+            placement: usize::MAX, pos, rotation: [0.0; 3],
+            def: def_hash, rate: 0.0, ch_on: 0, ch_off: 0, ch_out: 0,
+            toggle_period: 0.0, toggle_timer: 0.0, toggle_state: true,
+            expired: true, dead_ticks: 0,
+            parts: (0..d.max).map(|_| EmitterParticle {
+                pos: [0.0; 3], vel: [0.0; 3], age: 99999.0, life: 0.0, rgba: [0; 4],
+            }).collect(),
+            counter: 0, shared_rng: true, basis: Some(basis), age_ticks: 0,
+        });
+    }
+
+    /// The def table (the test's count predictor: the impact burst draws 4 × min(max, batch)).
+    pub fn defs(&self) -> &std::collections::HashMap<u32, EmitterDef> { &self.defs }
+
     /// One 60 Hz tick (`Emitter_Update`/`Ripples_Update`/`cloud_update`/`Apocalypse_Update` run in
-    /// the game's object handler; `Flicker_Update` likewise). `frame` = `GameState+0x52`.
-    pub fn tick(&mut self, ch: &mut Channels, player_pos: V3, frame: u32, gas: &mut crate::gas::GasPool) {
+    /// the game's object handler; `Flicker_Update` likewise). `frame` = `GameState+0x52`. `rng` is
+    /// the SHARED stream — consumed ONLY by the impact emitters (`shared_rng`); the 0xf2
+    /// placements keep the counter-hash stand-in (the G-033/fix-world-fx discipline).
+    pub fn tick(&mut self, ch: &mut Channels, player_pos: V3, frame: u32, gas: &mut crate::gas::GasPool, rng: &mut crate::drone::Rng) {
         // Flicker [M 0x1ab960]: the stubbed FindMapLight keeps the white target and the 0 stamp.
         for f in &mut self.flickers {
             for k in 0..3 {
@@ -305,6 +354,14 @@ impl WorldFx {
         // Emitters [M 0x17b080]: the rate countdown, the channels, the blink, the spawn, the motion.
         for e in &mut self.emitters {
             let Some(def) = self.defs.get(&e.def).cloned() else { continue; };
+            e.age_ticks += 1;
+            if e.age_ticks == 1 {
+                // The creation tick: `Emitter_Create` ran mid-walk (the collide phase), so the
+                // object does not update this frame at all — no spawn (its one-shot burst lands on
+                // the first REAL update, where `+0x49` is still 0; the all-dead latch increments at
+                // that update's tail [M 0x17b080:300-320]).
+                continue;
+            }
             // The out channel resets every tick and re-sets while any particle lives [M 0x17b080].
             if e.ch_out != 0 { ch.set(e.ch_out as u32, 0, frame); }
             // The blink (param 5): ON half the period, OFF the whole period [M 0x17b080:105-120].
@@ -333,8 +390,9 @@ impl WorldFx {
             }
             if alive > 0 && e.ch_out != 0 { ch.set(e.ch_out as u32, 1, frame); }
             // The spawn pass: batch-capped respawns of dead slots while enabled [M 0x17b080:191-260].
+            // The impact emitters skip their creation tick (created mid-walk — see `age_ticks`).
             let mut batch = def.batch;
-            if def.max > 0 && def.batch > 0 && e.dead_ticks == 0 && enabled {
+            if def.max > 0 && def.batch > 0 && e.dead_ticks == 0 && enabled && e.age_ticks > 1 {
                 for p in e.parts.iter_mut() {
                     if batch == 0 { break; }
                     let dead = p.life < p.age || p.age >= 99999.0;
@@ -342,18 +400,29 @@ impl WorldFx {
                     if e.expired && p.age < 99999.0 { continue; } // one-shot: never-spawned slots only
                     p.age = 0.0;
                     batch -= 1;
-                    // The spawn draws (yaw, pitch, speed, life) — counter-hash, no shared-stream draws.
-                    e.counter = e.counter.wrapping_add(0x9e37_79b9);
-                    let yaw = def.yaw_base + def.yaw_var * jitter(e.counter, 1);
-                    let pitch = def.pitch_base + def.pitch_var * jitter(e.counter, 2);
-                    let speed = def.speed_base + def.speed_var * jitter(e.counter, 3);
-                    let life = def.life_base + def.life_var * jitter(e.counter, 4);
+                    // The spawn draws (yaw, pitch, speed, life) — the game's order [M 0x17b080:
+                    // 216-247]. The impact emitters draw the SHARED stream (`Rand_FRandHalf(1.0)`
+                    // × 4); the 0xf2 placements keep the counter-hash (no shared-stream draws).
+                    let (yaw, pitch, speed, life);
+                    if e.shared_rng {
+                        yaw = def.yaw_base + def.yaw_var * crate::effect::frand_half(rng, 1.0);
+                        pitch = def.pitch_base + def.pitch_var * crate::effect::frand_half(rng, 1.0);
+                        speed = def.speed_base + def.speed_var * crate::effect::frand_half(rng, 1.0);
+                        life = def.life_base + def.life_var * crate::effect::frand_half(rng, 1.0);
+                    } else {
+                        e.counter = e.counter.wrapping_add(0x9e37_79b9);
+                        yaw = def.yaw_base + def.yaw_var * jitter(e.counter, 1);
+                        pitch = def.pitch_base + def.pitch_var * jitter(e.counter, 2);
+                        speed = def.speed_base + def.speed_var * jitter(e.counter, 3);
+                        life = def.life_base + def.life_var * jitter(e.counter, 4);
+                    }
                     // The spherical direction: sin(pitch+π/2)=cos(pitch), sin(yaw+π/2)=cos(yaw) —
                     // PS2Sinf2 0x11f968 returns TWO sines; the RotMatrixX caller proves the idiom.
                     let (cp, sp, cy, sy) = ((pitch + std::f32::consts::FRAC_PI_2).sin(), pitch.sin(), (yaw + std::f32::consts::FRAC_PI_2).sin(), yaw.sin());
                     let dir = [cp * cy * speed, sp * speed, cp * sy * speed];
-                    // The object basis (obj+0x90) from the placement's yaw/pitch/roll rotation.
-                    let m = nf_formats::placement::object_matrix(e.rotation, [0.0; 3]);
+                    // The object basis (obj+0x90): the impact emitters carry the Mat_SetDir/
+                    // SetNorm/SetUp rows built from the hit normal; the placements the euler matrix.
+                    let m = e.basis.unwrap_or_else(|| nf_formats::placement::object_matrix(e.rotation, [0.0; 3]));
                     p.vel = [0, 1, 2].map(|k| m[k][0] * dir[0] + m[k][1] * dir[1] + m[k][2] * dir[2]);
                     p.pos = e.pos;
                     p.life = life;
@@ -408,7 +477,8 @@ mod tests {
         fx.flickers.push(FlickerFx { placement: 0, pos: [0.0; 3], signal_channel: 0x55, rgb: [0; 3] });
         let mut ch = Channels::default();
         ch.set(0x55, 1, 0);
-        for _ in 0..600 { fx.tick(&mut ch, [0.0; 3], 0, &mut crate::gas::GasPool::default()); }
+        let mut rng = crate::drone::Rng::new(1);
+        for _ in 0..600 { fx.tick(&mut ch, [0.0; 3], 0, &mut crate::gas::GasPool::default(), &mut rng); }
         assert_eq!(fx.flickers[0].rgb, [255; 3], "the tint reaches white");
         assert_eq!(ch.v[0x55], 0, "the stubbed FindMapLight keeps the light-on path");
     }
@@ -421,10 +491,11 @@ mod tests {
         fx.ripples.push(RippleFx { placement: 0, pos: [10.0, 5.0, 20.0], spread: 2.0, period: 30, counter: 0 });
         let mut gas = crate::gas::GasPool::default();
         let mut ch = Channels::default();
+        let mut rng = crate::drone::Rng::new(1);
         let mut occupied = 0;
         let mut seen = None;
         for f in 0..600 {
-            fx.tick(&mut ch, [0.0; 3], f, &mut gas);
+            fx.tick(&mut ch, [0.0; 3], f, &mut gas, &mut rng);
             if !gas.puffs.is_empty() { occupied += 1; seen = Some(gas.puffs[0].clone()); }
         }
         // A ring lives its whole period (life = period), so with ~1 spawn per period the pool holds
@@ -453,9 +524,11 @@ mod tests {
             toggle_state: true, expired: false, dead_ticks: 0, parts: (0..8).map(|_| EmitterParticle {
                 pos: [0.0; 3], vel: [0.0; 3], age: 99999.0, life: 0.0, rgba: [0; 4],
             }).collect(), counter: 0,
+            shared_rng: false, basis: None, age_ticks: 0,
         });
         let mut ch = Channels::default();
-        for f in 0..60 { fx.tick(&mut ch, [0.0; 3], f, &mut crate::gas::GasPool::default()); }
+        let mut rng = crate::drone::Rng::new(1);
+        for f in 0..60 { fx.tick(&mut ch, [0.0; 3], f, &mut crate::gas::GasPool::default(), &mut rng); }
         assert_eq!(fx.emitters.len(), 1, "a continuous emitter never dies");
         assert!(fx.emitters[0].parts.iter().filter(|p| p.age < p.life).count() >= 6, "the slots cycle at the batch rate (batch 2/tick, life 0.5 s)");
         assert!(fx.particle_sprites().len() >= 6, "the draw handoff exposes the alive slots");
@@ -470,7 +543,7 @@ mod tests {
         fx.emitters[0].expired = true;
         let mut died = None;
         for f in 60..200 {
-            fx.tick(&mut ch, [0.0; 3], f, &mut crate::gas::GasPool::default());
+            fx.tick(&mut ch, [0.0; 3], f, &mut crate::gas::GasPool::default(), &mut rng);
             if fx.emitters.is_empty() { died = Some(f); break; }
         }
         assert!(died.is_some(), "the spent one-shot self-destructs (obj+0xFE bit 0)");
@@ -487,14 +560,15 @@ mod tests {
             remaining: 120.0, total: 120.0, armed: false, fade: 0.0,
         });
         let mut ch = Channels::default();
-        fx.tick(&mut ch, [0.0; 3], 0, &mut crate::gas::GasPool::default());
+        let mut rng = crate::drone::Rng::new(1);
+        fx.tick(&mut ch, [0.0; 3], 0, &mut crate::gas::GasPool::default(), &mut rng);
         assert!(!fx.apocalypses[0].armed && fx.apocalypses[0].fade == 0.0, "unlatched: no countdown");
         ch.set(0x10, 1, 1);
-        for f in 1..61 { fx.tick(&mut ch, [0.0; 3], f, &mut crate::gas::GasPool::default()); }
+        for f in 1..61 { fx.tick(&mut ch, [0.0; 3], f, &mut crate::gas::GasPool::default(), &mut rng); }
         assert!(fx.apocalypses[0].armed, "the latch sets once the channel fires");
         assert!((fx.apocalypses[0].remaining - 60.0).abs() < 1e-4, "60 of 120 ticks remain");
         assert!((fx.apocalypses[0].fade - 60.0 * 5.0 / 120.0).abs() < 1e-4, "fade = remaining·5/total [M 0x18d4f0]");
-        for f in 61..130 { fx.tick(&mut ch, [0.0; 3], f, &mut crate::gas::GasPool::default()); }
+        for f in 61..130 { fx.tick(&mut ch, [0.0; 3], f, &mut crate::gas::GasPool::default(), &mut rng); }
         assert!(fx.apocalypses[0].remaining == 0.0, "the countdown floors at 0");
     }
 
@@ -504,7 +578,8 @@ mod tests {
         let mut fx = WorldFx::default();
         fx.clouds.push(CloudFx { placement: 0, slot: 3, drift: [0.002, 0.0], height: 50.0, wrap: 0.1, phase: [0.0; 2] });
         let mut ch = Channels::default();
-        for f in 0..100 { fx.tick(&mut ch, [0.0; 3], f, &mut crate::gas::GasPool::default()); }
+        let mut rng = crate::drone::Rng::new(1);
+        for f in 0..100 { fx.tick(&mut ch, [0.0; 3], f, &mut crate::gas::GasPool::default(), &mut rng); }
         let c = &fx.clouds[0];
         assert!(c.phase[0] >= 0.0 && c.phase[0] < 0.1, "the phase wraps inside the modulus");
         assert!(c.phase[0] > 0.0, "the drift accumulated (100 ticks × 0.002 = 0.2 → wrapped)");

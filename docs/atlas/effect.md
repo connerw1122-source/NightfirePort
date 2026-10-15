@@ -77,6 +77,51 @@ per frame from the sim and collapses free slots far below the world:
 The old flat-colour `effect_quads` (fix-impacts' placeholder, drawn in the snow pass) is removed —
 the snow pass is back to snow + emitter particles only, matching the game's pass order.
 
+## The penetration roll (fix-impact-remainder, G-041)
+
+`Bullet_CollisionHandler` 0x12ce80 walks the bullet's HITDATA LIST — every front-face hit along the
+tick's segment — and per hit decides PIERCE vs STOP before any effect runs [M 0x12cfd0..0x12cfe4]:
+
+- `weapon_data+2` (the weapon id) 0x50/0x51 skip the arm entirely — no draw [M 0x12cfbc
+  `if (uVar2 - 0x50 < 2)`].
+- The surface byte (`HITDATA+0x50`, copied whole from the level collision blob's per-triangle
+  material array by `Intersect_RayGeom` 0x10a8c8:326) carries bits over the 0x3f material:
+  0x40 = always pierce (no draw), 0x80 = roll pierce. `Collide_Intersect` 0x1ebaa8 folds either
+  bit into `HITDATA+0x51` bit 1 [M 0x1ebf2e..0x1ebf3c], the handler's initial pierce.
+- `& 0x80` set → ONE `Rand_Rand(0x3f)` draw; bit 0 of the roll ORs into pierce [M 0x12cfd8].
+- A pierce keeps the bullet alive (`BU+0xF4` = 1 — it already flew the step in `Bullet_update`
+  0x12e7b0) and the walk moves to the NEXT HITDATA, which takes its own roll + effects; a stop
+  dies (`BU+0xF4` = 2 → `BU+0xF0 |= 0x10`) [M 0x12d81c..0x12d82c]. The per-hit stack that runs
+  either way: the flags (0x61 / 0x10), `Effect_Create`, the three explode arms (gated on NOT
+  piercing [M 0x12d07c reads the pierce byte]), the ricochet — whose mask is forced to 0 on a
+  pierce contact, so the roll still draws but can never reflect [M 0x12d6f8 `uVar16 = 0`].
+
+The port: `nf_game::effect::penetration_roll` + the HITDATA walk in `Drones::update_player_bullets`
+(and the drone-bullet arm), retracing ε 0.01 past each pierced surface [S — the game's list is
+prebuilt by `Collide_Pick`].
+
+## The impact emitter arm (fix-impact-remainder, G-041)
+
+`Effect_Create` 0x1ce688's flags & 0x20 block runs FIRST `Emitter_Create(0, 0, EffectInfo+0x84,
+hit_pos, normal, 0, 0, 0)` 0x17ae00, then the debris draw [M 0x1ce688:81-99]. `Emitter_Create`:
+`hashtable_getitem(EffectInfo[material]+0x84)` — the def hash from the block-0x30 emitter defs
+(`Emitter_LoadDefs` 0x17ab40, `nf_formats::level::EmitterDef`); a miss → NO object. Hit → a
+class-0x32 object (0x104 flags), the basis `Vec_MakeOrthonormalBasis(normal)` →
+`Mat_SetDir(u)`/`Mat_SetNorm(v)`/`Mat_SetUp(normal)` 0x1e3418/0x1e3458/0x1e3438 (rows +0x20/+0x00/
++0x10 — the spawn's local +y rides the normal), every slot dead (age 99999), the ONE-SHOT latch
+`+0x4b = (rate == 0)` — always true for impacts. NO RNG at creation.
+
+The draws come on the object's own update ticks (`Emitter_Update` 0x17b080, first run the NEXT
+frame — the object was created mid-walk): per spawned particle 4 × `Rand_FRandHalf(1.0)` — yaw
+`def+0x28 + +0x2c·d`, pitch `def+0x20 + +0x24·d`, speed `def+0x18 + +0x1c·d`, life `def+0x0c +
++0x10·d`, in that order [M 0x17b080:216-247] — capped by the def's batch (+0x3a) per tick, one-shot
+slots never respawn, and the object dies 3 ticks after everything is dead [M 0x17b080:300-320].
+
+The port: `WorldFx::spawn_impact` pushes a one-shot `EmitterFx` (basis rows [v, normal, u],
+`shared_rng: true`); `WorldFx::tick` consumes the 4 shared-stream draws per spawn from the tick
+AFTER creation (`age_ticks > 1`), ordered after the AI like the game's list walk; the 0xf2
+placement emitters keep their counter-hash stand-in (the fix-world-fx discipline, unchanged).
+
 ## The port's [S] stand-ins (live-check list)
 
 - The casing eject origin/basis: the game reads `AnimGetBoneWorldTrans(obj, 1|5, 0)` (view-model
@@ -90,8 +135,10 @@ the snow pass is back to snow + emitter particles only, matching the game's pass
 - The debris scale: single application (0x134210:25-33); `View_DrawObjectGlist` re-scales only the
   & 4 jitter path, which debris don't take. Render check: debris should be roughly half the wall
   puff's size, tumbling.
-- `Effect_Create`'s material-0x80 `Rand_Rand(0x3f)` penetration roll and the flags & 0x20 emitter
-  arm are not ported (no RNG consumed); `Effect_Body` 0x1cf400 / `Effect_Player` 0x1cec48 /
+- ~~`Effect_Create`'s material-0x80 `Rand_Rand(0x3f)` penetration roll and the flags & 0x20 emitter
+  arm are not ported~~ — BOTH ported by fix-impact-remainder (the two sections above); the roll
+  draws in the game's point of the frame, the impact emitter consumes the shared stream on its own
+  update ticks. Remaining unported: `Effect_Body` 0x1cf400 / `Effect_Player` 0x1cec48 /
   `Effect_Laser` 0x1cef38 and the bullet trails (`Bullet_trail_effect_smoke` 0x12cba8 /
   `Bullet_DoTrails` 0x12d890) are not ported.
 

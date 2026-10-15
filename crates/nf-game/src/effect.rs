@@ -81,9 +81,8 @@ pub fn frand_half_vec(rng: &mut Rng, scale: f32) -> V3 {
 
 /// `Vec_MakeOrthonormalBasis` 0x1e4b78: two vectors orthonormal against `n`; `Effect_Create` stores
 /// `u + v` into `HITDATA+0x20` [M 0x1ce740] and `Debris_Create` spreads the debris velocity with it.
-/// Returns `u + v` (the only form the callers use).
-pub fn orthonormal_basis_sum(n: V3) -> V3 {
-    let (a, b) = if n[0].abs() <= n[1].abs() {
+pub fn orthonormal_basis_pair(n: V3) -> (V3, V3) {
+    if n[0].abs() <= n[1].abs() {
         let il = 1.0 / (n[2] * n[2] + n[1] * n[1]).sqrt();
         let a = [0.0, -n[2] * il, n[1] * il];
         let b = [n[1] * a[2] - n[2] * a[1], -n[0] * a[2], n[0] * a[1]];
@@ -93,8 +92,35 @@ pub fn orthonormal_basis_sum(n: V3) -> V3 {
         let a = [n[2] * il, 0.0, -n[0] * il];
         let b = [n[1] * a[2], n[2] * a[0] - n[0] * a[2], -n[1] * a[0]];
         (a, b)
-    };
+    }
+}
+
+/// Returns `u + v` (the only form the callers use).
+pub fn orthonormal_basis_sum(n: V3) -> V3 {
+    let (a, b) = orthonormal_basis_pair(n);
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
+}
+
+/// `Bullet_CollisionHandler` 0x12ce80's penetration arm [M 0x12cfd0..0x12cfe4]: the roll decides
+/// whether a bullet PASSES THROUGH the surface it hit (a pierce keeps the bullet alive — state 1,
+/// the handler walks the trace's NEXT HITDATA and spawns the exit-hole effects — while a stop
+/// dies with `BU+0xF0 |= 0x10` [M 0x12d81c..0x12d82c]). The decision:
+/// - `weapon_data+2` (the weapon id) 0x50/0x51 skip the arm entirely — no draw [M 0x12cfbc
+///   `if (uVar2 - 0x50 < 2)`];
+/// - `HITDATA+0x51` bit 1 — set by `Collide_Intersect` 0x1ebaa8 when the triangle's surface byte
+///   carries 0x40 or 0x80 [M 0x1ebf2e..0x1ebf3c] — forces pierce (bit 0x40 = always);
+/// - surface byte `& 0x40` → forced pierce, no draw [M 0x12cfd0];
+/// - surface byte `& 0x80` → ONE `Rand_Rand(0x3f)` draw; bit 0 of the roll ORs into pierce
+///   [M 0x12cfd8 `bVar6 = Rand_Rand(0x3f); bVar7 = bVar7 | bVar6 & 1`].
+/// The material's 0x40/0x80 bits are per-triangle bytes in the level collision blob
+/// (`Intersect_RayGeom` 0x10a8c8:326 copies the whole byte to `HITDATA+0x50`).
+pub fn penetration_roll(rng: &mut Rng, material: u8, weapon_id: u16) -> bool {
+    if weapon_id == 0x50 || weapon_id == 0x51 { return false; }
+    let mut pierce = material & 0x40 != 0;
+    if material & 0x80 != 0 {
+        pierce |= rng.rand(0x3f) & 1 != 0;
+    }
+    pierce
 }
 
 impl Effects {
@@ -123,7 +149,9 @@ impl Effects {
     /// The impact sound itself is `EffectInfo+0x14` (`SurfaceSounds::impact`), already played by the
     /// callers' `impact_sound`.
     pub fn bullet_impact(&mut self, rng: &mut Rng, surfaces: Option<&SurfaceSounds>, gas: &mut crate::gas::GasPool,
-                         pos: V3, normal: V3, material: u8, dir: V3, flags70: u32, bounces: u8, owner_is_player: bool) -> Option<V3> {
+                         fx: &mut crate::world_fx::WorldFx,
+                         pos: V3, normal: V3, material: u8, dir: V3, flags70: u32, bounces: u8, owner_is_player: bool,
+                         ricochet_mask: u32) -> Option<V3> {
         // `Bullet_CollisionHandler` 0x12ce80: the effect flags start 0; weapon_data+0x70 & 2 → 0x61
         // [M 0x12cf58 init, 0x12d198 `| 0x61`]. Without bit 2 the game passes flags 0: no decal, no
         // gas, no debris — only the +0x14 sound (which `Effect_Bullet`'s 0x40 arm plays; the port
@@ -136,6 +164,18 @@ impl Effects {
         // basis [M 0x1ce728], restored before `Effect_Bullet`.
         let glass = (material & 0x3f) == 0x10;
         let n = normal;
+        if flags & 0x20 != 0 {
+            // The emitter arm [M Effect_Create 0x1ce688:81-88, the flags & 0x20 block's FIRST
+            // action]: `Emitter_Create(0, 0, EffectInfo+0x84, hit_pos, normal, 0, 0, 0)` 0x17ae00 —
+            // a ONE-SHOT burst emitter (rate argument 0 → the +0x4b one-shot latch) at the hit
+            // point, oriented by the surface normal, spawning `EffectInfo[material]+0x84`'s def.
+            // `Emitter_Create` itself consumes NO RNG (a failed def lookup → no object at all);
+            // the draws come on the emitter's OWN update ticks (`Emitter_Update` 0x17b080, 4 ×
+            // `Rand_FRandHalf(1.0)` per spawned particle — yaw, pitch, speed, life, that order).
+            if rec.emitter != 0 {
+                fx.spawn_impact(rec.emitter, pos, n);
+            }
+        }
         if flags & 0x20 != 0 && rec.debris_enable != 0 && rec.debris_mesh != 0 {
             // `Rand_Rand(EffectInfo+0x83)` → count [M 0x1ce7b0]; `Debris_Create` 0x1aaa00 per particle:
             let count = rng.rand(rec.debris_count as u32) + 1;
@@ -187,7 +227,10 @@ impl Effects {
         // so the 9 variant's `obj+0x3c & 0x400000` never applies). The roll `Rand_Rand(N) & mask`
         // draws only when `EffectInfo+0x1a != 0` [M 0x1cf290].
         if flags70 & 0x10 != 0 && bounces < 3 && rec.ricochet_n != 0 {
-            if rng.rand(rec.ricochet_n as u32) as u8 & 8 != 0 {
+            // The mask: 8 for a world hit, 9 when the hit object carries +0x3c & 0x400000, and 0
+            // on a PIERCE contact — the roll still draws, but can never reflect [M 0x12d6f8:
+            // `uVar16 = 8; … if (bVar7 != 0) uVar16 = 0;`].
+            if rng.rand(rec.ricochet_n as u32) as u8 & ricochet_mask as u8 != 0 {
                 // Reflect: `dir + normal·(−(rest+1)·dot(dir,normal))`, normalised, with the restitution
                 // read as raw f32 bits from `EffectInfo+0x1c` [M 0x12d704..0x12d7a8].
                 let rest = f32::from_bits(rec.restitution_bits);
@@ -236,6 +279,8 @@ mod tests {
             effects: (0..23).map(|k| if k == 10 { r } else { Default::default() }).collect(), ..Default::default() }
     }
 
+    fn fx() -> crate::world_fx::WorldFx { crate::world_fx::WorldFx::default() }
+
     /// G-041: a hit on a decal-carrying material leaves one decal at `hit + normal·0.01` with the
     /// material's mesh. Sister: material 0 (NONE) and flags without weapon bit 2 leave none.
     #[test]
@@ -245,7 +290,7 @@ mod tests {
         let r = rec(0x0200_0126, 0);
         let surf = table(r);
         let mut rng = Rng::new(1);
-        let out = e.bullet_impact(&mut rng, Some(&surf), &mut gas, [10.0, 2.0, 3.0], [0.0, 0.0, 1.0], 10, [0.0, 0.0, -1.0], 0x2, 0, true);
+        let out = e.bullet_impact(&mut rng, Some(&surf), &mut gas, &mut fx(), [10.0, 2.0, 3.0], [0.0, 0.0, 1.0], 10, [0.0, 0.0, -1.0], 0x2, 0, true, 8);
         assert!(out.is_none());
         assert_eq!(e.decals.len(), 1);
         let d = &e.decals[0];
@@ -256,7 +301,7 @@ mod tests {
         // only draws would be the ricochet's, which is gated on the flag too).
         let before = (rng.x, rng.y);
         let mut e2 = Effects::new();
-        e2.bullet_impact(&mut rng, Some(&surf), &mut gas, [1.0, 1.0, 1.0], [0.0, 1.0, 0.0], 10, [0.0, -1.0, 0.0], 0x0, 0, true);
+        e2.bullet_impact(&mut rng, Some(&surf), &mut gas, &mut fx(), [1.0, 1.0, 1.0], [0.0, 1.0, 0.0], 10, [0.0, -1.0, 0.0], 0x0, 0, true, 8);
         assert!(e2.decals.is_empty());
         assert_eq!((rng.x, rng.y), before, "flags 0: the game draws nothing at this impact");
     }
@@ -271,7 +316,7 @@ mod tests {
         let surf = table(r);
         let mut rng = Rng::new(7);
         for k in 0..201 {
-            e.bullet_impact(&mut rng, Some(&surf), &mut gas, [k as f32, 0.0, 0.0], [0.0, 1.0, 0.0], 10, [0.0, -1.0, 0.0], 0x2, 0, true);
+            e.bullet_impact(&mut rng, Some(&surf), &mut gas, &mut fx(), [k as f32, 0.0, 0.0], [0.0, 1.0, 0.0], 10, [0.0, -1.0, 0.0], 0x2, 0, true, 8);
         }
         assert_eq!(e.decals.len(), 200, "the pool holds 200");
         assert_eq!(e.decals[0].pos[0], 1.0, "the first decal (k=0) was evicted");
@@ -288,7 +333,7 @@ mod tests {
         let r = rec(0, 0);
         let surf = table(r);
         let mut rng = Rng::new(3);
-        e.bullet_impact(&mut rng, Some(&surf), &mut gas, [0.0; 3], [0.0, 1.0, 0.0], 10, [0.0, -1.0, 0.0], 0x2, 0, true);
+        e.bullet_impact(&mut rng, Some(&surf), &mut gas, &mut fx(), [0.0; 3], [0.0, 1.0, 0.0], 10, [0.0, -1.0, 0.0], 0x2, 0, true, 8);
         assert!(!e.debris.is_empty(), "stone debris spawns");
         assert!(e.debris.len() <= 6, "count = Rand_Rand(5)+1 ≤ 6");
         for d in &e.debris {
@@ -323,7 +368,7 @@ mod tests {
             let mut e = Effects::new();
             let mut rng = Rng::new(seed);
             let before = (rng.x, rng.y);
-            let out = e.bullet_impact(&mut rng, Some(&surf2), &mut gas, [0.0; 3], n, 10, dir, 0x12, 0, true);
+            let out = e.bullet_impact(&mut rng, Some(&surf2), &mut gas, &mut fx(), [0.0; 3], n, 10, dir, 0x12, 0, true, 8);
             assert_ne!((rng.x, rng.y), before, "N != 0: exactly one Rand_Rand draw (seeds advanced)");
             if let Some(d) = out { found = Some((seed, d)); break; }
         }
@@ -339,7 +384,7 @@ mod tests {
         let mut e3 = Effects::new();
         let mut rng3 = Rng::new(1);
         let before3 = (rng3.x, rng3.y);
-        assert!(e3.bullet_impact(&mut rng3, Some(&surf3), &mut gas, [0.0; 3], n, 10, dir, 0x12, 0, true).is_none());
+        assert!(e3.bullet_impact(&mut rng3, Some(&surf3), &mut gas, &mut fx(), [0.0; 3], n, 10, dir, 0x12, 0, true).is_none());
         assert_eq!((rng3.x, rng3.y), before3, "N = 0: Effect_RicochetProb draws nothing");
     }
 
