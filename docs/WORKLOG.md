@@ -13049,3 +13049,22 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   (slim ISO) + the no-GPU pylon set ×3 (fix_0c_pylon_live ×2 + probe_pylon_render, wgpu
   "adapter: NotFound" — the sandbox has no GPU adapter; same set WORKLOG fix-death-retry-boost
   recorded). The required final-tree suite restarted on the merge (totals in the report).
+
+## fix-search-cover-g028 (2026-10-15, branch s/fix-search-cover-g028) — started 14:47 UTC
+- Branch cut from origin/master cf4f33cd. Task G-028 (part of G-026): guard cover-node selection
+  (NDrone2_*Cover* / Drone_FindCover*), scoring, enter/leave transitions, tick order vs vision;
+  document in docs/systems/drone-ai.md, port into cover.rs + drone.rs hook, NF_ISO test
+  (07000005 courtyard / 07000012).
+- (14:47-15:30) G-028 findings: the cover selection chain was already ported and trace-verified (WORKLOG
+  0023/0079 + fix-cover-remainder) — `find_cover` 0x152548 (smallest emitter byte, strict-less, byte² ≤
+  opponent-dist²), `cover_node_ok` 0x151d68, `cover_available` 0x155a38 (all decompile callers pass needLos=1,
+  so FindCover's needLos=0 early return is dead code), the 0x8C-0x9C/0x97/0x98/0x37/0x38 states and the RNG
+  order. The real deviation was the ORDER: the game's `Drone_InitComms` runs `Drone_ProcessCoverNodes`
+  (0x139520:150, cadence −2/<1→10 [M 0x138e78]) BEFORE `ProcessOpponents` :151 and `ProcessDroneSight` :162 —
+  the port ran it after vision and the nav-node cache. Moved to the game's position (drone.rs); inputs are
+  identical at both positions, so it is a conformance fix with no observable delta. Docs: drone-ai.md cover
+  section (addresses) + the stale "Not yet: cover" port-status line fixed. New tests
+  `cover_selection_live.rs`: the scoring rule replicated in-test over the level's real nodes (side/LOS gates
+  load-bearing: a gate-less replication picks node 3 over the trace's node 1 — shown RED mid-session) and the
+  stance flags both ways (node 1 re-flagged crouch-only → cover type 0/1/4 and no stand anim; stand-only →
+  2/3). ai_live 35/35, cover_selection 2/2, portcheck 5/5.
