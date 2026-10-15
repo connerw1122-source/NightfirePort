@@ -1931,14 +1931,7 @@ impl Drone {
         // (the convention crate::drone line ~2703 uses for the stun family).
         self.alert = self.alert.max(1.0);
         self.pain_talk(d);
-        // `DroneFunc_SendHurtMessage` 0x145e28:19-57 (prop 0x32 = the scream property, the +8
-        // once-per-life bit, +0xc5 != 2): the hurt civilian SCREAMS — msg 0x12 broadcast with the
-        // victim as the alert source. The queue drains in the shared pass (the send needs the
-        // other drones, unreachable from inside this one's borrow).
-        if self.health > 0.0 && self.prop(d, 0x32) && !self.screamed {
-            self.screamed = true;
-            self.pending_shout = Some((msg::SCREAM, self.pos));
-        }
+        self.send_hurt_message(d);
         if allow {
             // `CallAnim(0, 0x51, 0, *(Drone+0x118), 0, 0)` + both flinch stamps (0x145f28:89-94).
             self.call_anim(d, anim_state::PUNCHED, self.impact_resume, 0);
@@ -1948,6 +1941,21 @@ impl Drone {
         }
         if valid(setv) { self.set_state(setv); }
         true
+    }
+
+    /// `DroneFunc_SendHurtMessage` (0x145e28): prop 0x32 = the scream property, the +0x4F8 & 8
+    /// once-per-life bit, mode +0xC5 != 2: the hurt civilian SCREAMS — msg 0x12 broadcast with the
+    /// victim as the alert source. The queue drains in the shared pass (the send needs the other
+    /// drones, unreachable from inside this one's borrow). Called from BOTH the punch path
+    /// (`NDrone2_PunchImpact` 0x145f28) and the bullet path (`NDrone2_BulletImpact` 0x1461c8:30).
+    fn send_hurt_message(&mut self, d: &Data) {
+        // No health gate here on purpose: `NDrone2_BulletImpact` calls it BEFORE the death branch
+        // (0x1461c8:30 vs :31) — a one-shot kill still screams. The punch path calls it only on its
+        // alive arm. The once-per-life bit (+0x4F8 & 8) is the port's `screamed`.
+        if self.prop(d, 0x32) && !self.screamed && self.mode != 2 {
+            self.screamed = true;
+            self.pending_shout = Some((msg::SCREAM, self.pos));
+        }
     }
 
     /// `NDrone2_ObjectIsArmed` 0x178768 on this drone's own class byte: classes 2..0x47 and 0x6a..0x71 are
@@ -1990,7 +1998,17 @@ impl Drone {
         let u8_ = if p3 != 0 { p3 } else { self.state };
         let p3 = if p3 == self.state { 0 } else { p3 };
         self.do_hit_effects(d);
-        if self.health <= 0.0 { self.set_state(state::DEATH_ANIM); return true; }
+        // `DroneFunc_SendHurtMessage` 0x145e28 — `NDrone2_BulletImpact` 0x1461c8:30 calls it on every
+        // bullet hit (the punch path already had it): the prop-0x32 civilian SCREAMS (msg 0x12
+        // broadcast, once per life, mode != 2). The queue drains in the shared pass.
+        self.send_hurt_message(d);
+        if self.health <= 0.0 {
+            // 0x1461c8:31-53: the death state by the mode byte +0xC5 — 0x1E (the bot-punch mode) →
+            // 0xF2, 0x1B/0x1C → 0x92, 0x1D → 0xBF, everything else 0x44 (Death_Anim).
+            let st = match self.mode { 0x1e => 0xf2, 0x1b | 0x1c => 0x92, 0x1d => 0xbf, _ => state::DEATH_ANIM };
+            self.set_state(st);
+            return true;
+        }
         if allow {
             self.big_hit = self.last_damage > self.max_health * 0.25 && self.health > self.max_health * 0.333;
             // The game's frame counter runs from boot (108153 at a 07000005 start [L]), so unset stamps are long past.
@@ -2010,7 +2028,10 @@ impl Drone {
     fn do_hit_effects(&mut self, d: &Data) {
         let Some(h) = self.hit else { return };
         self.hits_taken += 1;
-        let target = crate::damage::Target { damageable: self.damageable, armour: 0, mode: 0, skin: self.skin, kind: self.kind };
+        // `NDrone2_HitDamage` 0x145558:64 reads the drone's MODE byte +0xC5 (== 0xD → a head hit
+        // deals 2×Torso WITHOUT the silent-kill flag — the party guests), :83 reads armour +0xBB
+        // (written 0 only — DefaultInit 0x14b300:566 is the sole writer, so armour: 0 is faithful).
+        let target = crate::damage::Target { damageable: self.damageable, armour: 0, mode: self.mode, skin: self.skin, kind: self.kind };
         let r = crate::damage::hit_damage(d.tuning, target, nf_formats::ps2float::mul(h.damage, self.damage_taken), h.part, h.weapon, false, d.difficulty, d.level);
         // `NDrone2_HitDamage` 0x145558:57-60 (and the explosive arm :129-130): a hit on a team-1
         // drone from the player (+0x2B4 == the player object) logs the accuracy numerator
@@ -2024,11 +2045,17 @@ impl Drone {
     }
 
     /// `DroneAnim_LocationImpactAnim` (0x13c8b8): the flinch 0x4C, variant 5 + Rand(8), or by the part hit when Bond
-    /// aims; then the state `+0x118`.
+    /// aims; then the state `+0x118`. Modes 0x1B/0x1C remap the variant through the static table at
+    /// DAT_002f48b0 [M 0x13c8b8:96-98; the 18 u32s read from work/elf/ACTION.ELF: 0,0,0,0,0,1,1,2,1,2,3,4,3,4,0,0,0,0].
     fn location_impact_anim(&mut self, d: &Data, rng: &mut Rng) {
-        let v = if !self.bond_aiming { 5 + rng.rand(8) } else {
+        const MODE_1B_1C: [u32; 18] = [0, 0, 0, 0, 0, 1, 1, 2, 1, 2, 3, 4, 3, 4, 0, 0, 0, 0];
+        let mut v = if !self.bond_aiming { 5 + rng.rand(8) } else {
             match self.hit.map_or(0, |h| h.part) { 4 | 5 => 5, 0x12..=0x15 => 8, 0x1e | 0x1f | 0x20 | 0x23 => 9, 0x31..=0x33 => 13, 0x35..=0x37 => 12, _ => 6 + rng.rand(2) }
         };
+        if matches!(self.mode, 0x1b | 0x1c) {
+            // The variant is always 5..=13, well inside the 18 entries — the direct copy the game makes.
+            if let Some(nv) = MODE_1B_1C.get(v as usize) { v = *nv; }
+        }
         self.call_anim_variant(d, anim_state::IMPACT, v as u16, self.impact_resume, 0);
     }
 
@@ -5832,6 +5859,22 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // port's `part` bone id) is 5 (head), else 0x413.
                     if hit.damage > 0.5 && d.weapons.hit_flags(b.weapon as usize) & 0x180 == 0 {
                         self.audio.play3d(if part == 5 { 0x601 } else { 0x413 }, hit.point, None);
+                    }
+                    // `NDrone2_DealWithObjHit` case 5's blood/impact puff (0x13fff0 second switch,
+                    // 0x140300-0x14034c): Gas_Init(3.0, 6.0, cel, HIT+0x40, 0, 0, 0x20008bc, 5, -1,
+                    // 0xffffff00) — gated on the UNALIGNED f32 at weapondef+0x06 > 0 (bytes [class,
+                    // pad, min-range lo/hi]; the class byte non-zero makes the denormal positive),
+                    // skipped for the explosives 0x2b / 0x34-0x37; the stun guns 0x32/0x33 use mesh
+                    // 0x200026e with (1.0, 17.0), no gate and no flag (0x14031c). The default arm's
+                    // puff gets gas flags |= 8 [M 0x14034a]. Life: the game's 11th Gas_Init arg is
+                    // dropped by the decompiler at every site (gas.rs module doc) — 0.5 s [S]; the
+                    // packed colours: start -1 (white opaque), end 0xffffff00.
+                    let wdef6 = d.weapons.records.get(b.weapon as usize)
+                        .map_or(0f32, |r| f32::from_le_bytes(r[6..10].try_into().unwrap()));
+                    if matches!(b.weapon, 0x32 | 0x33) {
+                        self.gas.init_ex(0x0200_026e, hit.point, 0.0, [0.0; 3], 1.0, 17.0, 5, [0xff; 4], 0xffff_ff00, 0.5);
+                    } else if wdef6 > 0.0 && !matches!(b.weapon, 0x2b | 0x34..=0x37) {
+                        self.gas.init_ex(0x0200_08bc, hit.point, 0.0, [0.0; 3], 3.0, 6.0, 5, [0xff; 4], 0xffff_ff00, 0.5);
                     }
                     let rng = &mut self.rng;
                     let dr = &mut self.list[i];
