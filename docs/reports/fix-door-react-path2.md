@@ -85,3 +85,12 @@ door trace of the real walk plus a standalone probe:
 - `crates/nf-game/src/drone.rs`: one validity-gate term in the collide hook's drone mover build
   (additive, one line + comment).
 - `crates/nf-view/tests/common/walker.rs`: the `use_door` open-door arm (test infra, additive).
+
+## ntfy failed
+
+All three fallbacks returned the ntfy.sh daily quota 429:
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python3 urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: empty reply with the same 429 (quota), no output.
+
+The queue close (finish.sh `blocked 111c-fix-door-react-path2`, report pointer + result line appended and pushed to `origin/queue`) succeeded — this report is the notification of record.
