@@ -178,6 +178,8 @@ fn the_pause_menu_resumes_restarts_and_quits() {
     fe.action(Action::Up);      // NO → YES
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0005), "mission 1's BaseMap is 07000005 [M sp_level record 1 +0xc]");
+    assert!(fe.closed, "the restart closes the menu: play resumes on the reloaded map (the main menu stayed up over it)");
+    assert!(!fe.flow.warm_reset, "the pause RESTART is the cold arm [M 0x204408:139]");
     assert!(!fe.flow.warm_reset, "the restart is a cold load [M 0x204408: param_2 = 0]");
     // Row 2 = quit: a TWO-STEP confirm [M 0x204408:210-220: state_quit_166 gates the quit; the row
     // text swaps to 0x200 "QUIT: ARE YOU SURE?"], then the front-end map with the quit page [M

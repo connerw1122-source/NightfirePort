@@ -1287,7 +1287,10 @@ impl FrontEnd {
                                 let level = CAMPAIGN[self.mission].3;
                                 self.requested_level = Some(level);
                                 self.flow.reset_map_level_to_load(level, false, true);
-                                self.page = Page::Main;
+                                // The page closes and play resumes on the reloaded map (the menu manager is deleted
+                                // with the restart [M 0x204408:139-141]); leaving Page::Main up kept the main menu
+                                // over the reloaded level.
+                                self.closed = true;
                                 return true;
                             }
                             // YES on QUIT [M 0x204408:142-152 — +0x28 = 0x4000001c (the SP quit page),
