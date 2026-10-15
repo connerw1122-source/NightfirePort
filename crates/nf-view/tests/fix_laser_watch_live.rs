@@ -123,12 +123,14 @@ fn the_beam_points_its_negative_z_at_the_hit() {
     assert!(dot > 0.0, "the beam's +z must point end→start (the sprite extends −z): dot {dot:.4}");
     // The stretch: the matrix's z row length equals the muzzle→hit distance (obj+0xE8 [M 0x1a4560:40]).
     let zlen = (z[0] * z[0] + z[1] * z[1] + z[2] * z[2]).sqrt();
-    let dist = ((b[0] - a[0]).powi(2) + (b[1] - a[1]).powi(2) + (b[2] - a[2]).powi(2)).sqrt();
+    // The drawn beam starts at the view model's DATUM 0 (the watch face) [M 0x1c3120: a non-negative id
+    // is a datum], a little off the sim's start point `a`: measure the stretch from the drawn start.
+    let t = [m[3][0], m[3][1], m[3][2]];
+    let dist = ((b[0] - t[0]).powi(2) + (b[1] - t[1]).powi(2) + (b[2] - t[2]).powi(2)).sqrt();
     assert!((zlen - dist).abs() < 0.5, "the beam stretches by the watch→hit distance (z {zlen:.2} vs dist {dist:.2})");
     // The translation sits at the start (the watch): obj+0x30 = the bone-0 position [M 0x1a4560:33-37].
-    let t = [m[3][0], m[3][1], m[3][2]];
     let dt = ((t[0] - a[0]).powi(2) + (t[1] - a[1]).powi(2) + (t[2] - a[2]).powi(2)).sqrt();
-    assert!(dt < 0.5, "the beam object sits at the watch ({dt:.2} off)");
+    assert!(dt < 1.0, "the beam object sits at the watch, near the sim's start ({dt:.2} off)");
 }
 
 /// The held meter: a 0–100 charge drained while the beam runs [M HUD_UpdateAmmoPane 0x19a7f0:160-176

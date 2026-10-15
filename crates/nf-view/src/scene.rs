@@ -1825,7 +1825,12 @@ impl Sim {
         // weapon's `weapon_data[w].clip_size` (+0x92): clip[0x4A] (+0x530) and clip[0x4E] (+0x560) and
         // clip[0x33] (+0x41C) on `frame & 3 == 0`; clip[0x4C] (+0x548) and clip[0x4F] (+0x56C) on
         // `frame & 1 == 0`; clip[0x45] (+0x4F4, the grenade belt) on `frame % 6 == 0`. No ownership gate.
-        if !self.disabled && !fire_busy {
+        // The held laser/stunner parks its fire script at the last frame but stays in view state 9 (the regen's
+        // gate) until the release [L PCSX2 07000005: the clip drains exactly 1/frame for the whole hold, no +1 per
+        // 4 frames]; the port's `fire_busy` reads "script still advancing", so gate on the fire script too.
+        let held_fire_script = self.gun.fire_state && self.weapons.records.get(self.gun.weapon as usize)
+            .is_some_and(|w| self.view_script == u32::from_le_bytes(w[0xb0..0xb4].try_into().unwrap()));
+        if !self.disabled && !fire_busy && !held_fire_script {
             let frame = self.drones.frame;
             let gates: [(usize, bool); 6] = [
                 (0x4A, frame & 3 == 0), (0x4E, frame & 3 == 0), (0x33, frame & 3 == 0),
@@ -3235,7 +3240,7 @@ impl Sim {
                     // hardcode's sin was killing with EVERY type and on impact; the per-type records
                     // route each grenade to its own death branch [M 0x12dd60/0x12e104/0x12e1c0].
                     // The launch origin [M `Player_WeaponInitBullet` 0x1a4bf0:212-240]: the head, moved to the
-                    // MIDPOINT of the head and the view model's bone 0 (`AnimGetBoneWorldTrans(BL+0x7e8, 0)`) when
+                    // MIDPOINT of the head and the view model's DATUM 0 (`AnimGetBoneWorldTrans(BL+0x7e8, 0, 0)`) when
                     // the record has a first-person model (+0xDC), +0x68 & 0x10000, isn't an excluded base (1, 0x52,
                     // 0x54, 0x58, 0x59, 0x5b) and isn't a scoped weapon held zoomed. The view model's bone 0 is its
                     // object origin (the root's local translation is 0 [D probe, 0x34 frame 26]) = `gun_matrix`,
@@ -3247,8 +3252,10 @@ impl Sim {
                     let excluded = matches!(base, 1 | 0x52 | 0x54 | 0x58 | 0x59 | 0x5b);
                     let zoomed_scope = self.aiming && flags68 & 0x40 != 0;
                     let origin = if fp_model && !excluded && !zoomed_scope && flags68 & 0x10000 != 0 {
+                        // DATUM 0 [M 0x1c3120 — a non-negative id is a datum, not a bone]: the hand's mount.
                         let g = self.gun_matrix();
-                        [(camera[0] + g[3][0]) * 0.5, (camera[1] + g[3][1]) * 0.5, (camera[2] + g[3][2]) * 0.5]
+                        let d0 = self.view_datum(0).unwrap_or([g[3][0], g[3][1], g[3][2]]);
+                        [(camera[0] + d0[0]) * 0.5, (camera[1] + d0[1]) * 0.5, (camera[2] + d0[2]) * 0.5]
                     } else { camera };
                     self.drones.grenades.push(nf_game::grenade::Grenade {
                         pos: origin,
@@ -3830,6 +3837,26 @@ impl Sim {
     }
 
     /// (sequence index, frame) the first-person gun's script shows.
+    /// The world position of the held weapon's view-model DATUM `id` at this tick's pose
+    /// (`AnimGetBoneWorldTrans(BLData+0x7e8, id, 0)` [M 0x1c3120: a non-negative id is a datum —
+    /// `QuatTransToMat(datum.q, datum.t) · bone world`]): the first-person skin (+0xDC), the view script's
+    /// sequence at the current frame (root translation zeroed, as the draw does), through `gun_matrix`.
+    pub fn view_datum(&self, id: u32) -> Option<[f32; 3]> {
+        let w = self.weapons.records.get(self.gun.weapon as usize)?;
+        let skin = self.skins.get(&u32::from_le_bytes(w[0xdc..0xe0].try_into().ok()?))?;
+        let skel = self.skeletons.get(&skin.skeleton)?;
+        let dt = skin.datums.iter().find(|d| d.id == id && d.bone >= 0)?;
+        let script = self.scripts.get(&self.view_script)?;
+        let t = (1.0 + self.view_time) as u16;
+        let (a, _, q) = script.sequences().find(|(a, b, _)| *a <= t && t <= *b).or_else(|| script.sequences().last())?;
+        let seq = self.seqs.get(&q).filter(|s| s.skeleton == skin.skeleton)?;
+        let mut local = anim::local_pose(seq, skel, skin, (t.saturating_sub(a) + 1) as u32);
+        if let Some(r) = local.first_mut() { r.0 = [0.0; 3]; }
+        let world = anim::world_pose(&local, skin);
+        let m = anim::mul(&anim::mul(&anim::quat_trans_to_mat(dt.q, dt.t), world.get(dt.bone as usize)?), &self.gun_matrix());
+        Some([m[3][0], m[3][1], m[3][2]])
+    }
+
     pub fn view_frame(&self, skeleton: u8) -> Option<(usize, u32)> {
         let script = self.scripts.get(&self.view_script)?;
         let t = (1.0 + self.view_time) as u16;

@@ -165,11 +165,10 @@ fn the_blast_puffs_draw_camera_facing() {
 }
 
 /// The launch origin [M Player_WeaponInitBullet 0x1a4bf0:212-240]: the midpoint of the head and the view model's
-/// bone 0 (its object origin, ~0.43 behind the eye), so on the release tick the frag is BEHIND the camera — the
-/// game shows no grenade on the release frame (PCSX2 frozen at the fire script's frame 26). Sister: it is not at
-/// the eye (the old origin, which drew a screen-filling frag on that frame).
+/// DATUM 0 (`AnimGetBoneWorldTrans(vm, 0, 0)` — a non-negative id is a datum [M 0x1c3120]), the hand's mount.
+/// Sister: it is not at the eye (the old origin, which drew a screen-filling frag on the release frame).
 #[test]
-fn the_frag_launches_from_behind_the_eye() {
+fn the_frag_launches_from_the_head_hand_midpoint() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load_weapons(&iso, "07000015.bin", false, &[0x34]).expect("load 07000015");
     let sim = scene.sim.as_mut().unwrap();
@@ -179,14 +178,18 @@ fn the_frag_launches_from_behind_the_eye() {
     for _ in 0..120 { sim.step_bond(Input::default(), false, false, false); }
     let mut spawned = None;
     for t in 0..40 {
-        let eye = sim.bond.head(); let look = sim.bond.look();
+        let eye = sim.bond.head();
+        let d0 = sim.view_datum(0);
         sim.step_bond(Input::default(), t == 0, false, false);
-        if let Some(g) = sim.drones.grenades.first() { spawned = Some((g.pos, eye, look)); break; }
+        if let Some(g) = sim.drones.grenades.first() { spawned = Some((g.pos, eye, d0)); break; }
     }
-    let (p, eye, look) = spawned.expect("the frag spawned");
-    let fwd = (p[0] - eye[0]) * look[0] + (p[1] - eye[1]) * look[1] + (p[2] - eye[2]) * look[2];
+    let (p, eye, d0) = spawned.expect("the frag spawned");
+    let d0 = d0.expect("the frag's view model has a datum 0");
+    let mid = [(eye[0] + d0[0]) * 0.5, (eye[1] + d0[1]) * 0.5, (eye[2] + d0[2]) * 0.5];
+    let err = ((p[0] - mid[0]).powi(2) + (p[1] - mid[1]).powi(2) + (p[2] - mid[2]).powi(2)).sqrt();
     let off = ((p[0] - eye[0]).powi(2) + (p[1] - eye[1]).powi(2) + (p[2] - eye[2]).powi(2)).sqrt();
-    assert!(fwd < 0.05, "the frag starts at or behind the eye plane on the release tick (fwd {fwd})");
+    // The first update may already have moved it one (half-speed) step along its velocity.
+    assert!(err < 0.4, "the frag starts at the head/datum-0 midpoint (off by {err})");
     assert!(off > 0.1, "the frag does not start at the eye (offset {off})");
 }
 
