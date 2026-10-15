@@ -1271,7 +1271,6 @@ pub struct FrontEnd {
     /// The handlers' `menu_movie` static: set once the page-open pair has played, cleared by the
     /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
     pub menu_movie: bool,
->>>>>>> origin/master
 }
 
 impl FrontEnd {
