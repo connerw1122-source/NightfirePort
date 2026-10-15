@@ -12503,6 +12503,47 @@ Work Log:
 Stage Summary:
 - The hat's wall contact is verified accurate (one 0x4a7 clang, no material sound — cited + test-pinned); the in-flight cap is fixed to the game's 512-entry per-view draw list with newest-first reuse. Files: crates/nf-view/src/scene.rs (the draw: the slot constant, the u16 widening, the 4-line mapping), crates/nf-view/tests/hat_details_live.rs (new, 2 tests). grenade.rs/drone.rs untouched. Report: docs/reports/fix-hat-details.md (live checks: the PCSX2 clang pass, the 12-hat spree, two --bond spots; the stuck-hat orientation [S] deviation flagged).
 ---
+Task: fix-ladder-water (109i)
+Agent: worker (sandbox web-8fb9d45a)
+Task: (1) ladder dismount into water infinitely re-latches — fix the regrab timer, the swim entry, fix-swim2's exit; (2) Script_FFwd (cut-scene skip mid-dialogue) must stop the playing NIS voice stream. Files: crates/nf-game/src/{ladder,player}.rs + the voice stop.
+
+Work Log:
+- 03:05 UTC: branch s/fix-ladder-water from origin/master (d5b22f91), setup reused, pushed.
+- 03:05-04:40 UTC: the decompile read + the repro. The latch: dismount regrab 60 [M 0x196310] is
+  overwritten to 5 by the swim entry [M 0x195e50, FRAME_RATE 60/DIV 1.0 confirmed [L 0x30d0d0/d4]];
+  5-6 ticks later the pick re-grabs the swimmer at the snap (0.5 off the axis) — the port fed
+  swimmers the WALK pick (the walk segment + the radial min(r,1)+capsule 1.55 column) while the game
+  builds the swim HITTEST per substate [M 0x194df0 case 3: the low capsule, radius 0.55] and refines
+  every sphere candidate against the glist mesh (Collide_Update 0x1ea398:84-93 → Collide_Intersect
+  0x1ebaa8) — the thin rung plane cuts the reach at ~the capsule radius, which the 5-tick drift
+  (~0.2 at the Player_Move 0.2/tick ramp [M 0x191dd0]) clears. Fix: capsule_hits_swim (the swim arm)
+  + the frontal/lateral mesh-scale stage 2 for BOTH forms (|frontal| ≤ capsule_radius, |lateral| ≤
+  0.4+capsule_radius [S — the stand-in for the cel scoping + mesh refine]); every existing pin green
+  (the 0c yard walk, the 102h cases, wire, swim, vent). fail-first: re-latch at +27 on master, free
+  with the fix. The swim pin's bed spawn moved into the game's grabbable column (test-only).
+- The voice: Script_KillStream case 5 = Sound_Stop [M 0x1d9860:96-99] via Script_Free's per-stream
+  kill [M 0x1da880:27] — the port's kill() ignored kind 5. The dialogue: Script_FFwd's ScriptCam arm
+  calls Text_FlushAllSubtitles [M 0x1dac78:26-30] and the game draws ONE subtitle slot
+  [M Text_Update 0x1b1510] while the port queued the catch-up's remaining lines. Fix: kill() case 5
+  pushes SoundStop; ffwd() pushes TextFlush; the catch-up passes drop their Text adds [S]; the
+  viewer drops the script-sourced HUD lines. The end-to-end repro limits, honestly: 02's intro has
+  no kind-5 streams, 04's voices carry their own end ops and its script never arms the skip gate —
+  the voice pins pass on master too; the live checks cover the PCSX2 confirmation.
+
+Stage Summary:
+- The dismount into the pond no longer infinitely re-latches (the pick follows the substate's
+  HITTEST; the mesh-scale stage 2 gives the game's drift escape); Script_FFwd stops the playing
+  kind-5 voice [M 0x1d9860 case 5] and flushes the dialogue [M 0x1dac78:26-30] with the catch-up
+  adds dropped [S]. Report: docs/reports/fix-ladder-water.md (the live checks: the regrab writes,
+  the Sound_Stop-during-free watch, the 04 skip gate, the no-input drift).
+
+---
+Task: fix-ladder-water2 (109i2)
+Agent: worker
+Task: redo the ladder-into-water fix without breaking the walk-on grab — the merge suite caught a regression with 109i (walking into a ladder on dry ground no longer grabs it; fix_ladder2_live's walk tests fail at "never attached"); find which part of the new pick rejects the walk-on case, fix it against the decompile, keep 109i's own tests passing; add script: false to the two Msg-literal tests (fix_objective_banner_live.rs, fix_objective_messages_live.rs).
+
+Work Log:
+- 05:2x UTC: branch s/fix-ladder-water2 from origin/master (2cbfd7e3), merged origin/s/fix-ladder-water (WORKLOG both kept), pushed.
 ## fix-restart-health (2026-10-15, branch s/fix-restart-health) — started
 - (03:31 UTC) Branch created from origin/master d2ce47e5 and pushed. Setup reused (repo, work/, ISO, nf-queue). Task: after death the restart must give full health — find the game's restart/checkpoint health (ResetMap_LevelToLoad cold restart, Player_Init*, RamSave/RamLoad warm checkpoint) and fix the port. Files: crates/nf-game/src/{player,death,progress}.rs.
 
@@ -12596,3 +12637,16 @@ Work Log:
 
 Stage Summary:
 - The +0x274 writer is back to the game's raw-LOS reset (0x176a28:221, disasm 0x176de8) — all 21 game readers match again, the 3x3 settle is restored, and the first-shot timing now follows the game's two chains (the fresh-sight ack floor + the combat-config release), each cited. Report: docs/reports/fix-guard-first-shot2.md (live checks: the mid-charge first-shot PINE measurement that settles the combat-config exception; the beam + trace spots).
+---
+Task: fix-ladder-water2 (109i2)
+Agent: worker
+Task: redo the ladder-into-water fix without breaking the walk-on grab — the merge suite caught a regression with 109i (walking into a ladder on dry ground no longer grabs it; fix_ladder2_live's walk tests fail at "never attached"); find which part of the new pick rejects the walk-on case, fix it against the decompile, keep 109i's own tests passing; add script: false to the two Msg-literal tests (fix_objective_banner_live.rs, fix_objective_messages_live.rs).
+
+Work Log:
+- 05:2x UTC: branch s/fix-ladder-water2 from origin/master (2cbfd7e3), merged origin/s/fix-ladder-water (WORKLOG both kept), pushed.
+- 05:3x-06:00: the repro + the per-tick diagnostics the task asked for (fix_ladder2_live's pick_diag: the sphere test, the stage-2 frontal/lateral decomposition, the substate). THE CAUSE: the tests' Bond never walked — 07000002's level-start NIS arms on the first step and step_bond zeroes the input and skips the player tick while disabled; all 900 walk ticks were frozen (pos bit-identical, local[1] pinned at the one pre-NIS ramp tick 0.021). The frozen Bond stands frontal +1.130 off the nearest ladder's rung plane: master's bare radial column (min(r,1)+0.55 = 1.55) GRABBED THE FROZEN BOND — a false pass the game never grants (the walk HITTEST refines against the glist; a walk capsule 1.13 off the rung plane touches nothing); 109i's mesh-scale stage 2 (0.55) correctly rejects → the "regression" was the pick becoming game-correct over a vacuous walk.
+- 06:00-06:10: the fixes. (1) The tests walk for real: the NIS skipped the game's way (the skip action held while disabled — the fix_ladder_live load / fix_ladder_water_live step pattern; the level's scripts re-grab Bond within seconds so every walk tick carries the skip). The diagnostic then shows the game's contact grab: frontal 1.130 → 0.282 over 11 walk ticks, t12 lands SS_CLIMB the tick the walk capsule's frontal crosses the plane reach, snapped to the game's +0.5 offset (lateral −0.000). (2) The walk pick is the game's WALK arm [M Player_Collision 0x194df0 case 0/6: +0x7CC = 0x3e8ccccd = 0.275, A = up·0.55, B = up·(+0x7CC − cc)]: player.rs WALK_PICK_RADIUS + the arm selection in ladder_grab (walk 0 → capsule_hits 0.275; crouched walk = the game's substate 4 → capsule_hits_default [M case default: r 0.55, A 0.275, B 0.55 − cc]; swim 3 → capsule_hits_swim unchanged); ladder.rs folds the three arms over a shared pick_hit (stage 1 the ×1.5 sphere [M Collide_PickObj 0x1eae80], stage 2 the mesh-scale column [S]). This also kills the game-wrong re-grab of a dry stander parked at the dismount offset 0.5 (the pre-109i2 0.55 walk reach; the old unit asserted that hit — the re-anchored unit asserts the miss). (3) script: false in the two Msg literals (unblocks the suite build).
+- 06:1x: the sweep: nf-game --lib 161/161; fix_ladder2_live 4/4, fix_ladder_water_live 4/4 (109i's own), fix_ladder_live 3/3, fix_swim_live 4/4, fix_swim_vent_live 2/2, walkreal_0700000c_live 1/1 (the 102h crouched yard walk rides capsule_hits_default), fix_objective_banner_live 3/3, fix_objective_messages_live 5/5. Flagged not changed: the port's WORLD capsule (walls/floors) models the standing stance with the default arm's segment and the crouched with the swim arm's pair — the game's switch is 0 → (0.55, 0.275 − cc, r 0.275), 4 → (0.275, 0.55 − cc, r 0.55), 3 → (0.65 − cc, 0.45 − cc, r 0.55) [M 0x194df0]; the walkreal suite pins the current world behavior, retuning is its own task.
+
+Stage Summary:
+- The walk-on grab works exactly as the game's walk arm: the tests walk (the NIS skip), the pick follows the substate's capsule switch (0.275 walk / 0.55 default / 0.55 swim), 109i's dismount escape is intact. Report: docs/reports/fix-ladder-water2.md (live checks: the 0xF6 write watch at the walk-on contact, the dry-stander no-re-grab, the crouched yard grab, the 109i escape; --bond spots A/B). Full suite total lands in the report.
