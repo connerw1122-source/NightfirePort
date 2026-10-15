@@ -13410,3 +13410,8 @@ Work Log (unlock-popups):
 - (21:30-21:40) [L] dumps: RewardsTable from ee_start_05.bin 0x2bc920 (real layout: five 4-byte descriptors + 4 labels + 4 textures — the port's {bit,kind} fields were right, labels/textures unmodeled → new REWARD_TEXT static); the three pages walked from the disc's menu-def (08000002): NFBONUS full layout (header 0x2c5, hint 0x2d0, 0x100001cf texture, 0x100001d0 text list), WINGAME a bare root-only record, CHEATMEDAL 0x4000004c NOT in the def and no code/data route into it (open question; its rows grant medal_from_cheat 0x30cc74 = 999/1/2/3/4 and poke the mission-end channels 99/100).
 - (21:40-22:05) The port: menu.rs PAGE_NF_BONUS/PAGE_WIN_GAME/PAGE_CHEAT_MEDAL + Page variants, BonusFields/RewardLine, bonus_enter/win_enter/win_movie_finished/cheat_medal_confirm, the Results-Confirm three-way route, results_level; progress.rs REWARD_TEXT. Tests: unlock_popups.rs 12 headless + unlock_popups_live.rs ISO-gated pins. Fail-first caught: the win-page "no controls" pin was wrong (the root control counts) before the fix.
 - (22:05-22:20) Ran: nf-view + nf-game full test sets green (205+35+... all ok; unlock_popups 12/12, unlock_popups_live 1/1). Doc docs/systems/unlock-popups.md; report docs/reports/unlock-popups.md.
+
+## unlock-popups2 (2026-10-15, branch s/unlock-popups2) — started 23:40 UTC
+
+Work Log (unlock-popups2):
+- (23:40) Branch created from origin/s/unlock-popups @ b1432898 (the HELD 619: post-results bonus / cheat-medal / win pages; 1540/1 on master+619 with campaign_flow_live's front_end_chain_01_to_05 expecting Page::MissionSelect after the results Confirm but getting Page::NfBonus). Next: merge origin/master, reproduce, decide from the game's own flow which is right, fix code or test with that evidence.
