@@ -112,4 +112,4 @@ stays as G-046's UNCLEAR item.
 
 ## ntfy
 
-Sent via curl (13:49 UTC 2026-10-15). No fallback needed.
+FAILED — all three fallbacks. curl (13:50 UTC): `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`. python urllib retry (clean ASCII payload): `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`. wget `--post-data` printed nothing and the pipeline's exit status read 0 (through `tail`, so wget's own status is unresolved — the server-side 429 on the other two attempts says the quota was already spent, so this attempt most likely did not deliver either).
