@@ -251,6 +251,10 @@ pub struct Renderer {
     /// picks the ≤2 closest within the draw's bounding sphere (`Lights_CalcClosestLights`
     /// 0x1cb2e0 / `psiLight_SetLights` 0x10e588) into the draw's uniform slot.
     pub lights: nf_game::light::ResolvedLights,
+    /// The target's width / height: the movie plane keeps the game's 4:3 screen centred in it (every movie and the
+    /// loading picture fill the PS2's 4:3 picture [M DecodeBGFMVFrame 0x108550 — 512×448 centred]; stretched to a
+    /// 16:9 window they were a third too wide). 0 = fill the target.
+    pub screen_aspect: f32,
     ibuf: wgpu::Buffer,
     tex_bgs: Vec<wgpu::BindGroup>,
     /// Per texture slot: its first bind group, frame count and rate (animated textures).
@@ -527,7 +531,7 @@ impl Renderer {
         // movies.md §Presentation], so the quad draws BEFORE the HUD runs (under the page
         // controls); state 6 suppresses the overlay while its movie plays, so the draw position
         // is equivalent there.
-        Renderer { woman_tex, snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
+        Renderer { woman_tex, snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), screen_aspect: 0.0, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
     }
 
     /// The game's depth-0 pyramid for the walk [M `Vision_Calculate_View_Fustrum` 0x1e7df8,
@@ -683,7 +687,7 @@ impl Renderer {
         // The frame starts as fog (what the fog pass covers where nothing was drawn: zb 0); the
         // pillar-box clears black so the sides of a cut-scene frame are the void around the game's
         // 4:3 picture (the fog pass repaints the band's background itself).
-        let clear = if pillar.is_some() && movie.is_none() { wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 } }
+        let clear = if (pillar.is_some() && movie.is_none()) || (movie.is_some() && self.screen_aspect > 0.0) { wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 } }
             else if fog_on > 0.0 { wgpu::Color { r: (fog_rgb[0] * GAIN) as f64, g: (fog_rgb[1] * GAIN) as f64, b: (fog_rgb[2] * GAIN) as f64, a: 1.0 } } else { wgpu::Color { r: 0.05, g: 0.06, b: 0.08, a: 1.0 } };
         let mut enc = device.create_command_encoder(&Default::default());
         {
@@ -875,6 +879,11 @@ impl Renderer {
                     self.movie_size = Some((w, h));
                 }
                 if let Some(tex) = &self.movie_tex {
+                    let sx = if self.screen_aspect > 0.0 { ((4.0 / 3.0) / self.screen_aspect).min(1.0) } else { 1.0 };
+                    let v = |x: f32, y: f32, u: f32, w: f32| HudVertex { p: [x * sx, y], uv: [u, w], c: [1.0; 4] };
+                    queue.write_buffer(&self.movie_vbuf, 0, bytemuck::cast_slice(&[
+                        v(-1.0, 1.0, 0.0, 0.0), v(1.0, 1.0, 1.0, 0.0), v(1.0, -1.0, 1.0, 1.0),
+                        v(-1.0, 1.0, 0.0, 0.0), v(1.0, -1.0, 1.0, 1.0), v(-1.0, -1.0, 0.0, 1.0)]));
                     queue.write_texture(
                         wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
                         rgba, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(h) },

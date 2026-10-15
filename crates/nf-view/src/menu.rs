@@ -2289,3 +2289,61 @@ pub fn key_action(key: winit::keyboard::KeyCode) -> Option<Action> {
         _ => return None,
     })
 }
+
+/// The level loading screen's text and dots over its picture (the picture itself goes on the movie plane) [M
+/// `ResetMap_GenLoadScreen` 0x1d5de0 — see crate::loading]. Positions measured on PCSX2 07000005 (m18, 2026-10-15)
+/// agree with the game's 512×448 sprite coordinates: LOADING centred on x 310 (248·1.25), middle y 339; OBJECTIVE
+/// from x 35 (28·1.25), middle y 371; the hint 20 below at pitch 16, wrapped to 570 (456·1.25); six dots from x 69
+/// (55·1.25) at pitch 20, middle y 339.
+pub fn loading_overlay(font: &nf_formats::hud::Font, lang: Option<&Lang>, textures: &[(u32, crate::scene::TextureImage)], aspect: f32, level: u32, hint: Option<u32>, lit: u32) -> HudFrame {
+    let mut h = Hud { quads: Vec::new(), aspect, textures };
+    let bind = |id: u32| -> String { lang.and_then(|l| l.bind(id)).unwrap_or("").to_string() };
+    let cream = gs(CREAM, 0xff);
+    let gold = gs(0x785a14, 0xff);
+    centred(&mut h, font, -2, &bind(0x3c1), mx(310.0), my(339.0 + 6.0), cream, false, 1.0);
+    // "\xBA label \xBA text": the label in gold, a space, the text in cream; wrapped lines continue at x 35.
+    let mut y = 371.0f32;
+    let mut line = |h: &mut Hud, label: &str, text: &str, y: &mut f32| {
+        let first = format!("{label} {text}");
+        // PCSX2 draws these lines ~5% wider than the port's face at 1.0 ("OBJECTIVE Breach the castle walls" 311 vs
+        // 295 units) and breaks the level-05 hint after "objective,".
+        const SC: f32 = 1.05;
+        for (i, l) in wrap_px(&first, font, mx(545.0) / SC).iter().enumerate() {
+            let pen = my(*y + 6.0);
+            if i == 0 && l.starts_with(label) {
+                h.text_scaled(Anchor::Centre, font, -2, label, mx(35.0), pen, false, gold, false, SC);
+                let lw = font.layout(&format!("{label} "), 0.0, 0.0).1 * SC;
+                h.text_scaled(Anchor::Centre, font, -2, l[label.len()..].trim_start(), mx(35.0) + lw, pen, false, cream, false, SC);
+            } else {
+                h.text_scaled(Anchor::Centre, font, -2, l, mx(35.0), pen, false, cream, false, SC);
+            }
+            *y += 16.0;
+        }
+    };
+    if let Some(o) = crate::loading::objective_for(level) {
+        line(&mut h, &bind(0x200_0054), &bind(o), &mut y);
+        y += 4.0;
+    }
+    if let Some(hi) = hint {
+        let s = bind(hi);
+        line(&mut h, &bind(0x200_0055), crate::loading::strip_hint(&s), &mut y);
+    }
+    // The dots: the disc texture tinted (0xee,0xa0,0x29) for the first `lit`, (0x5c,0x31,0x0c) for the rest [M
+    // `CreateLoadingBlob` 0x11bf70]; drawn as discs the colours PCSX2 shows (m18: lit #cfcf50, dim #924c10, ~12 units
+    // across, centres from x 77 at pitch 20).
+    for i in 0..6u32 {
+        let c = if i < lit { gs(0x676728, 0xff) } else { gs(0x492608, 0xff) };
+        let (cx, cy, r) = (77.0 + 20.0 * i as f32, 338.5, 6.0);
+        let centre = h.ndc(Anchor::Centre, mx(cx), my(cy));
+        let n = 16;
+        for k in 0..n {
+            let a0 = k as f32 / n as f32 * std::f32::consts::TAU;
+            let a1 = (k + 1) as f32 / n as f32 * std::f32::consts::TAU;
+            let p = |a: f32, h: &Hud| h.ndc(Anchor::Centre, mx(cx + r * a.cos()), my(cy + r * a.sin()));
+            let q = |p: [f32; 2]| HudVertex { p, uv: [0.0, 0.0], c };
+            let (p0, p1) = (p(a0, &h), p(a1, &h));
+            h.ndc_solid(-2, [q(centre), q(p0), q(p1), q(centre), q(p1), q(p1)], c);
+        }
+    }
+    h.finish()
+}

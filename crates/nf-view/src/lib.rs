@@ -30,6 +30,7 @@ pub mod replay;
 pub mod panel;
 pub mod weapon_assets;
 pub mod woman;
+pub mod loading;
 /// The weapon matrix (task 100d): every on-foot level × every weapon, measured headless.
 pub mod matrix;
 
@@ -1384,6 +1385,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot, scene.sim.as_ref().map(|s| &s.world), door_closed.as_deref());
     r.update_skin(&queue, scene, choice, time, opts, vis_shot.as_deref());
     r.lights = scene.frame_lights();
+    r.screen_aspect = w as f32 / h as f32;
     // `NF_BENCH=N`: time the per-frame CPU side N times (posing + vertex build, and the upload) for profiling.
     if let Some(n) = std::env::var("NF_BENCH").ok().and_then(|v| v.parse::<u32>().ok()) {
         let t0 = std::time::Instant::now();
@@ -1556,9 +1558,45 @@ struct App {
     /// pause page runs `SFXPause`+`SFXPauseAllStreams` on open and the unpause pair on close
     /// [M 0x21b908:121-124, 0x21c2b0:11-22].
     audio_paused: bool,
+    /// The loading screens' pictures (07000500.bin, crate::loading), read on the first level change.
+    loading_art: Option<std::collections::HashMap<u32, (u32, u32, Vec<u8>)>>,
 }
 
 impl App {
+    /// Draws the level's loading screen and presents it before the (blocking) load [M ResetMap_Load 0x1d6360 state 3 →
+    /// ResetMap_GenLoadScreen 0x1d5de0, skipped for the front end 0x07000048]. The load blocks this thread, so the
+    /// dots show their first state; the game's vblank animation is not reproduced.
+    fn draw_loading_screen(&mut self, level: u32) {
+        if level & 0xff00_ffff == 0x0700_0048 { return; }
+        if self.loading_art.is_none() {
+            self.loading_art = Some(read_files_bin(&self.iso, loading::ARCHIVE).map(|b| loading::art(&b)).unwrap_or_default());
+        }
+        let Some(g) = self.gfx.as_mut() else { return };
+        if g.minimized { return; }
+        let level = if level & 0xff00_ffff == 0x0700_0018 { 0x0700_001b } else { level };
+        let picture = self.loading_art.as_ref().and_then(|a| a.get(&loading::image_for(level)));
+        let lang = self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()).or(self.lang.as_ref());
+        let aspect = g.config.width as f32 / g.config.height.max(1) as f32;
+        let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(1) | 1;
+        let hint = loading::hint_for(level, || { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; seed >> 8 });
+        let hud = match self.scene.hud.as_ref() {
+            Some(t) => menu::loading_overlay(&t.font, lang, &self.scene.hud_textures, aspect, level, hint, 0),
+            None => gpu::HudFrame::default(),
+        };
+        let frame = match g.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            _ => return,
+        };
+        let view = frame.texture.create_view(&Default::default());
+        g.renderer.screen_aspect = aspect;
+        // A zero view-projection collapses every world vertex (w = 0), so only the picture and the overlay draw.
+        let id = [[0.0f32; 4]; 4];
+        let movie = picture.map(|(w, h, rgba)| (*w, *h, rgba.as_slice()));
+        let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, id, id, [0.0; 3], 0, &[], &hud, movie, None);
+        g.queue.submit([enc.finish()]);
+        g.queue.present(frame);
+    }
+
     /// F8/F9: show the mission-complete / mission-failed results page for the loaded mission [S demo
     /// hook — the game reaches it from `Mission_Update` 0x182c60:74's event; the port's mission-event
     /// → results glue is listed in docs/reports/fix-menus.md as remaining host work].
@@ -2240,6 +2278,7 @@ impl ApplicationHandler for App {
                     };
                     let name = level_archive_name(next);
                     eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
+                    self.draw_loading_screen(next);
                     let load = if self.dev.is_some() { load_with_carry_dev } else { load_with_carry };
                     match load(&self.iso, &name, self.all, save.as_ref()) {
                         Ok(mut scene) => {
@@ -2618,6 +2657,7 @@ impl ApplicationHandler for App {
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
                 hud.append(&self.scene.script_overlay_hud(aspect));
                 g.renderer.lights = self.scene.frame_lights();
+                g.renderer.screen_aspect = g.config.width as f32 / g.config.height.max(1) as f32;
                 let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud, movie_frame, if cutscene { Some(band) } else { None });
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
@@ -2852,7 +2892,21 @@ pub fn run() -> Result<()> {
             let n: f32 = args.get(i + 1).context("--armour needs a value (0..=50)")?.parse()?;
             if let Some(sim) = scene.sim.as_mut() { sim.drones.health.armour = n; }
         }
-        let (mut menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end, &iso);
+        let (mut menu_frame, mut movie_frame) = front_end_menu(&args, &scene, front_end, &iso);
+        // `--loading`: the level's loading screen (crate::loading) — the picture on the movie plane, the text and the
+        // dots (`--frame` vblanks into the animation) over it.
+        if args.iter().any(|a| a == "--loading") {
+            let level = u32::from_str_radix(level.trim_end_matches(".bin"), 16).unwrap_or(0);
+            if let Some(art) = read_files_bin(&iso, loading::ARCHIVE).map(|b| loading::art(&b)) {
+                movie_frame = art.get(&loading::image_for(level)).cloned();
+            }
+            let lang = scene.sim.as_ref().and_then(|s| s.lang.clone());
+            let mut seed = 0x1234_5678u32;
+            let hint = loading::hint_for(level, || { seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345); seed >> 16 });
+            if let Some(t) = scene.hud.as_ref() {
+                menu_frame = Some(menu::loading_overlay(&t.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0, level, hint, loading::dots_lit(time as u32)));
+            }
+        }
         // fix-ingame-dev-menu: `--dev-page <name>` draws the F2 menu's page (menu/weapons/gadgets/
         // grenades/ammo/npcs/teleport/level/toggles/screenshot) over the game HUD, so the main agent
         // can render and check each page headless.
@@ -2875,7 +2929,7 @@ pub fn run() -> Result<()> {
     let pad_backend = gamepad::Backend::new(&iso);
     let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
-        audio_paused: false, };
+        audio_paused: false, loading_art: None, };
     if dev {
         // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
         // menu carries ALL of its functions now (through the same `panel::apply` command layer).
