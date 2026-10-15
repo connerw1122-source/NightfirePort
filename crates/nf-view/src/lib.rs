@@ -1621,6 +1621,12 @@ impl App {
             return;
         }
         fe.action(a);
+        self.menu_after();
+    }
+
+    /// After a menu action (key, click or hover): the page's sounds, the level it requested and its close.
+    fn menu_after(&mut self) {
+        let Some(fe) = self.fe.as_mut() else { return };
         // menu-sfx: the front end's sound events play straight through the driver's 2-D start —
         // `Menu_PlaySound`'s `Sound_Play(100.0f, id, 0, 0)` tail [M 0x1f3278] batched like the EE's
         // `SFXStart`. The loaded bank(s) decide audibility exactly as the game's lookup does (a
@@ -1634,11 +1640,6 @@ impl App {
                 });
             }
         }
-        self.menu_after();
-    }
-
-    /// After a menu action (key or click): the level the page requested and the page's close.
-    fn menu_after(&mut self) {
         let Some(fe) = self.fe.as_mut() else { return };
         let closed = fe.closed;
         if let Some(code) = fe.requested_level.take() {
@@ -2161,7 +2162,9 @@ impl ApplicationHandler for App {
             // Cursor moves: track the NDC position for the dev menu's click hit-test (when the menu is open).
             WindowEvent::CursorMoved { position, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
                 self.menu_pointer = self.menu_space(position.x, position.y);
-                if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) { fe.mouse_move(x, y); }
+                if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) {
+                    if fe.mouse_move(x, y) { self.menu_after(); }   // the hover's focus-move sound
+                }
             }
             WindowEvent::CursorMoved { position, .. } => if let (Some(g), Some(d)) = (&self.gfx, self.dev.as_deref_mut()) {
                 if d.menu {
