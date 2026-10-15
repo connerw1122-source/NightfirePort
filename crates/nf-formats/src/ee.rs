@@ -102,6 +102,8 @@ impl Machine {
     /// FPU register access (arguments in f12, results in f0).
     pub fn set_fpr(&mut self, i: usize, v: f32) { self.f[i] = v.to_bits(); }
     pub fn fpr(&self, i: usize) -> f32 { f32::from_bits(self.f[i]) }
+    /// General register write — for a third pointer argument (`call` only sets a0/a1).
+    pub fn set_gpr(&mut self, i: usize, v: u32) { self.r[i] = v as u128; }
     /// General register (low 32 bits), e.g. v0 = 2.
     pub fn gpr(&self, i: usize) -> u32 { self.r[i] as u32 }
     /// Writes bytes into the image.
