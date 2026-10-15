@@ -588,9 +588,32 @@ pub const AV_ROWS: &[OptRow] = &[
     OptRow { ctrl: 0x1000_0138, label: 0x198, y: 312.0, items: &[], kind: OptKind::Action },
     OptRow { ctrl: 0x1000_0222, label: 0x550, y: 340.0, items: &[], kind: OptKind::Action },
 ];
-/// The option pages' descriptions per (row control, current value) — i32::MIN matches any value [L ee_snapshot
-/// 0x2e4a18: 12-byte {control, value, label} records, 0xf0f0f0f0 = any].
+/// The option pages' descriptions per (row control, current value) — i32::MIN matches any value, the first matching
+/// record wins [L ee_snapshot 0x2e4610..0x2e4c28: 12-byte {control, value, label} records, 0xf0f0f0f0 = any; the main
+/// menu rows, the MP rules / player-mods / enviro-mods / bot-setup rows, then the codename option pages'].
 const OPT_DESC: &[(u32, i32, u32)] = &[
+    (0x1000_0002, i32::MIN, 0x100_0000), (0x1000_0003, i32::MIN, 0x100_0001), (0x1000_0004, i32::MIN, 0x100_0002), (0x1000_0008, 0, 0x100_002f),
+    (0x1000_00f6, 0, 0x100_002f), (0x1000_0081, 1, 0x100_0021), (0x1000_0081, 0, 0x100_0022), (0x1000_0084, 0, 0x100_0023),
+    (0x1000_0084, 1, 0x100_0024), (0x1000_0084, 2, 0x100_0025), (0x1000_0084, 3, 0x100_0026), (0x1000_0084, 4, 0x100_0027),
+    (0x1000_0084, 5, 0x100_0028), (0x1000_0084, 6, 0x100_0200), (0x1000_0084, 7, 0x100_0201), (0x1000_0084, 8, 0x100_0202),
+    (0x1000_0084, 9, 0x100_0203), (0x1000_0084, 10, 0x100_0327), (0x1000_0080, 1, 0x100_002a), (0x1000_0080, 0, 0x100_0029),
+    (0x1000_008c, 1, 0x100_002c), (0x1000_008c, 0, 0x100_002b), (0x1000_008d, 1, 0x100_002d), (0x1000_008d, 0, 0x100_002e),
+    (0x1000_00a2, 0, 0x100_002f), (0x1000_00a2, 1, 0x100_0030), (0x1000_00a2, 2, 0x100_0031), (0x1000_009f, 1, 0x100_0033),
+    (0x1000_009f, 0, 0x100_0032), (0x1000_019b, 0, 0x100_0034), (0x1000_019b, 1, 0x100_0035), (0x1000_019b, 16, 0x100_0295),
+    (0x1000_0227, 1, 0x100_0037), (0x1000_0227, 0, 0x100_0036), (0x1000_0228, 0, 0x100_01dd), (0x1000_0228, 1, 0x100_0325),
+    (0x1000_0228, 2, 0x100_0326), (0x1000_0228, 3, 0x100_01dc), (0x1000_0008, i32::MIN, 0x100_030d), (0x1000_00f6, i32::MIN, 0x100_030e),
+    (0x1000_0116, 1, 0x100_0079), (0x1000_0116, 0, 0x100_007a), (0x1000_0115, 1, 0x100_007b), (0x1000_0115, 0, 0x100_007c),
+    (0x1000_018c, 0, 0x100_007d), (0x1000_018c, 1, 0x100_007e), (0x1000_018c, 2, 0x100_007f), (0x1000_0195, 0, 0x100_02da),
+    (0x1000_0195, 4, 0x100_0083), (0x1000_0195, 1, 0x100_0080), (0x1000_0195, 2, 0x100_0081), (0x1000_0195, 3, 0x100_0082),
+    (0x1000_0195, 5, 0x100_0084), (0x1000_0195, 6, 0x100_0085), (0x1000_0195, 7, 0x100_0087), (0x1000_0195, 8, 0x100_0086),
+    (0x1000_0185, 2, 0x100_0088), (0x1000_0185, 3, 0x100_0089), (0x1000_0185, 4, 0x100_008a), (0x1000_0186, 8, 0x100_008b),
+    (0x1000_0186, 5, 0x100_008c), (0x1000_0186, 3, 0x100_008d), (0x1000_0186, 1, 0x100_008e), (0x1000_0187, 50, 0x100_008f),
+    (0x1000_0187, 75, 0x100_0090), (0x1000_0187, 100, 0x100_0091), (0x1000_0187, 125, 0x100_0092), (0x1000_0187, 150, 0x100_0093),
+    (0x1000_0187, 175, 0x100_0094), (0x1000_0187, 200, 0x100_0095), (0x1000_0187, 250, 0x100_0328), (0x1000_0187, 300, 0x100_0329),
+    (0x1000_0188, 50, 0x100_0096), (0x1000_0188, 75, 0x100_0097), (0x1000_0188, 100, 0x100_0098), (0x1000_0188, 125, 0x100_0099),
+    (0x1000_0188, 150, 0x100_009a), (0x1000_0188, 175, 0x100_009b), (0x1000_0188, 200, 0x100_009c), (0x1000_018a, 50, 0x100_009d),
+    (0x1000_018a, 75, 0x100_009e), (0x1000_018a, 100, 0x100_009f), (0x1000_018a, 125, 0x100_00a0), (0x1000_018a, 150, 0x100_00a1),
+    (0x1000_018a, 175, 0x100_00a2), (0x1000_018a, 200, 0x100_00a3),
     (0x1000_011a, 1, 0x100_030f), (0x1000_011a, 0, 0x100_0310), (0x1000_011b, 1, 0x100_0057), (0x1000_011b, 0, 0x100_0058),
     (0x1000_0124, 1, 0x100_0059), (0x1000_0124, 0, 0x100_005a), (0x1000_0125, 0, 0x100_005b), (0x1000_0125, 1, 0x100_005c),
     (0x1000_0126, 0, 0x100_005d), (0x1000_0126, 1, 0x100_005e), (0x1000_01cb, 1, 0x100_0061), (0x1000_01cb, 0, 0x100_0062),
@@ -2851,9 +2874,82 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
-        Page::MpSetup | Page::MpRules
-        | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBots | Page::MpBotChoose | Page::MpBotSetup
-        | Page::MpConfirm | Page::MpDebriefing => {}
+        // The MP value-list pages [L pages 0x40000014 Game Rules (header 0x19b), 0x40000017 Player Mods (0x19d),
+        // 0x40000028 Enviro-Mods (0x19e), 0x4000002c Bot Setup (0x294); hint 0x217; labels at x 54, values centred on
+        // the value controls, the description plate (50,355,540×40); the value labels per row from the handlers
+        // (P_MPRULES 0x20f790, P_MPPLAYERMODS 0x2104d0, P_MPENVIROMODS 0x210030, P_MPBOTSETUP 0x211270); PCSX2
+        // m58-m60, m62].
+        Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup => {
+            let onoff = |v: bool| bind(if v { 0x1b7 } else { 0x1b6 });
+            let num = |v: i32| v.to_string();
+            // (label, value text, row y, control, value)
+            let rows: Vec<(u32, String, f32, u32, i32)> = match fe.page {
+                Page::MpRules => {
+                    let t = fe.mp_time_limit;
+                    vec![(0x156, if t < 0 { bind(0x3ca) } else { num(t) }, 191.0, 0x1000_0008, t),
+                         (if fe.mp_rules_lives() { 0x3d3 } else { 0x24c }, num(fe.mp_frag_limit), 223.0, 0x1000_00f6, fe.mp_frag_limit)]
+                }
+                Page::MpPlayerMods => {
+                    const SETS: [u32; 11] = [0x1a0, 0x1a2, 0x1a4, 0x1a6, 0x1a8, 0x24f, 0x3db, 0x3dc, 0x3dd, 0x3de, 0x1b2];
+                    vec![(0x1ae, onoff(fe.mp_friendly_fire != 0), 143.0, 0x1000_0081, fe.mp_friendly_fire as i32),
+                         (0x24d, bind(SETS[(fe.mp_weapon_set as usize).min(10)]), 175.0, 0x1000_0084, fe.mp_weapon_set as i32),
+                         (0x1ac, onoff(fe.mp_player_mods[0] != 0), 207.0, 0x1000_0080, fe.mp_player_mods[0] as i32),
+                         (0x24e, onoff(fe.mp_player_mods[1] != 0), 239.0, 0x1000_008c, fe.mp_player_mods[1] as i32),
+                         (0x1e5, onoff(fe.mp_radar != 0), 271.0, 0x1000_008d, fe.mp_radar as i32)]
+                }
+                Page::MpEnviroMods => {
+                    let e = fe.mp_envmods;
+                    vec![(0x1af, bind([0x1b0, 0x1b1, 0x1b2][(e[0] as usize).min(2)]), 143.0, 0x1000_00a2, e[0] as i32),
+                         (0x1ab, onoff(e[1] != 0), 177.0, 0x1000_009f, e[1] as i32),
+                         (0x1aa, if e[2] == 0x10 { bind(0x100_0076) } else { onoff(e[2] != 0) }, 209.0, 0x1000_019b, e[2] as i32),
+                         (0x328, onoff(e[3] != 0), 241.0, 0x1000_0227, e[3] as i32),
+                         (0x5b9, bind([0x1b6, 0x100_02d8, 0x100_02d9, 0x1b2][(e[4] as usize).min(3)]), 273.0, 0x1000_0228, e[4] as i32)]
+                }
+                _ => {
+                    let b = &fe.mp_bots[fe.mp_bot_slot.min(3)];
+                    let pick = |v: i32, t: &[(i32, u32)]| t.iter().find(|x| x.0 == v).map_or(num(v), |x| bind(x.1));
+                    vec![(0x295, bind(if b.enabled { 0x181 } else { 0x182 }), 85.0, 0x1000_0116, b.enabled as i32),
+                         (0x247, pick(b.speed, &[(0, 0x23c), (1, 0x23d), (2, 0x23e)]), 117.0, 0x1000_018c, b.speed),
+                         (0x232, pick(b.trait_id, &[(0, 0x100_02d0), (1, 0x233), (2, 0x234), (3, 0x235), (4, 0x24a), (5, 0x237), (6, 0x238), (7, 0x239), (8, 0x24b)]), 149.0, 0x1000_0195, b.trait_id),
+                         (0x246, pick(b.aim, &[(2, 0x3bd), (3, 0x31b), (4, 0x31c)]), 181.0, 0x1000_0185, b.aim),
+                         (0x15e, pick(b.skill, &[(8, 0x241), (5, 0x242), (3, 0x243), (1, 0x244)]), 213.0, 0x1000_0186, b.skill),
+                         (0x1c6, num(b.hit_points), 245.0, 0x1000_0187, b.hit_points),
+                         (0x23a, num(b.recovery1), 277.0, 0x1000_0188, b.recovery1),
+                         (0x249, num(b.recovery2), 309.0, 0x1000_018a, b.recovery2)]
+                }
+            };
+            let hdr = match fe.page { Page::MpRules => 0x19b, Page::MpPlayerMods => 0x19d, Page::MpEnviroMods => 0x19e, _ => 0x294 };
+            page_header(&mut h, hfont, &bind(hdr));
+            let on = gs(CREAM, 0xff);
+            let off = gs(0x73330f, 0xc0);
+            let yellow = gs(0xfec43e, 0xff);
+            let cur = fe.cursor.min(rows.len() - 1);
+            for (i, (lbl, val, y, _, _)) in rows.iter().enumerate() {
+                let c = if i == cur { on } else { off };
+                let mid = y + 8.0;
+                left_text(&mut h, font, &bind(*lbl), mx(54.0), my(mid + 6.0), c, true, 1.3);
+                centred(&mut h, font, -2, val, mx(457.0), my(mid + 6.0), c, true, 1.3);
+                if i == cur {
+                    for (cx, left) in [(357.0f32, true), (555.0, false)] {
+                        let (p0, p1, p2) = if left { ((cx + 7.0, mid - 7.0), (cx + 7.0, mid + 7.0), (cx - 7.0, mid)) } else { ((cx - 7.0, mid - 7.0), (cx - 7.0, mid + 7.0), (cx + 7.0, mid)) };
+                        let q = |p: (f32, f32), h: &Hud| HudVertex { p: h.ndc(Anchor::Centre, mx(p.0), my(p.1)), uv: [0.0, 0.0], c: yellow };
+                        let v = [q(p0, &h), q(p1, &h), q(p2, &h), q(p0, &h), q(p2, &h), q(p2, &h)];
+                        h.ndc_solid(-3, v, yellow);
+                    }
+                }
+            }
+            if let Some(&(_, _, _, ctrl, v)) = rows.get(cur) {
+                if let Some(dl) = opt_desc(ctrl, v) {
+                    let plate_mid = if fe.page == Page::MpBotSetup { 375.0 } else { 375.0 };
+                    centred(&mut h, font, -2, &bind(dl), mx(320.0), my(plate_mid + 6.0), gs(CREAM, 0xff), true, 1.0);
+                }
+            }
+            hint_bar(&mut h, font, &hint(0x217, "~A Confirm  ~V Scroll  ~H Change  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        // Not drawn yet: the per-agent setup step (PCSX2 m52-m54 — the Join Game panels with Choose Team / Choose
+        // Character / Health Handicap), the Start summary (m65) and the debriefing.
+        Page::MpSetup | Page::MpConfirm | Page::MpDebriefing => {}
         Page::Start => {
             // The title [M menu-def page 0x40000009: the art control 0x10000196 (0,0,640,480) TEX
             // 0x03000074; the prompt control 0x100000fa (131,309,379×16) LBL 0x1c9, colours 0x7f621fff;

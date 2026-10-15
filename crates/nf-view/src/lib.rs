@@ -1286,6 +1286,10 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             "mpscenopts" => menu::Page::MpOptions,
             "mpbots" => menu::Page::MpBots,
             "mpbotchoose" => menu::Page::MpBotChoose,
+            "mprules" => menu::Page::MpRules,
+            "mpplayermods" => menu::Page::MpPlayerMods,
+            "mpenviromods" => menu::Page::MpEnviroMods,
+            "mpbotsetup" => menu::Page::MpBotSetup,
             // fix-pause-menu: the in-game pages render headless too (the pause page over the
             // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
             // picks the pause tab, `--confirm` arms the pause confirm.
