@@ -13481,3 +13481,31 @@ Work Log (credits-data):
   debriefing rows/columns (label ids, values, award rules), ordering, and the return flow. Handlers:
   P_MPDEBRIEFING_Handler 0x212198, C_RBMPFINISH_Handler 0x20db48. State + getters for the draw code; no drawing.
 - Status: branch created from origin/master; research starting.
+
+## mp-debriefing-data (2026-10-15, branch s/mp-debriefing-data) — DONE 22:55 UTC
+- Task: the MP match end + debriefing: the scenario end rules, the debriefing's rows/columns/
+  ordering, the return flow. P_MPDEBRIEFING 0x212198, C_RBMPFINISH 0x20db48 (settled: the
+  Player-Setup panel handler, not the debriefing), C_MPDBG 0x217860.
+- Evidence: MP_CheckForEndCondition 0x184268 + MP_Update 0x184bd0 + MP_SortOutWhoWon 0x1848d0 +
+  MP_PlayerKilled 0x188f70 read whole; disasm pinned GameState+0x1C = 0x40000033 (0x184e80),
+  +0x24 = 1 (0x184e6c), the state at MPGame+0x188, the team scores at +0x180/+0x184, the rank
+  table 0x309520 = 0x01000297-9a, the winner sprintf arg = MPSettings+slot·0x30+0 (0x212a64-7c),
+  fmt "%d" @0x30d2f0. Menu-def page 0x40000033 dumped (43 controls): columns Agent/Points/
+  Victories/Deaths/TOTAL = 0x14e/0x24c/0x686/0x2be/0x163; 0x1000015b is a dead send (no such
+  control). Decimal-as-hex offset corrections recorded (the state is +0x188 not +0x392 etc.).
+- Port: nf-game mp/mod.rs — MpSlot kills/deaths/streak/out, MpGame top_score/handover/
+  request_debriefing/restart_pending/end_status, player_killed (0x188f70's rules), the full
+  end-condition + state machine (demo/prot state 6 without the 0xfe latch, 0x10 elimination,
+  frag 0xfd → 1, time 0xfe → 2, 1→sort→3, 3→4 at 5 s, 4→5 + the 0x40000033 request, 6 restarts);
+  mp/debrief.rs — get_mp_score (0x203af8) + debriefing() (the sort, rank ties, the 4-row cap,
+  the result line). nf-view menu.rs — mp_debriefing + open_mp_debriefing + the row/result/
+  portrait getters, MP_CHARACTERS_SMALL (disc-pinned), the label consts, Action::Extra =
+  C_MPDBG 0x5d's rematch (the arena re-request), Confirm = 0x4b → the scenario page.
+- Tests: nf-game tests/mp_debriefing.rs 9/9; nf-view tests/mp_debriefing_flow.rs 6/6 (2 NF_ISO
+  binding every label against USATxt + pinning the small table). Ran: nf-game FULL 350/0 (39
+  binaries); nf-view MP area 55/0 (mp_menu_flow 9, menus_flow 36, mp_menu_lists_live 5,
+  mp_core_live 5). suite.py could not run (this sandbox reaps background jobs — the nohup died
+  in its first minute; the foreground window fit the direct runs above). Report §"How it was
+  verified" has the details.
+- Doc: docs/systems/mp-debriefing.md; report docs/reports/mp-debriefing-data.md. Live checks ×4
+  in the doc §6 (the team-announce inversion is the one to look at).
