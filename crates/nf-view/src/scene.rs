@@ -1811,12 +1811,15 @@ impl Sim {
         // +0x05) switch to their twin through the normal switch request; the rest cycle the mode byte
         // (the Inventory's `fire_mode`, `BL + w*0xC + 0x1BB`) up to the record's mode count (+0x2E).
         // For the watch pair 0x54/0x55 the fire press ORs in (the game reads action 9 mask 4 there) —
-        // the port tracks the trigger's press edge in `prev_trigger`.
-        if input.mode_switch {
-            let watch = matches!(self.gun.weapon, 0x54 | 0x55);
-            let fire_new = input.fire && !self.prev_trigger;
-            let toggled = if watch { fire_new } else { false };
-            if (input.mode_switch || toggled)
+        // the port tracks the trigger's press edge in `prev_trigger`. The game enters the block on the
+        // OR'd variable alone [M 0x1a24c8: `bVar5 = Input_Action(slot,0xc,4); if (*w - 0x54 < 2)
+        // bVar5 |= Input_Action(slot,9,4); if (bVar5 != 0 && anim+0xf4 == 0) ...`] — a fire press with
+        // the mode button untouched reaches it for this pair (weapon-matrix5: the old outer
+        // `if input.mode_switch` made the OR arm dead code; the harness's fire presses never swapped).
+        let watch = matches!(self.gun.weapon, 0x54 | 0x55);
+        let fire_new = input.fire && !self.prev_trigger;
+        let toggled = watch && fire_new;
+        if (input.mode_switch || toggled)
                 && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state && !fire_busy
                 && !(aiming && self.weapons.flags(self.gun.weapon as usize) & 0x40 != 0)
             {
@@ -1851,7 +1854,6 @@ impl Sim {
                         if let Some(fm) = self.drones.inventory.fire_mode.get_mut(self.gun.weapon as usize) { *fm = m; }
                     }
                 }
-            }
         }
         self.prev_trigger = input.fire;
         // The pickup auto-switch, LIVE (fix-auto-switch re-opens the fix-pickups-remainder gate)
