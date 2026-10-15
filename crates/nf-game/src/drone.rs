@@ -5737,7 +5737,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // Launcher 0x30's slow glowing ball (speed 0.1 → 0.025 u/tick) and the Korsakov K5 dart
             // 0x43 (1.5 → 0.375) [L ee_start_05.bin @ 0x2bf150].
             let flags6c = u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap());
-            let speed = f(0x20) * if flags6c & 0x200 != 0 { 0.25 } else { 1.0 };
+            let mut speed = f(0x20) * if flags6c & 0x200 != 0 { 0.25 } else { 1.0 };
+            // fix-sentinel-camera-play [L 2026-10-14 PCSX2, docs/live/2026-10-14-weapon-measurements-pcsx2.md]:
+            // the Sentinel rockets' FLIGHT step is 4.04× the init write — the 'Unguided' 0x2d's
+            // BU+0xF8 reads 0.33666 u/frame, constant over the flight (= (+0x20 0.3333 [L] × the
+            // 0x200 quarter [M Bullet_init 0x12c5a0:207-211]) × 4.04). Bullet_update rewrites
+            // BU+0xF8 per tick (0x12e7b0 at 0x12ecf8, the Vec_NormaliseLen step) and the object's
+            // control integrates the move — ×4.04 is the measured flight scale on the measured
+            // twins only (0x2c/0x2d); the other 0x200 records keep fire-modes3's pins (the Torpedo
+            // 0x30's 0.025, the Korsakov 0x43's 0.375). The port's 0.0625 was 5.4× too slow (the
+            // playtest: "The rockets are way too slow"). Live check: gdbwatch BU+0xF8 through a
+            // 0x2c ride to confirm the guided scale (predicted 0.2525).
+            if weapon == 0x2c || weapon == 0x2d { speed *= 4.04; }
             self.player_bullets.push(PlayerBullet {
                 pos: from, dir, speed, travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
                 homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
