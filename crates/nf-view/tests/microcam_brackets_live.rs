@@ -10,24 +10,27 @@ use nf_game::player::Input;
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
-/// The bracket texture ("DroneScan"'s, [D 07000005.bin map 15 batch 0]).
-const BRACKET_TEX: u32 = 0x0300_0145;
 
-/// Bracket quads in the overlay frame (6 vertices each), or None while the texture is not loaded.
+/// Bracket objects drawn this frame: the DroneScan mesh's world slots (scene Effect kind 6) that sit at a
+/// candidate root instead of collapsed far below, or None while the level lacks the mesh. The game draws the
+/// mesh itself in sort list 2 after `psiClearZ` [M 0x1e62d8:57-59, 0x1e6f50:162-175].
 fn bracket_quads(scene: &nf_view::scene::Scene) -> Option<usize> {
-    let frame = nf_view::hud::overlay(scene, 1280.0 / 720.0);
-    let ti = scene.hud_textures.iter().position(|(h, _)| *h == BRACKET_TEX)?;
-    Some(frame.runs.iter().filter(|r| r.0 == ti + 1).map(|r| (r.3 / 6) as usize).sum())
+    scene.effect_attachment(6, 0, nf_view::scene::DRONE_SCAN)?;
+    let fs = scene.frame_state(None, 0.0, nf_view::scene::ViewOpts::default());
+    Some((0..nf_view::scene::DRONE_SCAN_SLOTS).filter_map(|k| scene.effect_attachment(6, k, nf_view::scene::DRONE_SCAN))
+        .filter(|&a| fs.attach[a as usize][3][1] > -9999.0).count())
 }
 
-/// Whether a bracket quad sits near the screen centre (NDC |x|,|y| < 0.35 — the faced guard's box).
+/// Whether a drawn bracket sits near the screen centre: its root within ~0.35 rad of the view direction (the
+/// faced guard's box).
 fn centre_bracket(scene: &nf_view::scene::Scene) -> Option<bool> {
-    let frame = nf_view::hud::overlay(scene, 1280.0 / 720.0);
-    let ti = scene.hud_textures.iter().position(|(h, _)| *h == BRACKET_TEX)?;
-    Some(frame.runs.iter().filter(|r| r.0 == ti + 1).any(|r| {
-        let v = &frame.v[r.2 as usize..(r.2 + r.3) as usize];
-        let (mx, my) = (v.iter().map(|q| q.p[0]).sum::<f32>() / v.len() as f32, v.iter().map(|q| q.p[1]).sum::<f32>() / v.len() as f32);
-        mx.abs() < 0.8 && my.abs() < 0.8
+    let sim = scene.sim.as_ref()?;
+    let e = sim.bond.head();
+    let l = sim.bond.look();
+    Some(nf_view::hud::camera_scan_roots(sim).iter().any(|p| {
+        let d = [p[0] - e[0], p[1] - e[1], p[2] - e[2]];
+        let n = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt().max(1e-6);
+        (d[0] * l[0] + d[1] * l[1] + d[2] * l[2]) / n > 0.94
     }))
 }
 
@@ -105,7 +108,7 @@ fn the_micro_camera_brackets_every_candidate_guard() {
     // the cel draw, which culls by view too).
     let want = candidates(w.sim.as_ref().unwrap()).len();
     assert!(want >= 1, "at least the faced guard is a candidate [M 0x1a12d8]");
-    let quads = bracket_quads(&w).expect("the bracket texture 0x03000145 is loaded into the HUD (the game draws DroneScan brackets [M 0x1a12d8])");
+    let quads = bracket_quads(&w).expect("the DroneScan mesh 0x02000832 has its draw slots (the game draws DroneScan brackets [M 0x1a12d8])");
     assert!(quads >= 1, "the faced guard carries its bracket");
     assert_eq!(centre_bracket(&w), Some(true), "the faced guard's bracket rides the screen centre (the re-aim tracks it)");
     eprintln!("[brackets] {quads} quads drawn, {want} level candidates (the off-view ones cull, like the game's cel draw)");
@@ -161,7 +164,7 @@ fn a_corpse_gets_no_bracket() {
     assert!(sim.drones.list[di].health <= 0.0);
     let after = candidates(sim).len();
     drop(sim);
-    let quads = bracket_quads(&w).expect("the bracket texture loads");
+    let quads = bracket_quads(&w).expect("the DroneScan slots exist");
     assert_eq!(centre_bracket(&w), Some(false), "the dead guard's bracket is gone from the screen centre [M 0x1a12d8: the Drone+0xac > 0 gate]");
     eprintln!("[corpse] {quads} quads remain; the centre (the dead guard) has none");
 }
@@ -222,7 +225,7 @@ fn brackets_draw_through_a_wall() {
                 let rects = nf_view::hud::camera_brackets(sim, 1280.0 / 720.0);
                 assert_eq!(rects.len(), 1, "exactly the walled-off guard's bracket (present, enabled, alive, not WaitSwitch [M 0x1a12d8] — no LOS test anywhere in the chain)");
             }
-            let quads = bracket_quads(&w).expect("the bracket texture loads");
+            let quads = bracket_quads(&w).expect("the DroneScan slots exist");
             assert!(quads >= 1, "the overlay draws the walled-off guard's bracket");
             eprintln!("[wall] {quads} quads with a wall between Bond and guard {i}");
             done = true;
@@ -236,8 +239,10 @@ fn brackets_draw_through_a_wall() {
 fn probe_hud_textures() {
     let Some(iso) = iso() else { eprintln!("no NF_ISO"); return };
     let w = nf_view::load(&iso, "07000005.bin", false).expect("load");
-    let hit = w.hud_textures.iter().position(|(h, _)| *h == BRACKET_TEX);
-    eprintln!("hud_textures: {} entries; BRACKET_TEX at {:?}; total TEXTURES {}", w.hud_textures.len(), hit, nf_view::hud::TEXTURES.len());
+    let slot = w.effect_attachment(6, 0, nf_view::scene::DRONE_SCAN);
+    assert!(slot.is_some(), "07000005 resolves DroneScan 0x02000832 and builds its draw slots");
+    // Sister: an unrelated hash has no kind-6 slots.
+    assert!(w.effect_attachment(6, 0, 0x0200_0001).is_none());
 }
 
 #[test]

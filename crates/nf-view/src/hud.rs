@@ -15,10 +15,7 @@ const SH: f32 = 448.0;
 /// fix-context-hints added the third-icon context textures [M 0x2FC168 = 0x03000064+ctx; only 0x66
 /// (winch, ctx 2), 0x67 (hanging man, ctx 3) and 0x6A (figure, ctx 6) exist on the disc [D tex-list] —
 /// the table's other four ids never resolve in `hashtable_set_sprite` and the icon stays hidden].
-pub const TEXTURES: [u32; 27] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141, 0x0300_0066, 0x0300_0067, 0x0300_006a, 0x0300_005e, 0x0300_004a, 0x0300_005f, 0x0300_005c, 0x0300_005d, 0x0300_0059, 0x0300_0145];
-/// The Micro-Camera's target brackets [D 07000005.bin map 15 batch 0]: "DroneScan" 0x02000832's
-/// texture, 64×64, one frame.
-const DRONE_SCAN_TEX: u32 = 0x0300_0145;
+pub const TEXTURES: [u32; 26] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141, 0x0300_0066, 0x0300_0067, 0x0300_006a, 0x0300_005e, 0x0300_004a, 0x0300_005f, 0x0300_005c, 0x0300_005d, 0x0300_0059];
 const CROSS_TEX: u32 = 0x0300_0026;
 const FONT_TEX: u32 = 0x0300_0003;
 /// SightPane textures [D 07000005.bin entries 71 + 56]: 0x03000034 = the scope overlay (256×256, the circular
@@ -771,10 +768,8 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
                 // drawn, living, non-WaitSwitch drone, drawn through walls (the user's report). The
                 // game's sprite is one frame deep (Debris_Update 0x1aac00 deletes it); the pane
                 // re-creates them every tick, so a per-frame draw list is the same picture.
-                for [x, y, w2, h2] in camera_brackets(s, aspect) {
-                    let (tw, th) = h.tex_dims(DRONE_SCAN_TEX);
-                    h.quad(Anchor::Centre, 38, DRONE_SCAN_TEX, 0, x - w2 / 2.0, y - h2 / 2.0, w2, h2, [0.0, 0.0, tw, th], (false, false), c);
-                }
+                // Drawn as the world mesh itself (scene.rs Effect kind 6, `camera_scan_roots`): the HUD-quad
+                // stand-in showed the texture's black ground opaque and the wrong shape (render vs PCSX2, 2026-10-15).
             }
             // LaserPane 19 [L LaserSprInfo 0x2be288] — the Phoenix Samurai's (0x32/0x33) frame: six
             // solid-texture strips (top/bottom bars + four centre ticks), blend 1, colour 0x7f7f7f
@@ -815,6 +810,15 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
 // sizes the box from the quad's 2×2 world extent, matching `Camera::view_proj`'s projection
 // (ndc_x = (f/aspect)·x/z, ndc_y = f·y/z) and the hud's NDC mapping (`Hud::ndc`: uniform
 // (4/3)/aspect pixel scale across, full height).
+/// The bracket objects' world roots this tick (the pane's candidate rule, no screen cull — the world draw culls):
+/// empty unless the Micro-Camera's pane is up (zoom target > 1 on 0x54/0x55).
+pub fn camera_scan_roots(s: &crate::scene::Sim) -> Vec<[f32; 3]> {
+    if !(s.zoom_target > 1.0 && zoom_overlay(s.gun.weapon) == ZoomOverlay::Camera) { return Vec::new(); }
+    s.drones.llist.iter().map(|&i| &s.drones.list[i])
+        .filter(|dr| dr.present && dr.enabled && dr.health > 0.0 && dr.state != nf_game::drone::state::WAIT_SWITCH)
+        .map(|dr| dr.pos).collect()
+}
+
 pub fn camera_brackets(s: &crate::scene::Sim, aspect: f32) -> Vec<[f32; 4]> {
     let pos = s.bond.head();
     let yaw = s.bond.yaw;
