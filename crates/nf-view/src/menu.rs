@@ -2743,7 +2743,74 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
         // mp-menu-flow: the multiplayer pages draw from the same getters the other wheels use
         // (mp_row_preview/mp_row_desc/mp_row_locked + row_label); the drawing itself is the main
         // agent's task (no drawing in this task's scope) — the overlay leaves them empty here.
-        Page::MpJoin | Page::MpScenario | Page::MpMap | Page::MpSetup | Page::MpOptions | Page::MpRules
+        // Select Scenario / Select Map [L pages 0x4000001a (header 0x2c3) / 0x40000013 (header 0x158): the codename
+        // wheel's layout — panel, emblem, five wheel rows, the description plate, hint 0x218; PCSX2 m45-m48].
+        Page::MpScenario | Page::MpMap => {
+            let (hdr, n, cur) = if fe.page == Page::MpScenario { (0x2c3, MP_SCENARIO_ROWS.len(), fe.mp_scenario_row) } else { (0x158, MP_MAP_ROWS.len(), fe.mp_map_row) };
+            let cur = cur.min(n - 1);
+            page_header(&mut h, hfont, &bind(hdr));
+            panel(&mut h);
+            let c = if fe.mp_row_locked(cur) { gs(0x7f7f7f, 0x60) } else { gs(0x7f7f7f, 0xff) };
+            emblem_col(&mut h, fe.mp_row_preview(cur), 0x0300_00bf, c, c);
+            // Locked rows still show their name, greyed (PCSX2 m48: "Uplink", "Demolition"); the locked text is the description.
+            let name = |r: usize| -> String { if fe.page == Page::MpScenario { bind(MP_SCENARIO_ROWS[r].1) } else { fe.row_label(lang, r) } };
+            wheel_at(&mut h, font, n, cur, name, |r| fe.mp_row_locked(r), cream);
+            desc_block(&mut h, font, &bind(fe.mp_row_desc(cur)), bright);
+            hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        // Join Game [L page 0x40000019 (parsed 2026-10-15): header 0x29e, hint 0x49b; four panels TEX 0x03000199
+        // (50/328, 103/253, 262×134) titled 0x5f0..0x5f3 at (70/346, 105/255); each panel's message box
+        // (55/332, 135/285, 253×70); agent 1's codename prompt 0x37b (70,132), its emblem (117,150,128×64) and the
+        // codename spinner 0x1000022b (70,215,226×16). PCSX2 m42-m44.]
+        Page::MpJoin => {
+            page_header(&mut h, hfont, &bind(0x29e));
+            let panels = [(50.0f32, 103.0f32), (328.0, 103.0), (50.0, 253.0), (328.0, 253.0)];
+            for (i, &(px, py)) in panels.iter().enumerate() {
+                quad640(&mut h, 0x0300_0199, px, py, 262.0, 134.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+                label(&mut h, font, &bind(0x5f0 + i as u32), px + 20.0, py + 2.0, 226.0, 16.0, bright, true, 1.0);
+                let a = &fe.mp_join[i];
+                let (bx, by) = (px + 5.0, py + 32.0);
+                // The message lines, centred in the box at pitch 19 (PCSX2: middles 152/171/190 in a box from 135).
+                let lines_at = |h: &mut Hud, text: &str, mid: f32| {
+                    let lines: Vec<String> = text.split('\n').flat_map(|p| wrap_px(p, font, mx(240.0))).collect();
+                    let n = lines.len() as f32;
+                    // A text with a button glyph spaces its lines wider (PCSX2 m44: "Press ✕" / "when ready" 29 apart; the
+                    // plain wrapped lines 19).
+                    let pitch = if text.contains('~') && n > 1.0 { 29.0 } else { 19.0 };
+                    for (k, l) in lines.iter().enumerate() {
+                        let m = mid + (k as f32 - (n - 1.0) / 2.0) * pitch;
+                        hint_row(h, font, l, bx + 126.5 - 270.0, m - 8.5, cream, None);
+                    }
+                };
+                // hint_row centres on its x640 + 270 and puts the words' middle at y640 + 8.5.
+                let _ = by;
+                match (i, a.state) {
+                    (0, 1) => {
+                        label(&mut h, font, &bind(0x37b), 70.0, 132.0, 226.0, 16.0, cream, true, 1.0);
+                        // [M C_RBMPSTART 0x20d048:51-53: the image control gets TEX 0x030001a0, uv (0,0)-(127,63)]
+                        quad640(&mut h, 0x0300_01a0, 117.0, 150.0, 128.0, 64.0, [0.0, 0.0, 128.0, 64.0], gs(0x7f7f7f, 0xff));
+                        label(&mut h, font, &fe.mp_codename_at(a.codename_row), 70.0, 215.0, 226.0, 16.0, cream, true, 1.0);
+                        let yellow = gs(0xfec43e, 0xff);
+                        for (cx, left) in [(80.0f32, true), (284.0, false)] {
+                            let cy = 223.0;
+                            let (p0, p1, p2) = if left { ((cx + 6.0, cy - 6.0), (cx + 6.0, cy + 6.0), (cx - 6.0, cy)) } else { ((cx - 6.0, cy - 6.0), (cx - 6.0, cy + 6.0), (cx + 6.0, cy)) };
+                            let q = |p: (f32, f32), h: &Hud| HudVertex { p: h.ndc(Anchor::Centre, mx(p.0), my(p.1)), uv: [0.0, 0.0], c: yellow };
+                            let v = [q(p0, &h), q(p1, &h), q(p2, &h), q(p0, &h), q(p2, &h), q(p2, &h)];
+                            h.ndc_solid(-3, v, yellow);
+                        }
+                    }
+                    (0, _) => { let t = fe.row_label(lang, 0); lines_at(&mut h, &t, py + 32.0 + 43.0); }
+                    // Agents 2-4: the game's insert-controller texts (the port has one input) [L USATxt 0x3c0 / 0x4a2;
+                    // PCSX2 m42: port 2 for agent 2, the multitap line for 3 and 4].
+                    (1, _) => { let t = bind(0x3c0).replace("%s", "2"); lines_at(&mut h, &t, py + 32.0 + 36.0); }
+                    _ => { let t = bind(0x4a2); lines_at(&mut h, t.trim_end(), py + 32.0 + 36.0); }
+                }
+            }
+            hint_bar(&mut h, font, &hint(0x49b, "~A Confirm  ~V Change  ~B Back"), 50.0, 419.0, cream);
+            quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+        }
+        Page::MpSetup | Page::MpOptions | Page::MpRules
         | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBots | Page::MpBotChoose | Page::MpBotSetup
         | Page::MpConfirm | Page::MpDebriefing => {}
         Page::Start => {
@@ -3362,6 +3429,33 @@ fn wheel(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<
     wheel_dim(h, fe, font, lang, label, |_, _| false, base);
 }
 
+/// The multiplayer wheels' preview textures, loaded after MENU_TEXTURES so the fixed indices stay put [L the MP
+/// row tables' +0x00 hashes].
+pub fn mp_textures() -> &'static [u32] {
+    static T: std::sync::OnceLock<Vec<u32>> = std::sync::OnceLock::new();
+    T.get_or_init(|| {
+        let mut v: Vec<u32> = MP_SCENARIO_ROWS.iter().map(|r| r.0).chain(MP_MAP_ROWS.iter().map(|r| r.0))
+            .chain(MP_CHARACTERS.iter().map(|r| r.0)).chain(MP_OPTIONS_ROWS.iter().map(|r| r.0)).chain(MP_BOTS_ROWS.iter().map(|r| r.0))
+            .chain([0x0300_0199u32, 0x0300_0159, 0x0300_015c, 0x0300_0169, 0x0300_01a0])   // the Join Game panels + slot images [L page 0x40000019]
+            .filter(|h| *h != 0 && !MENU_TEXTURES.contains(h)).collect();
+        v.sort_unstable(); v.dedup(); v
+    })
+}
+
+/// A wheel over `n` rows centred on `cursor` (the MP pages keep their own row counters).
+#[allow(clippy::too_many_arguments)]
+fn wheel_at(h: &mut Hud, font: &nf_formats::hud::Font, n: usize, cursor: usize, label: impl Fn(usize) -> String, locked: impl Fn(usize) -> bool, base: [f32; 4]) {
+    for d in -2i32..=2 {
+        let r = cursor as i32 + d;
+        if r < 0 || r >= n as i32 { continue; }
+        let row = r as usize;
+        let slot = (d + 2) as usize;
+        let (mut c, scale) = match d { 0 => (base, 1.25), -1 | 1 => (dimmed(base, 0x80), 1.0), _ => (dimmed(base, 0x40), 1.0) };
+        if locked(row) { c = gs(0x484848, match d { 0 => 0x80, -1 | 1 => 0x40, _ => 0x20 }); }
+        left_text(h, font, &label(row), mx(WHEEL_X[slot]), my(WHEEL_Y[slot] + 8.5 + 6.0), c, true, scale);
+    }
+}
+
 fn wheel_dim(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, _lang: Option<&Lang>, label: impl Fn(&FrontEnd, usize) -> String, locked: impl Fn(&FrontEnd, usize) -> bool, base: [f32; 4]) {
     for (row, d) in fe.wheel() {
         let slot = (d + 2) as usize;
@@ -3388,8 +3482,9 @@ fn dimmed(mut c: [f32; 4], a: u32) -> [f32; 4] { c[3] = gs(0, a)[3]; c }
 /// A wheel page's description, wrapped to 500 units and centred in its plate (50,301,540×113): the lines' middles at
 /// pitch 28 around y 366 (PCSX2 07000048 codename/difficulty/missions, 2026-10-15: two lines at 352/380, one at 366).
 fn desc_block(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, c: [f32; 4]) {
-    // The wrap width is 520 640-space units (PCSX2's codename text breaks after "able to", a 502-unit line).
-    let lines = wrap_px(text, font, mx(520.0));
+    // The wrap width is 505 640-space units: PCSX2 keeps the 502-unit codename line ("…not be able to") and breaks the
+    // 509-unit Skyrail line before "deserted" (m06, m47).
+    let lines = wrap_px(text, font, mx(505.0));
     let n = lines.len().min(4);
     for (i, line) in lines.iter().take(4).enumerate() {
         let mid = 366.0 + (i as f32 - (n as f32 - 1.0) / 2.0) * 28.0;

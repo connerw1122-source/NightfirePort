@@ -1280,6 +1280,9 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             "advanced" => menu::Page::CnAdvanced,
             "mpoptions" => menu::Page::CnMp,
             "avoptions" => menu::Page::CnAv,
+            "mpscenario" => menu::Page::MpScenario,
+            "mpmap" => menu::Page::MpMap,
+            "mpjoin" => menu::Page::MpJoin,
             // fix-pause-menu: the in-game pages render headless too (the pause page over the
             // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
             // picks the pause tab, `--confirm` arms the pause confirm.
@@ -1289,6 +1292,11 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier|pause|results|complete)"); return (None, None); }
         };
     }
+    // The MP wheels keep their own row counters: `--cursor N` picks the row there too.
+    if fe.page == menu::Page::MpScenario { fe.mp_scenario_row = fe.cursor; }
+    if fe.page == menu::Page::MpMap { fe.mp_map_row = fe.cursor; }
+    // Join Game: `--cursor` is agent 1's panel state (0 press to join, 1 choose codename, 5 joined).
+    if fe.page == menu::Page::MpJoin { fe.mp_join[0].state = fe.cursor as u32; fe.mp_join[0].joined = fe.cursor > 0; fe.cursor = 0; }
     if let Some(i) = args.iter().position(|a| a == "--pause-tab") {
         fe.pause_tab = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0);
     }
