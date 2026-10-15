@@ -53,21 +53,24 @@ sim). Tests pin it: an extra out-of-band draw desyncs the hash; a different seed
 
 ## How it was verified
 
-Ran (all `--offline --release --test-threads=1`, `NF_ISO` set, foreground — background jobs are
-killed between tool calls in this sandbox, so the background fast-runner pass cannot complete
-here; foreground chunks stand in, as in the last windows):
+**Final tree = branch merged with origin/master (24b1f4dd, merge 2115381f), re-run and pushed:**
 
-- **nf-game: 371 passed / 0 failed / 2 ignored** (the full crate, includes mp_match_rules 14/14,
-  mp_arenas_live, all the bots/drone/world suites).
+- **nf-game: 378 passed / 0 failed / 2 ignored** (the merged crate — the 7 new stats tests from
+  master green too).
 - **`mp_lockstep` with `--features mp-bots`: 6/6** (the feature is not part of the standard suite
   command, so it ran separately — bots compile behind it).
-- **nf-audio: 13/0. nf-formats: 92/3** — the 3 failures are the permitted `disc_golden` trio on
-  the slim ISO.
 - **nf-view targeted determinism set: 28/0** — mp_core_live 5, mp_bots_live 2 (the ISO rigs,
   green after both fixes), mp_menu_flow 9, mp_menu_lists_live 5, replay_live 3,
   fps_determinism_live 4.
-- The full nf-view pass (wgpu GPU probes + the long walks) does not fit the window — same flag as
-  the previous windows' reports; the GPU probes are the known environmental failures.
+
+Pre-merge (same session, same command shape): nf-game 371/0, nf-audio 13/0, nf-formats 92/3 (the
+3 permitted `disc_golden` on the slim ISO), nf-view targeted 28/0.
+
+All runs `--offline --release --test-threads=1`, `NF_ISO` set, **foreground** — background jobs
+are killed between tool calls in this sandbox, so the background fast-runner pass cannot complete
+here (the same limitation the last windows reported); foreground chunks stand in, and the full
+nf-view pass (wgpu GPU probes + the long walks) does not fit the window — the GPU probes are the
+known environmental failures.
 
 Crates touched: `nf-game` only (mp/mod.rs module registry, mp/hash.rs, mp/replay.rs, mp/bots.rs,
 tests/mp_lockstep.rs) + docs. No game bytes, tokens, URLs or credentials committed; staged by name.

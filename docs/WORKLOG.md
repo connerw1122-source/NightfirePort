@@ -13796,3 +13796,6 @@ Work Log (async-level-load):
   window — flagged, same as the last windows.
 - Doc: docs/systems/net-lockstep.md (the contract, the audit table F1-F9, the design, what the
   future nf-net host owes, a live check if the main agent wants on-hardware trig samples).
+- Final tree: merged origin/master (24b1f4dd — stats/menu-sfx/async-load; WORKLOG union kept both)
+  and re-ran: nf-game 378/0/2, mp_lockstep 6/6 (--features mp-bots), nf-view mp set 28/0.
+  ntfy: all three fallbacks returned HTTP 429 (daily quota) — exact errors in the report.
