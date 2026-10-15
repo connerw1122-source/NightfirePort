@@ -13405,3 +13405,17 @@ Work Log (drive-crp-format):
 - Tests: mp_menu_flow.rs 9 headless (flow + back-outs + locks + bots + start checks + Quick Game +
   loader handover, each with a sister assertion) + mp_menu_lists_live.rs 5 ISO-gated (the five
   tables + the side bytes vs the disc's ACTION.ELF). 14/14 green; suite run on the final tree.
+## screen-adjust-model (2026-10-15, branch s/screen-adjust-model) — DONE 20:28 UTC
+- Merged origin/master mid-task: the mp-menu-flow task's menu work had landed in master — resolved
+  docs/WORKLOG.md (both kept) and crates/nf-view/src/menu.rs (both kept: the ScreenAdjust page and the
+  13 MP page variants coexist; the Left/Right remap list carries both additions; FrontEnd fields and
+  new() inits from both sides; the row_label Results arm merged into ScreenAdjust|Results).
+- Suite (this sandbox kills detached processes — background start died empty; foreground slices on the
+  final merged tree): screen_adjust 9/9 + menus_flow/menu_movies/fix_hud_zoom_tilt_live +
+  fix_viewmodel_zoom_live/fix_interp_ghosting_live/mp_menu_flow/campaign_flow_live = 70/0; menu-family
+  slice 13/0; playtest_spots_live+sim smoke 30/0; nf_{formats,view,game,audio} unit binaries +
+  hud_playtest_live/hud_radar_live/textures_live 301/0. Total 415 passed / 0 failed / 0 TIMEOUT, all
+  351 test binaries built clean. ~330 long per-level binaries didn't fit the window.
+- Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
+  0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
+  the PAL base note).

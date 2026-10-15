@@ -91,12 +91,26 @@ effects, with the widescreen 16:9 view aspect implemented.
     "Horizontal"/"Vertical"); `Sim.view_aspect` 4/3 default turning the gun-tilt matrix at 16/9.
 - Adjacent suites on the same tree: `menus_flow` 3/3, `menu_movies` 3/3,
   `fix_hud_zoom_tilt_live` 36/36 (the gun_matrix consumer).
-- The full suite (fast runner `tools/test/suite.py`, NF_ISO = the on-foot ISO) was started at
-  20:03 UTC against this tree; its total line and any FAILED/TIMEOUT lines are quoted below before
-  the final push. (SUITE_RESULT_PLACEHOLDER)
-- Commands run: `cargo test --offline --release -p nf-view --test screen_adjust` (and the three
-  adjacent test binaries above); `cargo check --offline -p nf-view`. All ISO-gated tests ran
-  against the disc; the headless ones need no ISO.
+- The full suite's fast runner (`tools/test/suite.py`, NF_ISO = the on-foot ISO, `--release`,
+  `--test-threads=1` per binary) — **this sandbox kills detached processes between tool calls**
+  (the background start at 20:03 UTC died with an empty log, the same experience the playtest-spots
+  worker recorded), so the suite ran in foreground slices against the tool cap, on the FINAL tree
+  merged with origin/master (the merge commit after resolving docs/WORKLOG.md and menu.rs — the
+  mp-menu-flow task's menu work landed in origin/master and both were kept):
+  - `--only screen_adjust,menus_flow,menu_movies,mp_menu_flow,fix_hud_zoom_tilt_live,fix_viewmodel_zoom_live,fix_interp_ghosting_live,campaign_flow_live`
+    → **70 passed, 0 failed** (the mp-menu-flow binaries run green against the merged menu.rs —
+    the conflict resolution kept both tasks' pages).
+  - `--only dev_menu_flow,devwin_flow,…` (menu-family slice) → **13 passed, 0 failed**.
+  - `--only playtest_spots_live,fix_swim_live,fix_ladder2_live,fix_restart_health_live,fix_wallhug_prompt_live`
+    → **30 passed, 0 failed** (a Sim-constructor smoke over 18 levels).
+  - `--only nf_formats,nf_view,nf_game,nf_audio,hud_playtest_live,hud_radar_live,textures_live`
+    → **301 passed, 0 failed** (the four crates' unit-test binaries + the HUD live binaries).
+  - Total across the slices: **415 passed, 0 failed**, 0 TIMEOUT/CRASH; the build step compiled all
+    **351** test binaries of the four crates clean. The remaining ~330 binaries (the long
+    NF_ISO per-level suites) did not fit this sandbox's window — not run, no failure implied.
+- Commands run: `cargo test --offline --release -p nf-view --test screen_adjust` (9/9), the three
+  adjacent test binaries, `cargo check --offline -p nf-view`, the suite slices above. All ISO-gated
+  tests ran against the disc.
 
 ## What's left / notes
 
