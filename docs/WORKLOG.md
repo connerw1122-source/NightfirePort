@@ -13445,6 +13445,34 @@ Work Log (credits-data):
 - (19:50-19:56) Tests crates/nf-view/tests/credits_data.rs (11, all green): count 0x242 + order pins (entries 0/1/2 = labels 0x10002a5/a6/a7 wide; 361 = 0x1000264 kind 2; 565 = 0x10002a1; 577 = a wide gap) + the slot accounting (209/504/241/202) + scroll rate (510 on entry, −2/frame exact) + the 14-frame period/mod-26 slots + the music fade window (686@vol700 → 0 at 578×14) + the exit/return pages (AV → CnAv, win → Main, no early fire) + the AV row opens the page + the NF_ISO pin: USATxt 0x198 binds "Credits", neighbour 0x197 does not. Fail-first evidence: the order pins caught the wrong tail index (553 vs the real 565) and a reversed sign in the scroll assert before the fixes.
 - (19:56) Run on this tree: nf-view lib 9/9, credits_data 11/11, menus_flow 36/36 (the file menu.rs touches); nf-view release build clean. The full suite didn't fit the window's tail (suite.py not on master; background jobs get reaped here) — the affected crates are nf-view only (no nf-game/nf-formats/nf-audio code changed).
 - (19:25) Extended verification on the final tree: campaign_flow_live 5/5, dev_menu_flow 5/5, fix_weapon_modes_live 6/6 (all the menu-driven nf-view suites) — 72 nf-view tests green total on this branch; no nf-game/nf-formats/nf-audio code touched. Finish steps ran (queue: done/613-credits-data.md carries the report); ntfy quota-429 on all three fallbacks, recorded in the report.
+## drive-physics (2026-10-15, branch s/drive-physics) — started 20:21 UTC
+- Task: the driving missions' car physics. Port the player car's physics step from DRIVING.ELF: the tuning
+  parameters (parse data\tuning\Physics\*.tun from the VIV archives), the integration (engine/gear/brake/
+  handbrake, tyre grip, steering, suspension), collision response against the track road/collision data, at
+  the game's tick rate. Deliverable: a headless nf_game::driving sim + tests driving a scripted input on a
+  flat surface, asserting the decompile's speed/turn numbers. No rendering.
+## drive-physics (2026-10-15, branch s/drive-physics) — first pass 21:08 UTC
+- docs/systems/drive-physics.md: the CARP tick map (FUN_00159d10 → FUN_001ff3d8 passes A-F →
+  FUN_00188200 → FUN_0018cef8 engine/gears/steer + FUN_00190f88 tyres), the .tun text DB
+  (KEY=VALUE, substring lookup FUN_001426a8, per-namespace registered globals Rigid 0x3390d0../
+  Physical 0x331970../Friction 0x3319d8.. with the .data initials), the pvehicle .atr per-car
+  schema (FUN_001968f8; Bond = vanquish.atr: MASS 1660, MAXACC 3, MAXBRAKE 3.15, MAXSTEERING 0.09,
+  MODSTEERSPEED 10, MINSTEER 0.425, GEAR_LIMIT 18/29/50/54/69, RATIO 0.65..0.44, SPRING_*,
+  WHEEL_RADIUS 0.365), the auto-shift walk + RPM (FUN_0018aa88: rpm = |v|·6000/LIMIT[gear],
+  neutral rev = throttle·7000), the drive force (MAXACC·RATIO[gear] − brake·MAXBRAKE), the
+  steering falloff (1−(v−MODSTEER)/25 floored at MINSTEER), the tyre grip boost
+  ((1−min(1,v/15))·2.5+1) + the ±12.5 lateral clamp (FUN_00190f88:506-508), the gravity bodge
+  (cars −13, jungle_truck −34; strings 0x396578/88), and the ground-damping predicate finding
+  (FUN_001f7c60:171-184 reads as the PROP path — applied to a car it would cap 0.16 m/s; cars
+  take ROLLING_RESISTANCE 0.1 instead).
+- crates/nf-game/src/driving.rs: Tuning (the .tun parser), Rigid/Friction (game defaults +
+  from_tun), CarParams (schema defaults + vanquish() + parse_atr), Car/CarInput/FlatWorld with
+  the per-tick step (gears → steering → drive/brake → bicycle-model yaw under the game's lateral
+  clamp → semi-implicit Euler, the VU0 macro form flagged [S]).
+- crates/nf-game/tests/drive_physics.rs: 11 tests, all green (parsers, gearbox walk + RPM
+  denominators, neutral rev, steering floor 0.03825, drive 1.95/1.77, brake −3.15, reverse decay
+  2.4−cut·0.075, gravity −13/−34 with the discrete Euler sum, the grip boost 3.5→1.0 + the clamp
+  sweep, the 90 s flat run visiting every gear and coasting gently).
 ## screen-adjust-model (2026-10-15, branch s/screen-adjust-model) — DONE 20:28 UTC
 - Merged origin/master mid-task: the mp-menu-flow task's menu work had landed in master — resolved
   docs/WORKLOG.md (both kept) and crates/nf-view/src/menu.rs (both kept: the ScreenAdjust page and the
@@ -13501,3 +13529,14 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   7 (last-row selection, per-row hints, the 0x31d fallback, modal, Back-vs-unpause, clamps, NF_ISO binds 0x202/0x31d/
   0x266 from USATxt.dat), each with a sister assertion; menus_flow.rs updated to the new row struct. All green on the
   merged tree (ce62cd7e). Doc: docs/systems/objective-hints.md; mission.md's "hint never drawn" + gap lines corrected.
+## drive-physics (2026-10-15, branch s/drive-physics) — DONE 21:25 UTC
+- Added the real-file tests: the shipped vanquish.atr and Physics\Rigid\default.tun, extracted from
+  MIS01.VIV through the repo's BIGF+RefPack readers (gated on /home/z/driving-refpack, override
+  NF_DRIVING_VIV; no game bytes committed) — parse to exactly the ported constants. 13/13 green.
+- Merged origin/master (WORKLOG both kept). Suite slice on the final tree: drive_physics + the four
+  crates' unit binaries → 315 passed / 0 failed; all 353 test binaries built clean. The per-level
+  NF_ISO binaries didn't fit the window (background processes die here — foreground slices).
+- Report docs/reports/drive-physics.md with 5 live checks (shift points + top speed, the ground-damping
+  predicate, the turn-rate pair, the −13 gravity on camera, the Friction tun's dead keys) and the ntfy
+  429 record. What's left for the next message: the VU0 macro (.vutext 0x324800), car↔world collision
+  vs the track quads, suspension/world colliders, handbrake in the step, the Friction name normalizer.
