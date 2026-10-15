@@ -117,6 +117,13 @@ runtime:
   (appended; the one edit inside driving-viv.md is the 6,825,216 → 6,826,240 correction with its [D]
   evidence).
 
-## ntfy
+## ntfy failed
 
-Sent after the final push (or the exact error recorded here if all three fallbacks fail).
+All three fallbacks, in order, with their exact outputs (2026-10-15 ~17:35 UTC):
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python3 urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit code 8 (server issued an error response — the same 429).
+
+The queue close (`done 500-drive-refpack`, origin/queue 52e7cbb7 + the report attach) and the branch
+pushes succeeded; only the notification is blocked by the shared daily quota (same outcome the
+mp-bots-states task recorded earlier today).
