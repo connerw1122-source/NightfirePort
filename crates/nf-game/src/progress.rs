@@ -7,7 +7,10 @@
 //! `ScoringTable` 0x2bc640 (12 × 60 B) with its static row arrays (`HT_*_ST` 0x2bbda0…0x2bc640),
 //! `ScoringTableDifMul` 0x2bc910 (3 f32), `RewardsTable` 0x2bc920 (12 × 64 B), `bonus` 0x2e1b88
 //! (u64[21]; slots 0..3 are the player slots), `sp_level` 0x2df2e0 (12 × 24 B) and the difficulty
-//! byte `GameState+0x40` (0x2a37a8; boot default 2 [M `bootup` 0x1c7e78:25]).
+//! word `GameState+40` (DECIMAL — hex +0x28, 0x2a3790; boot default 2 [M `bootup` 0x1c7e78:25,
+//! the `sw r8, 40(r17)` 0x1c7f88; every gameplay reader `lw`s 0x2a3790: InitWeapon 0x1a7ef8:
+//! 0x1a7f64, Check_AutoAim 0x1a73f8, Player_HandlePain 0x1902c8, DroneWeap_DoBulletAccuracy
+//! 0x179740] [L ee_start_05: [0x2a3790]=1, [0x2a37a8]=0]).
 //!
 //! The static tables below are the snapshot's bytes ([L] `work/ee_start_05.bin`, file offset =
 //! EE address), not reconstructions: thresholds, penalties, the 9 score rows per level, the reward
@@ -322,10 +325,13 @@ pub struct Progress {
     /// the ref): it reads the zero rows, every row's count is 0, nothing scores. The port models
     /// that state (`Some` zeroed rows); a driving hand-off, if one ever lands, writes rows here.
     pub new_scores: Option<[[i32; 3]; 9]>,
-    /// `GameState+0x40` (0x2a37a8) — the difficulty (1 Agent / 2 Secret Agent / 3 00 Agent /
-    /// 4 the bonus double-damage mode [M Player_HandlePain 0x1902c8:29-48]). Boot default 2
-    /// [M bootup 0x1c7e78:25]. Kept here (not on GameState — the port has no GameState struct)
-    /// and mirrored on `Drones::difficulty` for the tick code.
+    /// `GameState+40` (DECIMAL — hex +0x28, address 0x2a3790) — the difficulty (1 Agent / 2
+    /// Secret Agent / 3 00 Agent / 4 the bonus double-damage mode [M Player_HandlePain
+    /// 0x1902c8:29-48]). Boot default 2 [M bootup 0x1c7e78:25 = `sw r8, 40(r17)` 0x1c7f88 →
+    /// [0x2a3790]; the decomp's `GameState._40_4_` names are decimal offsets, so the old
+    /// "GameState+0x40 (0x2a37a8)" citation was the hex/decimal mixup — [L ee_start_05:
+    /// [0x2a3790]=1 with difficulty 1 active, [0x2a37a8]=0]. Kept here (not on GameState —
+    /// the port has no GameState struct) and mirrored on `Drones::difficulty` for the tick code.
     pub difficulty: u32,
     /// `DAT_002e1c2c` — "a new reward unlocked": Menu_SetLevelBonus 0x1ffa10 sets it when a medal
     /// counter's bit was not yet set [M :74-79], and P_NFRESULTS case 0x4b routes to the bonus
