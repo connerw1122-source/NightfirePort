@@ -1621,6 +1621,19 @@ impl App {
             return;
         }
         fe.action(a);
+        // menu-sfx: the front end's sound events play straight through the driver's 2-D start —
+        // `Menu_PlaySound`'s `Sound_Play(100.0f, id, 0, 0)` tail [M 0x1f3278] batched like the EE's
+        // `SFXStart`. The loaded bank(s) decide audibility exactly as the game's lookup does (a
+        // miss returns without starting): the front-end map boots bank 0xC, a paused mission keeps
+        // its own bank, which carries the pause blips [D SB_4/SB_5; docs/systems/menu-sfx.md §2-3].
+        let menu_sfx: Vec<_> = fe.drain_sfx().collect();
+        if !menu_sfx.is_empty() {
+            if let Some(snd) = self.sound.as_mut() {
+                snd.batch(|drv, out| {
+                    for ev in &menu_sfx { drv.start(out, ev.id, None, 0, None); }
+                });
+            }
+        }
         self.menu_after();
     }
 

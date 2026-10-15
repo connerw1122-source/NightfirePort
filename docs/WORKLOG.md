@@ -13529,6 +13529,32 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   7 (last-row selection, per-row hints, the 0x31d fallback, modal, Back-vs-unpause, clamps, NF_ISO binds 0x202/0x31d/
   0x266 from USATxt.dat), each with a sister assertion; menus_flow.rs updated to the new row struct. All green on the
   merged tree (ce62cd7e). Doc: docs/systems/objective-hints.md; mission.md's "hint never drawn" + gap lines corrected.
+
+## menu-sfx (2026-10-15, branch s/menu-sfx)
+- Task started: port the front end's and pause page's sounds. Plan: (1) research which SFX ids/banks
+  Menu_InputAction 0x1f1f40 / Manager_SendMessage 0x21c858 / the wheel/list/spinner handlers /
+  C_GCPAUSE_Handler 0x204408 play and when (docs first), (2) emit sound events from FrontEnd::action()
+  for the host to play through nf-audio, (3) tests: each action on each page emits the game's sound id,
+  NF_SILENT, numbers only. No drawing.
+- menu-sfx (2026-10-15, branch s/menu-sfx): ported the front end's and pause page's sounds as a
+  host-played event list (no drawing, no audio calls from the FrontEnd — tests stay silent).
+  Docs first: docs/systems/menu-sfx.md — Menu_PlaySound 0x1f3278's MENU_SOUND→bank-id map
+  (0/1/2→0x1da gated flags&1/2/4, 3/5→0x1d8, 4/6→0x1d9, 7→0x1da, 8→0x1d9 gated &8, 9→silent
+  [M 0x1f3278]), the per-widget call sites (Button/Label/Checkbox/Combo/Memo/Scroll Updates),
+  the same-page focus tick [M Page_Update 0x21edc8:38-53], the △ buzz+pop [M MenuManager_Update
+  0x21c3d8:78-105 → msg 0x5f], the twelve handlers' menu_movie-gated open pair SFXStart
+  (0x1d7)+(0x470) on msg 0x4c, and the banks: 07000048 loads hash 0xC/0x38 alternately
+  [M Sound_Ready 0x1dceb8:91-96], SB_0.SFX={0x1d7,0x1d8,0x1d9,0x1da,0x1db} vs
+  SB_1.SFX={0x1d8,0x1d9,0x1da,0x1db,0x470} [D the disc's effect tables] — one half of the pair
+  sounds per visit; mission banks duplicate 0x1d8/0x1d9/0x1da [D SB_4/SB_5], which is why the
+  pause blips play over a mission. Port: MenuSfx{sound,id} + FrontEnd.sfx_out/drain_sfx(),
+  enabled_sound_flags=0x0b [L 0x30d184], menu_movie, sfx()/focus_moved()/enter_page()/open_pair_sfx()
+  emissions in action()/opt_step/cn_move (68 move sites, 65 page transitions funnelled). Tests:
+  nf-view tests/menu_sfx_flow.rs 9/9 (numbers only, no disc reads, each with a sister that can
+  fail) + no regressions: menus_flow 36/36, codename_entry 14/14, mp_menu_flow 9/9,
+  objective_hints_flow 7/7, campaign_flow_live 5/5. Background suite on the pre-edit tree:
+  3 expected disc_golden fails + walkreal_07000001 + fix_0c_pylon×2 (no GPU adapter in this
+  sandbox) — pre-existing, see docs/reports/menu-sfx.md.
 ## drive-physics (2026-10-15, branch s/drive-physics) — DONE 21:25 UTC
 - Added the real-file tests: the shipped vanquish.atr and Physics\Rigid\default.tun, extracted from
   MIS01.VIV through the repo's BIGF+RefPack readers (gated on /home/z/driving-refpack, override
