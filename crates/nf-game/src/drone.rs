@@ -5436,6 +5436,13 @@ pub fn close_threshold(level: u32) -> f32 {
 pub struct Drones {
     pub list: Vec<Drone>,
     pub frame: u32,
+    /// The 15-frame sight pause (U-032's third question): `DroneVision_ProcessDroneSight`
+    /// 0x176a28:68-69 runs sight — and `DroneVision_FindAlertedDrones` — only once
+    /// `DAT_00298fb8 + 15 <= now` (stamped by `Drone_PostLoad_Init` 0x136938:46 at every level
+    /// load) AND `DAT_00298fbc + 15 <= now` (stamped by `Drone_EnableAll(1)` 0x1383e8:25); 15 flat
+    /// ticks, no FRAME_RATE_MUL in the disasm. Hearing is NOT gated. The port mirrors both stamps
+    /// with this one field: `frame + 15` at construction (the load) and at every re-enable.
+    pub sight_pause_until: u32,
     los_cursor: usize,
     /// The game's drone list (0x298E14, `LList_Add` appends): drones created at load in placement order, spawned ones
     /// appended — the order of the line-of-sight round robin.
@@ -5826,6 +5833,10 @@ impl Drones {
             aims_raise: 1200,
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
+            // fix-trigger-unknowns (U-032): the 15-frame sight pause — the fb8 (load) stamp; the fbc
+            // (EnableAll(1)) re-stamp happens in the DroneEnable handler. (fields on their own lines —
+            // merge lesson 4)
+            sight_pause_until: 15,
             pending_blasts: Vec::new(),
             level_current: 0,
             // fix-safe08: (script hash, stream) → the reserved pickup slot the renderer built for the
@@ -6735,6 +6746,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // obj+0xF0 gate's stand-in, so the freeze mirrors per drone.
                 crate::nis::Request::DroneEnable { on } => {
                     self.npc_enabled = on;
+                    // U-032: `Drone_EnableAll(1)` 0x1383e8:25 re-stamps `DAT_00298fbc` — sight waits
+                    // 15 more frames after every re-enable (EnableAll(0) does NOT stamp, :24).
+                    if on { self.sight_pause_until = self.frame + 15; }
                     for dr in self.list.iter_mut().filter(|d| d.present) {
                         if !on {
                             // `NDrone2_Enable(0)` 0x149dd0:8-15: hide everyone (the anim clock write
@@ -7124,6 +7138,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // `HandleSoundAlerts`/`Sound_ZeroAlertness` and the ch 0x96 alarm rebroadcast — sit inside the
         // `NPCGlobals != 0` block [M 0x139520:124-284]: a cut-scene that fired event 5 freezes all of these.
         if self.npc_enabled {
+        // U-032: sight and FindAlertedDrones wait out the 15-frame pause (see `sight_pause_until`);
+        // the hearing passes after the alerted-drones block are NOT gated [M 0x176a28:68-70 vs
+        // 0x139520:172+]. `frame` counts from the load, so the construction stamp is the fb8 one.
+        if frame >= self.sight_pause_until {
         // Visibility every tick for drones with vision on; line of sight for one drone per tick (round robin).
         for dr in &mut self.list { dr.visibility = if dr.present && !dr.corpse && (dr.vision_on || dr.alert >= 1.0) { dr.visibility() } else { 0.0 }; if dr.visibility < 0.7 { dr.los = false; } }
         let ln = self.llist.len();
@@ -7203,6 +7221,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             o.alert_bits |= b << 16;
             o.send(d, &mut self.rng, frame, msg::FORCED_ATTACK);
         }
+        } // the 15-frame sight pause (sight + FindAlertedDrones only; the 0x97/hearing passes are ungated)
         // `Drone_InitComms` after the vision pass: an enabled (`+0x4F8 & 0x100`, set by DefaultInit / Enable), living
         // (`& 0x600` clear) drone at alertness ≥ 1 within 30 units of Bond (not team 2) raises `switch_channels[0x97]`.
         // Direct `.v` write: `Drone_InitComms` stamps NO timestamp on 0x97/0x98 [M 0x139520:198-201 — their snapshot
@@ -8750,6 +8769,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
 mod tests {
     use super::*;
     use crate::world::CollisionWorld;
+
+    /// U-032's third question: the 15-frame sight pause is stamped at load — `Drones::new` is the
+    /// port's `Drone_PostLoad_Init` 0x136938:46 (`DAT_00298fb8 = now`), and the reader gate is
+    /// `DroneVision_ProcessDroneSight` 0x176a28:68-69 (`fb8 + 15 <= now && fbc + 15 <= now`).
+    /// The `Drone_EnableAll(1)` re-stamp is mirrored in the DroneEnable handler.
+    #[test]
+    fn the_15_frame_sight_pause_is_stamped_at_load() {
+        let d = Drones::new(Vec::new(), Rng::new(1));
+        assert_eq!(d.sight_pause_until, 15, "sight waits 15 flat ticks after the load stamp");
+    }
 
     /// A drone with only the collision-relevant fields set (pos, velocity, bounded, free_root, corpse), for the
     /// gravity / down-ray tests. The hip height is the default 1.0 (`Drone::hip`).
