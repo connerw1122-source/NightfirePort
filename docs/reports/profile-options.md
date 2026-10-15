@@ -77,3 +77,11 @@ auto-aim seed, crouch plumb, 2 literal fields), `nf-view hud.rs` (the crosshair 
 ## ntfy
 
 (sent after the push; on failure the exact error lands here)
+
+## ntfy failed
+
+All three fallbacks failed with the daily-quota 429 (2026-10-15 19:16 UTC):
+1. curl → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan..."}`
+2. python urllib → `HTTPError: HTTP Error 429: Too Many Requests`
+3. wget → empty body, exit 8 (the same 429 service-side).
+The finish step itself queued fine: `OK done 610-profile-options`.
