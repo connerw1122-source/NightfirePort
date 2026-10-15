@@ -42,12 +42,13 @@ fn candidates(sim: &nf_view::scene::Sim) -> Vec<usize> {
 }
 
 /// Arm the Micro-Camera through the real raise/zoom path and settle facing `to` from `at`.
-fn camera_zoomed_at(w: &mut nf_view::scene::Scene, at: [f32; 3], to: [f32; 3]) -> f32 {
+fn camera_zoomed_at(w: &mut nf_view::scene::Scene, at: [f32; 3], face_di: usize) -> f32 {
     {
         let sim = w.sim.as_mut().unwrap();
         sim.bond = nf_game::player::Bond::stand_at(&sim.world, at, 0.0);
+        let to = sim.drones.list[face_di].pos;
         let e = sim.bond.head();
-        let d = [to[0] - e[0], to[1] + 0.7 - e[1], to[2] - e[2]];
+        let d = [to[0] - e[0], to[1] - e[1], to[2] - e[2]];
         sim.bond.yaw = d[0].atan2(d[2]);
     }
     // Equip the Micro-Camera through the REAL number-key switch, settle the swap, then raise+zoom
@@ -55,7 +56,18 @@ fn camera_zoomed_at(w: &mut nf_view::scene::Scene, at: [f32; 3], to: [f32; 3]) -
     // refused — one queue point, and a held button never re-edges).
     for _ in 0..4 { w.sim.as_mut().unwrap().step_bond(Input { switch_to: Some(0x54), ..Input::default() }, false, false, false); }
     for _ in 0..90 { w.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    // Every held tick re-aims at the target's live position (the guards walk; zoom 8 narrows the
+    // fov to about 7.5 degrees, so the box must be tracked).
     for _ in 0..150 {
+        {
+            let sim = w.sim.as_mut().unwrap();
+            let to = sim.drones.list[face_di].pos;
+            let e = sim.bond.head();
+            let d = [to[0] - e[0], to[1] - e[1], to[2] - e[2]];
+            sim.bond.yaw = d[0].atan2(d[2]);
+            let h = (d[0] * d[0] + d[2] * d[2]).max(0.1).sqrt();
+            sim.bond.pitch = d[1].atan2(h) / std::f32::consts::FRAC_PI_2;
+        }
         w.sim.as_mut().unwrap().step_bond(Input { scope: true, zoom: true, ..Input::default() }, false, false, false);
     }
     w.sim.as_mut().unwrap().zoom
@@ -78,7 +90,7 @@ fn the_micro_camera_brackets_every_candidate_guard() {
         let (di, dp) = candidates(sim).into_iter().map(|i| (i, sim.drones.list[i].pos)).min_by(|a, b| a.1[2].total_cmp(&b.1[2])).expect("07000005 has living drawn guards");
         (di, dp)
     };
-    let zoom = camera_zoomed_at(&mut w, [dp[0], dp[1], dp[2] + 6.0], dp);
+    let zoom = camera_zoomed_at(&mut w, [dp[0], dp[1], dp[2] + 6.0], di);
     assert!(zoom > 1.5, "the Micro-Camera zoom engaged through the real input path (zoom {zoom})");
     // Re-aim at the guard's current spot (it may have stepped) and let the aim settle.
     {
@@ -95,9 +107,7 @@ fn the_micro_camera_brackets_every_candidate_guard() {
     assert!(want >= 1, "at least the faced guard is a candidate [M 0x1a12d8]");
     let quads = bracket_quads(&w).expect("the bracket texture 0x03000145 is loaded into the HUD (the game draws DroneScan brackets [M 0x1a12d8])");
     assert!(quads >= 1, "the faced guard carries its bracket");
-    // The centre check is a follow-up: the faced guard walks during the raise, so its box drifts
-    // off centre by the time the overlay builds (the bracket tracks it - that's the mechanism).
-    eprintln!("[centre] near-centre bracket: {:?}", centre_bracket(&w));
+    assert_eq!(centre_bracket(&w), Some(true), "the faced guard's bracket rides the screen centre (the re-aim tracks it)");
     eprintln!("[brackets] {quads} quads drawn, {want} level candidates (the off-view ones cull, like the game's cel draw)");
 }
 
@@ -115,7 +125,7 @@ fn a_corpse_gets_no_bracket() {
         let (di, dp) = candidates(sim).into_iter().map(|i| (i, sim.drones.list[i].pos)).min_by(|a, b| a.1[2].total_cmp(&b.1[2])).expect("guards");
         (di, dp)
     };
-    let zoom = camera_zoomed_at(&mut w, [dp[0], dp[1], dp[2] + 6.0], dp);
+    let zoom = camera_zoomed_at(&mut w, [dp[0], dp[1], dp[2] + 6.0], di);
     assert!(zoom > 1.5, "the Micro-Camera zoom engaged through the real input path (zoom {zoom})");
     // Kill the faced guard with the real fire path (the P2K), then back to the camera.
     {
@@ -159,7 +169,6 @@ fn a_corpse_gets_no_bracket() {
 /// Sister: the brackets draw through a wall — the projection has no LOS test [M 0x1a12d8 creates
 /// the sprite at the drone's position unconditionally; the user saw them through walls].
 #[test]
-#[ignore = "harness: the through-wall draw is the projection's no-LOS property [M 0x1a12d8]; the live test needs a dry walled spot with the pitch held on a moving guard - the raise refuses in water and zoom 8 loses a walking guard"]
 fn brackets_draw_through_a_wall() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut w = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
@@ -174,8 +183,11 @@ fn brackets_draw_through_a_wall() {
     let llist: Vec<usize> = w.sim.as_ref().unwrap().drones.llist.clone();
     let mut done = false;
     'guards: for &i in &llist {
-        let (drawn, alive, waiting, dpos) = { let dr = &w.sim.as_ref().unwrap().drones.list[i]; (dr.drawn, dr.health > 0.0, dr.state == nf_game::drone::state::WAIT_SWITCH, dr.pos) };
-        if !(drawn && alive && !waiting) { continue; }
+        let (present, enabled, alive, waiting, dpos) = {
+            let dr = &w.sim.as_ref().unwrap().drones.list[i];
+            (dr.present, dr.enabled, dr.health > 0.0, dr.state == nf_game::drone::state::WAIT_SWITCH, dr.pos)
+        };
+        if !(present && enabled && alive && !waiting) { continue; }
         for k in 0..24 {
             let a = k as f32 * std::f32::consts::TAU / 24.0;
             let at = [dpos[0] + a.sin() * 10.0, dpos[1], dpos[2] + a.cos() * 10.0];
@@ -188,28 +200,36 @@ fn brackets_draw_through_a_wall() {
                 sim.gun.weapon = 0x54;
                 sim.gun.switch_request = 0x54;
                 sim.gun.switch_state = 0;
+                // Aim at the guard's root (the bracket centres there; zoom 8's fov is ~7.5 degrees).
                 let dp = sim.drones.list[i].pos;
                 let e = sim.bond.head();
-                let d = [dp[0] - e[0], dp[1] + 0.7 - e[1], dp[2] - e[2]];
+                let d = [dp[0] - e[0], dp[1] - e[1], dp[2] - e[2]];
                 sim.bond.yaw = d[0].atan2(d[2]);
-                // Zoom 8 narrows the fov to ~7.5° — aim the pitch at the guard too.
                 let h = (d[0] * d[0] + d[2] * d[2]).max(0.1).sqrt();
                 sim.bond.pitch = d[1].atan2(h) / std::f32::consts::FRAC_PI_2;
-                // The wall really is between: the eye→drone segment hits the world.
-                assert!(sim.world.segment(e, dp).is_some(), "a wall stands between the eye and the guard");
-                // The held-zoom endpoint: the aim bit set + zoom_target at the cap [M 0x1a24c8:156-187].
                 sim.zoom_target = cap;
                 sim.zoom = cap;
             }
-            for _ in 0..6 { w.sim.as_mut().unwrap().step_bond(Input { scope: true, zoom: true, ..Input::default() }, false, false, false); }
+            // NO settle ticks: every step_bond rewrites zoom_target (the wet spot's raise is
+            // refused, so the aim bit never sets and the held-button zoom decays) — the state-set
+            // stands as the held-button endpoint and the draw reads the sim directly.
+            {
+                let sim = w.sim.as_ref().unwrap();
+                let dp = sim.drones.list[i].pos;
+                let e = sim.bond.head();
+                // The wall really is between: the eye→drone segment hits the world.
+                assert!(sim.world.segment(e, dp).is_some(), "a wall stands between the eye and the guard");
+                let rects = nf_view::hud::camera_brackets(sim, 1280.0 / 720.0);
+                assert_eq!(rects.len(), 1, "exactly the walled-off guard's bracket (present, enabled, alive, not WaitSwitch [M 0x1a12d8] — no LOS test anywhere in the chain)");
+            }
             let quads = bracket_quads(&w).expect("the bracket texture loads");
-            assert!(quads >= 1, "the walled-off guard still carries its bracket (through-wall draw)");
+            assert!(quads >= 1, "the overlay draws the walled-off guard's bracket");
             eprintln!("[wall] {quads} quads with a wall between Bond and guard {i}");
             done = true;
             break 'guards;
         }
     }
-
+    assert!(done, "no walled-off spot found on the ring walk");
 }
 
 #[test]
