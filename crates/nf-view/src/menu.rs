@@ -99,6 +99,16 @@ pub const PAGE_RECORDS: u32 = 0x4000_003a;
 /// The title layout the boot page leads to [M menu-def page 0x40000009: the art + Press START].
 pub const PAGE_TITLE_LAYOUT: u32 = 0x4000_0009;
 pub const PAGE_OPTIONS: u32 = 0x4000_0068;
+/// Codenames → "Edit Codename" [L 07000048 page 0x4000001b: header LBL 0x1f1, hint 0x20a; C_GOCODENAMES 0x216b38].
+pub const PAGE_CN_SELECT: u32 = 0x4000_001b;
+/// "Edit <name>": the codename options wheel [L page 0x4000001d; C_SBCNOPTIONS_Handler 0x213528, table 0x2dfc28].
+pub const PAGE_CN_MENU: u32 = 0x4000_001d;
+/// Advanced Options [L page 0x4000002d; P_CNOPTIONS_Handler 0x213f08].
+pub const PAGE_CN_ADVANCED: u32 = 0x4000_002d;
+/// Multiplayer Options [L page 0x4000002e; P_CNMPOPTIONS_Handler 0x2144d8].
+pub const PAGE_CN_MP: u32 = 0x4000_002e;
+/// AV Options [L page 0x40000031; P_CNAVOPTIONS_Handler 0x214818].
+pub const PAGE_CN_AV: u32 = 0x4000_0031;
 /// The IN-GAME pause page [M Player_Update 0x193600:73 — pressing Start in a mission runs
 /// `MenuManager_Create(0x80000002, 0x4000004b, …, 0x1e, 1, 3)` + `GS_PauseGame(1)`; the page lives in
 /// the MISSION archives' own kind-8 menu def (entry 08000001 of each level archive, e.g. 07000001.bin
@@ -350,7 +360,8 @@ pub const LOCKED_DESC: u32 = 0x0100_0009;
 pub fn aux_movie_for(page_id: u32) -> u32 {
     match page_id {
         PAGE_MAIN => 0x0733_0048,
-        PAGE_START | PAGE_CODENAME | PAGE_DIFFICULTY | PAGE_MISSION_SELECT | PAGE_DOSSIER | PAGE_RESULTS => 0x0735_0048,
+        PAGE_START | PAGE_CODENAME | PAGE_DIFFICULTY | PAGE_MISSION_SELECT | PAGE_DOSSIER | PAGE_RESULTS
+        | PAGE_CN_SELECT | PAGE_CN_MENU | PAGE_CN_ADVANCED | PAGE_CN_MP | PAGE_CN_AV => 0x0735_0048,
         _ => 0,
     }
 }
@@ -399,7 +410,7 @@ pub const INTRO_TICKS: u32 = 850;
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results }
+pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnAdvanced, CnMp, CnAv }
 
 impl Page {
     pub fn id(self) -> u32 {
@@ -408,6 +419,8 @@ impl Page {
             Page::Difficulty => PAGE_DIFFICULTY, Page::MissionSelect => PAGE_MISSION_SELECT,
             Page::Dossier => PAGE_DOSSIER, Page::Records => PAGE_RECORDS,
             Page::Options => PAGE_OPTIONS, Page::Pause => PAGE_PAUSE, Page::Results => PAGE_RESULTS,
+            Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnAdvanced => PAGE_CN_ADVANCED,
+            Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV,
         }
     }
     fn from_id(id: u32) -> Option<Page> {
@@ -416,6 +429,8 @@ impl Page {
             PAGE_DIFFICULTY => Page::Difficulty, PAGE_MISSION_SELECT => Page::MissionSelect,
             PAGE_DOSSIER => Page::Dossier, PAGE_RECORDS => Page::Records,
             PAGE_OPTIONS => Page::Options, PAGE_PAUSE => Page::Pause, PAGE_RESULTS => Page::Results,
+            PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_ADVANCED => Page::CnAdvanced,
+            PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv,
             _ => return None,
         })
     }
@@ -425,7 +440,82 @@ impl Page {
 /// engine routes cursor moves and confirms through `Menu_InputAction` / action 0x22 [M 0x1f1f40,
 /// 0x21c3d8] and skips movies through action 0x19 [M 0x1c98c8 case 6].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action { Up, Down, Confirm, Back, Side }
+pub enum Action { Up, Down, Confirm, Back, Side, Left, Right }
+
+/// One option row of the codename option pages: the row control, its label, its y (640 space), the value items
+/// (label id — 0 for a literal — the literal, the value), and its kind.
+pub struct OptRow { pub ctrl: u32, pub label: u32, pub y: f32, pub items: &'static [(u32, &'static str, i32)], pub kind: OptKind }
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum OptKind { List, Slider, Action }
+
+const ON_OFF: &[(u32, &str, i32)] = &[(0x1b7, "On", 1), (0x1b6, "Off", 0)];
+const TOGGLE_HOLD: &[(u32, &str, i32)] = &[(0x2a2, "Toggle", 1), (0x2a3, "Hold", 0)];
+/// Advanced Options [M P_CNOPTIONS_Handler 0x213f08:24-71 — each row's items (label, value) and the profile byte
+/// (DAT_002a38d1/c9/d0/cc/cb/d2/d4/d3) it reads back with msg 0x35; L page 0x4000002d's controls for the y].
+pub const ADV_ROWS: &[OptRow] = &[
+    OptRow { ctrl: 0x1000_011a, label: 0x196, y: 104.0, items: ON_OFF, kind: OptKind::List },        // Vibration
+    OptRow { ctrl: 0x1000_011b, label: 0x197, y: 136.0, items: ON_OFF, kind: OptKind::List },        // Auto Aim
+    OptRow { ctrl: 0x1000_0124, label: 0x29c, y: 168.0, items: ON_OFF, kind: OptKind::List },        // Crosshairs
+    OptRow { ctrl: 0x1000_0125, label: 0x032, y: 200.0, items: TOGGLE_HOLD, kind: OptKind::List },   // Crouch
+    OptRow { ctrl: 0x1000_0126, label: 0x02a, y: 232.0, items: TOGGLE_HOLD, kind: OptKind::List },   // Manual Aim
+    OptRow { ctrl: 0x1000_01cb, label: 0x399, y: 264.0, items: ON_OFF, kind: OptKind::List },        // Weapon Auto Switch
+    OptRow { ctrl: 0x1000_0226, label: 0x5b7, y: 296.0, items: &[(0x1b7, "On", 2), (0x1b6, "Off", 0)], kind: OptKind::List },
+    OptRow { ctrl: 0x1000_023b, label: 0x5bd, y: 328.0, items: &[(0x1b7, "On", 0), (0x1b6, "Off", 1)], kind: OptKind::List },
+];
+/// Multiplayer Options [M P_CNMPOPTIONS_Handler 0x2144d8:13-40 — Radar (MPSettings+0x40), Health Handicap
+/// (MPSettings+0x44, the literals at 0x30d390..), Auto Aim (DAT_002a38ca); L page 0x4000002e].
+pub const MP_ROWS: &[OptRow] = &[
+    OptRow { ctrl: 0x1000_0128, label: 0x1b3, y: 175.0, items: ON_OFF, kind: OptKind::List },
+    OptRow { ctrl: 0x1000_011c, label: 0x296, y: 207.0, items: &[(0, "-75", -75), (0, "-50", -50), (0, "-25", -25), (0, "0", 0), (0, "+25", 25), (0, "+50", 50), (0, "+75", 75), (0, "+100", 100)], kind: OptKind::List },
+    OptRow { ctrl: 0x1000_0129, label: 0x197, y: 239.0, items: ON_OFF, kind: OptKind::List },
+];
+/// AV Options [M P_CNAVOPTIONS_Handler 0x214818:37-60, 130-134; L page 0x40000031]: the two volume sliders
+/// (0..100, the controls' d3 0x64), Subtitles, Split Screen (0x2ba / 0x2b9), Speaker (0x393 / 0x394 / 0x395 =
+/// 0 / 1 / 4), Widescreen, then four action rows.
+pub const AV_ROWS: &[OptRow] = &[
+    OptRow { ctrl: 0x1000_0135, label: 0x194, y: 86.0, items: &[], kind: OptKind::Slider },
+    OptRow { ctrl: 0x1000_0134, label: 0x193, y: 114.0, items: &[], kind: OptKind::Slider },
+    OptRow { ctrl: 0x1000_0136, label: 0x2b5, y: 142.0, items: ON_OFF, kind: OptKind::List },
+    OptRow { ctrl: 0x1000_019a, label: 0x2b8, y: 170.0, items: &[(0x2ba, "Horizontal", 0), (0x2b9, "Vertical", 1)], kind: OptKind::List },
+    OptRow { ctrl: 0x1000_0198, label: 0x195, y: 198.0, items: &[(0x393, "Mono", 0), (0x394, "Stereo", 1), (0x395, "Pro Logic", 4)], kind: OptKind::List },
+    OptRow { ctrl: 0x1000_0223, label: 0x5b8, y: 227.0, items: ON_OFF, kind: OptKind::List },
+    OptRow { ctrl: 0x1000_0137, label: 0x2b6, y: 256.0, items: &[], kind: OptKind::Action },
+    OptRow { ctrl: 0x1000_01a3, label: 0x37e, y: 284.0, items: &[], kind: OptKind::Action },
+    OptRow { ctrl: 0x1000_0138, label: 0x198, y: 312.0, items: &[], kind: OptKind::Action },
+    OptRow { ctrl: 0x1000_0222, label: 0x550, y: 340.0, items: &[], kind: OptKind::Action },
+];
+/// The option pages' descriptions per (row control, current value) — i32::MIN matches any value [L ee_snapshot
+/// 0x2e4a18: 12-byte {control, value, label} records, 0xf0f0f0f0 = any].
+const OPT_DESC: &[(u32, i32, u32)] = &[
+    (0x1000_011a, 1, 0x100_030f), (0x1000_011a, 0, 0x100_0310), (0x1000_011b, 1, 0x100_0057), (0x1000_011b, 0, 0x100_0058),
+    (0x1000_0124, 1, 0x100_0059), (0x1000_0124, 0, 0x100_005a), (0x1000_0125, 0, 0x100_005b), (0x1000_0125, 1, 0x100_005c),
+    (0x1000_0126, 0, 0x100_005d), (0x1000_0126, 1, 0x100_005e), (0x1000_01cb, 1, 0x100_0061), (0x1000_01cb, 0, 0x100_0062),
+    (0x1000_0226, 2, 0x100_0302), (0x1000_0226, 0, 0x100_0303), (0x1000_023b, 0, 0x100_0304), (0x1000_023b, 1, 0x100_0305),
+    (0x1000_0128, 1, 0x100_005f), (0x1000_0128, 0, 0x100_0060),
+    (0x1000_011c, -75, 0x100_006a), (0x1000_011c, -50, 0x100_0069), (0x1000_011c, -25, 0x100_0068), (0x1000_011c, 0, 0x100_0063),
+    (0x1000_011c, 25, 0x100_0064), (0x1000_011c, 50, 0x100_0065), (0x1000_011c, 75, 0x100_0066), (0x1000_011c, 100, 0x100_0067),
+    (0x1000_0129, 1, 0x100_006b), (0x1000_0129, 0, 0x100_006c),
+    (0x1000_0135, i32::MIN, 0x100_0306), (0x1000_0134, i32::MIN, 0x100_0307), (0x1000_0136, 1, 0x100_0071), (0x1000_0136, 0, 0x100_0072),
+    (0x1000_0198, 0, 0x100_006d), (0x1000_0198, 1, 0x100_006e), (0x1000_0198, 2, 0x100_030b), (0x1000_0198, 4, 0x100_030b),
+    (0x1000_0223, 1, 0x100_0309), (0x1000_0223, 0, 0x100_030a), (0x1000_0137, i32::MIN, 0x100_030c), (0x1000_019a, 0, 0x100_006f),
+    (0x1000_019a, 1, 0x100_0070), (0x1000_01a3, i32::MIN, 0x100_0073), (0x1000_0138, i32::MIN, 0x100_0074), (0x1000_0222, i32::MIN, 0x100_0308),
+];
+/// The description label of `ctrl` at `value` [L table 0x2e4a18].
+pub fn opt_desc(ctrl: u32, value: i32) -> Option<u32> {
+    OPT_DESC.iter().find(|r| r.0 == ctrl && (r.1 == value || r.1 == i32::MIN)).map(|r| r.2)
+}
+/// The default option values — the PCSX2 Default profile's (2026-10-15 captures m32/m38/m40) [L].
+pub fn default_opts() -> std::collections::HashMap<u32, i32> {
+    [(0x1000_011a, 1), (0x1000_011b, 1), (0x1000_0124, 1), (0x1000_0125, 1), (0x1000_0126, 0), (0x1000_01cb, 1), (0x1000_0226, 2),
+     (0x1000_023b, 0), (0x1000_0128, 1), (0x1000_011c, 0), (0x1000_0129, 0), (0x1000_0135, 80), (0x1000_0134, 100), (0x1000_0136, 0),
+     (0x1000_019a, 0), (0x1000_0198, 1), (0x1000_0223, 0)].into_iter().collect()
+}
+/// The "Edit <name>" wheel's rows {preview, label, description} [L ee_snapshot table 0x2dfc28].
+pub const CN_MENU: [(u32, u32, u32); 7] = [
+    (0x0300_013b, 0x100_02d4, 0x100_02d7), (0x0300_0121, 0x1f3, 0x100_0051), (0x0300_0121, 0x27e, 0x100_0052),
+    (0x0300_0124, 0x37a, 0x100_0053), (0x0300_0123, 0x199, 0x100_0054), (0x0300_011f, 0x2bb, 0x100_0055), (0x0300_0125, 0x1f4, 0x100_0056),
+];
+
 
 /// The end-of-mission outcome the results page shows [M P_NFRESULTS is reached with +0x28 = 0x40000036
 /// from Mission_Update; P_ENDMISSION renders the stats pane 0x100001a4].
@@ -538,6 +628,14 @@ pub struct FrontEnd {
     /// level's best at ScoringTable+0x30 [M C_RBDSRECORDS 0x20bf00:26]); the host syncs the
     /// sim's tally in with `sync_profile_progress` before the results save.
     pub profile: Option<nf_game::profile::Profile>,
+    /// The codename option values by row control (crate::menu::ADV_ROWS / MP_ROWS / AV_ROWS) [M the profile bytes
+    /// the option handlers write — P_CNOPTIONS 0x213f08, P_CNMPOPTIONS 0x2144d8, P_CNAVOPTIONS 0x214818].
+    pub opts: std::collections::HashMap<u32, i32>,
+    /// The values on entering an option page: Back restores them, Confirm keeps the edits (the hint's ~A Confirm /
+    /// ~B Back) [S].
+    pub opts_saved: Option<std::collections::HashMap<u32, i32>>,
+    /// The codename the "Edit <name>" wheel edits ("Default" for the default profile) [L PCSX2 m30 "Edit Default"].
+    pub cn_name: String,
     /// The results page's fields, built by `results_enter` (P_NFRESULTS case 0x4c). None until
     /// the page enter runs against the live progress layer.
     pub results: Option<ResultsFields>,
@@ -574,6 +672,9 @@ impl FrontEnd {
             profiles: Vec::new(),
             active_profile: None,
             profile: None,
+            opts: default_opts(),
+            opts_saved: None,
+            cn_name: String::new(),
             // front-end-chain (each new field on its own line [WORKLOG lesson 4]).
             results: None,
             just_completed: false,
@@ -599,6 +700,11 @@ impl FrontEnd {
             // walks it].
             Page::Dossier => 4,
             Page::Options => 3,                    // the options page stubs three rows [S]
+            Page::CnSelect => 2 + self.profiles.len(),
+            Page::CnMenu => CN_MENU.len(),
+            Page::CnAdvanced => ADV_ROWS.len(),
+            Page::CnMp => MP_ROWS.len(),
+            Page::CnAv => AV_ROWS.len(),
             // The MISSION tab's rows [L page 0x4000004b's d1=6 list (153,183,334×120) binds labels
             // 0x16a CONTINUE / 0x16b RESTART / 0x16c QUIT via its m0x11 messages].
             Page::Pause => 3,
@@ -627,6 +733,11 @@ impl FrontEnd {
             // The dossier wheel's own name labels [L table 0x2dfcd0; C_SBDOSSIER 0x216eb0:48-49].
             Page::Dossier => bind([0x280, 0x281, 0x282, 0x19c][row.min(3)]),
             Page::Options => ["Screen adjust", "Controls", "Back"][row.min(2)].into(),
+            // Edit Codename: New Codename, Default, then the card's codenames [L PCSX2 m29].
+            Page::CnSelect if row >= 2 => self.profiles.get(row - 2).cloned().unwrap_or_default(),
+            Page::CnSelect => bind([0x29b, 0x211][row.min(1)]),   // def_codename 0x2e1b18 [L docs/reports/fix-save-profile.md]
+            Page::CnMenu => bind(CN_MENU[row.min(CN_MENU.len() - 1)].1),
+            Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().get(row).map_or(String::new(), |r| bind(r.label)),
             // The pause rows are the page data's own labels [L page 0x4000004b's d1=6 list m0x11:
             // 0x16a/0x16b/0x16c — the game's letter-spaced strings]. The ACTIONS are the handler's
             // [M C_GCPAUSE_Handler 0x204408: d1=6 case 0 → MenuManager_Delete (resume), case 1 → the
@@ -644,6 +755,30 @@ impl FrontEnd {
             // controls]); rows() is 1 for the wheel arithmetic only.
             Page::Results => String::new(),
         }
+    }
+
+    /// The option page's rows (empty off the option pages).
+    pub fn opt_rows(&self) -> &'static [OptRow] {
+        match self.page { Page::CnAdvanced => ADV_ROWS, Page::CnMp => MP_ROWS, Page::CnAv => AV_ROWS, _ => &[] }
+    }
+
+    /// The current value of an option row.
+    pub fn opt_value(&self, ctrl: u32) -> i32 { self.opts.get(&ctrl).copied().unwrap_or(0) }
+
+    /// Steps a List row to its next (or previous) item, or moves a slider by 10 within 0..=100 [M the list
+    /// controls' f2 3 cycle; the sliders' d3 0x64 range].
+    fn opt_step(&mut self, row: &OptRow, dir: i32) {
+        let v = self.opt_value(row.ctrl);
+        let nv = match row.kind {
+            OptKind::Slider => (v + 10 * dir).clamp(0, 100),
+            OptKind::List if !row.items.is_empty() => {
+                let i = row.items.iter().position(|it| it.2 == v).unwrap_or(0) as i32;
+                let n = row.items.len() as i32;
+                row.items[(i + dir).rem_euclid(n) as usize].2
+            }
+            _ => return,
+        };
+        self.opts.insert(row.ctrl, nv);
     }
 
     /// The wheel's visible slots: the game's list pages show five rows (y = 123/152/182/211/241 [M
@@ -929,7 +1064,67 @@ impl FrontEnd {
             }
             return false;
         }
+        // ◀ / ▶ change values on the option pages; elsewhere they keep the old Back / Confirm meaning.
+        let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv)) {
+            (Action::Left, false) => Action::Back,
+            (Action::Right, false) => Action::Confirm,
+            (a, _) => a,
+        };
         match self.page {
+            Page::CnSelect => match a {
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                // Edit: the default row or a codename opens its options wheel [M C_SBCNSELECT 0x212f58 → page
+                // 0x4000001d]; New Codename's name entry is not ported.
+                Action::Confirm if self.cursor >= 1 => {
+                    self.cn_name = if self.cursor == 1 { "Default".into() } else { self.profiles.get(self.cursor - 2).cloned().unwrap_or_default() };
+                    self.page = Page::CnMenu;
+                    self.cursor = 1; // the wheel opens on Controller Setup [L PCSX2 m30]
+                    return true;
+                }
+                Action::Back => { self.page = Page::Main; self.cursor = 2; return true; }
+                _ => return false,
+            },
+            Page::CnMenu => match a {
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                // [M C_SBCNOPTIONS_Handler 0x213528:32-60: rows 3/4/5 → pages 0x4000002d/2e/31; row 6 accepts]
+                Action::Confirm => {
+                    let to = match self.cursor { 3 => Page::CnAdvanced, 4 => Page::CnMp, 5 => Page::CnAv, 6 => Page::CnSelect, _ => return false };
+                    self.opts_saved = Some(self.opts.clone());
+                    self.page = to;
+                    self.cursor = if to == Page::CnSelect { 1 } else { 0 };
+                    return true;
+                }
+                Action::Back => { self.page = Page::CnSelect; self.cursor = 1; return true; }
+                _ => return false,
+            },
+            Page::CnAdvanced | Page::CnMp | Page::CnAv => {
+                let rows = self.opt_rows();
+                let back_row = match self.page { Page::CnAdvanced => 3, Page::CnMp => 4, _ => 5 };
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < rows.len() => { self.cursor += 1; return true; }
+                    Action::Left => { let r = &rows[self.cursor]; self.opt_step(r, -1); return true; }
+                    Action::Right => { let r = &rows[self.cursor]; self.opt_step(r, 1); return true; }
+                    // Restore Defaults [M P_CNAVOPTIONS 0x214818:100-106 resets the rows]; the other action rows
+                    // (Screen Adjust, Credits, the trailer) open pages not ported yet.
+                    Action::Confirm if rows[self.cursor].kind == OptKind::Action => {
+                        if rows[self.cursor].ctrl == 0x1000_01a3 {
+                            let d = default_opts();
+                            for r in AV_ROWS { if let Some(v) = d.get(&r.ctrl) { self.opts.insert(r.ctrl, *v); } }
+                            return true;
+                        }
+                        return false;
+                    }
+                    Action::Confirm => { self.opts_saved = None; self.page = Page::CnMenu; self.cursor = back_row; return true; }
+                    Action::Back => {
+                        if let Some(o) = self.opts_saved.take() { self.opts = o; }
+                        self.page = Page::CnMenu; self.cursor = back_row; return true;
+                    }
+                    _ => return false,
+                }
+            }
             Page::Start => {
                 if a == Action::Confirm {
                     // → the intro movie, then the main menu [M P_INTRO 0x209e88 plays 0x07370048
@@ -952,7 +1147,8 @@ impl FrontEnd {
                 // Single Player].
                 (Action::Confirm, 0) => { self.page = Page::Codename; self.cursor = 0; return true; }
                 (Action::Confirm, 1) => { return false; }   // Multiplayer: not ported (reported)
-                (Action::Confirm, 2) => { self.page = Page::Codename; self.cursor = 0; return true; }  // Codenames: the same codename page (stub; reported)
+                // Codenames → Edit Codename, on the Default row [M C_GOCODENAMES 0x216b38:37 → page 0x4000001b; L PCSX2 m29].
+                (Action::Confirm, 2) => { self.page = Page::CnSelect; self.cursor = 1; return true; }
                 (Action::Back, _) => { self.page = Page::Start; self.cursor = 0; return true; }
                 _ => {}
             },
@@ -1009,6 +1205,7 @@ impl FrontEnd {
                 _ => {}
             },
             Page::MissionSelect => match a {
+                Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
                 Action::Up => { self.cursor = self.step(-1); return true; }
                 Action::Down => { self.cursor = self.step(1); return true; }
                 Action::Confirm => {
@@ -1050,6 +1247,7 @@ impl FrontEnd {
                 _ => {}
             },
             Page::Records => match a {
+                Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
                 // The mission list walks the campaign [M the list control 0x10000174 is filled from
                 // sp_level by Menu_AddItemsToControl (P_DSRECORDS 0x217248:11-13); a row's selection
                 // drives C_RBDSRECORDS 0x20bf00's binds].
@@ -1068,6 +1266,7 @@ impl FrontEnd {
                 // d1=0xd case reads the list's row (msg 0x34) and 0 = YES executes].
                 if self.confirming_restart || self.confirming_quit {
                     match a {
+                        Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
                         Action::Up | Action::Down => { self.confirm_sel = 1 - self.confirm_sel; return true; }
                         Action::Confirm => {
                             if self.confirm_sel == 1 {
@@ -1110,6 +1309,7 @@ impl FrontEnd {
                     }
                 }
                 match a {
+                    Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
                     // ~H Next: the tab cycle [L the page hint 0x201 "~A Select ~V Scroll ~H Next";
                     // the four tabs are the page's type-1 controls].
                     Action::Side => { self.pause_tab = (self.pause_tab + 1) % 4; return true; }
@@ -1135,6 +1335,7 @@ impl FrontEnd {
                 }
             },
             Page::Results if self.outcome == Outcome::Complete => match a {
+                Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
                 Action::Side => {}
                 // P_NFRESULTS has no row list [L page 0x40000036's controls] — the wheel keys idle.
                 Action::Up | Action::Down | Action::Back => return false,
@@ -1153,6 +1354,7 @@ impl FrontEnd {
                 }
             },
             Page::Results => match a {
+                Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
                 Action::Side => {}
                 Action::Up | Action::Down => { self.cursor = (self.cursor + 1) % 2; return true; }
                 Action::Confirm => {
@@ -1235,7 +1437,7 @@ impl FrontEnd {
 /// sizes from the archive: 0x03000074 512×512 title art, 0x030000b3 512×256 panel, 0x030000bf 128×128
 /// ring emblem, 0x03000084/b6/c4/a5 the ring-masked previews, 0x0300016d 256×128 logo,
 /// 0x0300014c 256×256 stamp, 0x03000042 64×64 button/arrow atlas].
-pub const MENU_TEXTURES: [u32; 36] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0300_00bf, 0x0300_0084, 0x0300_00b6, 0x0300_00c4, 0x0300_00a5, 0x0300_016d, 0x0300_014c,
+pub const MENU_TEXTURES: [u32; 41] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0300_00bf, 0x0300_0084, 0x0300_00b6, 0x0300_00c4, 0x0300_00a5, 0x0300_016d, 0x0300_014c,
     // The hint-bar icon font `specialchar` [M 0x2dd8d8: every entry's texture is 0x03000075].
     0x0300_0075,
     // The 12 per-mission ring previews = sp_level[i]+0x00 [L ee_snapshot 0x2df2e0; all 12 live in the
@@ -1256,7 +1458,9 @@ pub const MENU_TEXTURES: [u32; 36] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0
     0x0300_0005,
     // The difficulty wheel's per-row previews [L ee_snapshot table 0x2df4c0 +0x00] and the Records medals
     // [M C_RBDSRECORDS 0x20bf00:58-110].
-    0x0300_00a6, 0x0300_00a7, 0x0300_013e, 0x0300_013f];
+    0x0300_00a6, 0x0300_00a7, 0x0300_013e, 0x0300_013f,
+    // The codename options wheel's previews [L ee_snapshot table 0x2dfc28].
+    0x0300_0121, 0x0300_0124, 0x0300_0123, 0x0300_011f, 0x0300_0125];
 
 /// The menu text renderer's special-character table `specialchar` (0x2dd8d8, 17 × 0x18 bytes: the token
 /// char, the texture hash 0x03000075, u0, v0, w, h, advance, height) [M ACTION.ELF symtab + the table's
@@ -1513,6 +1717,41 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
         }
         Page::Options => { page_rows(&mut h, fe, font, "OPTIONS", dim, bright); }
+        Page::CnSelect => {
+            // Edit Codename [L page 0x4000001b: header LBL 0x1f1, the codename wheel 0x100000ec, the emblem
+            // 0x100001cd (preview) under 0x10000108 (ring), hint 0x20a; PCSX2 m29].
+            page_header(&mut h, hfont, &bind(0x1f1));
+            panel(&mut h);
+            emblem(&mut h, if fe.cursor == 0 { 0x0300_013b } else { 0x0300_0135 }, 0x0300_00bf);
+            wheel(&mut h, fe, font, lang, |fe, row| fe.row_label(lang, row), cream);
+            // [M Menu_UpdateCodenameWheel's descriptions: create 0x1000004, default 0x1000003, a codename 0x1000005]
+            desc_block(&mut h, font, &bind([0x100_0004, 0x100_0003, 0x100_0005][fe.cursor.min(2)]), bright);
+            // ~X Delete only offers on a saved codename (PCSX2 m29: Default shows Edit / Create / Scroll / Back).
+            let mut hs = hint(0x20a, "~A Edit  ~Y Create  ~X Delete  ~V Scroll  ~B Back");
+            if fe.cursor < 2 { if let Some(i) = hs.find("~X") { let j = hs[i..].find("  ").map_or(hs.len(), |k| i + k + 2); hs.replace_range(i..j, ""); } }
+            hint_bar(&mut h, font, &hs, 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        Page::CnMenu => {
+            // "Edit <name>" [L page 0x4000001d: header 0x100001f9 runtime-filled (PCSX2 m30 "Edit Default"), the
+            // wheel 0x100000ff, the preview 0x100001a5 under the ring 0x10000109, hint 0x5cb; table 0x2dfc28].
+            page_header(&mut h, hfont, &format!("Edit {}", if fe.cn_name.is_empty() { "Default" } else { &fe.cn_name }));
+            panel(&mut h);
+            emblem(&mut h, CN_MENU[fe.cursor.min(CN_MENU.len() - 1)].0, 0x0300_00bf);
+            // The default profile's last row reads "Codenames" (PCSX2 m37) — it has nothing to save.
+            let default = fe.cn_name.is_empty() || fe.cn_name == "Default";
+            wheel(&mut h, fe, font, lang, |fe, row| if row == 6 && default { bind(MAIN_ITEMS[2]) } else { fe.row_label(lang, row) }, cream);
+            desc_block(&mut h, font, &bind(CN_MENU[fe.cursor.min(CN_MENU.len() - 1)].2), bright);
+            hint_bar(&mut h, font, &hint(0x5cb, "~A Select  ~V Scroll  ~B Cancel"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        Page::CnAdvanced | Page::CnMp | Page::CnAv => {
+            let header = match fe.page { Page::CnAdvanced => 0x37a, Page::CnMp => 0x199, _ => 0x2bb };
+            page_header(&mut h, hfont, &bind(header));
+            opt_list(&mut h, fe, font, lang);
+            hint_bar(&mut h, font, &hint(0x217, "~A Confirm  ~V Scroll  ~H Change  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
         Page::Pause => pause_page(&mut h, fe, font, lang, textures, cream, bright, dim),
         Page::Results => results_page(&mut h, fe, font, lang, textures, cream, bright, dim),
     }
@@ -1925,6 +2164,62 @@ fn desc_block(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, c: [f32; 4]
     }
 }
 
+/// The codename option pages' rows [L pages 0x4000002d / 2e / 31: the label controls at x 54-57 (301 wide, 16
+/// tall), the value controls at x 348-351 (219 wide; the sliders' bars (365,86/114,187×16)), the description plate
+/// (50,355,540×40); the selected row 0x7d6d59ff, the others 0x73330fc0 (the controls' msg 0x1b / 0x1c)]. PCSX2
+/// m32/m38/m40 (2026-10-15): the ◀ ▶ arrows at x 357 / 555 around the selected row's value.
+fn opt_list(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Option<&Lang>) {
+    let bind = |id: u32| -> String { lang.and_then(|l| l.bind(id)).unwrap_or("").to_string() };
+    let rows = fe.opt_rows();
+    let (lx, sc) = match fe.page { Page::CnAv => (56.0, 1.22), _ => (54.0, 1.3) };
+    let on = gs(CREAM, 0xff);
+    let off = gs(0x73330f, 0xc0);
+    let yellow = gs(0xfec43e, 0xff);
+    let arrow = |h: &mut Hud, cx: f32, cy: f32, left: bool| {
+        let (a, b, d) = if left { ((cx + 7.0, cy - 7.0), (cx + 7.0, cy + 7.0), (cx - 7.0, cy)) } else { ((cx - 7.0, cy - 7.0), (cx - 7.0, cy + 7.0), (cx + 7.0, cy)) };
+        let q = |p: (f32, f32), h: &Hud| HudVertex { p: h.ndc(Anchor::Centre, mx(p.0), my(p.1)), uv: [0.0, 0.0], c: yellow };
+        let v = [q(a, h), q(b, h), q(d, h), q(a, h), q(d, h), q(d, h)];
+        h.ndc_solid(-3, v, yellow);
+    };
+    let rect = |h: &mut Hud, x0: f32, y0: f32, x1: f32, y1: f32, c: [f32; 4]| {
+        let (a, b) = (h.ndc(Anchor::Centre, mx(x0), my(y0)), h.ndc(Anchor::Centre, mx(x1), my(y1)));
+        let q = |p: [f32; 2]| HudVertex { p, uv: [0.0, 0.0], c };
+        h.ndc_solid(-2, [q([a[0], a[1]]), q([b[0], a[1]]), q([b[0], b[1]]), q([a[0], a[1]]), q([b[0], b[1]]), q([a[0], b[1]])], c);
+    };
+    for (i, r) in rows.iter().enumerate() {
+        let sel = i == fe.cursor;
+        let c = if sel { on } else { off };
+        let mid = r.y + 8.0;
+        left_text(h, font, &bind(r.label), mx(lx), my(mid + 6.0), c, true, sc);
+        let v = fe.opt_value(r.ctrl);
+        match r.kind {
+            OptKind::List => {
+                let it = r.items.iter().find(|it| it.2 == v).or(r.items.first());
+                if let Some(it) = it {
+                    let txt = if it.0 != 0 { bind(it.0) } else { it.1.to_string() };
+                    centred(h, font, -2, &txt, mx(457.0), my(mid + 6.0), c, true, sc);
+                }
+                if sel { arrow(h, 357.0, mid, true); arrow(h, 555.0, mid, false); }
+            }
+            OptKind::Slider => {
+                // The bar: a pale track with the yellow fill to the value (PCSX2 m38).
+                let (x0, x1) = (365.0, 552.0);
+                // PCSX2 m38: track #c8c8c8, fill #d4952b.
+                rect(h, x0, mid - 7.0, x1, mid + 7.0, gs(0x646464, 0xff));
+                rect(h, x0, mid - 7.0, x0 + (x1 - x0) * v as f32 / 100.0, mid + 7.0, gs(0x6a4a15, 0xff));
+                if sel { arrow(h, 357.0, mid, true); arrow(h, 560.0, mid, false); }
+            }
+            OptKind::Action => {}
+        }
+    }
+    // The description of the selected row at its current value [L table 0x2e4a18], centred in the plate.
+    if let Some(r) = rows.get(fe.cursor) {
+        if let Some(d) = opt_desc(r.ctrl, fe.opt_value(r.ctrl)) {
+            centred(h, font, -2, &bind(d), mx(320.0), my(375.0 + 6.0), gs(CREAM, 0xff), true, 1.0);
+        }
+    }
+}
+
 /// Left-aligned text: the first glyph's ink starts at screen x `x`.
 fn left_text(h: &mut Hud, font: &nf_formats::hud::Font, s: &str, x: f32, y: f32, c: [f32; 4], shadow: bool, scale: f32) {
     let x0 = font.layout(s, 0.0, 0.0).0.first().map(|p| p.x).unwrap_or(0.0) * scale;
@@ -2283,8 +2578,11 @@ pub fn key_action(key: winit::keyboard::KeyCode) -> Option<Action> {
     Some(match key {
         KeyCode::ArrowUp | KeyCode::KeyW => Action::Up,
         KeyCode::ArrowDown | KeyCode::KeyS => Action::Down,
-        KeyCode::Enter | KeyCode::Space | KeyCode::ArrowRight | KeyCode::KeyD => Action::Confirm,
-        KeyCode::Escape | KeyCode::ArrowLeft | KeyCode::KeyA | KeyCode::Backspace => Action::Back,
+        KeyCode::Enter | KeyCode::Space => Action::Confirm,
+        // ◀ / ▶: the option pages change values with them; every other page reads them as Back / Confirm (action()).
+        KeyCode::ArrowRight | KeyCode::KeyD => Action::Right,
+        KeyCode::ArrowLeft | KeyCode::KeyA => Action::Left,
+        KeyCode::Escape | KeyCode::Backspace => Action::Back,
         KeyCode::Tab | KeyCode::KeyE => Action::Side,
         _ => return None,
     })

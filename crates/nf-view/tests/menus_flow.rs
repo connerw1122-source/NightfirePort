@@ -1150,3 +1150,73 @@ fn the_dossier_wheel_opens_at_records_and_clamps() {
     assert!(fe.action(Action::Down));
     assert_eq!(fe.cursor, 1, "Down steps to Rewards, never wraps");
 }
+
+/// Main → Codenames opens Edit Codename on the Default row, Edit opens the "Edit Default" wheel, its Advanced /
+/// Multiplayer / AV rows open their option pages [M C_GOCODENAMES 0x216b38; C_SBCNOPTIONS_Handler 0x213528:32-60].
+#[test]
+fn the_codenames_row_reaches_the_option_pages() {
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Main;
+    fe.cursor = 2;
+    assert!(fe.action(Action::Confirm));
+    assert_eq!((fe.page, fe.cursor), (Page::CnSelect, 1), "Edit Codename opens on Default (PCSX2 m29)");
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::CnMenu);
+    assert_eq!(fe.cn_name, "Default");
+    assert_eq!(fe.rows(), 7, "the wheel's seven rows [L table 0x2dfc28]");
+    for (row, page) in [(3usize, Page::CnAdvanced), (4, Page::CnMp), (5, Page::CnAv)] {
+        fe.page = Page::CnMenu;
+        fe.cursor = row;
+        assert!(fe.action(Action::Confirm));
+        assert_eq!(fe.page, page, "row {row}");
+        assert!(fe.action(Action::Back));
+        assert_eq!((fe.page, fe.cursor), (Page::CnMenu, row), "Back returns to the row it came from");
+    }
+    // Sister: the rows without a ported page do nothing.
+    fe.cursor = 1;
+    assert!(!fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::CnMenu);
+}
+
+/// ◀ / ▶ step an option's value; Back throws the edits away, Confirm keeps them; a slider moves by 10 in 0..=100.
+#[test]
+fn the_option_pages_change_values() {
+    let mut fe = FrontEnd::new();
+    fe.page = Page::CnMenu;
+    fe.cursor = 3;
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::CnAdvanced);
+    let auto_aim = menu::ADV_ROWS[1].ctrl;
+    assert_eq!(fe.opt_value(auto_aim), 1, "Auto Aim defaults On");
+    fe.cursor = 1;
+    assert!(fe.action(Action::Right));
+    assert_eq!(fe.opt_value(auto_aim), 0, "▶ steps On → Off");
+    assert!(fe.action(Action::Back));
+    assert_eq!(fe.opt_value(auto_aim), 1, "Back restores the value");
+    fe.page = Page::CnMenu; fe.cursor = 3;
+    assert!(fe.action(Action::Confirm));
+    fe.cursor = 1;
+    assert!(fe.action(Action::Left));
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::CnMenu);
+    assert_eq!(fe.opt_value(auto_aim), 0, "Confirm keeps the edit");
+    // The music slider.
+    fe.cursor = 5;
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::CnAv);
+    let music = menu::AV_ROWS[0].ctrl;
+    let v0 = fe.opt_value(music);
+    fe.cursor = 0;
+    for _ in 0..20 { fe.action(Action::Right); }
+    assert_eq!(fe.opt_value(music), 100, "the slider stops at 100 (from {v0})");
+    fe.action(Action::Left);
+    assert_eq!(fe.opt_value(music), 90);
+    // Sister: off the option pages ◀ / ▶ keep their Back / Confirm meaning.
+    let mut g = FrontEnd::new();
+    g.page = Page::Main;
+    g.cursor = 2;
+    assert!(g.action(Action::Right));
+    assert_eq!(g.page, Page::CnSelect, "▶ confirms on the main menu");
+    assert!(g.action(Action::Left));
+    assert_eq!(g.page, Page::Main, "◀ backs out");
+}

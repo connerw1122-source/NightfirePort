@@ -1274,6 +1274,11 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             "dossier" => menu::Page::Dossier,
             // fix-menus-real (additive hook): the dossier's Records table renders headless too.
             "records" => menu::Page::Records,
+            "cnselect" => menu::Page::CnSelect,
+            "cnmenu" => { fe.cn_name = "Default".into(); menu::Page::CnMenu }
+            "advanced" => menu::Page::CnAdvanced,
+            "mpoptions" => menu::Page::CnMp,
+            "avoptions" => menu::Page::CnAv,
             // fix-pause-menu: the in-game pages render headless too (the pause page over the
             // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
             // picks the pause tab, `--confirm` arms the pause confirm.
