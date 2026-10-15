@@ -78,7 +78,11 @@ disassembly-pinned and each has a fail-first test that was shown RED on the pre-
     fix_camera_exact_math, diff_calls, searchlight_live, ledge_live, tuning_live, fix_bond_damage_live,
     casings16_live, fix_sg5_casings_live, stun_grenade_live, world_fx, gadget_live, models_weapons_live —
     **34 passed / 0 failed / 0 ignored** (the exact-math family and the escort walk included).
-  - Chunk E (final tree, widest pass, after the report): see the WORKLOG tail line for the total.
+  - Chunk E (final tree): nf_game/nf_formats/nf_audio lib binaries + door_portal_links_live,
+    fix_gate_guard_truck_live, fix_satchel_stick_play_live, fix_satchel_tripbomb_live, nav_kick,
+    progress_live, fix_progress_live, enemies_07000012_live, anim_events, fix_ai_remainder, weapon_switch_live,
+    fix_ladder3_live, wire_anims_live — 265 passed / 0 failed. **Final-tree chunk total: 382 passed / 0 failed /
+    3 ignored** (the 3 standard skips).
   - Not run this session (no time in the 2-hour window): the long full-suite tail. The touched systems'
     consumers are the chunks above; the movement-axis/creep/wire-hand/missile sites are untouched.
 
