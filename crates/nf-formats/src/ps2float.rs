@@ -47,6 +47,11 @@ pub fn sqrt(a: f32) -> f32 {
     chop(r, a as f64 - r * r)
 }
 
+/// EE FPU divide (`div.s`): rounded to nearest — the model the shared interpreter pins with 739 of
+/// 750 live `ATAN2_APPROX` results (ee.rs `div.s` note) and which the atanf/atan2f goldens
+/// (exact-sine-sites-2) re-confirm on the libm's reduction divisions.
+pub fn div(a: f32, b: f32) -> f32 { a / b }
+
 #[cfg(test)]
 mod tests {
     use super::*;
