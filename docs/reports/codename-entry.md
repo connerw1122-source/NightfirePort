@@ -86,3 +86,27 @@ def_codename 0x2e1b18 — no drawing.
   overwrite box (id 4) appears [M P_CNNAME 0x50:62-76].
 - The wheel's last row label must read "Save Codename" (Txt 0x1f4) and saving a modified codename rewrites
   its file (LS_Save), not deletes it.
+
+## The merge with origin/master (post-report update)
+
+origin/master moved mid-task: the secret-codes worker's `Page::CnName` (the SAME page id 0x40000020, in
+its CHEAT mode — `SecretEntry` + `nf_game::secret_codes::submit`) plus the mp-menu-flow / screen-adjust /
+credits tasks landed. Merged and resolved:
+
+- ONE page, TWO modes: master's `Page::CnName` variant and `PAGE_CN_NAME` const stand (my duplicate
+  `Page::CodenameEntry` dropped [lesson 3]); the page's profile-name mode rides the same variant behind a
+  new `cn_profile_mode` flag — `cn_open(from)` arms it (from != 0x4000001d = profile mode [M P_CNNAME
+  0x213790:33]), the wheel's row 0 goes through `cn_open(PAGE_CN_MENU)` so the Secret Unlocks entry is
+  unchanged, and the `Page::CnName` action arm runs the `cn_*` flow first when profile mode, then the
+  secret grid exactly as master's did.
+- My CnMenu row-6 arm (Save Codename) restored on top of master's row-0/av-snapshot version — master's
+  "row 6 accepts" (plain leave) did not save the codename.
+- Kept both sides: my `cn_*` fields/inits alongside `secret`/screen/mp/credits fields; the WORKLOG got
+  both entries. lib.rs `--page cnname|cncheat` re-aimed at `Page::CnName`.
+
+Ran on the merged tree (f59b47fb): `cargo check -p nf-game -p nf-view` clean; **codename_entry 14/14,
+nf-game --lib secret 8/8 (their model unbroken), menus_flow 36/36** — the merge regresses nothing.
+Suite runner on the final tree: build ok (348 binaries), then `--only codename_entry,nf-game,menus_flow`
+→ **"50 passed, 0 failed, 0 ignored"**, no FAILED/TIMEOUT lines. The full 348-binary run does not fit
+the window (the build alone is 338 s; this sandbox also kills detached processes, so the background
+start printed nothing) — the main agent should run the complete suite on the merged tree.
