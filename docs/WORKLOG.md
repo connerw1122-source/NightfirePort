@@ -12450,3 +12450,10 @@ Work Log:
 
 Stage Summary:
 - The world's hold-jump stutter while turning is fixed at the source: the render bracket is now the last two ticks' cameras at every frame rate, the view model keeps its one-tick-bracket reattach, and nothing moves at a solid 60 fps. Files: crates/nf-view/src/lib.rs + crates/nf-view/tests/turn_stutter_live.rs (new); NO shared files touched; scratch probe (uncommitted): examples/tick_cost.rs. Report: docs/reports/fix-turn-stutter.md.
+
+Task ID: 109o-fix-hat-details
+Agent: hat-details worker
+Task: fix-hat-details — Oddjob's hat: (1) a weird sound when the hat hits a wall (check the bullet collision handler's sound arm for the hat record, the material sound); (2) throwing many hats stops showing them in flight (the port's projectile/grenade pool or draw list drops new hats past some count; the game's limit is the bullet pool — find its size — with oldest-first reuse). Playtest 1014-1725, real-input build. Files: crates/nf-game/src/{grenade,drone}.rs, the draw.
+
+Work Log:
+- (05:06) branch s/fix-hat-details from origin/master (2cbfd7e3) after re-fetch with the new token; sandbox survived (work/, ISO, ../nf-queue all present). Suite started in the background.
