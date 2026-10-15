@@ -13799,3 +13799,30 @@ Work Log (async-level-load):
   failure outside the slice.
 - Report docs/reports/mp-defaults-and-setup.md with 5 live checks (Locked row + the 0x10 read-back,
   the On/Random rows, the handicap prompt/image/values, the team image swap, the render spots).
+## subtitles-data (2026-10-15, branch s/subtitles-data)
+- Task started: port the Subtitles On/Off option's data path — where NIS/script cut-scene and FMV briefing subtitle
+  lines are stored, their timing (start/end ticks), label ids, and the drawing function/font/position/colour — as a
+  data model + per-tick `active_subtitle(t)` wired to the profile flag (control 0x10000136, P_CNAVOPTIONS_Handler
+  0x214818). No drawing; tests with numbers/ids only. Setup verified, branch cut from origin/master (2bda7b46).
+
+## subtitles-data (2026-10-15, branch s/subtitles-data)
+- Ported the Subtitles option's data path (no drawing — the main agent draws): `nf_game::subtitle::SubtitleTrack`
+  = `Text_AddMsg` 0x1b0c30's type-4/5 TXT_MSG queue as an absolute timeline (`SubtitleLine{label,start,end}`):
+  `push` (the DAT_002a37c8 gate [M 0x1b0c30 — type-4/id-0 adds pass only with the option on], the verbatim u16
+  duration [M disasm 0x1b1050: the 60-clamp skips types 4/5; one wrap part = the un-scaled time], the FIFO chain
+  start = max(push, prev end) [M Text_UpdateMsg 0x1b11d8 — only the head's timer runs]), `active_subtitle(t)` (the
+  per-tick query), `flush` (Text_FlushAllSubtitles 0x1b15c8 — head clamped, queued die), `from_script` (the briefing
+  walk: Wait(t) → release tick t+1 [M Script_Update 0x1da998's pre-increment clock]). `intro_script_for` = the
+  movie-code → script chain [M ResetMap_Load 0x1d6360:40-99]; `nf_view::movie::briefing_subtitles(iso, code, on)`
+  reads 07000500.bin (FILES.BIN) and walks the pack's script.
+- Wiring: `Drones::subtitle_track` (own line); `Request::Text` pushes at the script tick and gates `script_msgs`
+  (the HUD drain) on the flag — the fresh profile's default is Off [M profile.rs], so hosts must wire
+  `subtitle_track.enabled` from `Profile::gset.subtitles` / the AV row (0x10000136). `TextFlush` flushes the track.
+- Tests: 6 unit (chaining, verbatim duration, zero-time, Off, flush, from_script) + `subtitles_live.rs` 4 ISO-gated:
+  the disc-pinned 0x06000961 timeline (ticks 184/1340/2113/3570, labels 0x06000068-6b, times 1132/756/988/555 [D]),
+  no-row codes, the Off gate through the real Sim, the ON queue at the right tick. fix_script_commands_live's text
+  test now pins the ON behaviour explicitly. Ran: nf-game lib 212/212, nf-formats+nf-audio green (disc_golden 3 =
+  the slim-ISO set), the HUD-affected view binaries 34/34, suite runner over 104 more binaries across five chunks (menus_flow, level_live,
+  mp_arenas_live, codename_entry, the fields/fix_* sets…) — 0 failed; fix_0c_pylon_live's 2 = the sandbox's missing Vulkan ICD (adapter
+  request, pre-existing). The full 356-binary sweep didn't fit the window (background jobs die here; the runner
+  rebuilds cost 336 s). Doc: docs/systems/subtitles.md (the queue layout, both presenters, all three sources).
