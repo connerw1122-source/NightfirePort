@@ -12953,6 +12953,38 @@ docs/formats/ps2gfx.md, docs/GAPS.md (G-014).
   5/0, fix_weapon_modes_live 6/0, fix_samurai_fire_live 3/0, fix_weapons_all_live 4/0,
   weapon_switch_live 2/0 (nf-game), tuning_live 2/0 (nf-game). The fast suite on the final tree
   running (started 12:58); fix_switch_after_cold_load_live passed inside it as well.
+
+## exact-sine-portonly-review (branch s/exact-sine-portonly-review)
+- (14:30) Task started (110y): G-046's four PORT_ONLY trig stand-ins — ladder.rs:151 mesh columns,
+  player.rs:858 crawl advance, casing.rs:80-81 eject matrix (guards' yaw/pitch basis only; the
+  player path already ejects from the view-model datum per Casings::reserve/arm), drone.rs:2495
+  object-space head-track (game reads the drone's datum through AnimGetBoneWorldTrans
+  0x12f678:100-113). Plan: for each site, read the decompile at the game's point, replace the
+  port's construction with the game's mechanism (or prove equivalence with a test); fail-first
+  NF_ISO tests, suite green, G-046 updated. Branch cut from origin/master cf4f33cd.
+- (14:30-15:58) The four PORT_ONLY sites (G-046): researched via 3 parallel subagents (the decompile chains with
+  addresses) + implemented. CASING (done): the game's guard arm of Bullet_init_casing_ex 0x12f678:102-114 reads
+  the weapon-datum bone world matrix via AnimGetBoneWorldTrans — datum base+2 when the skin carries the eject port
+  (AnimDatumGetIndex 0x1c77f8) else base+1 (the muzzle datum); Drone::eject_matrix added (the weapon_matrix/
+  muzzle composition) and the guard fire call site feeds Casings::eject_bone (RNG order unchanged); test
+  guard_casing_ejects_from_the_weapon_datum_matrix, fail-first shown by reverting the call site. HEAD-TRACK
+  (equivalence proven + gates fixed): the object-space measurement ≡ the game's world-space two-acos-block
+  measurement (rigid yaw+translation ⇒ rotation-invariant dots/crosses/acos) — proven by
+  head_track_want_matches_the_game_s_world_space_measurement (0x1bf618:189-281 transcribed on the world palette);
+  the game's per-plane 0.25 gates (:209-210,:257-258) + behind skip (:222-236) added to head_track_want (the old
+  full-3D gate measured behind targets and clamped them) — head_track_pitch_stays_level_for_behind_targets,
+  fail-first shown; head_track_want made pub for the test. LADDER (documented, blocked): the game's stage 2 =
+  capsule vs the ladder's authored celglist triangles (Collide_Update 0x1ea398 → Collide_Intersect 0x1ebaa8:276-296
+  → Intersect_CylGeom 0x109da0, no trig); the port's analytic in_mesh_column stands because the ladder's glist is
+  unreachable in the port's data model (07000005 probe: map object hashcode 0xFFFFFFFF, world.shape() empty) —
+  also documented: the decompile's capsule arms are substate−1 keyed (walk/swim take the DEFAULT 0.55 arm, not the
+  port's playtest-tuned 0.275/low mapping). CRAWL (documented): the crawl anim scripts 0x600046d/f/471/475 ARE in
+  the level bins (0x6000471/0x6000475 = 90-frame looping locomotion → sequences 0x040003f0/0x040003e5, 222
+  channels); the root-motion extraction (bond's skeleton-0 skin + the channel order) didn't fit the window — the
+  0.02/tick [S] stand-in stays, live check requested. G-046 updated; report
+  docs/reports/exact-sine-portonly-review.md (live checks for the main agent: the guard shell basis, the
+  behind-target head behavior, the crawl speed fieldprobe, the ladder grab width). Suite totals appended below.
+
 ## fix-progress-detected-hook (2026-10-15, branch s/fix-progress-detected-hook) — started 12:57 UTC
 Task: G-045's two remaining pieces. (1) The detected counter's live hook: PlrMissionStats has a "times detected" stat but the port never increments it — find the vision-log call site in the decompile (PlrStat_Log* callers in DroneVision_*/NDrone2_*), port the increment, pin with a test (07000005 guard spotting Bond raises the counter exactly once per detection event). (2) Player_InitWeapon 0x1a7ef8's per-difficulty autoaim distances: the port uses fixed values — read the difficulty arms, port keyed on GameState+0x40, test each difficulty. Checked origin/s/fix-progress-remainder (110d, merged @ a958d179): it did neither part (G-045 on master still lists both as remaining). Files: crates/nf-game/src/progress.rs, the vision call site, crates/nf-game/src/player.rs, new tests, docs/fields/player-stats.md.
 
@@ -13068,3 +13100,55 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   load-bearing: a gate-less replication picks node 3 over the trace's node 1 — shown RED mid-session) and the
   stance flags both ways (node 1 re-flagged crouch-only → cover type 0/1/4 and no stand anim; stand-only →
   2/3). ai_live 35/35, cover_selection 2/2, portcheck 5/5.
+
+## fix-hud-zoom-tilt (110z)
+- (14:50) Started. Task: G-044 — port `Player_WeaponRecoil`'s zoom divide (glb_viewer+0x108) and
+  aspect x-term (viewer+0x114) into the gun-axis computation in scene.rs, using Sim::zoom (BL+0x8D0).
+  Branch cut from origin/master cf4f33cd. Plan: read the decompile + writers of +0x108/+0x114, write
+  the fail-first NF_ISO test (zoom 2 tilt = half of zoom 1), fix scene.rs, sister test zoom 1
+  bit-for-bit unchanged.
+- (14:55-15:15) Finding: G-044's fix is ALREADY on master — fix-viewmodel-zoom (b12a1b77, merged
+  2026-10-13) appended `/ self.zoom` to both gun-tilt terms in scene.rs `gun_matrix`, with the
+  4/3 aspect and an [L ee_start_05] citation, plus fix_viewmodel_zoom_live (composed-angle, 10%
+  tolerance at an uncontrolled zoom). This task verified the decompile chain independently
+  (Player_WeaponRecoil 0x1a3de8:52-57; viewer+0x108 writer = Player_PositionCamera 0x18f5d8 case
+  0/0xe feeding BL+0x8D0, case 1 pins 1.0; viewer+0x114 writer = Camera_CalcViewAngles 0x1baf70:
+  29-41 — 4/3 default, 16/9 widescreen option [DAT_002a37c4 = switch_CONFIG_WIDESCREEN 0x216168],
+  ×0.5/×2 split-screen), re-verified the [L] tag myself from ee_start_05 (0x1fc6c10: +0x108=1.0,
+  +0x114=0x3faaaaab, +0x118=π/3), and added the task's exact tests: fix_hud_zoom_tilt_live
+  (zoom-2 halves both terms; aspect = the constant's bits; the real input path's Ronin ramp
+  follows the formula tick-by-tick). FAIL-FIRST shown on the reverted divide (zoom-2 term stayed
+  at the zoom-1 value; ramp tick 0 failed), 3/3 pass on the restored tree; scene.rs left
+  byte-identical to master. No scoped weapon zooms to exactly 2.0 ([L ee_start_05 zooms 3.5/4/6/
+  10/16]) so the exact-2.0 leg sets BL+0x8D0 = 2.0 directly (a mid-ramp value; PositionCamera
+  feeds it verbatim). Observation (out of scope, noted in the GAPS closure): the game's rot+0x54
+  also adds the recoil kick BL+0x8e4 — the port doesn't model 0x8e0/0x8e4; no increment found in
+  the C decompile (only decay ×0.75 + init 0), decompiler-dropped store suspected. GAPS G-044 →
+  Closed. Suite restarted on the final tree.
+## menus vs PCSX2 (2026-10-15, branch mine/menus, main agent)
+- Every reachable front-end and in-game menu page compared side by side with PCSX2 captures (07000048 / 07000005)
+  and corrected: page headers left-aligned at x 50 at the header face's own size; the wheel rows left-aligned at
+  their controls' x; the ring texture 0x030000bf only masks the preview (no rim/square drawn); per-row difficulty
+  previews (table 0x2df4c0); locked wheel rows at half the slot alpha (Menu_UpdateWheel 0x1f8388:210-234); the
+  stray stamp 0x0300014c and the main menu's logo removed; main rows in the header face; Records rebuilt (three
+  framed boxes, the mission spinner, the rows, the medal only when earned — C_RBDSRECORDS 0x20bf00:58-110); title
+  prompt/legal sizes; pause hint bars dark words; OBJECTIVES rows = the visible objectives
+  (Mission_NumVisObjectives 0x182540) with the list cursor; quit/restart confirm; the codename option box
+  (Menu_CreateOptionBox 0x1f9608); hint bars at PCSX2's middles.
+- New: the level loading screen (ResetMap_GenLoadScreen 0x1d5de0 — crate::loading; the picture from
+  07000500.bin, objective + random hint, the LOADING dots static while the load blocks the thread).
+- New: Codenames → Edit Codename (0x4000001b) → Edit <name> (0x4000001d, table 0x2dfc28) → Advanced /
+  Multiplayer / AV Options (0x4000002d/2e/31): rows, value items and profile bytes from P_CNOPTIONS 0x213f08 /
+  P_CNMPOPTIONS 0x2144d8 / P_CNAVOPTIONS 0x214818, descriptions from the (control, value) table 0x2e4a18;
+  ◀ ▶ change values (Action::Left/Right; other pages keep Back/Confirm). The values are not wired to the sim yet
+  (queue task 610). Secret Unlocks / Controller Setup / Driving Controller / Screen Adjust / Credits / the
+  trailer / New Codename entry and the Multiplayer menus are not ported (611-613 queued for their data).
+- Renderer: the movie plane keeps the 4:3 picture centred with black bars (every menu movie and briefing was
+  stretched a third too wide on 16:9).
+- (15:38-15:53) Final tree: merged origin/master a2958c03 (WORKLOG/GAPS both kept on the append conflicts); the
+  fast runner on the affected binaries: ai_live/fix_ai_remainder_live/trig_live/fix_portonly_review_live/
+  tuning_live/fire_modes3_live/fix_weapon_fire_modes_live/weapon_switch_live/fix_weapons_all_live/
+  fix_samurai_fire_live = 65/0/4, then fix_sg5_casings_live/fix_shell_eject_live/casings16_live/impacts_live/
+  head_look_live/ai_traces_live/fix_weapon_effects_live/anim_events_live/fix_searchlight_remainder_live/
+  drone_portcheck_live/exact_vs_host_probe = 37/0/1. Total 102 passed / 0 failed / 5 ignored; the full suite
+  didn't fit the window (background jobs die here), the affected paths are covered.

@@ -29,6 +29,8 @@ pub mod scene;
 pub mod replay;
 pub mod panel;
 pub mod weapon_assets;
+pub mod woman;
+pub mod loading;
 /// The weapon matrix (task 100d): every on-foot level × every weapon, measured headless.
 pub mod matrix;
 
@@ -740,6 +742,20 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         hud: nf_formats::hud::HudTables::from_action_elf(&elf).map_err(|e| eprintln!("HUD tables: {e}")).ok(),
     };
     let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
+    // The pause/fail menus' burning woman [M `psiDecompressWoman` 0x1202a8]: the archive's kind-16 "woman" run-length
+    // mask filled from the fire texture 0x030000da, drawn into 0x030000db's texels through 0x030000da's CLUT (the
+    // disc's 0x030000db is a placeholder). The HUD texture starts on the first decoded frame.
+    {
+        let tex = |h: u32| level.maps.iter().flat_map(|m| m.textures.iter()).find(|t| t.hashcode == h);
+        if let (Some(e), Some(fire)) = (lb.entries.iter().find(|e| e.kind == 16), tex(0x0300_00da)) {
+            let mut w = woman::Woman::new(lb.data(&data, e).to_vec(), fire.frame(0).to_vec(), fire.palette_rgba8());
+            w.tick();
+            if let Some((_, t)) = scene.hud_textures.iter_mut().find(|(h, _)| *h == 0x0300_00db) {
+                if t.width as usize == woman::W && t.height as usize == woman::H { t.rgba = w.rgba(); }
+            }
+            scene.woman = Some(w);
+        }
+    }
     // The HUD's language strings (`fix-hud`): `Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` — the
     // NTSC-U default is `USATxt.dat` [D FILES.BIN; FNames 0x244680]. Parsed per its on-disc layout.
     if let Some(s) = scene.sim.as_mut() {
@@ -1258,6 +1274,11 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             "dossier" => menu::Page::Dossier,
             // fix-menus-real (additive hook): the dossier's Records table renders headless too.
             "records" => menu::Page::Records,
+            "cnselect" => menu::Page::CnSelect,
+            "cnmenu" => { fe.cn_name = "Default".into(); menu::Page::CnMenu }
+            "advanced" => menu::Page::CnAdvanced,
+            "mpoptions" => menu::Page::CnMp,
+            "avoptions" => menu::Page::CnAv,
             // fix-pause-menu: the in-game pages render headless too (the pause page over the
             // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
             // picks the pause tab, `--confirm` arms the pause confirm.
@@ -1273,6 +1294,7 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
     if args.iter().any(|a| a == "--confirm") {
         fe.confirming_quit = fe.cursor == 2;
         fe.confirming_restart = fe.cursor == 1;
+        fe.confirming_default_profile = fe.page == menu::Page::Codename;
     }
     // The pause page is a MISSION page: give the flow a mission level so open_pause's guard matches
     // (the game opens it over a running mission [M Player_Update 0x193600:73]).
@@ -1280,6 +1302,9 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
         fe.flow.current_level = 0x0700_0005;
         fe.mission = 1;
         fe.open_pause();
+    }
+    if fe.page == menu::Page::Pause {
+        if let Some(sim) = scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); }
     }
     // Tick through the boot load and let the page's timers run (the flash cycle etc.).
     for _ in 0..3 { fe.flow.main_tick(); let _ = fe.flow.load_tick(); }
@@ -1298,7 +1323,7 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
         let want = if intro {
             Some(menu::INTRO_MOVIES[args.iter().position(|a| a == "--intro").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(menu::INTRO_MOVIES.len() - 1)])
         } else {
-            let aux = menu::aux_movie_for(fe.page.id());
+            let aux = menu::aux_movie_for(fe.page_id());
             (aux != 0).then_some(aux)
         };
         if let Some(code) = want {
@@ -1365,6 +1390,7 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot, scene.sim.as_ref().map(|s| &s.world), door_closed.as_deref());
     r.update_skin(&queue, scene, choice, time, opts, vis_shot.as_deref());
     r.lights = scene.frame_lights();
+    r.screen_aspect = w as f32 / h as f32;
     // `NF_BENCH=N`: time the per-frame CPU side N times (posing + vertex build, and the upload) for profiling.
     if let Some(n) = std::env::var("NF_BENCH").ok().and_then(|v| v.parse::<u32>().ok()) {
         let t0 = std::time::Instant::now();
@@ -1502,6 +1528,8 @@ struct App {
     prev_lock_ch: bool,
     /// Render interpolation state: the cameras and palettes of the last two ticks, and whether a tick ran this frame.
     ticked: bool,
+    /// This frame's 60 Hz tick count (the burning woman advances once per tick while a paused page shows her).
+    frame_ticks: u32,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -1535,9 +1563,45 @@ struct App {
     /// pause page runs `SFXPause`+`SFXPauseAllStreams` on open and the unpause pair on close
     /// [M 0x21b908:121-124, 0x21c2b0:11-22].
     audio_paused: bool,
+    /// The loading screens' pictures (07000500.bin, crate::loading), read on the first level change.
+    loading_art: Option<std::collections::HashMap<u32, (u32, u32, Vec<u8>)>>,
 }
 
 impl App {
+    /// Draws the level's loading screen and presents it before the (blocking) load [M ResetMap_Load 0x1d6360 state 3 →
+    /// ResetMap_GenLoadScreen 0x1d5de0, skipped for the front end 0x07000048]. The load blocks this thread, so the
+    /// dots show their first state; the game's vblank animation is not reproduced.
+    fn draw_loading_screen(&mut self, level: u32) {
+        if level & 0xff00_ffff == 0x0700_0048 { return; }
+        if self.loading_art.is_none() {
+            self.loading_art = Some(read_files_bin(&self.iso, loading::ARCHIVE).map(|b| loading::art(&b)).unwrap_or_default());
+        }
+        let Some(g) = self.gfx.as_mut() else { return };
+        if g.minimized { return; }
+        let level = if level & 0xff00_ffff == 0x0700_0018 { 0x0700_001b } else { level };
+        let picture = self.loading_art.as_ref().and_then(|a| a.get(&loading::image_for(level)));
+        let lang = self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()).or(self.lang.as_ref());
+        let aspect = g.config.width as f32 / g.config.height.max(1) as f32;
+        let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(1) | 1;
+        let hint = loading::hint_for(level, || { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; seed >> 8 });
+        let hud = match self.scene.hud.as_ref() {
+            Some(t) => menu::loading_overlay(&t.font, lang, &self.scene.hud_textures, aspect, level, hint, 0),
+            None => gpu::HudFrame::default(),
+        };
+        let frame = match g.surface.get_current_texture() {
+            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
+            _ => return,
+        };
+        let view = frame.texture.create_view(&Default::default());
+        g.renderer.screen_aspect = aspect;
+        // A zero view-projection collapses every world vertex (w = 0), so only the picture and the overlay draw.
+        let id = [[0.0f32; 4]; 4];
+        let movie = picture.map(|(w, h, rgba)| (*w, *h, rgba.as_slice()));
+        let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, id, id, [0.0; 3], 0, &[], &hud, movie, None);
+        g.queue.submit([enc.finish()]);
+        g.queue.present(frame);
+    }
+
     /// F8/F9: show the mission-complete / mission-failed results page for the loaded mission [S demo
     /// hook — the game reaches it from `Mission_Update` 0x182c60:74's event; the port's mission-event
     /// → results glue is listed in docs/reports/fix-menus.md as remaining host work].
@@ -1645,7 +1709,7 @@ impl App {
         } else {
             // The page's aux loop [M 0x21c858:338]: stop when the page has no aux, (re)start when
             // the playing code differs from the page's.
-            let aux = menu::aux_movie_for(fe.page.id());
+            let aux = menu::aux_movie_for(fe.page_id());
             let wrong = match &self.movie {
                 Some(p) => aux == 0 || p.code() != aux || !p.is_looping(),
                 None => aux != 0,
@@ -2219,6 +2283,7 @@ impl ApplicationHandler for App {
                     };
                     let name = level_archive_name(next);
                     eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
+                    self.draw_loading_screen(next);
                     let load = if self.dev.is_some() { load_with_carry_dev } else { load_with_carry };
                     match load(&self.iso, &name, self.all, save.as_ref()) {
                         Ok(mut scene) => {
@@ -2302,6 +2367,7 @@ impl ApplicationHandler for App {
                     // G-043: the loop's tick scheduling, extracted verbatim into `ticks_for_frame`
                     // (the fps-determinism test drives the same arithmetic headless).
                     let elapsed = ticks_for_frame(&mut self.anim_time, dt, max_ticks);
+                    self.frame_ticks = elapsed;
                     // fix-ingame-dev-menu: the open menu pauses the sim — 0 ticks unless F11's
                     // one-shot step was pressed (`paused_tick_count`).
                     let n_ticks = match self.dev.as_deref_mut() {
@@ -2557,15 +2623,18 @@ impl ApplicationHandler for App {
                         // fix-pause-menu2: the OBJECTIVES tab's rows come from the sim's mission
                         // states (Mission_ObjectiveState's data [M 0x204408:251-271]; state 4 =
                         // the done marker), refreshed while the pause page is up.
-                        if fe.page == menu::Page::Pause {
-                            if let Some(sim) = self.scene.sim.as_ref() {
-                                fe.pause_objectives = nf_game::mission::LEVELS.iter().enumerate()
-                                    .find(|(_, l)| l.level == sim.level)
-                                    .map(|(li, l)| l.objectives.iter().enumerate().map(|(oi, o)| {
-                                        let done = sim.drones.mission.states.get(li).and_then(|s| s.get(oi)).map(|&s| s == 4).unwrap_or(false);
-                                        (o.text, done)
-                                    }).collect()).unwrap_or_default();
+                        // The burning woman (crate::woman): `Game_Run` 0x1c9790:36-41 runs `psiDecompressWoman` once per
+                        // frame in the paused branch — the pause page and the fail menu both pause the game.
+                        let shows_woman = fe.page == menu::Page::Pause || (fe.page == menu::Page::Results && fe.outcome == menu::Outcome::Failed);
+                        if shows_woman {
+                            if let Some(w) = self.scene.woman.as_mut() {
+                                let mut changed = false;
+                                for _ in 0..self.frame_ticks { changed |= w.tick(); }
+                                if changed { g.renderer.update_woman(&g.queue, &w.rgba()); }
                             }
+                        }
+                        if fe.page == menu::Page::Pause {
+                            if let Some(sim) = self.scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); }
                         }
                         let mut f = match &self.scene.hud {
                             Some(tables) => menu::menu_overlay(fe, &tables.font, &tables.font_header, lang, &self.scene.hud_textures, aspect),
@@ -2593,6 +2662,7 @@ impl ApplicationHandler for App {
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
                 hud.append(&self.scene.script_overlay_hud(aspect));
                 g.renderer.lights = self.scene.frame_lights();
+                g.renderer.screen_aspect = g.config.width as f32 / g.config.height.max(1) as f32;
                 let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud, movie_frame, if cutscene { Some(band) } else { None });
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
@@ -2719,6 +2789,15 @@ pub fn run() -> Result<()> {
         // first, so Bond is placed for the feature test and the rendered frame shows it.)
         let mut scene = scene;
         if let Some(n) = &scenario { apply_scenario(&mut scene, n); }
+        // The burning woman for the paused-page renders: advance her by the shot's tick count, as the paused frames
+        // would (crate::woman), so `--page pause|failed --frame N` shows frame N/2 of her loop.
+        if args.iter().position(|a| a == "--page").and_then(|i| args.get(i + 1)).is_some_and(|p| p == "pause" || p == "failed" || p == "results") {
+            if let Some(w) = scene.woman.as_mut() {
+                for _ in 0..time as u32 { w.tick(); }
+                let rgba = w.rgba();
+                if let Some((_, t)) = scene.hud_textures.iter_mut().find(|(h, _)| *h == 0x0300_00db) { if t.rgba.len() == rgba.len() { t.rgba = rgba; } }
+            }
+        }
         if let Some(sim) = scene.sim.as_mut() {
             // `--pull 100,130`: the trigger is pressed on those ticks (one tick each).
             let pulls: Vec<u32> = match args.iter().position(|a| a == "--pull") {
@@ -2818,7 +2897,21 @@ pub fn run() -> Result<()> {
             let n: f32 = args.get(i + 1).context("--armour needs a value (0..=50)")?.parse()?;
             if let Some(sim) = scene.sim.as_mut() { sim.drones.health.armour = n; }
         }
-        let (mut menu_frame, movie_frame) = front_end_menu(&args, &scene, front_end, &iso);
+        let (mut menu_frame, mut movie_frame) = front_end_menu(&args, &scene, front_end, &iso);
+        // `--loading`: the level's loading screen (crate::loading) — the picture on the movie plane, the text and the
+        // dots (`--frame` vblanks into the animation) over it.
+        if args.iter().any(|a| a == "--loading") {
+            let level = u32::from_str_radix(level.trim_end_matches(".bin"), 16).unwrap_or(0);
+            if let Some(art) = read_files_bin(&iso, loading::ARCHIVE).map(|b| loading::art(&b)) {
+                movie_frame = art.get(&loading::image_for(level)).cloned();
+            }
+            let lang = scene.sim.as_ref().and_then(|s| s.lang.clone());
+            let mut seed = 0x1234_5678u32;
+            let hint = loading::hint_for(level, || { seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345); seed >> 16 });
+            if let Some(t) = scene.hud.as_ref() {
+                menu_frame = Some(menu::loading_overlay(&t.font, lang.as_ref(), &scene.hud_textures, 1280.0 / 720.0, level, hint, loading::dots_lit(time as u32)));
+            }
+        }
         // fix-ingame-dev-menu: `--dev-page <name>` draws the F2 menu's page (menu/weapons/gadgets/
         // grenades/ammo/npcs/teleport/level/toggles/screenshot) over the game HUD, so the main agent
         // can render and check each page headless.
@@ -2839,9 +2932,9 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
-        audio_paused: false, };
+        audio_paused: false, loading_art: None, };
     if dev {
         // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
         // menu carries ALL of its functions now (through the same `panel::apply` command layer).
@@ -2953,3 +3046,15 @@ pub fn run() -> Result<()> {
 
 /// Leak a `String` to a `&'static str` (the scenario name lives for the program's life).
 fn leak_str(s: &str) -> &'static str { Box::leak(s.to_string().into_boxed_str()) }
+
+/// The pause OBJECTIVES tab's rows: (label, done) for each VISIBLE objective of the running level [M C_GCPAUSE_Handler
+/// 0x204408:251-268 lists `Mission_NumVisObjectives` rows; 0x182540 counts the objectives whose state (record+0x14)
+/// is > 1 or < 0; a row is done at state 4].
+fn pause_objective_rows(sim: &scene::Sim) -> Vec<(u32, bool)> {
+    nf_game::mission::LEVELS.iter().enumerate()
+        .find(|(_, l)| l.level == sim.level)
+        .map(|(li, l)| l.objectives.iter().enumerate().filter_map(|(oi, o)| {
+            let st = sim.drones.mission.states.get(li).and_then(|s| s.get(oi)).copied().unwrap_or(0) as i32;
+            (st > 1 || st < 0).then_some((o.text, st == 4))
+        }).collect()).unwrap_or_default()
+}
