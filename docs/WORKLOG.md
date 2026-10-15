@@ -12904,3 +12904,15 @@ the binaries the window fit.)
   bookkeeping) + the view_time floor for the reverse. fix_switch_after_cold_load_live 2/2
   (07000016 mash + the first-possible-tick single press + the settled press; 07000012 kit 0x10
   the same). Next: merge master, restart the suite on the final tree.
+
+## read-vu1-microcode (2026-10-15, branch s/read-vu1-microcode) — started 14:00 UTC
+Task 110v (G-014): the renderer's batch semantics (signed V4-8 = normal + no-kick flag, UV use,
+entry points 0 = clipped / 2 = unclipped, lighting) are measured from the data, but the VU1
+microcode itself (ACTION.ELF .vutext 0x241c80, 0x2880 bytes, plus the DVP overlays) has never
+been read. Do: write a small VU1 disassembler in tools/ (public VU manual, cited), map the
+packet entry points (0 = clipped, 2 = unclipped), follow the unpacked qwords through the vertex
+transform / normal use / ST-Q handling / clip test / lighting / kick, write
+docs/formats/vu1-microcode.md (per entry point: input qword layout, output to the GIF,
+addresses), and mark ps2gfx.md's "medium" batch assumptions confirmed / refuted / open. No
+renderer changes. Files: tools/ (the disassembler), docs/formats/vu1-microcode.md,
+docs/formats/ps2gfx.md, docs/GAPS.md (G-014).
