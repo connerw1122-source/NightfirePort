@@ -4059,6 +4059,9 @@ pub fn flash_mod(frame: u32) -> f32 {
 /// A rigid mesh hung on a character's datum (`AnimObjectDraw`): world = `QuatTransToMat(q, t)` · bone world.
 /// Draw slots per gas mesh (the sim's pool holds `GasPool::CAP` = 128; a puff past this index doesn't draw).
 pub const GAS_DRAW_SLOTS: usize = 64;
+/// "DroneScan" [D 07000005.bin]: the Micro-Camera's per-drone target bracket mesh, and its draw slots.
+pub const DRONE_SCAN: u32 = 0x0200_0832;
+pub const DRONE_SCAN_SLOTS: usize = 16;
 
 pub struct Attachment {
     pub character: u32,
@@ -4338,7 +4341,10 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
         Layer::SkyCamera | Layer::SkyFixed => if param4 == 1 { (0, 1) } else { (4, 0) },
         Layer::World => if chain == u32::MAX && obj.flags & 1 != 0 { (3, 2) } else { (1, 1) },
         Layer::Character => (2, 1),
-        Layer::Effect => (5, 0),
+        // `View_AddObjects` 0x1e62d8:57-59 routes an object with glist flag 0x2000 to sort list 2, which
+        // `Game_Draw` 0x1e6f50:162-175 draws after `psiClearZ` — over the whole world. Only the Micro-Camera's
+        // DroneScan (0x02000832, flags 0x2128 [D]) takes it here; the other 0x2000 effect meshes are unverified.
+        Layer::Effect => if obj.hashcode == DRONE_SCAN && obj.flags & 0x2000 != 0 { (6, 0) } else { (5, 0) },
     };
     // The object's world centre (glist sphere centre through the instance matrix) for the draw-order sort; world layers
     // keep each object apart. The world-space bounding-sphere radius (glist radius × the instance matrix's max axis
@@ -5180,6 +5186,19 @@ impl Scene {
                     let cinst = Instance { map: m, object: o, matrix: ident, placement: cplacement.clone() };
                     add_instance(level, &cinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                     attachments.push(Attachment { character: 0, bone: 0, local: cinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((3, slot, 0x0200_0273)), silencer: false });
+                }
+            }
+        }
+        // fix-microcam-brackets: the Micro-Camera's target brackets — `HUD_UpdateCameraPane` 0x1a12d8 creates one
+        // one-frame object per candidate drone at its root with gfx "DroneScan" 0x02000832 (Effect kind 6).
+        if drones.is_some() {
+            if let Some(&(m, o)) = level.by_hash.get(&DRONE_SCAN) {
+                let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+                let splacement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
+                for slot in 0..DRONE_SCAN_SLOTS {
+                    let sinst = Instance { map: m, object: o, matrix: ident, placement: splacement.clone() };
+                    add_instance(level, &sinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                    attachments.push(Attachment { character: 0, bone: 0, local: sinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((6, slot, DRONE_SCAN)), silencer: false });
                 }
             }
         }
@@ -6148,6 +6167,17 @@ impl Scene {
                             m
                         }
                         _ => far,
+                    },
+                    // The DroneScan bracket: at the candidate's root (`obj+0x30` [M 0x1a12d8:53]), no rotation
+                    // (control_create_object's null angles) — its glist flag 8 makes `View_DrawObjectGlist` 0x1e6780
+                    // billboard it (the viewer's rotation), scale 1.
+                    6 => match crate::hud::camera_scan_roots(s).get(slot) {
+                        Some(p) => {
+                            let (r, u) = (opts.right, opts.up);
+                            let f = [r[1] * u[2] - r[2] * u[1], r[2] * u[0] - r[0] * u[2], r[0] * u[1] - r[1] * u[0]];
+                            [[r[0], r[1], r[2], 0.0], [u[0], u[1], u[2], 0.0], [f[0], f[1], f[2], 0.0], [p[0], p[1], p[2], 1.0]]
+                        }
+                        None => far,
                     },
                     // fix-satchel-tripbomb: the satchel's countdown digits (kinds 4 = tens, 5 = units)
                     // — the meshes SatchelDigits[sec/10]/[sec%10] [L 0x2bed90], drawn at the stuck
