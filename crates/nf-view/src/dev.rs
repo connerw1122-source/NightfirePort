@@ -293,6 +293,9 @@ impl Dev {
             dr.present = true;
             dr.enabled = true;
             dr.started = false;
+            // The dev tool's grenade belt (B-12: the force-grenade tool and its tests rely on it).
+            dr.grenade_weapon = 0x35;
+            dr.grenade_count = 5;
             let idx = sim.drones.list.len();
             sim.drones.list.push(dr);
             sim.drones.llist.push(idx);

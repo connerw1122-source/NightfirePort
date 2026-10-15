@@ -6424,8 +6424,10 @@ impl Scene {
         // generics the walk drops where the port's per-cel attribution approximation disagrees");
         // for a live NPC the palette trusts the position + the GPU clip instead of the walk. The
         // hidden/present collapse below still removes dead and disabled ones.
+        // Only the dev panel's pool copies (`npc_pool` chars): exempting EVERY live drone let the strict
+        // walk's hidden rooms draw their partygoers (fix_portal_live's ballroom).
         let live_drone = |ci: usize| {
-            self.sim.as_ref()
+            self.npc_pool.iter().any(|s| s.chars.contains(&ci)) && self.sim.as_ref()
                 .and_then(|s| s.char_drone.get(ci).copied().flatten())
                 .and_then(|di| self.sim.as_ref().map(|s| (s, di)))
                 .map_or(false, |(s, di)| s.drones.list[di].present && s.drones.list[di].enabled)
