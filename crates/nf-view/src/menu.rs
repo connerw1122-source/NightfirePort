@@ -1376,6 +1376,30 @@ impl FrontEnd {
             opts: default_opts(),
             opts_saved: None,
             cn_name: String::new(),
+            // codename-entry (each on its own line [WORKLOG lesson 4]).
+            cn_typed: String::new(),
+            cn_cell: 0,
+            cn_from: 0,
+            cn_clear_on_key: false,
+            cn_box: None,
+            cn_delete_row: None,
+            cn_reserved: Vec::new(),
+            cn_exit: None,
+            cn_cheat_checked: false,
+            cn_profile_mode: false,
+            // nfstats-model (each new field on its own line [WORKLOG lesson 4]).
+            mission_stats: None,
+            // secret-codes: the letter-grid model starts empty (the game's buffer 0x34e028 begins
+            // empty on every page enter [M P_CNNAME 0x213790:46 re-binds the empty buffer]).
+            secret: SecretEntry::default(),
+            // screen-adjust-model (each new field on its own line [WORKLOG lesson 4]): the game
+            // boots the offset at 0/0 (.sbss) [M psiRestoreScreenPos 0x10b940's reset value].
+            screen_x: 0,
+            screen_y: 0,
+            screen_saved_x: 0,
+            screen_saved_y: 0,
+            screen_av_saved_x: 0,
+            screen_av_saved_y: 0,
             // front-end-chain (each new field on its own line [WORKLOG lesson 4]).
             results: None,
             just_completed: false,
@@ -2130,6 +2154,8 @@ impl FrontEnd {
             row @ 2..=5 => (row - 1) as i32,
             _ => 0,
         };
+    }
+
     /// P_NFSTATS_Handler 0x209938's page enter — the Mission Stats rows against the LIVE progress
     /// layer. The game's 0x4c build runs `PlrStat_GetScore(0)` (the commit [M 0x209938:36-38])
     /// and adds the rows; the port mirrors it through `nf_game::stats::stats_rows` (order,
