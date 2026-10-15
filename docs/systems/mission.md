@@ -21,8 +21,10 @@ pub struct Objective { pub text: u32, pub fail: u32, pub hint: u32, pub channel:
 
 Objective record (0x18 bytes) fields, established from the readers [M 0x1827d8/0x182270/0x182630]:
 `text` (the bank-4 label, e.g. 0x04000000 "Breach the castle walls"), `fail` (a per-objective fail label,
-0xffffffff = none in every shipped record), `hint` (the long description — filled but never drawn by any
-ACTION.ELF code found), `channel` (the condition switch channel; 0 = the raw `switch_channels[0]`), `init`
+0xffffffff = none in every shipped record), `hint` (the long description — drawn by the pause
+OBJECTIVES tab's ✕ Hint box: `C_GCPAUSE_Handler` 0x204408 case 1 binds record+0x08 in the ok-only
+option box, 0x31d substituted for −1 [M 0x205bd0-0x205bdc → Menu_CreateOptionBox 0x202218;
+docs/systems/objective-hints.md]), `channel` (the condition switch channel; 0 = the raw `switch_channels[0]`), `init`
 (the value `Mission_Init` resets it to), `enable` (the announce gate channel; 0 = announce without it),
 `flags` (bit 1 = the channel being ON means FAIL).
 
@@ -129,8 +131,11 @@ straight-line stand-ins).
 
 ## 7. Known gaps
 
-- The pause-screen objectives list (`Mission_ObjectiveState` 0x182630, `Mission_NumVisObjectives`
-  0x182540, drawn by `C_GCPAUSE_Handler` 0x204408) is not ported.
+- ~~The pause-screen objectives list (`Mission_ObjectiveState` 0x182630, `Mission_NumVisObjectives`
+  0x182540, drawn by `C_GCPAUSE_Handler` 0x204408) is not ported~~ → the data + flow are ported
+  (objective-hints: `Mission::num_vis_objectives`/`objective_state`, the `pause_objectives`/
+  `pause_objectives_sel`/`pause_hint` FrontEnd state and the ✕ flow — docs/systems/objective-hints.md);
+  the DRAWING of the ✕ hint box is the main agent's.
 - The fail/death 0x40000042 menu is a level restart; the red death fade is not drawn.
 - `DroneFunc_SetMissionFailReason` (0x13e560) is not wired to the drone paths that call it (the punch/
   alarm reasons) — the channels 0x60/0x61 hooks are.
@@ -257,7 +262,7 @@ triggers none of it.
 
 ### Known gaps (updated)
 
-- The pause-screen objectives list (as before) is not ported.
+- ~~The pause-screen objectives list (as before) is not ported~~ → ported (objective-hints, above).
 - ~~The fail/death 0x40000042 menu is a level restart; the red death fade is not drawn~~ → the menu
   logic + API are ported (§8); the menu DRAWING is 180-fix-menus'; the red fade drawing (pane 12's
   growing sprites, `death.pane_on`/`death.ticks`/`death.covered`) is render-side, not drawn yet.

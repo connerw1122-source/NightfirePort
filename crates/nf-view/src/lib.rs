@@ -1280,6 +1280,19 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             "advanced" => menu::Page::CnAdvanced,
             "mpoptions" => menu::Page::CnMp,
             "avoptions" => menu::Page::CnAv,
+            // codename-entry: the name-entry grid renders headless too (cn_open seeds the proposal).
+            "cnname" => { fe.cn_open(menu::PAGE_CN_SELECT); menu::Page::CnName }
+            "cncheat" => { fe.cn_open(menu::PAGE_CN_MENU); menu::Page::CnName }
+            "mpscenario" => menu::Page::MpScenario,
+            "mpmap" => menu::Page::MpMap,
+            "mpjoin" => menu::Page::MpJoin,
+            "mpscenopts" => menu::Page::MpOptions,
+            "mpbots" => menu::Page::MpBots,
+            "mpbotchoose" => menu::Page::MpBotChoose,
+            "mprules" => menu::Page::MpRules,
+            "mpplayermods" => menu::Page::MpPlayerMods,
+            "mpenviromods" => menu::Page::MpEnviroMods,
+            "mpbotsetup" => menu::Page::MpBotSetup,
             // fix-pause-menu: the in-game pages render headless too (the pause page over the
             // paused frame, the results per outcome). `--cursor N` picks the row, `--pause-tab N`
             // picks the pause tab, `--confirm` arms the pause confirm.
@@ -1289,6 +1302,14 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             other => { eprintln!("unknown --page '{other}' (start|main|codename|difficulty|missions|dossier|pause|results|complete)"); return (None, None); }
         };
     }
+    // The MP wheels keep their own row counters: `--cursor N` picks the row there too.
+    if fe.page == menu::Page::MpScenario { fe.mp_scenario_row = fe.cursor; }
+    if fe.page == menu::Page::MpMap { fe.mp_map_row = fe.cursor; }
+    if fe.page == menu::Page::MpOptions { fe.mp_options_row = fe.cursor; }
+    if fe.page == menu::Page::MpBots { fe.mp_bots_row = fe.cursor; }
+    if fe.page == menu::Page::MpBotChoose { fe.mp_bot_char = fe.cursor; }
+    // Join Game: `--cursor` is agent 1's panel state (0 press to join, 1 choose codename, 5 joined).
+    if fe.page == menu::Page::MpJoin { fe.mp_join[0].state = fe.cursor as u32; fe.mp_join[0].joined = fe.cursor > 0; fe.cursor = 0; }
     if let Some(i) = args.iter().position(|a| a == "--pause-tab") {
         fe.pause_tab = args.get(i + 1).and_then(|v| v.parse().ok()).unwrap_or(0);
     }
@@ -1306,6 +1327,15 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
     }
     if fe.page == menu::Page::Pause {
         if let Some(sim) = scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); }
+        // objective-hints: pre-open the ✕ hint box for the render (the row the cursor stands on) —
+        // the same state `FrontEnd::action`'s Confirm sets on the OBJECTIVES tab [M 0x204408
+        // 0x205b98-0x205c34: control 1's activation reads control 8's row and opens the ok-only
+        // box; 0xffffffff → 0x31d]. After the fill above (the rows must exist).
+        if args.iter().any(|a| a == "--pause-hint") && fe.pause_tab == 1 && !fe.pause_objectives.is_empty() {
+            let sel = fe.pause_objectives_sel.min(fe.pause_objectives.len() - 1);
+            let hint = fe.pause_objectives[sel].hint;
+            fe.pause_hint = Some(if hint == 0xffff_ffff { 0x31d } else { hint });
+        }
     }
     // Tick through the boot load and let the page's timers run (the flash cycle etc.).
     for _ in 0..3 { fe.flow.main_tick(); let _ = fe.flow.load_tick(); }
@@ -3082,14 +3112,17 @@ pub fn run() -> Result<()> {
 /// Leak a `String` to a `&'static str` (the scenario name lives for the program's life).
 fn leak_str(s: &str) -> &'static str { Box::leak(s.to_string().into_boxed_str()) }
 
-/// The pause OBJECTIVES tab's rows: (label, done) for each VISIBLE objective of the running level [M C_GCPAUSE_Handler
+/// The pause OBJECTIVES tab's rows: the mission's visible objectives (label / hint / done) [M C_GCPAUSE_Handler
 /// 0x204408:251-268 lists `Mission_NumVisObjectives` rows; 0x182540 counts the objectives whose state (record+0x14)
 /// is > 1 or < 0; a row is done at state 4].
-fn pause_objective_rows(sim: &scene::Sim) -> Vec<(u32, bool)> {
-    nf_game::mission::LEVELS.iter().enumerate()
-        .find(|(_, l)| l.level == sim.level)
-        .map(|(li, l)| l.objectives.iter().enumerate().filter_map(|(oi, o)| {
-            let st = sim.drones.mission.states.get(li).and_then(|s| s.get(oi)).copied().unwrap_or(0) as i32;
-            (st > 1 || st < 0).then_some((o.text, st == 4))
-        }).collect()).unwrap_or_default()
+fn pause_objective_rows(sim: &scene::Sim) -> Vec<menu::PauseObjective> {
+    // objective-hints [M C_GCPAUSE_Handler 0x204408:251-271]: the rows come from
+    // Mission_NumVisObjectives 0x182540 + Mission_ObjectiveState 0x182630 — the WHOLE mission's
+    // announced objectives in LEVELS order (prior parts included, future parts and unannounced
+    // rows excluded), not just the current level's record. state 4 = the ~J done marker; the
+    // hint stays 0xffffffff for hint-less records (the view's ✕ applies the 0x31d fallback).
+    let m = &sim.drones.mission;
+    (0..m.num_vis_objectives()).filter_map(|i| m.objective_state(i))
+        .map(|o| menu::PauseObjective { text: o.text, hint: o.hint, done: o.state == 4 })
+        .collect()
 }
