@@ -95,3 +95,26 @@ from the Classic Bond notes in 2026-10-13-weapon-modes-pcsx2.md) switches the HU
 view model gains a **long cylindrical silencer screwed onto the end of the barrel** (dark grey tube about a third of the
 slide's length, in line with the barrel). The swap plays a short gun animation. The user on the port: "The suppressor
 still stays on the gun, but visually it's not there" (task 109m).
+
+## Which levels carry what (the port's level data, 2026-10-14 probe) and a start-loadout bug
+
+From the levels' own pickups and the guards' weapons (port probe over the 21 story levels): the SG5 0x16 only from
+guards on 05/06; the AIMS-20 0x1a from pickups + guards on 14/15/16 (its grenade rounds 0x1b as pickups on 14); the
+remote mine 0x37 as pickups on 14 (at (38.7, 0, 33.6), (-28.0, 2.7, 6.9), (33.8, 3.6, -3.0)). In the REAL game the
+start loadouts differ by level — 07000014 starts with the Delta Repeater crossbow 0x11 in hand ("3-9 Single", in a
+crawl vent); 07000015's gadget cycle is Laser → Micro-Camera → Decryptor (no stunner); 07000005's is Stunner → Laser
+→ Grapple — while the port gives nearly every level the same `[1, 2, 4a, 4e, 50, 54]` (no crossbow on 14, a stunner
+on 15). In this save's layout L2 cycles weapons (□ reloads, ○ is the mode button).
+
+## The remote mine 0x37 (07000014, picked up from the pickup at (38.7, 0, 33.6))
+
+Frames 120 ms apart:
+
+- In hand: a round mine with a red light (a second, picked-up mine shows a cyan light).
+- **Fire throws it; it sticks where it lands** — it sits motionless on the surface from the first frame it lands, no
+  bounce (the user on the port: "The remote mine bounces for some reason").
+- **The mode button (○) switches to the detonator 0x38** (held id 0x38; the 2026-10-13 table's "→0x39" is wrong): the
+  left wrist comes up showing the watch and the HUD reads "Detonate". It is reached through the mine's mode press,
+  not the gadget cycle (the user: "you have it set to the watch rather than the alternate fire of the mine").
+- **Fire on the detonator blows the mine at once** (a full-screen blast the next frame), then the view returns to the
+  mine ("Grenade").
