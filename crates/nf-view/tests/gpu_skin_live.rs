@@ -80,7 +80,7 @@ fn sister_a_wrong_palette_is_caught() {
     let (layout, attrs) = scene.skin_layout();
     let (mut pal, _) = scene.skin_palette(&layout, None, 1.0, opts, None);
     for m in pal.iter_mut() { m[3][1] += 1.0; }
-    let i = attrs.iter().position(|a| a.a != a.b).expect("a blended vertex");
+    let i = attrs.iter().position(|a| a.a != a.b && a.mtb < 0).expect("a blended non-morph vertex");
     let g = apply(&pal, &attrs[i], scene.char_verts[i].pos, &[], &[]);
     assert!((g[1] - cpu[i][1]).abs() > 0.5, "a shifted palette must move the vertex");
 }

@@ -443,9 +443,12 @@ impl Renderer {
         let col_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("colours"), size: (skin_layout.col_one as u64 + 1) * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         // fix-gpu-facial-morphs: the per-character facial-weight blocks (written each frame in
         // `update_skin`) and the scene's concatenated MORPH_DATA targets (static). A scene with no
-        // morph bearer gets 16-byte dummies — the attrs' mtb −1 keeps the shader off them.
+        // morph bearer gets 16-byte dummies (a zero-size storage binding is a create error) — the
+        // attrs' mtb −1 keeps the shader off them.
         let wts_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("morph weights"), size: ((skin_layout.wt_stride as u64 * scene.characters.len() as u64) * 16).max(16), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-        let mtg_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("morph targets"), contents: &scene.morph_target_blob(), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST });
+        let blob = scene.morph_target_blob();
+        let mtg_contents = if blob.is_empty() { vec![0u8; 16] } else { blob };
+        let mtg_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("morph targets"), contents: &mtg_contents, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST });
         let slots = (scene.materials.len() + 2) as u64;
         let make_uniform = || {
             let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: UNIFORM_SLOT as u64 * slots, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });

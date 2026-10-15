@@ -5903,7 +5903,10 @@ impl Scene {
             let bone = |s: u16| c.slot_bones.get(s as usize).filter(|&&b| (b as u32) < c.skeleton.bones as u32).map(|&b| base + 1 + b as u32);
             // fix-gpu-facial-morphs: the character branch also carries the morph plumbing —
             // `SkinIt` 0x10bf30:90 gates on the vertex's morph index (−1 = none) and the object's
-            // Morph_Count; the target block is this character's [tgt_base, tgt_base + len).
+            // Morph_Count; the target block is this character's [tgt_base, tgt_base + len). The
+            // single-bone/no-bone fallbacks keep the same plumbing (the game's SkinIt morphs every
+            // vertex carrying a morph index, before any skinning); `one()`'s mtb −1 stays only on
+            // the non-character verts (searchlights, doors, pickups, attachments).
             let (mtb, mwb, cnt, tend) = {
                 let tb = tgt_base[v.character as usize];
                 let tlen = c.morph_targets.as_ref().map_or(0, |t| (t.len() / 4) as u32);
@@ -5913,10 +5916,11 @@ impl Scene {
                  if ok { c.skin.facial as u32 } else { 0 },
                  tb + tlen)
             };
+            let one_char = |m: u32| SkinAttr { a: m, b: m, w: 1.0, col: v.character, mtb, mwb, cnt, tend };
             match (bone(v.slots[0]), bone(v.slots[1])) {
                 (Some(a), Some(b)) => SkinAttr { a, b, w: v.weight, col: v.character, mtb, mwb, cnt, tend },
-                (Some(a), None) => one(a, v.character),
-                _ => one(base, v.character),
+                (Some(a), None) => one_char(a),
+                _ => one_char(base),
             }
         }).collect();
         (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_sl, col_one, wt_stride, n_tgt }, attrs)
