@@ -130,7 +130,10 @@ impl Gun {
     /// BLData+0x4F4` — and `+0x4F4` is not a separate field: it is `clip[0x45]` (`0x1B8 + 0x45·0xC`), the
     /// carried grenade count [M 0x1a16c0:14-15; player.md "`+0x4F4` is NOT a separate field"].
     /// *Deviation*: the 0x20000 ground-pickup scan is a STANDIN (returns false; the pickup list is not in Gun).
-    pub fn has_ammo(w: u8, carried: &[i16], clip: &[i16], ammo_type: impl Fn(u8) -> usize, _flags: impl Fn(u8) -> u32) -> bool {
+    /// `clip_slot` is `Player_AmmoInGun` 0x1a9190's pick (see `ammo_in_gun_slot`) — the game calls
+    /// `Player_AmmoInGun` for this clip half [M 0x1a16c0:22-24], so every caller that holds the weapon
+    /// table passes the shared-slot resolver.
+    pub fn has_ammo(w: u8, carried: &[i16], clip: &[i16], ammo_type: impl Fn(u8) -> usize, _flags: impl Fn(u8) -> u32, clip_slot: impl Fn(u8) -> usize) -> bool {
         if w == 0x45 {
             // `(short)weapon_data._18638_2_ (= weapon_data[0x45].clip_size = 100) <= *(short*)(BL+0x4F4)`
             // [M 0x1a16c0:14-15]; G-029 previously stood in with `true`.
@@ -138,12 +141,24 @@ impl Gun {
         }
         let t = ammo_type(w);
         if carried.get(t).copied().unwrap_or(0) != 0 { return true; }
-        // `Player_AmmoInGun`: rounds in the clip.
-        if clip.get(w as usize).copied().unwrap_or(0) != 0 { return true; }
+        // `Player_AmmoInGun`: rounds in the clip (the shared-slot pick, 0x1a9190).
+        if clip.get(clip_slot(w)).copied().unwrap_or(0) != 0 { return true; }
         // `ammo_type == 0`: melee / unlimited weapons (fists, hands, gadgets) always have ammo [M 0x1a16c0].
         if t == 0 { return true; }
         // Flag 0x20000: check the ground for a matching ammo pickup. STANDIN: not ported (no object list in Gun).
         false
+    }
+
+    /// `Player_AmmoInGun` 0x1a9190's clip-slot pick: a twin record (`+0x05 != 0`) reads the BASE's
+    /// slot (record `+0x02`) unless the `+0x90` ammo-shared bytes differ (then its own); a non-twin
+    /// (whose `+0x02` bases to itself [L ee_start_05.bin +0x02 sweep]) reads its own. The Phoenix
+    /// Samurai's give fills `clip[0x33]` (the base 0x33's slot — both records' +0x90 is 0x1f [L
+    /// ee_start_05.bin @ 0x2bf150]), so the Overcharge twin 0x32's dry check reads [0x33]: without
+    /// this the mode press to 0x32 is forever inert and the Samurai fires nothing anywhere
+    /// (weapon-matrix4 red #1).
+    pub fn ammo_in_gun_slot(w: u8, base_of: impl Fn(u8) -> u8, shared90_of: impl Fn(u8) -> u8) -> usize {
+        let b = base_of(w);
+        if b != w && shared90_of(w) == shared90_of(b) { b as usize } else { w as usize }
     }
 
     /// `Player_GetBestWeapon` (0x1a9680): scans the `BestWeapon` table (0x2bede0, 18 u16) for the first owned,
@@ -639,11 +654,11 @@ mod tests {
         let carried = [0i16; 34];
         let ammo_type = |_w: u8| 0usize;
         let flags = |_w: u8| 0u32;
-        assert!(!Gun::has_ammo(0x45, &carried, &clip, ammo_type, flags), "count < 100: no ammo");
+        assert!(!Gun::has_ammo(0x45, &carried, &clip, ammo_type, flags, |w| w as usize), "count < 100: no ammo");
         clip[0x45] = 100;
-        assert!(Gun::has_ammo(0x45, &carried, &clip, ammo_type, flags), "count ≥ 100 [M]");
+        assert!(Gun::has_ammo(0x45, &carried, &clip, ammo_type, flags, |w| w as usize), "count ≥ 100 [M]");
         // Sister: other weapons ignore clip[0x45] entirely.
         clip[0x45] = 0;
-        assert!(Gun::has_ammo(1, &carried, &clip, |_w| 0usize, flags), "ammo_type 0 = melee: always true");
+        assert!(Gun::has_ammo(1, &carried, &clip, |_w| 0usize, flags, |w| w as usize), "ammo_type 0 = melee: always true");
     }
 }

@@ -59,7 +59,7 @@ pub(crate) struct Quad { pub(crate) layer: i32, pub(crate) tex: usize, pub(crate
 /// at y 0x180 = 384 [L ACTION.ELF SpriteInfo 0x2c9468]) and the op-0x14 script sprites (their rects
 /// already scaled to this 512×448 space by `Script_SpriteStart`; drawn only when their texture hash
 /// is loaded, else logged once — the live check decides the visual).
-pub fn script_overlay(fade: Option<nf_game::drone::ViewFade>, letterbox: bool, sprites: &[(u32, [f32; 4])], textures: &[(u32, crate::scene::TextureImage)], aspect: f32) -> HudFrame {
+pub fn script_overlay(fade: Option<nf_game::drone::ViewFade>, letterbox: bool, sprites: &[(u32, [f32; 4])], textures: &[(u32, crate::scene::TextureImage)], aspect: f32, flashbang: f32) -> HudFrame {
     let mut h = Hud { quads: Vec::new(), aspect, textures };
     if letterbox {
         h.quad(Anchor::Stretch, 1, SCOPE_STRIP_TEX, 0, 0.0, 0.0, SW, 64.0, [0.0; 4], (false, false), [0.0, 0.0, 0.0, 1.0]);
@@ -75,6 +75,12 @@ pub fn script_overlay(fade: Option<nf_game::drone::ViewFade>, letterbox: bool, s
         if f.alpha > 0.0 {
             h.quad(Anchor::Stretch, 0, SCOPE_STRIP_TEX, 0, 0.0, 0.0, SW, SH, [0.0; 4], (false, false), [0.0, 0.0, 0.0, f.alpha.min(1.0)]);
         }
+    }
+    // fix-grenade-types: the flashbang whiteout — `Player_Update` feeds `GlobalBlur` and the white
+    // `Camera_SetFade` from the same BL+0x963 byte [M 0x193600:332-352]; the caller passes the fade's
+    // alpha. The blur pass has no port chain (the white fade is the game's visible effect).
+    if flashbang > 0.0 {
+        h.quad(Anchor::Stretch, 0, SCOPE_STRIP_TEX, 0, 0.0, 0.0, SW, SH, [0.0; 4], (false, false), [1.0, 1.0, 1.0, flashbang.min(1.0)]);
     }
     h.finish()
 }

@@ -892,7 +892,8 @@ fn cycle_to(scene: &mut Scene, id: u8) -> bool {
                 let carried = sim.drones.inventory.carried.clone();
                 let clip = sim.drones.inventory.clip.clone();
                 let weapons = &sim.weapons;
-                let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                let slot = |x: u8| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| weapons.ammo_type(y as usize) as u8);
+                let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize), slot);
                 eprintln!("[dbg cyc {id:#04x} p{press}] held={:02x} sw={} rel={} fire={} owned{}={} sel={} ammo={} clip{}={} carried{}={} disabled={} hp={:.1} vs={:#x}/{:.1} sub={}",
                     sim.gun.weapon, sim.gun.switch_state, sim.gun.reload_state, sim.gun.fire_state as u8,
                     id, sim.drones.inventory.owned.get(id as usize).copied().unwrap_or(false),

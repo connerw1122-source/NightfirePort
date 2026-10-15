@@ -1821,7 +1821,11 @@ impl Sim {
                     let carried = self.drones.inventory.carried.clone();
                     let clip = clip_view(&self.weapons, &self.drones.inventory.clip);
                     let weapons = &self.weapons;
-                    let has_ammo = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                    // fix-samurai-fire: the clip half is `Player_AmmoInGun` 0x1a9190's shared-slot
+                    // pick — the Overcharge twin 0x32's dry check reads the base's clip[0x33] (the
+                    // give fills the base's slot), else the mode press is forever inert.
+                    let slot = |x: u8| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| weapons.ammo_type(y as usize) as u8);
+                    let has_ammo = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize), slot);
                     let sw = nf_game::gun::fire_mode_switch(self.gun.weapon, twin, mode_count, mode, has_ammo);
                     if let Some(new) = sw.new_weapon {
                         // The twin switch writes `obj+0x63` (the switch request) [M 0x1a24c8:246-260].
@@ -1871,7 +1875,9 @@ impl Sim {
             let weapons = &self.weapons;
             let ammo_type_of = |w: u8| weapons.ammo_type(w as usize);
             let flags_of = |w: u8| weapons.flags(w as usize);
-            let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, ammo_type_of, flags_of);
+            // fix-samurai-fire: `Player_AmmoInGun` 0x1a9190's shared-slot pick for the clip half.
+            let slot = |x: u8| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| ammo_type_of(y) as u8);
+            let has_ammo = |w: u8| nf_game::gun::Gun::has_ammo(w, &carried, &clip, ammo_type_of, flags_of, slot);
             let selectable = |w: u8| weapons.selectable(w);
             // D-003 REMOVED: the root cause was the missing `Player_Init` override of weapon_data[1]+0xDC
             // (the fists skin). With the override applied in main.rs, the fists skin (0x050000ab) is found
@@ -2102,6 +2108,14 @@ impl Sim {
             // under him and the straddle BFS roots at the floor's cel — the 08 escort's straddle root and
             // the portal-centre crossings ([M 0x1c8928's +0x70]) both ride the same stateful cel).
             self.bond.cel = bond_cel;
+            // The melee hit-push `BL+0x910` (fix-bond-damage): `Player_Update` 0x193600 decays it
+            // ×0.9 every tick [M disasm 0x1937a4-0x1937d8] and, while Bond is alive, adds it to the
+            // move vec's Y before `obj+0x50 += move` [M disasm 0x193ccc-0x193cf0] — a per-tick
+            // displacement the floor collision absorbs when it pushes down.
+            self.drones.health.hit_push *= 0.9;
+            if self.drones.health.health > 0.0 {
+                self.bond.pos[1] += self.drones.health.hit_push;
+            }
             self.bond.tick_ctx(&self.world, &ctx, &input);
             // `obj+0x40 ← obj+0x30` — the moved pass's copy AFTER the cel change [M 0x1336f8:212].
             self.bond.prev_pos = prev_tick_pos;
@@ -2157,7 +2171,10 @@ impl Sim {
             // — the FULL pipeline (difficulty factor, no armour for type 7 [M 0x1902c8:84-104], the pain
             // flash +0x968 and the both-sides bits +0x967 = 0xC), not a bare subtraction.
             if let Some(dmg) = self.bond.drown_damage {
-                self.drones.health.pain_generic(dmg, self.drones.difficulty, self.level, 7);
+                if self.drones.health.pain_generic(&mut self.drones.rng, dmg, self.drones.difficulty, self.level, 7) {
+                    let p = self.bond.pos;
+                    self.drones.play_pain_grunt(p);
+                }
                 // The drown tick's sound rides the same 30-tick cadence [M Player_MonitorAir
                 // 0x191a70:135-143: every FRAME_RATE·0.5 ticks, Sound_Play(100, 0x60b) + HandlePain].
                 self.drones.audio.play(0x60b);
@@ -2214,7 +2231,12 @@ impl Sim {
         // The landing damage: `Player_CollisionHandler` 0x1949a8:117-126 calls `Player_HandlePain(timer - 60,
         // type 6)` — the full pipeline: the difficulty factor, NO armour (types 1..7 bypass it [M
         // 0x1902c8:84-104]), the pain flash +0x968 and the vertical direction bits +0x967 = 2.
-        if let Some(dmg) = self.bond.fall_damage { self.drones.health.pain_generic(dmg, self.drones.difficulty, self.level, 6); }
+        if let Some(dmg) = self.bond.fall_damage {
+            if self.drones.health.pain_generic(&mut self.drones.rng, dmg, self.drones.difficulty, self.level, 6) {
+                let p = self.bond.pos;
+                self.drones.play_pain_grunt(p);
+            }
+        }
         let (head, look) = (self.bond.head(), self.bond.look());
         // The shot's direction through the crosshair: forward + 0.76966 cx · right + 0.57724 cy · up.
         let (yaw, p) = (self.bond.yaw, self.bond.pitch * std::f32::consts::FRAC_PI_2);
@@ -2885,7 +2907,8 @@ impl Sim {
                     let carried = self.drones.inventory.carried.clone();
                     let clip = self.drones.inventory.clip.clone();
                     let weapons = &self.weapons;
-                    let has = nf_game::gun::Gun::has_ammo(base_u8, &carried, &clip, |t| weapons.ammo_type(t as usize), |t| weapons.flags(t as usize));
+                    let has = nf_game::gun::Gun::has_ammo(base_u8, &carried, &clip, |t| weapons.ammo_type(t as usize), |t| weapons.flags(t as usize),
+                        |x| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| weapons.ammo_type(y as usize) as u8));
                     if has {
                         self.gun.switch_request = base_u8; // BL+0x63 = the mine [M 0x1a4cb8]
                     } else {
@@ -2895,7 +2918,8 @@ impl Sim {
                         const BEST_WEAPON: [u16; 18] = [0x42, 0x32, 0x1a, 0x18, 0x1c, 0x16, 0x15, 0x08, 0x10, 0x0e, 0x0d, 0x0c, 0x12, 0x06, 0x04, 0x02, 0x0a, 0x01];
                         let owned = self.drones.inventory.owned.clone();
                         let base_of = |b: u8| weapons.base(b as usize) as u8;
-                        let has_ammo_fn = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize));
+                        let has_ammo_fn = |id: u8| nf_game::gun::Gun::has_ammo(id, &carried, &clip, |x| weapons.ammo_type(x as usize), |x| weapons.flags(x as usize),
+                            |x| nf_game::gun::Gun::ammo_in_gun_slot(x, |y| weapons.base(y as usize) as u8, |y| weapons.ammo_type(y as usize) as u8));
                         if let Some(id) = self.gun.get_best_weapon(&BEST_WEAPON, base_of, &owned, has_ammo_fn) {
                             self.gun.switch_request = id; // Player_GetBestWeapon writes BL+0x63 [M 0x1a9680 tail]
                         }
@@ -2980,11 +3004,26 @@ impl Sim {
                     let fuse = if flags70 & 0x200 == 0 {
                         (f32_at(0x1c) / speed).max(1.0)
                     } else if flags70 & 0x10000 != 0 { 300.0 } else { 210.0 };
+                    // fix-satchel-tripbomb: `Bullet_init` 0x12c5a0:199-208's family arm overwrites the
+                    // defaults — base (weapdef+2) 0x3b → `(id == 0x6c) ? 900 : ((id − base)·5 + 5)·60`
+                    // + BU+0x102 = 100 [M]; base 0x69 → 5.0 [:212-214]. [L dump of the 115 records:
+                    // every satchel bases to ITSELF and only 0x3b is selectable → the fired 0x3b gets
+                    // 300; the tripbomb 0x3a bases to itself → the default 210 (its arm delay comes
+                    // from the stick's own `BU+0xFC = 120.0` overwrite [M 0x12ce80:330]).]
+                    let base = u16::from_le_bytes([w[2], w[3]]);
+                    let wid = u16::from_le_bytes([w[0], w[1]]);
+                    let fuse = if base == 0x3b {
+                        if wid == 0x6c { 900.0 } else { ((wid - base) as f32 * 5.0 + 5.0) * 60.0 }
+                    } else if base == 0x69 { 5.0 } else { fuse };
                     // The mine 0x37 thrown by the PLAYER: BU+0xFC = 7777.0 — it waits for the
                     // detonator and never self-detonates [M Bullet_init 0x12c5a0:196-223 — the
                     // owner obj+0xff == 3 arm; guard-thrown mines keep 420]. The detonator's fire
                     // re-arms the placed mines to 10.0 [M Player_WeaponInitBullet 0x1a4bf0].
                     let fuse = if wt == 0x37 { 7777.0 } else { fuse };
+                    // fix-grenade-types: the 0x69 smoke canister's fuse is 5.0 [M Bullet_init
+                    // 0x12c5a0:212-215] — it pops almost at once into its long 3600-tick cloud
+                    // (the Sim's smoke arm re-arms by type).
+                    let fuse = if wt == 0x69 { 5.0 } else { fuse };
                     // The blast damage: `weapon_data+0x0C` [M 0x12cd98 disasm: `lwc1 $f14, 12($v0)` →
                     // Explode_Create's f14 → EXPLODEINFO+0x28 (Explode_CollisionHandler 0x17cde0:13-15);
                     // radius = $f12/$f13 = weapon_data+0x08]. The `addiu $t2, $zero, 0x64` (100) is the
@@ -3009,6 +3048,13 @@ impl Sim {
                         owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false,
                         // fix-oddjob-hat: the stick latch + the homing target (BU+0x40) start clear.
                         stuck: false, seek_target: None,
+                        // fix-satchel-tripbomb: the gadget state box exists from the spawn for the
+                        // satchel/tripbomb ids — `Bullet_DoTrails`' 0x3b tail (the beeps/digits) runs
+                        // in EVERY state [M 0x12d890:418+], so the quarter-second latch (BU+0x100)
+                        // must tick from the throw; the stick overwrites it with the surface state.
+                        phase: matches!(self.gun.weapon as u16, 0x3a | 0x3b).then(|| {
+                            Box::new(nf_game::grenade::StuckGadget { normal: [0.0, 1.0, 0.0], arm: 0.0, armed: false, last_qs: 0, digits: None })
+                        }),
                     });
                 } else {
                     // The muzzle light runs on every shot tick for the light-gated records — the
@@ -4075,13 +4121,19 @@ fn drone_height(hip: f32) -> f32 {
 impl Scene {
     /// The script player's overlay (fix-script-commands): the fade, the letterbox borders and the
     /// op-0x14 sprites — see `hud::script_overlay`. Appended to the HUD frame OUTSIDE the cut-scene
-    /// gate (the game draws these over the blanked HUD).
+    /// gate (the game draws these over the blanked HUD). fix-grenade-types: the flashbang whiteout
+    /// rides the same overlay — `Player_Update`'s fade is full alpha while the remaining time sits
+    /// above its half, then fades with it [M 0x193600:328-352], at `BL+0x963`'s alpha [M 0x196040].
     pub fn script_overlay_hud(&self, aspect: f32) -> crate::gpu::HudFrame {
         let Some(sim) = self.sim.as_ref() else { return Default::default() };
         let sprites: Vec<(u32, [f32; 4])> = sim.drones.scripts.objects.list.iter()
             .filter_map(|o| match o { Some(nf_game::nis::Obj::Sprite { hash, rect, .. }) => Some((*hash, *rect)), _ => None })
             .collect();
-        crate::hud::script_overlay(sim.drones.view_fade, sim.drones.letterbox, &sprites, &self.hud_textures, aspect)
+        let h = &sim.drones.health;
+        let flash = if h.flashbang <= 0.0 || h.flash_total <= 0.0 { 0.0 }
+            else if h.flashbang > h.flash_total * 0.5 { h.flash_alpha }
+            else { h.flash_alpha * (h.flashbang / (h.flash_total * 0.5)) };
+        crate::hud::script_overlay(sim.drones.view_fade, sim.drones.letterbox, &sprites, &self.hud_textures, aspect, flash)
     }
 
     /// `skeletons`: every skeleton on the disc by id; `sequences`: the level's animation archive, grouped by skeleton.
@@ -4529,7 +4581,12 @@ impl Scene {
             // TRACER_SLOTS = "lazer" (0x4E), +1 = "taser" (0x4A/0x4C), +2 = "uv_lazer" (the 0x4F
             // upgrade [M 0x1a4560's class-'N' pick]); `frame_state` shows the one for the active
             // weapon (all stretch muzzle→hit off sim.laser_beam).
-            for (slot, hash) in [(TRACER_SLOTS, 0x0200_0131u32), (TRACER_SLOTS + 1, 0x0200_026d), (TRACER_SLOTS + 2, 0x0200_06c1)] {
+            for (slot, hash) in [(TRACER_SLOTS, 0x0200_0131u32), (TRACER_SLOTS + 1, 0x0200_026d), (TRACER_SLOTS + 2, 0x0200_06c1),
+                // fix-satchel-tripbomb: the tripbomb's own beam mesh — the laser block creates the
+                // beam object with `hashtable_set_object_to_entity_gfx(uVar9, 0x2000133)` [M
+                // `Bullet_update` case 3, the +0x70 & 0x80000 arm 0x12ee30-0x12ee50]; two slots
+                // (the 6-placed cap keeps placed tripbombs bounded; the port draws the first two).
+                (TRACER_SLOTS + 3, 0x0200_0133), (TRACER_SLOTS + 4, 0x0200_0133)] {
                 if drones.is_some() {
                     if let Some(&(bmap, bobj)) = level.by_hash.get(&hash) {
                         let binst = Instance { map: bmap, object: bobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
@@ -4625,6 +4682,26 @@ impl Scene {
                     let cinst = Instance { map: m, object: o, matrix: ident, placement: cplacement.clone() };
                     add_instance(level, &cinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                     attachments.push(Attachment { character: 0, bone: 0, local: cinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((3, slot, 0x0200_0273)) });
+                }
+            }
+        }
+        // fix-satchel-tripbomb: the satchel's countdown digits — the 0x3b tail of `Bullet_DoTrails`
+        // (0x12d890:485-553) spawns two kind-0x40 objects every tick, gfx `SatchelDigits[sec/10]` and
+        // `SatchelDigits[sec%10]` [L SatchelDigits @0x2bed90 = 0x2000791..0x200079a], linked to the
+        // satchel's cel. The port pools them as Effect kinds 4 (tens) / 5 (units): 2 slots per digit
+        // mesh (the first two stuck satchels draw).
+        if drones.is_some() {
+            let dplacement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
+            let dident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+            for digit in 0..10u32 {
+                let mesh = 0x0200_0791 + digit;
+                let Some(&(dm, dobj)) = level.by_hash.get(&mesh) else { continue };
+                for kind in [4u8, 5u8] {
+                    for slot in 0..2 {
+                        let dinst = Instance { map: dm, object: dobj, matrix: dident, placement: dplacement.clone() };
+                        add_instance(level, &dinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                        attachments.push(Attachment { character: 0, bone: 0, local: dinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)) });
+                    }
                 }
             }
         }
@@ -5367,6 +5444,25 @@ impl Scene {
                 // and 0x200026d "taser" [M 0x1a46a8]), and `Draw_LaserBeam`'s stretch is the beam
                 // object's own scale (obj+0xE8 = the muzzle→hit distance) with the yaw/pitch of
                 // muzzle→hit in obj+0x50 (the negated-yaw euler) [M 0x1a4560:44-62].
+                if slot as usize >= TRACER_SLOTS + 3 {
+                    // fix-satchel-tripbomb: the tripbomb's laser beam (mesh 0x2000133 [M the beam
+                    // create]) — the sim rebuilds `tripbomb_beams` (start, end) every tick [M the
+                    // laser block 0x12efb8-0x12ef78 + `PositionBeam` 0x1a9400]. Same stretch as the
+                    // gadget beams (the beam object's z scaled by the length).
+                    let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
+                    let Some(s) = self.sim.as_ref() else { return far };
+                    let k = slot as usize - TRACER_SLOTS - 3;
+                    let Some(&(a, b)) = s.drones.tripbomb_beams.get(k) else { return far };
+                    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if len < 1e-4 { return far; }
+                    let dir = [d[0] / len, d[1] / len, d[2] / len];
+                    let yaw = dir[0].atan2(dir[2]);
+                    let pitch = -dir[1].atan2((dir[0] * dir[0] + dir[2] * dir[2]).sqrt());
+                    let mut m = nf_formats::placement::object_matrix([pitch, yaw, 0.0], a);
+                    for k in 0..3 { m[2][k] *= len; }
+                    return m;
+                }
                 if slot as usize >= TRACER_SLOTS {
                     let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
                     let Some(s) = self.sim.as_ref() else { return far };
@@ -5410,7 +5506,17 @@ impl Scene {
                 let norm = |v: [f32; 3]| { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(); if l > 1e-9 { [v[0] / l, v[1] / l, v[2] / l] } else { [0.0, 1.0, 0.0] } };
                 let (pos, dir, live_mesh): ([f32; 3], [f32; 3], u32) = if (slot as usize) < GRENADE_SLOTS {
                     match s.drones.grenades.get(slot as usize) {
-                        Some(g) if g.state < 2 => (g.pos, norm(g.velocity), g.mesh),
+                        Some(g) if g.state < 2 => {
+                            // fix-satchel-tripbomb: a stuck satchel/tripbomb draws aligned to the
+                            // NEGATED surface normal (the stick arm's `Mat_Align2Dir(obj+0x90,
+                            // −normal, …)` [M 0x12ce80:256-266]) instead of the flight direction.
+                            match &g.phase {
+                                // Only a STUCK gadget's normal draws (a flying 0x3a/0x3b carries the
+                                // placeholder phase box for the beep latch — the stick overwrites it).
+                                Some(p) if g.stuck => (g.pos, [-p.normal[0], -p.normal[1], -p.normal[2]], g.mesh),
+                                _ => (g.pos, norm(g.velocity), g.mesh),
+                            }
+                        }
                         _ => return far,
                     }
                 } else if (slot as usize) < GRENADE_SLOTS + TRACER_SLOTS {
@@ -5483,6 +5589,31 @@ impl Scene {
                         }
                         _ => far,
                     },
+                    // fix-satchel-tripbomb: the satchel's countdown digits (kinds 4 = tens, 5 = units)
+                    // — the meshes SatchelDigits[sec/10]/[sec%10] [L 0x2bed90], drawn at the stuck
+                    // satchel's matrix (aligned to −normal [M 0x12ce80:266]) offset along its own
+                    // axes [*suggested*: the game offsets by its own small rotation/translation pair
+                    // 0x12d890:486-511 — the port's (±0.03, 0.032, 0.06) is cosmetic].
+                    4 | 5 => {
+                        let satchels: Vec<&nf_game::grenade::Grenade> = s.drones.grenades.iter()
+                            .filter(|g| g.weapon_type == 0x3b && g.state < 2 && g.stuck && g.phase.is_some())
+                            .collect();
+                        let Some(g) = satchels.get(slot) else { return far };
+                        let p = g.phase.as_ref().unwrap();
+                        let Some((tens, units)) = p.digits else { return far };
+                        let digit = if kind == 4 { tens } else { units };
+                        if mesh != 0x0200_0791 + digit as u32 { return far; }
+                        let mut m = nf_game::searchlight::align2dir([-p.normal[0], -p.normal[1], -p.normal[2]], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
+                        let (x, y, z) = (m[0], m[1], m[2]);
+                        let (lx, ly, lz) = if kind == 4 { (-0.03f32, 0.032f32, 0.06f32) } else { (0.03, 0.032, 0.06) };
+                        m[3] = [
+                            g.pos[0] + x[0] * lx + y[0] * ly + z[0] * lz,
+                            g.pos[1] + x[1] * lx + y[1] * ly + z[1] * lz,
+                            g.pos[2] + x[2] * lx + y[2] * ly + z[2] * lz,
+                            1.0,
+                        ];
+                        m
+                    }
                     _ => far,
                 };
             }

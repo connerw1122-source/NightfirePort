@@ -7770,8 +7770,12 @@ Started 14:40 UTC 2026-10-13, sandbox expires ~16:38 UTC.
 Work Log:
 - Branch s/fix-swim-vent3 = s/fix-swim-vent2 (8b6374a) merged with origin/master (7fb019b); WORKLOG conflict resolved keeping both sides' entries (append-only). First checkpoint pushed.
 
+Work Log (continued):
+- 22:35-22:50: the deltas pinned from the decompile + disasm (0x1937a4-d8 the x0.9 decay, 0x193ccc-cf0 the move-Y add; 0x194458:229-256 the 0x412/0x171/push; 0x1902c8:110-119 the 1-in-4 grunt; ReadTuningVars 0x1d3a80 the 5 missing level groups) and ported (bullet.rs PlayerHealth.hit_push + the grunt roll in apply + damage_factor groups; drone.rs the Player-arm hooks; scene.rs the decay+apply + grunt plays).
+- 22:55: fix_bond_damage_live 6/6 green on the merged tree; the touched suites (death/restart/guest/hud/fields) all green. Report: docs/reports/fix-bond-damage.md.
+
 Stage Summary:
-- (in progress)
+- Ported: the 0x412 bullet-hit hurt sound (record +0x70 & 0x180 gate), the 1-in-4 0x88 pain grunt on the shared RNG, the melee hit-push BL+0x910 (+0x171 sound, x0.9/tick decay, move-vec-Y lane), the five missing ReadTuningVars damage-factor groups + difficulty 0 = Normal. Already present (unchanged): the armour absorb, the flash+fade, the dir sprites, the pane bands, the death/fail flow. Not modelled: rumble, the MP arms.
 
 ---
 Task: fix-portal3
@@ -8600,8 +8604,12 @@ Work Log:
   morph index) into docs/formats/character.md, port AnimFacialUpdate/AnimFacialBlend, drive from
   the cut-scene scripts' 22-channel face tracks + speech. WORKLOG first, branch pushed.
 
+Work Log (continued):
+- 22:35-22:50: the deltas pinned from the decompile + disasm (0x1937a4-d8 the x0.9 decay, 0x193ccc-cf0 the move-Y add; 0x194458:229-256 the 0x412/0x171/push; 0x1902c8:110-119 the 1-in-4 grunt; ReadTuningVars 0x1d3a80 the 5 missing level groups) and ported (bullet.rs PlayerHealth.hit_push + the grunt roll in apply + damage_factor groups; drone.rs the Player-arm hooks; scene.rs the decay+apply + grunt plays).
+- 22:55: fix_bond_damage_live 6/6 green on the merged tree; the touched suites (death/restart/guest/hud/fields) all green. Report: docs/reports/fix-bond-damage.md.
+
 Stage Summary:
-- (in progress)
+- Ported: the 0x412 bullet-hit hurt sound (record +0x70 & 0x180 gate), the 1-in-4 0x88 pain grunt on the shared RNG, the melee hit-push BL+0x910 (+0x171 sound, x0.9/tick decay, move-vec-Y lane), the five missing ReadTuningVars damage-factor groups + difficulty 0 = Normal. Already present (unchanged): the armour absorb, the flash+fade, the dir sprites, the pane bands, the death/fail flow. Not modelled: rumble, the MP arms.
 
 ---
 Task: fix-facial
@@ -9092,8 +9100,12 @@ Work Log:
   SetGoalToDroneWithLosToOpponent), then the rest (+0x31C drone-ahead flags/state 0x5E,
   obstacle avoidance, EnemyMission kind-8 paths, PatrolTalk RNG, boundary push-out).
 
+Work Log (continued):
+- 22:35-22:50: the deltas pinned from the decompile + disasm (0x1937a4-d8 the x0.9 decay, 0x193ccc-cf0 the move-Y add; 0x194458:229-256 the 0x412/0x171/push; 0x1902c8:110-119 the 1-in-4 grunt; ReadTuningVars 0x1d3a80 the 5 missing level groups) and ported (bullet.rs PlayerHealth.hit_push + the grunt roll in apply + damage_factor groups; drone.rs the Player-arm hooks; scene.rs the decay+apply + grunt plays).
+- 22:55: fix_bond_damage_live 6/6 green on the merged tree; the touched suites (death/restart/guest/hud/fields) all green. Report: docs/reports/fix-bond-damage.md.
+
 Stage Summary:
-- (in progress)
+- Ported: the 0x412 bullet-hit hurt sound (record +0x70 & 0x180 gate), the 1-in-4 0x88 pain grunt on the shared RNG, the melee hit-push BL+0x910 (+0x171 sound, x0.9/tick decay, move-vec-Y lane), the five missing ReadTuningVars damage-factor groups + difficulty 0 = Normal. Already present (unchanged): the armour absorb, the flash+fade, the dir sprites, the pane bands, the death/fail flow. Not modelled: rumble, the MP arms.
 
 ---
 Task: fix-nav-remainder
@@ -11906,6 +11918,20 @@ Work Log:
 - 21:15: the game's model pinned end-to-end (linked cel obj+0x20: create-link+snap 0x1346b8/0x1343c8, keep/portal/relink 0x133288+0x1e0d58+0x1c9500, ramp 0x1cb178 moved-only; the same Tweak+light pair on the character path 0x1e69a0:96->0x1e78b0; bCharacterLight/AnimColRad have NO EE reader — scanned all gp-relative accesses). Port matches on every headless point; 3 NF_ISO tests green (own-cel ambient per guest, party lights reach the draws, G-042 sheen map resolved). No production code changed. Report: docs/reports/fix-character-room-light.md.
 - 21:32: merged origin/master (1c376216, WORKLOG conflict resolved keeping both), lighting suites re-ran green on the final tree (new 3/3, character_lighting_live 4/4); baseline full suite on the identical production code: 1065 passed / 7 failed (3 disc_golden allowed + weapon_matrix_live TIMEOUT + 3 pre-existing pylon) / 35 ignored.
 
+---
+Task: fix-bond-damage
+Agent: worker (sandbox web-8fb9d45a)
+Task: Bond taking damage — armour absorbing first (Player_HandlePain 0x1902c8:100-104), the difficulty factor, the red screen flash and its fade, the hit-direction indicator, the health pane's colour bands, the pain sounds, the knockback/view kick, death (death camera, fail flow). Branch s/fix-bond-damage from origin/master.
+
+Work Log:
+- 22:12 UTC: branch s/fix-bond-damage created from origin/master (eb52fb56); work/ + ISO already present (1061754880 bytes); fast suite started in background; this checkpoint pushed.
+
+Work Log (continued):
+- 22:35-22:50: the deltas pinned from the decompile + disasm (0x1937a4-d8 the x0.9 decay, 0x193ccc-cf0 the move-Y add; 0x194458:229-256 the 0x412/0x171/push; 0x1902c8:110-119 the 1-in-4 grunt; ReadTuningVars 0x1d3a80 the 5 missing level groups) and ported (bullet.rs PlayerHealth.hit_push + the grunt roll in apply + damage_factor groups; drone.rs the Player-arm hooks; scene.rs the decay+apply + grunt plays).
+- 22:55: fix_bond_damage_live 6/6 green on the merged tree; the touched suites (death/restart/guest/hud/fields) all green. Report: docs/reports/fix-bond-damage.md.
+
+Stage Summary:
+- Ported: the 0x412 bullet-hit hurt sound (record +0x70 & 0x180 gate), the 1-in-4 0x88 pain grunt on the shared RNG, the melee hit-push BL+0x910 (+0x171 sound, x0.9/tick decay, move-vec-Y lane), the five missing ReadTuningVars damage-factor groups + difficulty 0 = Normal. Already present (unchanged): the armour absorb, the flash+fade, the dir sprites, the pane bands, the death/fail flow. Not modelled: rumble, the MP arms.
 ## fix-front-end-chain (outcome, 19:47-21:40 UTC)
 
 The front-end leg (campaign-flow blocker 7): `FrontEnd::results_enter` ports P_NFRESULTS 0x208e78
@@ -11951,7 +11977,53 @@ Work Log:
 
 Stage Summary:
 - The aim gate rebuilt on master's single raise/lower: one queue (the view chain's raw-edge arm), one advance+finish (aim_gate, before the consumers — the raise's finish sets the aim bit; no +0xB8 aims at once). Two real bugs fixed with game citations (the reverse-lower length, the fire_modes3 no-aim zoom). All named suites green on the final tree; the suite totals + the leftover walk sweep are in the report.
+---
+Task: fix-satchel-tripbomb
+Agent: worker (sandbox web-2cf47bf2)
+Task: the satchel family 0x3b-0x40 and the laser tripbomb 0x3a — stick on contact (+0x70 & 0x100), the satchel's timer/remote fuse (((id-0x3b)*5+5)*60 [M Bullet_init 0x12c5a0]), the tripbomb's beam + trigger + arm delay, blast scripts, sounds and models while stuck. Files: crates/nf-game/src/{grenade,drone}.rs, scene.rs beam draw (small).
 
+Work Log:
+- 21:38 UTC: branch s/fix-satchel-tripbomb created from origin/master (eb52fb56). work/ + ISO present, setup skipped. Exploring the decompile + port state next.
+
+---
+Task: fix-satchel-tripbomb (work continues)
+Agent: worker (sandbox web-2cf47bf2)
+Task: the satchel family 0x3b-0x40 and the laser tripbomb 0x3a — stick on contact, the satchel's timer fuse, the tripbomb's beam/trigger/arm delay, the blast scripts, sounds and models while stuck.
+
+Work Log:
+- 21:38-22:10: the decompile read. Key findings: (1) `Bullet_DoTrails` 0x12d890's decompile drops the 4th float arg — its `param_1 == 0` early-out tests the OBJ pointer (a0), NOT the step: disasm 0x12d890-0x12d8c8 + the call site 0x12efe8 `mov.s $f12, $f21` with case-3 $f21 = 0.0 — so DoTrails RUNS in stuck state 3 and the satchel's fuse/beeps/digits tick while stuck. (2) `Bullet_init` 0x12c5a0:199-208's family arm keys on base (weapdef+2) == 0x3b — the record dump of all 115 entries [L] shows every satchel bases to ITSELF and only 0x3b is selectable → the live fuse is 300; the tripbomb 0x3a bases to itself → the default 210, and its REAL arm delay is the stick's own overwrite `BU+0xFC = 120.0` [M 0x12ce80:330]. (3) The stick arm: 0x3b → 0.04 off the wall + 0x4a7; the 0x80000 tripbomb → 0.002 + 0x446 + the 6-placed walk; the satchel has NO detonator record (0x3b w68 = 0x10080, no 0x20000) — timer-only. (4) The tripbomb's laser: arm 120 ticks → the beam object (gfx 0x2000133) + Sound 0x27c once, then the ray out along +normal (Z = −normal at the stick, the beam end = pos − 200·Z), chars 2/3/0x28 → `Bullet_handle_object_destruction` 0x12cd98 → the 8/100 blast + the beam dies. (5) `SatchelDigits` @0x2bed90 = 0x2000791..0x200079a [L]; the 0x3b tail's beeps are 0x447 on the quarter-second change ((qs&3)==0 || ((qs&1)==0 && sec<10) || sec<5).
+- 22:10-22:45: the implementation (grenade.rs: the `StuckGadget` phase box, the generalized stuck tick, the tail; drone.rs: the consumer arms 0x446/0x27c/0x447, the beam pass + the char-crossing trigger + the 6-cap, the throw fuse arm; scene.rs: the family fuse formula, the stuck draw alignment, the beam slots TRACER_SLOTS+3/+4, the digit pools kinds 4/5). Tests: 3 unit (the stick+300 fuse+beeps/digits, the non-210 fuse, the tripbomb arm 121) + 4 live through step_bond (the stick+blast+0x6000052, the countdown+beeps, the arm/beam/trigger + the off-beam sister, the 6-cap).
+- 22:47: checkpoint pushed. 22:52: the pre-fix probe (git checkout HEAD~1 -- crates): stuck=false, boom_at=300 (bounced, never stuck) — the live tests fail on the pre-fix tree as required; restored.
+- 22:56: the full suite started on the final tree (tools/test/suite.py); the report + the finish steps follow.
+
+---
+Task ID: 106a-fix-samurai-fire
+Agent: samurai-fire worker
+Task: fix-samurai-fire — the Phoenix Samurai (0x32/0x33, the laser rifle's Overcharge/Beam modes) draws, plays its fire script and sounds, but nothing spawns on 16 of 18 levels [weapon-matrix4 red #1]. Find the game's fire path (Player_WeaponFiring 0x1a5460, Player_WeaponInitBullet 0x1a4bf0, the charge for Overcharge, the beam for Beam, any target gate) and port what's missing: the charged bolt flies and hits walls (fix-fire-modes3 ported its impact blast), the beam draws. Tests at 07000005's spawn: Overcharge at a wall spawns the bolt + blast; Beam draws to the wall.
+
+Work Log:
+- (20:58 UTC) Branch s/fix-samurai-fire created from origin/master 9c55eace and pushed. Setup reused (repo, work/, ISO, nf-queue). Docs + decompile round next.
+- (21:00-21:25 UTC) Decompile round: the Samurai 0x32/0x33 records [L ee_start_05.bin @ 0x2bf150] (both base 0x33, +0x90 = 0x1f, the give fills clip[0x33]); Player_AmmoInGun 0x1a9190's shared-slot read (the twin reads the base's slot — the mode press's dry check was reading the twin's own empty slot: the reach bug, weapon-matrix4 red #1); the fire path 0x1a5460:640-698 (+0x44 = 280 → the case-9 spawn [M 0x1a2e38:404-421]) and the collision handler's shared blast tail 0x12ce80:186-231 (the flesh contact reaches the 0x100000 blast too); the swoosh 0x12c5a0:116-133. Probe traces: the overcharge bolt DOES spawn on a full 280-tick hold (the port's release-frame machinery works) but the reach was broken and the flesh blast was missing.
+- (21:25-21:30) Fixes: Gun::ammo_in_gun_slot (0x1a9190) wired into the four has_ammo call sites (the mode press, the switch/cycle block, the detonator's re-arm ×2); the drone-hit arm gained the small-blast gate (the shared tail); the +0x6C & 0x10000 swoosh stand-in (a cyan gas puff per flying tick, no RNG draws).
+- (21:30-21:50) 3 NF_ISO tests SHOWN FAILING pre-fix (git stash; the reach inert / no trail), green post-fix; the neighbours green (weapon_switch 35, fire_modes3 5, weapon suites); suite chunks 998/5/19 (the 3 disc_golden + the 2 GPU-adapter documented). Report: docs/reports/fix-samurai-fire.md (the live checks + the render spots inside).
+
+Stage Summary:
+- The Phoenix Samurai fires: the mode press reaches the Overcharge twin (the AmmoInGun shared-slot read), the charged bolt flies and blasts on any non-ricochet contact, the beam draws its cyan trail. All named tests green failing-first; the suite totals in the report.
+- (21:54-22:02) origin/master merged (27e483ea, auto — 103i2's clip_slot write-side + fix-striped-boxes2 et al; complementary to the read-side ammo_in_gun_slot); re-verified on the merged tree: 344 passed / 0 failed (the libs, the Samurai trio, fix_reload_hang, the weapon suites, the neighbours). Report updated.
+Task ID: 107a-fix-grenade-types
+Agent: grenade-types worker
+Task: fix-grenade-types — every thrown grenade record vs the game: frag 0x34, stun 0x35, smoke 0x36, flash/gas thrown records; fuse, blast/cloud (Occlude_Create 0x17ea80/0x17eba0), stun effects on guards and Bond, cloud size/lifetime, guard reactions, sounds/particles. Symptom: "smoke grenade didn't work" (playtest 1013-1825).
+
+Work Log:
+- (started 21:57 UTC) branch s/fix-grenade-types from origin/master (eb52fb56). The thrown set swept from the game's own weapon_data initialiser [L]: 0x34 frag, 0x35 stun (fuse+FLASH), 0x36 smoke (fuse+SMOKE), 0x69 second smoke (0x36's label, the 3600 family); no separate gas/flash records — the puff rides the stun branch.
+- THE WHITE-OUT WAS INVISIBLE: the port wrote flashbang = 1.0 and decayed it 1/6 per tick (~6 ticks). The game [M 0x12e0b8 + 0x196040 + 0x193600; D input.md:126 FRAME_RATE = 60]: f = clamp01(1-(d-5)/85) x facing (blast at the player's xz = 1; 1-(|dyaw|-pi/6)*0.81851107; negative = 0) x 0.5 w/o LOS, SetFlashBang = 600*f ticks at alpha f, a full-alpha plateau then a fade. Ported: nf_game::drone::flash_amount + PlayerHealth.flash_total/flash_alpha + the tick decrement + hud::script_overlay's white quad.
+- THE STUN HELD 2x TOO LONG AND NEVER DISARMED: RecoverTime's 0x35 arm = 18*(200-b9) = 3600 (the port read the DEFAULT arm = 7200) [M 0x147188 + 0x172bb0]; StunGrenadeImpact ENTER DROPS the weapon (DropWeapon + ChangeWeapon(1)) [M 0x172bb0 case 1]; the prop-0x1C immunity [M 0x1469b8 case 0x18]. Ported all three.
+- THE FOREVER-STUN #2: the Loop's kept-down test is the LIVE DroneFunc_AnyoneNear [M 0x14a718 via 0x1631c0 case 0xc]; the port read the cached self.dist, which a stunned guard never refreshes. Fixed: Drone.player_pos mirrored in the tick's shared pass, SqDistXZ < 16 && |dy| <= 3.
+- THE 0x69 SMOKE: fuse 5.0 [M 0x12c5a0:212] and the pop re-arms to 3600 with Occlude_Create(pos, 3600, 1) [M 0x12e114-0x12e1b4] — the cloud lifetime IS the re-armed fuse. Both throw paths carry it.
+- Tests: fix_grenade_types_live (new): 0x69 fuse-5/3600-cloud, the at-feet flash on the observed geometry (both LOS branches), the retreated-throw falloff (d 38 -> alpha 0.30), the placed-guard stun (0x4d + drop + armed span) — 3 passed / 1 ignored. nf-game lib 152/152 (stun_loop_recovers re-pinned to the live-pos query + a |dy| sister).
+- Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
+- Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
+- Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
 ---
 Task: weapon-matrix5
 Agent: worker (sandbox web-9248268a)
@@ -12013,3 +12085,52 @@ Work Log:
   standing findings (0x32 F, 0x38 F, 0b's 0x2c W + 0x2e/0x30 D guided-lifetime, 0d's 0x2a X
   contact-flight) — the watch pair now clean everywhere (zero M reds). Full suite: 1136 passed /
   3 failed (the allowed disc_golden trio). Report: docs/reports/weapon-matrix5b.md.
+=======
+---
+Task: fix-satchel-tripbomb
+Agent: worker (sandbox web-2cf47bf2)
+Task: the satchel family 0x3b-0x40 and the laser tripbomb 0x3a — stick on contact (+0x70 & 0x100), the satchel's timer/remote fuse (((id-0x3b)*5+5)*60 [M Bullet_init 0x12c5a0]), the tripbomb's beam + trigger + arm delay, blast scripts, sounds and models while stuck. Files: crates/nf-game/src/{grenade,drone}.rs, scene.rs beam draw (small).
+
+Work Log:
+- 21:38 UTC: branch s/fix-satchel-tripbomb created from origin/master (eb52fb56). work/ + ISO present, setup skipped. Exploring the decompile + port state next.
+
+---
+Task: fix-satchel-tripbomb (work continues)
+Agent: worker (sandbox web-2cf47bf2)
+Task: the satchel family 0x3b-0x40 and the laser tripbomb 0x3a — stick on contact, the satchel's timer fuse, the tripbomb's beam/trigger/arm delay, the blast scripts, sounds and models while stuck.
+
+Work Log:
+- 21:38-22:10: the decompile read. Key findings: (1) `Bullet_DoTrails` 0x12d890's decompile drops the 4th float arg — its `param_1 == 0` early-out tests the OBJ pointer (a0), NOT the step: disasm 0x12d890-0x12d8c8 + the call site 0x12efe8 `mov.s $f12, $f21` with case-3 $f21 = 0.0 — so DoTrails RUNS in stuck state 3 and the satchel's fuse/beeps/digits tick while stuck. (2) `Bullet_init` 0x12c5a0:199-208's family arm keys on base (weapdef+2) == 0x3b — the record dump of all 115 entries [L] shows every satchel bases to ITSELF and only 0x3b is selectable → the live fuse is 300; the tripbomb 0x3a bases to itself → the default 210, and its REAL arm delay is the stick's own overwrite `BU+0xFC = 120.0` [M 0x12ce80:330]. (3) The stick arm: 0x3b → 0.04 off the wall + 0x4a7; the 0x80000 tripbomb → 0.002 + 0x446 + the 6-placed walk; the satchel has NO detonator record (0x3b w68 = 0x10080, no 0x20000) — timer-only. (4) The tripbomb's laser: arm 120 ticks → the beam object (gfx 0x2000133) + Sound 0x27c once, then the ray out along +normal (Z = −normal at the stick, the beam end = pos − 200·Z), chars 2/3/0x28 → `Bullet_handle_object_destruction` 0x12cd98 → the 8/100 blast + the beam dies. (5) `SatchelDigits` @0x2bed90 = 0x2000791..0x200079a [L]; the 0x3b tail's beeps are 0x447 on the quarter-second change ((qs&3)==0 || ((qs&1)==0 && sec<10) || sec<5).
+- 22:10-22:45: the implementation (grenade.rs: the `StuckGadget` phase box, the generalized stuck tick, the tail; drone.rs: the consumer arms 0x446/0x27c/0x447, the beam pass + the char-crossing trigger + the 6-cap, the throw fuse arm; scene.rs: the family fuse formula, the stuck draw alignment, the beam slots TRACER_SLOTS+3/+4, the digit pools kinds 4/5). Tests: 3 unit (the stick+300 fuse+beeps/digits, the non-210 fuse, the tripbomb arm 121) + 4 live through step_bond (the stick+blast+0x6000052, the countdown+beeps, the arm/beam/trigger + the off-beam sister, the 6-cap).
+- 22:47: checkpoint pushed. 22:52: the pre-fix probe (git checkout HEAD~1 -- crates): stuck=false, boom_at=300 (bounced, never stuck) — the live tests fail on the pre-fix tree as required; restored.
+- 22:56: the full suite started on the final tree (tools/test/suite.py); the report + the finish steps follow.
+
+---
+Task ID: 106a-fix-samurai-fire
+Agent: samurai-fire worker
+Task: fix-samurai-fire — the Phoenix Samurai (0x32/0x33, the laser rifle's Overcharge/Beam modes) draws, plays its fire script and sounds, but nothing spawns on 16 of 18 levels [weapon-matrix4 red #1]. Find the game's fire path (Player_WeaponFiring 0x1a5460, Player_WeaponInitBullet 0x1a4bf0, the charge for Overcharge, the beam for Beam, any target gate) and port what's missing: the charged bolt flies and hits walls (fix-fire-modes3 ported its impact blast), the beam draws. Tests at 07000005's spawn: Overcharge at a wall spawns the bolt + blast; Beam draws to the wall.
+
+Work Log:
+- (20:58 UTC) Branch s/fix-samurai-fire created from origin/master 9c55eace and pushed. Setup reused (repo, work/, ISO, nf-queue). Docs + decompile round next.
+- (21:00-21:25 UTC) Decompile round: the Samurai 0x32/0x33 records [L ee_start_05.bin @ 0x2bf150] (both base 0x33, +0x90 = 0x1f, the give fills clip[0x33]); Player_AmmoInGun 0x1a9190's shared-slot read (the twin reads the base's slot — the mode press's dry check was reading the twin's own empty slot: the reach bug, weapon-matrix4 red #1); the fire path 0x1a5460:640-698 (+0x44 = 280 → the case-9 spawn [M 0x1a2e38:404-421]) and the collision handler's shared blast tail 0x12ce80:186-231 (the flesh contact reaches the 0x100000 blast too); the swoosh 0x12c5a0:116-133. Probe traces: the overcharge bolt DOES spawn on a full 280-tick hold (the port's release-frame machinery works) but the reach was broken and the flesh blast was missing.
+- (21:25-21:30) Fixes: Gun::ammo_in_gun_slot (0x1a9190) wired into the four has_ammo call sites (the mode press, the switch/cycle block, the detonator's re-arm ×2); the drone-hit arm gained the small-blast gate (the shared tail); the +0x6C & 0x10000 swoosh stand-in (a cyan gas puff per flying tick, no RNG draws).
+- (21:30-21:50) 3 NF_ISO tests SHOWN FAILING pre-fix (git stash; the reach inert / no trail), green post-fix; the neighbours green (weapon_switch 35, fire_modes3 5, weapon suites); suite chunks 998/5/19 (the 3 disc_golden + the 2 GPU-adapter documented). Report: docs/reports/fix-samurai-fire.md (the live checks + the render spots inside).
+
+Stage Summary:
+- The Phoenix Samurai fires: the mode press reaches the Overcharge twin (the AmmoInGun shared-slot read), the charged bolt flies and blasts on any non-ricochet contact, the beam draws its cyan trail. All named tests green failing-first; the suite totals in the report.
+- (21:54-22:02) origin/master merged (27e483ea, auto — 103i2's clip_slot write-side + fix-striped-boxes2 et al; complementary to the read-side ammo_in_gun_slot); re-verified on the merged tree: 344 passed / 0 failed (the libs, the Samurai trio, fix_reload_hang, the weapon suites, the neighbours). Report updated.
+Task ID: 107a-fix-grenade-types
+Agent: grenade-types worker
+Task: fix-grenade-types — every thrown grenade record vs the game: frag 0x34, stun 0x35, smoke 0x36, flash/gas thrown records; fuse, blast/cloud (Occlude_Create 0x17ea80/0x17eba0), stun effects on guards and Bond, cloud size/lifetime, guard reactions, sounds/particles. Symptom: "smoke grenade didn't work" (playtest 1013-1825).
+
+Work Log:
+- (started 21:57 UTC) branch s/fix-grenade-types from origin/master (eb52fb56). The thrown set swept from the game's own weapon_data initialiser [L]: 0x34 frag, 0x35 stun (fuse+FLASH), 0x36 smoke (fuse+SMOKE), 0x69 second smoke (0x36's label, the 3600 family); no separate gas/flash records — the puff rides the stun branch.
+- THE WHITE-OUT WAS INVISIBLE: the port wrote flashbang = 1.0 and decayed it 1/6 per tick (~6 ticks). The game [M 0x12e0b8 + 0x196040 + 0x193600; D input.md:126 FRAME_RATE = 60]: f = clamp01(1-(d-5)/85) x facing (blast at the player's xz = 1; 1-(|dyaw|-pi/6)*0.81851107; negative = 0) x 0.5 w/o LOS, SetFlashBang = 600*f ticks at alpha f, a full-alpha plateau then a fade. Ported: nf_game::drone::flash_amount + PlayerHealth.flash_total/flash_alpha + the tick decrement + hud::script_overlay's white quad.
+- THE STUN HELD 2x TOO LONG AND NEVER DISARMED: RecoverTime's 0x35 arm = 18*(200-b9) = 3600 (the port read the DEFAULT arm = 7200) [M 0x147188 + 0x172bb0]; StunGrenadeImpact ENTER DROPS the weapon (DropWeapon + ChangeWeapon(1)) [M 0x172bb0 case 1]; the prop-0x1C immunity [M 0x1469b8 case 0x18]. Ported all three.
+- THE FOREVER-STUN #2: the Loop's kept-down test is the LIVE DroneFunc_AnyoneNear [M 0x14a718 via 0x1631c0 case 0xc]; the port read the cached self.dist, which a stunned guard never refreshes. Fixed: Drone.player_pos mirrored in the tick's shared pass, SqDistXZ < 16 && |dy| <= 3.
+- THE 0x69 SMOKE: fuse 5.0 [M 0x12c5a0:212] and the pop re-arms to 3600 with Occlude_Create(pos, 3600, 1) [M 0x12e114-0x12e1b4] — the cloud lifetime IS the re-armed fuse. Both throw paths carry it.
+- Tests: fix_grenade_types_live (new): 0x69 fuse-5/3600-cloud, the at-feet flash on the observed geometry (both LOS branches), the retreated-throw falloff (d 38 -> alpha 0.30), the placed-guard stun (0x4d + drop + armed span) — 3 passed / 1 ignored. nf-game lib 152/152 (stun_loop_recovers re-pinned to the live-pos query + a |dy| sister).
+- Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
+- Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
+- Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
+>>>>>>> origin/master
