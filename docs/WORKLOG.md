@@ -12024,3 +12024,11 @@ Work Log:
 - Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
+
+---
+Task: fix-sentinel-camera-play (109a)
+Agent: worker (sandbox web-9248268a)
+Task: the Sentinel's guided-rocket first-person camera doesn't happen in play (the merged tests ride), and the rockets are far too slow (the 0x200 speed-x0.25 read). Files: crates/nf-view/src/{scene,lib}.rs, crates/nf-game/src/drone.rs (small).
+
+Work Log:
+- 01:26 UTC: branch s/fix-sentinel-camera-play created from origin/master (d7afed5a) and pushed. Setup reused (repo, work/, ISO, nf-queue). Reading the PCSX2 measurements first.
