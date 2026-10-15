@@ -75,6 +75,8 @@ tool-call boundary here — the suite ran in foreground chunks (`--no-fail-fast`
 - Unrun for the wall (timeout-cut, none touch the view-model path): `wire_live`, `wire_repro`,
   `world_fx_live`, `worldobj_live`, `zz_obj_drives_probe` (+ `weapon_matrix_live`'s
   `#[ignore]`d 27-level matrix sweeps). **Total: 1304 passed / 6 failed / 39 ignored.**
+- Final-tree re-check (after the last origin/master merge, `b084d6ff`): fix_silencer_visual_live
+  2/2, fix_silencer_modes_live 2/2, fire_modes3_live 5/5 — green.
 
 ## Reproduce
 
