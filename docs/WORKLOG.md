@@ -13475,3 +13475,9 @@ Work Log (credits-data):
   7 (last-row selection, per-row hints, the 0x31d fallback, modal, Back-vs-unpause, clamps, NF_ISO binds 0x202/0x31d/
   0x266 from USATxt.dat), each with a sister assertion; menus_flow.rs updated to the new row struct. All green on the
   merged tree (ce62cd7e). Doc: docs/systems/objective-hints.md; mission.md's "hint never drawn" + gap lines corrected.
+
+## subtitles-data (2026-10-15, branch s/subtitles-data)
+- Task started: port the Subtitles On/Off option's data path — where NIS/script cut-scene and FMV briefing subtitle
+  lines are stored, their timing (start/end ticks), label ids, and the drawing function/font/position/colour — as a
+  data model + per-tick `active_subtitle(t)` wired to the profile flag (control 0x10000136, P_CNAVOPTIONS_Handler
+  0x214818). No drawing; tests with numbers/ids only. Setup verified, branch cut from origin/master (2bda7b46).
