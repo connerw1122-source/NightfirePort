@@ -159,7 +159,7 @@ fn rand_rand(r: &CallRecord) -> Result<PortResult, String> {
     let seed = |a: u32| -> Result<u32, String> {
         r.ins.iter().find(|g| g.addr == a).map(|g| u32_at(&g.bytes, 0)).ok_or(format!("no in region for seed {a:#x}"))
     };
-    let mut rng = nf_game::drone::Rng { x: seed(0x30d0_a0)?, y: seed(0x30d0_a4)? };
+    let mut rng = nf_game::drone::Rng { x: seed(0x30d0_a0)?, y: seed(0x30d0_a4)?, ..Default::default() };
     let v0 = rng.rand(n);
     let outs = r.outs.iter().map(|g| {
         let v = match g.addr { 0x30d0_a0 => rng.x, 0x30d0_a4 => rng.y, a => return Err(format!("unexpected out region {a:#x}")) };
@@ -207,8 +207,139 @@ fn quat_quat_to_mat(r: &CallRecord) -> Result<PortResult, String> {
 }
 
 // ---------------------------------------------------------------------------
-// The comparison
+// The ledger guard (docs/verify/ledger.md)
 // ---------------------------------------------------------------------------
+
+/// One `| 0x… | Name | Port fn | Status | Recording | …` row of the ledger.
+struct LedgerRow {
+    line_no: usize,
+    addr: String,
+    name: String,
+    port: String,
+    status: String,
+    recording: String,
+}
+
+/// A "bit-exact on N recorded calls" claim, parsed out of a row's status.
+struct BitExactClaim {
+    n: u32,
+}
+
+fn parse_bit_exact(status: &str) -> Option<BitExactClaim> {
+    let rest = status.strip_prefix("bit-exact on ")?
+        .strip_suffix(" recorded calls")?;
+    let n: u32 = rest.trim().parse().ok()?;
+    (n >= 1).then_some(BitExactClaim { n })
+}
+
+/// The ledger's status grammar (docs/verify/ledger.md) — everything else is a typo and must fail loudly.
+fn status_uses_the_grammar(status: &str) -> bool {
+    status == "unverified"
+        || status.starts_with("unverified (") && status.ends_with(')')
+        || status.starts_with("within tolerance (") && status.ends_with(')')
+        || status.starts_with("known divergent (") && status.ends_with(')')
+        || parse_bit_exact(status).is_some()
+}
+
+fn parse_ledger(text: &str) -> Vec<LedgerRow> {
+    let mut rows = Vec::new();
+    for (ln, line) in text.lines().enumerate() {
+        let t = line.trim_start();
+        // ledger rows start with `| 0x` (or `| -` for port-only); header/separator rows don't
+        if !(t.starts_with("| 0x") || t.starts_with("| - ")) { continue; }
+        let cells: Vec<&str> = t.split('|').collect();
+        // cells[0] is empty; we need addr, name, port, status, recording = cells[1..=5]
+        if cells.len() < 7 {
+            panic!("ledger line {}: a row needs at least 5 columns (Address | Name | Port fn | Status | Recording): {t:?}", ln + 1);
+        }
+        let clean = |s: &str| s.trim().trim_matches('`').to_string();
+        rows.push(LedgerRow {
+            line_no: ln + 1,
+            addr: clean(cells[1]),
+            name: clean(cells[2]),
+            port: clean(cells[3]),
+            status: clean(cells[4]),
+            recording: clean(cells[5]),
+        });
+    }
+    rows
+}
+
+/// The ledger's claims must be backed: every `bit-exact on N recorded calls` row needs the recording file (with
+/// ≥ N calls, the matching `function=` header and entry address) and a registered adapter; every row must use
+/// the status grammar. A stale claim (the recording shrank, the adapter was removed, a typo) fails here.
+#[test]
+fn ledger_claims_match_the_recordings() {
+    let ledger = Path::new(&env!("CARGO_MANIFEST_DIR")).join("../../docs/verify/ledger.md");
+    let text = fs::read_to_string(&ledger)
+        .unwrap_or_else(|e| panic!("read {}: {e}", ledger.display()));
+    let rows = parse_ledger(&text);
+    assert!(rows.len() >= 400, "the ledger must keep its appendix: {} rows", rows.len());
+
+    let table = adapters();
+    let mut seen_addr_name = std::collections::HashSet::new();
+    let mut claims = 0;
+    for row in &rows {
+        assert!(status_uses_the_grammar(&row.status),
+            "ledger line {}: status {:?} is not in the grammar (docs/verify/ledger.md)", row.line_no, row.status);
+        let key = (row.addr.clone(), row.name.clone());
+        assert!(seen_addr_name.insert(key),
+            "ledger line {}: duplicate address+name {} {}", row.line_no, row.addr, row.name);
+        let Some(claim) = parse_bit_exact(&row.status) else { continue };
+        claims += 1;
+        assert!(row.addr != "-", "ledger line {}: a bit-exact claim needs a game address", row.line_no);
+        assert!(row.port.contains("::") || row.port.starts_with("(adapter in diff_calls.rs"),
+            "ledger line {}: a bit-exact claim needs a greppable port fn (or the adapter marker), got {:?}",
+            row.line_no, row.port);
+        assert!(!row.recording.is_empty() && row.recording != "-",
+            "ledger line {}: a bit-exact claim needs a recording", row.line_no);
+        let file = row.recording.rsplit('/').next().unwrap();
+        let path = calls_dir().join(file);
+        let text = fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("ledger line {}: recording {}: {e}", row.line_no, path.display()));
+        let (function, addr, _, calls) = parse_calls(&text)
+            .unwrap_or_else(|e| panic!("ledger line {}: {}: {e}", row.line_no, path.display()));
+        assert_eq!(function, row.name,
+            "ledger line {}: the recording's function= header is {function:?}, the row says {:?}", row.line_no, row.name);
+        assert_eq!(format!("{:#x}", addr), format!("{:#x}", u32::from_str_radix(row.addr.trim_start_matches("0x"), 16)
+            .unwrap_or_else(|e| panic!("ledger line {}: bad address {:?}: {e}", row.line_no, row.addr))),
+            "ledger line {}: the recording's entry address disagrees with the row", row.line_no);
+        assert!(calls.len() as u32 >= claim.n,
+            "ledger line {}: claims {} recorded calls but {} holds {}", row.line_no, claim.n, path.display(), calls.len());
+        assert!(table.iter().any(|(n, _)| *n == row.name),
+            "ledger line {}: {function} has no adapter registered in diff_calls.rs::adapters()", row.line_no);
+    }
+    assert!(claims >= 3, "the ledger's verified rows went missing: {claims} bit-exact claims");
+}
+
+/// Sister: a row that claims bit-exact without the evidence behind it must fail the guard. The forged row is
+/// parsed with the real parser; today `Quat_Slerp_Acc` has neither a recording nor an adapter, so the guard
+/// fails it on the missing file — and if a later task records one, the missing adapter still fails it.
+#[test]
+fn a_bit_exact_claim_without_a_recording_fails_the_ledger_guard() {
+    let forged = "| 0x1e4188 | Quat_Slerp_Acc | `anim::slerp` | bit-exact on 40 recorded calls | `Quat_Slerp_Acc.calls` |\n";
+    let rows = parse_ledger(forged);
+    assert_eq!(rows.len(), 1);
+    let claim = parse_bit_exact(&rows[0].status).expect("the forged status must parse as bit-exact");
+    let path = calls_dir().join(format!("{}.calls", rows[0].name));
+    let backed_by_file = fs::read_to_string(&path).is_ok();
+    let backed_by_adapter = adapters().iter().any(|(n, _)| *n == rows[0].name);
+    assert!(!(backed_by_file && backed_by_adapter),
+        "the forged row must have no full backing (recording + adapter) for this sister to hold — \
+         if it now has both, forge a function that has neither");
+    if !backed_by_file {
+        assert!(!path.exists(), "Quat_Slerp_Acc has no recording yet — the guard must fail on the forged row");
+    } else {
+        assert!(!backed_by_adapter, "the guard must fail the forged row on the missing adapter (claim {} calls)", claim.n);
+    }
+    // and a typo'd status must fail the grammar, so a stale claim can't survive as prose
+    assert!(!status_uses_the_grammar("bit-exact 40 calls"));
+    assert!(!status_uses_the_grammar("bit-exact on 40 calls"));
+    assert!(!status_uses_the_grammar("verified"));
+    assert!(status_uses_the_grammar("unverified (recording exists; no adapter)"));
+    assert!(status_uses_the_grammar("known divergent (GAPS G-017)"));
+    assert!(status_uses_the_grammar("within tolerance (1e-5)"));
+}
 
 /// Distance in ulps between two f32 bit patterns (NaNs compare unequal unless the bits match).
 fn f32_ulp(a: u32, b: u32) -> u64 {

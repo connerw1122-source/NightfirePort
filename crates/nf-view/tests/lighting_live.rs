@@ -9,7 +9,7 @@ use nf_view::scene::ViewOpts;
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
-fn rng_of(r: &nf_game::drone::Rng) -> nf_game::drone::Rng { nf_game::drone::Rng { x: r.x, y: r.y } }
+fn rng_of(r: &nf_game::drone::Rng) -> nf_game::drone::Rng { nf_game::drone::Rng { x: r.x, y: r.y, ..Default::default() } }
 
 #[test]
 fn muzzle_light_lives_one_tick_with_the_weapon_values() {
