@@ -119,3 +119,15 @@ here regardless).
      team +1.0 exactly when the flag reaches the base [M 0x1861a8:89-93].
   4. Render check (lesson 6): an Arena-1 deathmatch `--bond` at the spawn looking at a pickup —
      the match HUD's score/limit rows should match `MP_GetPlayerScore` 0x189730's two-int format.
+
+## ntfy failed
+
+All three fallbacks failed with the ntfy.sh daily-quota limit (HTTP 429, code 42908):
+
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase
+  your limits with a paid plan, see https://ntfy.sh/docs/publish/#limitations"}`
+- python3 urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit 0 but the same 429 body (`limit reached: daily message quota reached`)
+
+(The same 429 quota was hit by the previous task's notification on 2026-10-15 — the topic's daily
+allowance is exhausted.)
