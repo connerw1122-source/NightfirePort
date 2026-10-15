@@ -82,6 +82,15 @@ in docs/formats/. No renderer work.
   so the run below is the foreground crates-my-tests-touch command instead — see the suite
   section of the WORKLOG for the exact totals.
 
-## ntfy
+## ntfy failed
 
-(sent after this report; see the finish steps)
+All three transports returned the same server-side error:
+
+```
+curl:  {"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh/docs/publish/#limitations","link":"https://ntfy.sh/docs/publish/#limitations"}
+python urllib: urllib.error.HTTPError: HTTP Error 429: Too Many Requests
+wget: exit 0 but empty body (the same 429 JSON; -q suppressed it)
+```
+
+The finish.sh report attach succeeded (done/ has the entry); the notification itself could
+not be delivered (ntfy.sh daily quota).
