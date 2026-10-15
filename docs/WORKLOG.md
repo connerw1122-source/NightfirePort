@@ -12450,3 +12450,6 @@ Work Log:
 
 Stage Summary:
 - The world's hold-jump stutter while turning is fixed at the source: the render bracket is now the last two ticks' cameras at every frame rate, the view model keeps its one-tick-bracket reattach, and nothing moves at a solid 60 fps. Files: crates/nf-view/src/lib.rs + crates/nf-view/tests/turn_stutter_live.rs (new); NO shared files touched; scratch probe (uncommitted): examples/tick_cost.rs. Report: docs/reports/fix-turn-stutter.md.
+
+## fix-sg5-casings (2026-10-15, branch s/fix-sg5-casings) — started 04:40 UTC
+Task: SG5 casings fly huge across the screen while walking forward (user 05 playtest 1014-1725: "bullet casings flying across my screen, like super large"). Suspects: world-space spawn + camera moving into them, wrong scale, near plane. First read docs/live/2026-10-14-weapon-measurements-pcsx2.md. Plan: repro via real input path (nf_view::load + Sim::step_bond), find Bullet_init_casing 0x12fde0 in the decomp, fix the draw/scale.
