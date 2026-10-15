@@ -119,7 +119,15 @@ The visual confirmation (no GPU here):
 
 ## Full-suite result on the final tree
 
-(to be filled from suite.out before the finish steps)
+The fast runner (`tools/test/suite.py`) on the final tree (this branch merged with origin/master 678c9195,
+348 test binaries): **build green in 326 s; the run was still in progress at push time (20:02 UTC) with
+~107/348 binaries done and zero FAILED/TIMEOUT/CRASH lines** — the sandbox's 2-hour window ends before the
+full run can print its total (the whole-ES decode tests and the 070000xx live missions dominate the tail).
+The runner keeps going in the background; the per-binary results stream into `suite.log` and the total will
+land in `suite.out` — the next session should read `tail -1 suite.out` before touching the movies code.
+Everything this task touched ran green in the targeted passes above (nf-formats `mpeg2_reference` 2/2 with
+`--features movies` on movie data; nf-view `menu_movies` 5/5 + `menu_backdrop_still` 7/7; both feature/no-
+feature builds of nf-formats' tests compile).
 
 ## ntfy failed
 
