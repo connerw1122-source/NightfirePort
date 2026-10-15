@@ -91,3 +91,10 @@ MPSettings stores (0x2A4944/0x2A4948), the ×0x3c on the confirm (0x2A4940), the
 count (0x2DEEA9 / 0x2A4950), GameState+0x08 on the confirm's ✕, the join-page state cells
 (0x2def60+0x360, 0x2dee69), and the render check for the scenario wheel (5 rows, ring-masked
 preview, the locked row's half alpha + "This scenario is locked.").
+
+## ntfy
+
+curl → HTTP 429 "limit reached: daily message quota reached"; python3 urllib → HTTP 429; wget →
+exit 0 (accepted, or at least not rejected with an error the tool prints in -q mode). Not all
+three failed, so per the rules this is not an "ntfy failed" record — the exact outputs are here
+for the driver in case the message did not land.
