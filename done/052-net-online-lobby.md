@@ -149,10 +149,13 @@ the flow, the getters and the tests. Design + evidence: `docs/systems/net-online
   - chunk A (mp/menu family + the four lib tests): 15 binaries, **415 passed / 0 failed**;
   - chunk B (rng/fields/trig/tuning/level/diff/spawner/pickup/progress/inputs + async-load +
     objective_state): 14 binaries, **40 passed / 0 failed**;
+  - chunk C (menu movies/credits/devwin + explode/grenade/doors/ledge/weapon-switch/sky/lights/cover/nav/searchlight/stun/bathhouse/facial/anim-events/port-only review): 20 binaries, **69 passed / 0 failed / 2 ignored**;
   - the two full-suite attempts together covered another 43 binaries (0 FAILED / 0 TIMEOUT
     observed) before the 10-minute tool window killed them — the ~360-binary pass does not fit the
     sandbox window; the three disc_golden tests and the no-GPU render tests were not re-verified
     here (they are the suite's known skip/fail set on this sandbox).
+  - **Totals across the chunks: 49 binaries, 524 passed / 0 failed / 2 ignored (the suite's
+    own skips), 0 TIMEOUT, 0 crashes.**
 
 ## What's left / for the next session
 
