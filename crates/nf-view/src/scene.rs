@@ -5623,8 +5623,13 @@ impl Scene {
                     if s.first_person {
                         if let Some(vm) = self.view_models.get(&s.gun.weapon) {
                             if let Some((_, world, m)) = &posed[*vm] {
-                                let bm = anim::mul(&world[0], m);
-                                a = [bm[3][0], bm[3][1], bm[3][2]];
+                                // A collapsed object matrix (the scoped-zoom hide) must not drag the
+                                // beam to the collapse point — the watch lasers never scope
+                                // (`+0x68 & 0x40` = 0 [L weapon_data 0x4e]), so this is a guard only.
+                                if m[3][1] > -9999.0 {
+                                    let bm = anim::mul(&world[0], m);
+                                    a = [bm[3][0], bm[3][1], bm[3][2]];
+                                }
                             }
                         }
                     }
