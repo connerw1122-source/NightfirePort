@@ -24,3 +24,8 @@ ISO-gated where they read the disc, each with a sister assertion that can fail).
 
 ---
 claimed-by: sandbox4 at 2026-10-15T21:28Z
+
+---
+## Report (done, 2026-10-15T22:19Z)
+
+Closed by the driver: the report is on `s/menu-sfx` (docs/reports/menu-sfx.md); the worker didn't run finish.sh.
