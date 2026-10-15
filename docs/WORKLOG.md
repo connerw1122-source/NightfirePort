@@ -12912,3 +12912,10 @@ the binaries the window fit.)
   5/0, fix_weapon_modes_live 6/0, fix_samurai_fire_live 3/0, fix_weapons_all_live 4/0,
   weapon_switch_live 2/0 (nf-game), tuning_live 2/0 (nf-game). The fast suite on the final tree
   running (started 12:58); fix_switch_after_cold_load_live passed inside it as well.
+
+## fix-hud-zoom-tilt (110z)
+- (14:50) Started. Task: G-044 — port `Player_WeaponRecoil`'s zoom divide (glb_viewer+0x108) and
+  aspect x-term (viewer+0x114) into the gun-axis computation in scene.rs, using Sim::zoom (BL+0x8D0).
+  Branch cut from origin/master cf4f33cd. Plan: read the decompile + writers of +0x108/+0x114, write
+  the fail-first NF_ISO test (zoom 2 tilt = half of zoom 1), fix scene.rs, sister test zoom 1
+  bit-for-bit unchanged.
