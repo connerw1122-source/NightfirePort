@@ -71,15 +71,21 @@ impl Ladder {
     ///
     /// Stage 2 — the climb-plane bound. The game's pick reach is narrowed past the sphere by the
     /// straddled-cel scoping (`Collide_Pick` 0x1eb320:125-134/318-328 tests only objects linked to the
-    /// cels the player straddles) and the glist mesh refine (`Collide_Intersect` 0x1ebaa8, not ported):
-    /// a tall ladder's bounds sphere is its half-HEIGHT (r 5.75 on the 0700000c yard ladder, y span
-    /// 0.8..12.1 [D probes]), so the bare ×1.5 sphere reaches ~9 units sideways — the dismount lunge at
-    /// the ladder top leaves Bond ~2.9 from the axis at regrab expiry and the bare stage 1 re-grabs him
-    /// into a climb/walk limit cycle (the 102h-fix-swim regression). The port's flat ladder list has no
-    /// cel scoping, so the mesh/cel filter is modelled with the axis-column bound this file carried
-    /// before 102h ([S], kept for stage 2): the ladder's climbable body is its thin vertical axis
-    /// column, horizontal reach `min(radius, 1.0) + capsule_radius`. Deep ON the axis the stage-1
-    /// sphere still rules (the pond grab); far OFF the axis the column bound rules (the land exit).
+    /// cels the player straddles) and the glist mesh refine (`Collide_Intersect` 0x1ebaa8, run per
+    /// candidate in `Collide_Update` 0x1ea398:84-93, not ported): a tall ladder's bounds sphere is its
+    /// half-HEIGHT (r 5.75 on the 0700000c yard ladder, y span 0.8..12.1 [D probes]), so the bare ×1.5
+    /// sphere reaches ~9 units sideways, and a ladder's pickable body is its thin rung plane through
+    /// the axis plus the rails' lateral span. The port models the refine as the frontal/lateral
+    /// decomposition of the offset from the axis ([S] — the stand-in for cel scoping + mesh refine,
+    /// replacing the pre-109i bare radial column `min(radius,1)+capsule`): `|frontal| ≤ capsule_radius` (the capsule reaches the rung plane and no farther —
+    /// this is the dismount-into-water escape: the dismount leaves Bond ~0.5 off the plane facing the
+    /// ladder, the swim entry's 5-tick regrab [M Player_InWater 0x195e50] buys ~0.2 of drift at the
+    /// `Player_Move` 0.2/tick ramp [M 0x191dd0:108-117], and 0.5+0.2 > 0.55 clears the plane reach
+    /// while the old bare `min(radius,1)+capsule` column (1.55 on the hut ladder) re-grabbed him every
+    /// cycle — the user's "infinitely latching onto the ladder", playtest 1014-1725) and
+    /// `|lateral| ≤ 0.4 + capsule_radius` (the rails' span ±~0.4 of the axis). The yaw window in
+    /// `Player_CollLadder` 0x196118:20 gates the sides (a walker brushing past faces across the
+    /// ladder, |diff| = π/2, no grab).
     pub fn capsule_hits(&self, pos: V3, capsule_radius: f32) -> bool {
         let a = [pos[0], pos[1] + 0.55, pos[2]];
         let b = [pos[0], pos[1] + 0.55 - 1.0347, pos[2]];
@@ -92,10 +98,42 @@ impl Ladder {
         let cy = a[1] + ab[1] * t - self.centre[1];
         let cz = a[2] + ab[2] * t - self.centre[2];
         if (cx * cx + cy * cy + cz * cz).sqrt() > self.radius * 1.5 + capsule_radius { return false; }
+        self.in_mesh_column(pos, capsule_radius)
+    }
+
+    /// The SWIM form of the same pick (`Player_Collision` 0x194df0's substate-3 arm builds a different
+    /// HITTEST [M]: capsule radius +0x7CC = 0.55 and the segment A = pos + up·(0.1 − (cc − 0.55)),
+    /// B = pos + up·(0.45 − cc) — a short LOW capsule ~0.48 under the root at the stand height, unlike
+    /// the walk arm's 0.55..−0.76). Stage 1 is the same ×1.5 sphere test; stage 2 is the same mesh-
+    /// scale column (`in_mesh_column`). The low segment is what bounds the grab by DEPTH: the game's
+    /// swim pick reaches ~0.48 below the root, so a bed-hugging root too far under the bounds centre
+    /// misses the ×1.5 sphere — the game grabs swimmers in the water column, not off the pond bed.
+    pub fn capsule_hits_swim(&self, pos: V3, capsule_radius: f32, cc: f32) -> bool {
+        let a = [pos[0], pos[1] + 0.1 - (cc - 0.55), pos[2]];
+        let b = [pos[0], pos[1] + 0.45 - cc, pos[2]];
+        let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+        let ap = [self.centre[0] - a[0], self.centre[1] - a[1], self.centre[2] - a[2]];
+        let ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+        let t = if ab2 < 1e-9 { 0.0 } else { (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab2 };
+        let t = t.clamp(0.0, 1.0);
+        let cx = a[0] + ab[0] * t - self.centre[0];
+        let cy = a[1] + ab[1] * t - self.centre[1];
+        let cz = a[2] + ab[2] * t - self.centre[2];
+        if (cx * cx + cy * cy + cz * cz).sqrt() > self.radius * 1.5 + capsule_radius { return false; }
+        self.in_mesh_column(pos, capsule_radius)
+    }
+
+    /// Stage 2, shared by both pick forms: the offset from the ladder axis decomposed along the
+    /// ladder's facing (`fwd(yaw) = (sin, ·, cos)`, the same convention as the grab snap
+    /// `centre + fwd·0.5` [M 0x196118:36-44]) — `|frontal| ≤ capsule_radius` (the rung plane) and
+    /// `|lateral| ≤ 0.4 + capsule_radius` (the rails' span). See `capsule_hits`'s doc.
+    fn in_mesh_column(&self, pos: V3, capsule_radius: f32) -> bool {
         let dx = pos[0] - self.centre[0];
         let dz = pos[2] - self.centre[2];
-        let horiz = (dx * dx + dz * dz).sqrt();
-        horiz <= self.radius.clamp(0.0, 1.0).max(0.35) + capsule_radius
+        let (s, c) = self.yaw.sin_cos();
+        let frontal = dx * s + dz * c;
+        let lateral = dx * c - dz * s;
+        frontal.abs() <= capsule_radius && lateral.abs() <= 0.4 + capsule_radius
     }
 }
 
@@ -168,5 +206,36 @@ mod tests {
         assert!(yard.capsule_hits([9.949, 11.736, -186.928], 0.55), "the ladder-top grab itself must still reach");
         assert!(!yard.capsule_hits([9.285, 11.736, -190.167], 0.55),
             "the dismounted walker 2.9 from the axis re-grabbed (the 102h limit cycle)");
+    }
+
+    #[test]
+    fn swim_pick_is_the_game_swim_capsule_with_the_mesh_scale_reach() {
+        let l = ladder(0.0); // centre (10, 3, 20), r 1.5 → bottom 2.5, top 5.35
+        let cc = 1.0347f32; // the stand root height [M Player_Collision 0x194df0 cc = AnimObj+0xCC]
+        // The swim segment [M 0x194df0 case 3]: A = pos + 0.1 − (cc − 0.55) = pos − 0.3847,
+        // B = pos + 0.45 − cc = pos − 0.5847. On the axis at the grab-snap distance (0.5, the game's
+        // own snap offset 0x196118:36-44): stage 1 (dist ≈ 1.17 ≤ 1.5·1.5 + 0.55) and stage 2
+        // (0.5 ≤ 0.55) both hit — the pond-bed swimmer still grabs the ladder he swims INTO.
+        assert!(l.capsule_hits_swim([10.0, 3.0, 20.5], 0.55, cc));
+        // 0.62 off the plane: past the mesh-scale stage 2 (0.55) → no hit. This is the dismount
+        // escape: the back-stick drift (0.2/tick ramp [M 0x191dd0], ~0.2 over the swim entry's
+        // 5-tick regrab [M 0x195e50]) clears 0.5 + 0.2 > 0.55 and the cycle never re-latches.
+        assert!(!l.capsule_hits_swim([10.0, 3.0, 20.62], 0.55, cc));
+        // Sister: the WALK form at the same 0.62 is past its mesh-scale plane reach too — the two
+        // forms share stage 2; the swim form's own shape is the LOW segment (stage 1).
+        assert!(!l.capsule_hits([10.0, 3.0, 20.62], 0.55));
+        // Sister: at 0.5 (the grab snap's own offset [M 0x196118:36-44]) BOTH forms still reach.
+        assert!(l.capsule_hits_swim([10.0, 3.0, 20.5], 0.55, cc));
+        assert!(l.capsule_hits([10.0, 3.0, 20.5], 0.55));
+        // Sister: the lateral span — 2.0 to the SIDE of the axis is past the rails (0.4 + 0.55).
+        assert!(!l.capsule_hits([12.0, 3.0, 20.0], 0.55));
+        // DEEP below the sphere bottom (the pond-bed swimmer at the root ~2.0): the low swim segment
+        // still reaches the ×1.5 sphere (dist ≈ 2.05 ≤ 2.8) — the climb-out assist keeps working.
+        assert!(l.capsule_hits_swim([10.0, 2.0, 20.3], 0.55, cc));
+        // Sister: a thin ladder stops the deep swim reach (the pick tracks the sphere): at the root
+        // 0.9 the swim segment (0.52..0.32) sits 2.49 from the sphere centre — past the thin ×1.5
+        // reach 1.45, while the full ladder still reaches (2.49 ≤ 2.8).
+        let thin = Ladder { radius: 0.6, ..ladder(0.0) };
+        assert!(!thin.capsule_hits_swim([10.0, 0.9, 20.0], 0.55, cc));
     }
 }

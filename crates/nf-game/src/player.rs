@@ -393,8 +393,14 @@ impl Bond {
         // `!= SS_WALK` gate silently killed the swim-grab call swim_tick already made (the user's "I
         // can't latch onto it and climb it" at the 02 pond hut ladder).
         if matches!(self.substate, SS_CLIMB | SS_GRAPPLE) || self.regrab != 0 { return; }
+        // The pick shape follows the substate's HITTEST arm [M Player_Collision 0x194df0]: the swim
+        // capsule (case 3: the low short segment, radius 0.55) vs the walk arm (case 0) — and the
+        // swim stage-2 cut is the mesh-scale reach (Ladder::capsule_hits_swim), the dismount-into-
+        // water escape (the 109i infinite latch).
+        let swim = self.substate == SS_SWIM;
         for (i, lad) in ctx.ladders.iter().enumerate() {
-            if !lad.capsule_hits(self.pos, RADIUS) { continue; }
+            let hit = if swim { lad.capsule_hits_swim(self.pos, RADIUS, self.cc) } else { lad.capsule_hits(self.pos, RADIUS) };
+            if !hit { continue; }
             let diff = wrap_pi(lad.yaw - self.yaw); // Vec_AngleDifference(player, ladder) [M 0x1e2b78]
             if diff.abs() <= std::f32::consts::FRAC_PI_2 { continue; }
             let (top, bottom) = (lad.top(), lad.bottom());
