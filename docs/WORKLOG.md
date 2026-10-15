@@ -12024,3 +12024,13 @@ Work Log:
 - Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
+
+Task ID: 109g-fix-turn-stutter
+Agent: turn-stutter worker
+Task: fix-turn-stutter — the world stutters/jitters while turning (user 05/08/15, new since the 1013 playtests; the view model and hand/gun stay smooth). Suspects: the camera yaw path vs the interpolated render (the world camera may read the raw tick yaw while the view model reads the interpolated one), the fps cap / frame pacing, frame-time spikes (nf_game::prof). Bisect master since 2026-10-13 23:00 if needed.
+
+Work Log:
+- (started 01:56 UTC) branch s/fix-turn-stutter created from origin/master (bf2bd176). Investigation starting.
+
+Stage Summary:
+- (in progress)
