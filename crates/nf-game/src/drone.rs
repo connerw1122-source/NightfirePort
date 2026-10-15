@@ -98,6 +98,18 @@ pub mod state {
     /// `StunGrenadeRecover` 0x163350: ENTER sets +0x4F8 & 0x10000 and plays the get-up anim 0x76 with follow-on
     /// 0x56 (Attack) for non-civilians; bullets (msg 8/9) → 0x44.
     pub const STUN_GRENADE_RECOVER: u8 = 0x4f;
+    /// The taser family (109b): `DSTATE_Taser` 0x162b98 — the fall state msg 7 enters once the tase
+    /// accumulator passes 2·health [M DroneFunc_HandleImpact 0x1469b8:126-130]. ENTER plays the
+    /// Rand(2) fall anim (0x31/0x32), drops the weapon, arms the twitch timer 1800
+    /// [M 0x162b98:44-56].
+    pub const TASER: u8 = 0x4a;
+    /// `DSTATE_Stunned` 0x162eb0 — the down state; ENTER arms the recover (+0xce0) and plays the
+    /// struggle anim 0x30/0x2f [M case 1]; TIMER_C falls to Recover 0x4c unless AnyoneNear(2.0)
+    /// re-arms 300 [M case 0xc].
+    pub const STUNNED: u8 = 0x4b;
+    /// `DSTATE_Stunned_Recover` 0x1630b8 — the get-up anim 0x76 with follow-on 0x56 + ChangeWeapon(6)
+    /// for non-civilians [M case 1]; another tase (msg 7) re-runs the fall.
+    pub const STUNNED_RECOVER: u8 = 0x4c;
     /// The scary-object family (`DroneFunc_ConsiderExplosive` 0x1431c0 → `RunAwayFromObject` 0x86 [M 0x1431c0:194-195];
     /// `HideFromScaryObject` 0x87 waits out the flee deadline +0x324 → 0x88 [M 0x168d18:39-44];
     /// `RecoverFromScaryObject` 0x88: +0x5A0 != 0x89 → Attack 0x56 [M 0x173658:33-42]). Names per the port's
@@ -221,8 +233,11 @@ pub mod msg {
     pub const ALARM: u8 = 0x1e;
     /// A bullet hit (`Drone_BulletHit` → msg 8 with the HITDATA).
     pub const BULLET: u8 = 8;
+    /// A taser hit (`NDrone2_DealWithObjHit` 0x13fff0:269-300 → msg 7 with the HITDATA): the Stunner's
+    /// bullets 0x4A / 0x4C route here — the zero-damage dart that stuns (109b).
+    pub const TASE: u8 = 7;
     /// A punch hit (`NDrone2_DealWithObjHit` 0x13fff0 case 5 → msg 6 with the HITDATA): weapon 1
-    /// (fists), 0x4B and 0x4D route here instead of msg 8; 0x4A / 0x4C are the taser (msg 7, not ported).
+    /// (fists), 0x4B and 0x4D route here instead of msg 8; 0x4A / 0x4C are the taser (msg 7).
     pub const PUNCH: u8 = 6;
     /// "Open that door" (`DroneAnim_EventFunc` 0x13b750 event 6 → `Drone_SM_SendMsg(0x20, 0, own, own)`;
     /// docs/fields/drone-statemachine.md). Only `DSTATE_OpenDoor` handles it: retry the door activation.
@@ -276,6 +291,16 @@ pub mod anim_state {
     pub const STUNNED_B: u16 = 0x2e;
     /// The get-up (`StunGrenadeRecover` 0x163350 ENTER: `CallAnim(0, 0x76, 0, 0x56 non-civilian)`).
     pub const STUN_GET_UP: u16 = 0x76;
+    /// The taser fall (`DSTATE_Taser` 0x162b98 ENTER: `Rand_Rand(2)` → `CallAnim(0, 0x31/0x32, 0, 0)`;
+    /// 0 when the draw is 0 → 0x32, else 0x31 [M 0x162b98:44-56]). A set without the datum falls back
+    /// to 0x24 inside `DroneAnim_CallAnim` [M 0x13ab58:106-114] — the TIMER_C band then never opens
+    /// (the game stalls in the fall state too).
+    pub const TASER_FALL_A: u16 = 0x31;
+    pub const TASER_FALL_B: u16 = 0x32;
+    /// The down twitches (`DSTATE_Stunned` 0x162eb0 ENTER: `CallAnim(0, 0x30/0x2f, 0, 0)` — 0x30 when
+    /// the stored fall anim +0xCD8 is 0x32, else 0x2f [M 0x162eb0 case 1]).
+    pub const STUNNED_TWITCH_A: u16 = 0x2f;
+    pub const STUNNED_TWITCH_B: u16 = 0x30;
 }
 
 /// Read-only game data the AI consults.
@@ -672,6 +697,19 @@ pub struct Drone {
     /// The stun-grenade recover deadline (frame): `StunGrenadeLoop`'s `+0xCC4 = GameState._52_4_ + (+0xCE0)`
     /// [M 0x1631c0 case 1], where `+0xCE0` is `DroneFunc_RecoverTime` 0x147188's ticks. fix-explosions.
     pub stun_until: u32,
+    /// fix-stunner-press (109b): the tase accumulator `Drone+0xBC` — `DroneFunc_HandleImpact` case 7
+    /// adds FRAME_RATE_MUL per tase msg and falls to `DSTATE_Taser` when it passes 2·health
+    /// [M 0x1469b8:126-130]. No other writer in the decompile: it persists across states.
+    pub tase_accum: u16,
+    /// `Drone+0xCE0`: the taser recover ticks from `DroneFunc_RecoverTime` — the taser arm
+    /// (the hit weapon 0x4A/0x4C) is FRAME_RATE_INT·10 → 600·0.01·(200−0xB9) = 1200 at the default
+    /// stat 0 [M 0x147188 cases 0x4a/0x4c; +0xB9 = 0 at run time [L 07000005]]. Set by the TASER
+    /// enter; spent by the STUNNED enter (+0xCC4) and its msg-0x19-class re-arms.
+    pub tase_recover: u32,
+    /// `Drone+0xCD8`: the fall anim the TASER enter rolled [M 0x162b98:44-48]. The STUNNED enter
+    /// picks the twitch anim from it (0x30 when 0x32, else 0x2f [M 0x162eb0 case 1]) and the
+    /// STUNNED msg-7 arm re-falls only when it is NOT 0x32 [M 0x162eb0 case 7].
+    pub tase_fall_anim: u16,
     /// fix-grenade-types: the LIVE player position, mirrored each tick (`Drones::tick`'s shared pass)
     /// — the stun loop's kept-down test is the game's live `DroneFunc_AnyoneNear` positional query
     /// [M 0x14a718 via 0x1631c0 case 0xc], not the cached opp `dist` (a stunned guard's perception
@@ -956,6 +994,9 @@ impl Drone {
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false,
             mission_wait_channel: 0,
             stun_until: 0, player_pos: [0.0; 3],
+            tase_accum: 0,
+            tase_recover: 0,
+            tase_fall_anim: 0,
             // fix-finale-blockers: 07000016's chaser (skin 0x0500001e, dtype 0xf, no placement death
             // channel [D]) carries 0x90 at init — the defeat stand-in documented in kiko.rs [S].
             death_channel: crate::kiko::chaser_death_channel(d.level, skin, param(15) as u8, param(12) as u8),
@@ -1852,10 +1893,16 @@ impl Drone {
     /// (unhandled → GLOBAL → dropped). `KnockedOut_Anim` (0x172a30 case 8/9) routes any bullet to Death_Anim — it
     /// arrives only via a scripted Message, since the bullet scan skips corpses.
     fn on_impact(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, punch: bool) -> bool {
-        // The stun family: a bullet (msg 8/9) on a stunned guard → Death_Anim 0x44 [M 0x172bb0/0x1631c0/0x163350
-        // case 8/9 → `Drone_SM_SetState(0x44)`]. msg 6 (punch) has no case in the family (dropped).
-        if matches!(s, state::STUN_GRENADE_IMPACT | state::STUN_GRENADE_LOOP | state::STUN_GRENADE_RECOVER) {
-            if punch { return false; }
+        // The stun families: a bullet (msg 8/9) → Death_Anim 0x44 [M 0x172bb0/0x1631c0/0x163350 case 8/9
+        // → `Drone_SM_SetState(0x44)`; the taser family 0x162b98/0x162eb0/0x1630b8 case 8/9 the same].
+        // msg 6 (punch): no case in the stun-grenade family or the TASER/Recover states (dropped);
+        // DSTATE_Stunned 0x162eb0 case 6 → PainTalk + SetState(0x42 KnockedOut_Anim).
+        if matches!(s, state::STUN_GRENADE_IMPACT | state::STUN_GRENADE_LOOP | state::STUN_GRENADE_RECOVER
+                | state::TASER | state::STUNNED | state::STUNNED_RECOVER) {
+            if punch {
+                if s == state::STUNNED { self.set_state(state::KNOCKED_OUT_ANIM); }
+                return false;
+            }
             self.set_state(state::DEATH_ANIM);
             return true;
         }
@@ -3223,6 +3270,105 @@ impl Drone {
         })
     }
 
+    /// `DroneFunc_HandleImpact` case 7 (0x1469b8:111-176): the tase. The accumulator `+0xBC` grows by
+    /// FRAME_RATE_MUL per msg; once it passes 2·health (`fptoui(+0xAC)` — the LIVE health) the drone
+    /// falls into `DSTATE_Taser` 0x4a with the HITDATA [M 0x1469b8:126-130 + the LAB_0014714c tail].
+    /// Below the threshold only the accumulator == 1 tick acts — the game re-enters the drone's
+    /// current state (`SetState(uVar12)` unless +0x4F8 & 0x4000000 [M 0x1469b8:132-141]); the port
+    /// skips that re-entry (a no-op re-flinch — the accumulator and the fall timing are unaffected;
+    /// noted in the report). This IS the base DSTATE's msg-7 handler: the port runs it for every
+    /// state without its own case-7 arm (the taser family handles its own in `handle_taser`).
+    fn on_tase(&mut self) -> bool {
+        self.tase_accum = self.tase_accum.saturating_add(1);
+        if self.tase_accum as u32 > (self.health as u32) << 1 {
+            self.set_state(state::TASER); // the HITDATA rides self.hit (the port's state-param stand-in)
+        }
+        true
+    }
+
+    /// The taser family (109b): `DSTATE_Taser` 0x162b98, `DSTATE_Stunned` 0x162eb0,
+    /// `DSTATE_Stunned_Recover` 0x1630b8. Bullets (msg 8/9 → 0x44) and the punches route through
+    /// `on_impact`'s family arm before this sees them.
+    fn handle_taser(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        if !matches!(s, TASER | STUNNED | STUNNED_RECOVER) { return None; }
+        Some(match (s, m) {
+            (_, 0) | (_, 10) => true,
+            (TASER, msg::ENTER) => {
+                // +0xCE0 = `DroneFunc_RecoverTime`: the taser arm FRAME_RATE_INT·10 → 600·0.01·(200−0)
+                // = 1200 [M 0x147188 cases 0x4a/0x4c]. The weapon drop: `DropWeapon + ChangeWeapon(1)`
+                // for non-civilians with +0xDA != 4 [M 0x162b98:27-34] — NOT modelled: the port's guards
+                // carry one fixed weapon (the stun-grenade family's standing gap; `Drone::weapon` is the
+                // held weapon MODEL id, not the game's ChangeWeapon slot — noted in the report).
+                self.tase_recover = 1200;
+                self.alert = self.alert.max(0.66); // AlertStatusSet(2) [M 0x162b98:42]
+                self.vision_on = false;
+                self.firing = false;
+                // Rand_Rand(2): 0 → 0x32, else 0x31 [M 0x162b98:44-48]; no follow-on state (the SM is
+                // already in the fall state).
+                let a = if rng.rand(2) == 0 { anim_state::TASER_FALL_B } else { anim_state::TASER_FALL_A };
+                self.tase_fall_anim = a;
+                self.call_anim(d, a, 0, 0);
+                // The twitch timer: FRAME_RATE_DIV·30 = 1800 [M 0x162b98:50-56].
+                self.timer_c = Some(frame + 1800);
+                true
+            }
+            (TASER, msg::TASE) => {
+                // case 7: another tase re-arms the twitch timer [M 0x162b98 case 7].
+                self.timer_c = Some(frame + 1800);
+                true
+            }
+            (TASER, msg::TIMER_C) => {
+                // case 0xc: the fall anims (+0x56a ∈ 0x31..0x32) fall through to Stunned 0x4b; an
+                // interrupted (or fallen-back) anim re-arms 300 and waits [M 0x162b98 case 0xc].
+                if matches!(self.anim.state, anim_state::TASER_FALL_A | anim_state::TASER_FALL_B) {
+                    self.set_state(STUNNED);
+                } else {
+                    self.timer_c = Some(frame + 300);
+                }
+                true
+            }
+            (STUNNED, msg::ENTER) => {
+                // case 1: +0xCC4 = now + (+0xCE0); the twitch anim by the stored fall anim; alert 2
+                // [M 0x162eb0 case 1].
+                self.timer_c = Some(frame + self.tase_recover);
+                self.alert = self.alert.max(0.66);
+                let a = if self.tase_fall_anim == anim_state::TASER_FALL_B { anim_state::STUNNED_TWITCH_B } else { anim_state::STUNNED_TWITCH_A };
+                self.call_anim(d, a, 0, 0);
+                true
+            }
+            (STUNNED, msg::TASE) => {
+                // case 7: a re-tase re-falls (Taser 0x4a) unless the stored fall anim is 0x32 — then
+                // it falls through to case 0x19's re-arm [M 0x162eb0 case 7 → 0x19].
+                if self.tase_fall_anim != anim_state::TASER_FALL_B {
+                    self.set_state(TASER);
+                } else {
+                    self.timer_c = Some(frame + self.tase_recover);
+                }
+                true
+            }
+            (STUNNED, msg::TIMER_C) => {
+                // case 0xc: `DroneFunc_AnyoneNear(2.0)` re-arms FRAME_RATE_INT·5 = 300; clear falls
+                // through to Stunned_Recover 0x4c [M 0x162eb0 case 0xc] — the same live-pos query the
+                // stun-grenade loop uses (`stun_kept_down`).
+                if self.stun_kept_down() { self.timer_c = Some(frame + 300); } else { self.set_state(STUNNED_RECOVER); }
+                true
+            }
+            (STUNNED_RECOVER, msg::ENTER) => {
+                // case 1: +0x4F8 |= 0x10000, ChangeWeapon(6) for non-civilians (not modelled — see the
+                // TASER enter), the get-up anim 0x76 with follow-on Attack 0x56 [M 0x1630b8 case 1].
+                self.call_anim(d, anim_state::STUN_GET_UP, ATTACK, 0);
+                true
+            }
+            (STUNNED_RECOVER, msg::TASE) => {
+                // case 7 → `HandleImpact(msg, 0, 1)`: the accumulator grows again; the re-fall when it
+                // passes 2·health [M 0x1630b8 case 7].
+                self.on_tase()
+            }
+            _ => true, // unhandled → GLOBAL → `DroneFunc_HandleImpact`'s default: dropped [M 0x1469b8:366]
+        })
+    }
+
     /// `DroneFunc_AnyoneNear` 0x14a718's player half at the stun loop's radius 2.0 (0x40000000) [M
     /// NDrone2_DSTATE_StunGrenadeLoop 0x1631c0 case 0xc]: the glb_players loop tests
     /// SqDist3D(player+0x30, dcv+0x30) < (2·r)² = 16 — dist < 4.0 — with a separate |dy| <= 3.0
@@ -3282,6 +3428,21 @@ impl Drone {
         use state::*;
         if m == msg::BULLET { return self.on_bullet(d, rng, frame, s); }
         if m == msg::PUNCH { return self.on_punch(d, rng, frame, s); }
+        // fix-stunner-press (109b): the tase. The taser family handles its own case-7 arms
+        // (`handle_taser`); every other state falls to the base handler — `DroneFunc_HandleImpact`
+        // IS the base DSTATE, so its case 7 (the accumulator + the fall) is the GLOBAL fallback,
+        // exactly like msg 8/6 [M 0x1469b8 case 7].
+        if m == msg::TASE {
+            if let Some(r) = self.handle_taser(d, rng, frame, s, m) { return r; }
+            return self.on_tase();
+        }
+        // fix-stunner-press: the taser family's OWN switch covers every other message — the game's
+        // family DSTATEs unhandle (→ GLOBAL = HandleImpact → default: dropped [M 0x1469b8:366]), so
+        // the port must not fall through to its own GLOBAL-state arms (the alarm/sound/anim-done
+        // routes would pull the tased guard back into combat — the 0x4a → 0x68 leak).
+        if matches!(s, TASER | STUNNED | STUNNED_RECOVER) {
+            if let Some(r) = self.handle_taser(d, rng, frame, s, m) { return r; }
+        }
         // The scream/shout broadcasts [M 0x145e28 + 0x160140; the receivers' EnemyAlerts arms
         // 0x177c18:33-51]: case 0x12 gates on prop 0x27, case 0x11 on prop 0x28; the receiver's
         // next state comes from `DroneVision_ShoutFromOtherDrone`. The port's civilian states go
@@ -3289,6 +3450,10 @@ impl Drone {
         // the guard states keep their sound-alert investigation (`enemy_alerts`, the port's
         // `DroneVision_AlertSound` else-arm [M 0x177800:81-88]).
         if m == msg::SCREAM || m == msg::SHOUT {
+            // fix-stunner-press: the taser family has no case 0x11/0x12 in the game (the 0x162b98/
+            // 0x162eb0/0x1630b8 switches) — the shout is unhandled → GLOBAL → dropped, a tased guard
+            // stays down. The stun-grenade family keeps the old route (its own standing behavior).
+            if matches!(s, state::TASER | state::STUNNED | state::STUNNED_RECOVER) { return true; }
             let hear = if m == msg::SCREAM { self.prop(d, 0x27) } else { self.prop(d, 0x28) };
             if !hear { return true; }
             let civilian = matches!(s, PARTY_GIRL | CIVILIAN | CIVILIAN_MISSION | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD | TRUCK_DRIVER_IDLE | CIVILIAN_SCARED | CIVILIAN_HIDING);
@@ -3304,7 +3469,8 @@ impl Drone {
         // (0x56 [M 0x15bf18:134, 0x15c248:102, 0x15c498:105, ...], HostageIdle 0x0E [M 0x15ce60:51], HostageHide 0
         // [M 0x15cfe0:48]); the fleeing family re-enters ConsiderExplosive with 0x88 [M 0x168d18 case 0x21]. The
         // armed states (UnderCoverFire 0x9C [M 0x16a3e0], AMBUSH_WAIT, GRENADE_THROW) keep their own arms.
-        if m == msg::EXPLOSIVE && !matches!(s, UNDER_COVER_FIRE | UNDER_COVER_SNIPER_FIRE | UNDER_COVER_SNIPER_RELOAD | AMBUSH_WAIT | GRENADE_THROW) {
+        if m == msg::EXPLOSIVE && !matches!(s, UNDER_COVER_FIRE | UNDER_COVER_SNIPER_FIRE | UNDER_COVER_SNIPER_RELOAD | AMBUSH_WAIT | GRENADE_THROW
+                | TASER | STUNNED | STUNNED_RECOVER) {
             let resume = if matches!(s, RUN_AWAY_FROM_OBJECT | HIDE_FROM_SCARY_OBJECT) { RECOVER_FROM_SCARY_OBJECT }
                 else if matches!(s, PARTY_GIRL | CIVILIAN | CIVILIAN_MISSION | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD | CIVILIAN_SCARED | CIVILIAN_HIDING) { 0 }
                 else { ATTACK };
@@ -6040,9 +6206,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     dr.bond_aiming = self.bond_aiming;
                     // `NDrone2_DealWithObjHit` case 5 (0x13fff0:269-306): the SHOOTER is the player, so the
                     // weapon decides the message — 1 (fists), 0x4B, 0x4D → msg 6 (punch); 0x4A / 0x4C →
-                    // msg 7 (taser, not ported — the Q-Claw's grapple state); anything else msg 8
-                    // (`Drone_BulletHit`). Both paths bump +0x1D8 and stamp +0x2B4 (last hit by) first.
-                    let m = if matches!(b.weapon, 1 | 0x4b | 0x4d) { msg::PUNCH } else { msg::BULLET };
+                    // msg 7 (the tase — the zero-damage dart that stuns, fix-stunner-press); anything
+                    // else msg 8 (`Drone_BulletHit`). Both paths bump +0x1D8 and stamp +0x2B4 (last hit by) first.
+                    let m = if matches!(b.weapon, 1 | 0x4b | 0x4d) { msg::PUNCH }
+                        else if matches!(b.weapon, 0x4a | 0x4c) { msg::TASE }
+                        else { msg::BULLET };
                     dr.send(d, rng, frame, m);
                     self.last_flinch = dr.global_flinch;
                     // fix-blast-scripts [M Bullet_CollisionHandler 0x12ce80 — the explode arms at
@@ -8487,6 +8655,9 @@ mod tests {
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
             mission_wait_channel: 0,
             stun_until: 0, player_pos: [0.0; 3],
+            tase_accum: 0,
+            tase_recover: 0,
+            tase_fall_anim: 0,
             stationary: false, alpha: 255.0, raise: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
