@@ -12912,3 +12912,12 @@ the binaries the window fit.)
   5/0, fix_weapon_modes_live 6/0, fix_samurai_fire_live 3/0, fix_weapons_all_live 4/0,
   weapon_switch_live 2/0 (nf-game), tuning_live 2/0 (nf-game). The fast suite on the final tree
   running (started 12:58); fix_switch_after_cold_load_live passed inside it as well.
+
+## exact-sine-portonly-review (branch s/exact-sine-portonly-review)
+- (14:30) Task started (110y): G-046's four PORT_ONLY trig stand-ins — ladder.rs:151 mesh columns,
+  player.rs:858 crawl advance, casing.rs:80-81 eject matrix (guards' yaw/pitch basis only; the
+  player path already ejects from the view-model datum per Casings::reserve/arm), drone.rs:2495
+  object-space head-track (game reads the drone's datum through AnimGetBoneWorldTrans
+  0x12f678:100-113). Plan: for each site, read the decompile at the game's point, replace the
+  port's construction with the game's mechanism (or prove equivalence with a test); fail-first
+  NF_ISO tests, suite green, G-046 updated. Branch cut from origin/master cf4f33cd.
