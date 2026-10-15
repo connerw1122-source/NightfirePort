@@ -13475,3 +13475,10 @@ Work Log (credits-data):
   7 (last-row selection, per-row hints, the 0x31d fallback, modal, Back-vs-unpause, clamps, NF_ISO binds 0x202/0x31d/
   0x266 from USATxt.dat), each with a sister assertion; menus_flow.rs updated to the new row struct. All green on the
   merged tree (ce62cd7e). Doc: docs/systems/objective-hints.md; mission.md's "hint never drawn" + gap lines corrected.
+
+## menu-sfx (2026-10-15, branch s/menu-sfx)
+- Task started: port the front end's and pause page's sounds. Plan: (1) research which SFX ids/banks
+  Menu_InputAction 0x1f1f40 / Manager_SendMessage 0x21c858 / the wheel/list/spinner handlers /
+  C_GCPAUSE_Handler 0x204408 play and when (docs first), (2) emit sound events from FrontEnd::action()
+  for the host to play through nf-audio, (3) tests: each action on each page emits the game's sound id,
+  NF_SILENT, numbers only. No drawing.
