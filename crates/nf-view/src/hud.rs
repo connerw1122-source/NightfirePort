@@ -344,7 +344,11 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     let f = 1.0f32;
     let armour = s.drones.health.armour * 0.16;
     // The health pane hides while the guided camera rides ("the health bar and the crosshair are gone while it
-    // flies" [L PCSX2 2026-10-13]).
+    // flies" [L PCSX2 2026-10-13]) — `HUD_UpdateHealthPane` 0x19b9c8:126-219 sets sprites 0..15 to layer 0xff
+    // while pane 9, 10, 11 (the Micro-Camera), 17 (the AIMS-20 zoom) or 18 is enabled (the pane enable bytes at
+    // HUDINFO+0x144 + 0x20·(n − 9)); PCSX2 shows no health swirl in the Micro-Camera view (2026-10-15).
+    let paned = s.zoom_target > 1.0 && matches!(zoom_overlay(s.gun.weapon), ZoomOverlay::Camera | ZoomOverlay::Oicw);
+    let riding = riding || paned;
     if armour > 0.0 && !riding {
         for k in 0..8 {
             let a = if k == 0 { 1.0 } else if (k as f32) < armour { 0.75 } else { 0.35 };
