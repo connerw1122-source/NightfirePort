@@ -21,6 +21,7 @@
 //! - Position on the segment: `A + (B − A)·t` [M 0x222468:12-20] (straight; curved through
 //!   FUN_00222d40, see `road::RoadNet::curve_point`).
 
+use super::physics::{Car, CarInput, CarParams, FlatWorld, Rigid};
 use super::road::{RoadNet, RSF_TURN_RESTR_A, RSF_TURN_RESTR_B};
 
 /// The AIVehicle states (+0x70) [M 0x12e350's switch; docs/systems/driving-ai.md §3].
@@ -54,6 +55,21 @@ impl SimCar {
     pub fn speed(&self) -> f32 {
         let s = self.vel[0] * self.vel[0] + self.vel[1] * self.vel[1] + self.vel[2] * self.vel[2];
         sqrt_ps2(s)
+    }
+
+    /// The sim view of 506's physics car (`physics::Car`) — the seam wired [M the field sources]:
+    /// pos = instance+0x10 (`Car::pos`), vel = instance+0x20 (`Car::vel`), forward = the class
+    /// yaw row (`[sin(yaw), 0, cos(yaw)]`, the same row `Car::step` drives along [M
+    /// physics.rs `step`'s `fwd`]). `alive` = 1.0: the physics car is a live actor —
+    /// FUN_00195a30's health gate is the actor layer, out of the headless scope [S].
+    pub fn of_car(car: &super::physics::Car) -> SimCar {
+        let (sin, cos) = car.yaw.sin_cos();
+        SimCar {
+            pos: car.pos,
+            vel: car.vel,
+            forward: [sin, 0.0, cos],
+            alive: 1.0,
+        }
     }
 }
 
@@ -201,7 +217,8 @@ impl AiCar {
 
     /// One 60 Hz step: target speed → drive command → the position along the segment. `dt` is the
     /// fixed 1/60 s timestep (docs/atlas/driving-elf.md §1.3); the speed itself comes from `sim`
-    /// (506's physics owns the throttle→acceleration conversion).
+    /// (506's physics owns the throttle→acceleration conversion — wired through
+    /// [`AiDriver`] below, or on rails here: the sim position follows the spline exactly).
     pub fn step(&mut self, net: &RoadNet, sim: &mut SimCar, dt: f32) -> Result<DriveCommand, String> {
         if self.state == STATE_STANDBY {
             // state 1: the spawn delay path — no motion [M 0x12e350's case 1]
@@ -211,8 +228,20 @@ impl AiCar {
         let aim = self.aim_point(net)?;
         let cmd = drive_control(sim, aim, target, self.forced_stop);
 
-        // The position advance: t moves by the distance covered over dt, normalized by the
-        // segment's length (the geometric fact of FUN_00222468's evaluation + the progress cells).
+        // The position advance: the distance covered over dt, normalized by the segment's length
+        // (the geometric fact of FUN_00222468's evaluation + the progress cells), then the spline
+        // position [M 0x222468].
+        self.advance_path(net, sim.speed(), dt)?;
+        sim.pos = net.seg_point(self.segment, self.t)?;
+        Ok(cmd)
+    }
+
+    /// The progress walk shared by the rail step and the physics-wired [`AiDriver`]: `t` moves by
+    /// `speed·dt` over the current segment, and a crossing applies the next-segment choice
+    /// [M 0x2247b0 + the join's direction rule 0x225c48]. Moved verbatim out of `step` when the
+    /// physics wiring landed — the rail path passes `sim.speed()`, the driver passes the physics
+    /// car's speed.
+    fn advance_path(&mut self, net: &RoadNet, speed: f32, dt: f32) -> Result<(), String> {
         let seg = net.seg(self.segment)?;
         let a = net.node(seg.node_a() as usize)?.pos();
         let b = net.node(seg.node_b() as usize)?.pos();
@@ -220,7 +249,6 @@ impl AiCar {
             let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
             d[0] * d[0] + d[1] * d[1] + d[2] * d[2]
         });
-        let speed = sim.speed();
         if seg_len > 0.0 {
             self.t += speed * dt / seg_len;
         }
@@ -249,10 +277,7 @@ impl AiCar {
                 }
             }
         }
-
-        // The sim position follows the spline [M 0x222468].
-        sim.pos = net.seg_point(self.segment, self.t)?;
-        Ok(cmd)
+        Ok(())
     }
 }
 
@@ -260,4 +285,119 @@ impl AiCar {
 /// for the tests.
 pub fn is_turn_restricted(flags: u16) -> bool {
     flags & (RSF_TURN_RESTR_A | RSF_TURN_RESTR_B) != 0
+}
+
+/// The AI brain wired onto 506's physics model — the seam 507 left open (`SimCar`), closed here.
+/// The division follows the game's two halves: the brain (`AiCar`) picks the pedals through
+/// FUN_0012e808/0x133ab0, and 506's `physics::Car` owns what the pedals do to the speed
+/// (`FUN_0018cef8`'s drive accel + the integration); the path position stays the spline eval
+/// [M 0x222468] with the car's speed feeding the progress (the AI vehicle is on rails, the
+/// throttle→speed response is the physics car's).
+pub struct AiDriver {
+    /// The AI car (state, segment, target speed, forced-stop).
+    pub brain: AiCar,
+    /// 506's physics car — the params are the pvehicle .atr values (e.g. `CarParams::vanquish`).
+    pub car: Car,
+    /// The surface the car drives on (the Friction row; the road data the port loads is the
+    /// RNgp, which carries no surface kind — the caller picks it [S]).
+    pub world: FlatWorld,
+    /// The Physics:Rigid globals (gravity, damping) — `Rigid::game_defaults()` unless a .tun
+    /// override is in play.
+    pub rigid: Rigid,
+}
+
+impl AiDriver {
+    /// A driver placed at the start of `segment`, heading A→B (`end` 0) or B→A (`end` 1): the
+    /// physics car sits on `seg_point(segment, 0)` [M 0x222468] pointed down the segment (yaw =
+    /// atan2(dir.x, dir.z), the yaw the `[sin, 0, cos]` forward row inverts [M physics `step`'s
+    /// `fwd`]).
+    pub fn on_segment(
+        params: CarParams,
+        net: &RoadNet,
+        segment: usize,
+        end: u8,
+        car_group: i8,
+    ) -> Result<AiDriver, String> {
+        let pos = net.seg_point(segment, 0.0)?;
+        let dir = segment_dir(net, segment, end)?;
+        let yaw = dir[0].atan2(dir[2]);
+        Ok(AiDriver {
+            brain: AiCar::on_segment(segment, end, car_group),
+            car: Car::new(params, pos, yaw),
+            world: FlatWorld::paved(),
+            rigid: Rigid::game_defaults(),
+        })
+    }
+
+    /// One 60 Hz step of the wired pair: the brain's command becomes the physics `CarInput`
+    /// (the four vtbl calls of FUN_00133ab0 map 1:1 onto the four CarInput fields — SetSteer/
+    /// SetThrottle/SetBrake/SetHandbrake [M 0x133ab0:135-180]), `Car::step` integrates it
+    /// [M 0x1ff3d8's order], and the pre-integration sim speed drives the path progress; the
+    /// position snaps back onto the spline [M 0x222468] and the yaw to the travel direction.
+    /// Note: `handbrake` reaches the physics only with 506's "handbrake in the step" work
+    /// (physics.rs's step does not read it yet — 506's report lists it) — the forced-stop case
+    /// holds its speed until then [S form, M the command itself].
+    pub fn step(&mut self, net: &RoadNet, dt: f32) -> Result<DriveCommand, String> {
+        if self.brain.state == STATE_STANDBY {
+            // state 1: no motion, the physics car idles [M 0x12e350's case 1]
+            return Ok(DriveCommand { steer: 0.0, throttle: 0.0, brake: 0.0, handbrake: false });
+        }
+        let sim = SimCar::of_car(&self.car);
+        let sim_speed = sim.speed(); // [M 0x133ab0:103-113 — the AI reads |vel| before the vehicle sim integrates]
+        let target = self.brain.select_target_speed(net, &sim)?;
+        let aim = self.brain.aim_point(net)?;
+        let cmd = drive_control(&sim, aim, target, self.brain.forced_stop);
+
+        let input = CarInput {
+            throttle: cmd.throttle,
+            brake: cmd.brake,
+            steer: cmd.steer,
+            handbrake: cmd.handbrake,
+        };
+        let (pre_sin, pre_cos) = self.car.yaw.sin_cos();
+        self.car.step(&input, &self.world, &self.rigid, dt);
+        // The brake rests the car at 0 — it cannot back it up [S: the game's brake opposes
+        // motion, reverse is the R-gear throttle path and the AI never drives R (506's gearbox
+        // work owns R); without this the 506 brake at rest integrates through zero into a
+        // negative vel and the rail car would gather speed backwards]. One tick only: at rest
+        // the AI's own speed ≤ 0 early-out [M 0x133ab0:153] stops commanding brake.
+        if input.throttle == 0.0 && input.brake > 0.0
+            && self.car.vel[0] * pre_sin + self.car.vel[2] * pre_cos < 0.0
+        {
+            self.car.vel = [0.0; 3];
+        }
+
+        // The sim speed the control pass read drives the progress walk, then the car lands back
+        // on the spline at the advanced t [M 0x222468], facing the travel direction.
+        self.brain.advance_path(net, sim_speed, dt)?;
+        let (pos, yaw) = spline_pose(net, self.brain.segment, self.brain.t, self.brain.end)?;
+        self.car.pos = pos;
+        self.car.yaw = yaw;
+        Ok(cmd)
+    }
+}
+
+/// The unit direction of travel on `segment` for `end` (0 = A→B, 1 = B→A).
+fn segment_dir(net: &RoadNet, segment: usize, end: u8) -> Result<[f32; 3], String> {
+    let seg = net.seg(segment)?;
+    let a = net.node(seg.node_a() as usize)?.pos();
+    let b = net.node(seg.node_b() as usize)?.pos();
+    let d = if end == 0 {
+        [b[0] - a[0], b[1] - a[1], b[2] - a[2]]
+    } else {
+        [a[0] - b[0], a[1] - b[1], a[2] - b[2]]
+    };
+    let len = sqrt_ps2(d[0] * d[0] + d[1] * d[1] + d[2] * d[2]);
+    if len <= 0.0 {
+        return Err(format!("segment {segment} is degenerate (zero length)"));
+    }
+    Ok([d[0] / len, d[1] / len, d[2] / len])
+}
+
+/// The spline position [M 0x222468] plus the yaw facing the travel direction (the forward row
+/// `[sin, 0, cos]` inverted) — the pose the wired driver leaves the physics car in.
+fn spline_pose(net: &RoadNet, segment: usize, t: f32, end: u8) -> Result<([f32; 3], f32), String> {
+    let pos = net.seg_point(segment, t)?;
+    let dir = segment_dir(net, segment, end)?;
+    Ok((pos, dir[0].atan2(dir[2])))
 }
