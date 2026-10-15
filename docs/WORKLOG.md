@@ -13238,3 +13238,9 @@ Work Log (fix-scores-handoff):
   the 3 slim-ISO disc_golden allows. Full background sweep impossible in this sandbox (jobs
   killed between tool calls). Report docs/reports/drive-elf-map.md pushed; finish.sh acked
   (OK done 501-drive-elf-map); ntfy 429 on all three fallbacks (recorded in the report).
+## dossier-pages-data (2026-10-15, branch s/dossier-pages-data) — start
+- (18:58 UTC) Task started: port the Dossier's Rewards / Gadgets / Weapons pages' data, state, flow and getters
+  (P_DSREWARDS_Handler 0x2172c8 + C_RBDSREWARDS_Handler 0x20c248, P_DSGADGETS_Handler 0x217190 +
+  C_SBDSGTSCROLL_Handler 0x20bcc0, P_DSWEAPONS_Handler 0x217038 + C_SBDSWPSCROLL_Handler 0x20bab0). No drawing —
+  data + Page variants + actions + getters + tests. Sandbox reused: repo, work/, ISO and nf-queue all present; branch
+  cut from origin/master 0157588d.
