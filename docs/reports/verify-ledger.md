@@ -53,12 +53,19 @@ documents the exit condition in its assert message).
 
 ## How it was verified
 
-- `cargo test --offline --release -p nf-game --test diff_calls` on the final tree: **6 passed / 0 failed**
-  (the 3 pre-existing replay/sister tests still green — no regression in the harness — plus the two new guard
-  tests).
+- `cargo test --offline --release -p nf-game --test diff_calls` — before AND after the origin/master merge
+  (ee1619d1): **6 passed / 0 failed** each time (the 3 pre-existing replay/sister tests still green — no
+  regression in the harness — plus the two new guard tests).
 - The ledger row count is asserted (`>= 400` rows) so the appendix can't silently vanish.
-- Full suite on the final tree (merged with origin/master ee1619d1): see the total line below (started in the
-  background right after the merge; the three slim-ISO `disc_golden` failures are the allowed ones).
+- Full suite on the final tree (merged with origin/master ee1619d1): see the total line below.
+
+**Sandbox note for whoever runs the suite here (not a port bug):** this sandbox ships **no Vulkan ICD**
+(`/usr/share/vulkan/icd.d/` is empty; libvulkan has no driver), so every wgpu render test fails with
+`adapter: NotFound` — the first run showed `fix_0c_pylon_live` ×2 failing this way. Verified environmental, not
+a regression: `apt-get download mesa-vulkan-drivers` + `dpkg -x` into a user prefix (`/home/z/vkusr`) with
+`VK_ICD_FILENAMES=/home/z/vkusr/usr/share/vulkan/icd.d/lvp_icd.json` (+ its lib dir on `LD_LIBRARY_PATH`) makes
+the software lavapipe adapter available, and **both pylon tests then pass** (6.4 s, `--test-threads=1`). The
+final suite run below uses that prefix via the launcher env.
 
 ## Live checks for the main agent
 
