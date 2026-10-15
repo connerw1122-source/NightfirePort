@@ -748,6 +748,13 @@ pub const MP_CHARACTER_SIDE_MI6: [bool; 29] = [
 /// The weapon-set names, indexed by MPSettings+0x1B4 0..10 [M P_MPPLAYERMODS 0x2104d0:26-49's
 /// label switch — the same list P_MPCONFIRM 0x20ec00's +0x1B4 switch binds].
 pub const MP_WEAPON_SETS: [u32; 11] = [0x1a0, 0x1a2, 0x1a4, 0x1a6, 0x1a8, 0x24f, 0x3db, 0x3dc, 0x3dd, 0x3de, 0x1b2];
+
+/// The Health Handicap list in the game's node order [M C_RBMPSETUP 0x20de58's state-3 confirm
+/// (msg 0x4b, state 3): msg-0x10 adds 8 nodes with these values; the labels are the handler's own
+/// .data strings 0x30d390..0x30d3c8 — [D] "-75","-50","-25","0","+25","+50","+75","+100"]. The
+/// fresh roster's +0x2c = 0 re-selects the "0" node [M bootup_bootup's roster loop].
+pub const MP_HANDICAPS: [(i32, &str); 8] =
+    [(-75, "-75"), (-50, "-50"), (-25, "-25"), (0, "0"), (25, "+25"), (50, "+50"), (75, "+75"), (100, "+100")];
 /// The P_MPSETUP per-agent prompt labels [M P_MPSETUP 0x20d7a8: state 2 (team) binds 0x37c, state
 /// 3 (character) binds 0x37d; USATxt "Choose Team"/"Choose Character"].
 pub const MP_SETUP_TEAM_PROMPT: u32 = 0x37c;
@@ -1062,11 +1069,14 @@ pub struct FrontEnd {
     /// init writes DAT_002deeba=6, 0x2deecc=7, 0x2deede=8, 0x2deef0=9] and enabled = 0.
     pub mp_bots: [MpBot; 4],
     /// P_MPSETUP's per-agent state for agent 1: 2 = Choose Team (team games), 3 = Choose
-    /// Character (FFA), 4 = chosen [M P_MPSETUP 0x20d7a8 sets mp_stuff+0x360 to 2/3 from the
-    /// scenario's 0x20000000 bit; C_RBMPSETUP 0x20de58:4b steps 2 → 3 and 3 → 4].
+    /// Character (FFA), 4 = Health Handicap, 5 = chosen [M P_MPSETUP 0x20d7a8 sets
+    /// mp_stuff+0x360 to 2/3 from the scenario's 0x20000000 bit; C_RBMPSETUP 0x20de58's 0x4b
+    /// steps 2 → 3 → 4 → 5 — state 4 builds the handicap list (−75..+100), stores the pick in
+    /// MPSettings+slot·0x30+0x2c, sets mpjoin+1 and the state 5].
     pub mp_setup_state: u32,
-    /// The setup page's agent-1 list selection: the team (0 Phoenix / 1 MI6) or the character id
-    /// [M C_RBMPSETUP 0x20de58's msg-0x35 reads; the team list's items are Phoenix(0x1c7)/MI6(0x1c8)].
+    /// The setup page's agent-1 list selection: the team (0 Phoenix / 1 MI6), the character id or
+    /// the MP_HANDICAPS index [M C_RBMPSETUP 0x20de58's msg-0x35 reads; the team list's items are
+    /// Phoenix(0x1c7)/MI6(0x1c8), the handicap nodes are −75..+100 [D 0x30d390..0x30d3c8]].
     pub mp_setup_sel: usize,
     /// MPSettings+0x1A0 — the time limit in minutes, −1 = Unlimited [M P_MPRULES 0x20f790:12; the
     /// game's confirm multiplies by 60 before handing the match over].
@@ -1085,6 +1095,15 @@ pub struct FrontEnd {
     /// The Enviro-Mods rows in page order (+0x1C0 view distance, +0x1B8, +0x1D4, +0x1D0, +0x1CC)
     /// [M P_MPENVIROMODS 0x210030:12-16, 20-27, 35-61].
     pub mp_envmods: [u32; 5],
+    /// mp-setup: agent 1's Health Handicap — MPSettings+slot·0x30+0x2c [M bootup_bootup 0x1c7e78
+    /// zeroes the roster (fresh +0x2c = 0); C_RBMPSETUP 0x20de58's state-4 confirm stores the
+    /// picked list value (−75..+100)].
+    pub mp_handicap: i32,
+    /// The OR of the profile's four bonus words (bonus[0..3] @0x2e1b88, u64 each) [M
+    /// Menu_UnlockMPSettings 0x1ff698's mask]. A fresh profile holds 0 — no reward bits set.
+    /// Nothing sets bits yet; the field exists so the Explosive-Scenery gate is a function of the
+    /// state, not a constant (see mp_explosive_unlocked).
+    pub mp_bonus_mask: u64,
     /// The start checks' error-box label id, 0 = none [M C_SBMPOPTIONS 0x20e818:84-114 — 0x1000311
     /// (FFA with more than one "good" side), 0x389 (an empty team), 0x39e (one player total)].
     pub mp_error: u32,
@@ -1155,13 +1174,21 @@ impl FrontEnd {
             mp_bots: std::array::from_fn(|slot| MpBot::fresh(slot)),
             mp_setup_state: 2,
             mp_setup_sel: 0,
+            // mp-setup (each new field on its own line [WORKLOG lesson 4]): the handicap starts 0
+            // [M bootup_bootup's roster +0x2c = 0] and the profile bonus mask is empty [L the EE
+            // snapshots read bonus words 0 / mp_stuff[0x370] = 0].
+            mp_handicap: 0,
+            mp_bonus_mask: 0,
             mp_time_limit: 10,
             mp_frag_limit: 10,
             mp_friendly_fire: 0,
             mp_weapon_set: 0,
             mp_radar: 1,
-            mp_player_mods: [0, 0],
-            mp_envmods: [1, 0, 0, 0, 0],
+            // mp-defaults: the boot values [M bootup_bootup 0x1c7e78 — +0x1BC=0 @0x1c7ffc,
+            // +0x1C8=1 @0x1c7ff8 (Location Damage On); +0x1C0=2 @0x1c7fac (row 1 = Random), the
+            // other enviro rows 0; the EE snapshots read the same [L]]
+            mp_player_mods: [0, 1],
+            mp_envmods: [2, 0, 0, 0, 0],
             mp_error: 0,
             mp_match_settings: None,
             // credits-data (each new field on its own line [WORKLOG lesson 4]): the credits roll's
@@ -1310,12 +1337,14 @@ impl FrontEnd {
             }
             Page::MpMap => bind(MP_MAP_ROWS.get(row).map_or(0, |r| r.1)),
             // The setup page's one row is agent 1's pick: the team (the game's list items are
-            // Phoenix 0x1c7 / MI6 0x1c8 [M P_MPSETUP 0x20d7a8]) or the character name.
+            // Phoenix 0x1c7 / MI6 0x1c8 [M P_MPSETUP 0x20d7a8]), the character name, or the
+            // handicap's own .data string [D 0x30d390..0x30d3c8 — C_RBMPSETUP adds them as raw
+            // strings, not Txt labels].
             Page::MpSetup => {
-                if self.mp_setup_state == 2 {
-                    bind([0x1c7, 0x1c8][self.mp_setup_sel.min(1)])
-                } else {
-                    bind(MP_CHARACTERS[self.mp_setup_sel.min(MP_CHARACTERS.len() - 1)].1)
+                match self.mp_setup_state {
+                    2 => bind([0x1c7, 0x1c8][self.mp_setup_sel.min(1)]),
+                    4 => MP_HANDICAPS[self.mp_setup_sel.min(MP_HANDICAPS.len() - 1)].1.into(),
+                    _ => bind(MP_CHARACTERS[self.mp_setup_sel.min(MP_CHARACTERS.len() - 1)].1),
                 }
             }
             Page::MpOptions => bind(MP_OPTIONS_ROWS.get(row).map_or(0, |r| r.1)),
@@ -2264,34 +2293,70 @@ impl FrontEnd {
                     _ => {}
                 }
             }
-            // The per-agent team/character page [M P_MPSETUP 0x20d7a8 + C_RBMPSETUP 0x20de58].
-            // Keyboard = agent 1: ◀ ▶ move the pick, ✕ confirms (state 3 → 4 team, 2 → 3 character
-            // — the game's C_RBMPSETUP:0x4b steps 2 → 3 and 3 → 4).
+            // The per-agent team/character/handicap page [M P_MPSETUP 0x20d7a8 + C_RBMPSETUP
+            // 0x20de58]. Keyboard = agent 1: ◀ ▶ move the pick, ✕ confirms (the game's
+            // C_RBMPSETUP:0x4b steps 2 → 3 → 4 → 5; state 4's list is the 8 handicap nodes).
             Page::MpSetup => {
-                let n = if self.mp_setup_state == 2 { 2usize } else { MP_CHARACTERS.len() };
+                let n = match self.mp_setup_state {
+                    2 => 2usize,
+                    4 => MP_HANDICAPS.len(),
+                    _ => MP_CHARACTERS.len(),
+                };
                 match a {
                     Action::Left if self.mp_setup_sel > 0 => { self.mp_setup_sel -= 1; return true; }
                     Action::Right if self.mp_setup_sel + 1 < n => { self.mp_setup_sel += 1; return true; }
                     Action::Confirm => {
-                        if self.mp_setup_state == 2 {
+                        match self.mp_setup_state {
                             // The team list: the selection IS the team [M P_MPSETUP's items
-                            // Phoenix(0x1c7) = 0 / MI6(0x1c8) = 1 → mpjoin+4].
-                            self.mp_join[0].team = self.mp_setup_sel as u32;
-                            self.mp_setup_state = 3;
-                            self.mp_setup_sel = 0;
-                            return true;
+                            // Phoenix(0x1c7) = 0 / MI6(0x1c8) = 1 → mpjoin+4]. State 3 re-selects
+                            // the agent's stored skin [M 0x4b's msg-0x1e of mpjoin+8].
+                            2 => {
+                                self.mp_join[0].team = self.mp_setup_sel as u32;
+                                self.mp_setup_state = 3;
+                                self.mp_setup_sel = self.mp_join[0].skin as usize;
+                                return true;
+                            }
+                            // The character list → mpjoin+8; state 4 builds the handicap list and
+                            // re-selects MPSettings+slot·0x30+0x2c [M 0x4b's state-3 arm].
+                            3 => {
+                                self.mp_join[0].skin = self.mp_setup_sel as u32;
+                                self.mp_setup_state = 4;
+                                self.mp_setup_sel = MP_HANDICAPS.iter().position(|h| h.0 == self.mp_handicap).unwrap_or(3);
+                                return true;
+                            }
+                            // The handicap pick lands in MPSettings+slot·0x30+0x2c, mpjoin+1 = 1
+                            // and state 5; when every joined agent is done the page changes to
+                            // 0x40000012 [M 0x4b's state-4 arm + Menu_MPAreWeReady 0x1f78d8 → the
+                            // 0x44/0x40000012 send]. The port's one keyboard agent is the only
+                            // joined human, so ready follows immediately.
+                            4 => {
+                                self.mp_handicap = MP_HANDICAPS[self.mp_setup_sel.min(MP_HANDICAPS.len() - 1)].0;
+                                self.mp_setup_state = 5;
+                                self.mp_join[0].ready = true;
+                                self.page = Page::MpOptions;
+                                self.cursor = 0;
+                                self.mp_options_row = 0;
+                                return true;
+                            }
+                            _ => return false,
                         }
-                        // The character list [M C_RBMPSETUP's msg-0x35 → mp_characters_small row;
-                        // mpjoin+8 = the id]. All picked → the options hub (P_MPOPTIONS expects
-                        // 0x40000051 as its source [M 0x217678:12]).
-                        self.mp_join[0].skin = self.mp_setup_sel as u32;
-                        self.mp_setup_state = 4;
-                        self.page = Page::MpOptions;
-                        self.cursor = 0;
-                        self.mp_options_row = 0;
+                    }
+                    // The game's back walks the prompts: 4 → 3 always, 3 → 2 only in team games
+                    // [M C_RBMPSETUP 0x20de58's 0x6b arm]; at 2 the page pops back to the map wheel.
+                    Action::Back => {
+                        match self.mp_setup_state {
+                            4 => {
+                                self.mp_setup_state = 3;
+                                self.mp_setup_sel = self.mp_join[0].skin as usize;
+                            }
+                            3 if self.mp_scenario & 0x2000_0000 != 0 => {
+                                self.mp_setup_state = 2;
+                                self.mp_setup_sel = self.mp_join[0].team as usize;
+                            }
+                            _ => { self.page = Page::MpMap; }
+                        }
                         return true;
                     }
-                    Action::Back => { self.page = Page::MpMap; return true; }
                     _ => {}
                 }
             }
@@ -2350,7 +2415,15 @@ impl FrontEnd {
                     Action::Down if self.cursor + 1 < 5 => { self.cursor += 1; return true; }
                     Action::Left => { self.mp_envmods_step(-1); return true; }
                     Action::Right => { self.mp_envmods_step(1); return true; }
-                    Action::Confirm | Action::Back => { self.page = Page::MpOptions; self.cursor = 0; return true; }
+                    // The game's msg-0x4b writes every row's current node value back on close [M
+                    // P_MPENVIROMODS 0x210030's stores 0x210424/0x210444/0x210464/0x21047c/0x210498]:
+                    // the locked row's only node is 0x10 ("Locked") so a visit leaves +0x1D4 = 0x10;
+                    // unlocked, a stale 0x10 falls to the first-added node (On, 1) [M
+                    // List_SendMessage 0x2196e8's msg-0x1e no-match keeps the first node current].
+                    Action::Confirm | Action::Back => {
+                        self.mp_envmods[2] = if self.mp_explosive_unlocked() { self.mp_envmods[2].min(1) } else { 0x10 };
+                        self.page = Page::MpOptions; self.cursor = 0; return true;
+                    }
                     _ => {}
                 }
             }
@@ -2577,9 +2650,75 @@ impl FrontEnd {
         match self.cursor.min(4) {
             0 => { self.mp_envmods[0] = (self.mp_envmods[0] as i32 + dir).rem_euclid(3) as u32; }
             1 => { self.mp_envmods[1] = (self.mp_envmods[1] as i32 ^ 1) as u32; }
-            2 => { self.mp_envmods[2] = (self.mp_envmods[2] as i32 ^ 1) as u32; }
+            // Explosive Scenery: the locked row's list holds ONE node (0x10 "Locked"), so ◀ ▶
+            // cannot move it — a no-op [M P_MPENVIROMODS 0x210030's mp_stuff[0x370]==0 branch
+            // binds the single 0x10 node and the page has no 0x49 arm]. Unlocked the list is
+            // On(1)/Off(0) and a stale 0x10 falls to the first node (On) [M List_SendMessage
+            // 0x2196e8's msg-0x1e no-match keeps the first-added node current].
+            2 => {
+                if self.mp_explosive_unlocked() {
+                    self.mp_envmods[2] = if self.mp_envmods[2] > 1 { 1 } else { self.mp_envmods[2] ^ 1 };
+                }
+            }
             3 => { self.mp_envmods[3] = (self.mp_envmods[3] as i32 ^ 1) as u32; }
             _ => { self.mp_envmods[4] = (self.mp_envmods[4] as i32 + dir).rem_euclid(4) as u32; }
+        }
+    }
+
+    /// mp_stuff[0x370] @0x2df2d0, the Explosive-Scenery unlock byte [M Menu_UnlockMPSettings
+    /// 0x1ff698: cleared, then set iff some (level, counter) reward is type 3 id 0x3e; on the
+    /// shipped RewardsTable that is exactly level 0x07000014 counter 3 [D 0x2bc920 row 10 — the
+    /// only type-3 entry], unlocked = mask bit 0x3e]. P_MPSCENARIO 0x217348 recomputes it on every
+    /// page enter, so a pure read is equivalent. The unlock-everything cheat does NOT set it [M
+    /// menu_unlock_everything never touches the bonus words].
+    pub fn mp_explosive_unlocked(&self) -> bool { self.mp_bonus_mask >> 0x3e & 1 != 0 }
+
+    /// The Enviro-Mods rows' value labels — P_MPENVIROMODS 0x210030's msg-0x4c node lists [M the
+    /// msg-0x10 binds]: row 0 view distance 0x1b0/0x1b1/0x1b2 at 0/1/2, row 1 (+0x1B8) and row 4
+    /// (+0x1D0) On(0x1b7)/Off(0x1b6), row 3 (+0x1D4) the locked branch's single 0x1000076
+    /// "Locked" node (value 0x10) vs unlocked On/Off, vehicles (+0x1CC)
+    /// 0x1b6/0x10002d8/0x10002d9/0x1b2.
+    pub fn mp_enviro_value_label(&self, row: usize) -> u32 {
+        let v = |i: usize| self.mp_envmods[i.min(4)];
+        match row.min(4) {
+            0 => [0x1b0, 0x1b1, 0x1b2][v(0).min(2) as usize],
+            1 => if v(1) != 0 { 0x1b7 } else { 0x1b6 },
+            2 => if !self.mp_explosive_unlocked() { 0x0100_0076 }
+                 else if v(2) == 0 { 0x1b6 } else { 0x1b7 },
+            3 => if v(3) != 0 { 0x1b7 } else { 0x1b6 },
+            _ => [0x1b6, 0x0100_02d8, 0x0100_02d9, 0x1b2][v(4).min(3) as usize],
+        }
+    }
+
+    /// The setup prompt's label id — the msg-0x18 binds to 0x100001a2 [M P_MPSETUP 0x20d7a8 binds
+    /// 0x37c (team) / 0x37d (character) on enter; C_RBMPSETUP 0x20de58 rebinds them on its
+    /// transitions and 0x296 (Health Handicap — the same label P_CNMPOPTIONS 0x2144d8 uses for its
+    /// per-profile handicap row) entering state 4].
+    pub fn mp_setup_prompt_label(&self) -> u32 {
+        match self.mp_setup_state { 2 => MP_SETUP_TEAM_PROMPT, 4 => 0x296, _ => MP_SETUP_CHAR_PROMPT }
+    }
+
+    /// The prompt's image (the msg-0x24 id on 0x100001a0): team Phoenix 0x30001a3 / MI6 0x30001a2
+    /// [M C_RBMPSETUP's 0x49/0x54 arm — value 1 binds 0x30001a2, else 0x30001a3; the entry bind is
+    /// [S] — the page-def or the first scroll sets it], character = the character row's preview
+    /// [M Menu_GetItemFromHash(0x2df8f8, value, 0x1d) → item+0], handicap = 0x30001a1 (the green
+    /// cross) [M the state-4 arm's 0x24 bind].
+    pub fn mp_setup_image(&self) -> u32 {
+        match self.mp_setup_state {
+            2 => [0x0300_01a3, 0x0300_01a2][self.mp_setup_sel.min(1)],
+            4 => 0x0300_01a1,
+            _ => MP_CHARACTERS[self.mp_setup_sel.min(MP_CHARACTERS.len() - 1)].0,
+        }
+    }
+
+    /// The current list item's text: the team/character labels through Lang, the handicap's own
+    /// .data string [D 0x30d390..0x30d3c8 — raw strings, not Txt labels].
+    pub fn mp_setup_value_text<'a>(&self, lang: Option<&'a Lang>) -> String {
+        let bind = |id: u32| lang.and_then(|l| l.bind(id)).map(str::to_string).unwrap_or_else(|| format!("<{id:#x}>"));
+        match self.mp_setup_state {
+            2 => bind([0x1c7, 0x1c8][self.mp_setup_sel.min(1)]),
+            4 => MP_HANDICAPS[self.mp_setup_sel.min(MP_HANDICAPS.len() - 1)].1.into(),
+            _ => bind(MP_CHARACTERS[self.mp_setup_sel.min(MP_CHARACTERS.len() - 1)].1),
         }
     }
 
@@ -2651,11 +2790,12 @@ impl FrontEnd {
         self.mp_friendly_fire = 0;            // [M +0x198 = 0]
         self.mp_weapon_set = 0;               // [M +0x1B4 = 0]
         self.mp_radar = 1;                    // [M +0x1C4 = 1]
-        self.mp_player_mods = [0, 0];         // [M +0x1D4 = 0, +0x1CC = 0]
-        self.mp_envmods[0] = 1;               // [M +0x1D0 = 0, +0x1C0 = Far(1)? — the quick start writes 2 at +0x1CC; view distance keeps the Far default]
+        self.mp_player_mods = [0, 0];         // [M the quick start writes neither +0x1BC nor +0x1C8 — the boot values 0/1 persist]
+        self.mp_envmods[0] = 2;               // [M the quick start never writes +0x1C0 — the boot value 2 (Random) persists]
         self.mp_envmods[1] = 0;
+        self.mp_envmods[2] = 0;               // [M 0x20c748: +0x1D4 = 0]
         self.mp_envmods[3] = 0;
-        self.mp_envmods[4] = 0;
+        self.mp_envmods[4] = 2;               // [M 0x20c734: +0x1CC = 2 = Helicopters (Car_Create 0x1305b0:29-40 spawns choppers on 2)]
         // The map sample: `Rand_Random() % 7` over mp_level rows 0..6 — never Ravine [M
         // 0x20c76c-0x20c7b4]. Headless determinism: the shared RNG is not wired here, so the port
         // takes row 0 (Skyrail) and records the gap [S — the game's sample is random].
@@ -2715,6 +2855,9 @@ impl FrontEnd {
         s.bot_count = bots;
         s.weapon_set = self.mp_weapon_set;
         s.radar = self.mp_radar;
+        // [M P_MPCONFIRM 0x20ec00's msg-0x4b: 0x20f708 andi 1 → 0x20f710 sw — Explosive Scenery
+        // masks to 0/1 at match start, so the locked page's stale 0x10 can never arm it]
+        self.mp_envmods[2] &= 1;
         s.master = 1;                             // [M +0x180 = 1]
         s.total_players = humans as u32 + bots;   // [M MP_Start 0x183a50:164]
         s.team_game = (self.mp_scenario >> 29) & 1;   // [M MP_Init 0x183438:41 — the core re-derives]

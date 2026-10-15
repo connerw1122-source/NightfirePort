@@ -81,8 +81,11 @@ fn setup_ffa_then_options_then_rules_back_out() {
     fe.mp_map_row = 0;
     fe.action(Action::Confirm);
     assert_eq!(fe.mp_setup_state, 3, "FFA asks Choose Character [M P_MPSETUP's mp_stuff state 3]");
-    // FFA: the character list confirm lands on the options hub.
+    // FFA: the character confirm asks the Health Handicap, whose confirm lands on the hub [M
+    // C_RBMPSETUP 0x20de58's 0x4b: 3 → 4 → 5 + Menu_MPAreWeReady → 0x40000012].
     fe.mp_setup_sel = 0; // Bond
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.mp_setup_state, 4, "then the Health Handicap [M the state-4 list −75..+100]");
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.page, Page::MpOptions, "the picks flow to P_MPOPTIONS [M → 0x40000012]");
     assert_eq!(fe.mp_join[0].skin, 0);
@@ -130,8 +133,8 @@ fn locked_scenario_and_ravine_bots_gate() {
     fe.mp_map_row = 7;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.mp_level, 0x0700_004b);
-    fe.mp_setup_state = 3;
-    fe.action(Action::Confirm); // character pick → options
+    fe.mp_setup_state = 4;
+    fe.action(Action::Confirm); // the handicap pick → options
     assert_eq!(fe.page, Page::MpOptions);
     assert!(!fe.mp_options_ai_bots_open(), "Ravine clears the AI Bots row [M 0x217678:20-25]");
     fe.mp_options_row = 1;
@@ -255,6 +258,8 @@ fn team_scenario_asks_team_then_character() {
     assert_eq!(fe.mp_join[0].team, 1, "the selection IS the team [M mpjoin+4]");
     assert_eq!(fe.mp_setup_state, 3, "then the character list [M C_RBMPSETUP's 2 → 3]");
     fe.mp_setup_sel = 4; // Alura — MI6 side
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.mp_setup_state, 4, "then the Health Handicap [M C_RBMPSETUP's 3 → 4]");
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.page, Page::MpOptions);
     // Sister: a lone MI6 human in a team game fails the both-sides check.
