@@ -58,3 +58,16 @@ The stunner is a **handheld device** (not the watch). Frames 80 ms apart, nothin
 
 So the real stunner **activates on the press** and holds while the button is held; the port activates on release
 (the user: "It only really activates on releasing the key"). The hit on a guard is still to be measured.
+
+## The laser watch 0x4e (07000005, the spawn, selected through the gadget cycle: Stunner → **Laser**)
+
+Frames 120 ms apart while fire is held, aimed past the trees at the gatehouse road:
+
+- Idle: the watch on the left wrist, face up, the hand low in the frame; HUD red meter "100 Laser".
+- **The press:** the hand rotates the wrist so the watch face points forward/up along the aim, and a **red beam**
+  runs from the watch face to the **crosshair point**: wide and glowing pink-white at the watch, tapering to a thin
+  red line that ends at the crosshair (the aimed-at surface). No other muzzle effect; the view model stays raised
+  while held.
+- **The meter drains while held:** 100 → 97 → 93 → 86 → 78 → 71 → 62 → 59 over ~1.3 s (≈31 per second, ≈0.5 per
+  frame).
+- The user on the port's laser (08, 0c): "the laser isnt visible", "The laser watch sucks", "Still not right".
