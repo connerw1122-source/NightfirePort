@@ -79,16 +79,16 @@ calls — same pattern as the previous sessions), limit 90 s per binary, 328 bin
 - 3 pylon-render (`fix_0c_pylon_live` ×2, `probe_pylon_render` ×1) — wgpu has no GPU in the
   sandbox; pre-existing on master, another session's scope.
 - 4 wall-cuts at the 90 s chunk limit: `fix_guard_weapons_live`, `weapon_matrix_live`,
-  `levels_sweep_live`, `campaign_flow_live` — the previous session re-ran all four green at
-  270/600 s (levels_sweep/campaign_flow/fix_guard at 270, weapon_matrix solo at 600: 6 passed /
-  0 failed / 24 ignored, ~5 min — a long binary, not a hang); this session's re-runs are noted
-  below in What's left.
+  `levels_sweep_live`, `campaign_flow_live`. Re-runs on THIS tree: `levels_sweep_live` +
+  `campaign_flow_live` green at 270 s (8 passed / 0 failed); `fix_guard_weapons_live` (270 s) and
+  `weapon_matrix_live` (solo 600 s: 6 passed / 0 failed / 24 ignored, ~5 min — a long binary, not
+  a hang) were green at those limits in the previous session's runs of the same binaries.
 
 ## What's left
 
-- The four wall-cut binaries' 270/600 s re-runs on THIS exact tree (they advanced past their cut
-  points, and all four were green at the longer limits on the pre-merge tree; nothing in this
-  task touches their paths except the one-line fall read).
+- `fix_guard_weapons_live` / `weapon_matrix_live` 270/600 s re-runs on this exact tree (both were
+  green at the longer limits on the pre-merge tree; nothing in this task touches their paths
+  except the one-line fall read).
 - The [S] bigger prize: the death-anim branch wiring `sim.bond.death_script()` into death.rs
   (the main agent's), and the spacewalk's float feel outdoors (the zero-g write is proven; the
   drift/float polish on non-fall axes is the game's `SSWalk` zero-g handling, not yet probed).
