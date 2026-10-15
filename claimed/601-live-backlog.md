@@ -19,3 +19,6 @@ authority or environment still needed to settle it, plus the supporting AND cont
    the report.
 
 Docs only. **Branch:** `s/live-backlog`.
+
+---
+claimed-by: sandbox5 at 2026-10-15T17:04Z
