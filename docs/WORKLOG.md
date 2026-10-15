@@ -12912,3 +12912,14 @@ the binaries the window fit.)
   5/0, fix_weapon_modes_live 6/0, fix_samurai_fire_live 3/0, fix_weapons_all_live 4/0,
   weapon_switch_live 2/0 (nf-game), tuning_live 2/0 (nf-game). The fast suite on the final tree
   running (started 12:58); fix_switch_after_cold_load_live passed inside it as well.
+
+## driving-input-path (2026-10-15, branch s/driving-input-path) — started 14:08 UTC
+
+Task 110w (G-004, U-003): the driving levels' input path from DRIVING.ELF is unported. Plan: (1)
+find the pad read, dead-zone chop/scale, steering/throttle/brake mapping and ramps in
+work/decomp/DRIVING.ELF, document in docs/systems/driving-input.md with addresses, compare with
+the on-foot ACTION.ELF path (input.md §2: threshold 40, scale 127/87); (2) port as pure module
+crates/nf-game/src/input/driving.rs (raw pad bytes in, vehicle controls out) with bit-exact unit
+tests; (3) map keyboard+mouse bindings onto it, note where a driving level would call it, don't
+wire the driving levels. Files: input/driving.rs (new), docs/systems/driving-input.md (new),
+docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
