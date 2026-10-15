@@ -12485,3 +12485,6 @@ Work Log:
 
 Stage Summary:
 - Branch s/fix-stunner-press @ c85f6796 + the report commit; the tase path ported end to end; the press verified on the real input path.
+
+## fix-laser-watch-look (2026-10-15, branch s/fix-laser-watch-look) — started
+- (05:34 UTC) Branch created from origin/master 0404d95b and pushed. Setup reused (repo, work/, ISO, nf-queue, ALSA prefix). Task: the laser watch 0x4e must match the measured game — wrist turn on press, beam from the watch face bone to the crosshair hit (pink-white glow tapering to a thin red line), drain ~31/s [D docs/live/2026-10-14-weapon-measurements-pcsx2.md "The laser watch 0x4e"]. Files: crates/nf-view/src/scene.rs, crates/nf-game/src/gadget.rs.
