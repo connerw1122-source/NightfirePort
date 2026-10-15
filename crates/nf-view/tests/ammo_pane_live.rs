@@ -77,8 +77,8 @@ fn the_four_weapons_pane_text_labels_and_icons_match_the_game() {
     let lang = s.lang.as_ref().expect("USATxt.dat parsed");
     // (weapon, kind, clip cap, the pane text at a full clip with an empty reserve) — the kind/cap
     // pairs are the game's numbers [L ee_snapshot 0x2BF150 + w·0x10C].
+    let wd = weapon_data();
     for (w, kind, cap, count) in [(0x06u8, 0x02u8, 16u32, "16-0"), (0x1e, 0x07, 5, "5-0"), (0x2a, 0x0d, 6, "6-0"), (0x4a, 0x14, 100, "100")] {
-        let wd = weapon_data();
         assert_eq!(field(&wd, w, 0x90) as u8, kind, "w {w:#04x}: the disc's ammo kind (+0x90) [L ee_snapshot]");
         assert_eq!(field(&wd, w, 0x92) & 0xffff, cap, "w {w:#04x}: the disc's clip capacity (+0x92) [L ee_snapshot]");
         let txt = pane_text(kind, cap, 0, cap);
