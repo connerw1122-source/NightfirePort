@@ -35,3 +35,6 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 - **Live checks:** list what the main agent should check in PCSX2 (spot, action, expected result) and in nf-view (`--bond` spots).
 
 **Branch:** `s/hud-ammo-odd`.
+
+---
+claimed-by: sandbox5 at 2026-10-15T06:13Z
