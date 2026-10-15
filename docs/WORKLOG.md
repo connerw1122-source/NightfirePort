@@ -13330,3 +13330,30 @@ Work Log (drive-crp-format):
   Speaker / Split-screen runtime effects (implement Widescreen 16:9 view aspect if simple: Camera_CalcViewAngles
   0x1baf70 writes 16/9 when DAT_002a37c4 is set). Deliver docs/systems/screen-adjust.md first, then state/flow/
   getters in nf-view menu.rs or nf_game, tests with sister assertions, report docs/reports/screen-adjust-model.md.
+## screen-adjust-model (2026-10-15, branch s/screen-adjust-model) — implementation + tests 20:03 UTC
+- docs/systems/screen-adjust.md: the Screen Adjust page (menu-def 0x40000047 [L walk 2026-10-15]: two
+  0x100001eb slider bars d1 0 vertical / 1 horizontal, picture TEX 0x3000074, hint 0x67b), P_SCREENADJUST
+  0x217a58 (0x4c snapshots PS2OldX/Y 0x30d578/57c; 0x4b → Manager 0x5f(1) which SKIPS the 0x6b restore
+  notification [M 0x21c858 case 0x5f] so ✕ keeps; 0x6b restores), C_SBSCREEN 0x217b08 (0x49 slider value →
+  psiAdjustScreenPos by axis d1; 0x51 = control-created, sets the −1..1 range), psiAdjustScreenPos 0x10b890
+  (X += dx·12 clamp ±0x1b0, Y += dy·4 clamp ±0x30), VBlankInt 0x124088's DISPLAY2 write decoded against
+  sceGsSetDefDispEnv 0x226370 (DX = X+0x27c, DY = Y+0x32, MAGH 5 → 2560 X-units/line, 448 field lines), the
+  profile blob (LS_Make/LoadGlobalSettings 0x1cd9d0/0x1cdbc8 carry screen X/Y as 32-bit signed + the
+  subtitles/widescreen/drawinfo bits), the AV Restore Defaults list (0x214818:96-110 — music 0xe→70, sfx
+  0x14→100, subtitles per LanguageToLoad, split 0, speaker 1, widescreen 0, psiRestoreScreenPos), and the
+  runtime effects (widescreen 16/9 viewer+0x114 [M 0x1baf70:28-32], split DrawInfo, subtitles
+  DAT_002a37c8, speaker SFXSetMode 0x117078).
+- crates/nf-view/src/menu.rs: Page::ScreenAdjust (0x40000047) with 2 slider rows + action() (Left/Right step
+  psiAdjustScreenPos, ✕ keeps, Back cancels); CnAv row ✕ on 0x1000_0137 pushes it (snapshot), 0x1000_01a3
+  runs the game's own reset list (NOT default_opts — music 70 not 80), commit/Back re-snapshot/restore the
+  AV offset baseline; FrontEnd fields screen_x/y + screen_saved_x/y (PS2OldX/Y) + screen_av_saved_x/y
+  (0x30d8e8/ec), methods screen_adjust/open/cancel/restore_defaults/av_screen_snapshot/av_screen_restore/
+  screen_offset_640 (X/4, Y·15/14)/screen_offset_frac (X/2560, Y/448)/view_aspect (16/9 vs 4/3 from the
+  widescreen opt); AV_ROWS "Pro Logic" → "Surround" [D USATxt 0x395]; minimal ScreenAdjust draw arm (the
+  main agent owns the final look).
+- crates/nf-view/src/scene.rs: Sim.view_aspect (default 4/3, field on its own line) fed into gun_matrix's
+  gy term (the port's one viewer+0x114 consumer); FrontEnd::view_aspect() is the host's feed.
+- crates/nf-view/tests/screen_adjust.rs: 9 tests (6 headless flow/number tests with sister assertions; 3
+  ISO-gated: the menu-def page's two sliders d1 0/1 + d3 0xa + picture 0x3000074, the label binds incl.
+  "Surround"/"~A Confirm  ~B Cancel", Sim.view_aspect 4/3 default driving gun_matrix). 9/9 green; menus_flow
+  3/3, menu_movies 3/3, fix_hud_zoom_tilt_live 36/36 green on the same tree.
