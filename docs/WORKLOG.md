@@ -13604,3 +13604,15 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   plus rng_live/ai_live/drone_portcheck_live/fields_live/pickup_live/trig_live/tuning_live/
   level_live/diff_calls/spawner_kill = 65/65), 0 failed; the first full-suite pass failed only the
   2 no-GPU fix_0c_pylon_live render tests (wgpu request_adapter panic — lesson 6, unrelated).
+
+## net-lockstep-core (2026-10-15, branch s/net-lockstep-core) — UDP lockstep session, started
+- Task: build the MP session layer on 050's determinism (050 not landed yet: the session takes the
+  per-tick state hash as an opaque u64 from the caller, so 050's state_hash(&MpWorld) wires in
+  later). New crate crates/nf-net (no rendering, no game-sim deps): host on a UDP port + up to 3
+  clients joining by address, handshake (protocol version + build id + codename, host's MpSettings
+  + seed to clients), per-tick input packets with tunable input delay (2-4 ticks), redundancy
+  (each packet repeats the last N unacked inputs), acks, stall when an input is missing (never
+  guess), state-hash exchange every N ticks with a desync error, timeout/disconnect handling,
+  session API poll()/local_input()/ready_inputs(). std::net::UdpSocket only, no new crates.
+  Tests over loopback: host + 3 clients, 2 000 ticks with a loss/latency shim, in sync; version
+  mismatch refused; client timeout reported. Doc: docs/systems/net-lockstep.md.
