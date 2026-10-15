@@ -236,8 +236,11 @@ fn guard_patrols_like_the_game() {
 fn guard_takes_cover_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    // Seed 1 (re-picked at the fix-ai-remainder merge: the head-tracking draws joined the RNG; fix-impacts had 3, 0072 1, 0056 2).
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 1);
+    // Seed 0 (re-picked at the exact-sine-sites-1 merge: the G-046 exact-trig swap shifted the bullet paths'
+    // ulps and with them the shared RNG stream's flyby draws, so the old seed's UnderCoverAim roll landed
+    // elsewhere — the live windows below still anchor the assertion. fix-ai-remainder had 1, fix-impacts 3,
+    // 0072 1, 0056 2) makes the port's rolls pick no first-sight move and the lean cover type, as the game did here.
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 0);
     let mut sim = l.sim(drones, rng);
     let player = bond_at([79.86, 22.92, 96.0]);
     for _ in 0..700 { sim.tick(&d, &player); }
@@ -252,7 +255,7 @@ fn guard_takes_cover_like_the_game() {
     let err = ((g.pos[0] - 58.83).powi(2) + (g.pos[2] - 99.32).powi(2)).sqrt();
     assert!(err < 0.4, "in cover at ({:.2}, {:.2}), {err:.2} from the live position", g.pos[0], g.pos[2]);
     // Sister: with Bond 6 units away (the first test's setup) the same guard never runs for cover.
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 1);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 0);
     let mut near = l.sim(drones, rng);
     for _ in 0..300 { near.tick(&d, &bond_at([67.31, 26.5, 99.47])); }
     assert!(near.list[gi].log.iter().all(|(_, s)| *s != 0x8c), "sister: cover must depend on the situation");

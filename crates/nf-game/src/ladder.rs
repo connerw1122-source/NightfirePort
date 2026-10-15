@@ -41,13 +41,10 @@ impl Ladder {
     pub fn create(p: &Placement, obj: Option<&MapObject>) -> Option<Ladder> {
         let o = obj?;
         let yaw = p.rotation[1];
-        let (s, c) = yaw.sin_cos();
-        // row-vector matrix rows: row0 = (cos,0,−sin), row2 = (sin,0,cos) [M placement::object_matrix].
-        let centre = [
-            p.translation[0] + o.centre[0] * c + o.centre[2] * s,
-            p.translation[1] + o.centre[1],
-            p.translation[2] - o.centre[0] * s + o.centre[2] * c,
-        ];
+        // row-vector matrix rows: row0 = (cos,0,−sin), row2 = (sin,0,cos) [M placement::object_matrix;
+        // G-046: the exact `View_RotTransMatrix` 0x1e5168 + `Control_BuildWorldSph` 0x133070 VU0 chain
+        // via `trig::world_sph_centre`].
+        let centre = crate::trig::world_sph_centre(o.centre, yaw, p.translation);
         let scale = p.scale();
         let s_max = scale.iter().fold(1.0f32, |a, &v| a * v.max(1e-6).abs());
         Some(Ladder { centre, radius: o.radius * s_max, yaw, channel: param1(p) })

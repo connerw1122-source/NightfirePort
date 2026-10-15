@@ -47,16 +47,39 @@ pub struct PlayerVolume { pub feet: V3, pub height: f32, pub radius: f32 }
 
 fn norm(v: V3) -> V3 { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(); if l > 0.0 { [v[0] / l, v[1] / l, v[2] / l] } else { v } }
 
-/// `Bullet_init` direction: normalise(normalise(dir) + spherical→cartesian(r, FRand 2π, FRand π)) with
-/// r = (FRand(2s) − s) · 0.0014, s = spread `+0x24` × (0 when `weapon_data+0x68 & 0x400000`, else `Drone+0xC0` = 1);
-/// the offset's components are added to x, z, y in that order.
+/// `Vec_Spherical_2_Cartesian` 0x1e3948 as `Bullet_init` 0x12c5a0 consumes it (G-046, disasm
+/// 0x1e3948-0x1e39e4 + 0x12c854-0x12c8a8): `PS2Sinf2(θ+π/2, θ)` → (cosθ, sinθ) and `PS2Sinf2(φ+π/2, φ)` →
+/// (cosφ, sinφ) — each output its own PS2Sinf, the +π/2 taken on the EE FPU — then the callee's
+/// `out[0] = (r·sinθ)·cosφ`, `out[1] = r·sinφ`, `out[2] = (r·cosθ)·cosφ` (chopped products), and
+/// `Bullet_init` adds out[0] to **x**, out[1] to **z**, out[2] to **y** (0012c884/0012c894/0012c8a0 — the
+/// callee's slots are consumed x, z, y, NOT the standard spherical convention; the old port form had θ and φ
+/// swapped and no φ in x). Returns (Δx, Δy, Δz).
+pub fn spread_offset(r: f32, theta: f32, phi: f32) -> V3 {
+    use nf_formats::ps2float::mul;
+    let s_th = crate::trig::sinf(theta);
+    let c_th = crate::trig::cosf(theta);
+    let s_ph = crate::trig::sinf(phi);
+    let c_ph = crate::trig::cosf(phi);
+    [mul(mul(r, s_th), c_ph), mul(mul(r, c_th), c_ph), mul(r, s_ph)]
+}
+
+/// `Bullet_init` direction: r = (FRand(2s) − s)·0.0014 on the EE FPU (the sub is inside
+/// `Rand_FRand_MVar2` 0x1e38b0, the ·0.0014 is mul.s 0x3ab78034 at 0x12c830), θ = FRand 2π, φ = FRand π
+/// (`0x40c90fdb`/`0x40490fdb`, 0x12c82c/0x12c840), the offset from `spread_offset` added per component on
+/// the EE FPU (0x12c884-0x12c8a8), then normalised. s = spread `+0x24` × (0 when `weapon_data+0x68 &
+/// 0x400000`, else `Drone+0xC0` = 1). The normalise stays the port's stand-in for `Vec_Normalise` 0x1e3000.
 pub fn spread(dir: V3, spread: f32, flags68: u32, rng: &mut crate::drone::Rng) -> V3 {
+    use nf_formats::ps2float::{add_noguard, mul};
     let s = if flags68 & 0x40_0000 != 0 { 0.0 } else { spread };
-    let r = (rng.frand(2.0 * s) - s) * 0.0014;
+    let r = mul(add_noguard(rng.frand(2.0 * s), -s, true), f32::from_bits(0x3ab7_8034));
     let (th, ph) = (rng.frand(crate::trig::TAU), rng.frand(crate::trig::PI));
-    let off = [r * ph.sin() * th.cos(), r * ph.sin() * th.sin(), r * ph.cos()];
+    let off = spread_offset(r, th, ph);
     let d = norm(dir);
-    norm([d[0] + off[0], d[1] + off[2], d[2] + off[1]])
+    norm([
+        add_noguard(d[0], off[0], true),
+        add_noguard(d[1], off[1], true),
+        add_noguard(d[2], off[2], true),
+    ])
 }
 
 /// First hit of the segment `a → b` with Bond's cylinder, as a fraction.
@@ -333,5 +356,92 @@ mod tests {
             if let Some(BulletEvent::FlyBy(_)) = b3.update(&world, &vol, [0.0; 3], &mut rng3) { fired3 = true; break; }
         }
         assert!(!fired3, "beyond 3 units → no fly-by");
+    }
+}
+
+/// G-046 exact-sine tests: `spread` against the game's own arithmetic, transcribed independently from the
+/// disassembly (fail-first: these failed on the host-trig spread — the standard-spherical convention — before
+/// the swap).
+#[cfg(test)]
+mod exact_sine_tests {
+    use super::*;
+    use nf_formats::ps2float as pf;
+
+    /// `Bullet_init` 0x12c5a0's spread, transcribed from the disassembly (0x12c7f4-0x12c8a8, 0x1e3948-0x1e39e4):
+    /// r = (FRand_MVar2(2s) − s)·0.0014 (EE sub/mul), θ = FRand(TAU), φ = FRand(PI);
+    /// `Vec_Spherical_2_Cartesian` runs `PS2Sinf2(θ+π/2, θ)` → (cosθ, sinθ) and `PS2Sinf2(φ+π/2, φ)` →
+    /// (cosφ, sinφ) and returns ((r·sinθ)·cosφ, r·sinφ, (r·cosθ)·cosφ); `Bullet_init` adds out[0] to x,
+    /// out[1] to **z**, out[2] to **y** (disasm 0012c884/0012c894/0012c8a0), then normalises. The 0.0014 is
+    /// 0x3ab78034 (0012c814-c818), TAU 0x40c90fdb, PI 0x40490fdb (0012c820/0012c834).
+    fn game_spread(dir: V3, s: f32, flags68: u32, rng: &mut crate::drone::Rng) -> V3 {
+        let s = if flags68 & 0x40_0000 != 0 { 0.0 } else { s };
+        let r = pf::mul(pf::add_noguard(rng.frand(2.0 * s), -s, true), f32::from_bits(0x3ab7_8034));
+        let th = rng.frand(f32::from_bits(0x40c9_0fdb));
+        let ph = rng.frand(f32::from_bits(0x4049_0fdb));
+        let (s_th, c_th) = (crate::trig::sinf(th), crate::trig::cosf(th));
+        let (s_ph, c_ph) = (crate::trig::sinf(ph), crate::trig::cosf(ph));
+        let out_x = pf::mul(pf::mul(r, s_th), c_ph); // out[0]
+        let out_z = pf::mul(r, s_ph);                // out[1]
+        let out_y = pf::mul(pf::mul(r, c_th), c_ph); // out[2]
+        let d = norm(dir);
+        norm([
+            pf::add_noguard(d[0], out_x, true),
+            pf::add_noguard(d[1], out_y, true),
+            pf::add_noguard(d[2], out_z, true),
+        ])
+    }
+
+    /// The pre-fix port formula (standard spherical, host trig): the sister that proves this test can see
+    /// the difference it is testing for.
+    fn host_spread(dir: V3, s: f32, flags68: u32, rng: &mut crate::drone::Rng) -> V3 {
+        let s = if flags68 & 0x40_0000 != 0 { 0.0 } else { s };
+        let r = (rng.frand(2.0 * s) - s) * 0.0014;
+        let (th, ph) = (rng.frand(crate::trig::TAU), rng.frand(crate::trig::PI));
+        let off = [r * ph.sin() * th.cos(), r * ph.sin() * th.sin(), r * ph.cos()];
+        let d = norm(dir);
+        norm([d[0] + off[0], d[1] + off[2], d[2] + off[1]])
+    }
+
+    #[test]
+    fn spread_matches_bullet_init_bit_for_bit() {
+        // Adversarial aim dirs (unit + skewed), spreads and seeds; every value bit-compared.
+        let dirs: [V3; 5] = [
+            [0.0, 0.0, 1.0], [1.0, 0.0, 0.0], [0.3, -0.8, 0.5], [-1.0, 2.0, -1.5], [0.0, 1.0, 0.0],
+        ];
+        let mut checked = 0;
+        for (i, &dir) in dirs.iter().enumerate() {
+            for &s in &[0.0f32, 1.0, 37.5, 500.0] {
+                let mut rng = crate::drone::Rng::new(0x1000 + i as u32);
+                let mut rng_expect = crate::drone::Rng::new(0x1000 + i as u32);
+                let got = spread(dir, s, 0, &mut rng);
+                let want = game_spread(dir, s, 0, &mut rng_expect);
+                for k in 0..3 {
+                    assert_eq!(got[k].to_bits(), want[k].to_bits(), "spread dir {dir:?} s {s} comp {k}: {:e} vs {:e}", got[k], want[k]);
+                }
+                checked += 1;
+            }
+        }
+        assert!(checked >= 20);
+    }
+
+    #[test]
+    fn spread_sister_host_trig_differs_from_the_game() {
+        // The same seeds through the pre-fix host-trig formula: at least one component must differ from the
+        // game's — otherwise this test could not have failed on the old code.
+        let dir: V3 = [0.3, -0.8, 0.5];
+        let mut any_diff = false;
+        for seed in 0..64u32 {
+            let mut rng = crate::drone::Rng::new(seed);
+            let mut rng_expect = crate::drone::Rng::new(seed);
+            let mut rng_host = crate::drone::Rng::new(seed);
+            let got = spread(dir, 37.5, 0, &mut rng);
+            let want = game_spread(dir, 37.5, 0, &mut rng_expect);
+            let old = host_spread(dir, 37.5, 0, &mut rng_host);
+            for k in 0..3 {
+                assert_eq!(got[k].to_bits(), want[k].to_bits(), "seed {seed} comp {k}");
+                if old[k].to_bits() != want[k].to_bits() { any_diff = true; }
+            }
+        }
+        assert!(any_diff, "sister: the host-trig spread must differ from the game's on some seed");
     }
 }
