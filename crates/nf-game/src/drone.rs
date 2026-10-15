@@ -5486,6 +5486,9 @@ pub struct Drones {
     /// `Vec_Copy2(bone_pos, obj+0x30, obj+0x40)` — the game ejects at the gun bone, not the eye).
     /// Consumed (reset to None) by the shot; `None` falls back to the aim-basis stand-in.
     pub eject_gun: Option<[[f32; 4]; 4]>,
+    /// The view model's eject datum (1, or 5 for the alternating guns' other side) as posed this tick and the
+    /// player's y — set by the viewer before each tick while a player shell waits (`Casings::reserve`).
+    pub eject_bone_now: Option<([[f32; 4]; 4], f32)>,
     /// Bond's previous position and the tick he started moving (`DoOpponentTargetting` +0x1DC / +0x1DD).
     prev_player: Option<V3>,
     moved_since: Option<u32>,
@@ -5858,6 +5861,7 @@ impl Drones {
             tripbomb_beams: Vec::new(),
             // fix-sg5-casings: the caller's view-model gun bone for the next shot's eject (own line).
             eject_gun: None,
+            eject_bone_now: None,
     };
         drones
     }
@@ -6114,7 +6118,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let yaw = dir[0].atan2(dir[2]);
         let pitch = dir[1].clamp(-1.0, 1.0).asin();
         match self.eject_gun.take() {
-            Some(bone) => self.casings.eject_bone(&d.surfaces.map(|s| &s.ammo).unwrap_or(&Default::default()), w, &bone, from[1], &mut self.rng),
+            // The player's shell is reserved now and ejected when the +0x78 delay ends, from the view model's
+            // datum as posed then (`eject_bone_now`, set by the viewer each tick) [M 0x12fde0 / 0x12f678].
+            Some(_) => self.casings.reserve(&d.surfaces.map(|s| &s.ammo).unwrap_or(&Default::default()), w),
             None => self.casings.eject(&d.surfaces.map(|s| &s.ammo).unwrap_or(&Default::default()), w, from, yaw, pitch, from[1], &mut self.rng),
         }
         // Heard by the drones; the audible shot comes from the gun's fire script (op 1), played by the player's owner.
@@ -6990,7 +6996,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // `Sound_Play3D`), die at 240 ticks.
         {
             let audio = &mut self.audio;
-            self.casings.update(|id, pos| { audio.play3d(id as u32, pos, None); });
+            let bone = self.eject_bone_now.as_ref().map(|(m, y)| (m, *y));
+            self.casings.update(bone, &mut self.rng, |id, pos| { audio.play3d(id as u32, pos, None); });
         }
         let frame = self.frame;
         // `Mission_Update` (0x182c60) runs from `Game_Run` (0x1c9790:17) BEFORE the object handler
