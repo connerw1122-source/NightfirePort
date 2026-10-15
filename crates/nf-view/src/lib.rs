@@ -324,6 +324,7 @@ fn wire_music(sim: &mut scene::Sim, mm: Vec<nf_formats::music::MapMusic>, vars: 
 }
 
 pub fn load(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
+    nf_game::trig::host_trig_init_from_env(); // NF_HOST_TRIG=1: the whole-process side-by-side switch (G-046)
     load_inner(iso, archive, all, false)
 }
 

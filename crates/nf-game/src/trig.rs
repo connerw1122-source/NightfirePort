@@ -17,6 +17,14 @@ pub static HOST_TRIG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicB
 /// The sites' fallback read (G-046's side-by-side test switch, see [`HOST_TRIG`]).
 pub fn host_trig() -> bool { HOST_TRIG.load(std::sync::atomic::Ordering::Relaxed) }
 
+/// One-time init: `NF_HOST_TRIG=1` flips every G-046 site to the host stand-ins for a whole
+/// process run (the side-by-side replay without a test-local switch). Exact math stays the default.
+pub fn host_trig_init_from_env() {
+    if std::env::var("NF_HOST_TRIG").as_deref() == Ok("1") {
+        HOST_TRIG.store(true, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
 pub const PI: f32 = f32::from_bits(0x4049_0fdb);
 pub const TAU: f32 = f32::from_bits(0x40c9_0fdb);
 pub const HALF_PI: f32 = f32::from_bits(0x3fc9_0fdb);
