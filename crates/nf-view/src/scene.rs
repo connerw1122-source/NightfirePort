@@ -4511,13 +4511,19 @@ impl Scene {
             let mut seen = BTreeSet::new();
             let players: Vec<nf_game::nis::Player> = level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9)
                 .filter_map(|(i, p)| nf_game::nis::Player::from_placement(i, p)).collect();
-            // The explosion script (`Explode_Create` 0x17cbd0 Script_Loads 0x6000052 on every disc caller
-            // [M 0x12cd98/0x12ce80/0x17ffa0/0x180498/0x1c350-calls]): the sim spawns it per blast
-            // (`Drones`' grenade explode), so its entity streams need attachments exactly like a placed
-            // player's. 0x6000027/0x600004F (Destroy_Smash's types) stay unported — the port's destroyables
-            // don't explode yet.
+            // The explosion scripts (`Explode_Create` 0x17cbd0 loads a per-source effect script —
+            // its `Script_Load` arg a3): 0x6000052 from the fuse/contact call sites [M 0x12cd98/
+            // 0x12ce80 disasm], 0x60007c4 from the Samurai bolt's 0x100000/0x200000 arms [M
+            // 0x12d0e8-0x12d188; fix-cutscene-actors's read of 0x12ce80:212-231 is the same arms —
+            // ONE path, the sim's per-blast spawn feeds this sweep], 0x6000027/0x600004f/0x6000052
+            // from `Destroy_Smash` by the tag's type byte [M 0x12bc50-0x12bd20]. All four ship in
+            // every story archive [D disc census]; 0x60007c4's entity streams (Laser_Blast_frame_1/2,
+            // Vertical_smoke, After_glow_test, cloud_1, smoke) resolve in every archive [D] but no
+            // placement references the script, so without this sweep the impact models could never
+            // draw. The sim spawns them per blast, so their entity streams need attachments exactly
+            // like a placed player's. (fix-blast-scripts: the port pre-registered only 0x06000052.)
             let hashes: Vec<u32> = players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0)
-                .chain(std::iter::once(0x0600_0052)).collect();
+                .chain([0x0600_0052u32, 0x0600_0027, 0x0600_004f, 0x0600_07c4]).collect();
             for h in hashes {
                 let Some(nis) = level.nis.get(&h) else { continue };
                 for (si, st) in nis.streams.iter().enumerate() {
