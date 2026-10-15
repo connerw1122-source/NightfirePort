@@ -17,7 +17,9 @@ Status := "bit-exact on " N " recorded calls"     N ≥ 1; the claim is enforced
         | "unverified"                            nothing recorded yet
         | "unverified (" prose ")"                e.g. "unverified (recording exists; no adapter)"
         | "known divergent (" reason ")"          reason cites a GAPS id or a doc
-Recording := "tests/calls/<Function>.calls" or "-"
+Address  := "0x" hex digits | "-"              (the game's entry address, as in the symtab)
+Port fn  := "crate::module::fn" | "(adapter in diff_calls.rs …)" — a greppable path when one exists
+Recording := "<Function>.calls" | "-"          (a file under tests/calls/)
 ```
 
 Guard rules (enforced in `diff_calls.rs`): a `bit-exact on N recorded calls` row must have (a) the recording file
@@ -37,13 +39,13 @@ with a level loaded (`tools/trace/goto_level.py <level>`). Region syntax and the
 | Address | Name | Port fn | Status | Recording |
 |---|---|---|---|---|
 | 0x120700 | PS2Sinf | `trig::sinf` → `anim::sinf` | bit-exact on 40 recorded calls | `PS2Sinf.calls` |
-| 0x1e3e80 | Quat_QuatToMat | `anim::quat_to_matrix` (adapter: EE-FPU op order from the decompile) | bit-exact on 40 recorded calls | `Quat_QuatToMat.calls` |
+| 0x1e3e80 | Quat_QuatToMat | (adapter in diff_calls.rs — the decompile's EE-FPU op order) | bit-exact on 40 recorded calls | `Quat_QuatToMat.calls` |
 | 0x1e3738 | Rand_Rand | `drone::Rng::rand` | bit-exact on 40 recorded calls | `Rand_Rand.calls` |
 
 Notes: the PS2Sinf port is the game's own polynomial (range reduction on the EE FPU, then the VU0 lane polynomial);
 `PS2Sinf2` 0x11f968 / `PS2Sinf3` 0x11fc20 are the same polynomial on 2/3 VU0 lanes and are separately unverified.
-The Quat_QuatToMat adapter lives in `diff_calls.rs` (it is the decompile's operation order with `ps2math` ops, not a
-crate function — the guard accepts it via the adapter table, and the row's Port fn names the closest crate fn).
+The Quat_QuatToMat port is the adapter itself (the decompile's operation order with `ps2math` ops, registered in
+`diff_calls.rs::adapters()` — there is no crate function for it).
 `Check_Target` (0x1a7810) and `Player_AutoAim` (0x1a7c98) also have recordings (40/80 calls, level 07000005 under
 play) but no adapter yet — their rows are in the hot-path table below.
 
@@ -170,7 +172,8 @@ python -I tools/trace/gdbcall.py Check_Target 0x1a7810 --spec "io:@(a0+0xe0)+0x1
 The committed 40 calls are all no-hit (+0x132 = 0, +0x133 = 2) [L docs/tools/call-traces.md]; an adapter will
 still need the scene, but the hit-case recording pins the output fields.
 
-## Appendix — every other ported sim function (seeded from docs/port-map/, status "unverified" unless claimed above)
+## Appendix
+ — every other ported sim function (seeded from docs/port-map/, status "unverified" unless claimed above)
 
 Generated from the port-map tables (`guard-ai`, `core-loop`, `levels`, `weapon-switching`, `audio`; the port fn
 column quotes the port map). The port map row keeps the full notes; this is the claim inventory, so every row
@@ -350,7 +353,6 @@ starts "unverified" and moves up only through the recording + replay route above
 | 0x1431c0 | DroneFunc_ConsiderExplosive | drone.rs::consider_explosive | unverified | - | drone AI; partial; Stores +0x330 (pos) / +0x350 (12 frag / 5 stun / 10 mine); routes to 0x86. The flee route itself is the STANDIN above. |
 | 0x145150 | NDrone2_SeenAndAttacking | - | unverified | - | audio; ported; AttackGate::seen_and_attacking (the count/floor/window/distance vars, the latch). |
 | 0x1453a8 | DroneFunc_CheckAlarmRaised | drone.rs::Drones::tick (music) | unverified | - | drone AI; partial; Channel 0xA4 (07000005/06: 0x37 / 0x61) raises the alarm-music gate; the per-level channel set is ported. |
-| 0x145558 | NDrone2_HitDamage | damage::hit_damage | unverified | - | drone AI; ported; Part < 0 → 1; head with fists / taser → torso; +0x14 = 0 → only +0x150 = dmg. Head ×Head (×Helmet if +0xBB&4), arms ×Arms (×Combat &8, ×Jacket &2), legs ×Leg... |
 | 0x1458e0 | NDrone2_DoHitEffects | drone.rs::do_hit_effects | unverified | - | drone AI; partial; Damage > 0.5 → sound 0x413 at the hit (0x601 when HITDATA+0x52 = 5 — *not modelled*). |
 | 0x145bd0 | DroneFunc_OnInitDeath | drone.rs::handle_death(*, ENTER) | unverified | - | drone AI; stub; +0xCD8 = 1 flag set; the per-mode +0x4F8 mask writes are not all ported. |
 | 0x145f28 | NDrone2_PunchImpact | drone.rs::punch_impact | unverified | - | drone AI; ported; The resume stamped into +0x118 before the damage; health ≤ 0 → KnockedOut_Anim 0x42 (mode 0x1E → 0xF2, bots not ported); alive: PainTalk, then the 0x51 stagg... |
@@ -518,7 +520,6 @@ starts "unverified" and moves up only through the recording + replay route above
 | 0x178c48 | DroneWeap_Ready2Fire | drone.rs::ready_to_fire | unverified | - | drone AI; partial; Aiming class, close enough, or the gun within 20° of the target. |
 | 0x178f68 | DroneWeap_FireWeapon | drone.rs::fire_weapon | unverified | - | drone AI; partial; Sound_Play3D(weapon_data+0x60, drone) (skipped for 0x5EF); DoBulletAccuracy; Bullet_init. |
 | 0x179558 | DroneWeap_ThrowGrenade | drone.rs::throw_grenade | unverified | - | drone AI; partial; Decrements +0xBCE; ±π/4 yaw lob by distance; mode 0xD sniper 1/3 chance of stun (0x36) over frag (0x35); bone 0x15 origin. |
-| 0x179740 | DroneWeap_DoBulletAccuracy | drone.rs::fire_weapon | unverified | - | drone AI; partial; p = 100 − 5·+0xB4, × modifiers (too close ×2, target first moved ×0.25, moving ×0.75, per-level difficulty); misses add a deterministic wobble; first-2-s-of-... |
 | 0x179a48 | DroneWeap_DoOpponentTargetting | drone.rs::Drones::tick | unverified | - | drone AI; partial; Moving / "first moved" for 2 s after Bond starts. |
 | 0x179ba8 | DroneWeap_BurstDelay | drone.rs::burst_delay | unverified | - | drone AI; partial; max(15, trunc(45·k·(0.5 + FRand 0.5))), ≤ 60, = 15 under 4 units, = 60 beyond 30; k from aggression +0xB5 (1.66/1.33/1.0/0.66/0.33). |
 | 0x179d40 | DroneWeap_NextBulletTime | drone.rs::next_bullet_time | unverified | - | drone AI; partial; Burst of weapon_data+0x2C (SG5 3, L96A1 1), +0x40 apart (SG5 4, L96A1 120); between bursts D + interval. |
@@ -533,7 +534,6 @@ starts "unverified" and moves up only through the recording + replay route above
 | 0x17a8c0 | DroneWeap_Fire | drone.rs::fire | unverified | - | drone AI; partial; Bullet_init with the muzzle direction; the per-shot Rand calls run. |
 | 0x17b968 | Env_Create | - | unverified | - | level load; ported; env::Drops (snow). |
 | 0x17bc88 | Env_Update | drone.rs:3706-3712 (Drops::update, env.rs:58) | unverified | - | frame/triggers; ported; The port runs it inside Drones::tick before the paused gate — the game runs it before GS_IsPaused too, so snow keeps falling while paused [M order match]. Th... |
-| 0x17c518 | Explode_Propagate | grenade.rs::explode_propagate | unverified | - | drone AI; ported; Sphere intersect of radius (weapon+0x08); damage = amount·(1 − dist/radius) (min 0.0002); drones take Drone_ExplosiveHit (msg 9); Bond takes Player_Hurt. |
 | 0x17cbd0 | Explode_Create | drone.rs::Drones::tick (Explosion struct) | unverified | - | drone AI; stub; The Explode object's create is approximated by an Explosion struct in the Drones list. |
 | 0x17d178 | GS_PauseGame | none | unverified | - | frame/triggers; not started; The LOAD_LEVEL caller's pause is folded into the port's synchronous level swap. |
 | 0x17d1e8 | GS_IsPaused | none (App.paused + Drones::paused stand in) | unverified | - | frame/triggers; standin; The port has no pause byte: nothing distinguishes "pause menu" from "cut-scene" — divergence 3 in §7. |
@@ -552,8 +552,6 @@ starts "unverified" and moves up only through the recording + replay route above
 | 0x1a6eb0 | Player_IsBetterWeapon | - | unverified | - | weapons; not started; The BestWeapon table for auto-switch on pickup. |
 | 0x1a6f80 | Player_WeaponChange | - | unverified | - | weapons; partial; The next/prev cycle. Ported: Gun::next_weapon iterates owned, selectable, has-ammo weapons. Not ported: the weapon/gadget split (mode=0 → weapons 1..0x47, mo... |
 | 0x1a73f8 | Check_AutoAim | drone.rs::Drones::auto_aim | unverified | - | drone AI; partial; Drawn, alive enemy drones within 25; cone 0.12·k yaw, 0.22·k pitch, k = weapon+0x14/100 · (1−d/25) · difficulty; ×1.4 lock-on; target bone 2; LOS. The crossh... |
-| 0x1a7810 | Check_Target | drone.rs::Drones::tick (crosshair) | unverified | - | drone AI; partial; Every 6 ticks Bond's 50-unit crosshair ray marks the first drone it hits (body cylinder r 0.4) for 30 ticks. *Deviation*: the game tests the drone's bounding... |
-| 0x1a7c98 | Player_AutoAim | drone.rs::Drones::auto_aim | unverified | - | drone AI; partial; The per-tick auto-aim driver. |
 | 0x1a8a58 | Player_EquipWeapon | - | unverified | - | weapons; ported; Inventory::equip_weapon. |
 | 0x1a8d18 | Player_EquipAmmo | - | unverified | - | weapons; ported; Inventory::equip_ammo. |
 | 0x1a9680 | Player_GetBestWeapon | - | unverified | - | weapons; not started; Finds the best owned weapon (for auto-switch). |
@@ -629,8 +627,6 @@ starts "unverified" and moves up only through the recording + replay route above
 | 0x1e0f10 | Ang_RotateToBearing | trig::rotate_to_bearing | unverified | - | drone AI; ported; The per-tick yaw rotation toward a bearing. |
 | 0x1e2b78 | Vec_AngleDifference | trig::angle_difference | unverified | - | drone AI; ported; The wrap-to-π angle difference. |
 | 0x1e2d08 | Camera_UpdateAll | scene.rs:420 (script_camera) + lib.rs:711-714 | unverified | - | frame/triggers; partial; Only camera 4 (script) and the Bond-follow camera; no Camera_CalcViewAngles game-path, no camera stack pops on Script_CameraEnd beyond the object delete. |
-| 0x1e3738 | Rand_Rand | drone.rs::Rng::rand | unverified | - | drone AI; ported; Two 16-bit multiply-with-carry streams: x × 18000 and y × 30903; Rand_Rand(n) returns (x + y) % n (the game's a_318/b_319 constants). Bit-exact. |
-| 0x1e3780 | Rand_FRand | drone.rs::Rng::frand | unverified | - | drone AI; ported; Rand_Rand(65536) / 65536 · max. Bit-exact. |
 | 0x1e4528 | ATAN2_APPROX | trig::atan2_approx | unverified | - | drone AI; ported; The PS2's atan2 approximation. |
 | 0x1e5168 | View_RotTransMatrix | aivolume::matrix | unverified | - | drone AI; ported; Rx·Rz·Ry row vectors; PS2 float arithmetic. |
 | 0x1e62d8 | View_AddObjects | - | unverified | - | level load; partial; the object draw dispatch; the port's Scene::build + add_instance mirrors it but the cel linking is standin. |
