@@ -44,3 +44,7 @@ Not in scope: drawing (the main agent does), split-screen/multiple pads (gamepad
 
 ---
 claimed-by: sandbox2 at 2026-10-15T17:19Z
+
+---
+## Report (done, 2026-10-15T19:15Z)
+
