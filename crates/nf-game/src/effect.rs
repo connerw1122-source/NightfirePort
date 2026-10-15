@@ -328,7 +328,8 @@ mod tests {
             let mut rng = Rng::new(seed);
             let before = (rng.x, rng.y);
             let out = e.bullet_impact(&mut rng, Some(&surf2), &mut gas, [0.0; 3], n, 10, dir, 0x12, 0, true);
-            assert_ne!((rng.x, rng.y), before, "N != 0: exactly one Rand_Rand draw (seeds advanced)");
+            assert_ne!((rng.x, rng.y), before,
+                "the tick drew (the kind-9 entry's spin+sign for the player shot + the ricochet roll)");
             if let Some(d) = out { found = Some((seed, d)); break; }
         }
         let (_, d) = found.expect("some seed must roll a ricochet with N=0xffff");
@@ -337,8 +338,11 @@ mod tests {
         assert!((d[0] - 0.995).abs() < 0.01, "the tangential component survives");
         assert!(d[2].abs() < 0.01, "the normal component is removed (e ≈ 0)");
         assert!((d[0] * d[0] + d[1] * d[1] + d[2] * d[2] - 1.0).abs() < 1e-4, "normalised");
-        // Sister: N = 0 → no draw, no reflection.
-        let r3 = EffectRecord { debris_enable: 0, ..rec(0, 0) };
+        // Sister: N = 0 → no ricochet draw, no reflection. The gas entries are emptied so the
+        // count isolates the ricochet roll (fix-gas-rng: the player's impact puffs always draw —
+        // the game skips the 1-in-2 kill for the obj+0xff == 3 owner [M 0x1ce8a8] — so the old
+        // gas-carrying sister saw the kind-9 entry's 2 spin draws land and read them as the roll).
+        let r3 = EffectRecord { gas: Default::default(), debris_enable: 0, ..rec(0, 0) };
         let surf3 = table(r3);
         let mut e3 = Effects::new();
         let mut rng3 = Rng::new(1);
