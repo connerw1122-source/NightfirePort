@@ -13354,3 +13354,9 @@ Work Log (drive-crp-format):
 - Tests: mp_menu_flow.rs 9 headless (flow + back-outs + locks + bots + start checks + Quick Game +
   loader handover, each with a sister assertion) + mp_menu_lists_live.rs 5 ISO-gated (the five
   tables + the side bytes vs the disc's ACTION.ELF). 14/14 green; suite run on the final tree.
+
+## objective-hints (2026-10-15, branch s/objective-hints)
+- Started: the pause OBJECTIVES tab's ✕ Hint — porting from C_GCPAUSE_Handler 0x204408 (OBJECTIVES case) and the
+  objective records: which row is selected, what ✕ shows (message box? label ids, timing), whether hints are limited
+  or affect scoring (Mission Stats / 007 Bonus), and Back. State + getters on FrontEnd (pause_objectives already
+  lists the visible rows); host side passes the hint labels. No drawing.
