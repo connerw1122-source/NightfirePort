@@ -11721,30 +11721,6 @@ progress.rs, profile.rs. Status: setting up.
 - Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
 - Report: docs/reports/fix-oddjob-hat.md (the evidence chain, the live checks: the PCSX2 curve/
   stick/clang/expiry, the gdbwatch obj+0xF4=3 and BU+0xFC=1500 countdown, the nf-view render spots).
-fix-blast-scripts: started. Task: explosions — each blast plays its own effect script (the port's
-spawn_blast currently renders the generic one-shot 0x06000052 for every explosion, while the game passes
-a per-source effect script to Explode_Create 0x17cbd0). Plan: census every Explode_Create call site and
-the script id it passes from the decompile, carry the script id through the port's blast request, play
-that script; NF_ISO tests for the Samurai bolt, a frag, a rocket and a destroyable. Branch
-s/fix-blast-scripts cut from origin/master 509ec984.
-
-fix-blast-scripts: done. The census (13 Explode_Create 0x17cbd0 call sites, each pinned by disasm):
-the fuse death and the bit-2 contact arm pass 0x6000052 (the port already matched those); the
-0x100000/0x200000 BOLT arms pass 0x60007c4 (the Phoenix Samurai's bolt 0x32 — radius 8, damage 256 —
-reached by ○ from the beam twin 0x33 — and the 0x6b/0x6e specials); Destroy_Smash 0x12bb60 routes by
-the tag's type byte (tag+0x16 = placement param 2): 1 → 0x6000027, 2 → 0x600004f, other non-zero →
-0x6000052, type 0 → NO blast; the rest (copter/drone-delete/car/MP/GT/monitor) have no object lists
-in the port yet (pre-existing, documented). Fixes: drone.rs (pending_blasts + spawn_blast carry the
-script; NEW bolt arms on world AND drone hits with the same non-ricochet gate; the destroy smashes
-queue the type script), props.rs (additive: Destroy.kind/blast_damage parsed from params 2/5,
-bullet_hit returns the blast-carrying smashes), scene.rs (the blast pre-registration chains all four
-script hashes), explode.rs (the +0x34 doc). Tests: crates/nf-view/tests/fix_blast_scripts_live.rs —
-the Samurai bolt's cyan blast (radius 8/damage 256, one 0x06007c4 player, no 0x06000052), the
-destroyable type-1 smash plays 0x0600027 + the type-0 sister plays NOTHING, the frag/rocket sister
-pins 0x06000052 — shown failing on the pre-fix tree (the fix stashed), green post-fix.
-Suite on the merged tree: see docs/reports/fix-blast-scripts.md ("Suite"). Report:
-docs/reports/fix-blast-scripts.md (live checks: the PCSX2 bolt-blast confirmation + meter share,
-the bottle smash's script id/radius/position, the type-0 no-blast; the nf-view render spots).
 ---
 Task ID: 103c-fix-0c-vent2
 Agent: 0c-vent2 worker
@@ -11990,14 +11966,6 @@ Work Log:
 - 21:32: merged origin/master (1c376216, WORKLOG conflict resolved keeping both), lighting suites re-ran green on the final tree (new 3/3, character_lighting_live 4/4); baseline full suite on the identical production code: 1065 passed / 7 failed (3 disc_golden allowed + weapon_matrix_live TIMEOUT + 3 pre-existing pylon) / 35 ignored.
 
 ---
-Task: fix-ammo-pane
-Agent: worker (sandbox web-a8aa38dd)
-Task: HUD ammo pane — the bottom-right pane with the ammo icon, "clip-spare" counts and the fire-mode label. At 0700000c's walkway with the sniper rifle out the real game shows an ammo icon, "5-30" and "Single"; the port shows only the weapon NAME ("Winter Tactical Sniper"). Port HUD_UpdateAmmoPane 0x19a7f0 and its create: when the name shows (on switch, how long) vs the counts/icon/mode label, layout and font, per-ammo-type icon, gadgets and weapons without ammo. Tests: 4 weapons (P2K, sniper, MGL, a gadget) — pane text, icon id and timing equal the game's numbers; sister assertions. File: crates/nf-view/src/hud.rs.
-
-Work Log:
-- 21:08 UTC: branch s/fix-ammo-pane created from origin/master (eb52fb56). Sandbox survived the previous session: work/, ISO, nf-queue, cargo all present; setup skipped except env re-export. Suite baseline starting in background.
-- 21:08-22:20 UTC: repro'd the compare spot headless (0700000c, --bond 14.22,16.28,-139.54,0.986,-0.269): the port at frame 30 shows only "Winter Tactical Sniper" because --give/the level start leave a switch request pending and the port's name window ran 60 ticks from the weapon-id FLIP (missing the pending draw), while the game re-arms BL+0x95E = 60 EVERY frame a differing request is pending (drone+0x63 vs +0x62, 0x19a7f0:212-217 [M disasm]) and decays in the same update (pending frames read 59; completion 58). Fixed the arm rule in scene.rs hud_tick (shared file, small hook — the old arm-on-flip + hud_weapon tracking retired); the pane's name label now reads the REQUESTED weapon's +0x38 (0x19ac98 [M]) so the pending draw announces the new weapon; the count text's hidden-while-switching store the decompiler drops is the delay-slot `sh $zero,0x20(s6)` at 0x19aa9c [M disasm] — the port already matched. Also ported the kind-0x1f display (0x19a7f0:129-136): clip' = min(max−clip, max−12) of max' = max−12 for the percent text AND both strips (the Samurai overcharge display; pre-fix the port drew clip/max raw). Tests: ammo_pane_live.rs 3/3 (4 weapons' pane text/label ids/icon rows [L ee_snapshot 0x2BF150 + BulletImg 0x2BEA38], the timer rule failing pre-fix, the 0x1f transform + sisters). Renders: the compare spot at rest = strip + "5-30" + "Single" ✓ the task's capture; frame 2 now shows the name during the pending draw (pre-fix: none). Suite baseline restarting after a disk-full kill.
-- 22:30 UTC: report written (docs/reports/fix-ammo-pane.md); final-tree suite (fast runner, 240 s per-binary cap): 1122 passed, 7 failed, 39 ignored (39 min) — the 7 are the 3 allowed disc_golden + the pre-existing weapon_matrix_live TIMEOUT (240 s cap) + the 3 pre-existing pylon failures; no new failures. Remaining (documented in the report): the obj+0xF6 gadget-device charge displays (needs the player's obj+0xF6 scratch modelled), the Q-Claw/grapple 3D marker (sprite 7), the MP name label +0x3C, the per-ammo-slot fire-mode byte source.
 Task: fix-bond-damage
 Agent: worker (sandbox web-8fb9d45a)
 Task: Bond taking damage — armour absorbing first (Player_HandlePain 0x1902c8:100-104), the difficulty factor, the red screen flash and its fade, the hit-direction indicator, the health pane's colour bands, the pain sounds, the knockback/view kick, death (death camera, fail flow). Branch s/fix-bond-damage from origin/master.
@@ -12160,15 +12128,20 @@ Work Log:
   fix_objects_live 2/2.
 
 ---
-Task: fix-ammo-pane2
-Agent: worker (sandbox web-2cf47bf2)
-Task: the ammo-pane tests (crates/nf-view/tests/ammo_pane_live.rs) read the local PCSX2 snapshot work/ee_snapshot.bin (panic at :17 in merge checkouts — the file isn't in the repo; CLAUDE.md: tests may depend only on NF_ISO). Re-source every game number from the disc through the port's own loaders, keep every assertion, make anything that truly needs the snapshot an #[ignore]d probe with a reason.
+Task: fix-grenade-release
+Agent: worker (sandbox web-89a10775, session 3)
+Task: grenade release timing — the grenade must spawn on the fire script's release frame (weapon_data+0x44, Player_WeaponFiring 0x1a5460:681-693), not on the press tick; find why the real-input throw still spawns early (press-tick spawn arm, script frame count vs rate, held-fire repeat). Second: the frag blast (effect script 0x06000052) draws as a thin flat sheet — check billboard/orientation/scale (Mat_Scale3f radius). User playtest 1014-1725, third report of the release timing.
 
 Work Log:
-- 23:55 UTC: branch s/fix-ammo-pane2 = origin/s/fix-ammo-pane + origin/master merged (WORKLOG conflict resolved keeping both), pushed. Sandbox survived: work/, ISO, nf-queue present; fast suite started in background.
-- 00:03: repro'd the held symptom — with work/ee_snapshot.bin + work/elf/ACTION.ELF hidden (the merge-checkout condition), the_four_weapons… and the_kind_1f… panic at ammo_pane_live.rs:17 "No such file or directory"; the timer test (NF_ISO-only) passes.
-- 00:12: the fix. weapon numbers → WeaponData::from_action_elf over the ISO's ACTION.ELF (the port runs the game's own boot initialiser _GLOBAL_$I$weapon_data 0x1b9900 — docs/formats/weapon-data.md; the sim's s.weapons vs a fresh disc parse keeps the label-id cross-checks meaningful); BulletImg.189 rows → raw slices from the disc's ACTION.ELF (0x2BEA38−0x106100+kind·16); every assertion kept. The boot-memory cross-check is now #[ignore = "needs the local PCSX2 EE snapshot…"] probe_weapon_table_matches_the_boot_snapshot.
-- 00:14: verified: 3/3 pass with work/ ABSENT (the fix's point); the probe passes with the snapshot present (all 115 records × the pane fields equal boot memory).
+- (started 01:26 UTC) branch s/fix-grenade-release from origin/master (bf2bd176). Setup reused: work/, ISO, nf-queue all in place.
+
+---
+Task: fix-grenade-release
+Agent: worker (sandbox web-89a10775, session 3)
+Task: grenade release timing — the grenade must spawn on the fire script's release frame (weapon_data+0x44, Player_WeaponFiring 0x1a5460:681-693), not on the press tick; find why the real-input throw still spawns early (press-tick spawn arm, script frame count vs rate, held-fire repeat). Second: the frag blast (effect script 0x06000052) draws as a thin flat sheet — check billboard/orientation/scale (Mat_Scale3f radius). User playtest 1014-1725, third report of the release timing.
+
+Work Log:
+- (started 01:26 UTC) branch s/fix-grenade-release from origin/master (bf2bd176). Setup reused: work/, ISO, nf-queue all in place (freed 6.2G stale build caches first — disk was 100%).
 
 Stage Summary:
 - ammo_pane_live.rs no longer reads work/ — depends only on NF_ISO; all assertions kept, one new #[ignore]d probe. No production code touched, no shared files touched. Suite total goes in docs/reports/fix-ammo-pane2.md.
@@ -12449,3 +12422,7 @@ Stage Summary:
 - The guided ride now takes the window's view in play, in the headless renders, with the arms and the crosshair hidden and the 15-tick restore; the Sentinel rockets fly at the measured 0.33666/0.2525 u/frame. Report: docs/reports/fix-sentinel-camera-play.md (the live checks: the guided speed gdbwatch, the other 0x200 records, the red tint).
 - (02:00-02:46 UTC) Verification: the failing-first proof (2 of the 3 tests fail on the stash of the src diffs — the tick-48 bounce; the stick never lands), all green post-fix. The full fast suite ran in foreground chunks (the sandbox reaps background processes): all 292 binaries on the final tree (origin/master bf2bd176 merged) — 1207 passed / 6 failed / 58 ignored; the 6 = the allowed disc_golden trio + fix_0c_pylon ×2 + probe_pylon_render ×1 (the GPU-adapter environmental class, failing identically without this task's diffs). The suite caught one real interaction: the re-locked fix_handcannon detonator test had pinned the +10.0 stand-in — its boom now lands on the press tick and the per-tick explosions.clear() hid it; re-locked to the disasm's −10.0 (green 3/3). The main agent's 2026-10-14 live measurements on 14 (master bf2bd176) confirm every fix independently: the mine sticks from the first frame, ○ reaches the detonator ("Detonate"), fire blows it at once, the view returns to "Grenade".
 - Report: docs/reports/fix-remote-mine-play.md (the live checks + the repro + the notes; the panel-give twin-switch deviation and the ≤1-tick boom ordering are flagged there).
+- The release timing: audited end-to-end against the decomp (0x1a5460 press/re-arm, 0x1a2e38 case-9 release frame, 0x1c2630 script tick) — the port's first-throw release is CORRECT (spawn at script frame 26 = +0x44, pin sound at 16 precedes it; verified on 07000015 through the real input path). The early-release symptom did NOT reproduce headlessly (press-tick arm, script rate, held repeat, dev ammo pin, tick accounting all ruled out — details in the report); no fix was guessed. Open: the game's held-fire auto-repeat (re-arm on the param_2==1 arm at 0x1a5460:603) — the port throws once per pull; needs the call-site trace.
+- The blast "thin wall": FIXED. The game billboards flag-0x8-glist entities (`Control_SetGList` 0x134960 copies celglist+0x44 into obj+0xF0; `View_DrawObjectGlist` 0x1e6780:43-65 draws them with the viewer's rotation, keeping the interp translation and the interp scale obj+0xE8 = key scale × the radius). The port drew the raw interp matrix — flat puff quads edge-on. Fix: `Scene::script_billboards` (collected at build) + the camera-basis swap in frame_state's script-entity arm; the op-0x1b sub-script walk added over fix-blast-scripts's sweep (the live blast's puffs are 0x06000052's SUB-script 0x06000047, src.0 [L]).
+- Tests: fix_grenade_release_live.rs — the_frag_leaves_the_hand_on_the_release_frame_after_the_pin_pull (07000015, real input, release frame 26 exact) + the_blast_puffs_draw_camera_facing (billboard set + real explosion + camera-facing axes), both green on the merged tree; pre-fix compile failure documented. Shared files: scene.rs only (3 additive hooks). The full final-tree suite was still running at the deadline — read suite_grenade_release.out.
+- Report: docs/reports/fix-grenade-release.md (live checks: the held-fire auto-repeat in PCSX2, the blast billboard --bond spots A/B).

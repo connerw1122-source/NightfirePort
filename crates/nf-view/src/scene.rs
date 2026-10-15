@@ -3814,6 +3814,14 @@ pub struct Scene {
     /// The HUD's textures by hash (docs/systems/hud.md), from any map of the archive, and its tables from ACTION.ELF.
     pub hud_textures: Vec<(u32, TextureImage)>,
     pub hud: Option<nf_formats::hud::HudTables>,
+    /// Script-entity meshes whose glist flags (`celglist+0x44` → `obj+0xF0` via `Control_SetGList`
+    /// 0x134960) carry the billboard bit 0x8: `View_DrawObjectGlist` 0x1e6780:43-65 draws them
+    /// camera-facing — the drawn rotation is the VIEWER's, with the interp's translation and the
+    /// interp scale (`obj+0xE8`, the key scale × the script scale, e.g. the blast radius). The
+    /// explosion script 0x0600052's puffs are such meshes; drawn with the raw interp matrix they
+    /// sit in their authored plane and read edge-on as "a very thin wall" (playtest 1014-1725).
+    /// Collected at build time (the parsed level is not kept on the Scene).
+    pub script_billboards: std::collections::HashSet<u32>,
     pub bounds: ([f32; 3], [f32; 3]),
     /// Camera start: the first placement whose object is named "Player1" (translation, yaw), if any.
     pub start: Option<([f32; 3], f32)>,
@@ -4516,6 +4524,7 @@ impl Scene {
         // Script objects (docs/systems/script-player.md): every animation and drawn entity the main map's script players
         // can make; each shows only while the simulation has the object.
         let mut script_objects = 0;
+        let mut script_billboards: std::collections::HashSet<u32> = std::collections::HashSet::new();
         if let Some(m) = level.main_map() {
             let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
             let placement = level.maps[m].placements.first().cloned().unwrap_or_default();
@@ -4525,17 +4534,26 @@ impl Scene {
             // The explosion scripts (`Explode_Create` 0x17cbd0 loads a per-source effect script —
             // its `Script_Load` arg a3): 0x6000052 from the fuse/contact call sites [M 0x12cd98/
             // 0x12ce80 disasm], 0x60007c4 from the Samurai bolt's 0x100000/0x200000 arms [M
-            // 0x12d0e8-0x12d188; fix-cutscene-actors's read of 0x12ce80:212-231 is the same arms —
-            // ONE path, the sim's per-blast spawn feeds this sweep], 0x6000027/0x600004f/0x6000052
-            // from `Destroy_Smash` by the tag's type byte [M 0x12bc50-0x12bd20]. All four ship in
-            // every story archive [D disc census]; 0x60007c4's entity streams (Laser_Blast_frame_1/2,
-            // Vertical_smoke, After_glow_test, cloud_1, smoke) resolve in every archive [D] but no
-            // placement references the script, so without this sweep the impact models could never
-            // draw. The sim spawns them per blast, so their entity streams need attachments exactly
-            // like a placed player's. (fix-blast-scripts: the port pre-registered only 0x06000052.)
-            let hashes: Vec<u32> = players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0)
+            // 0x12d0e8-0x12d188], 0x6000027/0x600004f/0x6000052 from `Destroy_Smash` by the tag's
+            // type byte [M 0x12bc50-0x12bd20]. The sim spawns them per blast, so their entity
+            // streams need attachments exactly like a placed player's. (fix-blast-scripts.)
+            // fix-grenade-release: a blast's VISIBLE puffs can live in a SUB-script — 0x06000052's
+            // op-0x1b (`Script_SubScriptStart` 0x1db050) spawns 0x06000047 [L the live frag blast's
+            // Obj::Entity src.0 = 0x06000047, the lib key], whose streams carry the puff meshes
+            // (0x020003cc/cd/ce/c7...). Walk the op-0x1b hashes recursively (the runtime `src` is
+            // the sub's own lib key, so the attachment's script tuple must carry the sub's hash).
+            let mut hashes: Vec<u32> = players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0)
                 .chain([0x0600_0052u32, 0x0600_0027, 0x0600_004f, 0x0600_07c4]).collect();
-            for h in hashes {
+            let mut queued: std::collections::HashSet<u32> = hashes.iter().copied().collect();
+            while let Some(h) = hashes.pop() {
+                let Some(nis) = level.nis.get(&h) else { continue };
+                for st in nis.streams.iter() {
+                    for cmd in st.decode() {
+                        if let nf_formats::nis::Cmd::SubScript { hash: sub, .. } = cmd {
+                            if sub != 0 && queued.insert(sub) { hashes.push(sub); }
+                        }
+                    }
+                }
                 let Some(nis) = level.nis.get(&h) else { continue };
                 for (si, st) in nis.streams.iter().enumerate() {
                     for cmd in st.decode() {
@@ -4591,6 +4609,8 @@ impl Scene {
                             nf_formats::nis::Cmd::Entity { hash, obj_type, .. } if !matches!(obj_type, 0xea | 0xeb | 0xf5 | 0xf2) => {
                                 if !seen.insert((h, si, hash)) { continue; }
                                 let Some(&(map, object)) = level.by_hash.get(&hash) else { continue };
+                                // The billboard set: glist flags bit 0x8 (`View_DrawObjectGlist`'s test).
+                                if level.maps[map].objects[object].flags & 0x8 != 0 { script_billboards.insert(hash); }
                                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
                                 add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                 attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: Some((h, si as u8, hash)), gas: None, effect: None });
@@ -5349,7 +5369,7 @@ impl Scene {
         // fix-portal4: sim-less loads never built a world — the chains fall back to the
         // bbox-face FindCel approximation (documented deviation; every live load path builds sim).
         if sim.is_none() { build_chains(&mut cel_graph, None); }
-        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, sound_spares: Vec::new(), snow_texture, vertices, indices, materials, textures, hud_textures, hud, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, grapple_hooks_drawn, misc_drawn }
+        Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, sound_spares: Vec::new(), snow_texture, vertices, indices, materials, textures, hud_textures, hud, script_billboards, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, grapple_hooks_drawn, misc_drawn }
     }
 
     /// Sequence index and frame a character shows after `ticks` 60 Hz updates: its start script (`choice = None`) or the
@@ -5661,7 +5681,30 @@ impl Scene {
             }
             let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
             if let Some((h, si, hash)) = a.script {
-                return self.sim.as_ref().and_then(|s| s.script_entity((h, si), hash)).unwrap_or(far);
+                return self.sim.as_ref().and_then(|s| s.script_entity((h, si), hash)).map(|m| {
+                    // The billboard entities (`View_DrawObjectGlist` 0x1e6780:43-65): the glist flags
+                    // bit 0x8 (reached via `Control_SetGList` 0x134960's `obj+0xF0 = glist+0x44`)
+                    // replaces the drawn ROTATION with the viewer's — `Mat_CopyRot(viewer+0x1a0)` —
+                    // keeping the interp translation and the interp scale `obj+0xE8` (the key scale
+                    // × the script scale via `Script_GetInterp` 0x1da158:117, `Mat_Scale3f`
+                    // 0x1e35f0). The port's entity matrix is rotation·s with s uniform (the interp
+                    // builds it from pos/quat/scale keys), so s = |column 0|. The obj+0x58 spin arm
+                    // (the interp X-axis re-applied over the viewer rotation) is not ported — the
+                    // blast's first-frame flash quad dominates and the puffs' spin is sub-visible
+                    // [S — live check in the report].
+                    if !self.script_billboards.contains(&hash) { return m; }
+                    let s = (m[0][0] * m[0][0] + m[1][0] * m[1][0] + m[2][0] * m[2][0]).sqrt();
+                    let (r, u) = (opts.right, opts.up);
+                    let n = |v: [f32; 3]| { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-9); [v[0] / l, v[1] / l, v[2] / l] };
+                    let (r, u) = (n(r), n(u));
+                    let f = n([r[1] * u[2] - r[2] * u[1], r[2] * u[0] - r[0] * u[2], r[0] * u[1] - r[1] * u[0]]);
+                    [
+                        [r[0] * s, r[1] * s, r[2] * s, 0.0],
+                        [u[0] * s, u[1] * s, u[2] * s, 0.0],
+                        [f[0] * s, f[1] * s, f[2] * s, 0.0],
+                        m[3],
+                    ]
+                }).unwrap_or(far);
             }
             if a.dropped {
                 // fix-objects: `!p.gone` — a TAKEN drop stays in the list as a tombstone (drone.rs
