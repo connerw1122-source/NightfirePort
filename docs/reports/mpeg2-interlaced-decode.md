@@ -131,4 +131,9 @@ feature builds of nf-formats' tests compile).
 
 ## ntfy failed
 
-(not reached yet)
+All three fallbacks failed with the ntfy.sh daily quota (the same 429 the 110p session hit earlier today):
+
+1. `curl -sS -H "Title: NightfirePort" -d "mpeg2-interlaced-decode: done …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. python urllib → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget -q -O- --post-data "…" https://ntfy.sh/nightfire-yoda-8k3x` → no output (429), exit status recorded as failure.
