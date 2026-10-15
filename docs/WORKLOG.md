@@ -11995,3 +11995,11 @@ Work Log:
 - 22:10-22:45: the implementation (grenade.rs: the `StuckGadget` phase box, the generalized stuck tick, the tail; drone.rs: the consumer arms 0x446/0x27c/0x447, the beam pass + the char-crossing trigger + the 6-cap, the throw fuse arm; scene.rs: the family fuse formula, the stuck draw alignment, the beam slots TRACER_SLOTS+3/+4, the digit pools kinds 4/5). Tests: 3 unit (the stick+300 fuse+beeps/digits, the non-210 fuse, the tripbomb arm 121) + 4 live through step_bond (the stick+blast+0x6000052, the countdown+beeps, the arm/beam/trigger + the off-beam sister, the 6-cap).
 - 22:47: checkpoint pushed. 22:52: the pre-fix probe (git checkout HEAD~1 -- crates): stuck=false, boom_at=300 (bounced, never stuck) — the live tests fail on the pre-fix tree as required; restored.
 - 22:56: the full suite started on the final tree (tools/test/suite.py); the report + the finish steps follow.
+
+---
+Task: fix-gpu-facial-morphs (108c)
+Agent: worker (sandbox web-9248268a)
+Task: apply the facial morph targets on the GPU skinning path (nf-view gpu.rs + the skinning shader + scene.rs upload): per-character weight vector + morph deltas, blended before skinning, so faces move in play and renders (Kimiko 07000007 at frames 600/700/800/1400). Tests: GPU output equals CPU path mid-blend (numbers) + the render checkpoints.
+
+Work Log:
+- 00:22 UTC: branch s/fix-gpu-facial-morphs created from origin/master (c9ada8c8) and pushed. Setup reused (repo, work/, ISO, nf-queue).
