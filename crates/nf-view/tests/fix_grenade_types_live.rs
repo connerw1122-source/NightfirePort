@@ -148,7 +148,12 @@ fn the_stun_flash_scales_with_distance() {
                 let sim = scene.sim.as_ref().unwrap();
                 (sim.bond.pos, sim.drones.grenades.first().unwrap().pos)
             };
-            let dx = gr[0] - bp[0]; let dz = gr[2] - bp[2];
+            // Along Bond's FACING, not Bond→grenade: the game launches from the midpoint of the head and
+            // the view model's bone 0 [M Player_WeaponInitBullet 0x1a4bf0:212-240], which starts BEHIND
+            // the eye, so on the release tick the grenade can still be behind Bond's xz.
+            let _ = gr;
+            let yaw = scene.sim.as_ref().unwrap().bond.yaw;
+            let (dx, dz) = (yaw.sin(), yaw.cos());
             let l = (dx * dx + dz * dz).sqrt().max(1e-3);
             scene.sim.as_mut().unwrap().bond.pos = [bp[0] - dx / l * 35.0, bp[1], bp[2] - dz / l * 35.0];
             moved = true;

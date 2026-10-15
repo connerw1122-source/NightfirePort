@@ -3189,8 +3189,24 @@ impl Sim {
                     // the flash branch), 0x36 'Smoke Grenade' (0/0, the occlude/re-arm branch). The old
                     // hardcode's sin was killing with EVERY type and on impact; the per-type records
                     // route each grenade to its own death branch [M 0x12dd60/0x12e104/0x12e1c0].
+                    // The launch origin [M `Player_WeaponInitBullet` 0x1a4bf0:212-240]: the head, moved to the
+                    // MIDPOINT of the head and the view model's bone 0 (`AnimGetBoneWorldTrans(BL+0x7e8, 0)`) when
+                    // the record has a first-person model (+0xDC), +0x68 & 0x10000, isn't an excluded base (1, 0x52,
+                    // 0x54, 0x58, 0x59, 0x5b) and isn't a scoped weapon held zoomed. The view model's bone 0 is its
+                    // object origin (the root's local translation is 0 [D probe, 0x34 frame 26]) = `gun_matrix`,
+                    // which sits ~0.43 BEHIND the eye: the grenade starts behind the camera and comes into view
+                    // only once it has flown past — the game shows no grenade on the release frame (PCSX2 frozen at
+                    // the fire script's frame 26), where the eye origin drew a screen-filling frag.
+                    let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
+                    let fp_model = u32::from_le_bytes(w[0xdc..0xe0].try_into().unwrap()) != 0;
+                    let excluded = matches!(base, 1 | 0x52 | 0x54 | 0x58 | 0x59 | 0x5b);
+                    let zoomed_scope = self.aiming && flags68 & 0x40 != 0;
+                    let origin = if fp_model && !excluded && !zoomed_scope && flags68 & 0x10000 != 0 {
+                        let g = self.gun_matrix();
+                        [(camera[0] + g[3][0]) * 0.5, (camera[1] + g[3][1]) * 0.5, (camera[2] + g[3][2]) * 0.5]
+                    } else { camera };
                     self.drones.grenades.push(nf_game::grenade::Grenade {
-                        pos: camera,
+                        pos: origin,
                         velocity: [sdir[0] * speed, sdir[1] * speed, sdir[2] * speed],
                         speed, travelled: 0.0, range: fuse, damage: f32_at(0x0c), radius: f32_at(0x08),
                         // The FIRED weapon's id, not the record's +0x02 base: the MGL's 'Delay' twin
@@ -5797,7 +5813,12 @@ impl Scene {
                     // ≤ GRENADE_SLOTS live projectiles every one draws (the ring never bites below 512).
                     let gi = if s.drones.grenades.len() > GRENADE_SLOTS { s.drones.grenades.len() - GRENADE_SLOTS + slot as usize } else { slot as usize };
                     match s.drones.grenades.get(gi) {
-                        Some(g) if g.state < 2 => {
+                        // State 0 (spawned, not yet updated) has no mesh in the game: `Bullet_update` state 0
+                        // assigns `weapon+0x5C` (`hashtable_set_object_to_entity_gfx`, disasm 0x12e8f0-0x12e900
+                        // [M]) on the projectile's first update. The port drew it on the spawn tick at the
+                        // camera — a screen-filling frag on the release frame, which PCSX2 frozen at that frame
+                        // doesn't show (the user's "released while I'm still pulling the pin").
+                        Some(g) if g.state == 1 => {
                             // fix-satchel-tripbomb: a stuck satchel/tripbomb draws aligned to the
                             // NEGATED surface normal (the stick arm's `Mat_Align2Dir(obj+0x90,
                             // −normal, …)` [M 0x12ce80:256-266]) instead of the flight direction.

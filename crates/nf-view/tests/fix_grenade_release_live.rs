@@ -163,3 +163,29 @@ fn the_blast_puffs_draw_camera_facing() {
     // live this frame. The billboard semantics on whatever DOES draw are asserted in the loop.
     eprintln!("[blast] live script-entity attachments checked: {checked}");
 }
+
+/// The launch origin [M Player_WeaponInitBullet 0x1a4bf0:212-240]: the midpoint of the head and the view model's
+/// bone 0 (its object origin, ~0.43 behind the eye), so on the release tick the frag is BEHIND the camera — the
+/// game shows no grenade on the release frame (PCSX2 frozen at the fire script's frame 26). Sister: it is not at
+/// the eye (the old origin, which drew a screen-filling frag on that frame).
+#[test]
+fn the_frag_launches_from_behind_the_eye() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load_weapons(&iso, "07000015.bin", false, &[0x34]).expect("load 07000015");
+    let sim = scene.sim.as_mut().unwrap();
+    let wd = sim.weapons.clone();
+    sim.drones.inventory.equip_weapon(&wd, 0x34, 1, true); sim.drones.inventory.equip_ammo(&wd, 0x34, 3);
+    sim.step_bond(Input { switch_to: Some(0x34), ..Input::default() }, false, false, false);
+    for _ in 0..120 { sim.step_bond(Input::default(), false, false, false); }
+    let mut spawned = None;
+    for t in 0..40 {
+        let eye = sim.bond.head(); let look = sim.bond.look();
+        sim.step_bond(Input::default(), t == 0, false, false);
+        if let Some(g) = sim.drones.grenades.first() { spawned = Some((g.pos, eye, look)); break; }
+    }
+    let (p, eye, look) = spawned.expect("the frag spawned");
+    let fwd = (p[0] - eye[0]) * look[0] + (p[1] - eye[1]) * look[1] + (p[2] - eye[2]) * look[2];
+    let off = ((p[0] - eye[0]).powi(2) + (p[1] - eye[1]).powi(2) + (p[2] - eye[2]).powi(2)).sqrt();
+    assert!(fwd < 0.05, "the frag starts at or behind the eye plane on the release tick (fwd {fwd})");
+    assert!(off > 0.1, "the frag does not start at the eye (offset {off})");
+}
