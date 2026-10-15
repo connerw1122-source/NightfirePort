@@ -70,9 +70,16 @@ Verified facts (each with the probe that pinned it, `crates/nf-view/examples/pro
   pose puts the light quads at/behind the eye plane (the game's are in front of the near plane).
   The grey dots visible in the render are the receiver texture's own light wells, not the mesh.
 
-**What's left**: re-run probe_aims_project with the render's opts axes; if the quads still project
-behind the eye, diff the port's bones 8..0xB world matrices against the game's
-(`AnimGetBoneWorldTrans` — a live check below settles it in one screenshot).
+**What's left**: the follow-up probe run (with the render's cam_axes and a char-50 skinned-vert
+projection added) sharpened the seam: under the probe's `frame_state(None, 60.0, opts)` the GUN
+BODY verts project off-screen too (0/401 on-screen) while the actual `--shot` render poses the gun
+correctly — so the probe's palette ≠ the render's palette with seemingly identical inputs (same
+load_dev build, same give/switch, same 60 strafe ticks, same time=60). The next session should diff
+`update_skin`'s exact invocation (the `vis` mask, `opts` fields beyond right/up, the App-side
+`anim_time`/`choice` plumbing) against the probe's bare `frame_state` call; once the probe
+reproduces the render's palette, the aims quads' projected position settles whether the bones
+8..0xB sit at the wells (GPU-state bug) or behind the eye (pose bug). Live check 3 below settles
+the game side in one screenshot either way.
 
 ## Verification
 
