@@ -3738,8 +3738,9 @@ pub struct Attachment {
     /// `Some((slot, mesh))`: a projectile mesh slot (`Bullet_update` state 0 sets the weapon's `+0x5C` mesh on the
     /// bullet object, `View_SetDrawInAllViews`, disasm 0x12e8f0-0x12e900 [M]). The slot indexes the simulation's
     /// projectile lists (0..GRENADE_SLOTS grenades, then the drone and player bullets); the mesh selects which of
-    /// the slot's per-mesh instances shows this frame.
-    pub projectile: Option<(u8, u32)>,
+    /// the slot's per-mesh instances shows this frame. u16: GRENADE_SLOTS is the game's 512-entry per-view draw
+    /// list (fix-hat-details), so the grenade range alone passes a u8.
+    pub projectile: Option<(u16, u32)>,
     /// The character's gun once dropped (`DroneWeap_DropWeapon`): drawn at the pickup's matrix while it lies there.
     pub dropped: bool,
     /// A script entity (script hash, stream, entity hash): drawn at the simulation object's matrix while it exists.
@@ -4181,7 +4182,17 @@ const TRACER_SLOTS: usize = 32;
 /// indices the tracer attachments use), and the last PLAYER_BULLET_SLOTS Bond's (`Sim::drones.player_bullets`).
 /// Each (slot, mesh) pair has its own Effect attachment; the live projectile's `+0x5C` mesh picks the one that
 /// shows (`Bullet_update` disasm 0x12e8f0 [M]).
-const GRENADE_SLOTS: usize = 8;
+/// fix-hat-details: GRENADE_SLOTS is the game's per-view draw-list capacity — `View_AddObjects` 0x1e62d8 adds
+/// every in-view object with a glist to a RING: `entry = viewer+8+ring·4 + cursor·0xc; cursor = (cursor+1) &
+/// (viewer+0x1a+ring·2 − 1)` — and a flying bullet rides ring 0 (`Bullet_update` state 0 clears obj+0xf0's
+/// 0x10/0x2000 [M 0x12e7b0]; ring 2's 128 is the +0xf0 & 0x2000 billboards). [L ee_snapshot.bin] viewer[0]
+/// @0x1fc6c10 and viewer[5] @0x1fc69b0 both carry sizes 512/512/128 — 512 entries per ring. The cel lists are
+/// newest-first [M `control_link_object_to_cel` 0x1346b8 prepends], so a full ring reuses the OLDEST-ADDED
+/// entries: the game keeps the NEWEST 512 objects per view. The pre-fix pool showed only the FIRST 8 grenades
+/// — with the stuck hats holding slots for their 1500-tick life [M 0x12e7b0:363-371], every later throw flew
+/// INVISIBLE (the user's "if you throw enough of them, you stop seeing them flying in the air"); the slot
+/// mapping below is therefore newest-first, so an overflow drops the oldest exactly like the ring.
+const GRENADE_SLOTS: usize = 512;
 const PLAYER_BULLET_SLOTS: usize = 8;
 /// fix-impacts-render: the impact-effect draw pools. Decals: the game's 200-node FIFO
 /// (`Effect_InitLists` 0x1cf268: `DList_Init(0x3496e0, 0x60, 200)` [M]). Casings: the 32-object
@@ -4727,7 +4738,7 @@ impl Scene {
             for slot in 0..proj_slots {
                 let pinst = Instance { map: pmap, object: pobject, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: pslot_placement.clone() };
                 add_instance(level, &pinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u8, mesh)), script: None, gas: None, effect: None });
+                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u16, mesh)), script: None, gas: None, effect: None });
             }
         }
         for (inst, follows_camera) in &sky {
@@ -5609,7 +5620,12 @@ impl Scene {
                 let Some(s) = self.sim.as_ref() else { return far };
                 let norm = |v: [f32; 3]| { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(); if l > 1e-9 { [v[0] / l, v[1] / l, v[2] / l] } else { [0.0, 1.0, 0.0] } };
                 let (pos, dir, live_mesh): ([f32; 3], [f32; 3], u32) = if (slot as usize) < GRENADE_SLOTS {
-                    match s.drones.grenades.get(slot as usize) {
+                    // fix-hat-details: newest-first slot mapping — the game's draw ring keeps the NEWEST
+                    // objects when a frame's adds overflow (the cel lists are newest-first [M
+                    // `control_link_object_to_cel` 0x1346b8], so the reused entries are the oldest); with
+                    // ≤ GRENADE_SLOTS live projectiles every one draws (the ring never bites below 512).
+                    let gi = if s.drones.grenades.len() > GRENADE_SLOTS { s.drones.grenades.len() - GRENADE_SLOTS + slot as usize } else { slot as usize };
+                    match s.drones.grenades.get(gi) {
                         Some(g) if g.state < 2 => {
                             // fix-satchel-tripbomb: a stuck satchel/tripbomb draws aligned to the
                             // NEGATED surface normal (the stick arm's `Mat_Align2Dir(obj+0x90,
