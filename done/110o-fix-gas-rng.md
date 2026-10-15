@@ -43,3 +43,7 @@ claimed-by: sandbox7 at 2026-10-15T12:06Z
 ## Report (done, 2026-10-15T13:58Z)
 
 Closed by the driver: the report is on `s/fix-gas-rng` (docs/reports/fix-gas-rng.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T14:02Z)
+
