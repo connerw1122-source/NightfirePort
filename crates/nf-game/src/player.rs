@@ -25,6 +25,14 @@ pub const ROOT_HEIGHT: f32 = 1.0347183;
 pub const CROUCH_ROOT_HEIGHT: f32 = 0.55;
 /// Capsule radius (`HITTEST+0x8C`).
 pub const RADIUS: f32 = 0.55;
+/// The WALK arm's pick radius (`Player_Collision` 0x194df0 case 0/6 writes the radius slot
+/// `+0x7CC = 0x3e8ccccd` = 0.275 — the swim/crouch/default arms write 0x3f0ccccd = 0.55). The walk
+/// grab's reach past the ladder's rung plane is the WALK capsule's 0.275, not the swim arm's 0.55:
+/// the game's `Player_CollLadder` 0x196118 fires from the walking HITTEST's mesh refine only when
+/// the walk capsule (r 0.275, segment A = pos + up·0.55, B = pos + up·(+0x7CC − cc)) touches the
+/// ladder glist (`Collide_Update` 0x1ea398:84-93 → `Collide_Intersect` 0x1ebaa8), so a walker or a
+/// just-dismounted stander 0.5+ off the plane never re-grabs. fix-ladder-water2.
+pub const WALK_PICK_RADIUS: f32 = 0.275;
 /// `BL+0x908` on land.
 pub const EYE: f32 = 0.7;
 const GRAVITY: f32 = -9.8;
@@ -393,8 +401,26 @@ impl Bond {
         // `!= SS_WALK` gate silently killed the swim-grab call swim_tick already made (the user's "I
         // can't latch onto it and climb it" at the 02 pond hut ladder).
         if matches!(self.substate, SS_CLIMB | SS_GRAPPLE) || self.regrab != 0 { return; }
+        // The pick shape follows the substate's HITTEST arm [M Player_Collision 0x194df0]: the swim
+        // capsule (case 3: the low short segment, radius 0.55), the WALK arm (case 0/6: radius
+        // +0x7CC = 0.275, segment A = pos + up·0.55, B = pos + up·(+0x7CC − cc)) and the DEFAULT
+        // arm (crouch 4 and the rest: radius 0.55, A = pos + up·0.275, B = pos + up·(0.55 − cc)) —
+        // and the swim stage-2 cut is the mesh-scale reach (Ladder::capsule_hits_swim), the
+        // dismount-into-water escape (the 109i infinite latch). The walk arm's own 0.275 is the
+        // walk grab's reach past the rung plane (fix-ladder-water2): the game's CollLadder fires
+        // from the walking HITTEST's mesh refine, so a stander 0.5+ off the plane never grabs.
+        let swim = self.substate == SS_SWIM;
         for (i, lad) in ctx.ladders.iter().enumerate() {
-            if !lad.capsule_hits(self.pos, RADIUS) { continue; }
+            let hit = if swim {
+                lad.capsule_hits_swim(self.pos, RADIUS, self.cc)
+            } else if self.substate == SS_WALK && !self.crouched {
+                lad.capsule_hits(self.pos, WALK_PICK_RADIUS, self.cc)
+            } else {
+                // The crouched walk is the game's substate 4 (the port folds the crouch into
+                // substate 0 + the flag) — the capsule switch's DEFAULT arm [M 0x194df0].
+                lad.capsule_hits_default(self.pos, RADIUS, self.cc)
+            };
+            if !hit { continue; }
             let diff = wrap_pi(lad.yaw - self.yaw); // Vec_AngleDifference(player, ladder) [M 0x1e2b78]
             if diff.abs() <= std::f32::consts::FRAC_PI_2 { continue; }
             let (top, bottom) = (lad.top(), lad.bottom());

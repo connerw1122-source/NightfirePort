@@ -499,11 +499,15 @@ pub struct Msg {
     /// pane's tests pin it) [M Text_AddMsg 0x1b0c30 stores the bound string; the id is the
     /// port's provenance for the game-label assertions].
     pub label: u32,
+    /// A script op-0x1e subtitle (`Text_AddMsg` type 4): the game's `Text_FlushAllSubtitles`
+    /// 0x1b15c8 deletes types 4/5 only, so the skip's flush drops these and nothing else
+    /// (fix-ladder-water).
+    pub script: bool,
 }
 
 impl Msg {
     pub fn new(text: String, time: f32) -> Msg {
-        Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false, label: 0 }
+        Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false, label: 0, script: false }
     }
 }
 
@@ -1715,8 +1719,11 @@ impl Sim {
                 // the raw radians steered at ~3% of the game's rate (the user: guided missiles "still
                 // don't work").
                 const K: f32 = 0.024_543_693;
-                let yaw_in = (input.turn / K).clamp(-1.0, 1.0);
-                let pitch_in = (input.look * std::f32::consts::FRAC_PI_2 / K).clamp(-1.0, 1.0);
+                // Signs: `steer_missile` SUBTRACTS (the game's raw-stick convention) while Bond's view ADDS the
+                // port's `turn`/`look` (player.rs: `yaw += turn`, `pitch += look`) — negate, so the mouse turns
+                // the rocket the way it turns Bond's view (the user: "the controls are reversed when flying").
+                let yaw_in = (-input.turn / K).clamp(-1.0, 1.0);
+                let pitch_in = (-input.look * std::f32::consts::FRAC_PI_2 / K).clamp(-1.0, 1.0);
                 nf_game::drone::steer_missile(&mut b.dir, yaw_in, pitch_in);
                 cam.pos = b.pos;
                 cam.dir = b.dir;
@@ -2048,19 +2055,26 @@ impl Sim {
             //   fix-swim-vent5 probe put 07000005's gate door and the second vent's ctx-6 icons in one
             //   port cel — so pure cel occupancy would arm the gate door against the [L PCSX2 2026-10-13
             //   pin (0xFF there; enforced by fix_swim_vent5_live)]. The arm region is therefore the
-            //   INTERSECTION: the straddle set AND the live-measured 12.0 window (the same measured
-            //   middle the pre-fix radius used: the vent crawl spot must read 6 at 3.9, the gate door
-            //   must not at 24.1). The intersection keeps the wall gate this task fixes (the 07000008
-            //   east balcony reads ctx 3 pre-fix at 11.1 through the wall — its cel is not the icon's;
-            //   the wall is the difference) and every measured pin. When the port's FindCel resolves
-            //   cels exactly like the game's, the distance factor can drop.
-            //   Window 12.0 → 6.0 (fix-context-hints2): the driver's 2026-10-14 PCSX2 side-by-side
-            //   pins 07000005's grapple spot (16.5, 29.6, 58.6) — 8.17 from the ctx-6 icon[3]
-            //   (24.20, 31.93, 60.01), same port cel 15 — at NO context and NO "Press Action" [L
-            //   PCSX2 2026-10-14], while the vent crawl spot still reads 6 at 3.9 [L PCSX2
-            //   2026-10-13]. The middle must sit between them: 6.0 (both icons' own world spheres
-            //   are r 2.276 [D probe], so the game's cel-chain arm at 3.9 is pure cel occupancy;
-            //   the port's coarse buckets need the [S] distance factor until FindCel matches).
+            //   INTERSECTION: the straddle set AND the game's own SPHERE test (fix-wallhug-prompt).
+            //   Window 12.0 → 6.0 → THE GAME'S SPHERE (fix-context-hints2 → fix-wallhug-prompt): the
+            //   driver's 2026-10-14 PCSX2 side-by-side pins 07000005's grapple spot (16.5, 29.6, 58.6)
+            //   — 8.17 from the ctx-6 icon[3] (24.20, 31.93, 60.01), same port cel 15 — at NO context
+            //   and NO "Press Action" [L PCSX2 2026-10-14], while the vent crawl spot still reads 6
+            //   [L PCSX2 2026-10-13]. The game's exact volume is NOT a flat window at all: the icon
+            //   writes only into the player object its own obj+0xd0 chain names, and `Collide_Pick`
+            //   0x1eb320 admits a candidate object ONLY when its world sphere meets the picker's
+            //   sphere — `Vec_SqDist3D(picker+0x60, obj+0x80) < (picker+0x6C + obj+0x8C)²` [M
+            //   0x1eb320 LAB_001eb4e4; the picker's +0x6C copies +0x8C = the player's world-sphere
+            //   radius 1.0576 (L M_CONTROL+0x8C, ee_start_05 player 0 standing), the icon's +0x8C is
+            //   its `Control_BuildWorldSph` 0x133070 radius — r 2.2757 on 05's ctx-6 icons [D probe]],
+            //   then `Collide_Intersect` 0x1ebaa8's LAB_001ebf04 re-tests sphere-sphere and the chain
+            //   keeps only overlapping pairs. So arm = `dist(bond.sphere_centre(), icon.centre) <
+            //   1.0576 + icon.radius`, gated by the straddle-cel set (the cel-cull stand-in). The
+            //   measured pins all sit the right side of 3.333: the crawl out-point is 3.28 from
+            //   icon[1] (arms), the grapple spot 8.17 from icon[3] (silent), the gate door 24.06
+            //   (0xFF). The old [S] 6.0 window measured Bond's FEET, not the sphere centre, and
+            //   reached ~1.8× past the game's shell — the user's "its interaction prompt area is a
+            //   bit too large. Like I'm walking away from it and I still see it" (05 trench ledge).
             self.bond.icon_ctx = 0xff;
             let bond_cell = find_cell_raycast(&self.cel_graph, self.bond.pos, Some(&self.world));
             for (ii, icon) in self.icons.iter().enumerate() {
@@ -2068,7 +2082,20 @@ impl Sim {
                 let Some(cells) = self.icon_cels.get(ii) else { continue };
                 if cells.is_empty() { continue; }
                 if !bond_cell.is_some_and(|bc| cells.contains(&bc)) { continue; }
-                let near = (icon.centre[0] - self.bond.pos[0]).powi(2) + (icon.centre[1] - self.bond.pos[1]).powi(2) + (icon.centre[2] - self.bond.pos[2]).powi(2) < 36.0;
+                // The game's sphere-sphere candidate filter [M Collide_Pick 0x1eb320 LAB_001eb4e4]:
+                // `Vec_SqDist3D(picker+0x60, obj+0x80) < (picker+0x6C + obj+0x8C)²` — the PICKER's
+                // radius is the HITTEST's own +0x8C (copied to +0x6C at 0x1eb320:99), a field of the
+                // pick sphere, NOT the object's world sphere (1.0576 [L M_CONTROL+0x8C] — the
+                // previous tasks' hint-marker stand-in). The measured pins bracket it: the 05 crawl
+                // out-point arms at 3.00 from icon[1] (p > 0.73), the grapple spot stays silent at
+                // 8.17 from icon[3] (p < 5.9), the gate door silent at 24.06, and the 07000008
+                // west-ledge cable grab arms at 3.47 from the r-1.1638 icon on the jump press
+                // [M fix_08_walls_live's probe spot] (p ≥ 2.31) — 2.5 sits inside every bracket [S;
+                // the report lists the live obj+0xd4+0x8C read]. `bond.sphere_centre()` is the
+                // ported player sphere centre, NOT the root `bond.pos` the old window measured.
+                let reach = icon.radius + 2.5;
+                let c = self.bond.sphere_centre();
+                let near = (icon.centre[0] - c[0]).powi(2) + (icon.centre[1] - c[1]).powi(2) + (icon.centre[2] - c[2]).powi(2) < reach * reach;
                 if near {
                     self.bond.icon_ctx = icon.ctx;
                     // `ThirdIcon_Update` 0x196e80:38-53: the type-6 icon posts the generic hint
@@ -2326,6 +2353,54 @@ impl Sim {
         let f = m[2];
         let l = (f[0] * f[0] + f[1] * f[1] + f[2] * f[2]).sqrt().max(1e-6);
         Some(([m[3][0], m[3][1], m[3][2]], f[0].atan2(f[2]), (f[1] / l).clamp(-1.0, 1.0).asin(), fov))
+    }
+
+    /// The wall-shimmy's third-person tracking camera (`Player_PositionCamera` 0x18f5d8 case 0xb →
+    /// `camera_tracking` 0x1ba5e0), Some only while the creep substate (7) runs — the user's "when I
+    /// entered a prompt it was in first person. should be 3rd person". Position, yaw, pitch (radians,
+    /// the window's Camera convention) and the FOV factor 1.0 (`viewer+0x108 = 1.0` [M 0x18f5d8:233]).
+    ///
+    /// The game, per creep tick [M 0x1ba5e0:69-110]:
+    /// 1. the carried wall's axis line — `wall+0x30` ± `Vec_Spherical_2_Cartesian(wall+0x8C,
+    ///    wall+0x54 + π/2, wall+0x58)` — with BOTH ends' Y raised **+1.0** for the creepwall's '+'
+    ///    class (the closest-point line hovers at Bond's head while he crawls) [M 0x1ba5e0:80-88];
+    /// 2. the closest point of that line to the player's position (obj+0x30) [M 0x1ba5e0:90];
+    /// 3. the camera sits at `closest − Cartesian(radius, yaw, −pitch)` with the radius the entry
+    ///    set (`viewer+0x1F0 = 4.0` [M Player_CollCreepWall 0x196758:123]), the yaw the wall's +0x54
+    ///    + π [M 0x1ba5e0:104-106] and the pitch the creepwall constant **0x402fede0 = 2.7486268**
+    ///    [M 0x1ba5e0:106-110] (a wall-specific ThirdPersonCameras spline only when the wall's
+    ///    BLData u16[1] (placement param 1) is set — 07000005's two 0x3F placements carry none
+    ///    [D probe], so the computed spherical is the live path);
+    /// 4. the look at the closest point, from the actual offset (the tail atan2s [M 0x1ba5e0:135-155]).
+    ///
+    /// In the port's convention (`Cartesian(r, θ, φ)` = `r·(sinθ·cosφ, −sinφ, cosθ·cosφ)` — the
+    /// wall axis [M 0x196758:86-90] pins the φ=0 slice) the offset resolves to
+    /// `cam = closest + axis_dir·(4.0·sin(2.7486268)) + up·(4.0·|cos(2.7486268)|)` with
+    /// `axis_dir = fwd(wall.yaw + π/2)` — ~1.53 along the wall from the tracked point, ~3.70 above
+    /// it, looking down at Bond. The game also draws Bond's body here (`View_SetDrawInAllViews`
+    /// [M 0x18f5d8:228]) and hides the view model (`View_SetDrawInNoViews(BLData+0x7e8)` [M :229]) —
+    /// the port has no player body mesh; the view-model hide lives in lib.rs's `view_model_entries`.
+    pub fn creep_camera(&self) -> Option<([f32; 3], f32, f32, f32)> {
+        if self.disabled || self.bond.substate != nf_game::player::SS_CREEP { return None; }
+        let w = self.creepwalls.get(self.bond.creep?)?;
+        // The tracked point: the closest point of the wall axis to Bond's pos [M 0x1ba5e0:90 —
+        // `vecutil_calculate_closest_point_on_line` clamps to the segment ends, as the port's
+        // `CreepWall::closest_point` does], with the line's Y +1.0 [M 0x1ba5e0:80-88]. Lifting both
+        // ends by a constant does not move the projected t, so the lift applies to the result.
+        let closest = w.closest_point(self.bond.pos);
+        let closest = [closest[0], closest[1] + 1.0, closest[2]];
+        // The spherical offset [M 0x1ba5e0:106-125], resolved in the port's convention (see the doc).
+        const CAM_PITCH: f32 = 2.748_626_8; // 0x402fede0 [M 0x1ba5e0:108]
+        let (sp, cp) = CAM_PITCH.sin_cos();
+        let (along, up) = (4.0 * sp, -4.0 * cp); // 1.5317 along the axis, 3.6952 up
+        let axis = [(w.yaw + std::f32::consts::FRAC_PI_2).cos(), 0.0, -(w.yaw + std::f32::consts::FRAC_PI_2).sin()];
+        let cam = [closest[0] + axis[0] * along, closest[1] + up, closest[2] + axis[2] * along];
+        // The look at the tracked point (the tail atan2s [M 0x1ba5e0:135-155]).
+        let d = [closest[0] - cam[0], closest[1] - cam[1], closest[2] - cam[2]];
+        let horiz = (d[0] * d[0] + d[2] * d[2]).sqrt();
+        let yaw = d[0].atan2(d[2]);
+        let pitch = (d[1] / horiz.max(1e-4)).clamp(-1.0, 1.0).asin();
+        Some((cam, yaw, pitch, 1.0))
     }
 
     /// The clip slot the held weapon reads and writes: the BASE's when the record is a twin (+0x05
@@ -2749,7 +2824,14 @@ impl Sim {
                 let script = self.gun.firing_anim_script(flags, u16::from_le_bytes([w[2], w[3]]), self.gun.clip, rd(0xb0), rd(0xb4), &mut self.drones.rng);
                 if script != 0 && !(was_fire_state && flags & 0x100400 != 0 && fire_anim_len != 0) {
                     self.view_script = script;
-                    (self.view_time, self.view_speed) = (0.0, 1.0);
+                    // [M `Player_WeaponFiring` 0x1a5460:676-685]: a record with +0x6C & 0x400 and a +0xB4
+                    // script enters view state 0xb and the just-queued fire script plays at 1.5×
+                    // (`*(script + 0x98) = 0x3fc00000`) — the hand grenades 0x34..0x37 [L +0x6C 0x8c08/0x8c0a].
+                    // Measured in PCSX2 (07000015, the frag): script time +1.5 per frame from the press,
+                    // frame 26 (the release, +0x44) at +17 frames. At 1.0 the port released at +25 with the
+                    // hand still on the pin (the user's report, four rounds).
+                    let speed = if rd(0x6c) & 0x400 != 0 && rd(0xb4) != 0 { 1.5 } else { 1.0 };
+                    (self.view_time, self.view_speed) = (0.0, speed);
                 }
             } else if self.gun.reload_state != 0 && was_reloading == 0 {
                 // Reload just started [M Player_WeaponFiring's shared tail 0x1a6250-0x1a631c]: state 6
@@ -2811,6 +2893,12 @@ impl Sim {
                     if flags & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) {
                         self.view_script = fire_last;
                         (self.view_time, self.view_speed) = (0.0, 1.5);
+                    } else if rd(0x6c) & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) {
+                        // The grenades' state 0xb [M `Player_SetWeaponAnimObj` 0x1a2e38 case 0xb]: the fire
+                        // script stopped → `AnimScriptAdd(+0xB4)` (the next grenade coming up) at its own
+                        // 1.0 [L PCSX2: the script after the throw runs +1.0 per frame], then idle.
+                        self.view_script = fire_last;
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
                     } else {
                         if flags & 0x1000 == 0 { self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0); }
                         self.gun.end_fire_state();
@@ -3397,12 +3485,17 @@ impl Sim {
         // Script op-0x1e text commands (`Script_TextStart` 0x1db2b8 → `Text_AddMsg(-1, 0, 4,
         // Txt_BindLabel(label), 0, time)` [M]): the raw labels drain to HUD messages with the same
         // bank binding as the pickup texts (fix-script-commands).
+        // The skip's subtitle flush [M Script_FFwd 0x1dac78:28-29 `Text_FlushAllSubtitles()`]: the
+        // script-sourced lines (type 4/5 [M 0x1b15c8]) die; the pickup/INFO queues stay.
+        if std::mem::take(&mut self.drones.text_flush) {
+            self.hud.msgs.retain(|m| !m.script);
+        }
         let lang = self.lang.take();
         let mut new_msgs: std::collections::VecDeque<Msg> = Default::default();
         if let Some(lang) = lang.as_ref() {
             for (label, time) in self.drones.script_msgs.drain(..) {
                 let text = lang.bind(label).unwrap_or("").trim().to_string();
-                if !text.is_empty() { new_msgs.push_back(Msg::new(text, time as f32)); }
+                if !text.is_empty() { new_msgs.push_back(Msg { script: true, ..Msg::new(text, time as f32) }); }
             }
         }
         // The INFO pane's label drain (fix-context-hints): the game binds at POST time
@@ -3477,7 +3570,7 @@ impl Sim {
                     // scales the life by the wrapped/orig length [M 0x1b0c30's +0x18 store]. The
                     // port wraps at draw time — the font lives in the scene's HudTables, which the
                     // Sim-side drain doesn't hold; the life scaling is not ported, see the report.)
-                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false, label: 0 });
+                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false, label: 0, script: false });
                 }
                 nf_game::mission::Event::FailLabel(l) => {
                     self.hud.fail_label = l;
@@ -3743,6 +3836,9 @@ pub fn flash_mod(frame: u32) -> f32 {
 }
 
 /// A rigid mesh hung on a character's datum (`AnimObjectDraw`): world = `QuatTransToMat(q, t)` · bone world.
+/// Draw slots per gas mesh (the sim's pool holds `GasPool::CAP` = 128; a puff past this index doesn't draw).
+pub const GAS_DRAW_SLOTS: usize = 64;
+
 pub struct Attachment {
     pub character: u32,
     pub bone: usize,
@@ -3755,8 +3851,9 @@ pub struct Attachment {
     /// `Some((slot, mesh))`: a projectile mesh slot (`Bullet_update` state 0 sets the weapon's `+0x5C` mesh on the
     /// bullet object, `View_SetDrawInAllViews`, disasm 0x12e8f0-0x12e900 [M]). The slot indexes the simulation's
     /// projectile lists (0..GRENADE_SLOTS grenades, then the drone and player bullets); the mesh selects which of
-    /// the slot's per-mesh instances shows this frame.
-    pub projectile: Option<(u8, u32)>,
+    /// the slot's per-mesh instances shows this frame. u16: GRENADE_SLOTS is the game's 512-entry per-view draw
+    /// list (fix-hat-details), so the grenade range alone passes a u8.
+    pub projectile: Option<(u16, u32)>,
     /// The character's gun once dropped (`DroneWeap_DropWeapon`): drawn at the pickup's matrix while it lies there.
     pub dropped: bool,
     /// A script entity (script hash, stream, entity hash): drawn at the simulation object's matrix while it exists.
@@ -3767,7 +3864,7 @@ pub struct Attachment {
     pub aims_light: Option<u8>,
     /// `Some(slot)`: a gas/smoke puff (`Gas_Init` 0x1aacc8) showing `sim.drones.gas.puffs[slot]` —
     /// a billboarded `smoke_1_dust` quad scaled by the puff's scale, faded by its rgba.
-    pub gas: Option<u16>,
+    pub gas: Option<(u16, u32)>,
     /// fix-impacts-render: an impact-effect draw slot — kind 0 a bullet decal (`Effect_Bullet`
     /// 0x1ce8a8's 200-node FIFO, `sim.drones.effects.decals[slot]`), kind 1 a shell casing
     /// (`Bullet_InitCasingLists` 0x12fd48's 32-object pool, `sim.drones.casings.list[slot]`),
@@ -3776,6 +3873,11 @@ pub struct Attachment {
     /// the level archive resolves, the `hashtable_set_sub_object_to_entity_gfx` mesh); the slot
     /// draws only while the live effect carries THAT mesh — free slots collapse far below the world.
     pub effect: Option<(u8, usize, u32)>,
+    /// fix-silencer-visual follow-up: the silenced twins' +0x7C tube. `Player_WeaponFiring` 0x1a5460:96-110 clears
+    /// datum 0 while the view anim is in state 8 (the swap/holster) — the swap anim screws its own part-bone 43
+    /// piece on — so the tube hides during the swap (the user: "it looks like it's already on and you're screwing
+    /// it on tighter").
+    pub silencer: bool,
 }
 
 /// Viewer switches that change what the game state would be.
@@ -4198,7 +4300,17 @@ const TRACER_SLOTS: usize = 32;
 /// indices the tracer attachments use), and the last PLAYER_BULLET_SLOTS Bond's (`Sim::drones.player_bullets`).
 /// Each (slot, mesh) pair has its own Effect attachment; the live projectile's `+0x5C` mesh picks the one that
 /// shows (`Bullet_update` disasm 0x12e8f0 [M]).
-const GRENADE_SLOTS: usize = 8;
+/// fix-hat-details: GRENADE_SLOTS is the game's per-view draw-list capacity — `View_AddObjects` 0x1e62d8 adds
+/// every in-view object with a glist to a RING: `entry = viewer+8+ring·4 + cursor·0xc; cursor = (cursor+1) &
+/// (viewer+0x1a+ring·2 − 1)` — and a flying bullet rides ring 0 (`Bullet_update` state 0 clears obj+0xf0's
+/// 0x10/0x2000 [M 0x12e7b0]; ring 2's 128 is the +0xf0 & 0x2000 billboards). [L ee_snapshot.bin] viewer[0]
+/// @0x1fc6c10 and viewer[5] @0x1fc69b0 both carry sizes 512/512/128 — 512 entries per ring. The cel lists are
+/// newest-first [M `control_link_object_to_cel` 0x1346b8 prepends], so a full ring reuses the OLDEST-ADDED
+/// entries: the game keeps the NEWEST 512 objects per view. The pre-fix pool showed only the FIRST 8 grenades
+/// — with the stuck hats holding slots for their 1500-tick life [M 0x12e7b0:363-371], every later throw flew
+/// INVISIBLE (the user's "if you throw enough of them, you stop seeing them flying in the air"); the slot
+/// mapping below is therefore newest-first, so an overflow drops the oldest exactly like the ring.
+const GRENADE_SLOTS: usize = 512;
 const PLAYER_BULLET_SLOTS: usize = 8;
 /// fix-impacts-render: the impact-effect draw pools. Decals: the game's 200-node FIFO
 /// (`Effect_InitLists` 0x1cf268: `DList_Init(0x3496e0, 0x60, 200)` [M]). Casings: the 32-object
@@ -4510,10 +4622,10 @@ impl Scene {
             let character = characters.len() as u32 - 1;
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             let local = anim::quat_trans_to_mat(dt.q, dt.t);
-            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
             // The same gun as a pickup once the drone drops it.
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-            attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+            attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
             // Its muzzle flash: `DroneWeap_FireWeapon` asks `AnimGetBoneWorldTrans(obj, datum id, 1, …)`, which looks up
             // the datum whose id is id + 1 — the muzzle (07000005: 8 → 9 at x −0.77, 16 → 17 at x −1.18).
             if let Some((fmesh, rgb)) = wd.muzzle_flash(weapon as u8) {
@@ -4521,7 +4633,7 @@ impl Scene {
                 if let (Some(&(fmap, fobject)), Some(md)) = (level.by_hash.get(&fmesh), muzzle) {
                     let finst = Instance { map: fmap, object: fobject, ..winst };
                     add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                 }
             }
         }
@@ -4549,7 +4661,7 @@ impl Scene {
                     let Some(&(pmap, pobject)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
                     let pinst = Instance { map: pmap, object: pobject, matrix: ident, placement: placement.clone() };
                     add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                 }
                 // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
                 let r = &wd.records[wid as usize];
@@ -4557,7 +4669,7 @@ impl Scene {
                 if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                     let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
                     add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                    attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                 }
                 // fix-gadgets-live: the AIMS-20's four side lights [M Player_WeaponFiring 0x1a5460:256-360 —
                 // for the records whose class halfword (+0x02) is 0x1a/0x1b, `AnimDatumSetEntity(animobj,
@@ -4569,11 +4681,39 @@ impl Scene {
                 let wclass = u16::from_le_bytes([r[2], r[3]]);
                 if matches!(wclass, 0x1a | 0x1b) {
                     if let Some(&(lmap, lobject)) = level.by_hash.get(&0x0200_0132) {
-                        for bone in 8u8..=11 {
+                        // 8..0xB are DATUM ids (`AnimDatumSetEntity(animobj, datum, mesh, 0xff)` — the silencer's
+                        // datum 0 is the same call): each datum carries its own bone and local q/t, and
+                        // `AnimObjectDraw` 0x1c4490 draws the entity at `QuatTransToMat(datum.q, datum.t) · bone
+                        // world`. Treated as raw bone indices with no local, the four quads sat ~1.3 units from the
+                        // receiver — off the gun, never seen (the user: "lights I still don't show on it").
+                        for id in 8u8..=11 {
+                            let Some(dt) = skin.datums.iter().find(|d| d.id == id as u32 && d.bone >= 0) else { continue };
                             let linst = Instance { map: lmap, object: lobject, matrix: ident, placement: placement.clone() };
-                            add_instance(level, &linst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                            attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: Some(bone), projectile: None, script: None, gas: None, effect: None });
+                            add_instance(level, &linst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                            attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: Some(id), projectile: None, script: None, gas: None, effect: None, silencer: false });
                         }
+                    }
+                }
+                // fix-silencer-visual: the silenced twins' view-entity — the silencer MESH the user
+                // doesn't see ("The suppressor still stays on the gun, but visually it's not
+                // there"). While the HELD record's flags (+0x68) carry 0x800, `Player_WeaponFiring`
+                // 0x1a5460:96-110 attaches the mesh at weapon_data+0x7C to DATUM 0 of the weapon
+                // AnimObj (BL+0x7e8) every tick — `AnimDatumSetEntity(vm, 0, weapon+0x7C, 0xff)`,
+                // cleared in the swap/holster state 8 and by the twin arm (0x1a5460:111-118) on the
+                // bare record; `AnimObjectDraw` 0x1c4490 draws a datum's entity at
+                // `QuatTransToMat(datum.q, datum.t) · bone world`. The silenced twins 0x03/0x05/
+                // 0x07/0x09 carry flags 0x1884/0x188c over the bare 0x02/0x04/0x06/0x08's
+                // 0x1004/0x100c, sharing +0x7C and the fp skin [L the golden weapon table 2fd48d6d;
+                // the P2K's mesh 0x02000842, on 05 natively [D]]. The mesh rides the record's own
+                // view-model character, so it draws only while that record is held — the game's
+                // per-tick gate. (Session 102b's open decode: fix_silencer_modes_live.rs.)
+                let wflags = u32::from_le_bytes(r[0x68..0x6c].try_into().unwrap());
+                let ventity = u32::from_le_bytes(r[0x7c..0x80].try_into().unwrap());
+                if wflags & 0x800 != 0 && ventity != 0 {
+                    if let (Some(&(emap, eobject)), Some(dt)) = (level.by_hash.get(&ventity), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
+                        let einst = Instance { map: emap, object: eobject, matrix: ident, placement: placement.clone() };
+                        add_instance(level, &einst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: true });
                     }
                 }
                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None , morph_targets: None });
@@ -4634,7 +4774,7 @@ impl Scene {
                                     let Some(&(map, object)) = part.and_then(|ph| level.by_hash.get(&ph)) else { continue };
                                     let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
                                     add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                                 }
                                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)), morph_targets: morph_of_object.clone() });
                                 script_objects += 1;
@@ -4658,7 +4798,7 @@ impl Scene {
                                                 let winst = Instance { map: wmap, object: wobject, matrix: ident, placement: placement.clone() };
                                                 add_instance(level, &winst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                                 let local = anim::quat_trans_to_mat(dt.q, dt.t);
-                                                attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                                                attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                                             } else { weapons_missing += 1; }
                                         } else { weapons_missing += 1; }
                                     }
@@ -4672,7 +4812,7 @@ impl Scene {
                                 if level.maps[map].objects[object].flags & 0x8 != 0 { script_billboards.insert(hash); }
                                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
                                 add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                                attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: Some((h, si as u8, hash)), gas: None, effect: None });
+                                attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: Some((h, si as u8, hash)), gas: None, effect: None, silencer: false });
                                 script_objects += 1;
                             }
                             _ => {}
@@ -4688,7 +4828,7 @@ impl Scene {
             for slot in 0..TRACER_SLOTS {
                 let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
                 add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
             }
             // fix-gadgets-live: the gadget BEAM draws the game's own sprites, not the trail stand-in —
             // `Draw_LaserBeam` 0x1a4560 sets the beam object's gfx to 0x2000131 "lazer" (the class-'N'
@@ -4708,7 +4848,7 @@ impl Scene {
                     if let Some(&(bmap, bobj)) = level.by_hash.get(&hash) {
                         let binst = Instance { map: bmap, object: bobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
                         add_instance(level, &binst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                        attachments.push(Attachment { character: 0, bone: 0, local: binst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                        attachments.push(Attachment { character: 0, bone: 0, local: binst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
                     }
                 }
             }
@@ -4744,7 +4884,7 @@ impl Scene {
             for slot in 0..proj_slots {
                 let pinst = Instance { map: pmap, object: pobject, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: pslot_placement.clone() };
                 add_instance(level, &pinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u8, mesh)), script: None, gas: None, effect: None });
+                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u16, mesh)), script: None, gas: None, effect: None, silencer: false });
             }
         }
         for (inst, follows_camera) in &sky {
@@ -4768,6 +4908,26 @@ impl Scene {
                 let mut decal_meshes: Vec<u32> = surf.effects.iter().map(|r| r.decal).filter(|m| *m != 0).collect();
                 let mut debris_meshes: Vec<u32> = surf.effects.iter().map(|r| r.debris_mesh).filter(|m| *m != 0).collect();
                 let mut casing_meshes: Vec<u32> = surf.ammo.casing_mesh.iter().copied().filter(|m| *m != 0).collect();
+                // The gas puffs (`Gas_Init` 0x1aacc8): one draw slot per pool index for each mesh a puff can carry —
+                // SMOKE_QUAD (muzzle smoke, searchlight smoke, trails) and every `EffectInfo` gas mesh (the impact
+                // puffs: snow material 12's only effect is its 0x02000039 floor puff). The draw side (`a.gas`) was
+                // written with the gas system but no slot was ever created, so no puff ever drew — the user's
+                // "when you shoot the snow, there's no impact" (snow leaves no decal).
+                let mut gas_meshes: Vec<u32> = surf.effects.iter().flat_map(|r| r.gas.iter().map(|g| g.mesh)).filter(|m| *m != 0).collect();
+                gas_meshes.push(nf_game::gas::SMOKE_QUAD);
+                gas_meshes.sort(); gas_meshes.dedup();
+                {
+                    let gslot_placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
+                    let gident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+                    for &mesh in &gas_meshes {
+                        let Some(&(m, o)) = level.by_hash.get(&mesh) else { continue };
+                        for slot in 0..GAS_DRAW_SLOTS {
+                            let inst = Instance { map: m, object: o, matrix: gident, placement: gslot_placement.clone() };
+                            add_instance(level, &inst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                            attachments.push(Attachment { character: 0, bone: 0, local: gident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: Some((slot as u16, mesh)), effect: None, silencer: false });
+                        }
+                    }
+                }
                 for v in [&mut decal_meshes, &mut debris_meshes, &mut casing_meshes] { v.sort(); v.dedup(); }
                 let slot_placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
                 let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
@@ -4781,7 +4941,7 @@ impl Scene {
                         for slot in 0..slots {
                             let inst = Instance { map: m, object: o, matrix: ident, placement: slot_placement.clone() };
                             add_instance(level, &inst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                            attachments.push(Attachment { character: 0, bone: 0, local: inst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)) });
+                            attachments.push(Attachment { character: 0, bone: 0, local: inst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)), silencer: false });
                         }
                     }
                 }
@@ -4798,7 +4958,7 @@ impl Scene {
                 for slot in 0..4 {
                     let cinst = Instance { map: m, object: o, matrix: ident, placement: cplacement.clone() };
                     add_instance(level, &cinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: 0, bone: 0, local: cinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((3, slot, 0x0200_0273)) });
+                    attachments.push(Attachment { character: 0, bone: 0, local: cinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((3, slot, 0x0200_0273)), silencer: false });
                 }
             }
         }
@@ -4817,7 +4977,7 @@ impl Scene {
                     for slot in 0..2 {
                         let dinst = Instance { map: dm, object: dobj, matrix: dident, placement: dplacement.clone() };
                         add_instance(level, &dinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                        attachments.push(Attachment { character: 0, bone: 0, local: dinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)) });
+                        attachments.push(Attachment { character: 0, bone: 0, local: dinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)), silencer: false });
                     }
                 }
             }
@@ -5541,10 +5701,10 @@ impl Scene {
             // The gas puffs: a camera billboard with the puff's scale and spin (the game's draw path is
             // `View_DrawObjectGlist`'s obj+0xF0 & 8 billboard: viewer rotation · the object's angles, scaled
             // by obj+0xE8 [M 0x1e6780:43-65]); free slots collapse like the tracers.
-            if let Some(gi) = a.gas {
+            if let Some((gi, gmesh)) = a.gas {
                 let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
                 let Some(s) = self.sim.as_ref() else { return far };
-                let Some(g) = s.drones.gas.puffs.get(gi as usize) else { return far };
+                let Some(g) = s.drones.gas.puffs.get(gi as usize).filter(|g| g.mesh == gmesh) else { return far };
                 let (c, sn) = g.spin.sin_cos();
                 let (rx, ry) = (opts.right, opts.up);
                 let (r2, u2) = ([rx[0] * c - ry[0] * sn, rx[1] * c - ry[1] * sn, rx[2] * c - ry[2] * sn],
@@ -5616,6 +5776,11 @@ impl Scene {
                 let b = self.sim.as_ref().and_then(|s| s.drones.bullets.get(slot)).filter(|b| b.state == 1);
                 return match b { Some(b) => tracer_matrix(b), None => [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]] };
             }
+            // The silencer tube hides during the variant swap (state 8) — the game clears datum 0 there
+            // [M 0x1a5460:96-110]; the swap anim's own piece is what gets screwed on.
+            if a.silencer && self.sim.as_ref().is_some_and(|s| s.gun.switch_state == 8) {
+                return [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
+            }
             if let Some((slot, mesh)) = a.projectile {
                 // A projectile-mesh slot: visible only while the slot's live projectile flies AND carries THIS
                 // attachment's mesh (the game's `hashtable_set_object_to_entity_gfx(obj, weapon+0x5C)`). The drawn
@@ -5626,7 +5791,12 @@ impl Scene {
                 let Some(s) = self.sim.as_ref() else { return far };
                 let norm = |v: [f32; 3]| { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(); if l > 1e-9 { [v[0] / l, v[1] / l, v[2] / l] } else { [0.0, 1.0, 0.0] } };
                 let (pos, dir, live_mesh): ([f32; 3], [f32; 3], u32) = if (slot as usize) < GRENADE_SLOTS {
-                    match s.drones.grenades.get(slot as usize) {
+                    // fix-hat-details: newest-first slot mapping — the game's draw ring keeps the NEWEST
+                    // objects when a frame's adds overflow (the cel lists are newest-first [M
+                    // `control_link_object_to_cel` 0x1346b8], so the reused entries are the oldest); with
+                    // ≤ GRENADE_SLOTS live projectiles every one draws (the ring never bites below 512).
+                    let gi = if s.drones.grenades.len() > GRENADE_SLOTS { s.drones.grenades.len() - GRENADE_SLOTS + slot as usize } else { slot as usize };
+                    match s.drones.grenades.get(gi) {
                         Some(g) if g.state < 2 => {
                             // fix-satchel-tripbomb: a stuck satchel/tripbomb draws aligned to the
                             // NEGATED surface normal (the stick arm's `Mat_Align2Dir(obj+0x90,
@@ -5647,6 +5817,10 @@ impl Scene {
                     }
                 } else {
                     match s.drones.player_bullets.get(slot as usize - GRENADE_SLOTS - TRACER_SLOTS) {
+                        // The ridden guided rocket is never drawn in its own camera: `Player_PositionCamera`
+                        // 0x18f5d8 case 0xc `View_SetDrawInOtherViewsOnly(BL+0x878, view)` [M]. Drawing it put
+                        // the eye inside the rocket's mesh — the big dark octagon the user saw instead of the view.
+                        Some(b) if b.guided_cam && s.missile_cam.is_some() => return far,
                         Some(b) if !b.dead => (b.pos, b.dir, s.weapons.projectile_mesh(b.weapon as usize)),
                         _ => return far,
                     }
@@ -5792,7 +5966,8 @@ impl Scene {
                 // in-hand weapon's lights draw; the blink/off arms run here:
                 // - idle > 15 → bone 8 blinks on GameState+0x76 % 40's 20/40 duty [M 0x1a5460:264] — the
                 //   port's frame counter stands in for GameState+0x76 [S];
-                // - idle > 45 → all four cleared [M 0x1a5460:348];
+                // - the all-off gate is record-dependent (fix-aims20-lights-render below): +0x93a in
+                //   burst, clip[0x1A] in grenade [M 0x1a5460 disasm 0x1a5bf4-68];
                 // fix-aims20-modes-lights: the bone-9/10/11 gates, previously unmeasured/always lit —
                 // the ground truth measured the display: grenade rounds 0 → red, red, dark, red; the
                 // long-no-anim state → red, dark, red, red; all four lit with rounds present.
@@ -5807,7 +5982,21 @@ impl Scene {
                 let Some(s) = self.sim.as_ref() else { return collapse(&datum) };
                 if !active { return collapse(&datum); }
                 let idle = s.drones.aims_idle;
-                if idle > 45 { return collapse(&datum); }
+                // fix-aims20-lights-render: the all-off gate is RECORD-DEPENDENT [M 0x1a5460 disasm
+                // 0x1a5bf4-68]. The C's line-312 `sVar5 = *(short *)(iVar1 + 0x93a)` in the else arm is a
+                // decompiler artifact: the BNEL at 0x1a5bf8 (record id != 0x1a → jump 0x1a5c40) EXECUTES
+                // its delay slot `lh $v0, 0x2f0($s2)`, so the `FRAME_RATE * 45.0 <` compare at 0x1a5c60
+                // reads **clip[0x1A]** (the burst slot, BL+0x2f0) when the held record is 0x1b, and the
+                // idle counter +0x93a (the reload at 0x1a5c3c) only when it is 0x1a. The disc's burst mag
+                // is 30 [L weapon_data 0x1a +0x92], so in grenade mode the gate can never fire — the row
+                // stays lit while idle, as the ground truth measured ("staying lit while idle",
+                // docs/live/2026-10-14, "The side lights"). Burst mode keeps the 0.75 s dead-still all-off.
+                let all_off = if s.gun.weapon == 0x1a {
+                    idle > 45
+                } else {
+                    s.drones.inventory.clip.get(0x1a).copied().unwrap_or(0) > 45
+                };
+                if all_off { return collapse(&datum); }
                 if bone == 8 && idle > 15 && s.drones.frame % 40 > 20 { return collapse(&datum); }
                 if bone == 9 && s.drones.aims_raise == 0 { return collapse(&datum); }
                 if bone == 10 || bone == 11 {
@@ -6242,7 +6431,7 @@ impl Scene {
         // The gas puffs' live rgba (the object's obj+0x103..0x106 bytes the draw reads [M 0x1ab2d0 tail]):
         // read straight from the pool — the alpha byte fades the quad out.
         let gas_rgba: Vec<Option<[u8; 4]>> = self.attachments.iter().map(|a| {
-            a.gas.and_then(|gi| self.sim.as_ref().and_then(|s| s.drones.gas.puffs.get(gi as usize))
+            a.gas.and_then(|(gi, gm)| self.sim.as_ref().and_then(|s| s.drones.gas.puffs.get(gi as usize).filter(|g| g.mesh == gm))
                 .map(|g| g.rgba.map(|c| c.round().clamp(0.0, 255.0) as u8)))
         }).collect();
         // The corpse fade (fix-ai-remainder; G-026): the game's `NDrone2_FadeOut` 0x172dd8 decays the
