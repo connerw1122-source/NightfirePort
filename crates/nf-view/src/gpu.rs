@@ -211,7 +211,7 @@ pub fn alpha_shaped(rgba: &[u8]) -> bool {
 
 /// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre + radius.
 #[derive(Clone, Copy)]
-struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32, node: u32, lflags: u16 }
+struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32, node: u32, lflags: u16, cam_pick: bool }
 
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
@@ -490,7 +490,7 @@ impl Renderer {
         // entries front-to-back. `Material::chain` carries the room's build-time parse-rank fallback, `node` its
         // per-frame chain cel (u32::MAX = a distance-keyed entry).
         let draws: Vec<DrawCall> = scene.materials.iter().zip(&material_tex)
-            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain, node: m.node, lflags: m.lflags }).collect();
+            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain, node: m.node, lflags: m.lflags, cam_pick: m.cam_pick }).collect();
         let fog = scene.fog;
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -671,7 +671,7 @@ impl Renderer {
             // sat nearer a lamp than the cel's centre does, so the walls over-lit (the "brighter,
             // harder falloff" symptom). Room-class primaries: `Material::node` (the per-frame
             // chain cel) inside a room cel.
-            let cel_pick = draw_light_sphere(dc.cel, dc.node, dc.centre, dc.radius, &self.cel_spheres);
+            let cel_pick = light_pick_sphere(dc.cam_pick, dc.cel, dc.node, dc.centre, dc.radius, eye, &self.cel_spheres);
             let (lp, lc) = self.lights.pick2([cel_pick.0[0], cel_pick.0[1], cel_pick.0[2], cel_pick.1], dc.lflags as u32);
             for (i, v) in lp.iter().chain(lc.iter()).enumerate() { s[24 + i * 4..28 + i * 4].copy_from_slice(v); }
         }
@@ -931,6 +931,17 @@ pub fn draw_light_sphere(cel: Option<u16>, node: u32, centre: [f32; 3], radius: 
         if let Some(k) = cel.and_then(|k| cel_spheres.get(k as usize)) { return *k; }
     }
     (centre, radius)
+}
+
+/// fix-shading-parity2: `View_SetupRenderModes2` 0x1e7908 (the `AnimObjectDraw` 0x1c4490:118-122 arm
+/// for skins with BOTH skinned main meshes and rigid extra parts, `AnimProcessSkinData` 0x1bd500's
+/// runtime skin+0x2c/0x2d) picks its two lights from the CAMERA's sphere — viewer+0xc0/c4/c8 with
+/// radius 0x40000000 = 2.0 [M 0x1e7908:24-28] — not the object's. `cam_pick` draws (every draw of
+/// such a skin; its attachments ride the same upload) use [eye, 2.0]; everything else keeps the
+/// cel/object sphere above.
+pub fn light_pick_sphere(cam_pick: bool, cel: Option<u16>, node: u32, centre: [f32; 3], radius: f32, eye: [f32; 3], cel_spheres: &[([f32; 3], f32)]) -> ([f32; 3], f32) {
+    if cam_pick { return (eye, 2.0); }
+    draw_light_sphere(cel, node, centre, radius, cel_spheres)
 }
 
 pub fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
