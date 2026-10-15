@@ -192,9 +192,14 @@ fn golden_weapon_models_resolve_on_every_story_level() {
         actual.push('\n');
     }
     eprintln!("---- actual table ----\n{actual}---- end ----");
-    // The pinned golden (numbers only, measured with the session union above). The four nonzero
+    // The pinned golden (numbers only, measured with the session union above). The nonzero
     // miss columns are the game's own artifacts, each measured:
-    // - 07000001/03 proj_miss 1: the stun-throwing guards (param 11 selects weapon 0x36 [M
+    // - proj/proj_miss (re-measured 2026-10-15, fix-start-loadouts): the proj lanes count the
+    //   START LOADOUT's own projectile meshes (Player_InitAmmoWeapons 0x1a17f8 + the per-level
+    //   Player_InitWeapon 0x1a7ef8 kit) on top of the placements'; the misses are kit meshes the
+    //   session union has not loaded by that level — `Bullet_update` skips the draw when the
+    //   hashtable misses (the `iVar14 == 0` arm [M 0x12e7b0]), so the port skips them too.
+    // - 07000001/03's guard proj_miss: the stun-throwing guards (param 11 selects weapon 0x36 [M
     //   NDrone2_DefaultInit 0x14b300]) whose stun mesh 0x0200071f is on NO archive the session has
     //   loaded by those levels [D scan] — `Bullet_update` skips the draw when the hashtable misses
     //   (the `iVar14 == 0` arm [M 0x12e7b0]), so the port skips it too.
@@ -203,45 +208,45 @@ fn golden_weapon_models_resolve_on_every_story_level() {
     //   guard unarmed.
     let expected = format!("{GOLDEN_HEADER}
 \
-07000001	20	19	0	19	0	6	0	0	1	19
+07000001	20	19	0	19	0	6	0	10	7	19
 \
-07000002	25	21	0	21	0	8	0	1	0	19
+07000002	25	21	0	21	0	8	0	10	7	19
 \
-07000003	20	17	0	17	0	5	0	0	1	19
+07000003	20	17	0	17	0	5	0	10	7	19
 \
-07000004	1	0	1	1	0	4	0	1	0	20
+07000004	1	0	1	1	0	4	0	10	7	20
 \
-07000005	16	16	0	13	0	6	0	0	0	22
+07000005	16	16	0	13	0	6	0	10	7	22
 \
-07000006	32	31	0	23	0	11	0	0	0	22
+07000006	32	31	0	23	0	11	0	10	7	22
 \
-07000007	58	8	0	8	0	3	0	0	0	15
+07000007	58	8	0	8	0	3	0	10	7	15
 \
-07000008	26	26	0	26	0	8	0	1	0	18
+07000008	26	26	0	26	0	8	0	10	7	18
 \
-07000009	6	0	0	0	0	3	0	0	0	19
+07000009	6	0	0	0	0	3	0	10	7	19
 \
-0700000a	20	0	0	0	0	5	0	0	0	19
+0700000a	20	0	0	0	0	5	0	10	7	19
 \
-0700000b	10	10	0	10	0	5	0	1	0	25
+0700000b	10	10	0	10	0	5	0	10	7	25
 \
-0700000c	40	40	0	40	0	15	0	1	0	23
+0700000c	40	40	0	40	0	15	0	12	5	23
 \
-0700000d	41	41	0	41	0	16	0	0	0	23
+0700000d	41	41	0	41	0	16	0	12	5	23
 \
-07000011	37	32	0	32	0	13	0	4	0	11
+07000011	37	32	0	32	0	13	0	14	3	11
 \
-07000012	32	28	0	28	0	18	0	5	0	15
+07000012	32	28	0	28	0	18	0	14	3	15
 \
-07000013	12	12	0	12	0	7	0	3	0	16
+07000013	12	12	0	12	0	7	0	15	2	16
 \
-07000014	61	61	0	61	0	32	0	7	0	19
+07000014	61	61	0	61	0	32	0	18	1	19
 \
-07000015	20	20	0	20	0	12	0	2	0	20
+07000015	20	20	0	20	0	12	0	16	1	20
 \
-07000016	20	16	2	18	0	17	0	3	0	20
+07000016	20	16	2	18	0	17	0	16	1	20
 \
-0700001b	20	19	0	18	0	7	0	2	0	2
+0700001b	20	19	0	18	0	7	0	17	1	2
 ");
     let diffs = nf_formats::golden::diff_tsv(&expected, &actual);
     assert!(diffs.is_empty(), "the weapon-model golden changed:\n{}\nactual:\n{actual}", diffs.join("\n"));
