@@ -13604,3 +13604,12 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   plus rng_live/ai_live/drone_portcheck_live/fields_live/pickup_live/trig_live/tuning_live/
   level_live/diff_calls/spawner_kill = 65/65), 0 failed; the first full-suite pass failed only the
   2 no-GPU fix_0c_pylon_live render tests (wgpu request_adapter panic — lesson 6, unrelated).
+
+## net-determinism (2026-10-15, branch s/net-determinism) — lockstep audit, started
+- Task: prove the MP match sim (mp-core/mp-bots/match-rules/MpSettings) is a pure function of
+  (settings, seed, per-tick inputs): audit nondeterminism sources (wall clock, HashMap order,
+  uninit/order, threads, float paths), check RNG seeding (game's Rand_*), deliver state_hash(&MpWorld)
+  -> u64 (integers + f32 bit patterns), a recorded-input replay harness, and tests: two independent
+  sims, same inputs, 10 000 ticks (bots on, every scenario), identical hashes every tick; sister test
+  proving the hash catches a one-bit difference. Doc: docs/systems/net-lockstep.md. Networking itself
+  is NOT this task — determinism only.
