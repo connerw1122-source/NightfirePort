@@ -13106,3 +13106,23 @@ Stage Summary:
   head_look_live/ai_traces_live/fix_weapon_effects_live/anim_events_live/fix_searchlight_remainder_live/
   drone_portcheck_live/exact_vs_host_probe = 37/0/1. Total 102 passed / 0 failed / 5 ignored; the full suite
   didn't fit the window (background jobs die here), the affected paths are covered.
+
+---
+Task ID: drive-ptp
+Agent: drive-ptp worker
+Task: port the PTP handover block (Boot_GetPTPData 0x1c8198), the 12 PlrStats driving slots, and the ACTION↔DRIVING level-transition hook (nf-view)
+
+Work Log:
+- Measured the full handover chain: Boot_GetPTPData 0x1c8198 (every PTP offset it writes, block 0x31c090 size 0xa50), psiLaunchDriving 0x120af0 (copy to 0x100000, +0x97c = 1), DRIVING main 0x174bf0 (the +0x960 gate, the +0x974 index → key switch with the 8 [D] strings, the +0x984 status map 1→0/2→1/3,4→2, the exit tail: next index + next key + FUN_00300058(0x100000, flag)), FUN_00300058 0x300058 (the +0x4b4 gate, +0x97c = result, BASE.ELF), Boot_LoadPTPData 0x1c8560 (the return mirror: +0x978 → Mission_SetStatus 0→6/4→3/else→2, GameState+0x28 = 0x40000036/0x4000001c/0x40000043, resume = ResetMap_LevelToLoad(0x7000048) ALWAYS, PlrStats_SetDrivingData)
+- Measured ResetMap_LevelToLoad 0x1d3800 (only 0x900000X ids push GameFlow state 9 — PTP+0x974 = GameState._8_4_ − 0x9000000) and Mission_Update 0x182c60 case 6's 8 on-foot→interlude pairs
+- Measured PlrStats_Get/SetDrivingData 0x199ac8/0x199b18: 12 entries, stride 0x3c, +0x00 record ptr, +0x18 id, values at record+8; table 0x2bbda0..0x2bc5c8; boot state all-zero [L ee_start_05.bin]
+- Wrote crates/nf-game/src/ptp.rs: PtpBlock (every field both sides touch, offsets in the doc comments), DrivingStats, DriveResult/DriveReturn (the dev stand-in), interlude_drive_index [S], 9 unit tests
+- nf-view hook: the LevelEnd arm's interlude branch → pub Sim::ptp_handover (scene.rs); lib.rs applies the stashed DriveReturn to the reloaded session (the mission status + the 12 slots, Boot_LoadPTPData's mirror)
+- Drones: three additive fields (driving_stats/driving_result/driving_return), own lines per merge lesson 4
+- Tests: walk_07000004_ptp_live (4, NF_ISO, the real load+step_bond path) — the kill route now runs the banner into the handover (resume armed at 0x07000048 cold, result 1 → MissionState 6, key paris_mis01); the Fail sister; the slots' carry. Pre-fix the first two fail (the handover never ran) — the reproduce-first record
+- docs/atlas/driving.md: the §2 "Ported (drive-ptp)" status block + the header status
+- Suite on the final merged tree (a1cb5b36), foreground chunks: 886 passed / 3 failed / 26 ignored + 1 OOM crash — the 3 = the known no-GPU pylon set, the crash = fix_death_restart_live OOM (dmesg global_oom, 4 GB box, does not intersect the change)
+
+Stage Summary:
+- The ACTION↔DRIVING handover now runs end to end in the port: a mission-complete on an arc-ending level builds the PTP block, skips the drive with a dev-chosen result, and resumes ACTION at the front end with the status and stats carried
+- Open [S] with live checks in docs/reports/drive-ptp.md: the interlude→drive-index pairing (the hub menu's sp_level table, unread) and PTP+0x978's DRIVING-side writer
