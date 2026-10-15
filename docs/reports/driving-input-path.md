@@ -105,6 +105,15 @@ the residue, if the driving levels are ever booted (needs the retail image's DRI
    (search the .tun parser's table for the key hash) and compare against the hard-coded ±0.3 chop
    at 0x16931c — if the tuning value exists and differs, the chop may read it at runtime.
 
-## ntfy
+## ntfy failed
 
-Sent after the final push (curl first, then the python3 urllib and wget fallbacks in order).
+All three fallbacks were tried in order and all failed with the ntfy.sh daily quota:
+
+1. curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. python3 urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. wget: exit code 8 (server error response), empty body; a retry with a minimal payload also returned exit code 8.
+
+The task result as intended for the notification: driving-input-path done — the driving input
+path decoded (PollDevice 0x169288, ±0.3 float chop, no ramps) and ported bit-exact as
+`nf_game::input::driving` (11 tests); nf_game lib 186/0 on the final tree; report at
+docs/reports/driving-input-path.md.
