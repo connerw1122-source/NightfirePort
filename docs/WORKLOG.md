@@ -12485,3 +12485,10 @@ Work Log:
 
 Stage Summary:
 - Branch s/fix-stunner-press @ c85f6796 + the report commit; the tase path ported end to end; the press verified on the real input path.
+---
+Task: fix-heads-07
+Agent: worker (sandbox web-2cf47bf2)
+Task: 109p — user 07000007 "It looks awful. I took an F12." Guests'/guards' heads at the four F12 spots look bad vs the game: check head skin texture/UVs, hair/hat attachment, head bone pose (101c's head angle), facial morph state (108c GPU morphs — coordinate), lighting (108b). Fix the head path; render the four spots before/after. Files: nf-view/src/scene.rs, nf-game/src/anim.rs.
+
+Work Log:
+- (05:28) branch s/fix-heads-07 from origin/master 0404d95b, pushed. Sandbox expiry ~07:24 UTC.
