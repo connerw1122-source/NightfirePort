@@ -1,0 +1,9 @@
+key	entry	track	articles	parts	model_symbols	geoprims	relocations	ci_items	cn_records	image_sha1
+MIS01.VIV#4	data\track\paris_mis01.crp	paris	494	1899	1890	1736	54613	994	2111	2f0000bcd4a1fd4f6b3b2bca69f70856e96b376e
+MIS11.VIV#4	data\track\uw_mis11.crp	underwater	219	730	727	1972	34404	453	2321	1536b520dd1bc460efba2610f37ffd020cc07da6
+MIS13A.VIV#4	data\track\junglea_mis13a.crp	jungle	358	1302	1283	1124	32408	431	841	6d916830b9fa102df5627b790122739ec28601b5
+MIS13B.VIV#4	data\track\jungleb_mis13b.crp	jungle	531	2152	2105	1144	42461	641	10869	39401ce247368f2f7429832c9be914935569467b
+MIS13C.VIV#4	data\track\junglec_mis13c.crp	jungle	196	780	709	556	17164	112	1276	965c24a00c0ae2ce239165faf1b6230532a89d65
+MIS3.VIV#4	data\track\snow1a_mis3.crp	snow1a	420	1843	1823	1144	40287	1160	921	caee4880090d01bfa4afe29cc1191a38c4307380
+MIS4.VIV#4	data\track\snow2a_mis4.crp	snow2a	524	1889	1889	957	36804	1505	5664	ee1da112b63e238899362eb4a785622ef9d97c49
+RACE.VIV#4	data\track\snow2a_race.crp	snow2a	521	1886	1886	942	36619	1505	5674	35f58cf9a181de811fbe5fe8ccffb41d87ef6ddb
