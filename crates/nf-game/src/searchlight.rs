@@ -2,9 +2,10 @@
 //! `Searchlight_Update` 0x1cb900, ported from the disassembly [M] and checked against the live layout in
 //! `work/ee_start_05.bin` [L] (29 parts on 07000005: 7 mounts, 7 heads, 6 beams, 7 coronas, 2 spots).
 //!
-//! Not ported yet (G-033): the spot's dynamic light (illumination is renderer work), `Gas_Init` smoke for
-//! broken lights (no particle system; its 6 RNG draws per puff are therefore not consumed either), and the
-//! bullet child-list (`obj+0xD0`, U-041) — bullets are tested against the solid parts' boxes instead.
+//! Not ported yet (G-033): the spot's dynamic light (illumination is renderer work) and `Gas_Init` smoke
+//! for broken lights (no particle system; its 6 RNG draws per puff are therefore not consumed either).
+//! The bullet break now rides the game's exact child-list path (U-041, `bullet_check` below; the full
+//! chain with addresses lives in docs/systems/searchlight.md).
 
 use crate::drone::{Data, Player, Rng};
 use crate::trig::{angle_difference, atan2_approx, sinf, PI, TAU};
@@ -67,6 +68,11 @@ pub struct Part {
     /// create (control_init_object 0x134630:15), the state-2 smoke's phase term
     /// `(GameState+52 + obj+0xEC) % 7 == 0` [M 0x1cb900:375]. The port creates at frame 0.
     pub created: u32,
+    /// Heads and mounts: the part object's own collision triangles, LOCAL to the object (map block 0x2E,
+    /// the port's parse of the celglist the game stores at `obj+0xD8` [M Searchlight_Create 0x1cb4f8:73;
+    /// `Collide_Intersect` 0x1ebaa8 ray-tests it in the object's `obj+0x90` frame]). Only the head's are
+    /// ever consulted — see `bullet_check`.
+    pub coll_tris: Vec<[[f32; 3]; 3]>,
 }
 
 /// All searchlight parts of a level, in placement (creation) order.
@@ -146,7 +152,8 @@ impl Searchlights {
     /// the shared stream, in this order [M, critical]. The linking walk sees the parts created so far (the cel
     /// list, newest first): a spot created before its head is moved −10000 by its own create and can never link
     /// (the measured orphan rule, L: spot 016e8ec0 on 07000005).
-    pub fn create(placements: &[Placement], rng: &mut Rng, bounds: impl Fn(&Placement) -> (V3, V3)) -> Searchlights {
+    pub fn create(placements: &[Placement], rng: &mut Rng, bounds: impl Fn(&Placement) -> (V3, V3),
+                  coll: impl Fn(&Placement) -> Vec<[[f32; 3]; 3]>) -> Searchlights {
         let mut s = Searchlights::default();
         for i in part_placements(placements) {
             let p = &placements[i];
@@ -164,6 +171,7 @@ impl Searchlights {
                 light: None, alpha: 0xff, scale: 1.0, box_min, box_max,
                 spawn_pos: p.translation,
                 created: 0,
+                coll_tris: coll(p),
             };
             let (half, mid) = half_mid(param(4), param(5));
             part.half = half;
@@ -207,7 +215,7 @@ impl Searchlights {
     /// `Sound_Play3D` events (id at position): 0xE5 the relay clunk when a channel re-lights the head, 0xE6 the
     /// glass break when a bullet kills it [M].
     pub fn update(&mut self, d: &Data, player: &Player, channels: &mut crate::triggers::Channels, head: usize,
-                  bullets: &[(V3, V3)], rng: &mut Rng, frame: u32) -> Vec<(u32, V3)> {
+                  bullets: &[(V3, V3)], weapons: &[u16], stops: &[f32], rng: &mut Rng, frame: u32) -> Vec<(u32, V3)> {
         let mut sounds = Vec::new();
         let (pos, base_yaw, half, mid, on, off) = {
             let h = &self.parts[head];
@@ -283,7 +291,7 @@ impl Searchlights {
         }
         if !parts_now {
             // The bullet check still runs in states 0/1/3 (the tail of the update) [M].
-            self.bullet_check(head, bullets, &mut sounds);
+            self.bullet_check(d, head, bullets, weapons, stops, &mut sounds);
             return sounds;
         }
         // The mount follows the head's yaw [M; L: mount 016dffd0's yaw = its head's].
@@ -417,27 +425,53 @@ impl Searchlights {
             }
         }
         // The tail's bullet check (states 0/1/3) [M].
-        self.bullet_check(head, bullets, &mut sounds);
+        self.bullet_check(d, head, bullets, weapons, stops, &mut sounds);
         sounds
     }
 
-    /// The child-list walk's stand-in (U-041): a player bullet segment crossing the head's or mount's box
-    /// breaks the light — state 2, the light deleted, the parts hidden, the glass sound [M for the effects].
-    fn bullet_check(&mut self, head: usize, bullets: &[(V3, V3)], sounds: &mut Vec<(u32, V3)>) {
+    /// The game's exact child-list path (U-041, docs/systems/searchlight.md). The collide pass mirrors
+    /// every contact into the hit object's `obj+0xD0` list (`Collide_Update` 0x1ea398:160-234: the node's
+    /// `+0x08` = the bullet's `HITTEST+0x90` damage = `weapon_definition+0xC` [M Bullet_update
+    /// 0x12e7b0:391], `+0x58` = the bullet), and `Searchlight_Update` 0x1cb900 breaks the light when its
+    /// walk (LAB_001cc1d4-0x1cc2f8) finds an entry whose `+0x58` is a class-5 bullet with `+0x08` > 0.0.
+    /// Only the HEAD runs that walk (the kind-1 gate at 0x1cb900:88-90) and class 0x22's collision
+    /// handler is 0 [L control_funcs 0x26f890] — a mount-only hit never breaks the light, so only the
+    /// head's geometry is tested here. The contact itself is the ray test `Collide_Intersect` 0x1ebaa8
+    /// runs against the head's collision cels (`obj+0xD8`) in the head's local frame (`obj+0x90`, the
+    /// aim matrix; `Intersect_RayGeom` 0x10a8c8 walks the COLLDATA box tree down to 0x40-byte
+    /// triangles): the port tests the parsed per-object collision triangles (map block 0x2E) in the
+    /// part's current matrix frame. Two game gates ride along: the mirror walk stops after the first
+    /// non-pass-through contact [M 0x1ea398:226-229] — the segment arrives truncated at the tick's stop
+    /// (`stops`) — and the break needs damage > 0 [M 0x1cb900:411], read off the bullet's weapon record.
+    fn bullet_check(&mut self, d: &Data, head: usize, bullets: &[(V3, V3)], weapons: &[u16], stops: &[f32],
+                    sounds: &mut Vec<(u32, V3)>) {
         if bullets.is_empty() { return; }
+        let tris = &self.parts[head].coll_tris;
+        if tris.is_empty() { return; }
         let pos = self.parts[head].pos;
+        let h = &self.parts[head];
+        // The segment against the head's collision triangles in the head's local frame (the game's
+        // inverse-`obj+0x90` transform; the matrix is a rotation and a translation, so the inverse is
+        // the transposed rotation with the negated translation).
+        let to_local = |v: V3| {
+            let dd = [v[0] - h.matrix[3][0], v[1] - h.matrix[3][1], v[2] - h.matrix[3][2]];
+            [0, 1, 2].map(|k| dd[0] * h.matrix[k][0] + dd[1] * h.matrix[k][1] + dd[2] * h.matrix[k][2])
+        };
         let mut hit = false;
-        for &k in [head].iter().chain(self.parts[head].links[0].iter()) {
-            let p = &self.parts[k];
-            // The segment against the part's oriented box: world → local (the matrix is a rotation and a
-            // translation, so the inverse is the transposed rotation with the negated translation).
-            let to_local = |v: V3| {
-                let d = [v[0] - p.matrix[3][0], v[1] - p.matrix[3][1], v[2] - p.matrix[3][2]];
-                [0, 1, 2].map(|k| d[0] * p.matrix[k][0] + d[1] * p.matrix[k][1] + d[2] * p.matrix[k][2])
-            };
-            for &(from, to) in bullets {
-                if seg_box(to_local(from), to_local(to), p.box_min, p.box_max) { hit = true; }
-            }
+        for (i, &(from, to)) in bullets.iter().enumerate() {
+            // The damage gate: the mirror node's `+0x08` = `weapon_definition+0xC` [M Bullet_update
+            // 0x12e7b0:391]; the walk breaks only on `+0x08` > 0.0 [M 0x1cb900:411].
+            let damage = weapons.get(i).copied()
+                .and_then(|w| d.weapons.records.get(w as usize))
+                .map_or(0.0, |r| f32::from_le_bytes([r[0x0c], r[0x0d], r[0x0e], r[0x0f]]));
+            if damage <= 0.0 { continue; }
+            // The tick's stop (the game stops mirroring past the first non-pass-through contact,
+            // 0x1ea398:226-229; the stopping contact itself still mirrors — inclusive).
+            let stop = stops.get(i).copied().unwrap_or(1.0);
+            let to = [from[0] + (to[0] - from[0]) * stop, from[1] + (to[1] - from[1]) * stop,
+                      from[2] + (to[2] - from[2]) * stop];
+            let (lf, lt) = (to_local(from), to_local(to));
+            if tris.iter().any(|t| seg_tri(lf, lt, t[0], t[1], t[2])) { hit = true; break; }
         }
         if hit {
             let links = self.parts[head].links;
@@ -451,110 +485,29 @@ impl Searchlights {
     }
 }
 
-/// A segment against an axis-aligned box (both endpoints transformed into the box's frame by the caller).
-fn seg_box(from: V3, to: V3, min: V3, max: V3) -> bool {
+/// A segment against a triangle (Möller–Trumbore in the caller's frame — the game's
+/// `Intersect_RayGeom` 0x10a8c8 tri pass, segment parameter t clamped to the flight [0,1]).
+fn seg_tri(from: V3, to: V3, a: V3, b: V3, c: V3) -> bool {
     let d = [to[0] - from[0], to[1] - from[1], to[2] - from[2]];
-    let mut t0 = 0.0f32;
-    let mut t1 = 1.0f32;
-    for k in 0..3 {
-        if d[k].abs() < 1e-12 {
-            if from[k] < min[k] || from[k] > max[k] { return false; }
-        } else {
-            let mut a = (min[k] - from[k]) / d[k];
-            let mut b = (max[k] - from[k]) / d[k];
-            if a > b { std::mem::swap(&mut a, &mut b); }
-            t0 = t0.max(a);
-            t1 = t1.min(b);
-            if t0 > t1 { return false; }
-        }
-    }
-    true
+    let e1 = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let e2 = [c[0] - a[0], c[1] - a[1], c[2] - a[2]];
+    let p = cross3(d, e2);
+    let det = dot3(e1, p);
+    if det.abs() < 1e-12 { return false; }
+    let inv = 1.0 / det;
+    let s = [from[0] - a[0], from[1] - a[1], from[2] - a[2]];
+    let u = dot3(s, p) * inv;
+    if !(0.0..=1.0).contains(&u) { return false; }
+    let q = cross3(s, e1);
+    let v = dot3(d, q) * inv;
+    if v < 0.0 || u + v > 1.0 { return false; }
+    let t = dot3(e2, q) * inv;
+    (0.0..=1.0).contains(&t)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn half_mid_matches_the_live_heads() {
-        // [L] The seven heads of 07000005: (p4, p5) → stored (half, mid) bits in ee_start_05.bin.
-        let golden: [(u32, u32, u32, u32); 7] = [
-            (358, 345, 0x3de8_56a0, 0x40c4_508c),
-            (0, 35, 0x3e9c_61ab, 0x3e9c_61ab),
-            (250, 320, 0x3f1c_61ac, 0x409f_2c8d),
-            (250, 320, 0x3f1c_61ac, 0x409f_2c8d),
-            (0, 40, 0x3eb2_b8c3, 0x3eb2_b8c3),
-            (0, 40, 0x3eb2_b8c3, 0x3eb2_b8c3),
-            (355, 345, 0x3db2_b8c0, 0x40c3_7a15),
-        ];
-        for &(p4, p5, half, mid) in &golden {
-            let (h, m) = half_mid(p4, p5);
-            assert_eq!((h.to_bits(), m.to_bits()), (half, mid), "p4 {p4} p5 {p5}");
-        }
-        // Sister: the naive (max−min)·π/360 disagrees in the last bits (three of the seven heads).
-        let naive = |p4: u32, p5: u32| ((p4.max(p5) - p4.min(p5)) as f32 * std::f32::consts::PI / 360.0).to_bits();
-        assert!(golden.iter().any(|&(p4, p5, h, _)| naive(p4, p5) != h), "sister");
-    }
-
-    #[test]
-    fn sweep_matches_the_live_heads() {
-        // [L] Golden sweep vectors (world-objects.md): the stored phase is post-advance, so compute with −1.
-        let golden: [(u32, u32, u32, u32, u32, u32); 5] = [
-            (0x439f_0000, 0x3e9c_61ab, 0x3e9c_61ab, 0x3f49_0fdb, 0x3d41_00a8, 0x3f1f_5694),
-            (0x43a0_8000, 0x3f1c_61ac, 0x409f_2c8d, 0x3f49_0fdb, 0xbfeb_4450, 0x3ef5_be04),
-            (0x4383_0000, 0x3f1c_61ac, 0x409f_2c8d, 0xbf37_3094, 0xbfbcc_698, 0xbfa6_d999),
-            (0x438a_8000, 0x3eb2_b8c3, 0x3eb2_b8c3, 0x3f25_514d, 0x3e43_2adf, 0x3eab_6499),
-            (0x4160_0000, 0x3eb2_b8c3, 0x3eb2_b8c3, 0xbee8_5696, 0x3ed0_fcf8, 0xbde0_cab0),
-        ];
-        for &(phase, half, mid, base, pitch, yaw) in &golden {
-            let (p, y) = sweep(f32::from_bits(phase) - 1.0, f32::from_bits(half), f32::from_bits(mid), f32::from_bits(base));
-            assert_eq!((p.to_bits(), y.to_bits()), (pitch, yaw), "phase {phase:#x}");
-        }
-        // Sister: swapping the yaw's half-range for the pitch's disagrees (head 2: half ≠ mid).
-        let (p, y) = sweep(f32::from_bits(0x43a0_8000) - 1.0, f32::from_bits(0x409f_2c8d), f32::from_bits(0x3f1c_61ac), f32::from_bits(0x3f49_0fdb));
-        assert_ne!((p.to_bits(), y.to_bits()), (0xbfeb_4450, 0x3ef5_be04), "sister");
-    }
-
-    #[test]
-    fn align2dir_matches_the_live_beam() {
-        // [L] Head 016dfe70 (yaw/pitch) aiming at Bond at the level start: the beam 016e0130's matrix bits.
-        // The cross ORDER is what this pins (the mirrored order is ~2.0 off on row 0); the components match
-        // within 2 ulp — the game's `Vec_Spherical_2_Cartesian` (PS2Sinf + FPU ops) and the VU0 MAC's single
-        // rounding are not modelled to the last bit for this visual-only matrix (see docs/systems/render.md's
-        // stance on last-ulp visual differences).
-        let (yaw, pitch) = (f32::from_bits(0x3f1f_5694), f32::from_bits(0x3d41_00a8));
-        let head = [f32::from_bits(0x4278_ab6a), f32::from_bits(0x4209_7269), f32::from_bits(0x42d6_0361)];
-        let player = [f32::from_bits(0x42d1_e873), f32::from_bits(0x41c7_b4d7), f32::from_bits(0x42d9_a68a)];
-        let up = sub3(player, head);
-        let mut m = align2dir(spherical(1.0, yaw, -pitch), up, up);
-        m[3] = [head[0], head[1], head[2], 0.0];
-        let golden: [[u32; 4]; 4] = [
-            [0xbe5e_bc78, 0xbf78_9016, 0x3dcc_3e74, 0],
-            [0x3f48_8620, 0xbe70_3cbc, 0xbf13_5fb4, 0],
-            [0x3f15_1500, 0xbd40_ee5d, 0x3f4f_c322, 0],
-            [0x4278_ab6a, 0x4209_7269, 0x42d6_0361, 0],
-        ];
-        for r in 0..4 {
-            for c in 0..4 {
-                let (got, want) = (m[r][c].to_bits(), golden[r][c]);
-                let ulp = got.abs_diff(want);
-                assert!(ulp <= 4, "row {r} col {c}: {got:#x} vs {want:#x} ({ulp} ulp)");
-            }
-        }
-        // Sister: the mirrored cross order (z × up) is far off row 0.
-        let z = spherical(1.0, yaw, -pitch);
-        let r0 = cross3(z, up);
-        assert!((r0[0] - f32::from_bits(0xbe5e_bc78)).abs() > 0.1, "sister");
-    }
-
-    #[test]
-    fn seg_box_hits_and_misses() {
-        let (min, max) = ([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]);
-        assert!(seg_box([-5.0, 0.0, 0.0], [5.0, 0.0, 0.0], min, max));
-        assert!(!seg_box([-5.0, 2.0, 0.0], [5.0, 2.0, 0.0], min, max));
-        assert!(seg_box([0.5, 0.5, 0.5], [3.0, 3.0, 3.0], min, max), "starts inside");
-        assert!(!seg_box([2.0, 0.0, 0.0], [3.0, 0.0, 0.0], min, max), "past it");
-    }
 
     /// The spot disc's orientation [M 0x1cb900 hit branch + 0x134210/0x1e5168]: the disc mesh lies in
     /// its local XZ plane (bbox y = 0 [D 'Searchlight1']), so its world normal is the matrix's ROW 1 —

@@ -5804,6 +5804,11 @@ pub struct Drones {
     /// mission-start force 1, `Menu_RunMiniMission` 0x1ffb90:22) [L ee_start_*.bin]. The difficulty
     /// page (180-fix-menus) writes it through `set_difficulty`.
     pub difficulty: u32,
+    /// The tick's stop fraction of each `bullet_paths` entry (fix-bullet-child-list): the game's
+    /// mirror walk stops after the first non-pass-through contact [M Collide_Update
+    /// 0x1ea398:226-229], so a consumer of the paths (the searchlight head's child-list test) must
+    /// see only the flight up to and including the stop. 1.0 = the bullet flew free this tick.
+    bullet_path_stops: Vec<f32>,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -5871,6 +5876,7 @@ impl Drones {
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
             // fix-06-alarm (fields on their own lines — merge lesson 4).
             sound_triggers: Default::default(),
+            bullet_path_stops: Vec::new(),
             node_doors: None,
             // fix-nav-remainder (fields on their own lines — merge lesson 4).
             node_kicks: None,
@@ -5950,6 +5956,12 @@ impl Drones {
             let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
                 else { level.maps[m].objects.get(p.index as usize) };
             obj.map_or(([0.0; 3], [0.0; 3]), |o| (o.min, o.max))
+        }, |p| {
+            // The part object's own collision cels (map block 0x2E) — the game's `obj+0xD8` celglist
+            // that `Collide_Intersect` 0x1ebaa8 ray-tests (fix-bullet-child-list, U-041).
+            let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
+                else { level.maps[m].objects.get(p.index as usize) };
+            obj.and_then(|o| o.collision.as_ref()).map_or(Vec::new(), |c| c.triangles().to_vec())
         });
         // `Searchlight_Create`'s kind-2 light record (0x1cb4f8:150-172): white, radius 500, intensity 1.0,
         // kind 2, permanent. The node's position (+0x10) is the PLACEMENT position written before the
@@ -6243,6 +6255,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         self.player_impacts.clear();
         self.bullet_paths.clear();
         self.bullet_path_weapons.clear();
+        self.bullet_path_stops.clear();
         // `Collide_Update` 0x1ea398's first loop clears every hit list at the head of the frame —
         // the fusebox wires' hit flags are per-tick only.
         for fb in &mut self.fuseboxes { fb.clear_hits(); }
@@ -6510,6 +6523,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 }
                 _ => b.pos = [b.pos[0] + b.dir[0] * step, b.pos[1] + b.dir[1] * step, b.pos[2] + b.dir[2] * step],
             }
+            // fix-bullet-child-list: the tick's stop fraction (see the `bullet_path_stops` field).
+            // The game's mirror walk (Collide_Update 0x1ea398:160-234) stops after the first
+            // non-pass-through contact [M 0x1ea398:226-229] — the stopping contact itself still
+            // mirrors, so the fraction is inclusive.
+            let stop_t = match (best, tw) {
+                (Some((_, _, t)), w) if w.is_none_or(|w| t < w) => t,
+                (_, Some(w)) => w,
+                _ => 1.0,
+            };
+            self.bullet_path_stops.push(stop_t.clamp(0.0, 1.0));
             // `Bullet_homing` 0x12f358 (from `Bullet_update` 0x12e7b0:483, after the move, for weapons
             // whose `+0x6C` carries 0x20000): keep/refresh the target, else scan for the nearest
             // heat-seekable object within 1000 units inside the 0.66-dot cone of the bullet's
@@ -7646,7 +7669,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             if what == 3 { let _pw = crate::prof::scope("ctl: kind 3");
                 // `Searchlight_Update` (docs/systems/world-objects.md): channels, sweep/tracking, the parts, the
                 // break check; its `Sound_Play3D` events (0xE5 relay, 0xE6 glass) enter the pool and the hearing list.
-                let evs = self.searchlights.update(d, player, &mut self.channels, index, &self.bullet_paths, &mut self.rng, frame);
+                let evs = self.searchlights.update(d, player, &mut self.channels, index, &self.bullet_paths, &self.bullet_path_weapons, &self.bullet_path_stops, &mut self.rng, frame);
                 for (id, pos) in evs {
                     match d.sfx {
                         Some(t) => { let h = t.get(id); self.play_sound_handle(pos, h); }

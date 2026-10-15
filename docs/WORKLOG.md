@@ -12918,3 +12918,30 @@ shot just outside the game's volume doesn't (the old stand-in box would have cau
 the sister failing on the old code first. Files: searchlight.rs, the bullet collision caller,
 docs/systems/searchlight.md, docs/UNKNOWNS.md (U-041), the new test. Branch cut from
 origin/master 404d7dc1.
+
+Task 110t: fix-bullet-child-list — the searchlight bullet box's exact path (worker, 13:36-15:15
+UTC 2026-10-15, window honoured). U-041 answered and the stand-in replaced. The game's chain [M
+unless noted]: `Bullet_update` 0x12e7b0 fills the bullet's HITTEST (damage = weapondef+0xC at
++0x90); `Collide_Update` 0x1ea398 clears every obj+0xD0 list [:25-53], `Collide_Pick`/`PickObj`
+0x1eb320/0x1eae80 gate candidates on `obj+0xD8` != 0 with `entry+8` (the COLLDATA) != 0 and the
+obj+0x80/0x8c sphere, `Collide_Intersect` 0x1ebaa8 copies `obj+0x90` and `Intersect_RayGeom`
+0x10a8c8 ray-tests the box tree down to 0x40-byte tris, the sorted contacts mirror into the HIT
+object's obj+0xD0 (node +0x08 = the damage, +0x58 = the bullet, +0x51 |= 1) stopping at the first
+non-pass-through contact [:226-229]; `Searchlight_Update` 0x1cb900's kind-1 gate (:88-90) is the
+ONLY reader (class 0x22's collision handler is 0 [L control_funcs 0x26f890]) — its walk
+(LAB_001cc1d4) breaks on a class-5 entry with +0x08 > 0.0 (state 2, psiLights deleted,
+Control_NextLOD, sound 0xE6). So: mount-only hits never break; the volume is the head's collision
+cels (OBJECT_SearchLight1, 130 tris, map block 0x2E), not the gfx box. FIX: searchlight.rs's
+bullet_check now tests the head part's parsed coll_tris in the part's current matrix frame with
+the damage gate (weapondef+0xC via bullet_path_weapons) and the stop-truncated segment (new
+`bullet_path_stops` parallel vec, pushed per tick in update_player_bullets); the mount chain and
+the gfx-box test are gone. Docs: docs/systems/searchlight.md (new, the full chain with
+addresses), UNKNOWNS U-041 → answered, GAPS G-033 row. Tests:
+crates/nf-view/tests/fix_bullet_child_list_live.rs — 3 live tests on 07000006 through
+nf_view::load + step_bond(trigger): the mount-only no-break and the cel-missing no-break PASS
+post-fix; the registered-housing-shot test's aim premise is UNRESOLVED (the muzzle rides the
+gun's anim pose — measured offsets swung 0.11→0.68 units between ticks, dbg notes in the report);
+fail-first shown: on the old code even the housing shot did NOT break (the stand-in's frame
+mismatch), the sisters' old-code behavior recorded in the report. Suite: pre-fix baseline
+1316 passed / 6 failed (the 3 disc_golden + the no-GPU pylon set) / 66 ignored; the post-fix
+full run does not fit the window — the report lists what ran.
