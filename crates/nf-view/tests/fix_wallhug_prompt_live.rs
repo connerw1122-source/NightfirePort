@@ -64,14 +64,15 @@ fn the_crawl_prompt_arms_only_inside_the_games_sphere() {
     let mouth = [b[0] - (a[0] - b[0]) / w.half_len.max(1e-3), w.pos[1], b[2] - (a[2] - b[2]) / w.half_len.max(1e-3)];
     let (icon_i, d_mouth) = nearest_ctx6(&sim, mouth);
     assert!(d_mouth < 3.333, "the test's mouth spot must sit inside the game's sphere (got {d_mouth:.2})");
-    // Walking away: continue along the mouth→out direction, +1.6 past it — outside 3.333, inside
-    // the old flat 6.0 window (the fail-first proof).
+    // Walking away: continue along the mouth→out direction, +2.2 past it — outside the game's
+    // shell (2.5 + 2.2757 = 4.78 around the sphere centre), inside the old flat 6.0 window (the
+    // fail-first proof).
     let icon_c = sim.icons[icon_i].centre;
     let away = [mouth[0] - icon_c[0], 0.0, mouth[2] - icon_c[2]];
     let al = (away[0] * away[0] + away[2] * away[2]).sqrt();
-    let mid = [mouth[0] + away[0] / al * 1.6, mouth[1], mouth[2] + away[2] / al * 1.6];
+    let mid = [mouth[0] + away[0] / al * 2.2, mouth[1], mouth[2] + away[2] / al * 2.2];
     let d_mid = nearest_ctx6(&sim, mid).1;
-    assert!(d_mid > 3.4 && d_mid < 6.0, "the mid spot must sit between the game's shell and the old window (got {d_mid:.2})");
+    assert!(d_mid > 5.0 && d_mid < 6.0, "the mid spot must sit between the game's shell and the old window (got {d_mid:.2})");
 
     // At the mouth: ctx 6 and the "Press Action" hint posts [M ThirdIcon_Update 0x196e80:38-44;
     // the port binds the queue into hud.info_msgs on the same tick, Msg::label keeps the id].

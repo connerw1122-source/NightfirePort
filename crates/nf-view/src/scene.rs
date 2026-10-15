@@ -2064,11 +2064,18 @@ impl Sim {
                 if cells.is_empty() { continue; }
                 if !bond_cell.is_some_and(|bc| cells.contains(&bc)) { continue; }
                 // The game's sphere-sphere candidate filter [M Collide_Pick 0x1eb320 LAB_001eb4e4]:
-                // the player's world sphere (r 1.0576 [L M_CONTROL+0x8C]) vs the icon's [M
-                // Control_BuildWorldSph 0x133070] — `bond.sphere_centre()` is the ported player
-                // branch, NOT the root `bond.pos` the old window measured.
+                // `Vec_SqDist3D(picker+0x60, obj+0x80) < (picker+0x6C + obj+0x8C)²` — the PICKER's
+                // radius is the HITTEST's own +0x8C (copied to +0x6C at 0x1eb320:99), a field of the
+                // pick sphere, NOT the object's world sphere (1.0576 [L M_CONTROL+0x8C] — the
+                // previous tasks' hint-marker stand-in). The measured pins bracket it: the 05 crawl
+                // out-point arms at 3.00 from icon[1] (p > 0.73), the grapple spot stays silent at
+                // 8.17 from icon[3] (p < 5.9), the gate door silent at 24.06, and the 07000008
+                // west-ledge cable grab arms at 3.47 from the r-1.1638 icon on the jump press
+                // [M fix_08_walls_live's probe spot] (p ≥ 2.31) — 2.5 sits inside every bracket [S;
+                // the report lists the live obj+0xd4+0x8C read]. `bond.sphere_centre()` is the
+                // ported player sphere centre, NOT the root `bond.pos` the old window measured.
+                let reach = icon.radius + 2.5;
                 let c = self.bond.sphere_centre();
-                let reach = icon.radius + 1.0576;
                 let near = (icon.centre[0] - c[0]).powi(2) + (icon.centre[1] - c[1]).powi(2) + (icon.centre[2] - c[2]).powi(2) < reach * reach;
                 if near {
                     self.bond.icon_ctx = icon.ctx;
