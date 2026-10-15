@@ -3827,6 +3827,9 @@ pub fn flash_mod(frame: u32) -> f32 {
 }
 
 /// A rigid mesh hung on a character's datum (`AnimObjectDraw`): world = `QuatTransToMat(q, t)` · bone world.
+/// Draw slots per gas mesh (the sim's pool holds `GasPool::CAP` = 128; a puff past this index doesn't draw).
+pub const GAS_DRAW_SLOTS: usize = 64;
+
 pub struct Attachment {
     pub character: u32,
     pub bone: usize,
@@ -3852,7 +3855,7 @@ pub struct Attachment {
     pub aims_light: Option<u8>,
     /// `Some(slot)`: a gas/smoke puff (`Gas_Init` 0x1aacc8) showing `sim.drones.gas.puffs[slot]` —
     /// a billboarded `smoke_1_dust` quad scaled by the puff's scale, faded by its rgba.
-    pub gas: Option<u16>,
+    pub gas: Option<(u16, u32)>,
     /// fix-impacts-render: an impact-effect draw slot — kind 0 a bullet decal (`Effect_Bullet`
     /// 0x1ce8a8's 200-node FIFO, `sim.drones.effects.decals[slot]`), kind 1 a shell casing
     /// (`Bullet_InitCasingLists` 0x12fd48's 32-object pool, `sim.drones.casings.list[slot]`),
@@ -4890,6 +4893,26 @@ impl Scene {
                 let mut decal_meshes: Vec<u32> = surf.effects.iter().map(|r| r.decal).filter(|m| *m != 0).collect();
                 let mut debris_meshes: Vec<u32> = surf.effects.iter().map(|r| r.debris_mesh).filter(|m| *m != 0).collect();
                 let mut casing_meshes: Vec<u32> = surf.ammo.casing_mesh.iter().copied().filter(|m| *m != 0).collect();
+                // The gas puffs (`Gas_Init` 0x1aacc8): one draw slot per pool index for each mesh a puff can carry —
+                // SMOKE_QUAD (muzzle smoke, searchlight smoke, trails) and every `EffectInfo` gas mesh (the impact
+                // puffs: snow material 12's only effect is its 0x02000039 floor puff). The draw side (`a.gas`) was
+                // written with the gas system but no slot was ever created, so no puff ever drew — the user's
+                // "when you shoot the snow, there's no impact" (snow leaves no decal).
+                let mut gas_meshes: Vec<u32> = surf.effects.iter().flat_map(|r| r.gas.iter().map(|g| g.mesh)).filter(|m| *m != 0).collect();
+                gas_meshes.push(nf_game::gas::SMOKE_QUAD);
+                gas_meshes.sort(); gas_meshes.dedup();
+                {
+                    let gslot_placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
+                    let gident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+                    for &mesh in &gas_meshes {
+                        let Some(&(m, o)) = level.by_hash.get(&mesh) else { continue };
+                        for slot in 0..GAS_DRAW_SLOTS {
+                            let inst = Instance { map: m, object: o, matrix: gident, placement: gslot_placement.clone() };
+                            add_instance(level, &inst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                            attachments.push(Attachment { character: 0, bone: 0, local: gident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: Some((slot as u16, mesh)), effect: None, silencer: false });
+                        }
+                    }
+                }
                 for v in [&mut decal_meshes, &mut debris_meshes, &mut casing_meshes] { v.sort(); v.dedup(); }
                 let slot_placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
                 let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
@@ -5663,10 +5686,10 @@ impl Scene {
             // The gas puffs: a camera billboard with the puff's scale and spin (the game's draw path is
             // `View_DrawObjectGlist`'s obj+0xF0 & 8 billboard: viewer rotation · the object's angles, scaled
             // by obj+0xE8 [M 0x1e6780:43-65]); free slots collapse like the tracers.
-            if let Some(gi) = a.gas {
+            if let Some((gi, gmesh)) = a.gas {
                 let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
                 let Some(s) = self.sim.as_ref() else { return far };
-                let Some(g) = s.drones.gas.puffs.get(gi as usize) else { return far };
+                let Some(g) = s.drones.gas.puffs.get(gi as usize).filter(|g| g.mesh == gmesh) else { return far };
                 let (c, sn) = g.spin.sin_cos();
                 let (rx, ry) = (opts.right, opts.up);
                 let (r2, u2) = ([rx[0] * c - ry[0] * sn, rx[1] * c - ry[1] * sn, rx[2] * c - ry[2] * sn],
@@ -6378,7 +6401,7 @@ impl Scene {
         // The gas puffs' live rgba (the object's obj+0x103..0x106 bytes the draw reads [M 0x1ab2d0 tail]):
         // read straight from the pool — the alpha byte fades the quad out.
         let gas_rgba: Vec<Option<[u8; 4]>> = self.attachments.iter().map(|a| {
-            a.gas.and_then(|gi| self.sim.as_ref().and_then(|s| s.drones.gas.puffs.get(gi as usize))
+            a.gas.and_then(|(gi, gm)| self.sim.as_ref().and_then(|s| s.drones.gas.puffs.get(gi as usize).filter(|g| g.mesh == gm))
                 .map(|g| g.rgba.map(|c| c.round().clamp(0.0, 255.0) as u8)))
         }).collect();
         // The corpse fade (fix-ai-remainder; G-026): the game's `NDrone2_FadeOut` 0x172dd8 decays the
