@@ -68,6 +68,9 @@ and the two docs changed. `fix_viewmodel_zoom_live` still passes (3/3 re-run thi
   16:29 stop-new-work mark; `fix_hud_zoom_tilt_live` 3/3 and `fix_viewmodel_zoom_live` 3/3 are
   inside the partial; zero FAILED/TIMEOUT/CRASH lines). On the slim ISO only the 3 `disc_golden`
   tests (and `pss_movies_live` without the retail image) may fail — none reached, none failed.
+  After the partial, master moved and was merged (394ef4a7: mp-bots-states + fix-progress-detected-
+  hook + fix-viewmodel-zoom's tree); both zoom test files re-run 3/3 on the merged tree (their
+  delta doesn't touch the gun axes).
 
 ## What's left
 
