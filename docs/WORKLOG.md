@@ -13370,3 +13370,9 @@ Work Log (drive-crp-format):
 - Tests: mp_menu_flow.rs 9 headless (flow + back-outs + locks + bots + start checks + Quick Game +
   loader handover, each with a sister assertion) + mp_menu_lists_live.rs 5 ISO-gated (the five
   tables + the side bytes vs the disc's ACTION.ELF). 14/14 green; suite run on the final tree.
+- (20:42) dossier-pages-data: report docs/reports/dossier-pages-data.md pushed (merged tree f7d9fb6e).
+  Verification: foreground chunks (the bg suite.py is reaped by this sandbox): nf-game lib 197/197,
+  nf-view lib 9/9, nf-formats lib 76/76, nf-audio lib 9/9; menus_flow 36/36, dossier_pages 7/7 (incl. the
+  disc ACTION.ELF byte check), mp_menu_flow 9/9, dev_menu_flow 5/5; progress consumers progress_live 1/1,
+  fix_progress_live 5/5, fix_scores_handoff_live 3/3, fix_save_profile_live 4/4, campaign_flow_live 1/1.
+  Left: the main agent's draw pass for --page rewards|gadgets|weapons; Records' pre-existing % wrap noted.
