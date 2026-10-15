@@ -897,7 +897,10 @@ fn wanted_weapon_models(level: &Level, wd: &nf_formats::weapon::WeaponData, casi
         if h != 0 && h != u32::MAX && !level.by_hash.contains_key(&h) && !needed.contains(&h) { needed.push(h); }
     };
     for r in &wd.records {
-        for off in [0x80usize, 0x4c, 0x48, 0x5c] {
+        // fix-silencer-visual: the view-entity mesh (+0x7C, `AnimDatumSetEntity(vm, 0, weapon+0x7C,
+        // 0xff)` per tick on the 0x800 records — `Player_WeaponFiring` 0x1a5460:96-110) rides the
+        // give/merge path too, or a foreign-level give of a silenced twin misses the tube.
+        for off in [0x80usize, 0x4c, 0x48, 0x5c, 0x7c] {
             want(u32::from_le_bytes(r[off..off + 4].try_into().unwrap()), &mut needed);
         }
     }

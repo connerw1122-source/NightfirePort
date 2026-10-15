@@ -4589,6 +4589,28 @@ impl Scene {
                         }
                     }
                 }
+                // fix-silencer-visual: the silenced twins' view-entity — the silencer MESH the user
+                // doesn't see ("The suppressor still stays on the gun, but visually it's not
+                // there"). While the HELD record's flags (+0x68) carry 0x800, `Player_WeaponFiring`
+                // 0x1a5460:96-110 attaches the mesh at weapon_data+0x7C to DATUM 0 of the weapon
+                // AnimObj (BL+0x7e8) every tick — `AnimDatumSetEntity(vm, 0, weapon+0x7C, 0xff)`,
+                // cleared in the swap/holster state 8 and by the twin arm (0x1a5460:111-118) on the
+                // bare record; `AnimObjectDraw` 0x1c4490 draws a datum's entity at
+                // `QuatTransToMat(datum.q, datum.t) · bone world`. The silenced twins 0x03/0x05/
+                // 0x07/0x09 carry flags 0x1884/0x188c over the bare 0x02/0x04/0x06/0x08's
+                // 0x1004/0x100c, sharing +0x7C and the fp skin [L the golden weapon table 2fd48d6d;
+                // the P2K's mesh 0x02000842, on 05 natively [D]]. The mesh rides the record's own
+                // view-model character, so it draws only while that record is held — the game's
+                // per-tick gate. (Session 102b's open decode: fix_silencer_modes_live.rs.)
+                let wflags = u32::from_le_bytes(r[0x68..0x6c].try_into().unwrap());
+                let ventity = u32::from_le_bytes(r[0x7c..0x80].try_into().unwrap());
+                if wflags & 0x800 != 0 && ventity != 0 {
+                    if let (Some(&(emap, eobject)), Some(dt)) = (level.by_hash.get(&ventity), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
+                        let einst = Instance { map: emap, object: eobject, matrix: ident, placement: placement.clone() };
+                        add_instance(level, &einst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None });
+                    }
+                }
                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None , morph_targets: None });
                 view_models.insert(wid, ci as usize);
             }
