@@ -13560,3 +13560,47 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   claim did NOT verify; placement must live in the Map group's aq#N arrays 451×32 B ×3).
 - Shared-file touches: lib.rs +1 line (pub mod crp_mesh), crp.rs Record::parse made pub.
 - Report: docs/reports/drive-track-mesh.md (live checks for the main agent listed there).
+## mp-match-rules (2026-10-15, branch s/mp-match-rules)
+- Started: the multiplayer scenarios' rules in the sim — scoring, win conditions, flag/uplink/
+  objective logic, respawn rules, environment/player modifiers per scenario (Arena, Team Arena,
+  CTF, Uplink, Top Agent, Demolition, ...), from the game's mp code via the scenario ids in
+  docs/systems/mp-menus.md. Deliverable: nf-game mp rules + headless per-scenario win-condition
+  tests (numbers only), docs/systems/<name>.md, report docs/reports/mp-match-rules.md.
+
+## mp-match-rules (2026-10-15, branch s/mp-match-rules)
+- The per-scenario MP rules are ported into nf-game's mp code: `rules.rs` (new) carries kill
+  scoring (MP_PlayerKilled 0x188f70 — deaths always, the 0x10 lives copy, self-kill −1/kill +1/bot
+  golden-gun +2, the bit30==0 ∧ {0x1, 0x20000002, 0x40000800, 0x60001000} personal gate — so
+  Deathmatch/Team Arena only, never 0x10/0x400/CTF/Uplink), the TDM team-score effects (enemy kill
+  +|Δ| to the opposing team, team-kill/self-kill −|Δ| to the victim's team), the assassin block
+  (+5 target kill / +3 revenge / MP_assassinReset 0x18aa70 with the killer inheriting the role),
+  the friendly-fire gate (MP_RegisterBulletHit 0x1857c0 — MPSettings+0x198 hex = the FF word), the
+  respawn rules (MP_ReSpawn 0x185368 — the lives/state gates, streak/last-shooter/status resets,
+  health = armor_bonus + 100), the who-won decision (MP_SortOutWhoWon 0x1848d0 — 0x10's unique
+  fewest-deaths winner, FFA's single qualifier, team games never compare), the round restart
+  (MP_RestartScenario 0x183fc0 — clock 0, random site re-pick, per-slot word resets, scores kept),
+  and every objective update: CTF pickup/capture (√2 of the enemy base +1 y → team +1 carrier +1)
+  / drop / 30 s return [MP_FlagUpdate 0x1861a8], Uplink's 0.2/s owned drip + Σ-personals team
+  score + instant flip [0x186d98], KOTH's 0.2/s on-hill drip + Σ recompute [0x186ae0], Demolition/
+  Protection's HP-2000 site (destroy → attacking team +1 with the own-goal correction, timeout →
+  defenders +1, state 6) [0x1870a0], GoldenEye's both-items strike (+1 per carrier, the random
+  opposing target, complete → the opposite team +1) [0x187568] and the blueprint delivery
+  (team +1 carrier +1, 30 s reset) [0x1882d8/0x188970].
+- The core (mod.rs) gained the full end-condition (0x184268: the 0x10 out-count against
+  total_players/player_count, the time-up + frag-limit latches against the new MPGame high-score
+  tracker at hex +0x18C, demo/prot state 6) and the full MP_Update state machine (0x184bd0: state
+  1 → SortOutWhoWon, the 0x10 state-2 fall-through, the 5 s debrief/restart timers, state 4 → 5
+  without the loader — *Deviation*). MpSettings gained friendly_fire (+0x198 hex); MpSlot gained
+  kills/deaths/streak/status_bits/dead (its "+0x20 status" doc corrected to the last-shooter word).
+  The Ghidra-decimal offset convention is now documented in both the module doc and the systems
+  doc (Ghidra `._412_4_` = hex +0x19C).
+- Tests: mp_match_rules.rs, 14 headless per-scenario tests (one per scenario + FF/respawn), each
+  with a sister assertion — 14/14 green. The suite build needed disk freed (the sandbox hit 100%;
+  target/debug + caches deleted); the suite run is still going at report time — see the report.
+- Deliverable doc: docs/systems/mp-match-rules.md (every rule tagged, the deviations listed).
+- Suite on the final tree: background runs are killed between tool calls in this sandbox, so the
+  350-binary pass cannot complete here; foreground `--only` chunks on the final tree ran 94 tests
+  over 14 binaries (the mp set mp_match_rules/mp_core_live/mp_menu_flow/mp_arenas_live = 29/29,
+  plus rng_live/ai_live/drone_portcheck_live/fields_live/pickup_live/trig_live/tuning_live/
+  level_live/diff_calls/spawner_kill = 65/65), 0 failed; the first full-suite pass failed only the
+  2 no-GPU fix_0c_pylon_live render tests (wgpu request_adapter panic — lesson 6, unrelated).
