@@ -12072,6 +12072,14 @@ Work Log:
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
 
+---
+Task ID: 109b-fix-stunner-press
+Agent: stunner-press worker
+Task: fix-stunner-press — the stunner 0x4a only fires on key release (playtest 1014-1725: "It only really activates on releasing the key"). Ground truth [D docs/live/2026-10-14-weapon-measurements-pcsx2.md]: the real stunner activates on the press, tip lights blue while held, swings back on release, no charge spent with no target. Find the fire path (Player_WeaponFiring 0x1a5460 for 0x4a/0x4b, held vs press, +0x68 flags) and the port's gate; fix so it fires on press, the beam/dart draws, and a guard hit is stunned (msg 7 taser path may be unported).
+
+Work Log:
+- (01:38 UTC) Branch s/fix-stunner-press created from origin/master bf2bd176 and pushed. Setup reused (repo, work/, ISO, nf-queue). Decompile + port rounds next.
+
 ## fix-aims20-modes-lights (2026-10-15, branch s/fix-aims20-modes-lights)
 - Task: AIMS-20 0x1a/0x1b mode swap on the B press (the twin rules, the shared clip slot) and the four side lights on the view model (BL+0x93a gate, 0x1a5460:264/314, the aims_light slots) — playtest 1014-1725: "Ames 20 wouldn't swap modes", "lights on the aim 20 arent on".
 - Started: ground truth docs/live/2026-10-14-weapon-measurements-pcsx2.md (AIMS-20 section), decomp Player_WeaponFiring 0x1a5460 (the 0x2000132 slot-8..11 light block), bldata.md +0x93A/+0x93E. Suite started in background.
@@ -12461,3 +12469,19 @@ Stage Summary:
 - Fix: nf_view::entry_checkpoint_save (the :325 mirror, captured after EVERY load) + nf_view::fail_restart_save (the serve: the entry checkpoint + the 50.0 floor + the mission payload in the Mission_Init(level,1) shape — previous parts kept, current+future reset [M 0x182270:68-129], since the port applies the carry AFTER its init latch); RamSave::with_mission_snapshot (player.rs, additive). The zero-buffer test re-pointed to the post-load entry checkpoint (health 100).
 - Tests: fix_restart_health_live.rs 2/2 through the real input path (cold 05 die→✕→menu→restart = 100.0 full; 07 full entry = 100.0, sub-50 entry = 50.0 the game's floor; no re-fail over 360 ticks); failing-first = compile errors on the pre-fix src + the old test's 50.0 pass pinned. Neighbours on the merged tree (d28d6f07, the turn-stutter merge): death/restart/carry/chain/campaign/progress/save-profile/stutter/ghosting/fps binaries + nf-game lib = 215 passed, 0 failed. Full suite: the nohup was reaped (the sandbox kills background jobs); the foreground chunks are the covered set — next session: the full total.
 - Report: docs/reports/fix-restart-health.md (live checks: the buffer 0x2b9440+0x5FC = 100 after a cold load, BL+0x894 = 100 after a cold-level Restart, 50.0 only for a sub-50 entry; --bond spots). Shared files: none beyond player.rs (task) + lib.rs's reload branch (the viewer's own).
+
+---
+Task ID: 109b-fix-stunner-press
+Agent: stunner-press worker
+Task: fix-stunner-press — the stunner 0x4a "only really activates on releasing the key" (playtest 1014-1725).
+
+Work Log:
+- Traced the game's fire path: with the stunner's refire denormal-0 [L record +0x40] the game fires every held tick and restarts the fire script every tick via AnimScriptAdd (the view state is 0xb, never 9 — the restart gate never applies) [M 0x1a5460/0x1a3c70/0x1c6d40/0x1c1600]. The port's sim does the same — the press side was right; the user's symptom is the unported tase (nothing happens to the guard) plus the held frame-1 pose question.
+- Ported the msg-7 tase path: DealWithObjHit's 0x4a/0x4c → msg 7 [M 0x13fff0:269-300], HandleImpact case 7 (the +0xBC accumulator vs 2·health, the fall) [M 0x1469b8:111-176], the taser family TASER 0x4a / STUNNED 0x4b / STUNNED_RECOVER 0x4c with their enter/tase/timer arms [M 0x162b98/0x162eb0/0x1630b8], RecoverTime's taser arm = 1200 ticks [M 0x147188].
+- The family swallows its own messages (HandleImpact's default returns 1 [M 0x1469b8:366]) — the port's GLOBAL arms (alarm/sound/shout/anim-done) pulled the tased guard back into AIM_STAND_FIRE 0x68 (found by backtrace); the family now intercepts before them.
+- Tests: fix_stunner_press_live — the press contract (state 9 + 0x600048a + 1 round, the release rings out at 1.5x, the passive regen noted), the tased guard (falls at hold tick 20, no damage, alert 2, stays down), the P2K sister. 3 passed. nf-game lib 160/160, nf-view lib 8/8.
+- Open: the full suite did not fit the window (run before merge); the held frame-1 pose needs the main agent's render; the weapon drop (ChangeWeapon 1/6) not modelled (Drone::weapon is the model id); the first-tase-tick re-entry and the behaviour-0x32 arm skipped.
+- Report: docs/reports/fix-stunner-press.md. Files: crates/nf-game/src/drone.rs, crates/nf-view/tests/fix_stunner_press_live.rs (+ the probe_stunner.rs scratch).
+
+Stage Summary:
+- Branch s/fix-stunner-press @ c85f6796 + the report commit; the tase path ported end to end; the press verified on the real input path.
