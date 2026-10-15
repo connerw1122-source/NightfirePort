@@ -12934,3 +12934,19 @@ Task: G-046 third group — swap the player-motion trig sites to the game's exac
 - Suite chunks (fast runner, foreground — background jobs die between tool calls here): chunk A (diff_calls, walkreal 01/02/05, fix_camera_exact_math, ai_traces_live) 11/1/2; chunk B (exact_sine_sites3_live, fix_ladder_live, fix_ladder2_live, wire_live, fix_wire2_live, fix_swim_vent5_live, diff_calls, trig_live) 25/0/3. The ONE failure, walkreal_07000001_live's escort walk (the contact settles at (−18.8,6.3,14.3) short of the plate), is PRE-EXISTING on master d38e945d: re-run with this task's changes stashed fails identically at the same spot (the rebuild proven by the fail-first results in the same stashed state) — some merge since the morning's all-green run broke it; not mine, needs its owner. The full four-crate run did not fit the window (329-binary build ~5 min + the pre-swap verification consumed it).
 - Files: crates/nf-game/src/{player,creepwall,trig}.rs, crates/nf-view/tests/exact_sine_sites3_live.rs (new), docs/GAPS.md (G-046 update), docs/WORKLOG.md, docs/reports/exact-sine-sites-3.md. look()/right() (player.rs:270) left for the world-spheres group; wire root-motion composition (player.rs:657) stays UNCLEAR per G-046.
 - Report: docs/reports/exact-sine-sites-3.md (live checks + --bond spots listed).
+
+## exact-sine-sites-merge (2026-10-15, branch s/exact-sine-sites-merge) — started 15:02 UTC
+Task 111b: land the held 110k (s/exact-sine-sites-1) + 110m (s/exact-sine-sites-3) on master. On master+both
+the main agent's suite gave 1329 passed / 2 failed: (a) walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact
+(the contact settles at (−18.8, 6.3, 14.3) instead of the LoadPointActivator plate — 882 s alone, 600 s suite timeout;
+the driver says master passes it but exact-sine-sites-3's report claims it failed on master at d38e945d with their
+changes stashed — to be bisected: master+110k vs master+110m, and re-checked on plain master); (b) fix_08_walls_live::
+the_wire_icons_straddle_set_is_its_own_west_room_cel — the exact world-sphere moved the icon bounds centre by 2e-5
+(left [133.42567, 48.326435, −101.2065] vs right [133.42569, 48.32644, −101.2065]); decide from the game's math
+whether the test's placement-origin expectation is the game's value or the old host value, update with justification.
+Method: the fix-exact-math-swap side-by-side (first divergent tick, first AI-visible divergence, the decision it
+flips); fix the ulp-wide stand-in the game's way, never revert the exact sine. G-046 resolved to one combined entry.
+- (15:02-15:15) Setup reused (repo, work/, ISO, nf-queue present). Branch s/exact-sine-sites-merge from origin/master
+  (cf4f33cd); merged origin/s/exact-sine-sites-1 (GAPS+WORKLOG conflicts: one combined G-046 entry, WORKLOG union)
+  then origin/s/exact-sine-sites-3 (GAPS kept combined, WORKLOG union). Next: build, run the two failing tests
+  fail-first, bisect the escort walk.
