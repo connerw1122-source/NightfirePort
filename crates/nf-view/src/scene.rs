@@ -299,6 +299,9 @@ pub struct Sim {
     pub nav: nf_game::nav::Network,
     pub covers: Vec<nf_game::cover::CoverNode>,
     pub tuning: nf_formats::tuning::Tuning,
+    /// mp-core: the MP match core (`nf_game::mp`) when `--mp` runs an arena — `MP_Update` 0x184bd0
+    /// runs per frame in gameplay [M]; `None` on every campaign level.
+    pub mp: Option<nf_game::mp::MpMatch>,
     pub hitboxes: nf_formats::hitbox::CollisionBones,
     pub sfx: Option<nf_formats::sfx::SfxTable>,
     pub volumes: Vec<nf_game::aivolume::AiVolume>,
@@ -1698,6 +1701,12 @@ impl Sim {
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
+        // mp-core: `MP_Update` 0x184bd0 runs per frame in the gameplay flow state [M 0x184bd0:17-21];
+        // the port's fixed tick stands in for the game's wall-clock delta (the module doc's
+        // *Deviation*). Arena loads only — `None` on every campaign level.
+        if let Some(m) = self.mp.as_mut() {
+            m.update(1.0 / 60.0, false);
+        }
         // `Game_Run` 0x1c9790:33 runs `Light_Update` before the object movement each tick (fix-lighting):
         // lifetimes (the muzzle light of the previous tick dies here), the script-channel gate and the
         // flicker state machine. The flicker's RNG re-seeds ride the shared generator before this tick's draws.
@@ -5662,6 +5671,7 @@ impl Scene {
                 prev_aiming: false,
                 view_aim_anim: None,
                 view_aim_raising: false,
+                mp: None,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
