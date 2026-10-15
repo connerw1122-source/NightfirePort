@@ -35,7 +35,7 @@ fn render_full(scene: &Scene, cam: glam::Vec3, yaw: f32, pitch: f32, fov: f32, t
     };
     let (right, up) = { let cp = pitch.cos(); let fw = glam::Vec3::new(cp * yaw.sin(), pitch.sin(), cp * yaw.cos()).normalize();
         let s = fw.cross(glam::Vec3::Y).normalize(); let u = s.cross(fw); (s.to_array(), u.to_array()) };
-    let vis = r.cel_visibility(cam.to_array(), vp, scene.sim.as_ref().map(|s| &s.world));
+    let vis = r.cel_visibility(cam.to_array(), vp, scene.sim.as_ref().map(|s| &s.world), None);
     let mut opts = ViewOpts::default();
     opts.right = right; opts.up = up;
     r.update_skin(&queue, scene, None, ticks as f32, opts, vis.as_deref());

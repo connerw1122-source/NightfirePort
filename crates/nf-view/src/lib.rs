@@ -1354,7 +1354,9 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let cut = scene.sim.as_ref().is_some_and(|s| s.script_camera().is_some());
     let (proj_aspect, band) = if cut { cutscene_frame(w as f32, h as f32) } else { (w as f32 / h as f32, [0.0; 4]) };
     let (vp_shot, _) = cam.view_proj(proj_aspect);
-    let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot, scene.sim.as_ref().map(|s| &s.world));
+    // The doors' `Door_IsClosed` snapshot for the walk's portal gate (fix-door-portal-links).
+    let door_closed = scene.sim.as_ref().map(|s| s.drones.doors.closed_flags());
+    let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot, scene.sim.as_ref().map(|s| &s.world), door_closed.as_deref());
     r.update_skin(&queue, scene, choice, time, opts, vis_shot.as_deref());
     r.lights = scene.frame_lights();
     // `NF_BENCH=N`: time the per-frame CPU side N times (posing + vertex build, and the upload) for profiling.
@@ -2464,7 +2466,8 @@ impl ApplicationHandler for App {
                 // The Toggles page's portal-culling row: off passes no world, so the walk returns
                 // everything (the whole level draws — the isolation view).
                 let portal = self.dev.as_deref().map_or(true, |d| d.portal_cull);
-                let vis = g.renderer.cel_visibility(draw_cam.pos.to_array(), vp0, if portal { self.scene.sim.as_ref().map(|s| &s.world) } else { None });
+                let door_closed = if portal { self.scene.sim.as_ref().map(|s| s.drones.doors.closed_flags()) } else { None };
+                let vis = g.renderer.cel_visibility(draw_cam.pos.to_array(), vp0, if portal { self.scene.sim.as_ref().map(|s| &s.world) } else { None }, door_closed.as_deref());
                 // G-043: build the palette only when a tick ran, then draw between the last two ticks.
                 if self.ticked || self.pal_cur.is_none() {
                     let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts, vis.as_deref());

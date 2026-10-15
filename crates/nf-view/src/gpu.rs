@@ -528,7 +528,7 @@ impl Renderer {
     /// collision tie-break when the placement re-finds. `None` (the walk cannot run: no portals /
     /// no cel) = the fix-render3 box test everywhere, and `NF_NOPORTAL` forces it (the walk is the
     /// default again, fix-portal).
-    pub fn cel_visibility(&mut self, eye: [f32; 3], view_proj: [[f32; 4]; 4], world: Option<&nf_game::world::CollisionWorld>) -> Option<Vec<bool>> {
+    pub fn cel_visibility(&mut self, eye: [f32; 3], view_proj: [[f32; 4]; 4], world: Option<&nf_game::world::CollisionWorld>, doors: Option<&[bool]>) -> Option<Vec<bool>> {
         let planes = extract_frustum(view_proj);
         let portal_enabled = std::env::var_os("NF_NOPORTAL").is_none();
         // The cell-level game mask (`View_AddCels` 0x1e6ba0: the VisCelList plus the +0x18 chain
@@ -540,7 +540,7 @@ impl Renderer {
             let sides = [planes[0], planes[1], planes[2], planes[3]];
             match crate::scene::eye_cell(&self.cel_graph, &mut self.viewer_cel, eye, world) {
                 Some(cell) => {
-                    let mut game = crate::scene::portal_visible_cels_game_from_cell(&self.cel_graph, cell, eye, &depth0, &sides);
+                    let mut game = crate::scene::portal_visible_cels_game_from_cell_doors(&self.cel_graph, cell, eye, &depth0, &sides, doors);
                     // fix-portal-sweep: the near-LOS rescue (scene::near_los_rescue) — the game-mask
                     // pass restores the near unoccluded generics the walk drops where the port's
                     // per-cel attribution approximation (the FindCel 0x1c8cb0 tie-break input)
@@ -551,7 +551,7 @@ impl Renderer {
                             eprintln!("[rescue] eye cell {cell}: {rescued} near cels restored");
                         }
                     }
-                    (game, crate::scene::portal_visible_cels_from_cell(&self.cel_graph, cell, eye, &depth0))
+                    (game, crate::scene::portal_visible_cels_from_cell_doors(&self.cel_graph, cell, eye, &depth0, doors))
                 }
                 None => (None, None),
             }
@@ -759,7 +759,7 @@ impl Renderer {
             let cel_visible: Vec<bool> = if cel_cull {
                 // The lazy fallback never fires in the live paths (cel_visibility runs first — lib.rs 1496 / shot());
                 // it has no `world` here, so the FindCel tie-break degrades to the approximation.
-                self.last_vis.clone().unwrap_or_else(|| self.cel_visibility(eye, view_proj, None).unwrap())
+                self.last_vis.clone().unwrap_or_else(|| self.cel_visibility(eye, view_proj, None, None).unwrap())
             } else { Vec::new() };
             // fix-portal2: the cell-level game mask. A cel placement's glist draws when ITS cel is
             // visible (`View_AddCels` 0x1e6ba0 — the VisCelList cel itself or a `+0x18` chain node
