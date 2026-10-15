@@ -194,9 +194,30 @@ reload produces [M]:
   warm restart does NOT re-fail (the replay loop fix-death-restart feared is an artefact of capturing
   at the fail, which the game never does). The port keeps the save each level was LOADED with
   (`App::entry_save`) and re-serves it on `Drones::level_exit_restart`.
-- **The health floor** — the handler passes `Player_RamLoad`'s boost arg 1: the saved health is
-  floored at the difficulty's `ContinueHealthBoost*` — 50.0 on all three difficulties [L
-  ee_start_05.bin 0x30cc34-3c] — then `Player_SetHealth` + the saved armour [M 0x1957a8:21-36].
+- **The health floor (the boost argument, fix-death-retry-boost)** — the handler passes
+  `Player_RamLoad`'s boost arg 1 [M 0x216618:21]. With it set, `Player_RamLoad` 0x1957a8:21-34
+  floors the saved health — the float at **RamSave+0x5FC** (`RamSave._1532_4_`) — at the
+  difficulty's `ContinueHealthBoost*`:
+  - **The pick** [M 0x1957a8:21-33]: the difficulty global **`GameState+0x40`** (0x2a37a8) —
+    1 → `ContinueHealthBoostEasy` (0x30cc34), 2 → `ContinueHealthBoostMedium` (0x30cc38),
+    anything else (0/3/4) → `ContinueHealthBoostHard` (0x30cc3c). All three are **50.0** on the
+    retail build [L ee_start_05.bin 0x30cc34..3c].
+  - **A max, not a set** [M :24-32]: the saved value survives when it is already above the floor;
+    the result is written BACK into the buffer (`swc1 $f12, 0x5fc` at 0x1958e4) before
+    `Player_SetHealth` (jal 0x1960b8 at 0x1958e8) applies it — so the floored value is what the
+    reload's `Player_InitWeapon` re-save captures.
+  - **Armour is NOT boosted** [M :36] — `BL+0x8B0 = RamSave._1536_4_` restores the saved armour
+    as-is.
+  - **Gated on the warm flag** [M :9] — the whole body (boost included) sits inside
+    `IsWarmReset != 0`; a cold load never boosts.
+  - **Who passes what**: the fail/death menu's Restart row 0 passes **1** [M 0x216618:21];
+    `Player_InitWeapon` 0x1a7ef8 passes **0** on ALL EIGHT of its `Player_RamLoad` calls
+    [M :158-305] — the trigger-exit warm load never boosts, so a level change at low health
+    carries the low health and only a death-Restart floors it.
+  - The port: `RamSave::continue_boost(difficulty)` + `continue_health_boost` (nf-game::player,
+    the difficulty mirror `Progress::difficulty`), applied by the restart serve
+    `nf_view::fail_restart_save` — the handler's `Player_RamLoad` position in the reload flow
+    (fix-restart-health's hardcoded `max(50.0)` viewer constant replaced).
 - **The mission layer** — `Mission_Init(level, 1)` re-derives `BaseMap`/`ThisOrderNum` from the
   level, resets the CURRENT and future parts' objective states + condition channels (previous parts
   keep theirs) [M 0x182270:68-129], and clears `LevelToEndTo`/`FailLabel`.

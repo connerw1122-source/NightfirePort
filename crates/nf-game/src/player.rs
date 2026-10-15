@@ -1164,6 +1164,19 @@ pub struct RamSave {
     pub mission: Option<crate::mission::MissionSave>,
 }
 
+/// `ContinueHealthBoostEasy` / `ContinueHealthBoostMedium` / `ContinueHealthBoostHard`
+/// (0x30cc34 / 0x30cc38 / 0x30cc3c) [L ee_start_05.bin 0x30cc34..3c — all three 50.0 on the
+/// retail build].
+pub const CONTINUE_HEALTH_BOOST: [f32; 3] = [50.0; 3];
+
+/// `Player_RamLoad` 0x1957a8:21-33's boost pick: the difficulty global `GameState+0x40`
+/// (0x2a37a8 — the port's `Progress::difficulty` mirror) selects the table entry — 1 → Easy,
+/// 2 → Medium, anything else (0/3/4) → Hard [M]. All three are 50.0 on retail [L], so the pick
+/// is only observable against a non-retail table.
+pub fn continue_health_boost(difficulty: u32) -> f32 {
+    match difficulty { 1 => CONTINUE_HEALTH_BOOST[0], 2 => CONTINUE_HEALTH_BOOST[1], _ => CONTINUE_HEALTH_BOOST[2] }
+}
+
 impl RamSave {
     /// The save `Trigger_Activate` makes on the way out of a level, after the success/fallback channel
     /// write [M 0x1b2318:97-116].
@@ -1189,6 +1202,19 @@ impl RamSave {
         self
     }
 
+    /// `Player_RamLoad`'s boost arm (0x1957a8:21-34), the second argument non-zero [M]: the saved
+    /// health is floored at the difficulty's `ContinueHealthBoost*` — a MAX, written back into the
+    /// buffer (`swc1 $f12, 0x5fc` at 0x1958e4) before `Player_SetHealth` (jal 0x1960b8 at 0x1958e8)
+    /// applies it; armour is untouched (restored separately from the save's +0x1536 [M :36]). The
+    /// game's call sites: the fail/death menu's Restart row 0 passes 1 [M `P_ENDMISSION_Handler`
+    /// 0x216618:21]; `Player_InitWeapon` 0x1a7ef8 passes 0 on all EIGHT of its `Player_RamLoad`
+    /// calls [M :158-305] — the trigger-exit warm load never boosts. The port's boost-1 call site
+    /// is the restart serve (`nf_view::fail_restart_save`, the handler's position in the reload
+    /// flow); the trigger-exit capture never calls this.
+    pub fn continue_boost(&mut self, difficulty: u32) {
+        self.health = self.health.max(continue_health_boost(difficulty));
+    }
+
     /// Attaches a pre-built mission snapshot — `fail_restart_save`'s serve carries the states in the
     /// shape the game's `Mission_Init(level, 1)` leaves the `.data` in (previous parts kept,
     /// current + future reset [M 0x182270:68-129]) because the port applies the carried snapshot
@@ -1201,9 +1227,11 @@ impl RamSave {
 
     /// `Player_RamLoad` (0x1957a8), `IsWarmReset != 0` arm [M]: the whole body is gated on the warm flag,
     /// so a cold load (`save = None`) restores nothing. Restores health (`Player_SetHealth`), armour
-    /// (+0x8B0), the saved weapon id (+0x934) and the four channel arrays. The `boost` argument (the death
-    /// retry's health floor, `P_ENDMISSION_Handler` 0x216618) is not ported — the port has no death-retry
-    /// reload path (WORKLOG fix-level2).
+    /// (+0x8B0), the saved weapon id (+0x934) and the four channel arrays. The `boost` argument is the
+    /// buffer-side max `RamSave::continue_boost` (0x1957a8:21-34): the fail-menu Restart's serve applies
+    /// it before the reload reads the buffer — exactly the game's write-back into RamSave+0x5FC
+    /// (`swc1 $f12, 0x5fc` 0x1958e4) before `Player_SetHealth` (jal 0x1960b8 0x1958e8) — so `restore`
+    /// itself applies whatever the buffer holds.
     pub fn restore(&self, health: &mut crate::bullet::PlayerHealth, inv: &mut crate::pickup::Inventory, ch: &mut Channels) -> u8 {
         health.health = self.health;
         health.armour = self.armour;
