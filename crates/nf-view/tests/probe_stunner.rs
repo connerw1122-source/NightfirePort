@@ -7,6 +7,7 @@ fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 fn dxz(a: [f32; 3], b: [f32; 3]) -> f32 { ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt() }
 
 #[test]
+#[ignore = "scratch probe (109b): run by hand with --ignored"]
 fn probe_stunner_fire_timing() {
     let iso = iso();
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
