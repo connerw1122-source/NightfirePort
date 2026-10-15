@@ -40,3 +40,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox1 at 2026-10-15T00:50Z
+
+---
+## Report (done, 2026-10-15T02:14Z)
+
+Closed by the driver: the report is on `s/fix-sentinel-camera-play` (docs/reports/fix-sentinel-camera-play.md); the worker didn't run finish.sh.
