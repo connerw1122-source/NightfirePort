@@ -78,9 +78,20 @@ NF_RNGLOG=1), on the fixed tree:
 
 ## Suite
 
-Chunked foreground runs (background jobs die between tool calls in this sandbox). The final merged
-tree totals are appended below as they complete; the fast majority ran here, the 10-minute
-walkreal binary is reported separately.
+Chunked foreground runs (background jobs die between tool calls in this sandbox). On the FINAL tree
+(merged with origin/master a1cb5b36's line, push e8e3f882):
+
+- `nf-game`: **308 passed / 0 failed** (ai_live 35/0 inside — the re-seeded cover test green).
+- `nf-formats`: **75 passed / 3 failed** — the 3 are the `disc_golden` slim-ISO allowance.
+- `nf-audio`: **13 passed / 0 failed**.
+- `nf-view` lib 8/0; `impact_remainder_live` 3/0 (the new fail-first test green); `lighting_live`
+  5/0; `rng_live`/`light_selection`/`diff_calls` are nf-game bins (inside the 308/0).
+- `walkreal_07000001_live`: still **1 passed / 1 failed** — the contact walks r0 further than
+  before but "stopped short of the goal at (3.5, 6.3, 7.3) after +1252 ticks (10 s still)". Left
+  for the next session (see What's left); everything else on the merged tree is green.
+
+Not run in the window: the remaining long nf-view live binaries (the weapon-matrix class). The
+suite runner command for the driver's full pass: `NF_ISO=<abs> python3 tools/test/suite.py`.
 
 ## What's left
 
