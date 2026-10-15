@@ -283,10 +283,22 @@ pub struct Renderer {
     movie_bg: Option<wgpu::BindGroup>,
     movie_size: Option<(u32, u32)>,
     movie_vbuf: wgpu::Buffer,
+    /// fix-shading-parity: the main pass's sample count (`--msaa`; 1 = the old 1-sample path).
+    msaa: u32,
+    /// The colour format Renderer::new was built with (the MSAA texture must match the target).
+    format: wgpu::TextureFormat,
+    /// The cached MSAA colour attachment, rebuilt when the target size changes.
+    msaa_color: Option<(u32, u32, wgpu::TextureView)>,
+    /// The room cels' light-pick spheres (`View_DrawCelGlist` 0x1e6538's cel+0x80 `sphere_tag`).
+    cel_spheres: Vec<([f32; 3], f32)>,
 }
 
 impl Renderer {
-    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, scene: &Scene, notex: bool, nofog: bool) -> Renderer {
+    pub fn new(device: &wgpu::Device, queue: &wgpu::Queue, format: wgpu::TextureFormat, scene: &Scene, notex: bool, nofog: bool, msaa: u32) -> Renderer {
+        // fix-shading-parity: MSAA for the main pass (`--msaa N`; the game runs 640×448i and its
+        // display copy blurs edges — the port's 1-sample pass aliased). Every pipeline in the ONE
+        // world pass carries the count; the resolve lands in the caller's target (render()).
+        let msaa = match msaa { 2 => 2, 4 => 4, 8 => 8, _ => 1 };
         let shader = device.create_shader_module(wgpu::ShaderModuleDescriptor { label: Some("nf-view"), source: wgpu::ShaderSource::Wgsl(SHADER.into()) });
         let ubgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -355,7 +367,7 @@ impl Renderer {
                     format: DEPTH, depth_write_enabled: Some(write), depth_compare: Some(compare),
                     stencil: Default::default(), bias: Default::default(),
                 }),
-                multisample: Default::default(),
+                multisample: wgpu::MultisampleState { count: msaa, ..Default::default() },
                 fragment: Some(wgpu::FragmentState {
                     module: &shader, entry_point: Some("fs"), compilation_options: wgpu::PipelineCompilationOptions { constants: &constants, ..Default::default() },
                     targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
@@ -382,7 +394,7 @@ impl Renderer {
                 format: DEPTH, depth_write_enabled: Some(false), depth_compare: Some(wgpu::CompareFunction::Always),
                 stencil: Default::default(), bias: Default::default(),
             }),
-            multisample: Default::default(),
+            multisample: wgpu::MultisampleState { count: msaa, ..Default::default() },
             fragment: Some(wgpu::FragmentState {
                 module: &hud_shader, entry_point: Some("fs"), compilation_options: Default::default(),
                 targets: &[Some(wgpu::ColorTargetState { format, blend: Some(blend), write_mask: wgpu::ColorWrites::ALL })],
@@ -485,6 +497,15 @@ impl Renderer {
         let snow_bg = match &scene.snow_texture { Some(t) => make_tex(t.width, t.height, &t.rgba), None => make_tex(1, 1, &[255, 255, 255, 255]) };
         let order_cap = draws.len();
         let cel_boxes = scene.cels.iter().map(|c| (c.min, c.max)).collect();
+        // fix-shading-parity: the room cels' light-pick spheres — the game uploads ONE light pair
+        // per cel draw from the cel's own sphere (`View_DrawCelGlist` 0x1e6538 passes cel+0x80 as
+        // the `sphere_tag` to `Lights_CalcClosestLights` 0x1cb2e0), not one per material. Same
+        // bbox centre / half-diagonal shape as `Scene::cel_sphere`.
+        let cel_spheres: Vec<([f32; 3], f32)> = scene.cels.iter().map(|c| {
+            let centre = [0, 1, 2].map(|k| (c.min[k] + c.max[k]) * 0.5);
+            let r = [0, 1, 2].map(|k| (c.max[k] - c.min[k]) * 0.5);
+            (centre, (r[0] * r[0] + r[1] * r[1] + r[2] * r[2]).sqrt())
+        }).collect();
         let cel_graph = scene.cel_graph.clone();
         // fix-movie-playback: the full-screen movie plane. The game blits each decoded 512×448 frame
         // straight into the frame buffer (DecodeBGFMVFrame 0x108550 → PS2UploadBGMImage 0x108740);
@@ -505,7 +526,12 @@ impl Renderer {
         // movies.md §Presentation], so the quad draws BEFORE the HUD runs (under the page
         // controls); state 6 suppresses the overlay while its movie plays, so the draw position
         // is equivalent there.
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
+        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler,
+            // fix-shading-parity, each on its own line (the merge lesson):
+            msaa,
+            format,
+            msaa_color: None,
+            cel_spheres }
     }
 
     /// The game's depth-0 pyramid for the walk [M `Vision_Calculate_View_Fustrum` 0x1e7df8,
@@ -594,7 +620,7 @@ impl Renderer {
     /// the fog pass with the rotation-only uniform) follow the viewer and are never culled. The per-frame `order` Vec
     /// is `clear`ed + refilled (not reallocated); `set_pipeline`/`set_bind_group(0)` are skipped when the value is
     /// unchanged from the previous draw.
-    pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame, movie: Option<(u32, u32, &[u8])>) -> wgpu::CommandEncoder {
+    pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, size: (u32, u32), view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame, movie: Option<(u32, u32, &[u8])>) -> wgpu::CommandEncoder {
         let ns = snow.len().min(SNOW_MAX);
         if ns > 0 { queue.write_buffer(&self.snow_vbuf, 0, bytemuck::cast_slice(&snow[..ns])); }
         let n = hud.v.len().min(HUD_MAX) / 3 * 3;
@@ -630,7 +656,16 @@ impl Renderer {
                 // The game zeroes the light slots for the sky and sprite passes [M 0x1e5ad0:89].
                 continue;
             }
-            let (lp, lc) = self.lights.pick2([dc.centre[0], dc.centre[1], dc.centre[2], dc.radius], dc.lflags as u32);
+            // fix-shading-parity: the room-class cel glists pick their lights from the CEL's own
+            // sphere — `View_DrawCelGlist` 0x1e6538 calls `Lights_CalcClosestLights` (0x1cb2e0)
+            // with cel+0x80 (the cel's sphere_tag) once for the whole cel, so every material in it
+            // shares the pair — while `View_DrawObjList` 0x1e69a0's objects pick from obj+0x80.
+            // The port picked per material; on multi-material lamp-lit walls the material bbox
+            // sat nearer a lamp than the cel's centre does, so the walls over-lit (the "brighter,
+            // harder falloff" symptom). Room-class primaries: `Material::node` (the per-frame
+            // chain cel) inside a room cel.
+            let cel_pick = draw_light_sphere(dc.cel, dc.node, dc.centre, dc.radius, &self.cel_spheres);
+            let (lp, lc) = self.lights.pick2([cel_pick.0[0], cel_pick.0[1], cel_pick.0[2], cel_pick.1], dc.lflags as u32);
             for (i, v) in lp.iter().chain(lc.iter()).enumerate() { s[24 + i * 4..28 + i * 4].copy_from_slice(v); }
         }
         for (m, vp) in [(&self.uniform, view_proj), (&self.uniform_rot, view_proj_rot)] {
@@ -643,12 +678,29 @@ impl Renderer {
         }
         // The frame starts as fog (what the fog pass covers where nothing was drawn: zb 0).
         let clear = if fog_on > 0.0 { wgpu::Color { r: (fog_rgb[0] * GAIN) as f64, g: (fog_rgb[1] * GAIN) as f64, b: (fog_rgb[2] * GAIN) as f64, a: 1.0 } } else { wgpu::Color { r: 0.05, g: 0.06, b: 0.08, a: 1.0 } };
+        // fix-shading-parity: MSAA — the pass renders into a multisampled attachment that resolves
+        // into the caller's target (`--msaa N`; the port's 1-sample pass aliased where the game's
+        // 640×448i display copy comes out smooth).
+        let mut color_view = target;
+        let mut resolve = None;
+        if self.msaa > 1 {
+            let stale = self.msaa_color.as_ref().is_none_or(|(w, h, _)| *w != size.0 || *h != size.1);
+            if stale {
+                let tex = device.create_texture(&wgpu::TextureDescriptor {
+                    label: Some("nf-view msaa"), size: wgpu::Extent3d { width: size.0, height: size.1, depth_or_array_layers: 1 },
+                    mip_level_count: 1, sample_count: self.msaa, dimension: wgpu::TextureDimension::D2,
+                    format: self.format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[],
+                });
+                self.msaa_color = Some((size.0, size.1, tex.create_view(&Default::default())));
+            }
+            if let Some((_, _, v)) = &self.msaa_color { color_view = v; resolve = Some(target); }
+        }
         let mut enc = device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
                 label: None,
                 color_attachments: &[Some(wgpu::RenderPassColorAttachment {
-                    view: target, depth_slice: None, resolve_target: None,
+                    view: color_view, depth_slice: None, resolve_target: resolve,
                     ops: wgpu::Operations { load: wgpu::LoadOp::Clear(clear), store: wgpu::StoreOp::Store },
                 })],
                 depth_stencil_attachment: Some(wgpu::RenderPassDepthStencilAttachment {
@@ -853,9 +905,30 @@ impl Renderer {
         enc
     }
 }
+/// fix-shading-parity: the sphere a draw picks its two lights from. The room-class cel glists
+/// (`Material::node` != `u32::MAX` inside a room cel) use the CEL's own sphere —
+/// `View_DrawCelGlist` 0x1e6538 passes cel+0x80 (the cel's `sphere_tag`) to
+/// `Lights_CalcClosestLights` 0x1cb2e0 once for the whole cel — every material in it shares the
+/// pair. Everything else is an object draw: `View_DrawObjList` 0x1e69a0 passes obj+0x80 (the
+/// object's position + radius), the port's material centre/radius. The pre-fix behaviour picked
+/// per MATERIAL everywhere, which over-lit multi-material walls whose bbox centre sat nearer a
+/// lamp than the cel's centre (the "lamp-lit walls brighter with a harder falloff" symptom).
+pub fn draw_light_sphere(cel: Option<u16>, node: u32, centre: [f32; 3], radius: f32, cel_spheres: &[([f32; 3], f32)]) -> ([f32; 3], f32) {
+    if node != u32::MAX {
+        if let Some(k) = cel.and_then(|k| cel_spheres.get(k as usize)) { return *k; }
+    }
+    (centre, radius)
+}
+
 pub fn depth_view(device: &wgpu::Device, w: u32, h: u32) -> wgpu::TextureView {
+    depth_view_msaa(device, w, h, 1)
+}
+
+/// The depth attachment at a sample count (fix-shading-parity: a pass's attachments must agree —
+/// the MSAA colour resolves need an equally multisampled depth).
+pub fn depth_view_msaa(device: &wgpu::Device, w: u32, h: u32, samples: u32) -> wgpu::TextureView {
     device.create_texture(&wgpu::TextureDescriptor {
-        label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: 1,
+        label: None, size: wgpu::Extent3d { width: w, height: h, depth_or_array_layers: 1 }, mip_level_count: 1, sample_count: samples.max(1),
         dimension: wgpu::TextureDimension::D2, format: DEPTH, usage: wgpu::TextureUsages::RENDER_ATTACHMENT, view_formats: &[],
     }).create_view(&Default::default())
 }
@@ -948,5 +1021,58 @@ mod shader_tests {
         assert!(super::SHADER.contains("min(c.rgb + lc.rgb * term / 255.0, vec3<f32>(1.0))"),
             "the shader must add the byte-scale light over the byte/255 vertex colour and clamp to byte 255");
         assert!(!super::SHADER.contains("term / 128.0"), "the old 2× over-add must stay gone");
+    }
+
+    /// fix-shading-parity: the room-class cel glists pick their two lights from the CEL's sphere
+    /// (`View_DrawCelGlist` 0x1e6538 hands cel+0x80 as the `sphere_tag` to
+    /// `Lights_CalcClosestLights` 0x1cb2e0 — one pair for the whole cel), while the object draws
+    /// keep their own sphere (`View_DrawObjList` 0x1e69a0 passes obj+0x80). The pre-fix renderer
+    /// picked per material everywhere: a material whose bbox centre sat nearer a lamp than the cel
+    /// centre got that lamp uploaded where the game uploads the cel's — the walls over-lit.
+    #[test]
+    fn the_room_cel_glists_pick_the_lights_from_the_cel_sphere() {
+        use nf_game::light::LightList;
+        let mut rng = nf_game::drone::Rng::new(3);
+        let mut l = LightList::default();
+        // Lamp A (red) 1 unit from the material's bbox centre; lamp B (green) 1 unit from the cel's.
+        l.create(2.0, 1.0, [1.0, 2.0, 0.0], [255, 0, 0], 0, -1, 3, 0, &mut rng);
+        l.create(2.0, 1.0, [5.0, 2.0, 0.0], [0, 255, 0], 0, -1, 3, 0, &mut rng);
+        let lights = l.resolve(&|_| [0.0; 3]);
+        let material_centre = [0.0f32, 2.0, 0.0];
+        let cel_sphere = ([4.0f32, 2.0, 0.0], 3.0);
+        // The game's pick — from the cel sphere — is the GREEN lamp first.
+        let (lp, lc) = lights.pick2([cel_sphere.0[0], cel_sphere.0[1], cel_sphere.0[2], cel_sphere.1], 0);
+        assert_eq!(lp[0][0], 5.0, "the game uploads the cel's closest lamp position");
+        assert_eq!(lc[0][1], 255.0, "the cel's first TColor row is the green lamp");
+        // The pre-fix pick — from the material bbox — is the RED lamp first. This disagreement is
+        // exactly the over-light: the same wall got a different light pair than the game uploads.
+        let (lp_old, lc_old) = lights.pick2([material_centre[0], material_centre[1], material_centre[2], 4.0], 0);
+        assert_eq!(lp_old[0][0], 1.0);
+        assert_eq!(lc_old[0][0], 255.0, "the pre-fix per-material pick chose the red lamp");
+        assert_ne!(lp[0], lp_old[0], "cel-sphere and material-sphere picks must differ here");
+        // The renderer's decision: a room-class cel glist (node in the chain, cel set) resolves to
+        // the CEL sphere; a distance-keyed object draw (node == u32::MAX) keeps its own sphere even
+        // when a cel is attributed (the inner-node statics draw as objects [M View_DrawObjList]).
+        let cel_spheres = vec![cel_sphere];
+        assert_eq!(super::draw_light_sphere(Some(0), 7, material_centre, 4.0, &cel_spheres), cel_sphere,
+            "room-class glist → the cel's sphere");
+        assert_eq!(super::draw_light_sphere(Some(0), u32::MAX, material_centre, 4.0, &cel_spheres), (material_centre, 4.0),
+            "object draw → its own sphere (sister: the game's obj+0x80 path)");
+        assert_eq!(super::draw_light_sphere(None, 7, material_centre, 4.0, &cel_spheres), (material_centre, 4.0),
+            "no cel attribution → its own sphere");
+    }
+
+    /// fix-shading-parity: the MSAA path — the pass renders into a multisampled attachment and
+    /// resolves into the caller's target, with an equally multisampled depth (a pass's attachments
+    /// must agree). The offscreen `--shot` and the live window both build the depth at the count.
+    #[test]
+    fn the_msaa_pass_resolves_into_the_target_with_matching_depth() {
+        let gpu = include_str!("gpu.rs");
+        assert!(gpu.contains("resolve_target: resolve"), "the pass must resolve into the caller's target");
+        assert!(gpu.contains("sample_count: self.msaa"), "the MSAA attachment is built at the renderer's count");
+        assert!(gpu.contains("depth_view_msaa(device, w, h, 1)"), "depth_view stays the 1-sample helper");
+        let lib = include_str!("lib.rs");
+        assert!(lib.contains("depth_view_msaa(&device, w, h, msaa.max(1))"), "the shot path builds MSAA depth");
+        assert!(lib.contains("depth_view_msaa(&g.device, g.config.width, g.config.height, self.msaa.max(1))"), "the live window too");
     }
 }

@@ -1152,15 +1152,19 @@ pub fn movie_iso_name(iso_path: &str) -> String {
 
 /// Renders one frame offscreen and writes it as a PNG. `menu` = a front-end overlay frame (fix-menus2:
 /// `--shot` on the front-end boot draws the menu pages too, so the main agent can compare with PCSX2).
-fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool, menu: Option<&gpu::HudFrame>, movie: Option<&(u32, u32, Vec<u8>)>) -> Result<()> {
-    let (w, h) = (1280u32, 720u32);
+fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, time: f32, mut opts: scene::ViewOpts, notex: bool, nofog: bool, menu: Option<&gpu::HudFrame>, movie: Option<&(u32, u32, Vec<u8>)>, msaa: u32, res_scale: f32) -> Result<()> {
+    // fix-shading-parity: `--res-scale S` renders the offscreen shot at S·1280×S·720 (a resolution
+    // scale, the other half of the game's smooth edges — the PS2 runs 640×448i upscaled); `--msaa N`
+    // multisamples the pass and resolves into this target.
+    let (w, h) = ((1280.0 * res_scale) as u32, (720.0 * res_scale) as u32);
+    let (w, h) = (w.max(1), h.max(1));
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
     let (opts_right, opts_up) = cam_axes(cam);
     opts.right = opts_right;
     opts.up = opts_up;
-    let mut r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog);
+    let mut r = gpu::Renderer::new(&device, &queue, format, scene, notex, nofog, msaa);
     let (vp_shot, _) = cam.view_proj(w as f32 / h as f32);
     let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot, scene.sim.as_ref().map(|s| &s.world));
     r.update_skin(&queue, scene, choice, time, opts, vis_shot.as_deref());
@@ -1188,13 +1192,13 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
         dimension: wgpu::TextureDimension::D2, format, usage: wgpu::TextureUsages::RENDER_ATTACHMENT | wgpu::TextureUsages::COPY_SRC, view_formats: &[],
     });
     let view = target.create_view(&Default::default());
-    let depth = gpu::depth_view(&device, w, h);
+    let depth = gpu::depth_view_msaa(&device, w, h, msaa.max(1));
     let (vp, vp_rot) = cam.view_proj(w as f32 / h as f32);
     let snow = snow_for(scene, cam);
     let overlay_owned = menu.map_or_else(|| overlay_for(scene, w as f32 / h as f32), |m| m.clone());
     let hud = &overlay_owned;
     let movie_arg = movie.map(|(w, h, rgba)| (*w, *h, rgba.as_slice()));
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud, movie_arg);
+    let mut enc = r.render(&device, &queue, &view, &depth, (w, h), vp, vp_rot, cam.pos.to_array(), time as u32, &snow, hud, movie_arg);
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
@@ -1261,6 +1265,8 @@ struct App {
     panel: Option<panel::Handle>,
     panel_level: u32,
     panel_frames: u32,
+    /// fix-shading-parity: the main pass's sample count (`--msaa N`, default 1 = the old path).
+    msaa: u32,
     /// Right mouse held: scope zoom (`Player_Zoom`).
     zoom: bool,
     /// Dev mode (WORKLOG 0083): `None` when `--dev` is off.
@@ -1535,7 +1541,7 @@ impl App {
             let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
             menu::menu_overlay(fe, &t.font, &t.font_header, lang, &self.scene.hud_textures, 1280.0 / 720.0)
         }));
-        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref(), None) {
+        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref(), None, self.msaa, 1.0) {
             Ok(()) => format!("saved {} ({line})", png.display()),
             Err(e) => format!("screenshot failed: {e} ({line})"),
         }
@@ -1682,8 +1688,8 @@ impl ApplicationHandler for App {
         // Vsync at the display rate by default (a 120/144 Hz display gets 120/144 fps); `--fps N` turns it off and caps.
         config.present_mode = if self.fps_cap.is_some() { wgpu::PresentMode::AutoNoVsync } else { wgpu::PresentMode::AutoVsync };
         surface.configure(&device, &config);
-        let depth = gpu::depth_view(&device, config.width, config.height);
-        let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene, self.notex, self.nofog);
+        let depth = gpu::depth_view_msaa(&device, config.width, config.height, self.msaa.max(1));
+        let renderer = gpu::Renderer::new(&device, &queue, config.format, &self.scene, self.notex, self.nofog, self.msaa);
         // `--dev`: open the dev window beside the game (devwin.rs).
         if self.dev.is_some() && self.devwin.is_none() {
             self.devwin = devwin::DevWindow::new(el, &window, &instance, &adapter, &device, &queue, &self.scene);
@@ -1746,7 +1752,7 @@ impl ApplicationHandler for App {
                     g.config.width = s.width;
                     g.config.height = s.height;
                     g.surface.configure(&g.device, &g.config);
-                    g.depth = gpu::depth_view(&g.device, g.config.width, g.config.height);
+                    g.depth = gpu::depth_view_msaa(&g.device, g.config.width, g.config.height, self.msaa.max(1));
                 }
                 g.window.request_redraw();
             },
@@ -1960,7 +1966,7 @@ impl ApplicationHandler for App {
                                 }
                                 self.scene = scene;
                                 if let Some(g) = &mut self.gfx {
-                                    g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
+                                    g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog, self.msaa);
                                 }
                                 self.weapon_switch_to = Some(w);
                             }
@@ -2047,7 +2053,7 @@ impl ApplicationHandler for App {
                             // (winit's `resumed` only runs at startup), so the process sat on a headless event
                             // loop with the audio still playing (the user's report).
                             if let Some(g) = &mut self.gfx {
-                                g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
+                                g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog, self.msaa);
                             }
                             eprintln!("level: loaded {name}");
                         }
@@ -2372,7 +2378,7 @@ impl ApplicationHandler for App {
                 if let Some(d) = self.dev.as_deref() { if d.overlay || d.menu { hud.append(&dev::hud(d, &self.scene, aspect, vp)); } }
                 hud.append(&self.scene.script_overlay_hud(aspect));
                 g.renderer.lights = self.scene.frame_lights();
-                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud, movie_frame);
+                let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, (view.texture().width(), view.texture().height()), vp, vp_rot, draw_cam.pos.to_array(), self.anim_time as u32, &snow, &hud, movie_frame);
                 g.queue.submit([enc.finish()]);
                 g.queue.present(frame);
                 if let Some(w) = self.devwin.as_mut() { w.tick(); }
@@ -2399,11 +2405,12 @@ pub fn run() -> Result<()> {
         default_hook(info);
     }));
     let args: Vec<String> = std::env::args().skip(1).collect();
-    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--dev [--panel]] [--scenario <name>] [--record <file>] [--replay <file>] [--no-fog] [--no-tex] [--shot out.png [--cam x y z yaw pitch] [--dev-page <name>]]\n\
+    const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--dev [--panel]] [--scenario <name>] [--record <file>] [--replay <file>] [--no-fog] [--no-tex] [--shot out.png [--cam x y z yaw pitch] [--dev-page <name>] [--msaa N] [--res-scale S]]\n\
         <level> is a FILES.BIN name such as 07000005 (\".bin\" optional); without <iso> the image path comes from NF_ISO\n\
         --dev --scenario <name>: place Bond for a feature test (weapon-switch, sg5-pickup, wire-music, autoaim)\n\
         --record <file>: record every logic tick's input to <file> (B-5). --replay <file>: replay a recording.\n\
-        --no-fog: skip the fog screen pass (isolate vertex colour/texture). --no-tex: ignore texture samples (solid white, isolate lighting/fog).";
+        --no-fog: skip the fog screen pass (isolate vertex colour/texture). --no-tex: ignore texture samples (solid white, isolate lighting/fog).\n\
+        --msaa N: multisample the main pass (2/4/8; 1 = off). --res-scale S: render --shot at S×1280×S×720 (fix-shading-parity).";
     // --movie <name/code> --frame N --shot out.png: headless PSS movie test (fix-movies) — demux, decode one
     // frame of the disc's MPEG-2 video, dump it as a PNG (no window, no GPU). The game plays these through
     // psiStartBackgroundMovie 0x001081a8 (cdrom0:\movies\30_FPS\%8.8x.pss;1). Needs `--features movies`.
@@ -2474,6 +2481,10 @@ pub fn run() -> Result<()> {
     let time = num("--frame")?.unwrap_or(0.0);
     let notex = args.iter().any(|a| a == "--no-tex");
     let nofog = args.iter().any(|a| a == "--no-fog");
+    // fix-shading-parity: `--msaa N` multisamples the main pass (2/4/8, default 1 = off);
+    // `--res-scale S` renders the offscreen `--shot` at S·1280×S·720.
+    let msaa = args.iter().position(|a| a == "--msaa").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u32>().ok()).unwrap_or(1);
+    let res_scale = args.iter().position(|a| a == "--res-scale").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<f32>().ok()).unwrap_or(1.0).max(0.125);
     if dev {
         eprintln!("dev mode ON — F1: AI overlay  F2: dev menu  F11: step one tick (when paused)");
         if let Some(ref n) = scenario {
@@ -2558,7 +2569,7 @@ pub fn run() -> Result<()> {
             let f = dev::hud(&d, &scene, 1280.0 / 720.0, [[0.0; 4]; 4]);
             menu_frame.get_or_insert_with(|| overlay_for(&scene, 1280.0 / 720.0)).append(&f);
         }
-        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog, menu_frame.as_ref(), movie_frame.as_ref());
+        return shot(&scene, &cam, args.get(i + 1).context("--shot needs a file name")?, choice, time, opts, notex, nofog, menu_frame.as_ref(), movie_frame.as_ref(), msaa, res_scale);
     }
     let event_loop = EventLoop::new()?;
     // Sound: the level's bank in the driver, the default output device (silent without one).
@@ -2568,7 +2579,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, msaa, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, };
     if dev {
