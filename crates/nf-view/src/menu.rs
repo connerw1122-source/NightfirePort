@@ -410,7 +410,7 @@ pub const INTRO_TICKS: u32 = 850;
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnAdvanced, CnMp, CnAv }
+pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnAdvanced, CnMp, CnAv, Credits }
 
 impl Page {
     pub fn id(self) -> u32 {
@@ -421,6 +421,7 @@ impl Page {
             Page::Options => PAGE_OPTIONS, Page::Pause => PAGE_PAUSE, Page::Results => PAGE_RESULTS,
             Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnAdvanced => PAGE_CN_ADVANCED,
             Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV,
+            Page::Credits => crate::credits::PAGE_CREDITS,
         }
     }
     fn from_id(id: u32) -> Option<Page> {
@@ -431,6 +432,7 @@ impl Page {
             PAGE_OPTIONS => Page::Options, PAGE_PAUSE => Page::Pause, PAGE_RESULTS => Page::Results,
             PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_ADVANCED => Page::CnAdvanced,
             PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv,
+            crate::credits::PAGE_CREDITS => Page::Credits,
             _ => return None,
         })
     }
@@ -647,6 +649,13 @@ pub struct FrontEnd {
     /// :74-79]: the page's Confirm routes to the bonus page 0x40000038 while it stands (not
     /// ported — reported).
     pub new_reward: bool,
+    /// credits-data: the credits roll's state (crate::credits::CreditsRoll — the handler's own
+    /// statics frame_518/name_520/index_519/fading_517/page_from_523/music_vol_524) [M
+    /// P_CREDITS_Handler 0x2152b0]. The main agent draws `self.credits.visible()`.
+    pub credits: crate::credits::CreditsRoll,
+    /// credits-data: the page the credits were opened from, as a Page when it is a ported one
+    /// (AV Options; the win page 0x40000053 is not ported and stays None) [M page_from_523].
+    pub credits_from: Option<Page>,
 }
 
 impl FrontEnd {
@@ -678,7 +687,25 @@ impl FrontEnd {
             // front-end-chain (each new field on its own line [WORKLOG lesson 4]).
             results: None,
             just_completed: false,
-            new_reward: false }
+            new_reward: false,
+            // credits-data (each new field on its own line [WORKLOG lesson 4]): the credits roll's
+            // state (crate::credits::CreditsRoll = the handler's own statics) and the opener.
+            credits: crate::credits::CreditsRoll::new(crate::credits::PAGE_CN_AV, 100, false),
+            credits_from: None }
+    }
+
+    /// credits-data: opens the credits page 0x40000030 — the AV Options Credits row's page change
+    /// and the win path's (P_WINGAME 0x215100:48 sends msg 0x44 with 0x40000030 after the
+    /// 0x073f0048 movie). `from_page` = the opener's id (the game's page_from 0x523 param),
+    /// `music_vol` = `SFXMusicGetVolume()` at enter, `bonus_flag` = GameState[0x52] [M the 0x4c
+    /// case 0x2152b0:72-94]. Returns false when credits are already up.
+    pub fn open_credits(&mut self, from_page: u32, music_vol: i32, bonus_flag: bool) -> bool {
+        if self.page == Page::Credits { return false; }
+        self.credits_from = Page::from_id(from_page);
+        self.credits = crate::credits::CreditsRoll::new(from_page, music_vol, bonus_flag);
+        self.page = Page::Credits;
+        self.cursor = 0;
+        true
     }
 
     pub fn rows(&self) -> usize {
@@ -705,6 +732,9 @@ impl FrontEnd {
             Page::CnAdvanced => ADV_ROWS.len(),
             Page::CnMp => MP_ROWS.len(),
             Page::CnAv => AV_ROWS.len(),
+            // credits-data: the credits page has no wheel rows (the two list controls are the
+            // roll itself) [M P_CREDITS_Handler 0x2152b0 has no cursor code].
+            Page::Credits => 0,
             // The MISSION tab's rows [L page 0x4000004b's d1=6 list (153,183,334×120) binds labels
             // 0x16a CONTINUE / 0x16b RESTART / 0x16c QUIT via its m0x11 messages].
             Page::Pause => 3,
@@ -738,6 +768,8 @@ impl FrontEnd {
             Page::CnSelect => bind([0x29b, 0x211][row.min(1)]),   // def_codename 0x2e1b18 [L docs/reports/fix-save-profile.md]
             Page::CnMenu => bind(CN_MENU[row.min(CN_MENU.len() - 1)].1),
             Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().get(row).map_or(String::new(), |r| bind(r.label)),
+            // credits-data: no rows — the roll's text lives in fe.credits.visible() [M].
+            Page::Credits => String::new(),
             // The pause rows are the page data's own labels [L page 0x4000004b's d1=6 list m0x11:
             // 0x16a/0x16b/0x16c — the game's letter-spaced strings]. The ACTIONS are the handler's
             // [M C_GCPAUSE_Handler 0x204408: d1=6 case 0 → MenuManager_Delete (resume), case 1 → the
@@ -801,6 +833,20 @@ impl FrontEnd {
         if self.intro_playing && self.flow.get_state() != ST_MOVIE {
             self.intro_playing = false;
             self.intro_index = 0;
+        }
+        // credits-data: the credits page's 0x50 tick; the delayed 0x44/0x5f exit routes the page
+        // [M P_CREDITS_Handler 0x2152b0:103-195 — ToMain = msg 0x44/0x40000002 after the win path,
+        // PopBack = msg 0x5f back to the opener].
+        if self.page == Page::Credits {
+            if let Some(exit) = self.credits.tick() {
+                match exit {
+                    crate::credits::CreditsExit::ToMain => { self.page = Page::Main; self.cursor = 0; }
+                    crate::credits::CreditsExit::PopBack(from) => {
+                        self.page = Page::from_id(from).unwrap_or(Page::Main);
+                        self.cursor = 0;
+                    }
+                }
+            }
         }
         // The title/main 240-frame flash [M 0x20a408's delayed 0x100000fa toggle at 0xf0 frames].
         if matches!(self.page, Page::Start | Page::Main) {
@@ -1107,13 +1153,19 @@ impl FrontEnd {
                     Action::Down if self.cursor + 1 < rows.len() => { self.cursor += 1; return true; }
                     Action::Left => { let r = &rows[self.cursor]; self.opt_step(r, -1); return true; }
                     Action::Right => { let r = &rows[self.cursor]; self.opt_step(r, 1); return true; }
-                    // Restore Defaults [M P_CNAVOPTIONS 0x214818:100-106 resets the rows]; the other action rows
-                    // (Screen Adjust, Credits, the trailer) open pages not ported yet.
+                    // Restore Defaults [M P_CNAVOPTIONS 0x214818:100-106 resets the rows]; Credits
+                    // opens the credits page (credits-data: the menu-def's action control
+                    // 0x10000138 → P_CREDITS page 0x40000030); Screen Adjust / the trailer stay
+                    // unported.
                     Action::Confirm if rows[self.cursor].kind == OptKind::Action => {
                         if rows[self.cursor].ctrl == 0x1000_01a3 {
                             let d = default_opts();
                             for r in AV_ROWS { if let Some(v) = d.get(&r.ctrl) { self.opts.insert(r.ctrl, *v); } }
                             return true;
+                        }
+                        if rows[self.cursor].ctrl == 0x1000_0138 {
+                            let vol = self.opts.get(&0x1000_0135).copied().unwrap_or(100);
+                            return self.open_credits(crate::credits::PAGE_CN_AV, vol, false);
                         }
                         return false;
                     }
@@ -1397,6 +1449,9 @@ impl FrontEnd {
                 }
                 Action::Back => { self.cursor = 1; return true; }
             },
+            // credits-data: the credits take no input — the handler has no input cases at all
+            // (the roll cannot be skipped) [M P_CREDITS_Handler 0x2152b0's message cases].
+            Page::Credits => {}
         }
         false
     }
@@ -1757,6 +1812,9 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
         }
         Page::Pause => pause_page(&mut h, fe, font, lang, textures, cream, bright, dim),
         Page::Results => results_page(&mut h, fe, font, lang, textures, cream, bright, dim),
+        // credits-data: the main agent draws the roll from fe.credits.visible() (the game's
+        // own line list + y positions) — nothing here yet.
+        Page::Credits => {}
     }
     h.finish()
 }
