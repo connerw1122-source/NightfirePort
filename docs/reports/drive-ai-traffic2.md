@@ -103,4 +103,14 @@ Docs: `docs/systems/driving-ai.md` gained §8 (the wiring, evidence-tagged) and 
 
 ## ntfy failed
 
-(recorded below only if all three fallbacks fail — see the final section.)
+All three fallbacks ran, in order, at 2026-10-15T23:38Z and all hit the ntfy.sh daily-message
+quota (the same 429 the day's earlier tasks recorded):
+
+1. `curl -sS -m 20 -H "Title: NightfirePort" -d "drive-ai-traffic2: …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your
+   limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 -c "…urlopen(Request('https://ntfy.sh/nightfire-yoda-8k3x', data=b'drive-ai-traffic2: done',
+   headers={'Title':'NightfirePort'}), timeout=20)"` → `urllib.error.HTTPError: HTTP Error 429:
+   Too Many Requests`
+3. `wget -q -O- --post-data "drive-ai-traffic2: done" https://ntfy.sh/nightfire-yoda-8k3x` →
+   silent (`-q`), exit code **8** (server issued an error response; the same 429 body).
