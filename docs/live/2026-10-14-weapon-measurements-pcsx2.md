@@ -130,3 +130,51 @@ Frames 120 ms apart:
   "Ames 20 wouldn't swap modes" may be this gate if the port's give didn't fill the grenade slot — check both.)
 - **The scope (aim, L1 held):** the whole screen goes dark red with a circular reticle in the centre and green-white
   boot text at the lower left: "COMMAND.COM / LOAD BIOS / MEMORY SET / SYSTEM STATUS / OK"; the view model is hidden.
+
+## The 06 truck driver (07000006, the truck start)
+
+The friendly driver (drone team 3, stands by the truck's cab at about (69–70, 38, 28–29)) is damageable, and **killing
+him fails the mission at once**: the "Mission Failed — REPLAY / QUIT" box appears as he dies (measured by accident:
+six P2K shots aimed at the stairs guard hit him). The port (104d-fix-06-driver) keeps him damageable; check that his
+death also fails the mission there.
+
+## The SG5 Commando 0x16 casings while walking forward (07000006, the guard's dropped SG5)
+
+Taken from the stairs guard (the SG5 is only on guards on 05/06), selected with L2, then forward + held fire; frames
+70 ms apart. The casings are **small brass shells** (about the size of the view model's front sight) ejected from the
+right side of the receiver, flying **up and to the LEFT, away from the camera**, gone off the top-left of the view
+within ~2 frames (~0.14 s). Walking forward does not bring them back across the screen or toward the camera, and they
+never get large. (The user on the port: "casings flying across my screen, like super large" — task 109l.)
+
+## Guard sighting -> first shot (07000006, god mode on, Bond never fires)
+
+Fresh 07000006 load; Bond walks forward from the truck start for 6 s (past the stairs into the courtyard) and stands;
+health/armour held by the measurement client (one PINE client). By game frame (60/s):
+
+- 32990: the stairs guard (drone 0x177b870 at (72.7, 37.6, 26.9)) alerts with Bond **2.8 units** away (walking
+  into him from behind).
+- 33087: the first enemy bullet, from (76.3, 35.5, 30.0) — **+97 frames (~1.6 s) after that alert**; the guard's next
+  shots +105, +167, +216, +269 (bursts ~50–60 frames apart).
+- 33326: a courtyard guard (0x1785530 at (91.7, 35.1, 36.3)) alerts with Bond 16.7 away; a bullet from (81.5, 32.2,
+  33.7) +45 frames later (attribution weak: the origin is 11 units from him).
+- 33600: a third guard (0x177c6b0) alerts at 18.3 units.
+
+So in the real game a guard that spots Bond fires its first shot ~1.6 s later, not on the next frames. (The user on
+the port: "Shots are still happening instantly" — task 109f.)
+
+## The stunner on a guard (07000005, the gate-trench guard 0x16ea150 at (99.7, 16.9, 101.6), god mode on)
+
+Selected through the gadget cycle (D-pad Up), Bond placed ~1 unit behind the guard. Held fire; per game frame:
+
+- The press: the device swings forward, the tip glows blue (as with no target).
+- **The stunner only acts in contact range.** At ~2 units with the crosshair beside or on the guard's shoulder it did
+  nothing to him: the charge just pulses 100 → 99 → 100 per discharge. At ~1 unit (touching) it connects:
+- 40811: the guard (state 0x4 idle) reacts (state 0x72 — alerted by the contact), turns toward Bond.
+- **The charge drains while it connects:** 100 → 98 (41011) → 92 → 89 → 79 → 69 (41106) — ~32 per second.
+- 41106: the guard enters **state 0x4a**, then 0x4b (41138): stunned — he **drops his weapon** (Bond picks it up:
+  "Picked up Winter Covert Sniper") and staggers.
+- While connected the screen flashes red (Bond takes the guard's hits; god mode kept him at 100).
+- After release the charge refills (68 → 70 …).
+
+So: press-activated, contact-range, drains ~32/s while touching a target, and the target is stunned (0x4a/0x4b) and
+disarmed after ~1.5 s of contact. (The user on the port: "It only really activates on releasing the key" — 109b.)

@@ -251,6 +251,16 @@ fn dropped_guns_dim_to_the_cel_ambient() {
             if sim.drones.list[gi].health <= 0.0 { break; }
         }
         assert!(sim.drones.list[gi].health <= 0.0, "the guard died");
+        // fix-guard-weapons2: with the game's per-shot RNG draws consumed (FireWeapon 0x179234's
+        // light-orientation FRand x3 + the Rand(500) pitch), the death tick (and so the corpse the
+        // drop spawns on) shifts; this harness's park spot can end inside `Pickup_Update`'s touch
+        // radius (bounds.radius + 1.1) and the game auto-takes the drop (`gone`), which the
+        // assertions below would read as "no drop". Step Bond clear before the fall — the dim
+        // behaviour of the DRAWN drop is what's under test.
+        {
+            let at = sim.drones.list[gi].pos;
+            sim.bond.pos = [at[0] + 10.0, at[1], at[2]];
+        }
         tick_idle(sim, 80); // the drop falls and lands
     }
     let sim = scene.sim.as_ref().unwrap();

@@ -594,7 +594,14 @@ impl Renderer {
     /// the fog pass with the rotation-only uniform) follow the viewer and are never culled. The per-frame `order` Vec
     /// is `clear`ed + refilled (not reallocated); `set_pipeline`/`set_bind_group(0)` are skipped when the value is
     /// unchanged from the previous draw.
-    pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame, movie: Option<(u32, u32, &[u8])>) -> wgpu::CommandEncoder {
+    /// `pillar` = the game's 4:3 cut-scene band [x, y, w, h] in target pixels (fix-cutscene-letterbox):
+    /// while a script camera runs every pass — world, fog, sky, snow and the HUD overlay — draws only
+    /// inside that band (`set_viewport`), the projection already narrowed to the game's aspect by the
+    /// caller (`crate::cutscene_frame`); the area outside stays at the black clear. The game rendered
+    /// every cut-scene at the console's own 4:3 frame, so a wider window pillar-boxes instead of
+    /// widening the view (gameplay stays widescreen — the caller passes None there). A movie frame
+    /// ignores the band: the FMV owns the whole screen [M 0x209e88].
+    pub fn render(&mut self, device: &wgpu::Device, queue: &wgpu::Queue, target: &wgpu::TextureView, depth: &wgpu::TextureView, view_proj: [[f32; 4]; 4], view_proj_rot: [[f32; 4]; 4], eye: [f32; 3], ticks: u32, snow: &[crate::scene::Vertex], hud: &HudFrame, movie: Option<(u32, u32, &[u8])>, pillar: Option<[f32; 4]>) -> wgpu::CommandEncoder {
         let ns = snow.len().min(SNOW_MAX);
         if ns > 0 { queue.write_buffer(&self.snow_vbuf, 0, bytemuck::cast_slice(&snow[..ns])); }
         let n = hud.v.len().min(HUD_MAX) / 3 * 3;
@@ -641,8 +648,11 @@ impl Renderer {
             }
             queue.write_buffer(m, 0, bytemuck::cast_slice(&u));
         }
-        // The frame starts as fog (what the fog pass covers where nothing was drawn: zb 0).
-        let clear = if fog_on > 0.0 { wgpu::Color { r: (fog_rgb[0] * GAIN) as f64, g: (fog_rgb[1] * GAIN) as f64, b: (fog_rgb[2] * GAIN) as f64, a: 1.0 } } else { wgpu::Color { r: 0.05, g: 0.06, b: 0.08, a: 1.0 } };
+        // The frame starts as fog (what the fog pass covers where nothing was drawn: zb 0); the
+        // pillar-box clears black so the sides of a cut-scene frame are the void around the game's
+        // 4:3 picture (the fog pass repaints the band's background itself).
+        let clear = if pillar.is_some() && movie.is_none() { wgpu::Color { r: 0.0, g: 0.0, b: 0.0, a: 1.0 } }
+            else if fog_on > 0.0 { wgpu::Color { r: (fog_rgb[0] * GAIN) as f64, g: (fog_rgb[1] * GAIN) as f64, b: (fog_rgb[2] * GAIN) as f64, a: 1.0 } } else { wgpu::Color { r: 0.05, g: 0.06, b: 0.08, a: 1.0 } };
         let mut enc = device.create_command_encoder(&Default::default());
         {
             let mut pass = enc.begin_render_pass(&wgpu::RenderPassDescriptor {
@@ -656,6 +666,9 @@ impl Renderer {
                 }),
                 timestamp_writes: None, occlusion_query_set: None, multiview_mask: None,
             });
+            if let Some([x, y, w, h]) = pillar.filter(|_| movie.is_none()) {
+                pass.set_viewport(x, y, w, h, 0.0, 1.0);
+            }
             pass.set_vertex_buffer(0, self.vbuf.slice(..));
             pass.set_vertex_buffer(1, self.skin_buf.slice(..));
             pass.set_index_buffer(self.ibuf.slice(..), wgpu::IndexFormat::Uint32);

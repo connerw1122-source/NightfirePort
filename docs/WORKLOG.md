@@ -10978,6 +10978,7 @@ Work Log:
 - menu_movies.rs:282 E0614 fixed (present returns (u32,u32,&[u8]) by value [M movie.rs:226]); all 203 nf-view+nf-formats test binaries build with --features nf-view/movies; 202 run: 201 ok + disc_golden's 3 allowed slim-ISO fails; PSS-data tests skip on the slim stub image by contract; docs/tools/test-suite.md gained the movies-feature note; weapon_matrix_live (>600 s with or without movies — pre-existing) flagged for the suite gate. No shared source files touched.
 - Post-merge (origin/master 6691ef9 = fix-menus-real2, whose menu_movies copy still carried the (*w,*h) bug): merged, rebuilt menu_movies/menus_flow/movie_playback_flow with movies on the final tree — 7/7, 34/34, 10/10 ok; suite restarted on the merged tree (see report).
 
+
 ## fix-save-profile
 - Started 12:32 UTC. Branch s/fix-save-profile from origin/master 1496b80. Task: port the game's memory-card profile save (unlocked missions, difficulty per mission, high scores/medals = Dossier Records, Bond moves, options, controller style) to one file per codename next to the port's config; hooks in nf-view menu.rs; tests: round trip, unlock after completing a mission, sister assertions. Layout must come from the game's save code in the decompile.
 ## fix-swim-entry (started)
@@ -11420,6 +11421,30 @@ not fit the window (14:43 deadline); the remaining families are listed in the re
 draws added; no wall-clock in Sim.
 ## fix-save-profile
 - The game's profile save ported: the six-block chain PLRS/MSSN/MPSG/GSET/CHET/BNUS [M SaveIFFBlocks 0x2c74d8 static init; L the table + the game's own 1022-byte chain in ee_snapshot InBufData 0x3416e0] with every field cited (PLRS = PlayerSetting[slot] 0x2a38c8 stride 0x158, 12 fields in LS_MakePlrSettings 0x1cd418's push order, the decode matches Input_Init 0x17edd8's defaults; GSET 905 B incl. the 219 zero dwords + the version tag 4; MPSG radar/health; CHET 3 bits; the file name IS the codename [M Menu_UpdateMessageBox 0x1f7de8]). crates/nf-game/src/profile.rs (new) + the menu hooks: the card rows after the two defaults, create/load codename, the mission_ended(Complete) save, the Records page reading the active profile. Tests: 5 module (the game's own chain decodes field-for-field) + 4 NF_ISO flow (create, the chain through the page, unlock-after-mission via nf_view::load + step_bond + mission_ended, the corrupt-file refusal); 4/4 + 5/5 on the merged tree (c606b5f). Difficulty is NOT in the save [M none of the six make fns reads GameState+0x40] — the brief's "difficulty per mission" resolves to the MSSN best scores. progress.rs: 4 fns pub(crate) + Clone (additive). Report: docs/reports/fix-save-profile.md (Live checks inside: the save chain in gdbwatch, the Records third value, the style-7 template question).
+## fix-guard-weapons (2026-10-14, branch s/fix-guard-weapons)
+
+Task 103f: check the rest of the guard fire model against the game for every
+weapon guards carry — per-weapon damage (weapon_data+0x0C), fire interval and
+burst, accuracy/spread per difficulty, distance falloff, armour absorption on
+Bond. Port what differs, citing DroneWeap_*/Drone_Fire*/Player_Hurt. Tests:
+3 weapons x 3 difficulties, hit rate over 100 shots at 10 units and damage per
+hit equal the game's model. Files: crates/nf-game/src/{drone,damage}.rs.
+
+- (15:19-17:00 UTC) Resumed on the merged master (3019d54; the prior session's uncommitted WIP
+  committed first as a7b0999). Disassembled the whole fire chain with mipsdis (DoBulletAccuracy
+  0x179740, NextBulletTime 0x179d40, BurstDelay 0x179ba8, Drone_ModBulletDamage 0x139f50,
+  Player_HandlePain 0x1902c8), read the tuning statics from ACTION.ELF + the three ee_start
+  snapshots ([L]: per-level accuracy 0x30caf0-8, Plr_DMod 0x30cc50-8, TooClose 0x30cb14=3.0 live,
+  difficulty at GameState+0x28 = 1). Fixed: the interval 60-clamp (weapons 6/10/0x0e-0x10), the
+  burst sizing draws, the BOT_getAggressionMul burst cut (12→3), the 4 missing per-shot RNG draws
+  (light orientation ×3 + sound pitch), the backshot ×2 (weapon 0x12, mode ∉ {2,0x19}, level
+  ≠ 0x700001b, |angle| < 90°, 0x30cb20), the voice-set-0xC zero-damage gate, the 0x63-0x66
+  no-modifier gate, the damage_factor difficulty-0 arm, and the 0x30cb0c→0x30cb1c citation.
+  Verified numbers: 0x0e 40/100 vs model 37.5 with every hit exactly 2.5; 0x12 43/100 vs 37.5 with
+  exactly 0.75. Test: crates/nf-view/tests/fix_guard_weapons_live.rs (3×3 matrix + TooClose sister
+  + the interval/burst fail-first). Remaining: the matrix's later phases trip the harness
+  engagement budget (some guards never engage a parked Bond); the suite restart couldn't fit the
+  window. Report: docs/reports/fix-guard-weapons.md.
 
 ## fix-fire-modes3
 - Started: branch s/fix-fire-modes3 from origin/master (8295049, weapon-matrix2 merged). Task:
@@ -11600,6 +11625,28 @@ Stage Summary:
 
 
 ---
+Task ID: 103f2-fix-guard-weapons2
+Agent: guard-weapons2 worker
+Task: fix-guard-weapons2 — the branch fails on current master: merge origin/master into s/fix-guard-weapons first; six tests fail on the merge (fix_guard_weapons_live x3: 3x3 matrix 90/100 shots, fire-rate 4/40 shots, TooClose 2.5 vs 5; master-passing: fix_progress difficulty-scale, render2 dropped-guns-dim, fix_objects death-drop; walkreal_07000001_live in batch). Find what the merge changes in the guard fire path / damage scale, fix it, keep the rest green, full suite. Files: crates/nf-game/src/{drone,bullet}.rs (+ shared-file additive hooks listed in the report).
+
+Work Log:
+- (18:20 UTC) Branch s/fix-guard-weapons2 created from origin/s/fix-guard-weapons (60b5b8e); origin/master merged (ed718f8, fix-weapon-fx-levels) — WORKLOG conflict resolved append-only (both sides kept), merge commit 5186f76. Setup reused (repo, work/, ISO, nf-queue). Reproduction next.
+- (18:16-20:00 UTC) fix-guard-weapons2 on the merged tree (5186f76). The six failures decompose: (a) the branch's
+  boot difficulty default 1 was wrong — bootup 0x1c7e78:25 stores 2 to 0x2a3790 (Ghidra `_40_4_` is DECIMAL 40;
+  `sw t0,40(s1)` @0x1c7f88), the snapshots' 1 is PTP-restore/mission-start session state [M+disasm]; reverted to 2
+  with corrected citations, fix_progress green. (b) The two drop tests: the branch's game-correct per-shot RNG
+  draws (FireWeapon 0x179268/88/ac light orientation + 0x17949c pitch) shift the death tick so the corpse lands in
+  Pickup_Update's touch radius of the parked Bond and the walk-over pickup consumes the drop (fix_objects dump:
+  drop `gone true` 0.5 units from Bond) — both tests now step Bond clear first; green. (c) The branch's own tests
+  were never finished: harness now re-parks around a stalling guard (3000-tick stall, up to 4 re-parks); TooClose
+  rewritten to the real two-band model (CombatTooClose 0x173338 backs the guard to ~8.2; the FireWeapon
+  min-range gate 0x178f68:97-102 + 0x12a960 is inert for 0x0e whose +0x08 = 0.0; deltas exactly record × DMod ×
+  (dist<3 ? 2 : 1)); fire-rate pins the tight 60 clamp with 2-round bursts (Rand(2)+1 0x179ed4 — min gap exactly
+  60, not ≥75); matrix pins health-pool round-trip deltas (1.65 double-rounds through the f32 pool). Result:
+  fire-rate + too-close green, matrix 8/9 phases (every completed per-hit delta exact; rates within tolerance);
+  the 07000005-diff3-0x16 collection remains the documented engagement-budget residual. Full suite did not fit
+  the window (background jobs die here); walkreal's walk phase exceeds one foreground chunk. Report:
+  docs/reports/103f2-fix-guard-weapons2.md (live checks inside: the point-blank ×2 arm, the boot default page).
 Task ID: 103k2-fix-weapon-anims2
 Agent: weapon-anims2 worker
 Task: fix-weapon-anims2 — the three suite failures the s/fix-weapon-anims merge held (gadget_select's weapon-cycle-on-a-gadget, gadget_laser's parked beam, fix_weapon_sounds' silent sweep cells); fix code or justify test windows from the game's code.
@@ -11674,6 +11721,30 @@ progress.rs, profile.rs. Status: setting up.
 - Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
 - Report: docs/reports/fix-oddjob-hat.md (the evidence chain, the live checks: the PCSX2 curve/
   stick/clang/expiry, the gdbwatch obj+0xF4=3 and BU+0xFC=1500 countdown, the nf-view render spots).
+fix-blast-scripts: started. Task: explosions — each blast plays its own effect script (the port's
+spawn_blast currently renders the generic one-shot 0x06000052 for every explosion, while the game passes
+a per-source effect script to Explode_Create 0x17cbd0). Plan: census every Explode_Create call site and
+the script id it passes from the decompile, carry the script id through the port's blast request, play
+that script; NF_ISO tests for the Samurai bolt, a frag, a rocket and a destroyable. Branch
+s/fix-blast-scripts cut from origin/master 509ec984.
+
+fix-blast-scripts: done. The census (13 Explode_Create 0x17cbd0 call sites, each pinned by disasm):
+the fuse death and the bit-2 contact arm pass 0x6000052 (the port already matched those); the
+0x100000/0x200000 BOLT arms pass 0x60007c4 (the Phoenix Samurai's bolt 0x32 — radius 8, damage 256 —
+reached by ○ from the beam twin 0x33 — and the 0x6b/0x6e specials); Destroy_Smash 0x12bb60 routes by
+the tag's type byte (tag+0x16 = placement param 2): 1 → 0x6000027, 2 → 0x600004f, other non-zero →
+0x6000052, type 0 → NO blast; the rest (copter/drone-delete/car/MP/GT/monitor) have no object lists
+in the port yet (pre-existing, documented). Fixes: drone.rs (pending_blasts + spawn_blast carry the
+script; NEW bolt arms on world AND drone hits with the same non-ricochet gate; the destroy smashes
+queue the type script), props.rs (additive: Destroy.kind/blast_damage parsed from params 2/5,
+bullet_hit returns the blast-carrying smashes), scene.rs (the blast pre-registration chains all four
+script hashes), explode.rs (the +0x34 doc). Tests: crates/nf-view/tests/fix_blast_scripts_live.rs —
+the Samurai bolt's cyan blast (radius 8/damage 256, one 0x06007c4 player, no 0x06000052), the
+destroyable type-1 smash plays 0x0600027 + the type-0 sister plays NOTHING, the frag/rocket sister
+pins 0x06000052 — shown failing on the pre-fix tree (the fix stashed), green post-fix.
+Suite on the merged tree: see docs/reports/fix-blast-scripts.md ("Suite"). Report:
+docs/reports/fix-blast-scripts.md (live checks: the PCSX2 bolt-blast confirmation + meter share,
+the bottle smash's script id/radius/position, the type-0 no-blast; the nf-view render spots).
 ---
 Task ID: 103c-fix-0c-vent2
 Agent: 0c-vent2 worker
@@ -11925,6 +11996,14 @@ Task: guard hit locations — hitbox set per skeleton, per-zone damage multiplie
 
 Work Log:
 - 21:47 UTC: branch s/fix-hit-locations created from origin/master (eb52fb56). work/ + ISO present, setup skipped. Research starting.
+Task: fix-ammo-pane
+Agent: worker (sandbox web-a8aa38dd)
+Task: HUD ammo pane — the bottom-right pane with the ammo icon, "clip-spare" counts and the fire-mode label. At 0700000c's walkway with the sniper rifle out the real game shows an ammo icon, "5-30" and "Single"; the port shows only the weapon NAME ("Winter Tactical Sniper"). Port HUD_UpdateAmmoPane 0x19a7f0 and its create: when the name shows (on switch, how long) vs the counts/icon/mode label, layout and font, per-ammo-type icon, gadgets and weapons without ammo. Tests: 4 weapons (P2K, sniper, MGL, a gadget) — pane text, icon id and timing equal the game's numbers; sister assertions. File: crates/nf-view/src/hud.rs.
+
+Work Log:
+- 21:08 UTC: branch s/fix-ammo-pane created from origin/master (eb52fb56). Sandbox survived the previous session: work/, ISO, nf-queue, cargo all present; setup skipped except env re-export. Suite baseline starting in background.
+- 21:08-22:20 UTC: repro'd the compare spot headless (0700000c, --bond 14.22,16.28,-139.54,0.986,-0.269): the port at frame 30 shows only "Winter Tactical Sniper" because --give/the level start leave a switch request pending and the port's name window ran 60 ticks from the weapon-id FLIP (missing the pending draw), while the game re-arms BL+0x95E = 60 EVERY frame a differing request is pending (drone+0x63 vs +0x62, 0x19a7f0:212-217 [M disasm]) and decays in the same update (pending frames read 59; completion 58). Fixed the arm rule in scene.rs hud_tick (shared file, small hook — the old arm-on-flip + hud_weapon tracking retired); the pane's name label now reads the REQUESTED weapon's +0x38 (0x19ac98 [M]) so the pending draw announces the new weapon; the count text's hidden-while-switching store the decompiler drops is the delay-slot `sh $zero,0x20(s6)` at 0x19aa9c [M disasm] — the port already matched. Also ported the kind-0x1f display (0x19a7f0:129-136): clip' = min(max−clip, max−12) of max' = max−12 for the percent text AND both strips (the Samurai overcharge display; pre-fix the port drew clip/max raw). Tests: ammo_pane_live.rs 3/3 (4 weapons' pane text/label ids/icon rows [L ee_snapshot 0x2BF150 + BulletImg 0x2BEA38], the timer rule failing pre-fix, the 0x1f transform + sisters). Renders: the compare spot at rest = strip + "5-30" + "Single" ✓ the task's capture; frame 2 now shows the name during the pending draw (pre-fix: none). Suite baseline restarting after a disk-full kill.
+- 22:30 UTC: report written (docs/reports/fix-ammo-pane.md); final-tree suite (fast runner, 240 s per-binary cap): 1122 passed, 7 failed, 39 ignored (39 min) — the 7 are the 3 allowed disc_golden + the pre-existing weapon_matrix_live TIMEOUT (240 s cap) + the 3 pre-existing pylon failures; no new failures. Remaining (documented in the report): the obj+0xF6 gadget-device charge displays (needs the player's obj+0xF6 scratch modelled), the Q-Claw/grapple 3D marker (sprite 7), the MP name label +0x3C, the per-ammo-slot fire-mode byte source.
 Task: fix-bond-damage
 Agent: worker (sandbox web-8fb9d45a)
 Task: Bond taking damage — armour absorbing first (Player_HandlePain 0x1902c8:100-104), the difficulty factor, the red screen flash and its fade, the hit-direction indicator, the health pane's colour bands, the pain sounds, the knockback/view kick, death (death camera, fail flow). Branch s/fix-bond-damage from origin/master.
@@ -12047,3 +12126,335 @@ Stage Summary:
 - Fixes in crates/nf-game/src/drone.rs only (5 small additive ones, listed above with addresses). New test file fix_hit_locations_live.rs. No shared-file edits beyond drone.rs (the task's own file).
 - Live checks requested (report §): the +0xC5 mode byte of a 05 guard at load (expect != 0xD) and a 07 guest (expect 0xD); the death anim after an aimed head kill on 05 (0x42 vs 0x40 variant); the blood puff mesh at a body hit.
 - Report: docs/reports/fix-hit-locations.md.
+Task: fix-guard-weapons3
+Agent: worker (sandbox web-2cf47bf2)
+Task: the HELD merge of s/fix-guard-weapons2 + master (+ fix-aim-raise2) fails two master-passing tests: fix_guard_weapons_live::the_3x3_hit_rate_and_damage_matrix_matches_the_game ("07000005.bin diff 3 weapon 0x16: hit rate 0.520 vs model 0.975") and nf-game ai_live::guard_takes_cover_like_the_game ("UnderCoverAim lasted 90 (live 37)" — the known RNG-stream-shift symptom). Find the difficulty-3/0x16 hit-rate gap (the TooClose, first-moved, sighting-time gates vs master's Bond/drone state) and the moved Rand_* draw; match the game's draw order exactly. Files: crates/nf-game/src/{drone,bullet}.rs.
+
+Work Log:
+- 22:47 UTC: base s/fix-guard-weapons2 (e66aa360) checked out, origin/master merged (e10f157a — WORKLOG conflict resolved append-only). Branch s/fix-guard-weapons3 created. Reproduction next.
+- 22:48-23:40 UTC: both failures root-caused and fixed. (a) The RNG shift: gw2's four new per-shot
+  fire-path draws (the flash-sprite orientation trio FRand(2π)/FRandHalf×2 [M FireWeapon 0x179268-0x1792ac —
+  but gated inside `if (lVar9 != 0)` on the kind-0x40 flash-sprite object create 0x179248, which the port's
+  sim never performs] and the Sound_Play3D pitch `Rand_Rand(500)` 0x17949c — audio-side) shifted the shared
+  stream off the live-calibrated one: `ai_live::guard_takes_cover_like_the_game`'s cover-type pick
+  (`cover_anim` mode 6's `rng.rand(2)`, drone.rs) flipped lean-out 176 (51f @1.5 = 37 ticks) to step-out 178
+  (90f @1.0 = 90). Removed both sites with citations; master's 5-draw/shot stream restored; the cover test is
+  back at 37. (b) The matrix 0x16/diff-3 0.52-vs-0.975: NOT a fire-path bug — the game's own NewSighting gate
+  (`DoBulletAccuracy` 0x179740: `+0x270 >= 120 && !+0x41`; the port matches) auto-misses ~60 shots per sight
+  loss, and the harness's stall re-parks (Bond teleports) plus the pre-fix parks WITHOUT a line-of-sight check
+  put gated shots inside the collected samples (the merged stream re-rolled which cells got hit; guard 8 fired
+  450 shots with seen=0 at a wall). Harness fixes: LOS-checked parks, per-shot gate-clean filtering
+  (seen_ticks >= 120 — the model's domain), 200 shots/cell (a 100-shot ±0.10 2σ sample hit the 0.12 tolerance
+  on the re-rolled stream). nf-view fix_guard_weapons_live 3/3, nf-game ai_live 35/35 on the fixed tree.
+Task: fix-melee
+Agent: worker (sandbox web-461a08d8)
+Task: melee — fists 0x01 and any melee weapon vs the game: punch range/arc, damage, left/right alternation (flag 0x80000), strike frame (+0x44 = 6), knockouts vs kills, civilians' reaction (274's chain merged), sounds, stealth takedowns. Files: crates/nf-game/src/drone.rs + the fire path in scene.rs (small). Branch s/fix-melee from origin/master (eb52fb56).
+
+Work Log:
+- 22:20 UTC: branch created from origin/master (eb52fb56), pushed. work/ + ISO + nf-queue already present from the prior sandbox; setup skipped.
+- 22:20-22:59: the melee audit, every fact tagged. [L ee_start_05.bin record 1]: fists 5.0 dmg / 1.75 range / speed 1.0 / +0x44 = 6 strike frame / +0x40 = 30 refire / flags68 0x880A2 / ammo 0, +0x91 = 0; fire scripts 0x060006de (op-1 0x142 @ frame 7) / 0x060006dd (@ frame 9) len 23 each [D 07000005.bin dump]; sound 0x142 hearing weight 0.0 vs 0x403's 65 [L SFXOutputData]. Two port bugs found + fixed, each with a fail-first NF_ISO test: (1) the fire path fed EVERY weapon's hearing the 0x403 gunshot — a punch alerted the room at weight 65 (the game's punch is silent to the AI; the whoosh weighs 0) — scene.rs hearing_id now 0x142 for weapons 1/0x4b/0x4d; fail-first shown (hearer loudness 58.24 → 0.0). (2) punch_impact missed the fail-reason-6 arm [M 0x145f28:69-73] (unarmed non-team-1 on every level but 09/0a → ch 0x60) and had the team arms' SendHurtMessage/KO order swapped (team 1 KOs before the scream; non-team-1 screams even when the punch was the kill) — restructured 1:1, the level-7 guest tests still green. Verified-matching (no change): the damage 7.5 = 5·1.0·1.5 through the real path, the +0x44 = 6 release, the KO 0x42 (not 0x44), head→torso for 1/0x4a..0x4d [M 0x145558], armour 0 (DefaultInit 0x14b300:566 the only writer), no casing (+0x6C & 0x40 clear + ammo_data[0] mesh 0), the 0x80000 alternation (one Rand(100) > 50 per punch), interval 30, the whoosh op-1, AlertStatusSet(2). 5 new tests in crates/nf-view/tests/fix_melee_live.rs (all green). Suite restarted (the first run had died silently).
+- 23:00-23:50: the punch-neighbor suites green after the restructure (guests 3/3, party 8/8, death 15/15, nf-game 268/268); origin/master merged (4ea550b7, WORKLOG both sides kept); the full 286-binary suite ran on the final tree in foreground chunks (the sandbox kills background jobs — the nohup/setsid runner died twice): **1125 passed / 5 failed (3 disc_golden allowed + 2 pre-existing pylon) / 66 ignored**; weapon_matrix_live 345 s no timeout. Report docs/reports/fix-melee.md committed; ntfy delivered on the wget fallback (curl/python3 429). DONE.
+## fix-pickups-ammo — s/fix-pickups-ammo (task 107e, started 22:37 UTC 2026-10-14)
+- Started from origin/master 4ea550b7. Scope: the pickup layer vs the game — caps, owned-weapon
+  takes, dropped guns, ammo boxes, the take sound + message, auto-switch.
+- Audit: read Pickup_Handler 0x18e650, Pickup_Update 0x18e148, Pickup_Create 0x18dda0,
+  Player_EquipWeapon 0x1a8a58, Player_EquipAmmo 0x1a8d18, DroneWeap_DropWeapon 0x17a2a0,
+  Script_HideObj 0x1db808 + a disc-wide placement census (a scratch example, not committed).
+  Five divergences found, all fixed failing-first:
+  1. The take sound for kinds 0/1 must be FORCED 0xF5 [M 0x18e650 LAB_0018ee80] — the disc
+     places them with 0x13F (the 07000002 sniper, the 07000008 rockets, the 07000005 id-6
+     boxes) and 0xFFFF (the 0700000c/d 0x1f boxes); the port played the placement's word.
+  2. The ammo path's id is the COMPOSITION upgrade_ammo_id(upgrade_weapon(raw)) [M
+     0x18e650:142-144 + 0x1a8d18:11-19] — the id-6 boxes (07000001/05) credit the P2K's
+     type-1 pool (cap 70 [L weapon_data: record 6 is type 2]), not type 2 (cap 90).
+  3. Pickup_Create's 07000008 && id 0x2c → rounds = 4 override [M 0x18dda0] — the vault's
+     rocket placement says 5 [D]; the old port granted 4 loaded + 1 spare (4/5 vs 4/4).
+  4. A hidden pickup is still takeable — Pickup_Update's take path never reads obj+0xF0 [M];
+     the AR drop's invisible 0x1B grenade pile [M 0x17a2a0:110-112] was never collected.
+  5. The kind-4 label (the placement's param 6 → +0x34) rides the take and is the message when
+     non-zero [M 0x18e650 case 4] — 0700000b's id-0x47 item carries 0x2000036 [D].
+- Tests: nf-game pickup units 12/12 (3 new), nf-view fix_pickups_ammo_live 4/4 (new, NF_ISO:
+  the boxes' type-1 pool + the raw-type message, the drop taken twice to the cap, the vault
+  rocket 4/4 + the forced sound, the hidden pile take, the 0700000b label message), the census
+  (fix_pickups_remainder_live) green over the levels with the override + the composed-id
+  refusal model, fix_pickups_trace_live 2/2, fix_auto_switch_live 6/6, fix_hud_live 6/6,
+  fix_objects_live 2/2.
+
+---
+Task: fix-ammo-pane2
+Agent: worker (sandbox web-2cf47bf2)
+Task: the ammo-pane tests (crates/nf-view/tests/ammo_pane_live.rs) read the local PCSX2 snapshot work/ee_snapshot.bin (panic at :17 in merge checkouts — the file isn't in the repo; CLAUDE.md: tests may depend only on NF_ISO). Re-source every game number from the disc through the port's own loaders, keep every assertion, make anything that truly needs the snapshot an #[ignore]d probe with a reason.
+
+Work Log:
+- 23:55 UTC: branch s/fix-ammo-pane2 = origin/s/fix-ammo-pane + origin/master merged (WORKLOG conflict resolved keeping both), pushed. Sandbox survived: work/, ISO, nf-queue present; fast suite started in background.
+- 00:03: repro'd the held symptom — with work/ee_snapshot.bin + work/elf/ACTION.ELF hidden (the merge-checkout condition), the_four_weapons… and the_kind_1f… panic at ammo_pane_live.rs:17 "No such file or directory"; the timer test (NF_ISO-only) passes.
+- 00:12: the fix. weapon numbers → WeaponData::from_action_elf over the ISO's ACTION.ELF (the port runs the game's own boot initialiser _GLOBAL_$I$weapon_data 0x1b9900 — docs/formats/weapon-data.md; the sim's s.weapons vs a fresh disc parse keeps the label-id cross-checks meaningful); BulletImg.189 rows → raw slices from the disc's ACTION.ELF (0x2BEA38−0x106100+kind·16); every assertion kept. The boot-memory cross-check is now #[ignore = "needs the local PCSX2 EE snapshot…"] probe_weapon_table_matches_the_boot_snapshot.
+- 00:14: verified: 3/3 pass with work/ ABSENT (the fix's point); the probe passes with the snapshot present (all 115 records × the pane fields equal boot memory).
+
+Stage Summary:
+- ammo_pane_live.rs no longer reads work/ — depends only on NF_ISO; all assertions kept, one new #[ignore]d probe. No production code touched, no shared files touched. Suite total goes in docs/reports/fix-ammo-pane2.md.
+
+Work Log (continued, fix-ammo-pane2):
+- 00:25: independent audit (subagent): every original assertion preserved (none dropped, none weakened after the label-literal fix), no work/ read outside the #[ignore]d probe, the BulletImg raw-slice cross-check is genuinely independent (symbol-table parse vs hardcoded offset 0x2BEA38−0x106100 — disjoint mechanisms). Its two label-id assertions were initially parser-vs-itself; fixed by asserting the boot-memory [L] literals (0x06→0x0500000e/0x05000036, 0x1e→0x05000010/0x05000029, 0x2a→0x05000005/0x05000032, 0x4a→0x05000042/0x05000042) for BOTH the sim table and a fresh disc parse.
+- 00:35-00:59: full suite on the final tree. This sandbox kills background processes between tool calls (nohup + setsid both died in the compile phase), so the suite ran via a per-binary-identical foreground chunk runner (scripts/run_suite_chunks.py — same build, same --test-threads=1/NF_SILENT/240 s limit, same counting/format, resumable). All 289 binaries: 1160 passed, 7 failed, 40 ignored — the 3 disc_golden (slim ISO) + 3 pre-existing pylon + the weapon_matrix_live 240 s-cap TIMEOUT; zero new failures; ammo_pane_live 3/0/1.
+- 01:00: report docs/reports/fix-ammo-pane2.md; finish steps next.
+Task: weapon-matrix5
+Agent: worker (sandbox web-9248268a)
+Task: close weapon-matrix4's harness gaps (watch 0x54/0x55 mode press ORs fire edge [M Player_Weapon 0x1a24c8 action 9 mask 4]; away switch after the Sentinel waits for missile_cam clear + the game's 15-tick restore; re-run Wolfram 0x04 on 0700004a and MGL 0x2a on 0700000d), then sweep ALL 27 levels and write a numbered finding per remaining red cell. weapon_matrix_live under 1200 s.
+
+Work Log:
+- 21:05 UTC: branch s/weapon-matrix5 created from origin/master (9c55eace). Sandbox survived reset-scan: work/ + ISO + nf-queue present, setup skipped.
+## weapon-matrix3 — s/weapon-matrix3 (task 103m, 14:57-16:35 UTC)
+- The gadget cells are REAL: 0x4A..0x5E equip via the gadget cycle (Player_WeaponChange 0x1a6f80
+  mode=1, Input::gadget_cycle) and run the beam/bolt/camera/sound checks; uncarried ids print n
+  (the game's cycle cannot reach them either). 07000005: 0x4a nt1 (the stunner's no-target arm
+  [M 0x1a4bf0:169-200]), 0x4e/-, 0x50/-, 0x54/-; the twins 0x4c/0x4f/0x55 n.
+- Two harness repairs the cells exposed: the dead-Bond cold reload (the warm restart's RamLoad
+  carry keeps hp 0 — measured) and the stale fire_busy script clear (the port keeps view_script
+  set with view_time frozen 0 after a script ends; the game's gate is the state-9 check
+  [M 0x1a6f80:33-47]). Proof on 07000003: D 17 → 9, clean 27 → 34.
+- The sweep: 2646 cells (27 × 98), 0 panics; red B 287 / D 487 / F 53 / M 197 / R 310 / W 47
+  (matrix2: D 1278 / B 234 / R 226 / M 152 / F 22 / W 9) — measured with the 103i hang unfixed
+  (its branch is a claim stub; the fix is in flight). Groups: the twins' B wall = the mode_to
+  press budget; the D-block = the stale-script family (fixed) + 103i's hang; F = the manor-intro
+  holds + 0x38's quiet fire (live check). Report: docs/reports/weapon-matrix3.md. Shared files:
+  none touched.
+- 20:46: merged origin/s/weapon-matrix3 (6171f2a8) — matrix.rs resolved to matrix4's harness evolution + matrix3's `no_target`/stunner field (the gadget test's escape hatch, Player_WeaponInitBullet 0x1a4bf0:169-200); WORKLOG append-only.
+- 20:55: weapon_matrix_live.rs restructured — the in-suite sample (05/0c/1b) + 24 sweep levels #[ignore]d with the reason (NF_MATRIX=all or a list re-selects with -- --ignored; nf-extract weapon-matrix covers the sweep), the three 07000005 consumers share one row via OnceLock; matrix3's gadget-cell test kept, every check intact. Builds clean.
+- 22:22 UTC: the three harness gaps closed. (1) scene.rs watch arm: the game enters the mode
+  block on action12|action9 [M 0x1a24c8 `bVar5 |= Input_Action(slot,9,4)`] — the old outer
+  `if input.mode_switch` made the OR arm dead code; the fail-first probe (probe_watch, style b)
+  showed "no swap" pre-fix, "SWAP landed 0x54→0x55" post-fix. (2) matrix.rs step() now carries the
+  real input path's own invariant (lib.rs feeds `fire: self.trigger` into Input AND the trigger arg)
+  so the OR's edge reaches the port on every fire press. (3) the guided-camera ride-out before the
+  reload/mode/away phases [M Bullet_Delete 0x12e660:27-29 +0x944=0xf; Player_Update 0x193600 case
+  10] — 0x2c on 07000005: W (and the M under it, the 4.5 press eaten the same way) → clean.
+  0.05 row: 3 reds (0x32 F target-gated, 0x38 F mine) 0 panics. Checkpoint push next.
+- 22:33 UTC: the sweep on this window's tree: 05 (98 cells, 3 reds, 0 panics), the 7 wrappers
+  (686/29/0), the story levels 01-08,0a,0c (768 cells, 0 panics; the reds are the 0x32 F / 0x38 F
+  pair + the dim no-fp give refusals 0x01/0x1e/0x43) and 0d (98/3/0 — the 0x2a X re-run: gap 97 =
+  the contact flight time at that spot, not the 210 fuse; the 0x04-on-4a re-run CLEAN). Root cause
+  of the 0x2e/0x30 D family: the never-dying guided missile on 0b/48/4a/4b rides into the next
+  cells (gcam1 in their cells) — the port needs the game's missile lifetime (Bullet_update
+  0x12e7b0), live check in the report. Remaining: story levels 11-16,1b. Report:
+  docs/reports/weapon-matrix5.md. finish.sh 106b done + ntfy sent.
+
+---
+Task: weapon-matrix5b
+Agent: worker (sandbox web-fe09c0ea)
+Task: weapon matrix 5 rebuild — base s/weapon-matrix5, merge origin/master FIRST (master now has weapon-matrix4b = matrix3 + matrix4 + the in-suite sample, and fix-samurai-fire's Gun::has_ammo(…, clip_slot)). HELD: on master + the branch alone, upgraded_runner_checks_the_new_behaviours_on_07000005 fails at weapon_matrix_live.rs:227 "0x54: the watch's twin chain must operate" — the gap-1 fix (the watch pair's mode press ORs the fire edge) doesn't hold on master's harness. Rebuild the three harness fixes on matrix4b's runner, keep the in-suite binary under 1200 s, re-run the sweep, report the red list as numbered findings. Files: crates/nf-view/src/matrix.rs, crates/nf-view/tests/weapon_matrix_live.rs (shared: small additive hooks only).
+
+Work Log:
+- 23:18 UTC: branch s/weapon-matrix5b created from origin/s/weapon-matrix5 (4cf0d3ef); origin/master (d1e8f6a7, 90 commits ahead) merged — matrix.rs/scene.rs auto-merged, WORKLOG resolved append-only (master's file kept, matrix5's entry + this one appended).
+- 23:18-00:45 UTC: the rebuild done. Merge of origin/master (90 commits) onto the matrix5 base —
+  matrix.rs/scene.rs auto-merged, WORKLOG append-only. The HELD 227 failure root-caused: the state-9
+  proxy (gun.fire_state) latched unconditionally on every round while the game's SetFiringAnim
+  0x1a3c70 enters view state 9 ONLY when the fire script exists (its tail: the +0xf4=9 store is
+  inside the `hash != 0` branch) — the script-less watch pair 0x54/0x55 wedged the mode block shut
+  forever on master's tree (fix-samurai-fire's clip-slot unification let the round actually run).
+  Fix: the latch gates on +0xB0/+0xB4 (GunParams carries them); spawn latch untouched. Runner test
+  227 panic → pass (118 s) + the machine_idle sister. In-suite binary 341.8 s (< 1200 cap), 6/0.
+  Sweep re-run: 24/24 levels passed, 0 panics; tables captured for 16/27; red list = matrix5's
+  standing findings (0x32 F, 0x38 F, 0b's 0x2c W + 0x2e/0x30 D guided-lifetime, 0d's 0x2a X
+  contact-flight) — the watch pair now clean everywhere (zero M reds). Full suite: 1136 passed /
+  3 failed (the allowed disc_golden trio). Report: docs/reports/weapon-matrix5b.md.
+---
+Task: fix-satchel-tripbomb
+Agent: worker (sandbox web-2cf47bf2)
+Task: the satchel family 0x3b-0x40 and the laser tripbomb 0x3a — stick on contact (+0x70 & 0x100), the satchel's timer/remote fuse (((id-0x3b)*5+5)*60 [M Bullet_init 0x12c5a0]), the tripbomb's beam + trigger + arm delay, blast scripts, sounds and models while stuck. Files: crates/nf-game/src/{grenade,drone}.rs, scene.rs beam draw (small).
+
+Work Log:
+- 21:38 UTC: branch s/fix-satchel-tripbomb created from origin/master (eb52fb56). work/ + ISO present, setup skipped. Exploring the decompile + port state next.
+
+---
+Task: fix-satchel-tripbomb (work continues)
+Agent: worker (sandbox web-2cf47bf2)
+Task: the satchel family 0x3b-0x40 and the laser tripbomb 0x3a — stick on contact, the satchel's timer fuse, the tripbomb's beam/trigger/arm delay, the blast scripts, sounds and models while stuck.
+
+Work Log:
+- 21:38-22:10: the decompile read. Key findings: (1) `Bullet_DoTrails` 0x12d890's decompile drops the 4th float arg — its `param_1 == 0` early-out tests the OBJ pointer (a0), NOT the step: disasm 0x12d890-0x12d8c8 + the call site 0x12efe8 `mov.s $f12, $f21` with case-3 $f21 = 0.0 — so DoTrails RUNS in stuck state 3 and the satchel's fuse/beeps/digits tick while stuck. (2) `Bullet_init` 0x12c5a0:199-208's family arm keys on base (weapdef+2) == 0x3b — the record dump of all 115 entries [L] shows every satchel bases to ITSELF and only 0x3b is selectable → the live fuse is 300; the tripbomb 0x3a bases to itself → the default 210, and its REAL arm delay is the stick's own overwrite `BU+0xFC = 120.0` [M 0x12ce80:330]. (3) The stick arm: 0x3b → 0.04 off the wall + 0x4a7; the 0x80000 tripbomb → 0.002 + 0x446 + the 6-placed walk; the satchel has NO detonator record (0x3b w68 = 0x10080, no 0x20000) — timer-only. (4) The tripbomb's laser: arm 120 ticks → the beam object (gfx 0x2000133) + Sound 0x27c once, then the ray out along +normal (Z = −normal at the stick, the beam end = pos − 200·Z), chars 2/3/0x28 → `Bullet_handle_object_destruction` 0x12cd98 → the 8/100 blast + the beam dies. (5) `SatchelDigits` @0x2bed90 = 0x2000791..0x200079a [L]; the 0x3b tail's beeps are 0x447 on the quarter-second change ((qs&3)==0 || ((qs&1)==0 && sec<10) || sec<5).
+- 22:10-22:45: the implementation (grenade.rs: the `StuckGadget` phase box, the generalized stuck tick, the tail; drone.rs: the consumer arms 0x446/0x27c/0x447, the beam pass + the char-crossing trigger + the 6-cap, the throw fuse arm; scene.rs: the family fuse formula, the stuck draw alignment, the beam slots TRACER_SLOTS+3/+4, the digit pools kinds 4/5). Tests: 3 unit (the stick+300 fuse+beeps/digits, the non-210 fuse, the tripbomb arm 121) + 4 live through step_bond (the stick+blast+0x6000052, the countdown+beeps, the arm/beam/trigger + the off-beam sister, the 6-cap).
+- 22:47: checkpoint pushed. 22:52: the pre-fix probe (git checkout HEAD~1 -- crates): stuck=false, boom_at=300 (bounced, never stuck) — the live tests fail on the pre-fix tree as required; restored.
+- 22:56: the full suite started on the final tree (tools/test/suite.py); the report + the finish steps follow.
+
+---
+Task ID: 106a-fix-samurai-fire
+Agent: samurai-fire worker
+Task: fix-samurai-fire — the Phoenix Samurai (0x32/0x33, the laser rifle's Overcharge/Beam modes) draws, plays its fire script and sounds, but nothing spawns on 16 of 18 levels [weapon-matrix4 red #1]. Find the game's fire path (Player_WeaponFiring 0x1a5460, Player_WeaponInitBullet 0x1a4bf0, the charge for Overcharge, the beam for Beam, any target gate) and port what's missing: the charged bolt flies and hits walls (fix-fire-modes3 ported its impact blast), the beam draws. Tests at 07000005's spawn: Overcharge at a wall spawns the bolt + blast; Beam draws to the wall.
+
+Work Log:
+- (20:58 UTC) Branch s/fix-samurai-fire created from origin/master 9c55eace and pushed. Setup reused (repo, work/, ISO, nf-queue). Docs + decompile round next.
+- (21:00-21:25 UTC) Decompile round: the Samurai 0x32/0x33 records [L ee_start_05.bin @ 0x2bf150] (both base 0x33, +0x90 = 0x1f, the give fills clip[0x33]); Player_AmmoInGun 0x1a9190's shared-slot read (the twin reads the base's slot — the mode press's dry check was reading the twin's own empty slot: the reach bug, weapon-matrix4 red #1); the fire path 0x1a5460:640-698 (+0x44 = 280 → the case-9 spawn [M 0x1a2e38:404-421]) and the collision handler's shared blast tail 0x12ce80:186-231 (the flesh contact reaches the 0x100000 blast too); the swoosh 0x12c5a0:116-133. Probe traces: the overcharge bolt DOES spawn on a full 280-tick hold (the port's release-frame machinery works) but the reach was broken and the flesh blast was missing.
+- (21:25-21:30) Fixes: Gun::ammo_in_gun_slot (0x1a9190) wired into the four has_ammo call sites (the mode press, the switch/cycle block, the detonator's re-arm ×2); the drone-hit arm gained the small-blast gate (the shared tail); the +0x6C & 0x10000 swoosh stand-in (a cyan gas puff per flying tick, no RNG draws).
+- (21:30-21:50) 3 NF_ISO tests SHOWN FAILING pre-fix (git stash; the reach inert / no trail), green post-fix; the neighbours green (weapon_switch 35, fire_modes3 5, weapon suites); suite chunks 998/5/19 (the 3 disc_golden + the 2 GPU-adapter documented). Report: docs/reports/fix-samurai-fire.md (the live checks + the render spots inside).
+
+Stage Summary:
+- The Phoenix Samurai fires: the mode press reaches the Overcharge twin (the AmmoInGun shared-slot read), the charged bolt flies and blasts on any non-ricochet contact, the beam draws its cyan trail. All named tests green failing-first; the suite totals in the report.
+- (21:54-22:02) origin/master merged (27e483ea, auto — 103i2's clip_slot write-side + fix-striped-boxes2 et al; complementary to the read-side ammo_in_gun_slot); re-verified on the merged tree: 344 passed / 0 failed (the libs, the Samurai trio, fix_reload_hang, the weapon suites, the neighbours). Report updated.
+Task ID: 107a-fix-grenade-types
+Agent: grenade-types worker
+Task: fix-grenade-types — every thrown grenade record vs the game: frag 0x34, stun 0x35, smoke 0x36, flash/gas thrown records; fuse, blast/cloud (Occlude_Create 0x17ea80/0x17eba0), stun effects on guards and Bond, cloud size/lifetime, guard reactions, sounds/particles. Symptom: "smoke grenade didn't work" (playtest 1013-1825).
+
+Work Log:
+- (started 21:57 UTC) branch s/fix-grenade-types from origin/master (eb52fb56). The thrown set swept from the game's own weapon_data initialiser [L]: 0x34 frag, 0x35 stun (fuse+FLASH), 0x36 smoke (fuse+SMOKE), 0x69 second smoke (0x36's label, the 3600 family); no separate gas/flash records — the puff rides the stun branch.
+- THE WHITE-OUT WAS INVISIBLE: the port wrote flashbang = 1.0 and decayed it 1/6 per tick (~6 ticks). The game [M 0x12e0b8 + 0x196040 + 0x193600; D input.md:126 FRAME_RATE = 60]: f = clamp01(1-(d-5)/85) x facing (blast at the player's xz = 1; 1-(|dyaw|-pi/6)*0.81851107; negative = 0) x 0.5 w/o LOS, SetFlashBang = 600*f ticks at alpha f, a full-alpha plateau then a fade. Ported: nf_game::drone::flash_amount + PlayerHealth.flash_total/flash_alpha + the tick decrement + hud::script_overlay's white quad.
+- THE STUN HELD 2x TOO LONG AND NEVER DISARMED: RecoverTime's 0x35 arm = 18*(200-b9) = 3600 (the port read the DEFAULT arm = 7200) [M 0x147188 + 0x172bb0]; StunGrenadeImpact ENTER DROPS the weapon (DropWeapon + ChangeWeapon(1)) [M 0x172bb0 case 1]; the prop-0x1C immunity [M 0x1469b8 case 0x18]. Ported all three.
+- THE FOREVER-STUN #2: the Loop's kept-down test is the LIVE DroneFunc_AnyoneNear [M 0x14a718 via 0x1631c0 case 0xc]; the port read the cached self.dist, which a stunned guard never refreshes. Fixed: Drone.player_pos mirrored in the tick's shared pass, SqDistXZ < 16 && |dy| <= 3.
+- THE 0x69 SMOKE: fuse 5.0 [M 0x12c5a0:212] and the pop re-arms to 3600 with Occlude_Create(pos, 3600, 1) [M 0x12e114-0x12e1b4] — the cloud lifetime IS the re-armed fuse. Both throw paths carry it.
+- Tests: fix_grenade_types_live (new): 0x69 fuse-5/3600-cloud, the at-feet flash on the observed geometry (both LOS branches), the retreated-throw falloff (d 38 -> alpha 0.30), the placed-guard stun (0x4d + drop + armed span) — 3 passed / 1 ignored. nf-game lib 152/152 (stun_loop_recovers re-pinned to the live-pos query + a |dy| sister).
+- Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
+- Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
+- Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
+
+---
+Task ID: 108a-fix-cutscene-letterbox
+Agent: fix-cutscene-letterbox worker
+Task: fix-cutscene-letterbox — cut-scenes must show what the game shows: the black letterbox bars (Script_CameraStart 0x1d9140's SpriteInfo 0x2c9468 bars, ported by 277-fix-script-commands) are missing in the port's 07000007 Kimiko scene, and the port's widescreen shows more at the sides than the game's 4:3 frame (frame 400: Dominique in the left doorway visible in the port, outside the game's frame).
+
+Work Log:
+- (23:23 UTC) Setup reused (repo, work/, ISO, nf-queue worktree). Branch s/fix-cutscene-letterbox created from origin/master (d1e8f6a7) and pushed with this entry.
+- (23:23-23:50 UTC) Setup reused (repo, work/, ISO, nf-queue). Branch s/fix-cutscene-letterbox from origin/master (d1e8f6a7). The two defects found and fixed (all in lib.rs + gpu.rs + one new test):
+  (1) the headless --shot path built its HUD from `overlay_for` ALONE, which is EMPTY while a script
+  camera runs (the gameplay-HUD gate) — the letterbox bars/fade/op-0x14 sprites never reached the
+  compare renders (the window path appended `script_overlay_hud` all along); fixed with `shot_hud`.
+  (2) both render paths projected at the window aspect — fixed: while a script camera is live the
+  projection narrows to the game's 4/3 (`cutscene_frame`) and `gpu::render` gained a `pillar` band
+  (black clear + set_viewport over every pass); gameplay keeps the widescreen. Bar evidence: the
+  two 512×64 bars at y 0/0x180, texture 0x03000002, layer 1 (no fade either way) [M 0x1d9140:49-61,
+  0x1d9860:87-93; L ee_snapshot@0x2c9468]. Two pre-existing tests (fix_0c_pylon_live,
+  probe_pylon_render) got the new trailing `None` argument (one token each).
+- (00:40 UTC) DONE on the final tree (= this branch, contains origin/master): suite in foreground
+  chunks (background jobs die between tool calls here) = 1150 passed / 6 failed / 63 ignored / 0
+  timeouts — the 6 are the 3 allowed disc_golden + the 3 pre-existing GPU-adapter pylon tests, the
+  exact baseline set. The 4 new fix_cutscene_letterbox_live tests pass (bars + flag-hold + the 4:3
+  band + the frame-400 extent geometry: 23 cast in 16:9 vs 16 in the game's frame, 7 in the added
+  side band). Report: docs/reports/fix-cutscene-letterbox.md (before/after renders are the main
+  agent's — no GPU adapter in this sandbox; the four --bond commands are in the report).
+
+Stage Summary:
+- The cut-scene picture now matches the game's: the bars draw on both render paths at the game's
+  size/timing (instant on at CameraStart, instant off at KillStream — the game has no bar fade),
+  and a script-camera frame projects at the console's 4:3, pillar-boxed on wider windows; gameplay
+  widescreen untouched.
+
+---
+Task: fix-sentinel-camera-play (109a)
+Agent: worker (sandbox web-9248268a)
+Task: the Sentinel's guided-rocket first-person camera doesn't happen in play (the merged tests ride), and the rockets are far too slow (the 0x200 speed-x0.25 read). Files: crates/nf-view/src/{scene,lib}.rs, crates/nf-game/src/drone.rs (small).
+
+Work Log:
+- 01:26 UTC: branch s/fix-sentinel-camera-play created from origin/master (d7afed5a) and pushed. Setup reused (repo, work/, ISO, nf-queue). Reading the PCSX2 measurements first.
+## fix-cutscene-actors — s/fix-cutscene-actors (task 291, started 20:12 UTC)
+- Task: playtests on 07000007 — "models in that cutscene aren't accurate" (the Kimiko scene), "guards aren't in the proper place after the Kimiko cutscene", and on another scene "models are missing". For each cut-scene on 07000005/06/07: list the actors the script creates (Script_AnimStart, skins), compare with what the port draws (skin resolution), and where the actors end up when the scene hands back (the scene's last keys / Script_KillStream vs the drones' positions). Fix what differs, with a test per scene (actor skin hashes and the post-scene positions). Files: crates/nf-game/src/nis.rs, crates/nf-view/src/scene.rs.
+- Status: branch cut from origin/master 62c17571, pushed. Setup reused (work/, ISO, nf-queue present). Suite started in background (suite.out).
+- Research so far: Kimiko scene = 0x06000073 (pack 07800007.bin, 4326 ticks, 15 streams): anim actors skins 0x0500003b (script 0x060004f1), 0x05000015 (0x060004f2), 0x0500000d (0x06000225); entity 0x02000acb (obj_type 0x1f, keyed); freeze pair event 5 (tick 0) / event 7 (tick 0x10e6); player return event 6 (param 0) at stream 7, previous stream 6's entity (hash 0). Drake fly-through = 0x06000072 (pack 07900007.bin). 07000005/06 have no loadable packs — archive kind-7 scripts only. All three Kimiko skins are in 07000007's own archive [D bin-list].
+- DONE (21:07-21:50 UTC): the per-scene actor inventory pinned and one missing-models fix landed.
+  (1) Inventory [D bin-list/nis dumps]: the actor-carrying cut-scenes on the three levels are
+  07000005 0x060008c8/0x06000952/0x06000994/0x06000a22 (truck), 07000006 0x06000071 (dressing), and
+  07000007's packs 0x06000072 (fly-through, 13 guests) / 0x06000073 (Kimiko: 0500003b/0x060004f1,
+  05000015/0x060004f2, 0500000d/0x06000225); every Anim skin resolves in its own archive and every
+  character builds; all actor-scene SP bases are identity, so the port's root-in-world anim model
+  matches; the Kimiko hand-back chain verified game-accurate step by step (event-6 snapshot of
+  stream 6's key-498 entity → Bond at [91.52, 43.85, -31.09]; the ch-0x48 second-switch drones —
+  placement 414 et al., param 6 = 72, param 8 = 100, alert block 5 → GetDTYPENEW case 5 → mode 0x15
+  → DroneTypeSettings[0x15].alt = 0xb4 — delete through NDrone2_PreDroneControl 0x148db0 when the
+  freeze lifts; WaitSwitch drones hidden per 0x15b960 msg 1 = NDrone2_Enable(0)).
+  (2) FIX (models missing): `Bullet_CollisionHandler` 0x12ce80:212-231 Script_Loads **0x060007c4**
+  via Explode_Create on the weapon `+0x70` 0x100000/0x200000 arms (disc records 0x32/0x6e = 0x100000,
+  0x6b = 0x200000 [L scan]) — no placement references it, so the port's scene build never made its
+  entity instances (Laser_Blast_frame_1/2, Vertical_smoke, After_glow_test, cloud_1, smoke) and the
+  sim never spawned it. Fixed both sides; test fails-first on the pre-fix tree.
+  (3) Tests: crates/nf-view/tests/fix_cutscene_actors_live.rs — 5 (Kimiko actors + hand-back
+  positions, dressing, ledge, fly-through skins, the impact models; the last fails-first). Neighbour
+  binaries green: fix_cutscenes_live 5, fix_cutscenes2_live 4, models_characters_live 6,
+  fix_weapon_effects_live 4, impacts_live 6. The full suite did not fit the window (the 21:51
+  stop-new-work rule) — the next session should run it on the merged tree.
+
+## fix-blast-scripts2 — s/fix-blast-scripts2 (task 105c2, started 22:39 UTC 2026-10-14)
+- Task: blast scripts + cut-scene actors — ONE 0x060007c4 path. Base s/fix-blast-scripts, merged
+  origin/master, then origin/s/fix-samurai-fire (not on master), then origin/s/fix-cutscene-actors
+  (291). HELD at merge: fix_blast_scripts_live::the_samurai_bolt_plays_the_cyan_blast_script fails
+  "exactly one 0x060007c4 one-shot player (the bolt's cyan blast) — left 0, right 1". Make ONE path:
+  the bolt's contact (world and flesh) creates the explosion with script 0x060007c4 and its entities
+  draw. Keep fix_blast_scripts_live, fix_cutscene_actors_live, fix_samurai_fire_live green.
+- Work log:
+
+## fix-blast-scripts2 — s/fix-blast-scripts2 (task 105c2, finished 23:56 UTC 2026-10-14)
+- The ONE 0x060007c4 path, reconciled from s/fix-blast-scripts + origin/master + origin/s/fix-samurai-fire + origin/s/fix-cutscene-actors (291):
+  the merge root cause was the fire-modes3-shaped FIRST world arm whose gate included the bolt bits
+  (0x100000/0x200000) while pushing the generic script 0x06000052 — the bolt's own else-if arm was
+  dead code, and cutscene-actors's separate direct `spawn_once(0x06007c4)` at the world hit was the
+  only thing drawing the cyan blast (at scale 1, alongside a leaked generic 0x06000052 player).
+- Evidence [M, ACTION.ELF disasm, little-endian decode]: `Bullet_CollisionHandler` 0x12ce80 runs
+  THREE independent explode arms on every non-ricochet contact (world AND flesh) — `+0x70 & 4` →
+  `Explode_Create(f12 = +0x08, f13 = +0x08, f14 = +0x0C, script 0x6000052)` [0x12d0ac-0c0];
+  `+0x70 & 0x100000` and `+0x70 & 0x200000` → `Explode_Create(f12 = 1.0 [0x12d0ec-0f0 `lui $at,
+  0x3f80; mtc1 $at, $f12`], f13 = +0x08 [0x12d118], f14 = +0x0C, script 0x60007c4)` [0x12d154-88].
+  `Explode_Create` 0x17cbd0 stores param_1 (f12) into SCRIPTINFO+0x94 = the script player's scale,
+  and param_2 (f13) is the blast radius (Camera_Shake + obj fields) [0x17cbd0 body]. The fuse death
+  0x12cd98 passes f12 = +0x08 [0x12ce1c] and Destroy_Smash 0x12bb60 passes f12 = tag+0x8c [0x12bcdc].
+  So: the game's bolt cyan blast plays at SCALE 1.0 while the blast radius stays 8.0 — the
+  fix-blast-scripts test's scale-8.0 pin contradicted the disc and is corrected to 1.0.
+- Fixes (crates/nf-game/src/drone.rs): the world arm now picks script AND scale by bits in ONE arm
+  (the flesh arm already did; both cite the disasm); cutscene-actors's separate direct spawn is
+  GONE — the queued blast's `spawn_blast` spawns the same script player, whose entities draw from
+  the scene.rs sweep (all four hashes kept, the ONE path); `pending_blasts` gained the game's f12
+  as a 7th tuple element (every push site cites its arm's f12: 0x4/fuse/destroy = radius, bolt =
+  1.0), and `spawn_blast` takes the scale instead of deriving it from the radius.
+- Tests: crates/nf-view/tests/fix_blast_scripts_live.rs — the corrected cyan-scale pin (1.0 [M
+  0x12d0ec-0x12d0f0]) + the generic-script sister SHOWN FAILING pre-fix (the bolt's blast played
+  0x06000052 through the mis-routed arm; "the bolt must not play the generic 0x06000052" panics on
+  the pre-fix merged tree), green post-fix with the destroy + frag/rocket sisters. fix_cutscene_actors_live
+  5/5, fix_samurai_fire_live 3/3, fix_weapon_fire_modes_live 5/5 (the neighbouring gates).
+- Suite on the final tree (287 state entries + the second same-named fix_ai_remainder_live binary,
+  foreground --test-threads=1 chunks — this sandbox kills background jobs, the 102c/100f/oddjob-hat
+  precedent): 1154 passed / 6 failed / 63 ignored; the 6 = the 3 ALLOWED disc_golden + the 3
+  pre-existing pylon failures (probe_pylon_render 1, fix_0c_pylon_live 2, documented on
+  weapon-matrix4b). weapon_matrix_live green in-suite (6/24 ignored, 340 s — the held timeout stays gone).
+- Shared files touched: crates/nf-view/src/scene.rs (the merge conflict resolution keeps the
+  four-hash sweep, comment-only union — no behaviour change), crates/nf-view/src/matrix.rs (the dbg
+  has_ammo call gained master's clip_slot arg — a compile fix, no behaviour change), crates/nf-game/src/gun.rs
+  and crates/nf-view/tests/weapon_switch_live.rs + docs/reports/fix-samurai-fire.md + docs/reports/fix-cutscene-actors.md
+  arrived from the merges themselves. Report: docs/reports/fix-blast-scripts2.md (the render spots
+  for the main agent + the live checks).
+
+---
+Task ID: 108d-fix-flesh-impacts
+Agent: fix-flesh-impacts worker
+Task: fix-flesh-impacts — player bullets hitting characters must spawn the game's own contact effect: every contact goes through Bullet_CollisionHandler 0x12ce80 → Effect_Create 0x1ce688 with HITDATA+0x50's material; the port's drone-hit arm only runs NDrone2_DoHitEffects 0x1458e0 (damage + the 0x601/0x413 hit sounds, no visual). Also settle material 0x10 (docs/fields: flesh/none vs effect.rs GLASS) via the EffectInfo table 0x3037c0, the flesh pass-through rule (0x800 / 0x10 [M 0x12ce80:136-141]), and the same for guard bullets hitting Bond.
+
+Work Log:
+- (00:44 UTC) Setup reused (repo, work/, ISO, nf-queue). Branch s/fix-flesh-impacts created from origin/master (88cba630) and pushed with this entry.
+- (00:45-02:15 UTC) The research flipped the premise: a character hit reports HITDATA material 0
+  [M Collide_Jointy 0x1ec180:125/173], so Effect_Create's guard [M 0x1ce688:52] skips the bullet's
+  own contact effect on people — the port's absence was correct. Material 0x10 = GLASS (windows;
+  the pass-through rule 0x12ce80:136-141 + the row 0x10 dump [L 0x3037c0+0x10·0x88] settle it; the
+  docs' "0x10 = flesh/none" needs the correction). The flesh visual is the VICTIM's own puff [M
+  NDrone2_DealWithObjHit 0x13fff0:235-256]: Gas_Init(3.0, 6.0, 0x20008bc, kind 5, white, life
+  0x3c = 60 — the stack arg from the disassembly 0x140404/0x140460) at the hit point, per the
+  SHOOTER's weapon id (outside {0x2b, 0x34..0x37}, damage > 0; the Samurai bolt 0x32/0x33 →
+  0x200026e at 1.0/16.0); Bond's handler has no puff at all [M 0x194458]. Ported in
+  update_player_bullets' drone-hit arm (drone.rs only, no shared files, no shared-RNG draws).
+- (02:15 UTC) Pushed 83583795. The 4 new NF_ISO tests pass (the failing-first body-shot test +
+  the per-hit count, wall-unchanged and Samurai-bolt sisters). The full suite did NOT fit the
+  window (the background runner dies between tool calls here; the foreground chunks need ~30 min)
+  — the first item for the next message. Report: docs/reports/fix-flesh-impacts.md.
+
+Stage Summary:
+- Bullets on people now show the game's flesh puff (0x20008bc, 3.0→6.0, 60 ticks, at the hit
+  point) on every guard/civilian drone hit by a player bullet, the Samurai bolt's energy puff
+  instead, no effect on Bond (the game's own rule), walls unchanged, material 0x10 settled as
+  GLASS with the decompile + table evidence.
+
+---
+Task: fix-sentinel-camera-play (109a)
+Agent: worker (sandbox web-9248268a)
+Task: the Sentinel's guided-rocket first-person camera doesn't happen in play (the merged tests ride), and the rockets are far too slow (the 0x200 speed-x0.25 read). Files: crates/nf-view/src/{scene,lib}.rs, crates/nf-game/src/drone.rs (small).
+
+Work Log:
+- 01:26 UTC: branch from origin/master (d7afed5a), setup reused, pushed. The PCSX2 measurements read first (docs/live/2026-10-14-weapon-measurements-pcsx2.md).
+- 01:30-02:05: the decompile read. [M Bullet_init 0x12c5a0:207-211] — the speed arm scales weapon_data+0x20 by 0.25 on +0x6C & 0x200 (the port implements it faithfully; the records [L ee_start_05 @ 0x2bf150]: 0x2c +0x20 = 0.25, 0x2d +0x20 = 0.3333, both 0x200) — so the port's 0.0625 is the INIT speed, but the game's flight is 0.33666 u/frame [L PCSX2] = 4.04× that. Bullet_update rewrites BU+0xF8 per tick (0x12e7b0 at 0x12ecf8, the Vec_NormaliseLen step) and the object's control integrates the move; the internal ×4.04 source is unresolved (the state-1 mover, control_movement_object_handler, FRAME_RATE_DIV=1.0/REC_FRAME_RATE=1/60 at 0x30d0d4/dc all read) — the port applies the measured ×4.04 on the measured twins (0x2c/0x2d) only, live check requested. The camera: `view_override()` had ZERO callers — the window built its camera from Bond's head (+ the script camera) only; the sim rode, the screen stayed. The mode-button hypothesis CLEARED with a test: the press reaches the twin through the real Input lane.
+- 02:06-02:35: the fix + the tests. lib.rs: view_override in the live tick block and in shot(); view_model_entries skips during the ride. scene.rs: frame_state hides the view-model character during the ride. hud.rs (one gate, listed): the crosshair skips during the ride. drone.rs: the ×4.04 measured flight scale on 0x2c/0x2d. sentinel_camera_live 3/3 through the real Input lanes; failing-first on the pre-fix src: the speed 0.06250 vs the measured 0.25250, the arms' hidden false on master. The affected suites green (fire_modes3 5/5, fix_weapon_fire_modes 5/5, fix_weapon_sounds 3/3 — its stale 0.0625 comment updated, fix_zoom_overlays 6/6); merge origin/master 0fbd0e4a (WORKLOG both kept).
+
+Stage Summary:
+- The guided ride now takes the window's view in play, in the headless renders, with the arms and the crosshair hidden and the 15-tick restore; the Sentinel rockets fly at the measured 0.33666/0.2525 u/frame. Report: docs/reports/fix-sentinel-camera-play.md (the live checks: the guided speed gdbwatch, the other 0x200 records, the red tint).
