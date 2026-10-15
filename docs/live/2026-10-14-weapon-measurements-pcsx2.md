@@ -87,3 +87,11 @@ BU+0xF8):
 
 So this setup does not answer the user's report (guards firing instantly after SIGHTING Bond). The sighting-to-first-
 shot measurement still needs a guard that sees Bond unalerted (06 courtyard searchlight / walking into view).
+
+## The P2K's silencer (07000005, the spawn)
+
+The mode press (in this save's controller layout the mode button is **○ (circle)**; □ is reload — the layout differs
+from the Classic Bond notes in 2026-10-13-weapon-modes-pcsx2.md) switches the HUD label "Semi" → "Silenced" and the
+view model gains a **long cylindrical silencer screwed onto the end of the barrel** (dark grey tube about a third of the
+slide's length, in line with the barrel). The swap plays a short gun animation. The user on the port: "The suppressor
+still stays on the gun, but visually it's not there" (task 109m).
