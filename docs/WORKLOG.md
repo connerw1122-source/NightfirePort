@@ -12450,3 +12450,6 @@ Work Log:
 
 Stage Summary:
 - The world's hold-jump stutter while turning is fixed at the source: the render bracket is now the last two ticks' cameras at every frame rate, the view model keeps its one-tick-bracket reattach, and nothing moves at a solid 60 fps. Files: crates/nf-view/src/lib.rs + crates/nf-view/tests/turn_stutter_live.rs (new); NO shared files touched; scratch probe (uncommitted): examples/tick_cost.rs. Report: docs/reports/fix-turn-stutter.md.
+
+## fix-0c-hatch-latches (2026-10-15, branch s/fix-0c-hatch-latches) — in progress
+- User 0700000c: the display hatch is missing two of its four latches; culling issues after dropping through the hole; still can't get through. Plan: reproduce the missing-latch draw headless, find the gate in the decompile (misc gate / glist flag / striped-box 0x10 rule / LOD), fix; the eye cel / portal on the inner ledge for the culling; port the winch platforms #351/#364/#377 motion (fix-0c-vent2) for the traversal. Work starts; suite runner launched.
