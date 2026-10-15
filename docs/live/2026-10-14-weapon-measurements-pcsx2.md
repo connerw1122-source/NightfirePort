@@ -41,9 +41,8 @@ Frames 70 ms apart from the press (the count 9 → 8 shows on the press frame):
 **The grenade leaves the hand ≈ 0.3 s (≈ 18–21 game frames) after the press**, after the pin pull. (The user, three
 times: the port releases it "while I'm still pulling the pin".)
 
-## The stunner 0x4a (07000015, no target in front)
+## The stunner 0x4a
 
-- Holding fire at an empty corridor fires **nothing visible**: no beam, no dart, no spark. The HUD shows a blue
-  charge meter with a number; held, it stayed at 83; after release it climbed 83 → 89 → 99 within ~0.6 s.
-- So with no target the real stunner does nothing on press or release. The press-vs-release behaviour with a guard in
-  front is still to be measured (a level with a guard in view).
+Not measured yet. A first attempt equipped it by poking the held-weapon byte; the HUD read "Stunner" but the
+watch was not in Bond's hands (the user caught it), so that capture was invalid and was removed. The stunner must be
+selected through the watch's gadget cycle (D-pad) before measuring.
