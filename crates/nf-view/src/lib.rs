@@ -1306,6 +1306,15 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
     }
     if fe.page == menu::Page::Pause {
         if let Some(sim) = scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); }
+        // objective-hints: pre-open the ✕ hint box for the render (the row the cursor stands on) —
+        // the same state `FrontEnd::action`'s Confirm sets on the OBJECTIVES tab [M 0x204408
+        // 0x205b98-0x205c34: control 1's activation reads control 8's row and opens the ok-only
+        // box; 0xffffffff → 0x31d]. After the fill above (the rows must exist).
+        if args.iter().any(|a| a == "--pause-hint") && fe.pause_tab == 1 && !fe.pause_objectives.is_empty() {
+            let sel = fe.pause_objectives_sel.min(fe.pause_objectives.len() - 1);
+            let hint = fe.pause_objectives[sel].hint;
+            fe.pause_hint = Some(if hint == 0xffff_ffff { 0x31d } else { hint });
+        }
     }
     // Tick through the boot load and let the page's timers run (the flash cycle etc.).
     for _ in 0..3 { fe.flow.main_tick(); let _ = fe.flow.load_tick(); }

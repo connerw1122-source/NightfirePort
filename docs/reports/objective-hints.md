@@ -34,6 +34,8 @@ selection and ✕ flow from `C_GCPAUSE_Handler` 0x204408 — no drawing (the mai
   and selection intact. The port just clears the field, the row state untouched underneath.
 - `open_pause()` resets the box + selection; the OBJECTIVES draw arm's yellow cursor follows `pause_objectives_sel`
   (was pinned to the last row).
+- Render plumbing for the main agent: `--page pause --pause-tab 1 --pause-hint` pre-opens the box state
+  (`pause_hint` from the cursor row, after the objectives fill) — the box itself is still to draw.
 
 **The questions the task asked:**
 

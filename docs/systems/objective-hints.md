@@ -121,6 +121,8 @@ The draw puts the yellow cursor at it (the port's old code pinned the cursor to 
 - `FrontEnd::action()` Page::Pause: tab 1's Up/Down move the selection, ✕ (Confirm) opens the box with the selected
   row's hint (the −1 → 0x31d fallback [M 0x205bd0-bdc]), Confirm/Back close it, other input idles while it is up;
   entering the tab re-selects the last row.
+- The host's render path pre-opens the box for screenshots: `--page pause --pause-tab 1 --pause-hint` sets
+  `pause_hint` from the cursor row after the objectives fill (crates/nf-view/src/lib.rs).
 
 ## 5. Tests
 
