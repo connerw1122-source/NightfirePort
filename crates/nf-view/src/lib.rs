@@ -208,6 +208,10 @@ fn rot_transpose3(m: &nf_formats::anim::Mat4) -> nf_formats::anim::Mat4 {
 /// attachment slots hung on the view model character — the rigid gun parts, the muzzle flash).
 fn view_model_entries(scene: &scene::Scene, l: &scene::SkinLayout) -> Option<Vec<usize>> {
     let s = scene.sim.as_ref()?;
+    // fix-sentinel-camera-play: the ride draws no view model (the game's substate 10 cleared the
+    // anim set [M `Player_ChangeSubState(10)`; L PCSX2 "no view model"]) — frame_state hides the
+    // arms' palette; the reattach skips too.
+    if s.missile_cam.is_some() { return None; }
     let ci = *scene.view_models.get(&s.gun.weapon)?;
     let base = *l.char_base.get(ci)? as usize;
     let nb = scene.characters.get(ci)?.skeleton.bones as usize;
@@ -1157,6 +1161,12 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
     let (_adapter, device, queue) = pollster::block_on(device(&instance, None))?;
     let format = wgpu::TextureFormat::Rgba8Unorm;
+    // fix-sentinel-camera-play: the headless renders show the ride too — a `--frame N` shot taken
+    // during the guided ride draws the rocket's forward view [M `Player_PositionCamera` 0x18f5d8
+    // case 0xc], not Bond's.
+    let cam = &scene.sim.as_ref().and_then(|s| s.view_override()).map(|(p, d)| Camera {
+        pos: Vec3::new(p[0], p[1], p[2]), yaw: d[0].atan2(d[2]), pitch: d[1].clamp(-1.0, 1.0).asin(), fov: GAME_FOV,
+    }).unwrap_or(*cam);
     let (opts_right, opts_up) = cam_axes(cam);
     opts.right = opts_right;
     opts.up = opts_up;
@@ -2208,6 +2218,15 @@ impl ApplicationHandler for App {
                             self.cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV / sim.zoom };
                             // A script's cut-scene camera takes over the view (`Camera_Enable(4)`).
                             if let Some((p, yaw, pitch, fov)) = sim.script_camera() { self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov }; }
+                            // fix-sentinel-camera-play [M `Player_PositionCamera` 0x18f5d8 case 0xc]: while the
+                            // guided camera rides the missile, the view IS the missile's (`Sim::view_override`
+                            // = its pos/dir) — the user's "doesn't go into first person": the window never
+                            // consulted the override (the sim side rode; the matrix's gcam saw it). The HUD
+                            // ammo pane stays; the view model and the crosshair do not draw (frame_state's
+                            // ride hide + hud.rs's gate).
+                            if let Some((p, d)) = sim.view_override() {
+                                self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw: d[0].atan2(d[2]), pitch: d[1].clamp(-1.0, 1.0).asin(), fov: GAME_FOV };
+                            }
                         }
                         // HUD stand-in: Bond's health (`BL+0x894`) and the hit flash (`BL+0x968`) in the title.
                         if before / 30 != self.anim_time as u32 / 30 {

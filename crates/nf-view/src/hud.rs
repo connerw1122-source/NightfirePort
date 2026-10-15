@@ -286,7 +286,9 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     let [u, v, w, hh] = CROSS[cell.min(3) as usize].map(|k| k as f32);
     // A zoomed weapon hides the crosshair: the aim-mode path of `HUD_UpdateCrossHair` 0x19e6d0 ends at
     // LAB_0019e9c8 (layer 0xff = not drawn) whenever the weapon is scoped — the zoom overlay replaces it.
-    let zoomed = sim.map_or(false, |s| s.zoom_target > 1.0);
+    // fix-sentinel-camera-play: the guided ride hides it too ("no view model, no crosshair" [L PCSX2],
+    // the substate-10 view [M 0x193600:242-256]).
+    let zoomed = sim.map_or(false, |s| s.zoom_target > 1.0) || sim.map_or(false, |s| s.missile_cam.is_some());
     if !zoomed {
         h.quad(Anchor::Centre, 49, CROSS_TEX, 0, SW / 2.0 * (1.0 + cx) - w / 2.0, SH / 2.0 * (1.0 - cy) - hh / 2.0, w, hh, [u, v, w, hh], (false, false), gs(0xff0000, 0xff));
     }
