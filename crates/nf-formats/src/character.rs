@@ -61,7 +61,29 @@ impl Skin {
     pub fn is_sleeve(hash: u32) -> bool { (hash >> 16) & 0x10 != 0 }
     pub fn parent(&self, bone: usize) -> Option<usize> { match self.bones[bone] & 0x7f { 0x7f => None, p => Some(p as usize) } }
     pub fn animated(&self, bone: usize) -> bool { self.bones[bone] & 0x80 != 0 }
+
+    /// `AnimProcessSkinData` 0x1bd500:159-166 — every MAIN-list entry whose hash byte 2 carries bit
+    /// 0x10 is replaced, before the celglist lookup, by `AnimSleeveGetEntity(0)` 0x1c6590: the
+    /// first present entity of the fixed 8-entry `SleeveEnts` list @0x2c6ed8 [L ee_snapshot,
+    /// byte-exact], tried from index 0 with at most 8 lookups; none present → the game stores 0
+    /// (nothing drawn for that entry, modelled here as `None`). Non-sleeve entries are untouched.
+    /// `present` mirrors the session hashtable (`hashtable_getitem`): true when the entity hash
+    /// resolves. Direct entries never go through this — the game only reroutes the 0x10-flagged
+    /// ones (`if ((*pbVar2 & 0x10) != 0) iVar4 = AnimSleeveGetEntity__FUi(0);`).
+    pub fn substitute_sleeves(&mut self, present: impl Fn(u32) -> bool) {
+        for slot in self.main.iter_mut() {
+            if !slot.map_or(false, Self::is_sleeve) { continue; }
+            *slot = SLEEVE_ENTS.iter().copied().find(|&h| present(h)); // none present → None (the game's 0)
+        }
+    }
 }
+
+/// `SleeveEnts.324` @0x2c6ed8, the priority list `AnimSleeveGetEntity` 0x1c6590 walks (8 × u32
+/// LE read at the file offset) [L ee_snapshot; disasm 0x1c65a0 `addiu $s3,$v0,0x6ed8`]. The same
+/// set the view-model build calls SLEEVES (`crates/nf-view/src/scene.rs`, `lib.rs`).
+pub const SLEEVE_ENTS: [u32; 8] = [
+    0x0200_09d0, 0x0200_0900, 0x0200_01f7, 0x0200_0929, 0x0200_09e6, 0x0200_09ff, 0x0200_0a14, 0x0200_0a13,
+];
 
 /// `bone_count(skeleton id)` must give the bone count of that skeleton (from the archive's SKEL entries).
 pub fn parse_skin(data: &[u8], bone_count: impl Fn(u8) -> Option<u8>) -> Result<Skin> {
@@ -136,5 +158,33 @@ mod tests {
         assert_eq!((s.id, s.bones, s.has_translation(0), s.has_translation(1), s.translated_bones()), (2, 2, false, true, 1));
         assert_eq!(s.offsets[1], [1.5, 0.0, 0.0]);
         assert!(Skin::is_sleeve(0x0210_0001) && !Skin::is_sleeve(0x0200_040d));
+    }
+
+    /// `AnimProcessSkinData` 0x1bd500:159-166 via `AnimSleeveGetEntity` 0x1c6590: only the
+    /// 0x10-flagged main entries are rerouted, to the first present `SleeveEnts` entity; a direct
+    /// entry — even one the session lacks — stays as parsed, and a fully missing sleeve list
+    /// drops the entry to `None` (the game's celglist 0).
+    #[test]
+    fn sleeve_substitution_reroutes_only_flagged_entries() {
+        let mut s = Skin {
+            hashcode: 0x0500_0030, scale: [1.0; 3], skeleton: 7, bones: vec![0xff],
+            main: vec![Some(0x0210_0001), None, Some(0x0200_040d), Some(0x0210_00ff)],
+            extra: Vec::new(), inverse_bind: Vec::new(), facial: 0, datums: Vec::new(),
+        };
+        // The first SleeveEnts entry is present: every 0x10-flagged entry becomes it.
+        s.substitute_sleeves(|h| h == SLEEVE_ENTS[0]);
+        assert_eq!(s.main, vec![Some(SLEEVE_ENTS[0]), None, Some(0x0200_040d), Some(SLEEVE_ENTS[0])]);
+        // A session where only the third list entry is loaded: the walk skips the first two.
+        let mut s2 = s.clone();
+        let mut s2c = s2.clone();
+        s2c.substitute_sleeves(|h| h == SLEEVE_ENTS[2]);
+        assert_eq!(s2c.main[0], Some(SLEEVE_ENTS[2]));
+        assert_eq!(s2c.main[3], Some(SLEEVE_ENTS[2]));
+        // Nothing present at all: the flagged entries drop to None (the game's hashtable 0).
+        s2.substitute_sleeves(|_| false);
+        assert_eq!(s2.main, vec![None, None, Some(0x0200_040d), None]);
+        // The substitute list is the game's byte-exact SleeveEnts @0x2c6ed8.
+        assert_eq!(SLEEVE_ENTS[0], 0x0200_09d0);
+        assert_eq!(SLEEVE_ENTS[7], 0x0200_0a13);
     }
 }
