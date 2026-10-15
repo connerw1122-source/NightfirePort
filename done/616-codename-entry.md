@@ -25,3 +25,8 @@ ISO-gated where they read the disc, each with a sister assertion that can fail).
 
 ---
 claimed-by: sandbox6 at 2026-10-15T19:13Z
+
+---
+## Report (done, 2026-10-15T20:37Z)
+
+Closed by the driver: the report is on `s/codename-entry` (docs/reports/codename-entry.md); the worker didn't run finish.sh.
