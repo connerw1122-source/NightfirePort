@@ -13540,3 +13540,9 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   predicate, the turn-rate pair, the −13 gravity on camera, the Friction tun's dead keys) and the ntfy
   429 record. What's left for the next message: the VU0 macro (.vutext 0x324800), car↔world collision
   vs the track quads, suspension/world colliders, handbrake in the step, the Friction name normalizer.
+
+## frontend-music (2026-10-15, branch s/frontend-music) — started 21:55 UTC
+- Task: port the front end's music — track ids, start/stop/crossfade over page changes (title, main menu, list
+  pages, results, MP setup), the pause page music, movie backdrops' own audio vs the music, and the mission-end →
+  front-end handover. Data + state + flow + getters (no drawing), in nf-view/menu.rs or nf_game. Tests: numbers only.
+- Status: branch created from origin/master (65528c8f), WORKLOG entry pushed. Research phase next.
