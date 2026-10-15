@@ -668,4 +668,39 @@ mod tests {
         for _ in 0..2000 { assert!(g.update(&w, &mut rng).is_none(), "the tripbomb never fuse-explodes"); }
         assert!(g.state < 2, "still alive");
     }
+
+    /// fix-satchel-stick-play, the first-tick contact [M `Bullet_CollisionHandler` 0x12ce80 — the
+    /// sticky arm runs on the move's HITDATA, and the move's hit at t=0 (spawned already touching
+    /// the surface, moving into it) is a hit like any other]: a satchel spawned ON the wall face
+    /// moving into it sticks ON THE FIRST update — no bounce, no flight. Sister: spawned just
+    /// INSIDE the face (beyond it) the one-sided move ray misses the entry face — the game's own
+    /// `Intersect_RayGeom` 0x10a8c8:150-168 skips `n·dir >= 0` — so it keeps flying and sticks on
+    /// the floor below instead; the port matches the game (no fix, the shared shape is documented).
+    #[test]
+    fn satchel_spawned_touching_the_wall_sticks_on_the_first_tick() {
+        let w = wall_world();
+        let mut g = satchel();
+        g.pos = [0.0, 1.0, 0.0]; // ON the z = 0 wall face, moving −z (into it)
+        let mut rng = Rng::new(0);
+        let ev = g.update(&w, &mut rng);
+        assert!(matches!(ev, Some(GrenadeEvent::Stick(_))), "the touching spawn sticks at once, got {ev:?}");
+        assert!(g.stuck && g.velocity == [0.0, 0.0, 0.0], "stuck, velocity zeroed");
+        let p = g.phase.as_ref().expect("the phase box");
+        assert!((p.normal[2] - 1.0).abs() < 1e-4, "the wall's +z normal");
+    }
+
+    #[test]
+    fn satchel_spawned_inside_the_wall_skips_the_entry_face_like_the_game() {
+        let w = wall_world();
+        let mut g = satchel();
+        g.pos = [0.0, 1.0, -0.01]; // just INSIDE the wall, moving −z (deeper)
+        let mut rng = Rng::new(0);
+        let mut stuck_normal = None;
+        for _ in 0..200 {
+            if g.stuck { stuck_normal = Some(g.phase.as_ref().unwrap().normal); break; }
+            g.update(&w, &mut rng);
+        }
+        let n = stuck_normal.expect("it sticks somewhere (the floor) within 200 ticks");
+        assert!(n[1] > 0.9, "NOT on the wall's entry face — the one-sided ray skips it (the game's shape, 0x10a8c8:150-168); normal {n:?}");
+    }
 }
