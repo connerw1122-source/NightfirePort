@@ -13540,3 +13540,8 @@ Work Log (drive-ai-traffic):
   foreground slices: 191 passed / 2 failed = the known no-GPU pylon set. The background suite.py
   start died empty (this sandbox reaps detached processes — the screen-adjust-model note) → the
   foreground slices above are the suite coverage; suite.out stayed empty.
+
+## drive-ai-traffic2 (2026-10-15, branch s/drive-ai-traffic2) — started 22:15 UTC
+
+Work Log (drive-ai-traffic2):
+- (22:15) Sandbox reused (repo + work/ + ISO + nf-queue present). Branch s/drive-ai-traffic2 created from origin/s/drive-ai-traffic @ 1fb6f042 (the HELD 507 branch: driving/{mod,ai,road}.rs). Next: merge origin/master (506's driving.rs single file) and restructure into one module layout, then wire the AI onto 506's physics.
