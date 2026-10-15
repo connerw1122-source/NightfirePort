@@ -74,7 +74,19 @@ claim (§1) and the two "pause-screen objectives list is not ported" gap lines (
 
 ## Suite tally (final tree)
 
-- (pending — filled in before the final push)
+- All 353 test binaries build clean on the final merged tree (ce62cd7e + the doc/comment commits after it — no code
+  deltas): `build ok: 353 test binaries`.
+- nf-formats + nf-audio via the runner (`tools/test/suite.py --only`, 12 binaries): **117 passed, 3 failed** — the
+  3 failures are exactly the 3 allowed `disc_golden` tests (bigf header/tables/directory-tree golden manifests — the
+  slim-ISO environmental fails the task permits).
+- nf-game: the full crate suite (`cargo test --offline --release -p nf-game -- --test-threads=1`) — no failures.
+- nf-view, the touched+menu set: `menus_flow` 36/36, `objective_hints_flow` 7/7 (incl. the NF_ISO label binds),
+  `credits_data` 11/11, `mp_menu_flow` 9/9, `fix_objective_messages_live` 5/5.
+- **The remaining 242 nf-view `_live` binaries did not run in this window**: this sandbox kills background jobs
+  between tool calls (two `nohup` runner starts died with 0-byte output), and foreground runner chunks + the
+  353-binary build exhausted the sandbox disk twice (reclaimed ~1.5 GB of stale duplicate artifacts to finish the
+  build). The affected surface of this task is the pause/menu code above — all of its binaries are green here.
+  The next window should run the full runner on the final tree.
 
 ## What's left / gaps
 

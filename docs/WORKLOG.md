@@ -13848,3 +13848,13 @@ Work Log (async-level-load):
   disc ACTION.ELF byte check), mp_menu_flow 9/9, dev_menu_flow 5/5; progress consumers progress_live 1/1,
   fix_progress_live 5/5, fix_scores_handoff_live 3/3, fix_save_profile_live 4/4, campaign_flow_live 1/1.
   Left: the main agent's draw pass for --page rewards|gadgets|weapons; Records' pre-existing % wrap noted.
+## objective-hints (2026-10-15, branch s/objective-hints) — close-out
+- Suite on the final tree (foreground runner chunks — this sandbox kills background jobs): all 353 binaries BUILD;
+  nf-formats+nf-audio 117 passed / 3 failed (the 3 allowed disc_golden environmental fails); nf-game full green;
+  nf-view menus_flow 36/36, objective_hints_flow 7/7, credits_data 11/11, mp_menu_flow 9/9,
+  fix_objective_messages_live 5/5. The 242 other nf-view _live binaries did not fit the window (disk + no
+  background) — flagged in the report for the next window.
+- Report: docs/reports/objective-hints.md (evidence: C_GCPAUSE 0x204408 case 1 = control 1's ✕ → the ok-only
+  option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
+  P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
+  outside 0x182630, no PlrStat hints counter).
