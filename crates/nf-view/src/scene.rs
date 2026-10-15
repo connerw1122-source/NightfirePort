@@ -514,10 +514,11 @@ pub struct HudState {
     pub msgs: std::collections::VecDeque<Msg>,
     /// How many `drones.taken` events `hud_tick` has converted into messages.
     pub taken_seen: usize,
-    /// `BL+0x95E`: 60 ticks after a weapon whose record's +2 word changed; the ammo pane shows the
-    /// fire-mode label bright while it runs, then the weapon name (`HUD_UpdateAmmoPane` 0x19a7f0).
+    /// `BL+0x95E`: re-set to 60 every frame a differing switch request is pending, then −1/frame;
+    /// while it runs the ammo pane shows the weapon name alone (`HUD_UpdateAmmoPane` 0x19a7f0).
     pub weapon_label_timer: u8,
-    /// `obj+0x63`: the weapon id the HUD last saw (the timer's change test) [M 0x19a7f0:206-213].
+    /// Retired by fix-ammo-pane: the timer arms on the pending request (drone+0x63 vs +0x62), not
+    /// on a last-seen weapon id. Kept so existing saves/replays keep their layout.
     pub hud_weapon: u8,
     /// The health pane's `CrouchIconTimer` (60 after Bond stands; fades sprite 19 over the last 30)
     /// [M `HUD_UpdateHealthPane` 0x19b9c8:305-328].
@@ -1810,12 +1811,15 @@ impl Sim {
         // +0x05) switch to their twin through the normal switch request; the rest cycle the mode byte
         // (the Inventory's `fire_mode`, `BL + w*0xC + 0x1BB`) up to the record's mode count (+0x2E).
         // For the watch pair 0x54/0x55 the fire press ORs in (the game reads action 9 mask 4 there) —
-        // the port tracks the trigger's press edge in `prev_trigger`.
-        if input.mode_switch {
-            let watch = matches!(self.gun.weapon, 0x54 | 0x55);
-            let fire_new = input.fire && !self.prev_trigger;
-            let toggled = if watch { fire_new } else { false };
-            if (input.mode_switch || toggled)
+        // the port tracks the trigger's press edge in `prev_trigger`. The game enters the block on the
+        // OR'd variable alone [M 0x1a24c8: `bVar5 = Input_Action(slot,0xc,4); if (*w - 0x54 < 2)
+        // bVar5 |= Input_Action(slot,9,4); if (bVar5 != 0 && anim+0xf4 == 0) ...`] — a fire press with
+        // the mode button untouched reaches it for this pair (weapon-matrix5: the old outer
+        // `if input.mode_switch` made the OR arm dead code; the harness's fire presses never swapped).
+        let watch = matches!(self.gun.weapon, 0x54 | 0x55);
+        let fire_new = input.fire && !self.prev_trigger;
+        let toggled = watch && fire_new;
+        if (input.mode_switch || toggled)
                 && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state && !fire_busy
                 && !(aiming && self.weapons.flags(self.gun.weapon as usize) & 0x40 != 0)
             {
@@ -1850,7 +1854,6 @@ impl Sim {
                         if let Some(fm) = self.drones.inventory.fire_mode.get_mut(self.gun.weapon as usize) { *fm = m; }
                     }
                 }
-            }
         }
         self.prev_trigger = input.fire;
         // The pickup auto-switch, LIVE (fix-auto-switch re-opens the fix-pickups-remainder gate)
@@ -3293,17 +3296,21 @@ impl Sim {
     /// `Text_AddMsg` 0x1b0c30; `Text_UpdateMsg` 0x1b11d8 decrements the head's time by FRAME_RATE_MUL
     /// = 1 and deletes it at ≤ 0).
     fn hud_tick(&mut self) {
-        // The weapon-name timer: set to 60 when the HUD's weapon id differs from the last seen one and
-        // the two records' +2 words differ [M 0x19a7f0:206-213]; counts down every frame.
+        // The weapon-name timer (`HUD_UpdateAmmoPane` 0x19a7f0:212-217): while a switch request
+        // differs from the current weapon (drone+0x63 vs +0x62) and the two records' +2 words
+        // differ, the timer is RE-SET to FRAME_RATE (60) every pending frame — the name covers the
+        // whole draw animation plus the 60-tick decay [M]. fix-ammo-pane: the old arm-on-flip fired
+        // once at the completion tick, so the port's name window missed the pending draw entirely
+        // and ran 60 ticks from there; the game arms through it.
         let w = self.gun.weapon;
-        if self.hud.hud_weapon != w && w != 0 {
-            let changed = match (self.weapons.records.get(self.hud.hud_weapon as usize), self.weapons.records.get(w as usize)) {
+        let req = self.gun.switch_request;
+        if req != 0 && req != w {
+            let changed = match (self.weapons.records.get(w as usize), self.weapons.records.get(req as usize)) {
                 (Some(a), Some(b)) => a[2..4] != b[2..4],
                 _ => false,
             };
             if changed { self.hud.weapon_label_timer = 60; }
         }
-        self.hud.hud_weapon = w;
         self.hud.weapon_label_timer = self.hud.weapon_label_timer.saturating_sub(1);
         // The crouch icon: the timer holds 60 while crouched, then fades after standing
         // [M 0x19b9c8:305-328].
@@ -4505,18 +4512,19 @@ impl Scene {
             let mut seen = BTreeSet::new();
             let players: Vec<nf_game::nis::Player> = level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9)
                 .filter_map(|(i, p)| nf_game::nis::Player::from_placement(i, p)).collect();
-            // The explosion script (`Explode_Create` 0x17cbd0 Script_Loads 0x6000052 on every disc caller
-            // [M 0x12cd98/0x12ce80/0x17ffa0/0x180498/0x1c350-calls]): the sim spawns it per blast
-            // (`Drones`' grenade explode), so its entity streams need attachments exactly like a placed
-            // player's. 0x6000027/0x600004F (Destroy_Smash's types) stay unported — the port's destroyables
-            // don't explode yet.
-            // fix-grenade-release: the blast's VISIBLE puffs live in a SUB-script — 0x06000052's
-            // op-0x1b (`Script_SubScriptStart` 0x1db050) spawns 0x06000047 [L the live blast's
+            // The explosion scripts (`Explode_Create` 0x17cbd0 loads a per-source effect script —
+            // its `Script_Load` arg a3): 0x6000052 from the fuse/contact call sites [M 0x12cd98/
+            // 0x12ce80 disasm], 0x60007c4 from the Samurai bolt's 0x100000/0x200000 arms [M
+            // 0x12d0e8-0x12d188], 0x6000027/0x600004f/0x6000052 from `Destroy_Smash` by the tag's
+            // type byte [M 0x12bc50-0x12bd20]. The sim spawns them per blast, so their entity
+            // streams need attachments exactly like a placed player's. (fix-blast-scripts.)
+            // fix-grenade-release: a blast's VISIBLE puffs can live in a SUB-script — 0x06000052's
+            // op-0x1b (`Script_SubScriptStart` 0x1db050) spawns 0x06000047 [L the live frag blast's
             // Obj::Entity src.0 = 0x06000047, the lib key], whose streams carry the puff meshes
             // (0x020003cc/cd/ce/c7...). Walk the op-0x1b hashes recursively (the runtime `src` is
             // the sub's own lib key, so the attachment's script tuple must carry the sub's hash).
             let mut hashes: Vec<u32> = players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0)
-                .chain(std::iter::once(0x0600_0052)).collect();
+                .chain([0x0600_0052u32, 0x0600_0027, 0x0600_004f, 0x0600_07c4]).collect();
             let mut queued: std::collections::HashSet<u32> = hashes.iter().copied().collect();
             while let Some(h) = hashes.pop() {
                 let Some(nis) = level.nis.get(&h) else { continue };
