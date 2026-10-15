@@ -45,3 +45,7 @@ claimed-by: sandbox1 at 2026-10-15T00:50Z
 ## Report (done, 2026-10-15T02:14Z)
 
 Closed by the driver: the report is on `s/fix-sentinel-camera-play` (docs/reports/fix-sentinel-camera-play.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T02:49Z)
+
