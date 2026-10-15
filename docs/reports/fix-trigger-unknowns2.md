@@ -114,3 +114,11 @@ The 7 failures:
 - U-032's msg-0x1B sender remains open (unchanged from 110f; no evidence found this session — ACTION.ELF still has no
   literal 0x1B sender).
 - `fix_death_restart_live`'s in-runner flake deserves a look on a machine with more RAM (solo runs green).
+
+## ntfy / finish notes
+
+- finish.sh first run used a repo-relative report path (the script `cd`s to the queue worktree before `cat`), so the
+  report body was missing from the queue entry; the idempotent re-run with the absolute path attached it ("OK already
+  closed in done/, report attached").
+- ntfy: the direct curl got `{"code":42908,"http":429,"error":"limit reached: daily message quota reached"}`; the
+  python-urllib fallback delivered the notification ("sent").
