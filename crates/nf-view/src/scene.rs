@@ -5834,7 +5834,16 @@ impl Scene {
                                 // beam to the collapse point — the watch lasers never scope
                                 // (`+0x68 & 0x40` = 0 [L weapon_data 0x4e]), so this is a guard only.
                                 if m[3][1] > -9999.0 {
-                                    let bm = anim::mul(&world[0], m);
+                                    // `AnimGetBoneWorldTrans(obj, 0, 0)`'s second argument is a DATUM id when
+                                    // non-negative [M 0x1c3120: param_2 >= 0 looks up the skin's datum list,
+                                    // `QuatTransToMat(datum.q, datum.t) · bone world`; only negative ids index
+                                    // bones]: datum 0 of the watch view model — the watch face. Bone 0 put the
+                                    // beam's wide end at the screen edge (the main agent's 08 render).
+                                    let c = &self.characters[*vm];
+                                    let bm = match c.skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0) {
+                                        Some(dt) => anim::mul(&anim::mul(&anim::quat_trans_to_mat(dt.q, dt.t), &world[dt.bone as usize]), m),
+                                        None => anim::mul(&world[0], m),
+                                    };
                                     a = [bm[3][0], bm[3][1], bm[3][2]];
                                 }
                             }
