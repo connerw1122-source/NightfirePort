@@ -163,3 +163,107 @@ fn driving_sym_is_the_shipped_hint_table() {
     // Sister: the count is load-bearing.
     assert_ne!(syms.len(), 12_718);
 }
+
+// ---- RefPack decompression (phase 0 of the driving port, G-phase-0) -------------------------------
+//
+// The game's own decompressor is DRIVING.ELF 0x00323bb0 (gate) / 0x00323e98 (decode) / 0x00323cc8 (size
+// probe) [M]; the port lives in `nf_formats::refpack`. This section pins every RefPack entry's
+// decompressed size and SHA-1 over the 8 mission .VIVs — the only archives that carry RefPack streams
+// (MISC.VIV is all plain, .MUS/.SPE are all ASF audio — pinned by golden/driving_census.tsv, asserted
+// below). Coverage: 1,126 streams, 70,285,629 compressed → 132,706,995 decompressed bytes.
+
+/// The 8 mission archives that carry RefPack entries (the census's `refpack` column > 0).
+const MISSION_VIVS: [&str; 8] =
+    ["MIS01.VIV", "MIS11.VIV", "MIS13A.VIV", "MIS13B.VIV", "MIS13C.VIV", "MIS3.VIV", "MIS4.VIV", "RACE.VIV"];
+
+fn refpack_dir() -> Option<std::path::PathBuf> {
+    if let Some(p) = std::env::var_os("NF_DRIVING_REFPACK") {
+        let p = std::path::PathBuf::from(p);
+        if p.is_dir() { return Some(p); }
+        eprintln!("skip: NF_DRIVING_REFPACK={p:?} is not a directory");
+        return None;
+    }
+    if let Some(p) = std::env::var_os("NF_DRIVING") {
+        let p = std::path::PathBuf::from(p);
+        if p.is_dir() { return Some(p); }
+    }
+    let manifest = std::path::Path::new(env!("CARGO_MANIFEST_DIR"));
+    let p = manifest.join("../../DRIVING");
+    if p.is_dir() { return Some(p); }
+    eprintln!("skip: no DRIVING folder for the RefPack golden (set NF_DRIVING_REFPACK)");
+    None
+}
+
+fn load_viv(dir: &std::path::Path, name: &str) -> (Bigf, Vec<Vec<u8>>) {
+    let data = std::fs::read(dir.join(name)).unwrap_or_else(|e| panic!("{name}: {e}"));
+    let g = Bigf::parse(&data, data.len() as u64).expect("BIGF parse");
+    let blobs = g.entries.iter()
+        .map(|e| data[e.offset as usize..(e.offset + e.size) as usize].to_vec()).collect();
+    (g, blobs)
+}
+
+#[test]
+fn driving_refpack_entries_decompress_to_the_golden() {
+    let Some(dir) = refpack_dir() else { eprintln!("skip: NF_DRIVING_REFPACK/DRIVING not available"); return };
+    let golden = include_str!("../golden/driving_refpack.tsv");
+    let mut rows = Vec::new();
+    let mut total_decompressed = 0u64;
+    for name in MISSION_VIVS {
+        let (g, blobs) = load_viv(&dir, name);
+        for (i, (e, blob)) in g.entries.iter().zip(&blobs).enumerate() {
+            if !nf_formats::refpack::is_refpack(blob) { continue; }
+            // The header must announce exactly what the decoder produces [M 0x323e98 returns the header
+            // size; the equality over all 1,126 real streams is the cross-check].
+            let (announced, _) = nf_formats::refpack::decompressed_size(blob).expect("header");
+            let out = nf_formats::refpack::decompress(blob)
+                .unwrap_or_else(|err| panic!("/DRIVING/{name}: {} failed: {err}", e.name));
+            assert_eq!(out.len(), announced, "/DRIVING/{name}: {} produced {} bytes, header says {announced}", e.name, out.len());
+            total_decompressed += out.len() as u64;
+            // Key = archive#table-index, the same index golden/bigf_entries.tsv pins, so the two goldens
+            // cross-reference entry for entry.
+            rows.push(format!("/DRIVING/{name}#{i}\t{}\t{}\t{}\t{}\n", e.name, blob.len(), out.len(), sha1_hex(&out)));
+        }
+    }
+    assert_eq!(rows.len(), 1126, "RefPack stream count over the 8 mission archives");
+    assert_eq!(total_decompressed, 132_706_995, "total decompressed bytes");
+    let actual = format!("key\tentry\tcompressed\tdecompressed\tsha1\n{}", rows.join(""));
+    let d = diff_tsv(golden, &actual);
+    assert!(d.is_empty(), "{} differences:\n{}", d.len(), d.join("\n"));
+    // The doc's [D] anchor: paris_mis01.crp, the largest entry (driving-viv.md; size-field bytes
+    // 10 fb 68 29 00 → 0x682900 = 6,826,240).
+    let track = rows.iter().find(|r| r.contains("paris_mis01.crp")).expect("paris track in the golden");
+    let size: u64 = track.split('\t').nth(3).unwrap().parse().unwrap();
+    assert_eq!(size, 6_826_240, "paris_mis01.crp announced decompressed size");
+    // Sister: a one-character change to one digest must be caught.
+    let mut lines: Vec<String> = actual.lines().map(String::from).collect();
+    let row = &mut lines[1];
+    let last = row.pop().unwrap();
+    row.push(if last == '0' { '1' } else { '0' });
+    lines.push(lines.last().unwrap().clone());
+    let tampered = lines.join("\n") + "\n";
+    assert_eq!(diff_tsv(golden, &tampered).len() >= 1, true, "sister: a one-character change must be caught");
+}
+
+#[test]
+fn refpack_golden_covers_every_refpack_entry_of_all_23_archives() {
+    // driving_census.tsv pins the refpack/plain/audio split of all 23 archives [D]; the decompression
+    // golden must cover exactly the streams the census counts as refpack — no more, no less.
+    let census = include_str!("../golden/driving_census.tsv");
+    let golden = include_str!("../golden/driving_refpack.tsv");
+    let mut expected: std::collections::BTreeMap<String, u32> = Default::default();
+    for line in census.lines().skip(1) {
+        let f: Vec<&str> = line.split('\t').collect();
+        let count: u32 = f[5].parse().unwrap();
+        if count > 0 { expected.insert(f[0].to_string(), count); }
+    }
+    let mut actual: std::collections::BTreeMap<String, u32> = Default::default();
+    for line in golden.lines().skip(1) {
+        let key = line.split('\t').next().unwrap().to_string();
+        let archive = key.split('#').next().unwrap().to_string();
+        *actual.entry(archive).or_default() += 1;
+    }
+    assert_eq!(actual, expected, "the RefPack golden must cover every refpack-counted stream of the census");
+    // Sister: the census really splits by content class (misclassifying audio as refpack would show here).
+    assert!(!expected.iter().any(|(k, _)| k.ends_with(".MUS") || k.ends_with(".SPE")),
+        "no .MUS/.SPE archive may carry refpack streams");
+}
