@@ -6390,6 +6390,24 @@ impl Scene {
         const FAR: Mat4 = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
         let fs = self.frame_state(choice, time, opts);
         let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
+        // fix-dev-spawn-visible: a LIVE drone's character (present + enabled — the dev NPC spawns, and
+        // the placed guards while they fight) must not vanish when the strict portal walk drops the
+        // room he stands in. The measured case: the skin-row guard settles 4.4 m in front of the
+        // 07000005 spawn into a room whose cell (31) is in NEITHER mask from the eye's cell (14) —
+        // game 75/137, strict 5/137 — while the player looks straight at him; the game draws an
+        // object there (View_AddCels' depth-0 frustum band covers 200 units, View_DrawObjList 0x1e69a0
+        // draws the VisCelList cels' object lists, and the object is linked to the room build_FindCel
+        // 0x1c8680 picks at its own position). The port's walk is the approximation that already
+        // needed `near_los_rescue` for the World draws (fix-portal-sweep: "the near unoccluded
+        // generics the walk drops where the port's per-cel attribution approximation disagrees");
+        // for a live NPC the palette trusts the position + the GPU clip instead of the walk. The
+        // hidden/present collapse below still removes dead and disabled ones.
+        let live_drone = |ci: usize| {
+            self.sim.as_ref()
+                .and_then(|s| s.char_drone.get(ci).copied().flatten())
+                .and_then(|di| self.sim.as_ref().map(|s| (s, di)))
+                .map_or(false, |(s, di)| s.drones.list[di].present && s.drones.list[di].enabled)
+        };
         let vis_room = |pos: [f32; 3]| -> bool {
             vis.map_or(true, |v| self.cel_index_at(pos).map_or(true, |r| v.get(r).copied().unwrap_or(true)))
         };
@@ -6402,7 +6420,7 @@ impl Scene {
             let nb = c.skeleton.bones as usize;
             if fs.hidden[ci] { for k in 0..=nb { p[base + k] = collapse(&c.matrix); } continue; }
             let cpos = fs.posed[ci].as_ref().map_or(c.matrix[3], |(_, _, m)| m[3]);
-            if !vis_room([cpos[0], cpos[1], cpos[2]]) { for k in 0..=nb { p[base + k] = FAR; } continue; }
+            if !live_drone(ci) && !vis_room([cpos[0], cpos[1], cpos[2]]) { for k in 0..=nb { p[base + k] = FAR; } continue; }
             match &fs.posed[ci] {
                 Some((mats, _, m)) => {
                     p[base] = *m;
