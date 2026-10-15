@@ -244,5 +244,37 @@ walk an AI car along a real segment chain, pin the real record counts (numbers o
 - The AIEl chunk binary layout inside the `.crp` (record +0x44.. is proven from the parsed runtime
   records; the on-disc AIEl chunk record layout itself is [S] — the port reads AIEl only through the
   documented slots, real-data AIEl parsing is a live check).
-- 506's physics (s/drive-physics) lands beside this: `driving::road` + `driving::ai` are the data
-  model both sides share (a `PVehicle` sim object plugs into `AiCar::step` through a small trait).
+- 506's physics (s/drive-physics) landed beside this: the seam is wired as of `drive-ai-traffic2`
+  (2026-10-15) — see §8 (`SimCar::of_car` + `AiDriver`, no trait needed).
+
+## 8. The physics wiring (`drive-ai-traffic2`, 2026-10-15)
+
+507 landed the AI beside 506's physics with `SimCar` as the unwired seam; 506 then merged as the
+single file `driving.rs`, and `drive-ai-traffic2` moved it to `driving/physics.rs` (507's
+`driving/` directory had made the two layouts collide, rustc E0761) with a top-level re-export
+keeping every public path (`nf_game::driving::{Car, CarInput, CarParams, DT, FlatWorld, Rigid,
+Tuning, Friction, SURFACES}` — the module test pins them). The wiring:
+
+- `ai::SimCar::of_car(&Car)` [M the field sources]: pos = instance+0x10, vel = instance+0x20,
+  forward = the yaw's `[sin, 0, cos]` row (the row `Car::step` drives along [M physics `step`'s
+  `fwd`]); `alive` = 1.0 — FUN_00195a30's health gate is the actor layer, out of headless scope
+  [S].
+- `ai::AiDriver` { `brain: AiCar`, `car: Car`, `world: FlatWorld`, `rigid: Rigid` }: one 60 Hz
+  step = the brain's FUN_0012e808 → FUN_00133ab0 command mapped 1:1 onto 506's `CarInput`
+  (SetSteer/SetThrottle/SetBrake/SetHandbrake [M 0x133ab0:135-180]), `Car::step` integrates it
+  [M 0x1ff3d8's order], the **pre-integration** sim speed drives the path progress (the AI reads
+  |vel| before the vehicle sim integrates [M 0x133ab0:103-113]; `AiCar::advance_path` is the
+  progress walk moved verbatim out of `AiCar::step`, which keeps its exact rail behavior), then
+  the car lands back on the spline [M 0x222468] facing the travel direction.
+- The brake rest clamp [S]: 506's brake integrates through zero into a negative vel (reverse is
+  the R-gear throttle path 506's gearbox work owns), which would back the rail car up; the driver
+  zeroes a brake-induced backwards velocity, and at rest the AI's own speed ≤ 0 early-out
+  [M 0x133ab0:153] keeps it parked.
+- Known gap: `Car::step` does not read `handbrake` yet (506's report lists "handbrake in the
+  step") — the forced-stop command is exact [M 0x133ab0:173-180] but holds speed by no force;
+  the test `the_forced_stop_handbrakes_and_the_speed_holds_until_506s_handbrake_lands` fails the
+  day 506's handbrake lands, on purpose.
+- Tests: `crates/nf-game/tests/driving_ai_physics.rs` (8) — the layout paths, the sim view, the
+  acceleration numbers with a bit-exact bare-`Car` replay (the driver adds no physics of its
+  own), the steering-angle falloff, the arrival rest, the forced-stop record, the clean-link
+  crossing at the physics speed, standby.
