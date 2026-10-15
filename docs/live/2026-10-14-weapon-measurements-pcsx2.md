@@ -130,3 +130,10 @@ Frames 120 ms apart:
   "Ames 20 wouldn't swap modes" may be this gate if the port's give didn't fill the grenade slot — check both.)
 - **The scope (aim, L1 held):** the whole screen goes dark red with a circular reticle in the centre and green-white
   boot text at the lower left: "COMMAND.COM / LOAD BIOS / MEMORY SET / SYSTEM STATUS / OK"; the view model is hidden.
+
+## The 06 truck driver (07000006, the truck start)
+
+The friendly driver (drone team 3, stands by the truck's cab at about (69–70, 38, 28–29)) is damageable, and **killing
+him fails the mission at once**: the "Mission Failed — REPLAY / QUIT" box appears as he dies (measured by accident:
+six P2K shots aimed at the stairs guard hit him). The port (104d-fix-06-driver) keeps him damageable; check that his
+death also fails the mission there.
