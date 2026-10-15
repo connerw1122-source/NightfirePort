@@ -13354,3 +13354,10 @@ Work Log (drive-crp-format):
 - Tests: mp_menu_flow.rs 9 headless (flow + back-outs + locks + bots + start checks + Quick Game +
   loader handover, each with a sister assertion) + mp_menu_lists_live.rs 5 ISO-gated (the five
   tables + the side bytes vs the disc's ACTION.ELF). 14/14 green; suite run on the final tree.
+
+## mp-match-rules (2026-10-15, branch s/mp-match-rules)
+- Started: the multiplayer scenarios' rules in the sim — scoring, win conditions, flag/uplink/
+  objective logic, respawn rules, environment/player modifiers per scenario (Arena, Team Arena,
+  CTF, Uplink, Top Agent, Demolition, ...), from the game's mp code via the scenario ids in
+  docs/systems/mp-menus.md. Deliverable: nf-game mp rules + headless per-scenario win-condition
+  tests (numbers only), docs/systems/<name>.md, report docs/reports/mp-match-rules.md.
