@@ -125,3 +125,17 @@ PCSX2 (the real verification this task wants):
   `docs/WORKLOG.md` (append-only entries) — one-row surgical edits, no reformatting.
 - No shared source file (`drone.rs`, `scene.rs`, `player.rs`, `lib.rs`) was touched at all.
 - `crates/nf-game/src/corona.rs` is a task-named file; comment-only change.
+
+## ntfy failed
+
+All three delivery attempts returned the same server rejection (2026-10-15 ~15:52Z):
+
+- `curl -sS -m 20 -H "Title: NightfirePort" -d "..." https://ntfy.sh/nightfire-yoda-8k3x`
+  → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase
+  your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- `python3 urllib.request` → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- `wget -S -O- --post-data "..."` → `HTTP/1.1 429 Too Many Requests` (Server: nginx)
+
+The task is nonetheless closed in the queue (`finish.sh` ran; the driver had already closed
+110x-find-corona-creator from the pushed report and the full report body is attached in
+done/110x-find-corona-creator.md on origin/queue).
