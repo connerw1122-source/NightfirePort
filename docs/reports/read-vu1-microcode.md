@@ -60,11 +60,13 @@ was a read task.
   `JR vi01` trampoline at 0x24f). PCSX2's interpreter tables lack them too, so
   the path may be dead on hardware; a live check can settle it.
 - The full 4-crate suite: the sandbox kills background processes between tool
-  calls, so the fast runner (tools/test/suite.py) was restarted three times and
-  was running on the final merged tree at report time; no result line yet. The
-  task changed no Rust code (only docs/ and tools/), so the code under test is
-  byte-identical to origin/master's apart from other workers' merges that
-  arrived in origin/master itself.
+  calls, so the fast runner (tools/test/suite.py) could not survive to print a
+  total line (restarted three times, each killed). A foreground partial on the
+  final merged tree gives the task-adjacent crate: **nf-formats lib 64/64
+  passed; disc_golden 11 passed / 3 failed — exactly the 3 `disc_golden` tests
+  the slim ISO is allowed to fail** (rules line 5). No Rust code was changed by
+  this task (docs/ + tools/ only), so the code under test is origin/master's
+  own apart from other workers' merges that arrived in origin/master itself.
 
 ## Verification
 
