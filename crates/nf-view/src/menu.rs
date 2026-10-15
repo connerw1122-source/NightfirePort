@@ -96,6 +96,14 @@ pub const PAGE_DOSSIER: u32 = 0x4000_002b;
 /// image 0x10000176 (435,282,128×64) TEX 0x0300013d); P_DOSSIER 0x216de0's rows open it
 /// [M C_SBDOSSIER 0x216eb0:12-31 — index 0 → 0x4000003a]].
 pub const PAGE_RECORDS: u32 = 0x4000_003a;
+/// The Dossier's Rewards page [M C_RBDSREWARDS 0x20c248 opens from the wheel's row 1
+/// (C_SBDOSSIER 0x216eb0:12-31); the menu-def PAGE record 0x4000003b carries fh 0x80000002, aux
+/// 0x07350048 [D parsed 2026-10-15].]
+pub const PAGE_REWARDS: u32 = 0x4000_003b;
+/// The Dossier's Gadgets page [M C_SBDOSSIER's row 2 → 0x4000003c; PAGE record aux 0x07350048 [D].]
+pub const PAGE_GADGETS: u32 = 0x4000_003c;
+/// The Dossier's Weapons page [M C_SBDOSSIER's row 3 → 0x4000003d; PAGE record aux 0x07350048 [D].]
+pub const PAGE_WEAPONS: u32 = 0x4000_003d;
 /// The title layout the boot page leads to [M menu-def page 0x40000009: the art + Press START].
 pub const PAGE_TITLE_LAYOUT: u32 = 0x4000_0009;
 pub const PAGE_OPTIONS: u32 = 0x4000_0068;
@@ -346,6 +354,71 @@ pub const CAMPAIGN: [(u32, u32, u32, u32); 12] = [
 /// `Menu_UpdateWheel` binds +0x08 when unlocked, +0x14 when not].
 pub const LOCKED_DESC: u32 = 0x0100_0009;
 
+/// The Weapons page's 27 rows [M `ds_weapons` 0x2dfec8, 27 × 0x18 B (symtab 648); row layout read by
+/// `Menu_UpdateWheel` 0x1f8388 (wheel rows bind +0x04, the preview control gets msg 0x24 with +0x00,
+/// the description control binds +0x08 when +0x10 ≠ 0 else +0x14) and `C_SBDSWPSCROLL` 0x20bab0
+/// (msg 0x40 cursor → +0x0c object id → the suffix)]. Values are the EE snapshot's boot state
+/// [L work/ee_start_05.bin 0x2dfec8]; row 0 is the overview `P_DSWEAPONS` 0x217038:11-33 rewrites
+/// (see `weapon_overview_row`) — its boot values ARE the level-0 rewrite [L].
+pub const WEAPONS_TABLE: [(u32, u32, u32, u32); 27] = [
+    // (preview texture, wheel label, description label, upgrade object)
+    (0x0300_00f3, 0x33d, 0x359, 0x00), (0x0300_00ed, 0x33f, 0x35b, 0x3f), (0x0300_00ee, 0x340, 0x35c, 0x3f),
+    (0x0300_00f0, 0x341, 0x35d, 0x3f), (0x0300_00e9, 0x342, 0x35e, 0x3f), (0x0300_00f8, 0x343, 0x35f, 0x3f),
+    (0x0300_00f6, 0x344, 0x360, 0x3f), (0x0300_00e8, 0x345, 0x361, 0x3f), (0x0300_00ec, 0x346, 0x362, 0x3f),
+    (0x0300_00fe, 0x347, 0x363, 0x09), (0x0300_00fa, 0x348, 0x364, 0x09), (0x0300_00f1, 0x349, 0x365, 0x3f),
+    (0x0300_00f5, 0x34a, 0x366, 0x3f), (0x0300_0191, 0x34b, 0x367, 0x3f), (0x0300_00ef, 0x34c, 0x368, 0x3f),
+    (0x0300_00eb, 0x34d, 0x369, 0x3f), (0x0300_00f7, 0x34e, 0x36a, 0x3f), (0x0300_00ea, 0x34f, 0x36b, 0x3f),
+    (0x0300_00f4, 0x350, 0x36c, 0x3f), (0x0300_0100, 0x351, 0x36d, 0x3f), (0x0300_00f9, 0x352, 0x36e, 0x3f),
+    (0x0300_0101, 0x353, 0x36f, 0x3f), (0x0300_0102, 0x354, 0x370, 0x3f), (0x0300_0103, 0x355, 0x371, 0x3f),
+    (0x0300_00ff, 0x356, 0x372, 0x3f), (0x0300_0193, 0x357, 0x373, 0x3f), (0x0300_0192, 0x358, 0x374, 0x3f),
+];
+/// The Gadgets page's 14 rows [M `ds_gadgets` 0x2e0150, 14 × 0x18 B (symtab 336); same layout; L
+/// work/ee_start_05.bin 0x2e0150]. Every row's +0x10 unlocked byte is 1 in the boot state; no
+/// runtime writer was found [S]. P_DSGADGETS 0x217190:11-15 overwrites the LAST row's +0x0c object
+/// slot with the texture hash 0x030000e5 (60 Hz) / 0x0300018f (50 Hz) — kept static here (0x3f, the
+/// same no-suffix effect through 0x2025f8's `param_1 < 0x3f` guard) with the store cited in
+/// docs/systems/dossier-pages-data.md.
+pub const GADGETS_TABLE: [(u32, u32, u32, u32); 14] = [
+    (0x0300_00e6, 0x323, 0x331, 0x12), (0x0300_00c4, 0x321, 0x32f, 0x15), (0x0300_00e2, 0x328, 0x336, 0x03),
+    (0x0300_00df, 0x329, 0x337, 0x06), (0x0300_00e1, 0x326, 0x334, 0x0f), (0x0300_00e4, 0x327, 0x335, 0x3f),
+    (0x0300_00e5, 0x32a, 0x338, 0x3f), (0x0300_00e7, 0x324, 0x332, 0x3f), (0x0300_00e0, 0x322, 0x330, 0x0c),
+    (0x0300_00e3, 0x325, 0x333, 0x3f), (0x0300_0104, 0x32b, 0x339, 0x3f), (0x0300_00fc, 0x32c, 0x33a, 0x3f),
+    (0x0300_0190, 0x32d, 0x33b, 0x3f), (0x0300_00fb, 0x32e, 0x33c, 0x3f),
+];
+/// The RewardsTable's per-row bonus captions and stamp textures [M `RewardsTable` 0x2bc920 entry
+/// +0x1c..+0x28 (labels) and +0x30..+0x3c (textures) — the loads `Menu_GetLevelBonuses` 0x1ffe98
+/// makes (disassembly-checked: `lw 28/32/36/40` = +0x1c..+0x28, `lw 48/52/56/60` = +0x30..+0x3c);
+/// the decompile's `_44_/_48_` prints are a Ghidra framing artifact]. Values [L work/ee_start_05.bin
+/// 0x2bc920] in SP_LEVEL_HASHES order. The DESCRIPTORS live in nf-game's REWARDS_TABLE (the same
+/// 64-byte entries' +0x04..+0x14).
+pub const REWARD_BONUS: [([(u32, u32); 4]); 12] = [
+    // [(label, texture); bronze..platinum]
+    [(0x2d6, 0x0300_012c), (0x2ec, 0x0300_0111), (0x0100_01f9, 0x0300_0102), (0x2f2, 0x0300_0118)], // 0x09000001
+    [(0x2d2, 0x0300_0134), (0x2e9, 0x0300_0116), (0x3a5, 0x0300_00f3), (0x2f1, 0x0300_0108)],       // 0x07000005
+    [(0x2d3, 0x0300_0131), (0x2de, 0x0300_00a1), (0x2df, 0x0300_00e2), (0x100_01fc, 0x0300_0196)],  // 0x09000005
+    [(0x2d4, 0x0300_0133), (0x2ea, 0x0300_011a), (0x3a6, 0x0300_00df), (0x2ee, 0x0300_0113)],       // 0x09000006
+    [(0x2d5, 0x0300_012f), (0x2e0, 0x0300_00a4), (0x3a7, 0x0300_00fa), (0x2ed, 0x0300_011d)],       // 0x07000001
+    [(0x2db, 0x0300_012e), (0x2e1, 0x0300_00a3), (0x3a5, 0x0300_00f3), (0x2f0, 0x0300_010b)],       // 0x07000009
+    [(0x2d7, 0x0300_0130), (0x3a3, 0x0300_011c), (0x3a8, 0x0300_00e0), (0x2e8, 0x0300_0110)],       // 0x0700000c
+    [(0x2d8, 0x0300_012a), (0x2e3, 0x0300_009d), (0x3a5, 0x0300_00f3), (0x3a2, 0x0300_0148)],       // 0x07000011
+    [(0x2d9, 0x0300_0198), (0x3a4, 0x0300_0114), (0x3a9, 0x0300_00e1), (0x2ef, 0x0300_010f)],       // 0x09000002
+    [(0x2da, 0x0300_0132), (0x2e5, 0x0300_009e), (0x3aa, 0x0300_00e6), (0x3a1, 0x0300_010a)],       // 0x09000003
+    [(0x2dc, 0x0300_012d), (0x2e6, 0x0300_00c4), (0x3ab, 0x0300_00c4), (0x2eb, 0x0300_0117)],       // 0x07000014
+    [(0x100_01ff, 0x0300_012b), (0x2e7, 0x0300_00a0), (0x3a7, 0x0300_00fa), (0x100_01fb, 0x0300_0194)], // 0x0700001b
+];
+/// The Gadgets page's upgrade caption per object id [M C_SBDSGTSCROLL 0x20bcc0:82-104's switch —
+/// the description becomes `sprintf("%s\n%s", desc, Txt_BindLabel(suffix))` (the format string
+/// 0x30d358 is "%s\n%s" [D ACTION.ELF .data]) when the object's upgrade level ≠ 0].
+pub fn gadget_suffix(object: u32) -> Option<u32> {
+    Some(match object { 0x03 => 0x3b3, 0x06 => 0x3b4, 0x0c => 0x3b5, 0x0f => 0x3b6, 0x12 => 0x3b7, 0x15 => 0x3b8, _ => return None })
+}
+/// The Weapons page's upgrade captions [M C_SBDSWPSCROLL 0x20bab0:80-89 — only the watch (object 9)
+/// gets one, level 1 → 0x3b1, level 2 → 0x3b2; level 3 adds NO suffix].
+pub fn weapon_suffix(object: u32, level: u32) -> Option<u32> {
+    if object != 9 { return None; }
+    match level { 1 => Some(0x3b1), 2 => Some(0x3b2), _ => None }
+}
+
 /// A front-end page's aux background-movie code [M the menu-def PAGE record's third dword, stored at
 /// M_PAGE+0xC4 by `MenuManager_Create` 0x21b908:169-183 and played as a LOOPING background movie on
 /// page change by `Manager_SendMessage` 0x21c858:338 (`Menu_PlayMovie(aux, 0, 1, 0, 0, 0)` — loop = 1;
@@ -410,7 +483,7 @@ pub const INTRO_TICKS: u32 = 850;
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnAdvanced, CnMp, CnAv }
+pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Rewards, Gadgets, Weapons, Options, Pause, Results, CnSelect, CnMenu, CnAdvanced, CnMp, CnAv }
 
 impl Page {
     pub fn id(self) -> u32 {
@@ -418,6 +491,7 @@ impl Page {
             Page::Start => PAGE_START, Page::Main => PAGE_MAIN, Page::Codename => PAGE_CODENAME,
             Page::Difficulty => PAGE_DIFFICULTY, Page::MissionSelect => PAGE_MISSION_SELECT,
             Page::Dossier => PAGE_DOSSIER, Page::Records => PAGE_RECORDS,
+            Page::Rewards => PAGE_REWARDS, Page::Gadgets => PAGE_GADGETS, Page::Weapons => PAGE_WEAPONS,
             Page::Options => PAGE_OPTIONS, Page::Pause => PAGE_PAUSE, Page::Results => PAGE_RESULTS,
             Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnAdvanced => PAGE_CN_ADVANCED,
             Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV,
@@ -428,6 +502,7 @@ impl Page {
             PAGE_START => Page::Start, PAGE_MAIN => Page::Main, PAGE_CODENAME => Page::Codename,
             PAGE_DIFFICULTY => Page::Difficulty, PAGE_MISSION_SELECT => Page::MissionSelect,
             PAGE_DOSSIER => Page::Dossier, PAGE_RECORDS => Page::Records,
+            PAGE_REWARDS => Page::Rewards, PAGE_GADGETS => Page::Gadgets, PAGE_WEAPONS => Page::Weapons,
             PAGE_OPTIONS => Page::Options, PAGE_PAUSE => Page::Pause, PAGE_RESULTS => Page::Results,
             PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_ADVANCED => Page::CnAdvanced,
             PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv,
@@ -694,11 +769,18 @@ impl FrontEnd {
             Page::Difficulty => DIFFICULTIES.len(),
             Page::MissionSelect => CAMPAIGN.len(),
             Page::Records => CAMPAIGN.len(),        // the Records list walks the campaign [M 0x217248:11-13]
+            // The Rewards list is the same 12 sp_level records [M P_DSREWARDS 0x2172c8:11-13
+            // Menu_AddItemsToControl(…, 0xc, …)]. The wheels' ranges are their own init messages
+            // [M C_SBDSGTSCROLL 0x20bcc0:64-67 msg 0x27 (0, 0xd); C_SBDSWPSCROLL 0x20bab0:64-68
+            // msg 0x27 (0, 0x1a)] = the tables' row counts.
             // fix-menus-real: the dossier wheel's four rows from the game's own table 0x2dfcd0
             // [L ACTION.ELF .data dump: {0x300019b, 0x280 Records}, {0x300019c, 0x281 Rewards},
             // {0x30000c4, 0x282 Gadgets}, {0x30000ee, 0x19c Weapons}; C_SBDOSSIER 0x216eb0:48-49
             // walks it].
             Page::Dossier => 4,
+            Page::Rewards => CAMPAIGN.len(),
+            Page::Gadgets => GADGETS_TABLE.len(),
+            Page::Weapons => WEAPONS_TABLE.len(),
             Page::Options => 3,                    // the options page stubs three rows [S]
             Page::CnSelect => 2 + self.profiles.len(),
             Page::CnMenu => CN_MENU.len(),
@@ -730,6 +812,11 @@ impl FrontEnd {
             Page::Difficulty => bind(DIFFICULTIES[row.min(2)]),
             Page::MissionSelect => bind(CAMPAIGN.get(row).map_or(0, |c| c.1)),   // +0x04 name [M 0x1f8388]
             Page::Records => bind(CAMPAIGN.get(row).map_or(0, |c| c.1)),          // the list is sp_level's names [M 0x217248:11-13]
+            // The Rewards list is sp_level's names [M 0x2172c8:11-13]; the wheels' five visible rows
+            // bind the table's +0x04 labels [M Menu_UpdateWheel 0x1f8388:174-203].
+            Page::Rewards => bind(CAMPAIGN.get(row).map_or(0, |c| c.1)),
+            Page::Gadgets => bind(GADGETS_TABLE.get(row).map_or(0, |g| g.1)),
+            Page::Weapons => bind(WEAPONS_TABLE.get(row).map_or(0, |w| w.1)),
             // The dossier wheel's own name labels [L table 0x2dfcd0; C_SBDOSSIER 0x216eb0:48-49].
             Page::Dossier => bind([0x280, 0x281, 0x282, 0x19c][row.min(3)]),
             Page::Options => ["Screen adjust", "Controls", "Back"][row.min(2)].into(),
@@ -1046,6 +1133,68 @@ impl FrontEnd {
         Some(if k(2) && k(3) && k(4) { (0x307, 0x0300_013e) } else if k(2) && k(3) { (0x306, 0x0300_013f) } else if k(2) { (0x308, 0x0300_0140) } else { (0x309, 0x0300_013d) })
     }
 
+    /// One Dossier wheel row's page — the C_SBDOSSIER 0x216eb0:12-31 map the Confirm action walks.
+    pub fn dossier_row_page(row: usize) -> Page {
+        match row { 0 => Page::Records, 1 => Page::Rewards, 2 => Page::Gadgets, _ => Page::Weapons }
+    }
+
+    /// The Rewards page's four bonus rows for campaign row `row`: `(shown, caption label, stamp
+    /// texture)` [M C_RBDSREWARDS 0x20c248:21-74 — the caption/texture pair comes from
+    /// Menu_GetLevelBonuses 0x1ffe98's struct (RewardsTable entry +0x1c/+0x30, see
+    /// REWARD_BONUS), shown via msg 0x2b/2 with the texture msg 0x24; the gates are CUMULATIVE:
+    /// row k shows only when Medals 1..k are all earned (the handler's flag chain). No profile →
+    /// nothing is shown.]
+    pub fn reward_rows(&self, row: usize) -> [(bool, u32, u32); 4] {
+        let hash = nf_game::progress::SP_LEVEL_HASHES.get(row).copied().unwrap_or(0);
+        let medal = |k: u32| self.profile.as_ref().map_or(false, |p| p.progress.has_medal(hash, k, 0));
+        let mut all = true;
+        let mut out = [(false, 0u32, 0u32); 4];
+        for (k, slot) in (1u32..=4).zip(out.iter_mut()) {
+            all = all && medal(k);
+            let bonus = &REWARD_BONUS.get(row).copied().unwrap_or_default()[k as usize - 1];
+            *slot = (all, bonus.0, bonus.1);
+        }
+        out
+    }
+
+    /// One wheel row's bound data: `(preview texture, name label, description label, upgrade
+    /// caption, unlocked)` [M Menu_UpdateWheel 0x1f8388 — the preview control's msg 0x24 takes
+    /// +0x00, the five wheel rows bind +0x04, the description control binds +0x08 when +0x10 ≠ 0
+    /// (else +0x14, and the preview dims to 0x60606060); the upgrade caption is the selected
+    /// row's handler compose: C_SBDSGTSCROLL 0x20bcc0:75-111 / C_SBDSWPSCROLL 0x20bab0:76-89 —
+    /// `sprintf("%s\n%s", desc, Txt_BindLabel(cap))` (the format string 0x30d358 is "%s\n%s" [D])
+    /// when `Menu_GetObjectUpgradeLevel` 0x2025f8's level ≠ 0].
+    pub fn wheel_row(&self, row: usize, table: &[(u32, u32, u32, u32)]) -> (u32, u32, u32, Option<u32>, bool) {
+        let Some(&(preview, name, desc, object)) = table.get(row) else { return (0, 0, 0, None, false) };
+        let unlocked = true; // every boot-state row reads +0x10 = 1 [L]; no runtime writer found [S]
+        let level = self.profile.as_ref().map_or(0, |p| p.progress.object_upgrade_level(object as u32, 0));
+        let cap = if object == 0 && table.len() == WEAPONS_TABLE.len() { None } else if table.len() == GADGETS_TABLE.len() { gadget_suffix(object as u32).filter(|_| level != 0) } else { weapon_suffix(object as u32, level) };
+        (preview, name, desc, cap, unlocked)
+    }
+
+    /// The Gadgets wheel's row `row` [M ds_gadgets 0x2e0150; the suffix map 0x20bcc0:82-104].
+    pub fn gadget_row(&self, row: usize) -> (u32, u32, u32, Option<u32>, bool) { self.wheel_row(row, &GADGETS_TABLE) }
+
+    /// The Weapons wheel's row `row`, with row 0 = the overview P_DSWEAPONS rewrites [M
+    /// 0x217038:11-33 — ds_weapons[0] +0x00/+0x04/+0x08 per `Menu_GetObjectUpgradeLevel(0, 0)`,
+    /// the watch's 3-member gold group → levels 0..3].
+    pub fn weapon_row(&self, row: usize) -> (u32, u32, u32, Option<u32>, bool) {
+        if row != 0 { return self.wheel_row(row, &WEAPONS_TABLE); }
+        let (preview, name, desc) = self.weapon_overview_row();
+        (preview, name, desc, None, true)
+    }
+
+    /// The Weapons overview row [M P_DSWEAPONS 0x217038:11-33's level table].
+    pub fn weapon_overview_row(&self) -> (u32, u32, u32) {
+        let level = self.profile.as_ref().map_or(0, |p| p.progress.object_upgrade_level(0, 0)).min(3);
+        match level {
+            1 => (0x0300_014f, 0x3c5, 0x3c6),
+            2 => (0x0300_00f2, 0x33e, 0x35a),
+            3 => (0x0300_0150, 0x3c7, 0x3c8),
+            _ => (0x0300_00f3, 0x33d, 0x359),
+        }
+    }
+
     /// The intro movie the P_INTRO run currently shows [M 0x209e88's movie_283 counter].
     pub fn intro_movie_code(&self) -> u32 { INTRO_MOVIES[self.intro_index.min(INTRO_MOVIES.len() - 1)] }
 
@@ -1239,9 +1388,14 @@ impl FrontEnd {
                 Action::Confirm => {
                     // The wheel's row opens its page [M C_SBDOSSIER 0x216eb0:12-31 — index 0 →
                     // 0x4000003a Records, 1 → 0x4000003b Rewards, 2 → 0x4000003c Gadgets,
-                    // 3 → 0x4000003d Weapons; the port draws Records, the rest are reported].
-                    if self.cursor == 0 { self.page = Page::Records; self.cursor = self.mission.min(CAMPAIGN.len() - 1); return true; }
-                    return false;
+                    // 3 → 0x4000003d Weapons]. Every page's init resets its scroll to row 0
+                    // [M the wheel controls' own MSG 0x2e (0,0) [D page data] + P_DSGADGETS
+                    // 0x217190:10's explicit reset; P_DSREWARDS/P_DSRECORDS leave the list at
+                    // GameState+0x72's row — the port keeps the cursor at the mission].
+                    let to = Self::dossier_row_page(self.cursor);
+                    self.page = to;
+                    self.cursor = if to == Page::Records { self.mission.min(CAMPAIGN.len() - 1) } else { 0 };
+                    return true;
                 }
                 Action::Back | Action::Side => { self.page = Page::MissionSelect; return true; }
                 _ => {}
@@ -1254,6 +1408,37 @@ impl FrontEnd {
                 Action::Up => { self.cursor = (self.cursor + CAMPAIGN.len() - 1) % CAMPAIGN.len(); return true; }
                 Action::Down => { self.cursor = (self.cursor + 1) % CAMPAIGN.len(); return true; }
                 Action::Back | Action::Confirm | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
+            },
+            // The three pages the Dossier wheel's rows 1-3 open. Their scrolls are the game's own
+            // M_SCROLLs: Up/Down step ±1 and CLAMP (the wrap flag +0x144 is set only by msg 0x69,
+            // which no menu-def control carries [M Scroll_Update 0x2221b20:186-210,
+            // Scroll_SendMessage 0x222810:136-139]); every move notifies the owner (msg 0x49) which
+            // rebinds; Confirm does nothing (no handler arm [M C_RBDSREWARDS 0x20c248, the wheel
+            // handlers' 0x51 arm is the INIT]); Back/□ return to the Dossier (the Records page's
+            // mapping; no handler overrides the manager's default back [S]).
+            Page::Rewards => match a {
+                Action::Left | Action::Right => {}
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                Action::Down if self.cursor + 1 < CAMPAIGN.len() => { self.cursor += 1; return true; }
+                Action::Up | Action::Down => return false,   // clamped [M 0x2221b20:186-210]
+                Action::Back | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
+                Action::Confirm => return false,             // no select arm [M 0x20c248]
+            },
+            Page::Gadgets => match a {
+                Action::Left | Action::Right => {}
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                Action::Down if self.cursor + 1 < GADGETS_TABLE.len() => { self.cursor += 1; return true; }
+                Action::Up | Action::Down => return false,
+                Action::Back | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
+                Action::Confirm => return false,
+            },
+            Page::Weapons => match a {
+                Action::Left | Action::Right => {}
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                Action::Down if self.cursor + 1 < WEAPONS_TABLE.len() => { self.cursor += 1; return true; }
+                Action::Up | Action::Down => return false,
+                Action::Back | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
+                Action::Confirm => return false,
             },
             Page::Options => match a {
                 Action::Up => { self.cursor = (self.cursor + 2) % 3; return true; }
@@ -1718,6 +1903,62 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             hint_bar(&mut h, font, &hint(0x49e, "~V Change  ~B Back"), 50.0, 419.0, cream);
             // Only the logo [L 0x10000001 (434,38,156×43) TEX 0x0300016d] — this page has no ring stamp.
             quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+        }
+        Page::Rewards => {
+            // The Dossier's Rewards table [M menu-def PAGE 0x4000003b (parsed 2026-10-15): header
+            // LBL 0x281 (50,40,376×17); hint LBL 0x49e; the spinner 0x1000017a (132,93,376×16)
+            // filled from sp_level [M P_DSREWARDS 0x2172c8:11-13]; the four stamp controls
+            // 0x100001d6..d9 (76,130/202/274/346, 51×51) + captions 0x100001d2..d5 (137,147/219/291/
+            // 363, 453×16) — runtime-filled by C_RBDSREWARDS 0x20c248 (texture msg 0x24 from
+            // RewardsTable+0x30..+0x3c, caption msg 0x18 from +0x1c..+0x28, hidden until their
+            // cumulative medal chain); the logo. The stamp UVs are the draw pass's to verify.]
+            page_header(&mut h, hfont, &bind(0x281));
+            let m = fe.cursor.min(CAMPAIGN.len() - 1);
+            label(&mut h, font, &bind(CAMPAIGN[m].1), 132.0, 93.0, 376.0, 16.0, bright, true, 1.0);
+            for (i, (shown, cap, tex)) in fe.reward_rows(m).into_iter().enumerate() {
+                if !shown { continue; }
+                quad640(&mut h, tex, 76.0, 130.0 + i as f32 * 72.0, 51.0, 51.0, [0.0, 0.0, 128.0, 128.0], gs(0x7f7f7f, 0xff));
+                label(&mut h, font, &bind(cap), 137.0, 147.0 + i as f32 * 72.0, 453.0, 16.0, bright, true, 1.0);
+            }
+            hint_bar(&mut h, font, &hint(0x49e, "~V Change  ~B Back"), 50.0, 419.0, cream);
+            quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+        }
+        Page::Gadgets => {
+            // The Dossier's Gadgets wheel [M menu-def PAGE 0x4000003c (parsed 2026-10-15): header
+            // LBL 0x282; hint 0x49f; panel TEX 0x030000b3 (50,53,590×295); the preview 0x1000016c
+            // (114,118,150×150) f1 0x1d UNDER the ring 0x1000016d f1 0x1c TEX 0x030000bf; the five
+            // wheel rows 0x1000016a; the description plate 0x1000016b (50,301,540×113). The rows,
+            // preview and description come from ds_gadgets 0x2e0150 [L ee_start_05.bin] via
+            // Menu_UpdateWheel 0x1f8388 + the upgrade caption compose of C_SBDSGTSCROLL 0x20bcc0.]
+            page_header(&mut h, hfont, &bind(0x282));
+            panel(&mut h);
+            let row = fe.cursor.min(GADGETS_TABLE.len() - 1);
+            let (preview, _name, desc, cap, unlocked) = fe.gadget_row(row);
+            emblem_col(&mut h, preview, 0x0300_00bf, if unlocked { cream } else { gs(0x7f7f7f, 0x60) }, cream); // [M 0x1f8388's locked 0x60606060]
+            wheel(&mut h, fe, font, lang, |_fe, r| bind(GADGETS_TABLE[r.min(GADGETS_TABLE.len() - 1)].1), cream);
+            let mut text = bind(desc);
+            if let Some(c) = cap { text.push('\n'); text.push_str(&bind(c)); }   // [M "%s\n%s" 0x30d358]
+            desc_block(&mut h, font, &text, bright);
+            hint_bar(&mut h, font, &hint(0x49f, "~V Scroll  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        Page::Weapons => {
+            // The Dossier's Weapons wheel [M menu-def PAGE 0x4000003d (parsed 2026-10-15): header
+            // LBL 0x19c; hint 0x49f; the ring 0x1000016e f1 0x1c TEX 0x030000bf with the preview
+            // 0x10000170 f1 0x1d UNDER it; the five wheel rows 0x10000171; the description plate
+            // 0x10000172 (50,301,540×113). Rows from ds_weapons 0x2dfec8 [L ee_start_05.bin]; row 0
+            // is the overview P_DSWEAPONS 0x217038 rewrites per the watch's upgrade level.]
+            page_header(&mut h, hfont, &bind(0x19c));
+            panel(&mut h);
+            let row = fe.cursor.min(WEAPONS_TABLE.len() - 1);
+            let (preview, _name, desc, cap, unlocked) = fe.weapon_row(row);
+            emblem_col(&mut h, preview, 0x0300_00bf, if unlocked { cream } else { gs(0x7f7f7f, 0x60) }, cream);
+            wheel(&mut h, fe, font, lang, |fe, r| bind(fe.weapon_row(r.min(WEAPONS_TABLE.len() - 1)).1), cream);
+            let mut text = bind(desc);
+            if let Some(c) = cap { text.push('\n'); text.push_str(&bind(c)); }
+            desc_block(&mut h, font, &text, bright);
+            hint_bar(&mut h, font, &hint(0x49f, "~V Scroll  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
         }
         Page::Options => { page_rows(&mut h, fe, font, "OPTIONS", dim, bright); }
         Page::CnSelect => {

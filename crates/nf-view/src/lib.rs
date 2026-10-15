@@ -1274,6 +1274,10 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             "dossier" => menu::Page::Dossier,
             // fix-menus-real (additive hook): the dossier's Records table renders headless too.
             "records" => menu::Page::Records,
+            // dossier-pages-data (additive hooks): the Dossier wheel's rows 1-3 render headless too.
+            "rewards" => menu::Page::Rewards,
+            "gadgets" => menu::Page::Gadgets,
+            "weapons" => menu::Page::Weapons,
             "cnselect" => menu::Page::CnSelect,
             "cnmenu" => { fe.cn_name = "Default".into(); menu::Page::CnMenu }
             "advanced" => menu::Page::CnAdvanced,

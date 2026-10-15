@@ -13244,3 +13244,13 @@ Work Log (fix-scores-handoff):
   C_SBDSGTSCROLL_Handler 0x20bcc0, P_DSWEAPONS_Handler 0x217038 + C_SBDSWPSCROLL_Handler 0x20bab0). No drawing —
   data + Page variants + actions + getters + tests. Sandbox reused: repo, work/, ISO and nf-queue all present; branch
   cut from origin/master 0157588d.
+- (20:15) dossier-pages-data: the three pages implemented + tested. docs/systems/dossier-pages-data.md (all
+  addresses + tags); menu.rs: Page::Rewards/Gadgets/Weapons (+ids 0x4000003b/3c/3d), WEAPONS_TABLE 27 rows /
+  GADGETS_TABLE 14 rows / REWARD_BONUS 12×(label,tex)×4 [L ee_start_05.bin, disc-verified against ACTION.ELF
+  .data by dossier_pages::the_port_tables_match_the_discs_action_elf_data], getters reward_rows/wheel_row/
+  gadget_row/weapon_row/weapon_overview_row, the Dossier Confirm map (rows 1-3 open the pages, cursor reset),
+  clamp scroll actions [M Scroll_Update 0x2221b20], minimal draw arms + lib.rs --page rewards|gadgets|weapons.
+  FOUND+FIXED in nf-game/progress.rs: gold_group grouped kind-4 descs by desc[0]'s packed word (= 0 for every
+  entry → one 12-member group, rank = table index) — the game scans descs 1..4 of every entry for the target
+  desc's own word [M 0x199210:39-62]; real groups {1,5,7}→bits 0..2 and {4,11}→bits 9/10. Added
+  Progress::object_upgrade_level [M 0x2025f8]. nf-game lib 188/188; dossier_pages 7/7; menus_flow 36/36.
