@@ -4681,10 +4681,16 @@ impl Scene {
                 let wclass = u16::from_le_bytes([r[2], r[3]]);
                 if matches!(wclass, 0x1a | 0x1b) {
                     if let Some(&(lmap, lobject)) = level.by_hash.get(&0x0200_0132) {
-                        for bone in 8u8..=11 {
+                        // 8..0xB are DATUM ids (`AnimDatumSetEntity(animobj, datum, mesh, 0xff)` — the silencer's
+                        // datum 0 is the same call): each datum carries its own bone and local q/t, and
+                        // `AnimObjectDraw` 0x1c4490 draws the entity at `QuatTransToMat(datum.q, datum.t) · bone
+                        // world`. Treated as raw bone indices with no local, the four quads sat ~1.3 units from the
+                        // receiver — off the gun, never seen (the user: "lights I still don't show on it").
+                        for id in 8u8..=11 {
+                            let Some(dt) = skin.datums.iter().find(|d| d.id == id as u32 && d.bone >= 0) else { continue };
                             let linst = Instance { map: lmap, object: lobject, matrix: ident, placement: placement.clone() };
-                            add_instance(level, &linst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                            attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: Some(bone), projectile: None, script: None, gas: None, effect: None, silencer: false });
+                            add_instance(level, &linst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                            attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: Some(id), projectile: None, script: None, gas: None, effect: None, silencer: false });
                         }
                     }
                 }
