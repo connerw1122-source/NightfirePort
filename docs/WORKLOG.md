@@ -13323,7 +13323,36 @@ Work Log (drive-crp-format):
 - Findings: the fix-melee guard-2 stand (60.4,27.1,100.4) has no floor in the sim — the Scorpion row uses the [L] chase-trace stand (79.86,22.92,96.0; guard 19.3 out in view); the 0c upper-walkway spot is walled off from the vent (end wall z −110.02, opening 3.2 up) — the doc's hatch row uses the burn stance (6.0,12.94,−110.5, floor 11.84 [L]); the 0a cubicle blocker is Bond-body only (eye ray blocked t≈0.46, the shot installs clean; fire straight after spawning — a settled Bond slides ~1.1 off the desk-edge spot).
 - Suite: this sandbox kills detached processes between tool calls (3 attempts) and OOM'd/disk-filled at the suite's -j4 build (3 GB RAM; pruned 2.4 GB of stale target artifacts) — the suite ran in foreground chunks against the 555 s tool cap: 94 binaries through chunk 0 (93 ok, 1 FAILED = probe_pylon_render: wgpu finds no GPU in this sandbox — environment, not code), 25 more ok in chunk 1 (cut mid-run). ~220 long NF_ISO binaries didn't fit the window. No failure attributable to this task (two new files only; no shared file touched).
 - Report: docs/reports/playtest-spots.md. Live checks for the main agent listed there + in spots.md (Q-Claw draw on cold 05, 0a walk-in, 0c ascent, 14 approach, 02 bathhouse hatches, 06 siren).
+## secret-codes (s/secret-codes)
 
+- (18:15) Sandbox reused (repo/work/ISO/nf-queue all present, build tools kept). Branch s/secret-codes created from origin/master @ 4bd64a03, pushed with this entry. Background suite.py started at 18:14 UTC (deadline ~20:13 UTC; stop new work 19:53 UTC).
+
+## secret-codes (s/secret-codes)
+
+- (18:14-18:15) Sandbox reused (repo/work/ISO/nf-queue/build env all present). Branch s/secret-codes created from origin/master @ 4bd64a03, pushed with the first entry. Background suite.py started (deadline ~20:13 UTC; stop new work 19:53 UTC).
+- (18:15-18:45) Research through the decomp + the ACTION.ELF disassembly (capstone): the Secret Unlocks page is 0x40000020 (P_CNNAME 0x213790) in cheat mode [M 0x213790:31-38]; the grid is the keyboard control (C_KEYBOARD_Handler 0x213a98: chars append, id 1000 delete, 1001 space, 0x3ea submit, 8-char cap); submit runs Menu_SpecialCodenameCheck 0x200238 — 52 × 0x38-byte stack entries {char code[16]; u32 level_flags @+0x20; u64 cheat_mask @+0x28}, strcmp match → the 12 sp_level+0x10 flags from level_flags bit i [M 0x201890-0x2018ac] + Menu_SetBonus(mask, 0, 0) whose zero-overwrite arm ORs [M 0x2018b4/b8 + 0x1ff898:79-84]. C_KEYPAD 0x216810 is the in-game door-keypad widget, not this page. The grant codes run Menu_UpgradeCheat 0x1fffe8 (two passes, id = the raw desc bit); the kind-4 groups widen per 0x199210:58-77 — the 12 gold-group ids 0,1,2/3/6/9,10/12/15/18/21/24 exactly cover the (id,count) call list. Strings + addresses dumped from .rodata 0x308578..0x3087a0; every bit re-verified against the raw words (Ghidra mis-folded several: BITESIZE/JOELWADE share bit 41 via one ori/dsll/xor triple; HUGE EGO shares BLIMP's bit 53; NUMBER 1 really is bit 54 via dsll32 7).
+- (19:00-19:15) The port: crates/nf-game/src/secret_codes.rs (the 52-code SECRET_CODES table with per-entry .rodata citations, submit() = the validator's port, upgrade_cheat() = the two-pass grant with the widened-bit walk) + lib.rs hook. 8 lib tests (valid/invalid sisters, PASSPORT, toggles, grant fill order, Q LAB, PARTY, medal-bits survival). FAIL-FIRST recorded: the first grant run awarded bits 2/10/15 instead of 0/9/15 — the widened_bit rank walk counted matches AFTER the target entry (fixed: stop at the entry), then 8/8 green.
+- (19:15-19:30) The FrontEnd: crates/nf-view/src/menu.rs — Page::CnName (0x40000020) + SecretEntry {cursor, typed, accepted, pending_submit} + SECRET_GRID (39 cells: 0-9, A-Z, Delete, Space, Submit) + secret_press (8-char cap/delete/space/flag) + secret_submit(&mut Progress) (the host drains — no Progress in the action handler, same split as results_enter); the wheel's row 0 routes to the page [M 0x213528 case 0]; the overlay draws a stub grid (the drawing task owns the look). 3 grid tests (type BOWLER + submit, the cap + delete, the routing). nf-game lib 196/196, nf-view lib 12/12.
+- (19:30-19:35) Merged origin/master (crp/refpack + WORKLOG conflict resolved keeping both) → nf-game 205/205, nf-view 12/12 on the merged tree. Suite restarted in background with the env (the first bg run died on the missing cargo PATH). Doc: docs/systems/secret-codes.md (the table, the flow, the save, the bit semantics, the open items). Report + finish steps next.
+- (19:35-19:53) Suite on the merged tree: build ok 347 binaries in 346 s; through 19:50 UTC the FAILED/CRASH lines are exactly the environmental/allowed set — 3 disc_golden (slim ISO), probe_pylon_render + fix_0c_pylon_live ×2 (no-GPU pylon set), fix_death_restart_live exit -9 (OOM in the 3 GB sandbox). No secret-codes failure. The total line prints only at the end and did not land before the sandbox expired — recorded in the report. Report amended (ntfy 429 quota on all three fallbacks) and pushed; finish.sh re-run.
+
+## mpeg2-interlaced-decode (s/mpeg2-interlaced-decode, started 2026-10-15 ~18:40 UTC)
+- Task 605: the menu backdrop movie 07350048 (512x448 interlaced MP@ML, I/P/B) decodes as a ghost/smear in the
+  port vs a crisp picture in PCSX2 — suspected wrong interlaced predicted-picture reconstruction in
+  oxideav-mpeg12video or our use of it. Plan: PSNR the port vs an independent ffmpeg decode per frame/picture
+  type, find the cause, fix, pin with an NF_ISO test + sister.
+- Done: the decode itself was NEVER wrong — whole-ES PSNR port vs ffmpeg on the real 07350048 (range-fetched
+  from the retail image on the file host, SHA-1 verified against the golden manifest): 62.5–69.6 dB over 120
+  frames (I 69.4+, P 62.5+), and 07100005 65.1–76.1 dB (I/P/B); the crate's own conformance suite is 1462/0
+  (field pictures, dual-prime, 16x8, qmat). The user-visible ghost was PRESENTATION: the movies are BT.601
+  limited range (07350048 Y spans 14..218) and yuv420_to_rgb8 rendered Y raw with full-range chroma gains —
+  black at RGB(16,16,16), ~86% contrast, vs the game's IPU CSC which expands to full range. Fixed the matrix
+  (black now 0), plus VideoFrame::coding_type now reports the spec codes 1/2/3 (the crate enum is 0-based;
+  I pictures reported 0/"?" and P 1/"I" before). New: mpeg2_reference.rs (NF_ISO+movies-gated: per-frame
+  exact SHA-1 pin + reference block-grid MAD <= 2.0 over 120 frames, sister tests), golden
+  mpeg2_ref_digests_07350048.tsv + mpeg2_ref_psnr_07100005.tsv, dump_mpeg2_yuv/dump_pss_es examples,
+  pss.md decode-accuracy section. Pins 1f1fe7b0 -> 21d0739d (the CSC fix legitimately changes RGB8 output);
+  menu_movies/menu_backdrop_still re-pinned and green on a 3-movie mini ISO (NF_MOVIE_ISO).
 ## mp-menu-flow (2026-10-15, branch s/mp-menu-flow)
 - Started: multiplayer front-end flow and its data (no drawing) — porting the MP page flow, lists and state into
   nf-view's FrontEnd/Page/action, headless-testable. Reading the ACTION.ELF handlers and the menu-def 07000048.bin

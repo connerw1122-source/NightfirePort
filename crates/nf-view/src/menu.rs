@@ -103,6 +103,12 @@ pub const PAGE_OPTIONS: u32 = 0x4000_0068;
 pub const PAGE_CN_SELECT: u32 = 0x4000_001b;
 /// "Edit <name>": the codename options wheel [L page 0x4000001d; C_SBCNOPTIONS_Handler 0x213528, table 0x2dfc28].
 pub const PAGE_CN_MENU: u32 = 0x4000_001d;
+/// The codename-entry / Secret Unlocks page [M Handler_HandleMessage 0x2029e0:372-374 routes
+/// 0x40000020 to P_CNNAME_Handler 0x213790; C_SBCNOPTIONS_Handler 0x213528 case 0 opens it].
+/// Entered from the codename wheel (0x4000001d) it runs in cheat mode [M 0x213790:31-38] — the
+/// Secret Unlocks letter grid; its model is [`SecretEntry`].
+/// Advanced Options [L page 0x4000002d; P_CNOPTIONS_Handler 0x213f08].
+pub const PAGE_CN_NAME: u32 = 0x4000_0020;
 /// Advanced Options [L page 0x4000002d; P_CNOPTIONS_Handler 0x213f08].
 pub const PAGE_CN_ADVANCED: u32 = 0x4000_002d;
 /// Multiplayer Options [L page 0x4000002e; P_CNMPOPTIONS_Handler 0x2144d8].
@@ -456,7 +462,7 @@ pub const INTRO_TICKS: u32 = 850;
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnAdvanced, CnMp, CnAv,
+pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, CnSelect, CnMenu, CnName, CnAdvanced, CnMp, CnAv,
     // mp-menu-flow: the multiplayer front end (page ids in the PAGE_MP_* constants below).
     MpJoin, MpScenario, MpMap, MpSetup, MpOptions, MpRules, MpPlayerMods, MpEnviroMods, MpBots, MpBotChoose, MpBotSetup, MpConfirm, MpDebriefing, Credits }
 
@@ -467,7 +473,7 @@ impl Page {
             Page::Difficulty => PAGE_DIFFICULTY, Page::MissionSelect => PAGE_MISSION_SELECT,
             Page::Dossier => PAGE_DOSSIER, Page::Records => PAGE_RECORDS,
             Page::Options => PAGE_OPTIONS, Page::Pause => PAGE_PAUSE, Page::Results => PAGE_RESULTS,
-            Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnAdvanced => PAGE_CN_ADVANCED,
+            Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnName => PAGE_CN_NAME, Page::CnAdvanced => PAGE_CN_ADVANCED,
             Page::CnMp => PAGE_CN_MP, Page::CnAv => PAGE_CN_AV,
             Page::MpJoin => PAGE_MP_JOIN, Page::MpScenario => PAGE_MP_SCENARIO, Page::MpMap => PAGE_MP_MAP,
             Page::MpSetup => PAGE_MP_SETUP, Page::MpOptions => PAGE_MP_OPTIONS, Page::MpRules => PAGE_MP_RULES,
@@ -483,7 +489,7 @@ impl Page {
             PAGE_DIFFICULTY => Page::Difficulty, PAGE_MISSION_SELECT => Page::MissionSelect,
             PAGE_DOSSIER => Page::Dossier, PAGE_RECORDS => Page::Records,
             PAGE_OPTIONS => Page::Options, PAGE_PAUSE => Page::Pause, PAGE_RESULTS => Page::Results,
-            PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_ADVANCED => Page::CnAdvanced,
+            PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_NAME => Page::CnName, PAGE_CN_ADVANCED => Page::CnAdvanced,
             PAGE_CN_MP => Page::CnMp, PAGE_CN_AV => Page::CnAv,
             PAGE_MP_JOIN => Page::MpJoin, PAGE_MP_SCENARIO => Page::MpScenario, PAGE_MP_MAP => Page::MpMap,
             PAGE_MP_SETUP => Page::MpSetup, PAGE_MP_OPTIONS => Page::MpOptions, PAGE_MP_RULES => Page::MpRules,
@@ -501,6 +507,44 @@ impl Page {
 /// 0x21c3d8] and skips movies through action 0x19 [M 0x1c98c8 case 6].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action { Up, Down, Confirm, Back, Side, Left, Right }
+
+/// One cell of the Secret Unlocks letter grid. The character cells carry their char; the three
+/// control cells use the ids the game's keyboard sends [M C_KEYBOARD_Handler 0x213a98: id 1000
+/// (0x3e8) deletes the last char, id 1001 (0x3e9) appends the space, id 0x3ea submits].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SecretKey { Char(char), Space, Delete, Submit }
+
+/// The grid's cells, digits then letters then the three control cells (0-9, A-Z, ← → ✓ [D the
+/// page's cell set; the model order here is the port's — the drawn layout is the main agent's]).
+pub static SECRET_GRID: [SecretKey; 39] = {
+    let mut keys: [SecretKey; 39] = [SecretKey::Char('0'); 39];
+    let mut i = 0;
+    let mut c = b'0';
+    while c <= b'9' { keys[i] = SecretKey::Char(c as char); i += 1; c += 1; }
+    let mut c = b'A';
+    while c <= b'Z' { keys[i] = SecretKey::Char(c as char); i += 1; c += 1; }
+    keys[36] = SecretKey::Delete;
+    keys[37] = SecretKey::Space;
+    keys[38] = SecretKey::Submit;
+    keys
+};
+
+/// The Secret Unlocks entry model: the grid cursor, the typed string (the game's buffer 0x34e028,
+/// capped at 8 chars [M 0x213a98:29-31]), the feedback flag (the 0x100029d option box a valid code
+/// opens [M 0x213a98:71-72]; an invalid one gives no feedback [M :68-70]) and the submit request
+/// the host drains with [`FrontEnd::secret_submit`] (the action handler owns no Progress — the
+/// same split as `results_enter`).
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct SecretEntry {
+    /// The grid cell the cursor stands on (into [`SECRET_GRID`]).
+    pub cursor: usize,
+    /// The typed string so far.
+    pub typed: String,
+    /// The valid-code option box (label 0x100029d) is up.
+    pub accepted: bool,
+    /// The Submit cell was pressed; the host must run [`FrontEnd::secret_submit`].
+    pub pending_submit: bool,
+}
 
 /// One option row of the codename option pages: the row control, its label, its y (640 space), the value items
 /// (label id — 0 for a literal — the literal, the value), and its kind.
@@ -966,6 +1010,9 @@ pub struct FrontEnd {
     /// :74-79]: the page's Confirm routes to the bonus page 0x40000038 while it stands (not
     /// ported — reported).
     pub new_reward: bool,
+    /// secret-codes: the Secret Unlocks letter-grid model (page 0x40000020 in cheat mode). The
+    /// grid cursor + typed string + the valid-code box flag [M C_KEYBOARD_Handler 0x213a98].
+    pub secret: SecretEntry,
     // ── mp-menu-flow: the multiplayer front end (each new field on its own line [WORKLOG lesson 4]) ──
     /// The four Join-Game panels [M mpjoin 0x2dee68 (4 × 0x10: +0x00 joined, +0x01 ready,
     /// +0x04 team, +0x08 skin) and mp_stuff+0x360+slot·4 (the per-slot state: 0 = press ✕ to
@@ -1067,6 +1114,9 @@ impl FrontEnd {
             results: None,
             just_completed: false,
             new_reward: false,
+            // secret-codes: the letter-grid model starts empty (the game's buffer 0x34e028 begins
+            // empty on every page enter [M P_CNNAME 0x213790:46 re-binds the empty buffer]).
+            secret: SecretEntry::default(),
             // mp-menu-flow (each new field on its own line [WORKLOG lesson 4]).
             mp_join: std::array::from_fn(|_| MpJoinAgent::default()),
             mp_scenario: 0,
@@ -1130,6 +1180,7 @@ impl FrontEnd {
             Page::Options => 3,                    // the options page stubs three rows [S]
             Page::CnSelect => 2 + self.profiles.len(),
             Page::CnMenu => CN_MENU.len(),
+            Page::CnName => 1, // the grid is not a row list; its cursor lives in `secret.cursor`
             Page::CnAdvanced => ADV_ROWS.len(),
             Page::CnMp => MP_ROWS.len(),
             Page::CnAv => AV_ROWS.len(),
@@ -1191,6 +1242,7 @@ impl FrontEnd {
             Page::CnSelect if row >= 2 => self.profiles.get(row - 2).cloned().unwrap_or_default(),
             Page::CnSelect => bind([0x29b, 0x211][row.min(1)]),   // def_codename 0x2e1b18 [L docs/reports/fix-save-profile.md]
             Page::CnMenu => bind(CN_MENU[row.min(CN_MENU.len() - 1)].1),
+            Page::CnName => String::new(), // the grid has no row labels (the model draws its own)
             Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().get(row).map_or(String::new(), |r| bind(r.label)),
             // credits-data: no rows — the roll's text lives in fe.credits.visible() [M].
             Page::Credits => String::new(),
@@ -1588,9 +1640,10 @@ impl FrontEnd {
             }
             return false;
         }
-        // ◀ / ▶ change values on the option pages and the MP value pages; elsewhere they keep the
-        // old Back / Confirm meaning. The MP wheels (scenario/map/options/bots) keep the remap.
-        let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv
+        // ◀ / ▶ change values on the option pages and the MP value pages and move the Secret Unlocks
+        // grid cursor; elsewhere they keep the old Back / Confirm meaning. The MP wheels
+        // (scenario/map/options/bots) keep the remap.
+        let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv | Page::CnName
             | Page::MpJoin | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup)) {
             (Action::Left, false) => Action::Back,
             (Action::Right, false) => Action::Confirm,
@@ -1614,9 +1667,10 @@ impl FrontEnd {
             Page::CnMenu => match a {
                 Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
                 Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
-                // [M C_SBCNOPTIONS_Handler 0x213528:32-60: rows 3/4/5 → pages 0x4000002d/2e/31; row 6 accepts]
+                // [M C_SBCNOPTIONS_Handler 0x213528:32-60: row 0 → page 0x40000020 (Secret
+                // Unlocks / the codename entry); rows 3/4/5 → pages 0x4000002d/2e/31; row 6 accepts]
                 Action::Confirm => {
-                    let to = match self.cursor { 3 => Page::CnAdvanced, 4 => Page::CnMp, 5 => Page::CnAv, 6 => Page::CnSelect, _ => return false };
+                    let to = match self.cursor { 0 => Page::CnName, 3 => Page::CnAdvanced, 4 => Page::CnMp, 5 => Page::CnAv, 6 => Page::CnSelect, _ => return false };
                     self.opts_saved = Some(self.opts.clone());
                     self.page = to;
                     self.cursor = if to == Page::CnSelect { 1 } else { 0 };
@@ -1625,6 +1679,21 @@ impl FrontEnd {
                 Action::Back => { self.page = Page::CnSelect; self.cursor = 1; return true; }
                 _ => return false,
             },
+            Page::CnName => {
+                // The letter grid [M C_KEYBOARD_Handler 0x213a98]: cells append (8-char cap),
+                // Delete truncates, Space appends ' ', Submit validates through
+                // `nf_game::secret_codes::submit` (Menu_SpecialCodenameCheck 0x200238's port);
+                // a match opens the 0x100029d box, a miss is silent [M :67-73].
+                match a {
+                    Action::Left if self.secret.cursor > 0 => { self.secret.cursor -= 1; return true; }
+                    Action::Right if self.secret.cursor + 1 < SECRET_GRID.len() => { self.secret.cursor += 1; return true; }
+                    Action::Up if self.secret.cursor >= 8 => { self.secret.cursor -= 8; return true; }
+                    Action::Down if self.secret.cursor + 8 < SECRET_GRID.len() => { self.secret.cursor += 8; return true; }
+                    Action::Confirm => { self.secret_press(); return true; }
+                    Action::Back => { self.secret = SecretEntry::default(); self.page = Page::CnMenu; self.cursor = 1; return true; }
+                    _ => return false,
+                }
+            }
             Page::CnAdvanced | Page::CnMp | Page::CnAv => {
                 let rows = self.opt_rows();
                 let back_row = match self.page { Page::CnAdvanced => 3, Page::CnMp => 4, _ => 5 };
@@ -2206,6 +2275,39 @@ impl FrontEnd {
             Page::Credits => {}
         }
         false
+    }
+
+    /// secret-codes: press the grid cell the cursor stands on. Characters append (the 8-char cap
+    /// [M 0x213a98:29-31]), Delete truncates [M :39-43], Space appends ' ' [M :28-36/:75-85],
+    /// Submit flags the drain [M :67-74 — the handler calls Menu_SpecialCodenameCheck; the port
+    /// splits it so the host supplies the Progress, like `results_enter`].
+    pub fn secret_press(&mut self) -> bool {
+        self.secret.accepted = false;
+        match SECRET_GRID[self.secret.cursor.min(SECRET_GRID.len() - 1)] {
+            SecretKey::Char(c) => {
+                if self.secret.typed.chars().count() >= 8 { return false; }
+                self.secret.typed.push(c);
+                true
+            }
+            SecretKey::Space => {
+                if self.secret.typed.chars().count() >= 8 { return false; }
+                self.secret.typed.push(' ');
+                true
+            }
+            SecretKey::Delete => { self.secret.typed.pop(); true }
+            SecretKey::Submit => { self.secret.pending_submit = true; true }
+        }
+    }
+
+    /// secret-codes: the host drains a pending Submit here — `Menu_SpecialCodenameCheck`
+    /// 0x200238's port applies the unlock to the live progress; `true` opens the 0x100029d box
+    /// [M 0x213a98:67-73], `false` is the game's silent miss.
+    pub fn secret_submit(&mut self, progress: &mut nf_game::progress::Progress) -> bool {
+        if !self.secret.pending_submit { return false; }
+        self.secret.pending_submit = false;
+        let hit = nf_game::secret_codes::submit(progress, &self.secret.typed);
+        self.secret.accepted = hit;
+        hit
     }
 
     /// The menu-def page the screen is: `Page::Results` is TWO pages — the fail menu 0x40000042 (a mission
@@ -2850,6 +2952,27 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             wheel(&mut h, fe, font, lang, |fe, row| if row == 6 && default { bind(MAIN_ITEMS[2]) } else { fe.row_label(lang, row) }, cream);
             desc_block(&mut h, font, &bind(CN_MENU[fe.cursor.min(CN_MENU.len() - 1)].2), bright);
             hint_bar(&mut h, font, &hint(0x5cb, "~A Select  ~V Scroll  ~B Cancel"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        Page::CnName => {
+            // The Secret Unlocks letter grid (the model side; the drawn layout is the stub until
+            // the drawing task lands — the main agent owns the page's look).
+            page_header(&mut h, hfont, &bind(0x1000_02d4)); // cheat_mode's prompt label [M 0x213790:37]
+            panel(&mut h);
+            let mut grid = String::new();
+            for (i, k) in SECRET_GRID.iter().enumerate() {
+                let ch = match k { SecretKey::Char(c) => *c, SecretKey::Space => '_', SecretKey::Delete => '<', SecretKey::Submit => '+' };
+                if i == fe.secret.cursor { grid.push('['); }
+                grid.push(ch);
+                if i == fe.secret.cursor { grid.push(']'); }
+                grid.push(' ');
+            }
+            h.text_scaled_tex(Anchor::Centre, font, -1, 0x0300_0005, &fe.secret.typed, mx(320.0), my(150.0), false, cream, true, 1.3);
+            h.text_scaled_tex(Anchor::Centre, font, -1, 0x0300_0005, &grid, mx(320.0), my(190.0), false, bright, true, 0.9);
+            if fe.secret.accepted {
+                h.text_scaled_tex(Anchor::Centre, font, -1, 0x0300_0005, "CODE ACCEPTED", mx(320.0), my(300.0), false, bright, true, 1.1); // label 0x100029d's text [S]
+            }
+            hint_bar(&mut h, font, &hint(0x5cb, "~A Select  ~H Move  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
         Page::CnAdvanced | Page::CnMp | Page::CnAv => {
@@ -3754,4 +3877,71 @@ pub fn loading_overlay(font: &nf_formats::hud::Font, lang: Option<&Lang>, textur
         }
     }
     h.finish()
+}
+
+#[cfg(test)]
+mod secret_grid_tests {
+    use super::*;
+
+    /// The grid flow: type BOWLER through the cells, submit, and the unlock lands in the
+    /// progress's bonus[0] bit 38 (the sister: a miss leaves it zero [M 0x213a98:67-73]).
+    #[test]
+    fn grid_types_and_submits_a_code() {
+        let mut fe = FrontEnd::new();
+        fe.page = Page::CnName;
+        let mut p = nf_game::progress::Progress::default();
+        // The cursor walks to B (cell 10), presses, and the letter appends.
+        for (want, cell) in [('B', 11), ('O', 24), ('W', 32), ('L', 21), ('E', 14), ('R', 27)] {
+            fe.secret.cursor = cell;
+            assert!(matches!(SECRET_GRID[cell], SecretKey::Char(c) if c == want));
+            assert!(fe.secret_press());
+        }
+        assert_eq!(fe.secret.typed, "BOWLER");
+        fe.secret.cursor = 38; // the Submit cell [M 0x213a98:45-74]
+        assert!(fe.secret_press());
+        assert!(fe.secret.pending_submit);
+        assert!(fe.secret_submit(&mut p));
+        assert!(fe.secret.accepted);
+        assert_eq!(p.bonus[0], 1 << 38);
+        // The miss path: a wrong string drains silently and unlocks nothing.
+        let mut q = nf_game::progress::Progress::default();
+        fe.secret = SecretEntry::default();
+        fe.page = Page::CnName;
+        fe.secret.cursor = 10; // 'B'
+        fe.secret_press();
+        fe.secret.cursor = 38;
+        fe.secret_press();
+        assert!(fe.secret_submit(&mut q) == false);
+        assert!(!fe.secret.accepted);
+        assert_eq!(q.bonus[0], 0);
+    }
+
+    /// The 8-char cap [M 0x213a98:29-31] and the Delete cell [M :39-43].
+    #[test]
+    fn grid_caps_and_deletes() {
+        let mut fe = FrontEnd::new();
+        fe.secret.cursor = 10;
+        for _ in 0..9 { fe.secret_press(); }
+        assert_eq!(fe.secret.typed.chars().count(), 8);
+        fe.secret.cursor = 36; // Delete
+        assert!(fe.secret_press());
+        assert_eq!(fe.secret.typed.chars().count(), 7);
+        fe.secret.cursor = 37; // Space
+        assert!(fe.secret_press());
+        assert_eq!(fe.secret.typed.chars().count(), 8);
+    }
+
+    /// The wheel routes row 0 to the grid page [M C_SBCNOPTIONS 0x213528 case 0] and Back
+    /// returns to it.
+    #[test]
+    fn cnmenu_row0_opens_the_grid() {
+        let mut fe = FrontEnd::new();
+        fe.page = Page::CnMenu;
+        fe.cursor = 0;
+        assert!(fe.action(Action::Confirm));
+        assert_eq!(fe.page, Page::CnName);
+        assert_eq!(fe.page_id(), PAGE_CN_NAME);
+        assert!(fe.action(Action::Back));
+        assert_eq!(fe.page, Page::CnMenu);
+    }
 }

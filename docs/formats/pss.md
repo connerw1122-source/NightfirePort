@@ -54,6 +54,18 @@ decode + §6.1.1.11 B-frame display reorder; frame 0/1000 of 07100001 pin to SHA
 `54b75479b7bbfd6d8e2492e8fc97072484ccbf3d` / `f965b37f552c898f75df29895c83e63aebe50134`, cross-checked against
 ffmpeg on the same ES (IDCT rounding differs between decoders: PSNR 67.8 / 66.3 dB, same geometry).
 
+Decode accuracy (mpeg2-interlaced-decode, 2026-10-15): the crate's decode matches an independent ffmpeg decode
+within IDCT rounding on the real streams — `07350048` 62.5–69.6 dB Y-PSNR over 120 frames (I 69.4+, P 62.5+;
+the interlaced suspicion was wrong: the crate's own conformance suite — field pictures, dual-prime, 16×8 MC,
+custom quant matrices — is 1462/0, and the port matches it). The real presentation bug was **colour**: the
+movies are BT.601 **limited range** (07350048's Y spans 14..218 — black 16, white 235), the IPU's RGBA32 CSC
+expands that to full range (movies.md: `sceMpegGetPicture` decodes straight into RGBA32), and the old
+`yuv420_to_rgb8` used Y raw with the full-range chroma gains — black rendered as RGB(16,16,16) and every movie
+sat at ~86 % contrast ("soft, low-contrast ghost"). `yuv420_to_rgb8` now runs the limited→full matrix.
+Reference digests: `golden/mpeg2_ref_digests_07350048.tsv` (per-frame type/temporal-reference/PSNR/port-SHA-1 +
+reference block means; `mpeg2_reference.rs` replays them) and `golden/mpeg2_ref_psnr_07100005.tsv` (the
+briefing's 120-frame PSNR table: I 70.7+, P 65.3+, B 65.1+ dB).
+
 ## Tests
 
 `crates/nf-formats/tests/pss_movies_live.rs` (opt-in NF_ISO, like the other golden tests): every movie demuxes to
