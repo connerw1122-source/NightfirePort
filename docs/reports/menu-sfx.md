@@ -56,9 +56,17 @@ nothing; the pair test asserts the second open is silent.
 
 ## How it was verified
 
-- `cargo test` (NF_SILENT, separate target dir) on the final tree: **menu_sfx_flow 9/9**,
-  menus_flow 36/36, codename_entry 14/14, mp_menu_flow 9/9, objective_hints_flow 7/7,
-  campaign_flow_live 5/5 — no regressions from the 95 touched call sites.
+- Merged origin/master (8d0244aa — the PC-menus mouse support, which refactored the host's
+  dispatch into `menu_input` and added `mouse_move`/`mouse_click`): resolved both conflicts
+  (WORKLOG both entries kept; lib.rs took master's `menu_input` refactor and the sound drain now
+  lives inside it, so keyboard, wheel and right-click paths all play). Master's mouse paths emit
+  too: `mouse_move`'s hover-select is the game's cursor-over-focus change and ticks MENU_SOUND 7
+  [M Page_Update 0x21edc8:38-53 — Menu_GetControl picks the control under the cursor sprite];
+  `mouse_click`'s wheel-neighbour scroll ticks, its bare-row click blips MENU_SOUND 0, and every
+  other route goes through `action()`'s hook.
+- `cargo test` (NF_SILENT) on the final merged tree: **menu_sfx_flow 9/9**, menus_flow 37/37
+  (master added one), codename_entry 14/14, mp_menu_flow 9/9, objective_hints_flow 7/7,
+  campaign_flow_live 5/5 — 81/81, no regressions.
 - The background full suite (`tools/test/suite.py`, started 6 min into the session) ran the
   pre-edit tree; it was still running at the deadline. Its failures are pre-existing and
   environmental, none in code I touched: the 3 `disc_golden` tests (expected on the slim ISO),
