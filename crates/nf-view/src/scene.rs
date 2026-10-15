@@ -5775,7 +5775,8 @@ impl Scene {
                 // in-hand weapon's lights draw; the blink/off arms run here:
                 // - idle > 15 → bone 8 blinks on GameState+0x76 % 40's 20/40 duty [M 0x1a5460:264] — the
                 //   port's frame counter stands in for GameState+0x76 [S];
-                // - idle > 45 → all four cleared [M 0x1a5460:348];
+                // - the all-off gate is record-dependent (fix-aims20-lights-render below): +0x93a in
+                //   burst, clip[0x1A] in grenade [M 0x1a5460 disasm 0x1a5bf4-68];
                 // fix-aims20-modes-lights: the bone-9/10/11 gates, previously unmeasured/always lit —
                 // the ground truth measured the display: grenade rounds 0 → red, red, dark, red; the
                 // long-no-anim state → red, dark, red, red; all four lit with rounds present.
@@ -5790,7 +5791,21 @@ impl Scene {
                 let Some(s) = self.sim.as_ref() else { return collapse(&datum) };
                 if !active { return collapse(&datum); }
                 let idle = s.drones.aims_idle;
-                if idle > 45 { return collapse(&datum); }
+                // fix-aims20-lights-render: the all-off gate is RECORD-DEPENDENT [M 0x1a5460 disasm
+                // 0x1a5bf4-68]. The C's line-312 `sVar5 = *(short *)(iVar1 + 0x93a)` in the else arm is a
+                // decompiler artifact: the BNEL at 0x1a5bf8 (record id != 0x1a → jump 0x1a5c40) EXECUTES
+                // its delay slot `lh $v0, 0x2f0($s2)`, so the `FRAME_RATE * 45.0 <` compare at 0x1a5c60
+                // reads **clip[0x1A]** (the burst slot, BL+0x2f0) when the held record is 0x1b, and the
+                // idle counter +0x93a (the reload at 0x1a5c3c) only when it is 0x1a. The disc's burst mag
+                // is 30 [L weapon_data 0x1a +0x92], so in grenade mode the gate can never fire — the row
+                // stays lit while idle, as the ground truth measured ("staying lit while idle",
+                // docs/live/2026-10-14, "The side lights"). Burst mode keeps the 0.75 s dead-still all-off.
+                let all_off = if s.gun.weapon == 0x1a {
+                    idle > 45
+                } else {
+                    s.drones.inventory.clip.get(0x1a).copied().unwrap_or(0) > 45
+                };
+                if all_off { return collapse(&datum); }
                 if bone == 8 && idle > 15 && s.drones.frame % 40 > 20 { return collapse(&datum); }
                 if bone == 9 && s.drones.aims_raise == 0 { return collapse(&datum); }
                 if bone == 10 || bone == 11 {
