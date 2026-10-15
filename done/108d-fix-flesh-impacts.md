@@ -142,3 +142,8 @@ other puff sites; determinism untouched). No other files changed; shared files u
 - The render pair (above) for the visual gate.
 - Optionally: guard-vs-guard friendly-fire bullets don't reach the victim path in the port (the
   NPC bullet update has no drone event), so their victim puffs are out of scope here.
+
+---
+## Report from the worker (done, 2026-10-15T01:17Z)
+
+Closed by the driver: the report is on `s/fix-flesh-impacts` (docs/reports/fix-flesh-impacts.md); the worker didn't run finish.sh.
