@@ -1594,6 +1594,8 @@ struct App {
     ticked: bool,
     /// This frame's 60 Hz tick count (the burning woman advances once per tick while a paused page shows her).
     frame_ticks: u32,
+    /// The paused menus' 60 Hz accumulator (seconds) for the animations that run while the game is paused.
+    menu_clock: f32,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -1690,8 +1692,22 @@ impl App {
         self.menu_after();
     }
 
-    /// After a menu action (key or click): the level the page requested and the page's close.
+    /// After a menu action (key, click or hover): the page's sounds, the level it requested and its close.
     fn menu_after(&mut self) {
+        let Some(fe) = self.fe.as_mut() else { return };
+        // menu-sfx: the front end's sound events play straight through the driver's 2-D start —
+        // `Menu_PlaySound`'s `Sound_Play(100.0f, id, 0, 0)` tail [M 0x1f3278] batched like the EE's
+        // `SFXStart`. The loaded bank(s) decide audibility exactly as the game's lookup does (a
+        // miss returns without starting): the front-end map boots bank 0xC, a paused mission keeps
+        // its own bank, which carries the pause blips [D SB_4/SB_5; docs/systems/menu-sfx.md §2-3].
+        let menu_sfx: Vec<_> = fe.drain_sfx().collect();
+        if !menu_sfx.is_empty() {
+            if let Some(snd) = self.sound.as_mut() {
+                snd.batch(|drv, out| {
+                    for ev in &menu_sfx { drv.start(out, ev.id, None, 0, None); }
+                });
+            }
+        }
         let Some(fe) = self.fe.as_mut() else { return };
         let closed = fe.closed;
         if let Some(code) = fe.requested_level.take() {
@@ -2389,7 +2405,9 @@ impl ApplicationHandler for App {
             // Cursor moves: track the NDC position for the dev menu's click hit-test (when the menu is open).
             WindowEvent::CursorMoved { position, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
                 self.menu_pointer = self.menu_space(position.x, position.y);
-                if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) { fe.mouse_move(x, y); }
+                if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) {
+                    if fe.mouse_move(x, y) { self.menu_after(); }   // the hover's focus-move sound
+                }
             }
             WindowEvent::CursorMoved { position, .. } => if let (Some(g), Some(d)) = (&self.gfx, self.dev.as_deref_mut()) {
                 if d.menu {
@@ -2978,7 +2996,13 @@ impl ApplicationHandler for App {
                         if shows_woman {
                             if let Some(w) = self.scene.woman.as_mut() {
                                 let mut changed = false;
-                                for _ in 0..self.frame_ticks { changed |= w.tick(); }
+                                // The paused frames' own 60 Hz clock: `frame_ticks` is the GAME's tick count and stays frozen
+                                // at its last value while a menu is up, so ticking by it ran the figure once per render frame
+                                // × that stale count (several times too fast on a fast display — the user's playtest).
+                                self.menu_clock += dt;
+                                let n = (self.menu_clock * 60.0) as u32;
+                                self.menu_clock -= n as f32 / 60.0;
+                                for _ in 0..n.min(8) { changed |= w.tick(); }
                                 if changed { g.renderer.update_woman(&g.queue, &w.rgba()); }
                             }
                         }
@@ -3286,7 +3310,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
         net: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,
