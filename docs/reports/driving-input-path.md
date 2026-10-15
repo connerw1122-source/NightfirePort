@@ -47,16 +47,27 @@ and map the port's keyboard+mouse bindings onto it (driving levels stay unwired)
   patterns (0x3c008081, 0x3baaaaab, 0xbe99999a/0x3e99999a, 0x3e4ccccd), the digital remap order,
   the all-sticks-zero guard, the strict edges, and sister assertions on every threshold
   (`nf_game` lib: **181 passed / 0 failed**, the 11 inside).
-- Full four-crate suite on the final tree (this branch = origin/master + 3 commits):
-  nf-formats 64/0 (+ integration: driving_golden **4 skips** — it prints "skip" and passes
-  without the DRIVING/ disc folder, which this sandbox cannot extract; weapon_live 1/0;
-  pss_movies_live 3/0; exact_vs_host_probe 3/0; facial_probe 1/0), nf-audio 9/0, nf-view 8/0,
-  nf-game integration 23 binaries 99/0. **Total: 373 passed / 3 failed / 1 ignored — the 3
-  failures are exactly the allowed slim-ISO `disc_golden` trio.**
+- Full four-crate suite on the pre-merge tree: nf-formats 64/0 (+ integration: driving_golden
+  **4 skips** — it prints "skip" and passes without the DRIVING/ disc folder, which this sandbox
+  cannot extract; weapon_live 1/0; pss_movies_live 3/0; exact_vs_host_probe 3/0; facial_probe
+  1/0), nf-audio 9/0, nf-view 8/0, nf-game integration 23 binaries 99/0. Total 373 passed /
+  3 failed / 1 ignored — the 3 failures exactly the allowed slim-ISO `disc_golden` trio.
+- **Final tree** (after merging origin/master a2958c03 — the 110q/110r/110s merges; WORKLOG
+  conflict resolved keeping both sides' entries): rebuilt all four crates (338 test binaries) and
+  ran the priority set: `nf_game` lib **186 passed / 0 failed** (the 11 driving tests inside,
+  plus master's 5 new mp-bots tests), `driving_golden` 4/0 (skips, as above), `disc_golden`
+  11 passed / 3 failed (the allowed slim-ISO trio), and ~40 more nf-game/nf-view integration
+  binaries all green (ai_live 35/0, campaign_flow_live 5/0, character_lighting_live 4/0,
+  audio_probe 3/0, bank_live 1/0 …). One extra environment failure: `probe_pylon_render`
+  panics at `wgpu request_adapter` — the sandbox has no GPU (the known no-GPU pylon class
+  recorded by earlier sessions; a pure input module cannot affect it). The remaining binaries
+  are other workers' live tests, green pre-merge and covered by their own priority batches.
 - Caveat: this sandbox kills background jobs between tool calls, so `tools/test/suite.py` under
   nohup could not survive; the same binaries ran as foreground chunks with the runner's
   per-binary `--test-threads=1` semantics reproduced by scripts/run_suite_chunks.py (kept out of
-  the repo). NF_ISO pointed at Nightfire-onfoot.iso throughout.
+  the repo). NF_ISO pointed at Nightfire-onfoot.iso throughout; the ALSA user prefix
+  (`libasound2-dev` extracted to ~/.alsa-prefix, PKG_CONFIG_PATH + LD_LIBRARY_PATH + RUSTFLAGS
+  -L) replaced the sandbox-lost /tmp prefix from setup step 4.
 
 ## Shared files touched (minimal, additive)
 
@@ -96,4 +107,4 @@ the residue, if the driving levels are ever booted (needs the retail image's DRI
 
 ## ntfy
 
-(sent after this commit — see the WORKLOG; on failure the exact error goes here.)
+Sent after the final push (curl first, then the python3 urllib and wget fallbacks in order).

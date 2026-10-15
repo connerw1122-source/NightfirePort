@@ -12971,3 +12971,9 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   23 bins 99/0; disc_golden 3 failed = the allowed slim-ISO trio. Total 373 passed / 3 allowed
   failures / 1 ignored. The sandbox kills background jobs between tool calls, so the suite ran
   as foreground chunks (scripts/run_suite_chunks.py) instead of the nohup runner.
+
+- (15:52) Final-tree correction: after merging origin/master a2958c03 the priority suite on the
+  merged tree gives nf_game lib 186/0 (the 11 driving tests inside), disc_golden 11/3 (the allowed
+  trio), driving_golden 4/0 (disc-folder skips), ~40 integration bins green, probe_pylon_render
+  down on the no-GPU wgpu adapter (known environment class). The 373/3/1 line above describes the
+  pre-merge tree; docs/reports/driving-input-path.md carries both.
