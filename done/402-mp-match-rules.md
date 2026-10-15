@@ -22,3 +22,7 @@ claimed-by: sandbox5 at 2026-10-15T19:50Z
 ## Report (done, 2026-10-15T21:23Z)
 
 Closed by the driver: the report is on `s/mp-match-rules` (docs/reports/mp-match-rules.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T21:31Z)
+
