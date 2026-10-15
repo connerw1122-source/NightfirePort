@@ -257,3 +257,67 @@ fn flat_run_shifts_through_every_gear_in_order() {
     assert!(car.speed < v0, "rolling resistance slows the car");
     assert!(car.speed > v0 * 0.8, "…gently (v0 {v0} → {}), not the 0.8-per-tick cliff", car.speed);
 }
+
+// --- The real-file tests: the mission VIVs' own tuning data (no game bytes in the repo) ---
+// The slim ISO's /DRIVING records are zeroed [D; docs/atlas/driving-elf.md §2], so the VIVs come
+// from the working set (default /home/z/driving-refpack/DRIVING, override NF_DRIVING_VIV dir);
+// the tests skip when it is absent.
+
+fn driving_viv(name: &str) -> Option<std::path::PathBuf> {
+    let base = std::env::var_os("NF_DRIVING_VIV").map(std::path::PathBuf::from)
+        .unwrap_or_else(|| std::path::PathBuf::from("/home/z/driving-refpack/DRIVING"));
+    let p = base.join(name);
+    p.exists().then_some(p)
+}
+
+/// Extracts one entry from a mission VIV through the repo's own BIGF + RefPack readers.
+fn viv_entry(viv: &std::path::Path, name: &str) -> Option<Vec<u8>> {
+    let data = std::fs::read(viv).ok()?;
+    let bigf = nf_formats::bigf::Bigf::parse(&data, data.len() as u64).ok()?;
+    let e = bigf.find(name)?;
+    let raw = data.get(e.offset as usize..(e.offset + e.size) as usize)?.to_vec();
+    if nf_formats::refpack::is_refpack(&raw) { nf_formats::refpack::decompress(&raw).ok() } else { Some(raw) }
+}
+
+/// The shipped `data\sim\attrib\pvehicle\vanquish.atr` parses to exactly the values the port's
+/// `vanquish()` hard-codes [D]. Sister: any drifted constant fails the element-wise compare.
+#[test]
+fn the_real_vanquish_atr_matches_the_ported_constants() {
+    let Some(viv) = driving_viv("MIS01.VIV") else { eprintln!("skip: no mission VIVs"); return };
+    let Some(bytes) = viv_entry(&viv, r"data\sim\attrib\pvehicle\vanquish.atr") else { eprintln!("skip: no vanquish.atr in MIS01.VIV"); return };
+    let text = String::from_utf8_lossy(&bytes);
+    let p = CarParams::parse_atr(&text);
+    let v = CarParams::vanquish();
+    assert_eq!(p.mass, v.mass, "MASS [D]");
+    assert_eq!(p.maxacc, v.maxacc, "MAXACC [D]");
+    assert_eq!(p.maxrevacc, v.maxrevacc, "MAXREVACC [D]");
+    assert_eq!(p.maxbrake, v.maxbrake, "MAXBRAKE [D]");
+    assert_eq!(p.maxsteering, v.maxsteering, "MAXSTEERING [D]");
+    assert_eq!(p.modsteer_speed, v.modsteer_speed, "MODSTEERSPEED [D]");
+    assert_eq!(p.min_steer, v.min_steer, "MINSTEER [D]");
+    assert_eq!(p.gear_limit, v.gear_limit, "GEAR_LIMIT R,1..5 [D]");
+    assert_eq!(p.gear_ratio, v.gear_ratio, "GEAR_RATIO R,1..5 [D]");
+    assert_eq!(p.friction_limit_front, v.friction_limit_front, "FRICTIONLIMITFRONT [D]");
+    assert_eq!(p.wheel_radius, v.wheel_radius, "WHEEL_RADIUS [D]");
+    assert_eq!(p.handbrake_force, v.handbrake_force, "HANDBRAKE_FORCE [D]");
+}
+
+/// The shipped `Physics\Rigid\default.tun` overrides nothing — its values equal the ELF's
+/// compiled-in initials [M .data 0x3390d0..; D the file]. Sister: a changed constant fails.
+#[test]
+fn the_real_rigid_tun_matches_the_compiled_in_defaults() {
+    let Some(viv) = driving_viv("MIS01.VIV") else { eprintln!("skip: no mission VIVs"); return };
+    let Some(bytes) = viv_entry(&viv, r"data\tuning\Physics\Rigid\default.tun") else { eprintln!("skip: no Rigid tun"); return };
+    let text = String::from_utf8_lossy(&bytes);
+    let t = Tuning::parse(&text);
+    let r = Rigid::from_tun(&t);
+    let d = Rigid::game_defaults();
+    assert_eq!(r.gravity, d.gravity, "GRAVITY [D file == M .data]");
+    assert_eq!(r.bodge_player_gravity, d.bodge_player_gravity, "BODGE_PLAYER_GRAVITY");
+    assert_eq!(r.sleep_vel, d.sleep_vel, "SLEEP_VEL");
+    assert_eq!(r.ground_friction_coeff, d.ground_friction_coeff, "GROUND_FRICTION_COEFF");
+    assert_eq!(r.natural_angular_damping, d.natural_angular_damping, "NATURAL_ANGULAR_DAMPING");
+    assert_eq!(r.m_limit, d.m_limit, "M_LIMIT");
+    assert_eq!(r.am_limit, d.am_limit, "AM_LIMIT");
+    assert_eq!(r.total_force_limit, d.total_force_limit, "TOTAL_FORCE_LIMIT");
+}
