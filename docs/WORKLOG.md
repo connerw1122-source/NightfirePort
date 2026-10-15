@@ -13004,3 +13004,10 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
   (slim ISO) + the no-GPU pylon set ×3 (fix_0c_pylon_live ×2 + probe_pylon_render, wgpu
   "adapter: NotFound" — the sandbox has no GPU adapter; same set WORKLOG fix-death-retry-boost
   recorded). The required final-tree suite restarted on the merge (totals in the report).
+
+- audit-sound-calls (16:18-): starting the full sound-call audit vs the port. Plan: enumerate
+  every call site of Sound_Play3D / Sound_Play / Sound_PlayAt* / Music_Event / ambient-loop
+  starters in ACTION.ELF's decomp (caller fn + address, sound id, trigger), check each against
+  the port (grep id / caller's port function), classify PORTED / MISSING / N/A, write
+  docs/systems/sound-coverage.md, then port the 5 most-noticeable SP on-foot MISSING sites with
+  NF_ISO tests asserting the sound reaches the Sim's sound list (NF_SILENT).
