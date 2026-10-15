@@ -13314,6 +13314,22 @@ Stage Summary:
   menu_live 12 + menu_backdrop_still 1 + menu_movies 2 + menu_woman_live 5 + dev_menu_flow 1 green.
   New tests: nf-game mission_stats_rows 7 (incl. the 07000005 PCSX2 golden numbers) + nf-view
   mission_stats_flow 3.
+## dossier-pages-data (2026-10-15, branch s/dossier-pages-data) — start
+- (18:58 UTC) Task started: port the Dossier's Rewards / Gadgets / Weapons pages' data, state, flow and getters
+  (P_DSREWARDS_Handler 0x2172c8 + C_RBDSREWARDS_Handler 0x20c248, P_DSGADGETS_Handler 0x217190 +
+  C_SBDSGTSCROLL_Handler 0x20bcc0, P_DSWEAPONS_Handler 0x217038 + C_SBDSWPSCROLL_Handler 0x20bab0). No drawing —
+  data + Page variants + actions + getters + tests. Sandbox reused: repo, work/, ISO and nf-queue all present; branch
+  cut from origin/master 0157588d.
+- (20:15) dossier-pages-data: the three pages implemented + tested. docs/systems/dossier-pages-data.md (all
+  addresses + tags); menu.rs: Page::Rewards/Gadgets/Weapons (+ids 0x4000003b/3c/3d), WEAPONS_TABLE 27 rows /
+  GADGETS_TABLE 14 rows / REWARD_BONUS 12×(label,tex)×4 [L ee_start_05.bin, disc-verified against ACTION.ELF
+  .data by dossier_pages::the_port_tables_match_the_discs_action_elf_data], getters reward_rows/wheel_row/
+  gadget_row/weapon_row/weapon_overview_row, the Dossier Confirm map (rows 1-3 open the pages, cursor reset),
+  clamp scroll actions [M Scroll_Update 0x2221b20], minimal draw arms + lib.rs --page rewards|gadgets|weapons.
+  FOUND+FIXED in nf-game/progress.rs: gold_group grouped kind-4 descs by desc[0]'s packed word (= 0 for every
+  entry → one 12-member group, rank = table index) — the game scans descs 1..4 of every entry for the target
+  desc's own word [M 0x199210:39-62]; real groups {1,5,7}→bits 0..2 and {4,11}→bits 9/10. Added
+  Progress::object_upgrade_level [M 0x2025f8]. nf-game lib 188/188; dossier_pages 7/7; menus_flow 36/36.
 ## drive-crp-format (2026-10-15, branch s/drive-crp-format) — started 17:00 UTC
 
 Task: driving phase 1 — decode the .crp container (chunks, tables, the track mesh, the car model and its parts) from the data and DRIVING.ELF's consumer (task 501's map names it, or find it from the BIGF read of the track entry), write docs/formats/crp.md, and add a parser with golden numbers for every .crp in the 23 archives (NF_DRIVING or the full retail image). Files: crates/nf-formats/src/crp.rs (new), crates/nf-formats/tests/driving_golden.rs. Merge s/drive-refpack if not on master (done: merged 5a0e53f9). Deadline: stop new work 18:32 UTC, sandbox expires ~18:52 UTC.
@@ -13826,3 +13842,9 @@ Work Log (async-level-load):
   mp_arenas_live, codename_entry, the fields/fix_* sets…) — 0 failed; fix_0c_pylon_live's 2 = the sandbox's missing Vulkan ICD (adapter
   request, pre-existing). The full 356-binary sweep didn't fit the window (background jobs die here; the runner
   rebuilds cost 336 s). Doc: docs/systems/subtitles.md (the queue layout, both presenters, all three sources).
+- (20:42) dossier-pages-data: report docs/reports/dossier-pages-data.md pushed (merged tree f7d9fb6e).
+  Verification: foreground chunks (the bg suite.py is reaped by this sandbox): nf-game lib 197/197,
+  nf-view lib 9/9, nf-formats lib 76/76, nf-audio lib 9/9; menus_flow 36/36, dossier_pages 7/7 (incl. the
+  disc ACTION.ELF byte check), mp_menu_flow 9/9, dev_menu_flow 5/5; progress consumers progress_live 1/1,
+  fix_progress_live 5/5, fix_scores_handoff_live 3/3, fix_save_profile_live 4/4, campaign_flow_live 1/1.
+  Left: the main agent's draw pass for --page rewards|gadgets|weapons; Records' pre-existing % wrap noted.
