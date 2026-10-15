@@ -3336,7 +3336,13 @@ impl Sim {
                         // shell at the view-model gun bone's world position (`AnimGetBoneWorldTrans`
                         // VECTOR out) — hand the posed gun matrix (`Player_PositionGun` 0x1a3b40's
                         // port) to the next fire_player so the casing spawns at the gun, not the eye.
-                        self.drones.eject_gun = Some(self.gun_matrix());
+                        // The player arm [M 0x12f678:88-99]: `AnimGetBoneWorldTrans(BL+0x7e8, 1, 0, pos, MATRIX)` —
+                        // DATUM 1 (a non-negative id is a datum [M 0x1c3120]); the 0x40000 alternating records with
+                        // `BL+0x958 == 0` use datum 5 (the other gun). The view model's origin (`gun_matrix`) sits
+                        // ~0.43 behind the eye: shells ejected there spawned at the camera — "big on my screen, but
+                        // I can't really see them" (the user, 1015-0046).
+                        let alt = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40000 != 0 && self.gun.alt_fire_toggle == 0;
+                        self.drones.eject_gun = Some(self.view_datum_matrix(if alt { 5 } else { 1 }).unwrap_or_else(|| self.gun_matrix()));
                         self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
                         // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:248-253]: a `+0x6C & 4` shot hands
                         // the view to the projectile — `Player_ChangeSubState(owner, 10)`, `BLData+0x878 =
@@ -3842,6 +3848,11 @@ impl Sim {
     /// `QuatTransToMat(datum.q, datum.t) · bone world`]): the first-person skin (+0xDC), the view script's
     /// sequence at the current frame (root translation zeroed, as the draw does), through `gun_matrix`.
     pub fn view_datum(&self, id: u32) -> Option<[f32; 3]> {
+        self.view_datum_matrix(id).map(|m| [m[3][0], m[3][1], m[3][2]])
+    }
+
+    /// `view_datum`'s full world matrix (rotation rows + translation) — the `AnimGetBoneWorldTrans` MATRIX out.
+    pub fn view_datum_matrix(&self, id: u32) -> Option<Mat4> {
         let w = self.weapons.records.get(self.gun.weapon as usize)?;
         let skin = self.skins.get(&u32::from_le_bytes(w[0xdc..0xe0].try_into().ok()?))?;
         let skel = self.skeletons.get(&skin.skeleton)?;
@@ -3853,8 +3864,7 @@ impl Sim {
         let mut local = anim::local_pose(seq, skel, skin, (t.saturating_sub(a) + 1) as u32);
         if let Some(r) = local.first_mut() { r.0 = [0.0; 3]; }
         let world = anim::world_pose(&local, skin);
-        let m = anim::mul(&anim::mul(&anim::quat_trans_to_mat(dt.q, dt.t), world.get(dt.bone as usize)?), &self.gun_matrix());
-        Some([m[3][0], m[3][1], m[3][2]])
+        Some(anim::mul(&anim::mul(&anim::quat_trans_to_mat(dt.q, dt.t), world.get(dt.bone as usize)?), &self.gun_matrix()))
     }
 
     pub fn view_frame(&self, skeleton: u8) -> Option<(usize, u32)> {
