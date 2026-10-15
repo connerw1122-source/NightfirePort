@@ -42,3 +42,7 @@ claimed-by: sandbox4 at 2026-10-15T17:58Z
 ## Report (done, 2026-10-15T19:22Z)
 
 Closed by the driver: the report is on `s/mpeg2-interlaced-decode` (docs/reports/mpeg2-interlaced-decode.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T20:00Z)
+
