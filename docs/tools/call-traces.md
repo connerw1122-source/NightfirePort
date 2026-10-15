@@ -47,7 +47,7 @@ record the memory the function writes instead.
 | `Player_AutoAim.calls` (0x1a7c98) | `io:@(a0+0xe0)+0x114:0x20 in:@(a0+0xdc)+0x60:4` | 80 | recorded under play in aim mode: the aim bit set on all 80, the cursor non-zero, the block changed by the 0.5 easing on 76 |
 | `Check_Target.calls` (0x1a7810) | `io:@(a0+0xe0)+0x130:4` | 40 | no target under the crosshair (+0x132 = 0, +0x133 = 2) on all 40: the no-hit path only |
 
-## Harness status (045n verify-bitexact, 2026-10-13)
+## Harness status (045n verify-bitexact, 2026-10-13; ledger added by verify-ledger 2026-10-15)
 
 `crates/nf-game/tests/diff_calls.rs` replays every recording through a port adapter and requires the same bits:
 `PS2Sinf` 40/40, `Quat_QuatToMat` 40/40 (EE-FPU op order from the decompile), `Rand_Rand` 40/40 including the
@@ -55,3 +55,10 @@ state after each call. `Check_Target` and `Player_AutoAim` are not covered yet (
 platform f32 sin differs from the game on 24/40 recorded calls; the same polynomial with FPU no-guard sums
 differs on 11/40 (the VU0 guard bit is load-bearing); a flipped output bit fails, a caller-owned byte does not.
 Format v1 carried everything the adapters needed.
+
+**The ledger** (`docs/verify/ledger.md`) is the claim inventory over this machinery: one row per ported sim
+function (address, name, port fn, status, recording), seeded from the port maps + the atlas, hot paths first —
+with the exact `gdbcall.py --spec` command and the level/spot for every recording still missing. The guard test
+`ledger_claims_match_the_recordings` (same file) fails if a row claims `bit-exact on N recorded calls` without
+the recording behind it (≥ N calls, matching `function=`/entry address, adapter registered) or if any row's
+status leaves the documented grammar. Recording requests live in the ledger's "Recording requests" section.
