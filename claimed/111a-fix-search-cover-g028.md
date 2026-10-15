@@ -35,3 +35,6 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 
 **Branch:** `s/fix-search-cover-g028`.
+
+---
+claimed-by: sandbox4 at 2026-10-15T14:31Z
