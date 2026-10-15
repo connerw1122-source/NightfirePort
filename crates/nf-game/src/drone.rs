@@ -7957,8 +7957,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // fix-satchel-tripbomb: the 0x80000 tripbomb arm plays the MINE's 0x446
                         // instead [M 0x12ce80:326-328] and overwrites `BU+0xFC = 120.0` [:330] (the
                         // phase box carries it); the 0x3b satchel shares the hat's 0x4a7 [:319-321].
-                        let stick_sound = if g.weapon_type == 0x3a { 0x446 } else { 0x4a7 };
-                        if let Some(t) = d.sfx { let h = t.get(stick_sound); self.audio.play3d(h.id, p, None); }
+                        // fix-remote-mine-play: the mine 0x37's own stick arm [:296-330] plays NO
+                        // sound — its block has no Sound_Play3D call at all (unlike 0x3b/0x45's
+                        // 0x4a7 and 0x3a's 0x446) — the stick is silent.
+                        let stick_sound = match g.weapon_type { 0x37 => None, 0x3a => Some(0x446), _ => Some(0x4a7) };
+                        if let Some(id) = stick_sound { if let Some(t) = d.sfx { let h = t.get(id); self.audio.play3d(h.id, p, None); } }
                         break;
                     }
                     // fix-satchel-tripbomb: the tripbomb's laser armed — the beam object created once
@@ -8161,8 +8164,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // — the 0x80000 stick arm walks the objects, counts the same-weapdef same-owner type-5 bullets
         // and marks the oldest (obj+0xEC smallest [*suggested*: the port's spawn order]) `+0xFE |= 1`
         // past 6]. Applied every tick over the placed set — the net effect matches.
+        // fix-remote-mine-play: the mine 0x37's stick arm carries the same walk [M 0x12ce80:296-330 —
+        // the record's base id 0x37, count < 6, else the oldest `+0xFE |= 1`]; its placed set joins
+        // the same every-tick consumer.
         let mut placed: Vec<usize> = self.grenades.iter().enumerate()
-            .filter(|(_, g)| g.weapon_type == 0x3a && g.stuck && g.state < 2)
+            .filter(|(_, g)| matches!(g.weapon_type, 0x3a | 0x37) && g.stuck && g.state < 2)
             .map(|(i, _)| i).collect();
         while placed.len() > 6 { let i = placed.remove(0); self.grenades[i].state = 2; }
         // fix-satchel-tripbomb: the tripbomb's laser [M `Bullet_update` case 3, the `+0x70 & 0x80000`

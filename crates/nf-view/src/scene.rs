@@ -2891,25 +2891,29 @@ impl Sim {
                 // `Player_WeaponInitBullet` 0x1a4bf0's FIRST branch [M disasm 0x1a4c30-0x1a4cd4]: a record
                 // whose +0x68 carries 0x20000 — the Remote Mine's detonator 0x38 (+0x68 = 0x00020010
                 // [L ee_start_05.bin]; the mine 0x37 = 0x00014090 lacks the bit; 0x39 is the inert
-                // sibling) — never shoots: it walks the objects, marks every player-owned bullet of
-                // this base with the 10-tick detonate fuse (BD+0xFC = 10.0, `swc1 f0,252(a1)`;
-                // `Bullet_DoTrails` 0x12d890:268-281 counts it down and blasts at < 0 with
-                // `Explode_Create(record+0x08, record+0x08, record+0x0C, …)` — radius 8 / damage 100
-                // [L record 0x37]), then `Player_WeaponHasAmmo(base)` arms the switch back to the
-                // mine (BL+0x63 = base, `sb v0,99(v1)` [M 0x1a4cb8]) — or, dry, clears the base's
-                // owned byte (+0x1BA lane [M bldata.md], `sb zero,442(v0)` [M 0x1a4cd0]) and lets
-                // `Player_GetBestWeapon` 0x1a9680 write the request [M 0x1a4ccc]. No bullet, no
-                // muzzle latch (+0x95b never sets in this arm), no casing.
+                // sibling) — never shoots: it walks the objects and marks EVERY player-owned bullet
+                // of this base (the walk has no break — all placed mines go at once) with the
+                // detonate fuse `BU+0xFC = −10.0` [M disasm 0x1a4c54-0x1a4c88: `lui $at, 0xc120;
+                // mtc1 $at, $f0; …; swc1 $f0, 0xfc($a1)` — 0xc1200000 = −10.0f; the earlier
+                // "+10.0" note dropped the sign]; `Bullet_DoTrails` 0x12d890:268-285 counts it down
+                // and blasts at < 0 — the NEXT tick — with `Explode_Create(record+0x08, record+0x08,
+                // record+0x0C, …)` — radius 8 / damage 100 [L record 0x37]. The port's fuse model is
+                // `range − travelled` = BU+0xFC, so the mark writes `range = travelled − 10.0`.
+                // Then `Player_WeaponHasAmmo(base)` arms the switch back to the mine (BL+0x63 =
+                // base, `sb v0,99(v1)` [M 0x1a4cb8]) — or, dry, clears the base's owned byte (+0x1BA
+                // lane [M bldata.md], `sb zero,442(v0)` [M 0x1a4cd0]) and lets `Player_GetBestWeapon`
+                // 0x1a9680 write the request [M 0x1a4ccc]. No bullet, no muzzle latch (+0x95b never
+                // sets in this arm), no casing.
                 if flags & 0x20000 != 0 {
                     let base = self.weapons.base(self.gun.weapon as usize);
                     for g in self.drones.grenades.iter_mut() {
                         // The game's walk matches type-5 objects whose weapon record's +0x02 equals
                         // the fired record's +0x02 and whose BD+0x30 is the firing player [M
                         // 0x1a4c5c-0x1a4c88]; the port's grenade list is exactly those bullets, the
-                        // owner usize::MAX is the player. In-flight or resting — the walk has no
-                        // stuck filter.
+                        // owner usize::MAX is the player. In-flight, stuck or resting — the walk has
+                        // no state filter (every match takes the −10.0 store).
                         if g.state < 2 && self.weapons.base(g.weapon_type as usize) == base && g.owner == usize::MAX {
-                            g.range = g.travelled + 10.0; // the absolute BU+0xFC = 10.0 at the mark tick
+                            g.range = g.travelled - 10.0; // the absolute BU+0xFC = −10.0 [M 0x1a4c88]
                         }
                     }
                     let base_u8 = base as u8;
