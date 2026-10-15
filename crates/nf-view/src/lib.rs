@@ -1280,6 +1280,9 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
             "advanced" => menu::Page::CnAdvanced,
             "mpoptions" => menu::Page::CnMp,
             "avoptions" => menu::Page::CnAv,
+            // codename-entry: the name-entry grid renders headless too (cn_open seeds the proposal).
+            "cnname" => { fe.cn_open(menu::PAGE_CN_SELECT); menu::Page::CnName }
+            "cncheat" => { fe.cn_open(menu::PAGE_CN_MENU); menu::Page::CnName }
             "mpscenario" => menu::Page::MpScenario,
             "mpmap" => menu::Page::MpMap,
             "mpjoin" => menu::Page::MpJoin,

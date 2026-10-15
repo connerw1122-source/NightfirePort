@@ -13323,6 +13323,13 @@ Work Log (drive-crp-format):
 - Findings: the fix-melee guard-2 stand (60.4,27.1,100.4) has no floor in the sim — the Scorpion row uses the [L] chase-trace stand (79.86,22.92,96.0; guard 19.3 out in view); the 0c upper-walkway spot is walled off from the vent (end wall z −110.02, opening 3.2 up) — the doc's hatch row uses the burn stance (6.0,12.94,−110.5, floor 11.84 [L]); the 0a cubicle blocker is Bond-body only (eye ray blocked t≈0.46, the shot installs clean; fire straight after spawning — a settled Bond slides ~1.1 off the desk-edge spot).
 - Suite: this sandbox kills detached processes between tool calls (3 attempts) and OOM'd/disk-filled at the suite's -j4 build (3 GB RAM; pruned 2.4 GB of stale target artifacts) — the suite ran in foreground chunks against the 555 s tool cap: 94 binaries through chunk 0 (93 ok, 1 FAILED = probe_pylon_render: wgpu finds no GPU in this sandbox — environment, not code), 25 more ok in chunk 1 (cut mid-run). ~220 long NF_ISO binaries didn't fit the window. No failure attributable to this task (two new files only; no shared file touched).
 - Report: docs/reports/playtest-spots.md. Live checks for the main agent listed there + in spots.md (Q-Claw draw on cold 05, 0a walk-in, 0c ascent, 14 approach, 02 bathhouse hatches, 06 siren).
+## codename-entry (2026-10-15, branch s/codename-entry)
+- Started: porting the codename name-entry page (P_CNNAME_Handler 0x213790, C_KEYBOARD_Handler 0x213a98, Menu_IsValidCodename 0x1f9930, def_codename 0x2e1b18): docs first (docs/systems/codename-entry.md), then the grid model + profile create/rename/delete via nf_game::profile, then tests (numbers/ids only, sister assertions). In progress.
+## codename-entry (2026-10-15, branch s/codename-entry) — DONE
+- docs/systems/codename-entry.md: the name-entry page 0x40000020 (P_CNNAME_Handler 0x213790, C_KEYBOARD_Handler 0x213a98, Menu_IsValidCodename 0x1f9930, def_codename 0x2e1b18) — the three entries + cheat_mode, the grid (buffer 0x34e028, 8-char clamp, keys 1000 ←/1001 space/1002 ✓, glyph cells 100-103 = font bytes 0xc4/c2/c6/c0, proposals "BOND"/""), the validator (0x3bc empty, 0x2c0 reserved vs "New Codename"/"Default" strstr), the accept (slot 999 → box mode 1 LS_Save, overwrite box 4, → wheel 0x4000001d → Controls 0x40000022), Edit Codename's ~X delete (0x5e → box mode 3 psiDeleteData + card-flow confirm, re-enum 0x6e), and the wheel's LAST row = "Save Codename" (Txt 0x1f4; C_SBCNOPTIONS case 6 = box mode 1 LS_Save(0x2e1ae8)) — the game has no in-place rename (rename = create + delete).
+- crates/nf-view/src/menu.rs: Page::CodenameEntry + the cn_* model (cn_open/press/type_char/move/dismiss_box/delete_*, getters, CN_GRID [S packing], CN_MAX_CHARS 8), wired into CnSelect row 0 / Codename row 0 opens, ~X delete confirm, wheel row 6 saves via save_profile, load_profile_data loads the picked codename before the wheel. crates/nf-game/src/profile.rs: +Profile::delete_in. lib.rs: --page cnname|cncheat.
+- Tests: crates/nf-view/tests/codename_entry.rs 14/14 (incl. the NF_ISO label sister — 11 ids bound against USATxt.dat) + nf-game profile lib 6/6. cargo check clean. The background suite.py was killed by the sandbox between tool calls (known); nf-game/nf-view portions of the four-crate command ran green.
+- Report: docs/reports/codename-entry.md (shared-file list + live checks: the four glyph cells' font identity, the overwrite box, the Save Codename row).
 ## secret-codes (s/secret-codes)
 
 - (18:15) Sandbox reused (repo/work/ISO/nf-queue all present, build tools kept). Branch s/secret-codes created from origin/master @ 4bd64a03, pushed with this entry. Background suite.py started at 18:14 UTC (deadline ~20:13 UTC; stop new work 19:53 UTC).
@@ -13480,6 +13487,33 @@ Work Log (credits-data):
 - Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
   0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
   the PAL base note).
+
+## drive-car-models (s/drive-car-models)
+
+Started 2026-10-15 ~20:05 UTC. Task: decode the driving missions' car models from the
+`DRIVING/*.VIV` archives (format, LODs, textures, wheel attachment points), a `nf_formats`
+module + an `nf-extract` OBJ dump command, goldens (per-model vertex/triangle counts +
+buffer SHA-1s), format doc in docs/formats/. No renderer work.
+
+### drive-car-models — session result (2026-10-15, ~22:00 UTC)
+
+- Format decoded end-to-end and documented (docs/formats/car-model.md): car `.crp` article
+  window records, the `Skel` part table = the wheel/hub attachment points (resolved by name
+  via FUN_001c9980 0x1c9980 / FUN_001d2648 0x1d2648, tables EE 0x334070/0x334080/0x334090),
+  the ELFd||ELFr MIPS ET_REL module (`.data` = model, symbols name `__Model:::{as NNNN}::
+  Model[L]` variant×LOD descriptors, TAR texture refs, MatCar* materials), the batch table,
+  and the draw buffers as VIF streams (V4_32 (x,y,z,1.0) quads = vertices).
+- Port: `crates/nf-formats/src/carmodel.rs` + `nf-extract carmodels` (OBJ vertices-only,
+  local). Goldens: `golden/carmodel_golden.tsv` (5 plain MISC cars) + `carmodel_golden.rs`
+  (NF_DRIVING-gated, tamper sisters, wheel-names test).
+- Tests run: `cargo test --offline --release -j2 -p nf-formats -- --test-threads=1` with
+  NF_ISO + NF_DRIVING → 78 lib + 2 carmodel_golden + 11 driving/disc others passed; the only
+  3 failures are the allowed `disc_golden` trio on the slim ISO. The background fast runner
+  could not survive between tool calls in this sandbox (2 launches died); the foreground
+  per-crate command above is the substitute. Crates touched: nf-formats, nf-extract.
+- Left: triangle connectivity (EAGL GeoPrim consumer 0x262000–0x2a7000), DMA head words,
+  mission-car goldens, the main agent's render/parity pass.
+- Merge with origin/master (f59b47fb): master's Page::CnName (the secret-codes worker's cheat grid) kept as the one page id 0x40000020; my profile-name mode rides the same variant behind cn_profile_mode (cn_open arms it; the wheel's row 0 = cn_open(PAGE_CN_MENU) leaves Secret Unlocks untouched); the CnMenu row 6 = Save Codename semantics restored on top of master's row-0/snapshot arm. Merged tree: cargo check clean, codename_entry 14/14 + secret 8/8 + menus_flow 36/36. Suite runner: build ok (348 binaries), --only codename_entry,nf-game,menus_flow = 50 passed / 0 failed / 0 ignored; the full run doesn't fit the window (build alone 338 s; detached processes get killed here). finish.sh closed 616-codename-entry in done/; ntfy 429 daily quota on curl+urllib (wget exit 0, ambiguous) — exact outputs in the report.
 
 ## objective-hints (2026-10-15, branch s/objective-hints)
 - Ported the pause OBJECTIVES tab's data + ✕ flow (no drawing): `Mission::num_vis_objectives()`/`objective_state()`
