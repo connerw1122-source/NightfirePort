@@ -13238,3 +13238,15 @@ Work Log (fix-scores-handoff):
   the 3 slim-ISO disc_golden allows. Full background sweep impossible in this sandbox (jobs
   killed between tool calls). Report docs/reports/drive-elf-map.md pushed; finish.sh acked
   (OK done 501-drive-elf-map); ntfy 429 on all three fallbacks (recorded in the report).
+
+## verify-ledger (s/verify-ledger, started 2026-10-15 ~17:10 UTC)
+- Task 600: extend the bit-exact call-verification machinery (045n) into a ledger: docs/verify/ledger.md
+  (one row per ported sim function: address, name, port fn, status), replay tests in diff_calls.rs style
+  for anything replayable without the emulator, gdbcall.py --spec recording requests for the rest, and a
+  test that fails if a row claims bit-exact without recording+replay behind it.
+- Plan: seed the ledger from the port map + atlas (hot paths first), wire existing recordings, write spec
+  requests for the missing ones, add the guard test, run the touched crates + full suite, push, report.
+- Done: docs/verify/ledger.md (474 rows: 3 verified + 17 hot paths with gdbcall specs + 454 appendix rows from
+  the port maps), the guard test ledger_claims_match_the_recordings + its sister in diff_calls.rs (status
+  grammar, recording/adapter backing, N >= claimed, no dupes), call-traces.md harness section now points at the
+  ledger. diff_calls 6/6 green on the merged tree. No gameplay code changes.
