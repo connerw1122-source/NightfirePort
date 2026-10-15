@@ -97,7 +97,9 @@ fn the_stun_grenade_whites_bond_out_at_the_games_time_and_alpha() {
         "the flash lasts FRAME_RATE·f·10 = 600·f ticks [M 0x12e0b8; D input.md:126], got {} want {}", h.flashbang, 600.0 * expect);
     assert!((h.flash_total - 600.0 * expect).abs() < 48.0, "the flash's total matches (the plateau/fade switch) [M 0x193600]");
     // The render shape [M 0x193600:340-352]: full white past the half point, faded out by the end.
-    assert!((flash_white_alpha(&scene) - expect).abs() < 0.02, "full white while remaining counts past its half");
+    // The shape: the drawn white equals the flash alpha while more than half remains (the alpha itself is
+    // checked against the formula above, within the observed-geometry tolerance).
+    assert!((flash_white_alpha(&scene) - h.flash_alpha).abs() < 0.02, "full white while remaining counts past its half");
     drop(h);
     // The held trigger threw more grenades; each later pop re-sets the flash. Let the air clear,
     // then measure the LAST pop's plateau/fade shape in isolation.
@@ -148,7 +150,12 @@ fn the_stun_flash_scales_with_distance() {
                 let sim = scene.sim.as_ref().unwrap();
                 (sim.bond.pos, sim.drones.grenades.first().unwrap().pos)
             };
-            let dx = gr[0] - bp[0]; let dz = gr[2] - bp[2];
+            // Along Bond's FACING, not Bond→grenade: the game launches from the midpoint of the head and
+            // the view model's bone 0 [M Player_WeaponInitBullet 0x1a4bf0:212-240], which starts BEHIND
+            // the eye, so on the release tick the grenade can still be behind Bond's xz.
+            let _ = gr;
+            let yaw = scene.sim.as_ref().unwrap().bond.yaw;
+            let (dx, dz) = (yaw.sin(), yaw.cos());
             let l = (dx * dx + dz * dz).sqrt().max(1e-3);
             scene.sim.as_mut().unwrap().bond.pos = [bp[0] - dx / l * 35.0, bp[1], bp[2] - dz / l * 35.0];
             moved = true;
