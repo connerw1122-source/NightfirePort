@@ -13604,3 +13604,12 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   plus rng_live/ai_live/drone_portcheck_live/fields_live/pickup_live/trig_live/tuning_live/
   level_live/diff_calls/spawner_kill = 65/65), 0 failed; the first full-suite pass failed only the
   2 no-GPU fix_0c_pylon_live render tests (wgpu request_adapter panic — lesson 6, unrelated).
+
+## attract-mode (2026-10-15, branch s/attract-mode)
+Task 625-attract-mode: port the title screen's no-input attract sequence — `P_ATTRACT_Handler`
+0x20a1f0 and the no-input counter (`Menu_ResetNoInputCount`; `FrontEnd::no_input_frames` already
+counts): the timeout value, what plays (movie codes / demo data), how input interrupts it, and
+the return to the title. Flow + state on `FrontEnd` in crates/nf-view/src/menu.rs (no drawing —
+the main agent renders), the host starts the movie through the existing movie player. Tests: the
+timeout fires at the game's frame count; any input returns to the title. Docs first:
+docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
