@@ -640,3 +640,35 @@ mod tests {
         );
     }
 }
+
+// codename-entry: the card's delete [M Menu_UpdateMessageBox 0x1f7de8 case 3 → psiDeleteData(0x2e1ae8),
+// reached from the Edit Codename list's ~X (C_SBCNSELECT 0x212f58 case 0x5e) with the card-flow
+// confirm; the port models the confirm in nf-view's FrontEnd].
+impl Profile {
+    /// Deletes the codename's file from the card dir. True when the file existed and went.
+    pub fn delete_in(dir: &std::path::Path, name: &str) -> bool {
+        std::fs::remove_file(Self::path_in(dir, name)).is_ok()
+    }
+}
+
+#[cfg(test)]
+mod delete_tests {
+    use super::*;
+
+    /// The delete removes the file and leaves the rest of the card alone [M psiDeleteData
+    /// 0x1f7de8 case 3 deletes the one named datum].
+    #[test]
+    fn delete_in_removes_only_the_named_file() {
+        let dir = std::env::temp_dir().join(format!("nf-cn-delete-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        Profile::default_codename("KEEPME").save_to_dir(&dir).unwrap();
+        Profile::default_codename("DROPME").save_to_dir(&dir).unwrap();
+        assert!(Profile::path_in(&dir, "DROPME").exists(), "sister: the file must exist first");
+        assert!(Profile::delete_in(&dir, "DROPME"));
+        assert!(!Profile::path_in(&dir, "DROPME").exists());
+        assert!(Profile::path_in(&dir, "KEEPME").exists());
+        assert!(!Profile::delete_in(&dir, "DROPME"), "a second delete finds nothing");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+}
