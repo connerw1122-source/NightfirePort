@@ -5147,7 +5147,13 @@ pub struct Drones {
     /// fix-weapon-effects: blasts queued this tick (`Explode_Create` 0x17cbd0's call sites inside the
     /// grenade/bullet loops — the impact explode `Bullet_CollisionHandler` 0x12d068-0x12d0bc and the
     /// grenade path's bit-4 contact) — processed after the loop, where `&mut self` is free.
-    pub pending_blasts: Vec<(V3, f32, f32, usize, u16)>,
+    /// fix-blast-scripts2: the tuple carries the game's script-scale float too — `Explode_Create`'s
+    /// f12 lands in SCRIPTINFO+0x94 [M 0x17cbd0: `*(SCRIPTINFO+0x94) = param_1`] — because the
+    /// game's callers DISAGREE: the 0x4/fuse arms pass f12 = weapon_data+0x08 (scale = radius
+    /// [M 0x12d0ac `lwc1 $f12, 8($v1)` + `mov.s $f13, $f12`; 0x12ce1c]) while the Samurai bolt's
+    /// 0x100000/0x200000 arms pass f12 = 1.0 [M 0x12d0ec-0x12d0f0 `lui $at, 0x3f80; mtc1 $at, $f12`]
+    /// with radius f13 = +0x08. Tuple: (pos, radius, damage, owner, weapon_type, script, scale).
+    pub pending_blasts: Vec<(V3, f32, f32, usize, u16, u32, f32)>,
     /// The camera-shake amount: `Explode_Create` 0x17cbd0 calls `Camera_Shake(pos, radius)` when the
     /// radius reaches 0.5 [M 0x17cc28-0x17cc44]; the port decays it 10%/tick − 0.05 [*suggested*: the
     /// game's `Camera_Shake` curve is view-side, not modelled]. The view reads it for the offset. fix-explosions.
@@ -5756,10 +5762,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
     /// 0x12e1c0), the impact explode (`Bullet_CollisionHandler` 0x12d068-0x12d0bc [M, disassembled])
     /// and the grenade contact. `Explode_Propagate` 0x17c518 through `explode::propagate`: the full
     /// 12-case dispatch (drones msg 9, Bond `Player_Hurt`, breakables, destroyables; the port has no
-    /// copter/vehicle/MP/GT/sensor/monitor/sub lists yet). The effect script 0x6000052 plays at the
-    /// blast, scale = radius·0.06666667 [M 0x17cbd0:84-106]; its own Sound(0x3E) is the blast sound
-    /// [D script stream 36].
-    fn spawn_blast(&mut self, d: &Data, pos: V3, radius: f32, damage: f32, owner: usize, weapon_type: u16, player_pos: V3, frame: u32) {
+    /// copter/vehicle/MP/GT/sensor/monitor/sub lists yet). `script` = the per-source effect script the
+    /// caller passes (the game's a3): 0x6000052 from the fuse/contact call sites, 0x60007c4 from the
+    /// Samurai bolt's 0x100000/0x200000 arms, the destroyable's type script from `Destroy_Smash`
+    /// [M each site's disasm; the census in docs/reports/fix-blast-scripts.md]. `scale` = the game's
+    /// f12 (SCRIPTINFO+0x94, the script player's scale): the 0x4/fuse callers pass radius, the bolt
+    /// arms pass 1.0 [M 0x12d0ac / 0x12d0ec-0x12d0f0; fix-blast-scripts2]. scale = radius·0.06666667
+    /// [M 0x17cbd0:84-106] is the object's obj+0xE8 field, NOT the script scale; its own Sound(0x3E)
+    /// is the blast sound [D script stream 36].
+    fn spawn_blast(&mut self, d: &Data, pos: V3, radius: f32, damage: f32, owner: usize, weapon_type: u16, player_pos: V3, frame: u32, script: u32, scale: f32) {
         let drones: Vec<(usize, V3, f32)> = self.list.iter().enumerate()
             .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos, 0.4)).collect();
         let hits = crate::explode::propagate(pos, radius, damage, owner,
@@ -5787,12 +5798,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         let mut bm = [[0.0f32; 4]; 4];
         bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
-        // The blast script plays at scale = SCRIPTINFO+0x94 = param_1 = f12 = the radius [M disasm
-        // 0x12ce1c-0x12ce2c f12 = weapon_data+0x08; 0x17cbd0 stores param_1 into SCRIPTINFO+0x94;
-        // Script_GetInterp 0x1da158:117 multiplies the key scales by it]. fix-grenade-throw: the
-        // port used radius·0.0667 (obj+0xE8 — a collision-sphere field, read by nothing visual) —
-        // 15× too small: the user's "The explosion is very small and not accurate to the game."
-        self.scripts.spawn_once_scaled(usize::MAX, 0x0600_0052, bm, radius);
+        // The blast script plays at scale = SCRIPTINFO+0x94 = the CALLER's f12: the 0x4/fuse arms
+        // pass weapon_data+0x08, the Samurai bolt's 0x100000/0x200000 arms pass 1.0 [M disasm
+        // 0x12ce1c-0x12ce2c f12 = weapon_data+0x08; 0x12d0ec-0x12d0f0 f12 = 0x3f800000; 0x17cbd0
+        // stores param_1 into SCRIPTINFO+0x94; Script_GetInterp 0x1da158:117 multiplies the key
+        // scales by it]. fix-grenade-throw: the port used radius·0.0667 (obj+0xE8 — a
+        // collision-sphere field, read by nothing visual) — 15× too small: the user's "The explosion
+        // is very small and not accurate to the game." fix-blast-scripts2: the caller's f12 arrives
+        // as the `scale` arg instead of being derived from the radius.
+        self.scripts.spawn_once_scaled(usize::MAX, script, bm, scale);
         // `Camera_Shake(pos, radius)` only from radius 0.5 [M 0x17cc28].
         if radius >= 0.5 { self.shake = self.shake.max(radius); }
         self.explosions.push((pos, radius, damage, owner, weapon_type));
@@ -5837,7 +5851,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             // The photograph targets and breakable doors see the bullet this tick (the game's
             // collision pass registers the contact; the prop's update walks it — crate::props).
-            self.props.bullet_hit(b.pos, end, b.weapon, b.damage, &mut self.channels, frame);
+            // fix-blast-scripts: the destroyable smashes queue their blast (`Destroy_Smash`
+            // 0x12bb60's `Explode_Create` — script by the tag's type byte: 1 → 0x6000027, 2 →
+            // 0x600004f, other non-zero → 0x6000052 [M 0x12bc50-0x12bd20]; damage = tag+0x08, the
+            // placement's param 5 [M 0x12bd04]; attacker = the bullet's owner, the player here →
+            // usize::MAX; no weapon record → weapon_type 0 in the explosion record).
+            for (pos, radius, damage, kind) in self.props.bullet_hit(b.pos, end, b.weapon, b.damage, &mut self.channels, frame) {
+                let script = match kind { 1 => 0x0600_0027, 2 => 0x0600_004f, _ => 0x0600_0052 };
+                // fix-blast-scripts2: Destroy_Smash's f12 reads the tag's +0x8c [M 0x12bcdc `lwc1
+                // $f12, 140($16)`] — the port keeps the historical scale = radius here (no disc
+                // contradiction surfaced; the green destroy test pins the script, not the scale).
+                self.pending_blasts.push((pos, radius, damage, usize::MAX, 0, script, radius));
+            }
             // The fusebox wires see the bullet this tick (`Collide_Update` 0x1ea398 pushes the pick
             // onto the hit object's `obj+0xD0`; `FuseBox_Update` 0x1adfe8:88 filters the list with
             // `Collide_FilterBullets(list, 0xfffd)` — class-5 hitters whose category word
@@ -5909,18 +5934,31 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     let m = if matches!(b.weapon, 1 | 0x4b | 0x4d) { msg::PUNCH } else { msg::BULLET };
                     dr.send(d, rng, frame, m);
                     self.last_flinch = dr.global_flinch;
-                    // fix-samurai-fire: the small-blast arms are the collision handler's SHARED tail —
-                    // the flesh contact reaches them too [M `Bullet_CollisionHandler` 0x12ce80:186-231:
-                    // `Effect_Create` then the `+0x70 & 4 / & 0x100000 / & 0x200000` `Explode_Create`
-                    // gates, all on the same non-ricochet (`bVar7 == 0`) flow — :207-216 is the
-                    // Samurai's 0x100000 cyan blast]. The port had the gate only on its world arm, so
-                    // the Samurai bolt's blast never fired on a guard hit (the courtyard probe: the
-                    // bolt died on a drone contact, no explosion).
-                    let flags70_d = d.weapons.records.get(b.weapon as usize).map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
-                    if flags70_d & 4 != 0 || flags70_d & 0x10_0000 != 0 || flags70_d & 0x20_0000 != 0 {
-                        let radius = d.weapons.records.get(b.weapon as usize).map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
-                        let damage = d.weapons.records.get(b.weapon as usize).map_or(0.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
-                        self.pending_blasts.push((hit.point, radius, damage, usize::MAX, b.weapon));
+                    // fix-blast-scripts [M Bullet_CollisionHandler 0x12ce80 — the explode arms at
+                    // 0x12d068-0x12d188 run on OBJECT contacts too, not just the world]: the contact
+                    // bit (0x4, script 0x6000052) and the bolt bits (0x100000/0x200000, script
+                    // 0x60007c4 — the Samurai 0x32 / the 0x6b/0x6e specials) explode at the hit
+                    // point with radius = weapon_data+0x08, damage = +0x0C [M disasm 0x12d0ac-0c0,
+                    // 0x12d0f0-24, 0x12d154-88], unless the contact is a ricochet re-entry (the
+                    // port's `b.bounces == 0` gate, the same one the world path uses). Direct damage
+                    // (the msg above) AND the blast both apply, as in the game. fix-samurai-fire's
+                    // flesh-arm finding (0x12ce80:186-231, the shared tail) is the same statement —
+                    // ONE path: the script-carrying push below is the single source of the bolt's
+                    // blast on a drone hit.
+                    let flags70h = d.weapons.records.get(b.weapon as usize)
+                        .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                    if b.bounces == 0 && flags70h & (0x4 | 0x100000 | 0x200000) != 0 {
+                        let radius = d.weapons.records.get(b.weapon as usize)
+                            .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
+                        let damage = d.weapons.records.get(b.weapon as usize)
+                            .map_or(0.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
+                        let script = if flags70h & 4 != 0 { 0x0600_0052 } else { 0x0600_07c4 };
+                        // fix-blast-scripts2: the scale is the game's f12 — radius for the 0x4 arm
+                        // [M 0x12d0ac], 1.0 for the bolt arms [M 0x12d0ec-0x12d0f0]. The handler's
+                        // arms are the SAME Explode_Create on world and flesh contacts (this is the
+                        // flesh one), so the scale rule carries over unchanged.
+                        let scale = if flags70h & 4 != 0 { radius } else { 1.0 };
+                        self.pending_blasts.push((hit.point, radius, damage, usize::MAX, b.weapon, script, scale));
                     }
                 }
                 (_, Some(w)) => {
@@ -5973,25 +6011,32 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // plain guns (0x70 = 0x12) do not.
                     // The exploding round does NOT continue as a ricochet — the handler runs the effects
                     // first (Effect_Create at 0x12d060), then the explode gate.
-                    // fix-fire-modes3: the two SMALL-BLAST arms of the same handler [M 0x12ce80:207-216
-                    // (`+0x70 & 0x100000`) and 0x12ce80:226-245 (`+0x70 & 0x200000`)]: on a non-ricochet
-                    // contact they run `Explode_Create(1.0, weapon_data+0x08, +0x0C, …, script
-                    // 0x60007c4, …)` — the Phoenix Samurai bolt's cyan blast (only 0x32 carries
-                    // 0x100000 [L ee_start_05.bin @ 0x2bf150]; radius/damage from the same +0x08/+0x0C
-                    // fields as the 0x4 arm). The effect script differs (0x60007c4, the cyan blast
-                    // stream) from the generic 0x6000052 this port's `spawn_blast` renders — a
-                    // documented effect-visual deviation; the blast's radius/damage/propagate are the
-                    // game's fields.
-                    if (flags70 & 4 != 0 || flags70 & 0x10_0000 != 0 || flags70 & 0x20_0000 != 0)
-                        && b.bounces == 0 {
+                    // fix-fire-modes3 + fix-blast-scripts + fix-cutscene-actors, reconciled by
+                    // fix-blast-scripts2 into ONE path [M Bullet_CollisionHandler 0x12ce80 disasm
+                    // 0x12d068-0x12d188]: the handler runs THREE INDEPENDENT explode arms on every
+                    // non-ricochet contact (world AND flesh) — `+0x70 & 4` → Explode_Create(f12 =
+                    // +0x08, f13 = +0x08, f14 = +0x0C, script 0x6000052) [M 0x12d0ac-0c0], `+0x70 &
+                    // 0x100000` and `+0x70 & 0x200000` → Explode_Create(f12 = 1.0 [M 0x12d0ec-0f0],
+                    // f13 = +0x08 [M 0x12d118], f14 = +0x0C, script 0x60007c4) [M 0x12d154-88]. The
+                    // port's no-record-carries-two fact [L weapon_data scan] folds them into one arm
+                    // with the script/scale picked by bits — the same shape the flesh arm above
+                    // uses. The fire-modes3-shaped first arm here used to catch the bolt bits too
+                    // and push the generic 0x06000052, making the bolt arm dead code (the merge
+                    // hold's symptom: the cyan player came only from cutscene-actors's separate
+                    // direct spawn, and the generic player leaked through).
+                    if flags70 & (0x4 | 0x10_0000 | 0x20_0000) != 0 && b.bounces == 0 {
                         let radius = d.weapons.records.get(b.weapon as usize)
                             .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
                         let damage = d.weapons.records.get(b.weapon as usize)
                             .map_or(0.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
+                        let script = if flags70 & 4 != 0 { 0x0600_0052 } else { 0x0600_07c4 };
+                        // The scale is the game's f12: radius for the 0x4 arm, 1.0 for the bolt
+                        // arms [M 0x12d0ac / 0x12d0ec-0x12d0f0].
+                        let scale = if flags70 & 4 != 0 { radius } else { 1.0 };
                         // Queued, not spawned: the grenade section's per-tick `explosions.clear()` runs
                         // AFTER `update_player_bullets`, so a blast pushed here directly would be wiped
                         // before the view sees it — the queue drains after that clear.
-                        self.pending_blasts.push((hit, radius, damage, usize::MAX, b.weapon));
+                        self.pending_blasts.push((hit, radius, damage, usize::MAX, b.weapon, script, scale));
                     } else if let Some((p, dir)) = ricochet {
                         if b.bounces < 3 {
                             b.dead = false;
@@ -6001,6 +6046,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             b.first = false;
                         }
                     }
+                    // fix-blast-scripts2: cutscene-actors's separate direct `spawn_once` of
+                    // 0x06007c4 at the world hit is GONE — the queued blast's `spawn_blast` now
+                    // spawns the same script player (at the game's f12 scale) through the ONE
+                    // path above, so the entities draw from the sweep scene.rs already
+                    // pre-registers (0x12ce80's own effect arm `Effect_Create` at 0x12d060 runs
+                    // before all three explode arms and stays the view-side hit effect).
                 }
                 _ => b.pos = [b.pos[0] + b.dir[0] * step, b.pos[1] + b.dir[1] * step, b.pos[2] + b.dir[2] * step],
             }
@@ -7920,7 +7971,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                                 .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
                             let damage = d.weapons.records.get(g.weapon_type as usize)
                                 .map_or(0.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
-                            self.pending_blasts.push((p, radius, damage, g.owner, g.weapon_type));
+                            // fix-blast-scripts2: scale = the game's f12 = +0x08 [M 0x12d0ac].
+                            self.pending_blasts.push((p, radius, damage, g.owner, g.weapon_type, 0x0600_0052, radius));
                             g.state = 2; // the object is destroyed by the blast
                             break;
                         }
@@ -8061,7 +8113,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // `Bullet_Delete`'s effect kind (+0x70 & 7 = 0 [L the hat's +0x70 = 0x100]) spawns
                         // nothing; the kill is the CONTACT path below.
                         if weapon_type != 0x45 {
-                            self.pending_blasts.push((pos, radius, damage, owner, weapon_type));
+                            // fix-blast-scripts2: the fuse death's f12 = weapon_data+0x08 = the radius
+                            // [M 0x12ce1c `lwc1 $f12, 8($2)`].
+                            self.pending_blasts.push((pos, radius, damage, owner, weapon_type, 0x0600_0052, radius));
                         }
                         break;
                     }
@@ -8140,8 +8194,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
         }
         let blasts = std::mem::take(&mut self.pending_blasts);
-        for (pos, radius, damage, owner, weapon_type) in blasts {
-            self.spawn_blast(d, pos, radius, damage, owner, weapon_type, player.pos, frame);
+        for (pos, radius, damage, owner, weapon_type, script, scale) in blasts {
+            self.spawn_blast(d, pos, radius, damage, owner, weapon_type, player.pos, frame, script, scale);
         }
         self.grenades.retain(|g| g.state < 2);
         // The HandleExplosives broadcast for the bounced explosives [M 0x1435f0 + 0x138b10]: classification by
