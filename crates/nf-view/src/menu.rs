@@ -513,6 +513,70 @@ impl Page {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action { Up, Down, Confirm, Back, Side, Left, Right }
 
+// ── menu-sfx: the front end's sounds ──────────────────────────────────────────────────────────
+// The engine plays every menu sound through `Menu_PlaySound(MENU_SOUND)` 0x1f3278, which maps the
+// enum to bank ids and gates four of them on `enabled_sound_flags` 0x30d184 [M 0x1f3278; L the
+// boot value 0x0b — sounds 0/1/8 enabled, 2 disabled]:
+//   0 → 0x1da (&1)   the ✕ select blip   [M Button_Update 0x1ef948:106, Label_Update 0x218cb8:236,
+//                                             Checkbox_Update 0x1efef8:65, Combo_Update 0x1f0498:124,
+//                                             Memo_Update 0x21e490:300, Scroll_Update 0x221b20:472]
+//   1 → 0x1da (&2)   the □ side action    [M the 0x20-edge arms of the same widgets (msg 0x5d)]
+//   2 → 0x1da (&4)   the ○ side action    [M the 0x21-edge arms (msg 0x5e)]
+//   3 → 0x1d8        list/spinner up ◀ first step    [M Scroll_Update 0x221b20:204]
+//   4 → 0x1d9        list/spinner down ▶ first step  [M Scroll_Update :188]
+//   5 → 0x1d8        up, auto-repeat     [M Scroll_Update :228 — every 5th held frame, 2nd past 0x1fa]
+//   6 → 0x1d9        down, auto-repeat   [M Scroll_Update :177]
+//   7 → 0x1da        the cursor landed on a different control of the SAME page
+//                                        [M Page_Update 0x21edc8:38-53]
+//   8 → 0x1d9 (&8)   △ back with no 0x5b script on the focus: the buzz + the page-stack pop
+//                                        [M MenuManager_Update 0x21c3d8:78-105 → msg 0x5f]
+//   9 → silence      Scroll_Update's △ arm calls Menu_PlaySound(9), which falls into the switch
+//                    default and starts nothing [M 0x1f3278 default → lVar2 = 0; 0x221b20:457]
+// The twelve top-level page handlers play the open pair `SFXStart(0x1d7)` + `SFXStart(0x470)` on
+// msg 0x4c, gated by the `menu_movie` static (set 1 after playing, reset by the intro/attract
+// movie-end paths) [M P_START 0x20a408:12-22, P_MAIN 0x20a7b0:36-47, P_NFRESULTS 0x208e78:63-65,
+// P_INTRO 0x209e88:23-58, and P_ESTHERO/P_ATTRACT/P_FMVPLAYER/P_NFMAP/P_MPDEBRIEFING/P_TRAILER/
+// P_WINGAME/P_CREDITS]. The front end (07000048) loads bank hash 0xC or 0x38, flipping
+// DAT_002e1b11 on every (re)load [M Sound_Ready 0x1dceb8:91-96]: SB_0.SFX (hash 12) carries
+// {0x1d7, 0x1d8, 0x1d9, 0x1da, 0x1db} and SB_1.SFX (hash 56) carries {0x1d8, 0x1d9, 0x1da, 0x1db,
+// 0x470} [D the disc's PS2/ENGLISH/SB_0/SB_{0,1}.SFX effect tables] — so exactly one half of the
+// open pair sounds per visit, alternating. Mission banks duplicate 0x1d8/0x1d9/0x1da (not
+// 0x1d7/0x470) [D SB_4.SFX/SB_5.SFX], which is why the pause page's blips play over a paused
+// mission while the open pair cannot. A start whose id no loaded bank holds is a silent no-op
+// [M the IOP lookup returns 1, docs/systems/sound.md §2].
+/// The spinner/list ◀▲ step (MENU_SOUND 3/5) [D in the front-end and mission banks].
+pub const SFX_MENU_VAL_DEC: u32 = 0x1d8;
+/// The spinner/list ▶▼ step (MENU_SOUND 4/6) and the △ back buzz (MENU_SOUND 8) [D].
+pub const SFX_MENU_VAL_INC: u32 = 0x1d9;
+/// The select blip (MENU_SOUND 0/1/2) and the same-page cursor tick (MENU_SOUND 7) [D].
+pub const SFX_MENU_TICK: u32 = 0x1da;
+/// The page-open pair's bank-0xC half — only SB_0.SFX holds it [D].
+pub const SFX_MENU_OPEN_MOVE: u32 = 0x1d7;
+/// The page-open pair's bank-0x38 half — only SB_1.SFX holds it [D].
+pub const SFX_MENU_OPEN_SELECT: u32 = 0x470;
+/// The `menu_movie`-gated open pair's marker in [`MenuSfx::sound`] (not a MENU_SOUND enum value —
+/// the pair goes through the handlers' own `SFXStart` calls, not `Menu_PlaySound`).
+pub const MENU_SOUND_PAGE_OPEN: u8 = 0xff;
+pub const MENU_SOUND_SELECT: u8 = 0;
+pub const MENU_SOUND_SIDE_SQUARE: u8 = 1;
+pub const MENU_SOUND_SIDE_CIRCLE: u8 = 2;
+pub const MENU_SOUND_VAL_DEC: u8 = 3;
+pub const MENU_SOUND_VAL_INC: u8 = 4;
+pub const MENU_SOUND_FOCUS: u8 = 7;
+pub const MENU_SOUND_BACK: u8 = 8;
+
+/// One menu sound the game's front end starts. `sound` is the MENU_SOUND value the game passed to
+/// `Menu_PlaySound` [M 0x1f3278] (or [`MENU_SOUND_PAGE_OPEN`] for the handlers' `SFXStart` pair);
+/// `id` is the bank SFX id the sound engine receives. The host plays the drained events through
+/// nf-audio; tests assert the numbers only and never open a device.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct MenuSfx {
+    /// The MENU_SOUND enum value [M 0x1f3278].
+    pub sound: u8,
+    /// The bank SFX id [M the mapping above; D the SB_*.SFX tables].
+    pub id: u32,
+}
+
 /// objective-hints: one OBJECTIVES-tab row — the game's OBJ_STATE as the pause populate
 /// (C_GCPAUSE_Handler 0x204408:251-271) uses it: the row text (record+0x00), the ✕ hint box's
 /// label (record+0x08; 0xffffffff = none, the view substitutes 0x31d [M 0x205bd0-0x205bdc]) and
@@ -1181,6 +1245,18 @@ pub struct FrontEnd {
     /// credits-data: the page the credits were opened from, as a Page when it is a ported one
     /// (AV Options; the win page 0x40000053 is not ported and stays None) [M page_from_523].
     pub credits_from: Option<Page>,
+
+    // menu-sfx (each new field on its own line [WORKLOG lesson 4]).
+    /// The sounds this frame's input/page changes started — the host drains (`drain_sfx`) and
+    /// plays them through nf-audio; the FrontEnd never touches the audio stack itself (tests
+    /// stay silent). docs/systems/menu-sfx.md §3.
+    pub sfx_out: Vec<MenuSfx>,
+    /// `enabled_sound_flags` 0x30d184 — gates MENU_SOUND 0/1/2/8 [M 0x1f3278's case gates]; the
+    /// boot value 0x0b leaves sound 2 (○) disabled [L ee_start @0x30d184 = 0x0b].
+    pub enabled_sound_flags: u8,
+    /// The handlers' `menu_movie` static: set once the page-open pair has played, cleared by the
+    /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
+    pub menu_movie: bool,
 }
 
 impl FrontEnd {
@@ -1193,7 +1269,7 @@ impl FrontEnd {
         // post-unlock session and read 1 everywhere].
         unlocked[0] = true;
         unlocked[1] = true;
-        FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0,
+        let mut fe = FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0,
             backdrop_live: false,
             // fix-pause-menu: the pause page's own state (each on its line [WORKLOG lesson 4]).
             confirming_restart: false,
@@ -1264,7 +1340,80 @@ impl FrontEnd {
             // credits-data (each new field on its own line [WORKLOG lesson 4]): the credits roll's
             // state (crate::credits::CreditsRoll = the handler's own statics) and the opener.
             credits: crate::credits::CreditsRoll::new(crate::credits::PAGE_CN_AV, 100, false),
-            credits_from: None }
+            credits_from: None,
+
+            // menu-sfx (each new field on its own line [WORKLOG lesson 4]).
+            /// The sounds this frame's input/page changes started — the host drains and plays them
+            /// through nf-audio (never from inside the FrontEnd: tests stay silent).
+            sfx_out: Vec::new(),
+            /// `enabled_sound_flags` 0x30d184 — the boot value 0x0b gates MENU_SOUND 0/1/2/8
+            /// [L ee_start 0x30d184 = 0x0b; M 0x1f3278's gates].
+            enabled_sound_flags: 0x0b,
+            /// The handlers' `menu_movie` static: set once the open pair has played, reset by the
+            /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
+            menu_movie: false };
+        // The boot opens P_START: the pair plays with `menu_movie` clear [M P_START 0x20a408:12-22;
+        // the game's boot path P_INTRO → P_START replays it the same way — the intro movie end
+        // clears the static [M 0x209e88:44,58]].
+        fe.open_pair_sfx();
+        fe
+    }
+
+    /// The page-open sound pair [M the twelve handlers' msg-0x4c case — SFXRemove(0, 0x1d7/0x470)
+    /// then SFXStart(0x1d7), SFXStart(0x470)], gated by `menu_movie`. The pair is emitted as two
+    /// events; which one actually sounds depends on which front-end bank the game loaded
+    /// ([D SB_0 vs SB_1], the alternation [M Sound_Ready 0x1dceb8:91-96] — the port's front-end
+    /// bank state is the host's, so both events go out and the driver's lookup decides).
+    fn open_pair_sfx(&mut self) {
+        if self.menu_movie { return; }
+        self.sfx_out.push(MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_MOVE });
+        self.sfx_out.push(MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_SELECT });
+        self.menu_movie = true;
+    }
+
+    /// Every front-end page change funnels through here so the open pair rides the transitions
+    /// into the pair-playing pages (Start/Main/MissionSelect/Results/Credits/MpDebriefing — the
+    /// port's stand-ins for the game's twelve handlers [M the SFXStart(0x1d7) caller list]).
+    fn enter_page(&mut self, p: Page) {
+        self.page = p;
+        if matches!(p, Page::Start | Page::Main | Page::MissionSelect | Page::Results
+                    | Page::Credits | Page::MpDebriefing) {
+            self.open_pair_sfx();
+        }
+    }
+
+    /// `Menu_PlaySound` [M 0x1f3278]: the gated sounds (0/1/2/8) drop when their
+    /// `enabled_sound_flags` bit is clear; 3-7 play ungated; 9 (the switch default) starts nothing.
+    fn sfx(&mut self, sound: u8, id: u32) {
+        let bit = match sound { 0 => 1, 1 => 2, 2 => 4, 8 => 8, _ => 0 };
+        if bit != 0 && self.enabled_sound_flags & bit == 0 { return; }
+        self.sfx_out.push(MenuSfx { sound, id });
+    }
+
+    /// The cursor landed on a different control of the same page: MENU_SOUND 7 [M Page_Update
+    /// 0x21edc8:38-53]. Returns true so the move arms stay one-liners.
+    fn focus_moved(&mut self) -> bool {
+        self.sfx(MENU_SOUND_FOCUS, SFX_MENU_TICK);
+        true
+    }
+
+    /// Whether the cursor sits on a control the widget layer would blip for ✕/○: the rowed pages'
+    /// row, the letter grids' cell. The Screen Adjust bars carry no select [L page 0x40000047's
+    /// controls — two slider bars, the picture and the hint; S the no-blip reading].
+    fn sfx_selectable(&self) -> bool {
+        match self.page {
+            Page::CnName => true,
+            Page::ScreenAdjust => false,
+            _ => self.cursor < self.rows(),
+        }
+    }
+
+    /// The host's drain: everything the front end started since the last drain, in play order.
+    /// The host plays each `id` through nf-audio's driver 2-D start; the events carry the game's
+    /// own ids so the bank lookup decides audibility, exactly as the game's `SFXStart` /
+    /// `Sound_Play` do [M 0x115a68, 0x1f3278].
+    pub fn drain_sfx(&mut self) -> std::vec::Drain<'_, MenuSfx> {
+        self.sfx_out.drain(..)
     }
 
     /// credits-data: opens the credits page 0x40000030 — the AV Options Credits row's page change
@@ -1276,7 +1425,7 @@ impl FrontEnd {
         if self.page == Page::Credits { return false; }
         self.credits_from = Page::from_id(from_page);
         self.credits = crate::credits::CreditsRoll::new(from_page, music_vol, bonus_flag);
-        self.page = Page::Credits;
+        self.enter_page(Page::Credits);
         self.cursor = 0;
         true
     }
@@ -1534,6 +1683,14 @@ impl FrontEnd {
             _ => return,
         };
         self.opts.insert(row.ctrl, nv);
+        if nv != v {
+            // menu-sfx: the spinner's ◀/▶ step, first press — MENU_SOUND 3 (0x1d8) down-count,
+            // 4 (0x1d9) up-count; no sound when the value didn't move [M Scroll_Update
+            // 0x221b20:186-208 — the min/max guards skip the play; the game's wrap replays the
+            // same first-step ids]. The held-repeat ids (5/6) are the host key-repeat's concern.
+            self.sfx(if dir < 0 { MENU_SOUND_VAL_DEC } else { MENU_SOUND_VAL_INC },
+                     if dir < 0 { SFX_MENU_VAL_DEC } else { SFX_MENU_VAL_INC });
+        }
     }
 
     /// The wheel's visible slots: the game's list pages show five rows (y = 123/152/182/211/241 [M
@@ -1555,6 +1712,7 @@ impl FrontEnd {
         // after the second intro movie) [M 0x209e88: the page change follows the movies].
         if self.intro_playing && self.flow.get_state() != ST_MOVIE {
             self.intro_playing = false;
+            self.menu_movie = false; // the intro movie end clears menu_movie [M P_INTRO 0x209e88:44,58]
             self.intro_index = 0;
         }
         // credits-data: the credits page's 0x50 tick; the delayed 0x44/0x5f exit routes the page
@@ -1563,7 +1721,7 @@ impl FrontEnd {
         if self.page == Page::Credits {
             if let Some(exit) = self.credits.tick() {
                 match exit {
-                    crate::credits::CreditsExit::ToMain => { self.page = Page::Main; self.cursor = 0; }
+                    crate::credits::CreditsExit::ToMain => { self.enter_page(Page::Main); self.cursor = 0; }
                     crate::credits::CreditsExit::PopBack(from) => {
                         self.page = Page::from_id(from).unwrap_or(Page::Main);
                         self.cursor = 0;
@@ -1585,7 +1743,7 @@ impl FrontEnd {
     /// which the host applies through `Sound::set_paused` when this page comes up).
     pub fn open_pause(&mut self) -> bool {
         if self.page != Page::Pause && self.flow.current_level != FRONTEND_LEVEL && self.flow.current_level != 0 {
-            self.page = Page::Pause;
+            self.enter_page(Page::Pause);
             self.cursor = 0;
             self.pause_tab = 0;
             self.confirming_restart = false;
@@ -1621,7 +1779,7 @@ impl FrontEnd {
         // The game's order [M 0x182c60 case 4]: `ResetMap_LevelToLoad(LevelToEndTo, 0, 0)` pushes the load
         // first, THEN `GameFlow_PushState(60.0, 7, …)` puts the fade on top, so the fade plays before the load.
         self.flow.push_state(ST_FADE_HOLD);
-        self.page = Page::Results;
+        self.enter_page(Page::Results);
         self.cursor = 0;
     }
 
@@ -1762,7 +1920,7 @@ impl FrontEnd {
         }
         self.active_profile = Some(name);
         self.profile = Some(profile);
-        self.page = Page::Difficulty;
+        self.enter_page(Page::Difficulty);
         self.cursor = 1; // Agent [M the wheel starts centred on the middle row]
         true
     }
@@ -1879,7 +2037,7 @@ impl FrontEnd {
     /// entry (DAT_0030d2d8 [L] :36); the ✓ cell holds the focus [M :47-48]; the first press clears
     /// (del_when_keypressed [M 0x213a98:18-27]).
     pub fn cn_open(&mut self, from: u32) {
-        self.page = Page::CnName;
+        self.enter_page(Page::CnName);
         // The mode flag: PROFILE-name entry (from Select Codename / Edit Codename) runs the
         // validator/create flow; the wheel's entry (0x4000001d) is the cheat/secret grid [M
         // P_CNNAME 0x213790:33 cheat_mode = param_6 == 0x4000001d].
@@ -1910,7 +2068,13 @@ impl FrontEnd {
         let Some((r0, c0)) = Self::cn_find(self.cn_cell) else { return };
         let r = (r0 as i32 + dy).clamp(0, Self::CN_GRID.len() as i32 - 1) as usize;
         let c = (c0 as i32 + dx).clamp(0, Self::CN_GRID[r].len() as i32 - 1) as usize;
-        self.cn_cell = Self::CN_GRID[r][c];
+        let next = Self::CN_GRID[r][c];
+        if next != self.cn_cell {
+            // The focus moved between the grid's cells: MENU_SOUND 7 [M Page_Update 0x21edc8:38-53;
+            // the game's clamped edge moves keep the focus, and Page_Update only sounds on a change].
+            self.cn_cell = next;
+            self.focus_moved();
+        }
     }
 
     /// Types one character through the C_KEYBOARD append path [M 0x213a98:75-85 — the cell's
@@ -1988,7 +2152,7 @@ impl FrontEnd {
                         // on the wheel].
                         self.cn_name = name;
                         self.cn_exit = Some(PAGE_CN_MENU);
-                        self.page = Page::CnMenu;
+                        self.enter_page(Page::CnMenu);
                         self.cursor = 1;
                         true
                     }
@@ -2045,6 +2209,7 @@ impl FrontEnd {
             if a == Action::Confirm {
                 self.flow.pop_state();
                 self.intro_playing = false;
+            self.menu_movie = false; // the intro movie end clears menu_movie [M P_INTRO 0x209e88:44,58]
                 self.intro_index = 0;
                 return true;
             }
@@ -2059,10 +2224,24 @@ impl FrontEnd {
             (Action::Right, false) => Action::Confirm,
             (a, _) => a,
         };
+        // menu-sfx: the widget layer's select/back sounds fire with the input itself, before the
+        // page handler decides what the input means [M Button_Update 0x1ef948:104-127 and the other
+        // widget Updates play on the raw action edge; the △ buzz rides MenuManager_Update
+        // 0x21c3d8:78-105]. Confirm = MENU_SOUND 0 (&1), Back = MENU_SOUND 8 (&8, the manager's △
+        // path), Side = MENU_SOUND 2 (&4 — clear in the boot flags 0x0b [L 0x30d184], so ○ is
+        // silent on the disc). Dead rows blip in the game too — the widget doesn't know the page
+        // handler ignores the message — so the port emits on any cursor-able control [S the dead-
+        // row reading; the ScreenAdjust bars select nothing]. The host drains `sfx_out`.
+        match a {
+            Action::Confirm if self.sfx_selectable() => self.sfx(MENU_SOUND_SELECT, SFX_MENU_TICK),
+            Action::Back => self.sfx(MENU_SOUND_BACK, SFX_MENU_VAL_INC),
+            Action::Side if self.sfx_selectable() => self.sfx(MENU_SOUND_SIDE_CIRCLE, SFX_MENU_TICK),
+            _ => {}
+        }
         match self.page {
             Page::CnSelect => match a {
-                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return self.focus_moved(); }
                 // The ~X Delete on a saved codename asks first [M C_SBCNSELECT 0x212f58 case 0x5e
                 // — sel > 1 → box mode 3 psiDeleteData 0x1f7de8:38-57 under the card-flow
                 // confirm; P_CNSELECT 0x212ad0 case 0x6e re-enumerates after].
@@ -2092,16 +2271,16 @@ impl FrontEnd {
                 Action::Confirm if self.cursor >= 1 => {
                     self.cn_name = if self.cursor == 1 { "Default".into() } else { self.profiles.get(self.cursor - 2).cloned().unwrap_or_default() };
                     if self.cursor >= 2 { self.load_profile_data(self.cursor); }
-                    self.page = Page::CnMenu;
+                    self.enter_page(Page::CnMenu);
                     self.cursor = 1; // the wheel opens on Controller Setup [L PCSX2 m30]
                     return true;
                 }
-                Action::Back => { self.page = Page::Main; self.cursor = 2; return true; }
+                Action::Back => { self.enter_page(Page::Main); self.cursor = 2; return true; }
                 _ => return false,
             },
             Page::CnMenu => match a {
-                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return self.focus_moved(); }
                 // [M C_SBCNOPTIONS_Handler 0x213528:32-60: row 0 → page 0x40000020 (Secret
                 // Unlocks / the codename entry); rows 3/4/5 → pages 0x4000002d/2e/31; the
                 // LAST row (6) is Save Codename: a default re-maps and leaves [M case 6 —
@@ -2111,21 +2290,21 @@ impl FrontEnd {
                 Action::Confirm => {
                     match self.cursor {
                         0 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.cn_open(PAGE_CN_MENU); self.cursor = 0; return true; }
-                        3 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.page = Page::CnAdvanced; self.cursor = 0; return true; }
-                        4 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.page = Page::CnMp; self.cursor = 0; return true; }
-                        5 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.page = Page::CnAv; self.cursor = 0; return true; }
+                        3 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.enter_page(Page::CnAdvanced); self.cursor = 0; return true; }
+                        4 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.enter_page(Page::CnMp); self.cursor = 0; return true; }
+                        5 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.enter_page(Page::CnAv); self.cursor = 0; return true; }
                         6 => {
                             if self.profiles.iter().any(|p| *p == self.cn_name) {
                                 self.save_profile();
                             }
-                            self.page = Page::CnSelect;
+                            self.enter_page(Page::CnSelect);
                             self.cursor = 1;
                             return true;
                         }
                         _ => return false,
                     }
                 }
-                Action::Back => { self.page = Page::CnSelect; self.cursor = 1; return true; }
+                Action::Back => { self.enter_page(Page::CnSelect); self.cursor = 1; return true; }
                 _ => return false,
             },
             Page::CnName => {
@@ -2145,7 +2324,7 @@ impl FrontEnd {
                         }
                         Action::Back if self.cn_box.is_some() => { self.cn_dismiss_box(); return true; }
                         Action::Back => {
-                            self.page = Page::from_id(self.cn_from).unwrap_or(Page::Main);
+                            self.enter_page(Page::from_id(self.cn_from).unwrap_or(Page::Main));
                             self.cursor = 0;
                             return true;
                         }
@@ -2157,12 +2336,12 @@ impl FrontEnd {
                 // `nf_game::secret_codes::submit` (Menu_SpecialCodenameCheck 0x200238's port);
                 // a match opens the 0x100029d box, a miss is silent [M :67-73].
                 match a {
-                    Action::Left if self.secret.cursor > 0 => { self.secret.cursor -= 1; return true; }
-                    Action::Right if self.secret.cursor + 1 < SECRET_GRID.len() => { self.secret.cursor += 1; return true; }
-                    Action::Up if self.secret.cursor >= 8 => { self.secret.cursor -= 8; return true; }
-                    Action::Down if self.secret.cursor + 8 < SECRET_GRID.len() => { self.secret.cursor += 8; return true; }
+                    Action::Left if self.secret.cursor > 0 => { self.secret.cursor -= 1; return self.focus_moved(); }
+                    Action::Right if self.secret.cursor + 1 < SECRET_GRID.len() => { self.secret.cursor += 1; return self.focus_moved(); }
+                    Action::Up if self.secret.cursor >= 8 => { self.secret.cursor -= 8; return self.focus_moved(); }
+                    Action::Down if self.secret.cursor + 8 < SECRET_GRID.len() => { self.secret.cursor += 8; return self.focus_moved(); }
                     Action::Confirm => { self.secret_press(); return true; }
-                    Action::Back => { self.secret = SecretEntry::default(); self.page = Page::CnMenu; self.cursor = 1; return true; }
+                    Action::Back => { self.secret = SecretEntry::default(); self.enter_page(Page::CnMenu); self.cursor = 1; return true; }
                     _ => return false,
                 }
             }
@@ -2170,8 +2349,8 @@ impl FrontEnd {
                 let rows = self.opt_rows();
                 let back_row = match self.page { Page::CnAdvanced => 3, Page::CnMp => 4, _ => 5 };
                 match a {
-                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                    Action::Down if self.cursor + 1 < rows.len() => { self.cursor += 1; return true; }
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                    Action::Down if self.cursor + 1 < rows.len() => { self.cursor += 1; return self.focus_moved(); }
                     Action::Left => { let r = &rows[self.cursor]; self.opt_step(r, -1); return true; }
                     Action::Right => { let r = &rows[self.cursor]; self.opt_step(r, 1); return true; }
                     // The action rows [M P_CNAVOPTIONS 0x214818 msg 0x4b]: Screen Adjust (0x10000137)
@@ -2182,7 +2361,7 @@ impl FrontEnd {
                         match rows[self.cursor].ctrl {
                             0x1000_0137 => {
                                 self.screen_adjust_open();          // the subscreen's own 0x4c snapshot [M 0x217a58:8-10]
-                                self.page = Page::ScreenAdjust;
+                                self.enter_page(Page::ScreenAdjust);
                                 self.cursor = 0;                    // the vertical bar first [L page data's d1 0 arm]
                                 return true;
                             }
@@ -2214,7 +2393,7 @@ impl FrontEnd {
                     Action::Confirm => {
                         self.opts_saved = None;
                         if self.page == Page::CnAv { self.av_screen_snapshot(); }
-                        self.page = Page::CnMenu; self.cursor = back_row; return true;
+                        self.enter_page(Page::CnMenu); self.cursor = back_row; return true;
                     }
                     Action::Back => {
                         if let Some(o) = self.opts_saved.take() { self.opts = o; }
@@ -2222,7 +2401,7 @@ impl FrontEnd {
                         // when no subscreen was opened; a subscreen trip re-snapshots on re-enter,
                         // so the stored baseline is always the right one [M 0x214818:79-85].
                         if self.page == Page::CnAv { self.av_screen_restore(); }
-                        self.page = Page::CnMenu; self.cursor = back_row; return true;
+                        self.enter_page(Page::CnMenu); self.cursor = back_row; return true;
                     }
                     _ => return false,
                 }
@@ -2234,8 +2413,8 @@ impl FrontEnd {
             // snapshot (the msg 0x6b path, the page hint's "Cancel" [L 0x67b]).
             Page::ScreenAdjust => {
                 match a {
-                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                    Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                    Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return self.focus_moved(); }
                     Action::Left => {
                         if self.cursor == 0 { self.screen_adjust(0, -1); } else { self.screen_adjust(-1, 0); }
                         return true;
@@ -2246,14 +2425,14 @@ impl FrontEnd {
                     }
                     Action::Confirm => {
                         self.av_screen_snapshot();   // the AV page's re-enter re-snapshots [M 0x214818:135]
-                        self.page = Page::CnAv;
+                        self.enter_page(Page::CnAv);
                         self.cursor = 6;             // the Screen Adjust row [L page data y=256 is the 7th row]
                         return true;
                     }
                     Action::Back => {
                         self.screen_adjust_cancel();
                         self.av_screen_snapshot();
-                        self.page = Page::CnAv;
+                        self.enter_page(Page::CnAv);
                         self.cursor = 6;
                         return true;
                     }
@@ -2269,25 +2448,25 @@ impl FrontEnd {
                     self.flow.play_movie(INTRO_TICKS);
                     self.intro_playing = true;
                     self.intro_index = 0;
-                    self.page = Page::Main;
+                    self.enter_page(Page::Main);
                     self.cursor = 0;
                     return true;
                 }
             }
             Page::Main => match (a, self.cursor) {
-                (Action::Up, _) => { self.cursor = (self.cursor + self.rows() - 1) % self.rows(); return true; }
-                (Action::Down, _) => { self.cursor = (self.cursor + 1) % self.rows(); return true; }
+                (Action::Up, _) => { self.cursor = (self.cursor + self.rows() - 1) % self.rows(); return self.focus_moved(); }
+                (Action::Down, _) => { self.cursor = (self.cursor + 1) % self.rows(); return self.focus_moved(); }
                 // NightFire → Select Codename [M C_GONIGHTFIRE 0x2169b8:36-37 opens the next front-end
                 // page; the driver's observed order NightFire → Select Codename → Select Difficulty →
                 // Single Player].
-                (Action::Confirm, 0) => { self.page = Page::Codename; self.cursor = 0; return true; }
+                (Action::Confirm, 0) => { self.enter_page(Page::Codename); self.cursor = 0; return true; }
                 // Multiplayer → the Join page [M C_GOMULTIPLAYER 0x216a78 sends the delayed
                 // msg 0x44 → 0x40000019 after 0x13 frames; the port flips at once like the other
                 // page changes].
-                (Action::Confirm, 1) => { self.page = Page::MpJoin; self.cursor = 0; return true; }
+                (Action::Confirm, 1) => { self.enter_page(Page::MpJoin); self.cursor = 0; return true; }
                 // Codenames → Edit Codename, on the Default row [M C_GOCODENAMES 0x216b38:37 → page 0x4000001b; L PCSX2 m29].
-                (Action::Confirm, 2) => { self.page = Page::CnSelect; self.cursor = 1; return true; }
-                (Action::Back, _) => { self.page = Page::Start; self.cursor = 0; return true; }
+                (Action::Confirm, 2) => { self.enter_page(Page::CnSelect); self.cursor = 1; return true; }
+                (Action::Back, _) => { self.enter_page(Page::Start); self.cursor = 0; return true; }
                 _ => {}
             },
             Page::Codename => match a {
@@ -2316,7 +2495,7 @@ impl FrontEnd {
                             self.confirming_default_profile = true;
                         } else {
                             self.confirming_default_profile = false;
-                            self.page = Page::Difficulty;
+                            self.enter_page(Page::Difficulty);
                             self.cursor = 1; // Agent [M the game's default difficulty row is the middle one — the wheel starts centred]
                         }
                         return true;
@@ -2325,7 +2504,7 @@ impl FrontEnd {
                 }
                 Action::Back => {
                     if self.confirming_default_profile { self.confirming_default_profile = false; return true; }
-                    self.page = Page::Main; self.cursor = 0; return true;
+                    self.enter_page(Page::Main); self.cursor = 0; return true;
                 }
                 _ => {}
             },
@@ -2335,24 +2514,24 @@ impl FrontEnd {
                 // front-end menu-def carries NO msg 0x69 on any control [L the tag-stream dump,
                 // 891 messages, zero 0x69]; C_SBNFDFCTY 0x216ca8:25-28 sets this wheel's range
                 // [0,2]. The port's old % wrap bounced Easy↔Little Leak on Up.
-                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return self.focus_moved(); }
                 Action::Up | Action::Down => return false,
                 Action::Confirm => {
                     self.difficulty = self.cursor.min(DIFFICULTIES.len() - 1);
                     // → the Single Player list [M C_SBNFDFCTY 0x216ca8:10-17 Menu_ChangePageCloseIris
                     // 0x4000001c — the driver's observed order Select Difficulty → Single Player].
-                    self.page = Page::MissionSelect;
+                    self.enter_page(Page::MissionSelect);
                     self.cursor = self.mission.min(self.first_unlocked());
                     return true;
                 }
-                Action::Back => { self.page = Page::Codename; self.cursor = 0; return true; }
+                Action::Back => { self.enter_page(Page::Codename); self.cursor = 0; return true; }
                 _ => {}
             },
             Page::MissionSelect => match a {
                 Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
-                Action::Up => { self.cursor = self.step(-1); return true; }
-                Action::Down => { self.cursor = self.step(1); return true; }
+                Action::Up => { self.cursor = self.step(-1); return self.focus_moved(); }
+                Action::Down => { self.cursor = self.step(1); return self.focus_moved(); }
                 Action::Confirm => {
                     // Locked rows can't be chosen [M C_SBNFMAP 0x20b8d8:18-20 `if
                     // (!menu_unlock_everything && !sp_level[i*0x18+0x10]) return`]. Starting:
@@ -2369,8 +2548,8 @@ impl FrontEnd {
                 // 0x1000010c, which rejects out-of-range indices and redraws (Scroll_SendMessage
                 // 0x222810:98-106); without the reset the port entered with the missions cursor
                 // and the wheel showed Weapons on screen — the playtest's "the port adds Weapons"].
-                Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }   // □ Dossier
-                Action::Back => { self.page = Page::Difficulty; self.cursor = self.difficulty; return true; }
+                Action::Side => { self.enter_page(Page::Dossier); self.cursor = 0; return true; }   // □ Dossier
+                Action::Back => { self.enter_page(Page::Difficulty); self.cursor = self.difficulty; return true; }
             },
             Page::Dossier => match a {
                 // The wheel CLAMPS, it never wraps [M Scroll_Update 0x2221b20:186-194 (Down at the
@@ -2378,17 +2557,17 @@ impl FrontEnd {
                 // and that flag is set only by msg 0x69 (Scroll_SendMessage 0x222810:136-139), which
                 // nothing sends to 0x1000010c; msg 0x2e rejects out-of-range indices]. The port's
                 // old % wrap teleported Records → Weapons on Up.
-                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return true; }
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return self.focus_moved(); }
                 Action::Up | Action::Down => return false,
                 Action::Confirm => {
                     // The wheel's row opens its page [M C_SBDOSSIER 0x216eb0:12-31 — index 0 →
                     // 0x4000003a Records, 1 → 0x4000003b Rewards, 2 → 0x4000003c Gadgets,
                     // 3 → 0x4000003d Weapons; the port draws Records, the rest are reported].
-                    if self.cursor == 0 { self.page = Page::Records; self.cursor = self.mission.min(CAMPAIGN.len() - 1); return true; }
+                    if self.cursor == 0 { self.enter_page(Page::Records); self.cursor = self.mission.min(CAMPAIGN.len() - 1); return true; }
                     return false;
                 }
-                Action::Back | Action::Side => { self.page = Page::MissionSelect; return true; }
+                Action::Back | Action::Side => { self.enter_page(Page::MissionSelect); return true; }
                 _ => {}
             },
             Page::Records => match a {
@@ -2396,14 +2575,14 @@ impl FrontEnd {
                 // The mission list walks the campaign [M the list control 0x10000174 is filled from
                 // sp_level by Menu_AddItemsToControl (P_DSRECORDS 0x217248:11-13); a row's selection
                 // drives C_RBDSRECORDS 0x20bf00's binds].
-                Action::Up => { self.cursor = (self.cursor + CAMPAIGN.len() - 1) % CAMPAIGN.len(); return true; }
-                Action::Down => { self.cursor = (self.cursor + 1) % CAMPAIGN.len(); return true; }
-                Action::Back | Action::Confirm | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
+                Action::Up => { self.cursor = (self.cursor + CAMPAIGN.len() - 1) % CAMPAIGN.len(); return self.focus_moved(); }
+                Action::Down => { self.cursor = (self.cursor + 1) % CAMPAIGN.len(); return self.focus_moved(); }
+                Action::Back | Action::Confirm | Action::Side => { self.enter_page(Page::Dossier); self.cursor = 0; return true; }
             },
             Page::Options => match a {
                 Action::Up => { self.cursor = (self.cursor + 2) % 3; return true; }
                 Action::Down => { self.cursor = (self.cursor + 1) % 3; return true; }
-                Action::Back | Action::Confirm if self.cursor == 2 => { self.page = Page::Main; self.cursor = 2; return true; }
+                Action::Back | Action::Confirm if self.cursor == 2 => { self.enter_page(Page::Main); self.cursor = 2; return true; }
                 _ => {}
             },
             Page::Pause => {
@@ -2443,7 +2622,7 @@ impl FrontEnd {
                             self.flow.page = PAGE_RESULTS_QUIT_TARGET;
                             self.requested_level = Some(FRONTEND_LEVEL);
                             self.flow.reset_map_level_to_load(FRONTEND_LEVEL, false, true);
-                            self.page = Page::Main;
+                            self.enter_page(Page::Main);
                             self.cursor = 0;
                             return true;
                         }
@@ -2502,8 +2681,8 @@ impl FrontEnd {
                         }
                         return true;
                     }
-                    Action::Up => { self.cursor = (self.cursor + 2) % 3; return true; }
-                    Action::Down => { self.cursor = (self.cursor + 1) % 3; return true; }
+                    Action::Up => { self.cursor = (self.cursor + 2) % 3; return self.focus_moved(); }
+                    Action::Down => { self.cursor = (self.cursor + 1) % 3; return self.focus_moved(); }
                     Action::Back => { self.closed = true; return true; }   // resume [M the d1=6 case-0 arm → MenuManager_Delete]
                     Action::Confirm => {
                         match self.cursor {
@@ -2537,7 +2716,7 @@ impl FrontEnd {
                     // P_NFMAP 0x20b608 case 0x4c's cursor rule: scan sp_level+0x10 from row 11 down
                     // — the list opens on the HIGHEST unlocked row [M :57-64].
                     self.cursor = (0..CAMPAIGN.len()).rev().find(|&i| self.unlocked_row(i)).unwrap_or(0);
-                    self.page = Page::MissionSelect;
+                    self.enter_page(Page::MissionSelect);
                     self.flow.page = PAGE_MISSION_SELECT;
                     return true;
                 }
@@ -2545,7 +2724,7 @@ impl FrontEnd {
             Page::Results => match a {
                 Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
                 Action::Side => {}
-                Action::Up | Action::Down => { self.cursor = (self.cursor + 1) % 2; return true; }
+                Action::Up | Action::Down => { self.cursor = (self.cursor + 1) % 2; return self.focus_moved(); }
                 Action::Confirm => {
                     // The list's item VALUES [L page 0x40000042: REPLAY = 0, QUIT = 2; M 0x216618 msg 0x35].
                     match [0usize, 2][self.cursor.min(1)] {
@@ -2558,7 +2737,7 @@ impl FrontEnd {
                             let level = self.flow.current_level;
                             self.requested_level = Some(level);
                             self.flow.reset_map_level_to_load(level, true, true);
-                            self.page = Page::Main;
+                            self.enter_page(Page::Main);
                             return true;
                         }
                         1 => {
@@ -2567,21 +2746,21 @@ impl FrontEnd {
                             let level = CAMPAIGN[self.mission].3;
                             self.requested_level = Some(level);
                             self.flow.reset_map_level_to_load(level, false, true);
-                            self.page = Page::Main;
+                            self.enter_page(Page::Main);
                             return true;
                         }
                         2 => {
                             self.flow.page = PAGE_RESULTS_QUIT_TARGET;
                             self.requested_level = Some(FRONTEND_LEVEL);
                             self.flow.reset_map_level_to_load(FRONTEND_LEVEL, false, true);
-                            self.page = Page::Main;
+                            self.enter_page(Page::Main);
                             self.cursor = 0;
                             return true;
                         }
                         _ => {}
                     }
                 }
-                Action::Back => { self.cursor = 1; return true; }
+                Action::Back => { self.cursor = 1; return self.focus_moved(); }
             },
             // ── mp-menu-flow: the multiplayer front end ──
             // Join Game [M P_MPJOIN 0x20ca00 + C_RBMPSTART 0x20d048 + C_RBMPCNAME 0x20d448].
@@ -2594,8 +2773,8 @@ impl FrontEnd {
                 let slot = self.cursor.min(3);
                 let can_join = slot == 0;   // keyboard = agent 1 [S — the task's scope; see mp_join doc]
                 match a {
-                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                    Action::Down if self.cursor + 1 < 4 => { self.cursor += 1; return true; }
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                    Action::Down if self.cursor + 1 < 4 => { self.cursor += 1; return self.focus_moved(); }
                     Action::Left if can_join && self.mp_join[0].state == 1 => {
                         // ◀ ▶ move the codename list [M C_RBMPCNAME's list control 0x1000022b; the
                         // rows are the two defaults ("Player N" via Menu_MapDefaultCodename) then
@@ -2626,7 +2805,7 @@ impl FrontEnd {
                             // ✕ once joined: "Player Ready" [M C_RBMPSTART's 0x4b state-5 arm sets
                             // mpjoin+1 = 1 and fades; P_MPJOIN's msg-0x50 arm checks
                             // Menu_MPAreWeReady → page 0x4000001a].
-                            5 if !self.mp_join[0].ready => { self.mp_join[0].ready = true; self.page = Page::MpScenario; self.cursor = 0; return true; }
+                            5 if !self.mp_join[0].ready => { self.mp_join[0].ready = true; self.enter_page(Page::MpScenario); self.cursor = 0; return true; }
                             _ => {}
                         }
                     }
@@ -2644,7 +2823,7 @@ impl FrontEnd {
                 match a {
                     Action::Up if self.mp_scenario_row > 0 => { self.mp_scenario_row -= 1; return true; }
                     Action::Down if self.mp_scenario_row + 1 < MP_SCENARIO_ROWS.len() => { self.mp_scenario_row += 1; return true; }
-                    Action::Back => { self.page = Page::Main; self.cursor = 1; return true; }  // [M P_MPSCENARIO:29 → 0x40000002]
+                    Action::Back => { self.enter_page(Page::Main); self.cursor = 1; return true; }  // [M P_MPSCENARIO:29 → 0x40000002]
                     Action::Confirm => {
                         let row = self.mp_scenario_row.min(MP_SCENARIO_ROWS.len() - 1);
                         // Locked rows refuse [M C_SBMPSCEN:40-42 — the +0x10 gate, unless
@@ -2656,7 +2835,7 @@ impl FrontEnd {
                         // Confirm stores the scenario word [M disasm 0x20c9c8 `sw 0x4944($t0)`]
                         // and opens the map page [M 0x20c9a8-0x20c9b4 → 0x40000013].
                         self.mp_scenario = MP_SCENARIO_ROWS[row].3;
-                        self.page = Page::MpMap;
+                        self.enter_page(Page::MpMap);
                         self.mp_map_row = self.mp_map_row.min(MP_MAP_ROWS.len() - 1);
                         return true;
                     }
@@ -2668,7 +2847,7 @@ impl FrontEnd {
                 match a {
                     Action::Up if self.mp_map_row > 0 => { self.mp_map_row -= 1; return true; }
                     Action::Down if self.mp_map_row + 1 < MP_MAP_ROWS.len() => { self.mp_map_row += 1; return true; }
-                    Action::Back => { self.page = Page::MpScenario; return true; }   // [M the wheel's back — C_SBMPSCEN's page again; the game's own back is msg 0x63]
+                    Action::Back => { self.enter_page(Page::MpScenario); return true; }   // [M the wheel's back — C_SBMPSCEN's page again; the game's own back is msg 0x63]
                     Action::Confirm => {
                         let row = self.mp_map_row.min(MP_MAP_ROWS.len() - 1);
                         // [M C_SBMPMAP:12-14's lock gate — a no-op on retail data (all +0x10 = 1).]
@@ -2676,7 +2855,7 @@ impl FrontEnd {
                         // [M disasm 0x217654/0x21765c] and opens the setup page [M
                         // 0x217638-0x217644 → 0x40000051].
                         self.mp_level = MP_MAP_ROWS[row].3;
-                        self.page = Page::MpSetup;
+                        self.enter_page(Page::MpSetup);
                         // P_MPSETUP picks the prompt from the scenario's team bit [M 0x20d7a8].
                         self.mp_setup_state = if self.mp_scenario & 0x2000_0000 != 0 { 2 } else { 3 };
                         self.mp_setup_sel = 0;
@@ -2707,12 +2886,12 @@ impl FrontEnd {
                         // 0x40000051 as its source [M 0x217678:12]).
                         self.mp_join[0].skin = self.mp_setup_sel as u32;
                         self.mp_setup_state = 4;
-                        self.page = Page::MpOptions;
+                        self.enter_page(Page::MpOptions);
                         self.cursor = 0;
                         self.mp_options_row = 0;
                         return true;
                     }
-                    Action::Back => { self.page = Page::MpMap; return true; }
+                    Action::Back => { self.enter_page(Page::MpMap); return true; }
                     _ => {}
                 }
             }
@@ -2721,7 +2900,7 @@ impl FrontEnd {
                 match a {
                     Action::Up if self.mp_options_row > 0 => { self.mp_options_row -= 1; return true; }
                     Action::Down if self.mp_options_row + 1 < MP_OPTIONS_ROWS.len() => { self.mp_options_row += 1; return true; }
-                    Action::Back => { self.page = Page::MpSetup; return true; }
+                    Action::Back => { self.enter_page(Page::MpSetup); return true; }
                     Action::Confirm => {
                         let row = self.mp_options_row.min(MP_OPTIONS_ROWS.len() - 1);
                         // AI Bots is locked on Ravine [M P_MPOPTIONS 0x217678:20-25].
@@ -2731,10 +2910,10 @@ impl FrontEnd {
                             // 0x20e818:50-130 — the team/FFA checks, then 0x40000049 or the
                             // error box].
                             0 => { return self.mp_start_checks(); }
-                            1 => { self.page = Page::MpBots; self.mp_bots_row = self.mp_bot_slot + 1; return true; }  // [M :116 → 0x40000027; the cursor = mp_stuff[0x37a]+1]
-                            2 => { self.page = Page::MpRules; return true; }    // [M :119 → 0x40000014]
-                            3 => { self.page = Page::MpPlayerMods; return true; }  // [M :122 → 0x40000017]
-                            _ => { self.page = Page::MpEnviroMods; return true; }  // [M :125 → 0x40000028]
+                            1 => { self.enter_page(Page::MpBots); self.mp_bots_row = self.mp_bot_slot + 1; return true; }  // [M :116 → 0x40000027; the cursor = mp_stuff[0x37a]+1]
+                            2 => { self.enter_page(Page::MpRules); return true; }    // [M :119 → 0x40000014]
+                            3 => { self.enter_page(Page::MpPlayerMods); return true; }  // [M :122 → 0x40000017]
+                            _ => { self.enter_page(Page::MpEnviroMods); return true; }  // [M :125 → 0x40000028]
                         }
                     }
                     _ => {}
@@ -2743,35 +2922,35 @@ impl FrontEnd {
             // Game Rules [M P_MPRULES 0x20f790: two list rows; Confirm reads both and closes].
             Page::MpRules => {
                 match a {
-                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                    Action::Down if self.cursor + 1 < 2 => { self.cursor += 1; return true; }
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                    Action::Down if self.cursor + 1 < 2 => { self.cursor += 1; return self.focus_moved(); }
                     Action::Left => { self.mp_rules_step(-1); return true; }
                     Action::Right => { self.mp_rules_step(1); return true; }
                     // Confirm AND Back close the page (the game's confirm reads both rows; the
                     // 0x5f close is the same manager pop either way [M :14 → Manager 0x5f]).
-                    Action::Confirm | Action::Back => { self.page = Page::MpOptions; self.cursor = 0; return true; }
+                    Action::Confirm | Action::Back => { self.enter_page(Page::MpOptions); self.cursor = 0; return true; }
                     _ => {}
                 }
             }
             // Player Mods [M P_MPPLAYERMODS 0x2104d0: five list rows, Confirm reads all five].
             Page::MpPlayerMods => {
                 match a {
-                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                    Action::Down if self.cursor + 1 < 5 => { self.cursor += 1; return true; }
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                    Action::Down if self.cursor + 1 < 5 => { self.cursor += 1; return self.focus_moved(); }
                     Action::Left => { self.mp_playermods_step(-1); return true; }
                     Action::Right => { self.mp_playermods_step(1); return true; }
-                    Action::Confirm | Action::Back => { self.page = Page::MpOptions; self.cursor = 0; return true; }
+                    Action::Confirm | Action::Back => { self.enter_page(Page::MpOptions); self.cursor = 0; return true; }
                     _ => {}
                 }
             }
             // Enviro-Mods [M P_MPENVIROMODS 0x210030: five list rows].
             Page::MpEnviroMods => {
                 match a {
-                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                    Action::Down if self.cursor + 1 < 5 => { self.cursor += 1; return true; }
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                    Action::Down if self.cursor + 1 < 5 => { self.cursor += 1; return self.focus_moved(); }
                     Action::Left => { self.mp_envmods_step(-1); return true; }
                     Action::Right => { self.mp_envmods_step(1); return true; }
-                    Action::Confirm | Action::Back => { self.page = Page::MpOptions; self.cursor = 0; return true; }
+                    Action::Confirm | Action::Back => { self.enter_page(Page::MpOptions); self.cursor = 0; return true; }
                     _ => {}
                 }
             }
@@ -2780,14 +2959,14 @@ impl FrontEnd {
                 match a {
                     Action::Up if self.mp_bots_row > 0 => { self.mp_bots_row -= 1; return true; }
                     Action::Down if self.mp_bots_row + 1 < MP_BOTS_ROWS.len() => { self.mp_bots_row += 1; return true; }
-                    Action::Back => { self.page = Page::MpOptions; self.cursor = 1; return true; }  // row 0 = Continue [M C_SBBOTS:15 → Manager 0x5f]
+                    Action::Back => { self.enter_page(Page::MpOptions); self.cursor = 1; return true; }  // row 0 = Continue [M C_SBBOTS:15 → Manager 0x5f]
                     Action::Confirm => {
                         // Row 0 closes [M C_SBBOTS:15]; rows 1-4 pick the slot [M :20 `mp_stuff[0x37a]
                         // = sel-1`] and open the bot choose wheel [M :23 → 0x4000003f].
-                        if self.mp_bots_row == 0 { self.page = Page::MpOptions; self.cursor = 1; return true; }
+                        if self.mp_bots_row == 0 { self.enter_page(Page::MpOptions); self.cursor = 1; return true; }
                         self.mp_bot_slot = self.mp_bots_row - 1;
                         self.mp_bot_char = self.mp_bots[self.mp_bot_slot].character as usize;
-                        self.page = Page::MpBotChoose;
+                        self.enter_page(Page::MpBotChoose);
                         return true;
                     }
                     _ => {}
@@ -2798,7 +2977,7 @@ impl FrontEnd {
                 match a {
                     Action::Up if self.mp_bot_char > 0 => { self.mp_bot_char -= 1; return true; }
                     Action::Down if self.mp_bot_char + 1 < MP_CHARACTERS.len() => { self.mp_bot_char += 1; return true; }
-                    Action::Back => { self.page = Page::MpBots; self.mp_bots_row = self.mp_bot_slot + 1; return true; }
+                    Action::Back => { self.enter_page(Page::MpBots); self.mp_bots_row = self.mp_bot_slot + 1; return true; }
                     Action::Confirm => {
                         let ch = self.mp_bot_char.min(MP_CHARACTERS.len() - 1);
                         // Locked characters refuse [M C_SBMPBTCHOOSE:18-20's unlock gate].
@@ -2813,7 +2992,7 @@ impl FrontEnd {
                         b.dirty = false;
                         let (skill, aim, hp, speed, r1, r2, trait_id) = MpBot::preset(ch);
                         (b.skill, b.aim, b.hit_points, b.speed, b.recovery1, b.recovery2, b.trait_id) = (skill, aim, hp, speed, r1, r2, trait_id);
-                        self.page = Page::MpBotSetup;
+                        self.enter_page(Page::MpBotSetup);
                         self.cursor = 0;
                         return true;
                     }
@@ -2824,15 +3003,15 @@ impl FrontEnd {
             // (>= 15) lock all seven stat rows [M :23-48] and Confirm still closes [M :138-169]].
             Page::MpBotSetup => {
                 match a {
-                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
-                    Action::Down if self.cursor + 1 < 8 => { self.cursor += 1; return true; }
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
+                    Action::Down if self.cursor + 1 < 8 => { self.cursor += 1; return self.focus_moved(); }
                     Action::Left => { self.mp_botsetup_step(-1); return true; }
                     Action::Right => { self.mp_botsetup_step(1); return true; }
                     // [M :138-169 — the values store back, +0x11 dirty = 1, Manager 0x5f twice =
                     // back to the Bots list.]
                     Action::Confirm | Action::Back => {
                         self.mp_bots[self.mp_bot_slot.min(3)].dirty = true;
-                        self.page = Page::MpBots;
+                        self.enter_page(Page::MpBots);
                         self.mp_bots_row = self.mp_bot_slot + 1;
                         self.cursor = 0;
                         return true;
@@ -2844,13 +3023,13 @@ impl FrontEnd {
             // starts the match].
             Page::MpConfirm => {
                 if a == Action::Confirm { return self.mp_confirm_start(); }
-                if a == Action::Back { self.page = Page::MpOptions; self.cursor = 0; return true; }
+                if a == Action::Back { self.enter_page(Page::MpOptions); self.cursor = 0; return true; }
             }
             // The debriefing [M P_MPDEBRIEFING 0x212198 + C_MPDBG 0x217860: Confirm restores the
             // MPSettings backup and returns to the scenario page; the rematch arm (msg 0x5d)
             // reloads the level — the port has no in-match host loop for it yet (reported)].
             Page::MpDebriefing => {
-                if a == Action::Confirm { self.page = Page::MpScenario; self.mp_scenario_row = 0; return true; }
+                if a == Action::Confirm { self.enter_page(Page::MpScenario); self.mp_scenario_row = 0; return true; }
             }
             // credits-data: the credits take no input — the handler has no input cases at all
             // (the roll cannot be skipped) [M P_CREDITS_Handler 0x2152b0's message cases].
@@ -3055,7 +3234,7 @@ impl FrontEnd {
         }
         // At least two players overall [M the 0x39e arm].
         if humans + bots < 2 { self.mp_error = 0x39e; return false; }
-        self.page = Page::MpConfirm;
+        self.enter_page(Page::MpConfirm);
         self.cursor = 0;
         true
     }
@@ -3100,7 +3279,7 @@ impl FrontEnd {
             (b.skill, b.aim, b.hit_points, b.speed, b.recovery1, b.recovery2, b.trait_id) = (skill, aim, hp, speed, r1, r2, trait_id);
         }
         for b in self.mp_bots.iter_mut().skip(3) { b.enabled = false; }
-        self.page = Page::MpConfirm;          // [M 0x20c978-0x20c984 → 0x40000049]
+        self.enter_page(Page::MpConfirm);          // [M 0x20c978-0x20c984 → 0x40000049]
         self.cursor = 0;
     }
 
