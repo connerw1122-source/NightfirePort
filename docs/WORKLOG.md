@@ -13378,3 +13378,22 @@ Started 2026-10-15 ~20:05 UTC. Task: decode the driving missions' car models fro
 `DRIVING/*.VIV` archives (format, LODs, textures, wheel attachment points), a `nf_formats`
 module + an `nf-extract` OBJ dump command, goldens (per-model vertex/triangle counts +
 buffer SHA-1s), format doc in docs/formats/. No renderer work.
+
+### drive-car-models — session result (2026-10-15, ~22:00 UTC)
+
+- Format decoded end-to-end and documented (docs/formats/car-model.md): car `.crp` article
+  window records, the `Skel` part table = the wheel/hub attachment points (resolved by name
+  via FUN_001c9980 0x1c9980 / FUN_001d2648 0x1d2648, tables EE 0x334070/0x334080/0x334090),
+  the ELFd||ELFr MIPS ET_REL module (`.data` = model, symbols name `__Model:::{as NNNN}::
+  Model[L]` variant×LOD descriptors, TAR texture refs, MatCar* materials), the batch table,
+  and the draw buffers as VIF streams (V4_32 (x,y,z,1.0) quads = vertices).
+- Port: `crates/nf-formats/src/carmodel.rs` + `nf-extract carmodels` (OBJ vertices-only,
+  local). Goldens: `golden/carmodel_golden.tsv` (5 plain MISC cars) + `carmodel_golden.rs`
+  (NF_DRIVING-gated, tamper sisters, wheel-names test).
+- Tests run: `cargo test --offline --release -j2 -p nf-formats -- --test-threads=1` with
+  NF_ISO + NF_DRIVING → 78 lib + 2 carmodel_golden + 11 driving/disc others passed; the only
+  3 failures are the allowed `disc_golden` trio on the slim ISO. The background fast runner
+  could not survive between tool calls in this sandbox (2 launches died); the foreground
+  per-crate command above is the substitute. Crates touched: nf-formats, nf-extract.
+- Left: triangle connectivity (EAGL GeoPrim consumer 0x262000–0x2a7000), DMA head words,
+  mission-car goldens, the main agent's render/parity pass.
