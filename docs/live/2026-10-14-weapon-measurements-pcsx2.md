@@ -145,3 +145,19 @@ Taken from the stairs guard (the SG5 is only on guards on 05/06), selected with 
 right side of the receiver, flying **up and to the LEFT, away from the camera**, gone off the top-left of the view
 within ~2 frames (~0.14 s). Walking forward does not bring them back across the screen or toward the camera, and they
 never get large. (The user on the port: "casings flying across my screen, like super large" — task 109l.)
+
+## Guard sighting -> first shot (07000006, god mode on, Bond never fires)
+
+Fresh 07000006 load; Bond walks forward from the truck start for 6 s (past the stairs into the courtyard) and stands;
+health/armour held by the measurement client (one PINE client). By game frame (60/s):
+
+- 32990: the stairs guard (drone 0x177b870 at (72.7, 37.6, 26.9)) alerts with Bond **2.8 units** away (walking
+  into him from behind).
+- 33087: the first enemy bullet, from (76.3, 35.5, 30.0) — **+97 frames (~1.6 s) after that alert**; the guard's next
+  shots +105, +167, +216, +269 (bursts ~50–60 frames apart).
+- 33326: a courtyard guard (0x1785530 at (91.7, 35.1, 36.3)) alerts with Bond 16.7 away; a bullet from (81.5, 32.2,
+  33.7) +45 frames later (attribution weak: the origin is 11 units from him).
+- 33600: a third guard (0x177c6b0) alerts at 18.3 units.
+
+So in the real game a guard that spots Bond fires its first shot ~1.6 s later, not on the next frames. (The user on
+the port: "Shots are still happening instantly" — task 109f.)
