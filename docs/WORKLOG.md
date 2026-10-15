@@ -12024,3 +12024,11 @@ Work Log:
 - Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
+
+---
+Task ID: 109b-fix-stunner-press
+Agent: stunner-press worker
+Task: fix-stunner-press — the stunner 0x4a only fires on key release (playtest 1014-1725: "It only really activates on releasing the key"). Ground truth [D docs/live/2026-10-14-weapon-measurements-pcsx2.md]: the real stunner activates on the press, tip lights blue while held, swings back on release, no charge spent with no target. Find the fire path (Player_WeaponFiring 0x1a5460 for 0x4a/0x4b, held vs press, +0x68 flags) and the port's gate; fix so it fires on press, the beam/dart draws, and a guard hit is stunned (msg 7 taser path may be unported).
+
+Work Log:
+- (01:38 UTC) Branch s/fix-stunner-press created from origin/master bf2bd176 and pushed. Setup reused (repo, work/, ISO, nf-queue). Decompile + port rounds next.
