@@ -12436,3 +12436,11 @@ Stage Summary:
 - Swap: the variant-swap arm carried the live magazine across 0x1a→0x1b, syncing the burst slot's 30 into clip[0x1b] (30 "grenades") and the 9mm spare into carried[12]; the pair has OWN slots (+0x90 5 vs 12, Player_AmmoInGun 0x1a9190) and the ground truth's swap shows HUD "4-0 Grenade". Both variant arms now flush+re-read; same-ammo twins (P2K) are a no-op round-trip. The dev give fills the twin's slot once (the panel's affordance; the ground truth's "check both").
 - Tests: fix_aims20_modes_lights_live (3, through step_bond's real Input) — 3/3 FAILED on the pre-fix tree, green after. Regression sweep (silencer/weapon-modes/fire-modes3/weapon-fire-modes/weapon-switch/reload-hang/gadgets/weapons-all/grenade-throw/auto-switch): 43 passed, 0 failed. Full suite: the nohup died on the cargo env twice; the restarted run was still building at the deadline — no total line this session (next session: tail -1 suite.out).
 - Report: docs/reports/fix-aims20-modes-lights.md. Files: scene.rs (task), drone.rs (+1 field line), panel.rs (the give's twin fill), the new test file.
+
+---
+Task: fix-wallhug-prompt (109k)
+Agent: worker (sandbox web-9248268a)
+Task: fix-wallhug-prompt — playtest 1014-1725: (1) the wall-shimmy interaction prompt's trigger volume is far too large (must port the game's creep-wall 0x3F prompt size/test); (2) the wall-shimmy runs in first person, the game shows third person during the creep substate (Player_PositionCamera); (3) the Q-Claw's bolt plays the bullet impact sound on the hook latch ("hook latched, pulled me in, but I also heard a bullet impact") — the claw bolt must not. Files: crates/nf-game/src/player.rs, crates/nf-view/src/{scene,lib}.rs. Tests through the real input path (Sim::step_bond + the Input lib.rs builds), shown failing on master first.
+
+Work Log:
+- (04:06-04:15 UTC) Setup reused (repo, work/, ISO, nf-queue). Branch s/fix-wallhug-prompt created from origin/master d2ce47e5 and pushed. Decompile round next: the creep-wall 0x3F prompt volume, Player_PositionCamera for the creep substate, the claw bolt's impact-sound arm.
