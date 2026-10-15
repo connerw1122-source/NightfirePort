@@ -73,11 +73,20 @@ bridge, pose-preserving (identity at 0 verified in the goldens).
 the game core differs from host libm on 2000-sample sweeps). `cargo test -p nf-formats --lib`:
 **64/64**.
 
-## What's left / [S] notes
+## Suite (foreground chunks — this sandbox reaps background jobs)
 
-- **Full 4-crate suite not run** (sandbox window): only nf-game lib + nf-formats lib + trig_live.
-  The pose sites' bits changed, so AI-fight tests are the ones to watch; run the fast runner on the
-  merged tree before merging. `suite.out` on the branch is from an earlier session's task.
+**406 passed / 0 failed** on this branch: nf-game all test binaries **289/289** (the AI-fight and
+drone live tests with the changed pose bits — none flipped), nf-view 117 across four batches: the
+alphabetical prefix through dump_drone3 (62, cut by a chunk timeout, no failures), then targeted
+batches — dump_drone4/probe_drone4/fix_drone3_live/fix_drone4_live/head_look_live/fix_aim_raise_live/
+fps_determinism_live (22), walk_07000005 (the AT-420 level)/walk_07000006/walk_07000007/
+fix_ai_remainder_live/fix_guard_misc_live (13), models_characters_live/models_weapons_live (its
+re-pinned golden holds)/fix_guest_reactions_live/weapon_anims_live (20). Not run: the nf-view
+walk/walkreal sweeps and portal/cutscene tails (no plausible coupling to the two sites), nf-audio
+(untouched), nf-formats integration (lib 64/64 done). Run the fast runner on the merged tree before
+merging per the standing rule.
+
+## What's left / [S] notes
 - **[S] steer rebuild structural factors**: the game's dir row carries `sinf(π/2)` = 0x3f800001
   (from RotMatrixZYX's rz=0 lanes) and the `RotMatrix`/`MulMatrix0` c²=0x3f800002 diagonal even at
   zero roll, and it is **not** re-normalized; the port's rebuild absorbs these (≤2 ulp per
