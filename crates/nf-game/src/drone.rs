@@ -8276,10 +8276,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             for (i, x) in self.list.iter().enumerate() {
                 if !x.present { continue; }
                 let pre = drone_pre.get(i).copied().unwrap_or(x.pos);
+                // fix-door-react-path2: the class-2 contact gate [M Door_ReactToHit 0x135980:47-72,
+                // docs/fields/drone.md +0x4F8 census] needs the AI-active bit 0x100 SET
+                // (`(ext+0x4F8 & 0x600) == 0 && (ext+0x4F8 & 0x100) != 0 && +0xAC > 0 &&
+                // !(obj+0xFE & 1)`) — Enable(0) clears 0x100 [M 0x149dd0:14], so a disabled-but-
+                // alive drone (its enable channel off, pre-spawn waiting) never qualifies and never
+                // reverses a closing leaf. The port's `enabled` is the Enable(1)/Enable(0) mirror;
+                // the corpse bits 0x200/0x400 map to `corpse` and the health floor to `+0xAC > 0`.
                 movers.push(crate::door::DoorMover {
                     a: pre, b: x.pos, radius: 0.4, centre: x.pos,
                     player: false,
-                    valid: !x.corpse && x.health > 0.0,
+                    valid: !x.corpse && x.health > 0.0 && x.enabled,
                 });
             }
             let evs = self.doors.collide_step(&movers, &mut self.channels, frame);

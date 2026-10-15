@@ -816,7 +816,27 @@ impl Walker {
             (sim.drones.doors.list[di].pos, sim.drones.doors.list[di].state)
         };
         if state & 0xc != 0 {
-            // Already open/opening — just walk through.
+            // Already open/opening — walk THROUGH the opening (the real player's move), not a bare
+            // return. fix-door-react-path2: at the 01 stairwell door (-14.06, 5.35, 13.05) the nav
+            // leg's straight line to the far node clips the jamb west of the open doorway, Bond
+            // wedges on the wall face ~2.7 short, and the leg burns its 6000-tick cap while the
+            // door sits open — the escort walk's 110p timeout. Steer at the door's centre until
+            // inside the threshold (~0.9), capped; the caller's stuck ladder resumes from there.
+            // The door cycling (auto-close → ReactToHit reversal) just re-runs this arm.
+            for _ in 0..90u32 {
+                let (dpos, st) = {
+                    let sim = self.scene.sim.as_ref().unwrap();
+                    (sim.drones.doors.list[di].pos, sim.drones.doors.list[di].state)
+                };
+                if st & 0xc == 0 { break; }   // closed again mid-walk: the E arm handles the next cycle
+                let sim = self.scene.sim.as_ref().unwrap();
+                let dd = dxz(sim.bond.pos, dpos);
+                if dd < 0.9 { break; }
+                let desired = (dpos[0] - sim.bond.pos[0]).atan2(dpos[2] - sim.bond.pos[2]);
+                let err = wrap_pi(desired - sim.bond.yaw);
+                let input = Input { turn: err.clamp(-0.08, 0.08), forward: 0.8, ..Default::default() };
+                self.tick(input, false);
+            }
             return;
         }
         eprintln!("[walk] {label}: opening door ({:.1},{:.1},{:.1}) state {:#x}", dpos[0], dpos[1], dpos[2], state);
