@@ -52,11 +52,11 @@ offsets below are goal-relative; add 0x00 or 0x50.
 | +0x00..0x1F | 0x20 bytes | `CelPos_tag` copy (goal position; `initGoal` copies celpos+0x00..0x1F, or zeroes +0x10..0x1F when the celpos is null) | [M 0x1294c0:24-38] |
 | +0x20 | u32 | runtime scratch — cleared by `uninitGoal` 0x129438; `BotGlobal` msg 0x45 (missile opponent) zeroes the *active* goal's +0x20 | [M*] |
 | +0x24 | f32 | goal start timestamp — `processGoals` 0x127c78 expires the goal when `MPGame+0x412 <= +0x24 + +0x28` | [M 0x127c78:71] |
-| +0x28 | f32 | goal duration (the 5 s timeout lives here per atlas §4; the pair is the deadline) | [M1; exact 5.0 write not yet located — live check below] |
+| +0x28 | f32 | goal duration — `gotoGoal` 0x1278a8:50,58 writes `VIDEO_FRAME_RATE * 5` (= 300.0 at 60 Hz) against the *seconds* clock of `MPGame+0x412`, so the validity window is ~300 s, not the atlas's "5 s" gloss (5 s × frame-rate vs a seconds clock — original-quirk-or-bug undecided, live check below re-pinned to 300.0) | [M 0x1278a8:50,58; reader 0x127c78:70] |
 | +0x2C | f32 | pickup-class-3 weight (health), clamped ≤ 25.0 (`setGoalPickPrefs` writes params 1..3) | [M*] |
 | +0x30 | f32 | pickup-class-1 weight (ammo) | [M*] |
 | +0x34 | f32 | pickup-class-0 weight (weapons) | [M*] |
-| +0x38 | u32 | objective id (`setGoalPickPrefs` param 4; `BotGlobal` 0x3A weights it 1.0 before `pickGoal`) | [M*] |
+| +0x38 | u32/f32 | written by `setGoalPickPrefs` param 4; **read as f32** by `pickGoal` (the objective score multiplier, `pickGoal` 0x126b88:144,292 — BotIdle writes 0x3f800000 = 1.0) | [M*] |
 | +0x3C | u32 | target object: type 1 → MP_PICKUP, type 2 → MP objective obj, type 3 → hunted player obj (`processGoals` 0x127c78:60-77 dispatches on +0x45) | [M*] |
 | +0x40 | u32 | state to switch to when the goal fires (0xF9 goto / 0xF7 guard-friend — `processGoals` writes both) | [M 0x127c78:100,113] |
 | +0x44 | u8 | flags: bit0 = complete (`setGoalComplete` 0x129510 sets; `uninitGoal` clears) | [M*] |
@@ -96,14 +96,14 @@ offsets below are goal-relative; add 0x00 or 0x50.
 | +0x764 | u8 | character index (from record+0x10; `BOT_setGender` 0x126718 reads) | [M*] |
 | +0x765 | u8 | **active goal index** (0xFF none): `getActiveGoal` 0x129548 returns `slot + idx*0x50`; written by `processGoals`, cleared by `uninitGoal`/`fellOutMap`; 0xFF also gates `increaseDistraction` | [M*] |
 | +0x766 | u8 | type of the last requested state (`BotInit` := 0 before 0xF9; `BotGlobal` 0x2E := `getStateType(state)`; `fellOutMap` := 9) | [M*] |
-| +0x767 | u8 | the bot's own player index 0..7 (`setOtherPlayerInfo` skips it in the +0xB0 scan, resets >7 to 0). No writer found outside init-adjacent paths — live check queued | [M1 reader] |
+| +0x767 | u8 | the round-robin vision cursor: `setOtherPlayerInfo` 0x125390:154,171,174 advances it (one candidate per call gets the `CanSeeObject` query; the +0xB0 scan skips self, resets >7 to 0) — the earlier "no writer" note is closed | [M reader+writer] |
 | +0x768 | u8 | **current weapon id** (index into `weapon_data`, 0x10C stride): `ReloadAmmoType` 0x129d28:14, `setGoalPickPrefs` 0x128298:34, `changeWeapon`, `PostLoad_Init`, `BotGlobal` 0x45 (`== 0x3B` close-combat); `BOT_init` copies it to `Drone+0xC58` | [M*] |
 | +0x769 | u8 | **armour pool** — `BOT_handlePain` 0x125ed8 subtracts absorbed damage; `Pickup_Handler` adds. (`BOTWEAP_setDroneArmour` 0x12af70 is empty — the atlas's suspicion confirmed) | [M*] |
 | +0x76A | u8 | announced held weapon (`BotGlobal` msg 0x42 := msg byte; the BOTWEAP layer's team radio) | [M1] |
 | +0x76B | s8 | grudge slot: killer's player index or 0xFF (`BOT_init` := 0xFF; `FindOpponent` 0x1424e0:280 requires −1 to consider others; `BotGlobal` 0x43 clears when the killer dies) | [M*] |
 | +0x76C | u8 | opponent-history head index (`handleOpponentHistory` 0x1257c0:64-69 wraps at 16; `fellOutMap` := 0) | [M*] |
 | +0x76D | u8 | cleared by `fellOutMap` — purpose [S] | [M1] |
-| +0x76E | u8 | `BOT_init` := 0xFF — no reader found | [M1] |
+| +0x76E | s8 | the last chosen pickup index: `pickGoal` 0x126b88:496 writes the winner, :397 skips it on the next scan; `BOT_init` := 0xFF | [M reader+writer] |
 | +0x76F | u8 | `BotIdle` 0x171b80:96 := 1 when the +0x771 gate passes | [M1] |
 | +0x770 | u8 | player-scan flag (`setOtherPlayerInfo` 0x125390:35,61 := 0/1 — set when the scan finds a live candidate; `fellOutMap` clears) | [M1] |
 | +0x771 | u8 | attack re-entry latch (`BotIdle` 0x171b80:67,94 sets/tests; `BotGlobal` 0x45 → SetState(0xCF) when set) | [M*] |
@@ -120,9 +120,9 @@ slots (17 goal-relative fields), and 36 instance fields ≥ +0xB0. Unmapped: the
 
 ## Live checks for the main agent
 
-1. **Goal timeout constant**: watch a bot slot's `BOT_vars+0x28` (f32) after
-   `BOTSTATE_initGoal` writes it (`gdbwatch` on `0x26D660+0x28` (w) in an MP match with 1 bot)
-   — expect 5.0 (atlas §4 says 5 s; the write site wasn't in the decompile I read).
+1. **Goal timeout constant**: `gdbwatch` `0x26D660+0x28` (w) — expect **300.0** (`gotoGoal`
+   0x1278a8:58 writes `VIDEO_FRAME_RATE * 5`; the write site is now known — re-pinned from the
+   original 5.0 expectation).
 2. **+0x767 self-index writer**: `gdbwatch` `0x26D660+0x767` (w) — expect a write during
    `BOT_init`/menu prepare with the slot value (4..7 mapped to 0..7?); the decompile only shows
    the reader.
