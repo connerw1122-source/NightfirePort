@@ -135,8 +135,16 @@ fn the_overlay_and_crosshair_gates_follow_aim_and_scoped() {
     let f = nf_view::hud::overlay(&scene, 4.0 / 3.0);
     assert!(!tex_runs(&scene, &f, 0x0300_0026).is_empty(), "the crosshair draws when not aiming");
     assert!(tex_runs(&scene, &f, 0x0300_0034).is_empty(), "no scope when not aiming");
-    // Aim the sniper while the zoom is still ~1.0: the scope draws and the crosshair hides.
-    scene.sim.as_mut().unwrap().step_bond(nf_game::player::Input { aiming: true, ..Default::default() }, false, false, false);
+    // Aim the sniper: the scope draws and the crosshair hides. fix-scope-zoom2: the HUD gate is
+    // the game's +0x60 bit0 [M 0x19e6d0:27-148] — for a raise-script sniper the raise queue
+    // CONSUMES bit0 on the press tick [M Player_Weapon 0x1a24c8:144-152 `uVar8 & 0xfffe`] and the
+    // raise's finish writes it back [M Player_SetWeaponAnimObj case 0xf 0x1a2e38:557
+    // `+0x60 |= 1`], so the pane appears at the raise's end, not on the press tick. The hold
+    // covers the draw + the raise (0x24's raise script is absent from this level's set — the bit
+    // sets at tick 1; the longest held case below is 0x54: raise 71 @1.25 → tick 56 [L probe]).
+    for _ in 0..80 {
+        scene.sim.as_mut().unwrap().step_bond(nf_game::player::Input { aiming: true, ..Default::default() }, false, false, false);
+    }
     let f = nf_view::hud::overlay(&scene, 4.0 / 3.0);
     assert!(!tex_runs(&scene, &f, 0x0300_0034).is_empty(), "the scope draws on aim (the gate is aim+scoped, not the zoom value)");
     assert!(tex_runs(&scene, &f, 0x0300_0026).is_empty(), "the crosshair hides on aim of a scoped weapon");
@@ -148,7 +156,12 @@ fn the_overlay_and_crosshair_gates_follow_aim_and_scoped() {
         let sim = scene.sim.as_mut().unwrap();
         sim.gun.weapon = w;
         sim.gun.switch_request = w;
-        sim.step_bond(nf_game::player::Input { aiming: true, ..Default::default() }, false, false, false);
+        // fix-scope-zoom2: hold the aim through the draw + the raise (0x1a: 20 @1.25 → tick 16,
+        // 0x54: 71 @1.25 → tick 56; 0x32 has no raise script — the bit sets at once [L probe]) —
+        // the pane's gate is the aim bit, which sets at the raise's finish [M 0x1a2e38:554-561].
+        for _ in 0..80 {
+            sim.step_bond(nf_game::player::Input { aiming: true, ..Default::default() }, false, false, false);
+        }
         let f = nf_view::hud::overlay(&scene, 4.0 / 3.0);
         assert!(!tex_runs(&scene, &f, tex).is_empty(), "aimed {name} draws");
         assert!(tex_runs(&scene, &f, 0x0300_0034).is_empty(), "no sniper scope on {name}");

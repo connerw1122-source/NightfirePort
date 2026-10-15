@@ -335,10 +335,14 @@ pub struct Sim {
     /// record's idle-alert script (+0xCC) queues; cleared when the fidget stops (back to +0xA0) or
     /// when anything else displaces it (the game resets +0x959 in every non-idle state [M :40-58]).
     pub view_alert: bool,
-    /// fix-weapon-anims: last tick's aiming input — the aim raise/lower edge (`Player_Weapon`
-    /// 0x1a24c8:117-152 queues +0xB8 at 1.25 on the aim-on edge and +0xBC at 1.25 (or +0xB8 played
-    /// REVERSE — the port plays it forward, deviation documented) on the aim-off edge, from the
-    /// fully idle machine).
+    /// fix-weapon-anims: last tick's LATCHED aim input — the game's `+0x60` bit0, the edge source
+    /// for the aim raise/lower queue (`Player_Weapon` 0x1a24c8:117-152 queues +0xB8 at 1.25 on the
+    /// latch's rise and +0xBC at 1.25 (or +0xB8 played REVERSE — the port plays it forward,
+    /// deviation documented) on its fall, from the fully idle machine). fix-scope-zoom2: the latch
+    /// is NOT the raw button — the view-state gate clears bit0 while the machine is busy
+    /// [M 0x1a24c8:64-99] and the raise's finish writes it [M `Player_SetWeaponAnimObj` case 0xf
+    /// 0x1a2e38:557 `+0x60 |= 1`], so a press held through a busy state re-edges at idle and the
+    /// finish tick does not re-edge (run computes the latch; aim_gate writes it at the finish).
     pub prev_aiming: bool,
     /// fix-weapon-anims + fix-aim-raise2: the aim raise/lower script currently playing
     /// (`Player_Weapon` 0x1a24c8:121-152 — the raise +0xB8 @1.25 is the game's state 0xF, the
@@ -1627,6 +1631,10 @@ impl Sim {
                     self.view_script = self.weapons.idle_script(self.gun.weapon as usize);
                     (self.view_time, self.view_speed) = (0.0, 1.0);
                     self.view_aim_anim = None;
+                    // fix-scope-zoom2: the finish writes the input latch [M 0x1a2e38:557
+                    // `+0x60 |= 1`] — run's edge detect (same tick, run follows the gate) must not
+                    // see a fresh rise, or the raise would re-queue every tick the button is held.
+                    self.prev_aiming = true;
                 }
             } else {
                 if self.view_speed < 0.0 {
@@ -2357,13 +2365,27 @@ impl Sim {
     }
 
     fn run(&mut self, pos: [f32; 3], sph: [f32; 3], camera: [f32; 3], look: [f32; 3], aim: [f32; 3], trigger: bool, aiming: bool, reload: bool, use_key: bool) {
-        // fix-weapon-anims + fix-aim-raise2: the aim raise/lower edges — the RAW button (the
-        // param; the gated BIT is `self.aiming`, which `aim_gate` maintained before run) — before
-        // the level is overwritten (the queue arm deep in the view chain reads the EDGE)
-        // [M Player_Weapon 0x1a24c8:117-152: the arm fires on the tick the input flips the bit].
-        let aim_on_edge = aiming && !self.prev_aiming;
-        let aim_off_edge = !aiming && self.prev_aiming;
-        self.prev_aiming = aiming;
+        // fix-weapon-anims + fix-aim-raise2: the aim raise/lower edges — the game edges them on the
+        // LATCHED input bit (+0x60 bit0), not the raw button: the view-state gate clears the latch
+        // while the machine is busy [M `Player_Weapon` 0x1a24c8:64-99 — the +0xf4 switch clears
+        // bit0 for every non-idle view state (scoped list: 1-4, 6-8, 10, 13-16)] and the raise
+        // queue consumes it [M :144-152 `uVar8 & 0xfffe`], so a press HELD through a busy state
+        // (the draw, a reload, the previous raise) re-edges on the tick the machine returns to
+        // idle [M :117-152 — the edge detect compares the latch against last tick's stored latch].
+        // fix-scope-zoom2: the raw-button edge was swallowed by the draw whenever the aim press
+        // landed mid-switch (the sniper tests aim from tick 0), so the raise never queued, the aim
+        // bit never set and the zoom stayed 1.0 — the merge's HELD symptom. The latch mirrors the
+        // game's bit0: the raw input AND the fully idle machine. The raise's finish also writes
+        // the latch [M `Player_SetWeaponAnimObj` case 0xf 0x1a2e38:557 `+0x60 |= 1`] — aim_gate
+        // sets `prev_aiming` there, which suppresses the fresh edge on the finish tick. The fidget
+        // (a script swap at view state 0) blocks the port's latch but not the game's bit0 — the
+        // raise waits for the fidget's end instead of displacing it (documented gap).
+        let idle_hash = self.weapons.idle_script(self.gun.weapon as usize);
+        let aim_latch = aiming && self.view_script == idle_hash && self.view_aim_anim.is_none()
+            && self.gun.switch_state == 0 && self.gun.reload_state == 0 && !self.gun.fire_state;
+        let aim_on_edge = aim_latch && !self.prev_aiming;
+        let aim_off_edge = !aim_latch && self.prev_aiming;
+        self.prev_aiming = aim_latch;
         // The drones aim at and look for Bond's chest (`Drone_View_Bones`; one point here, 0.45 under the eye).
         let hanging = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
         // The game's collision capsule off `pos` (= Bond's obj+0x30): standing (case 0/6) ends

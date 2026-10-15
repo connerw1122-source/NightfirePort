@@ -464,6 +464,48 @@ fn sniper_mode_press_resets_zoom_and_swaps_damage() {
     assert_eq!(cap1f, 10.0, "the twin's zoom cap [L]");
 }
 
+/// fix-scope-zoom2: the aim press HELD through the draw still zooms — the game's raise queue
+/// edges on the LATCHED input bit (+0x60 bit0), which the view-state gate clears while the
+/// machine is busy [M `Player_Weapon` 0x1a24c8:64-99 — every non-idle +0xf4 state clears bit0]
+/// and the raise's finish writes back [M `Player_SetWeaponAnimObj` case 0xf 0x1a2e38:557
+/// `+0x60 |= 1`]. So a press that lands while the draw still runs (and stays held) re-edges when
+/// the machine returns to idle, the raise plays, the aim bit sets and the zoom leaves 1.0.
+/// Before the latch the raw-button edge was consumed mid-draw (the queue arm refuses a busy
+/// machine), the raise never queued and the zoom stayed 1.0 forever — the merge's HELD symptom
+/// ("the scope zoomed in (zoom 1)").
+#[test]
+fn sniper_aim_held_through_the_draw_still_zooms() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load(&iso);
+    tick(&mut scene, 30);
+    assert!(give(&mut scene, 0x1e, 10), "give the Tactical Sniper");
+    // The draw request, then the aim press lands MID-DRAW and stays held (no settle ticks —
+    // the draw is still playing when the aim arrives).
+    for _ in 0..60 {
+        scene.sim.as_mut().unwrap().step_bond(Input { switch_to: Some(0x1e), ..Default::default() }, false, false, false);
+        if scene.sim.as_ref().unwrap().gun.weapon == 0x1e { break; }
+    }
+    assert_eq!(scene.sim.as_ref().unwrap().gun.weapon, 0x1e, "the sniper drawn");
+    for _ in 0..250 {
+        scene.sim.as_mut().unwrap().step_bond(Input { aiming: true, ..Default::default() }, false, false, false);
+    }
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        assert!(sim.aiming, "the aim bit set once the draw ended and the raise finished");
+        // The aim-start read the base's slot: the zoom eased to sqrt(+0x88) = sqrt(10) [M
+        // 0x1a24c8:173-177 + Player_InitAmmoWeapons 0x1a17f8:51; L 0x1E +0x88 = 0x41200000].
+        assert!((sim.zoom - 3.162_277_6).abs() < 1e-2,
+            "the zoom left 1.0 through the held press (aim-start slot sqrt(10)), got {}", sim.zoom);
+    }
+    // Sister: with the chain alive, the held zoom axis climbs to the record's cap [M
+    // `Player_Zoom` 0x1a1a70:35-39,56 ×1.025 per tick, clamped to +0x88; L 0x1E +0x88 = 10.0].
+    for _ in 0..300 {
+        scene.sim.as_mut().unwrap().step_bond(Input { aiming: true, zoom: true, ..Default::default() }, false, false, false);
+    }
+    let zoomed = { let sim = scene.sim.as_ref().unwrap(); sim.zoom };
+    assert!((zoomed - 10.0).abs() < 1e-3, "the held zoom axis reached the cap 10.0, got {zoomed}");
+}
+
 /// The Torpedo Launcher (0x30): a homing round with NO rocket camera (+0x6C = 0x20200 — the homing
 /// bit, no 0x4 [L]) that spawns at QUARTER speed (+0x6C & 0x200 → speed × 0.25 [M Bullet_init
 /// 0x12c5a0:188-190]: 0.1 → 0.025 u/tick — the PCSX2 pass's "a slow glowing ball").
