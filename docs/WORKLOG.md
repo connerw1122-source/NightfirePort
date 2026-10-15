@@ -12973,3 +12973,48 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
 - (13:04-13:20) Research: 4 parallel decompile reads (goal machine, attack family, BotGlobal dispatch mechanics, spawn/pickup/timing) — headlines: msg 3 is the per-tick heartbeat delivered to 0xC5 first for bots [M 0x171df8:78-86]; msg[1] never read; the ignore block returns 1/default 0; no SetState(0xE9) exists (BotStuck is an orphan stub); the goal duration is VIDEO_FRAME_RATE*5 = 300.0 on a seconds clock [M 0x1278a8:50,58], not 5 s; +0x76E is the last-pickup index (reader found); +0x767 is the round-robin vision cursor (writer found); the mode bitmask is MPGame+0x1A8+team*2; the visit decay is ×max(|now−visit|·50,1)/×4500 [M 0x126b88:407-415]; the burst arithmetic (interval min-60, Rand_Rand(3)+2 / Rand_Rand(2)+1, ≥4 ×aggression min-3) [M 0x179d40].
 - (13:20-14:26) The port: bots.rs §6 behind mp-bots — BotVars/GoalSlot/BotPickup/OtherPlayer/BotCtx (offsets in comments), the goal machine (initGoal/uninitGoal/setGoalComplete/getActiveGoal/setGoalPickPrefs/pickGoal/gotoGoal/processGoals), the 0xC5 heartbeat + corrections, 0xF9/0xEB (the 0xF6 detour, no 0xE9), 0xCF/0xD2 (the verbatim latch routing, the NextBulletTime lift, the per-tick firing pipeline with the 0.9998 cone), the trait switch 0x128b50. Deviations documented: straight-line walk at the stats' speed mult (the AINetwork route wiring is the named gap), checkAttackMove stand-in (the move states unported), the minimal FindOpponent (nearest seen candidate).
 - (14:26-14:41) Tests: 5 brain unit tests (the pickup round trip with the 300.0 deadline + the now+45.0 stamp; the stand sister; the fire decision — aim +x, tick ≥ the burst deadline, through 0xEC→0xCF→0xD2; the visit-decay skip; the RNG-order determinism) + mp_bots_live 2/2 on Arena 1 through the real spawn/pickup path. Priority batch green: nf-game lib 175/175, nf-view lib 8/8, mp_arenas 1/1, mp_core 5/5, mp_bots 2/2, rng 1/1. Docs: bot-vars.md 4 row corrections + the atlas §4 status + the report. The full 4-crate suite did NOT run (the sandbox's bg runner died on PATH; the batch covers the touched crate) — run it on the merged tree.
+
+
+## driving-input-path (2026-10-15, branch s/driving-input-path) — started 14:08 UTC
+
+Task 110w (G-004, U-003): the driving levels' input path from DRIVING.ELF is unported. Plan: (1)
+find the pad read, dead-zone chop/scale, steering/throttle/brake mapping and ramps in
+work/decomp/DRIVING.ELF, document in docs/systems/driving-input.md with addresses, compare with
+the on-foot ACTION.ELF path (input.md §2: threshold 40, scale 127/87); (2) port as pure module
+crates/nf-game/src/input/driving.rs (raw pad bytes in, vehicle controls out) with bit-exact unit
+tests; (3) map keyboard+mouse bindings onto it, note where a driving level would call it, don't
+wire the driving levels. Files: input/driving.rs (new), docs/systems/driving-input.md (new),
+docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
+- (14:06-15:20) driving-input-path (G-004/U-003) done on this branch. The decode: the SYM hint
+  addresses stay absent [M-negative], but our DRIVING.ELF matches the Raikaru shipped-ELF layout —
+  PS2PadDevice::PollDevice = FUN_00169288 [M]. The device vtable is 8-byte-stride (adj,func) at
+  0x374880, vptr at obj+0x18 [M 0x167bc8 pattern]; slots: 2 = the InputTable registration
+  (FUN_00168b08, 32 named values ALX/ALY/ARX/ARY + 12 AButton pressures + 16 DButton bits,
+  records 0x34 = kind+name+4 buffer pointers), 3 = PollDevice, 4 = value count (32), 5 = HasChanged.
+  PollDevice [M 0x169288, disasm-checked]: axes = LX, −LY, RX, −RY through b*0x3c008081f−1
+  (0x3c008081 = exactly f32(2/255) [M 0x169218]), all-sticks-zero guard zeroes only the axes,
+  then the dead zone FUN_00167c48(−0.3, 0.3) = strict lo<v<hi → 0 with NO rescale [M 0x167c48] —
+  a different mechanism from on-foot's byte threshold 40 + 127/87 (input.md §2). Pressures
+  b/192 capped 1 [M 0x169248]; digital mode 4 remaps DButton floats {29,31,28,30,20..} over the
+  AButton slots. The action layer: FUN_00168678 evaluates per-value 0xc-byte bindings {type,arg,
+  action} through 7 helpers (pressed/released edges 0.5/−0.5, crossings, centre ±0.2 [0x3e4ccccd],
+  auto-repeat with the strict `last+delay < now` clock and repeat state stored in message buffers
+  C/D), sends {action, device, value} via FUN_00165850 (ids 1..0x40; 0x1f FIRESECONDARY dropped
+  behind DAT_00339f54). Action ids from the .data pairs at 0x32c098 (STEER=1 .. RESUMEAUTODRIVE=0x40).
+  NO ramps in the input path [M-negative] — the only time-based behaviour is the auto-repeat.
+  Port: crates/nf-game/src/input/driving.rs (pure; wired via one `pub mod driving;` line in
+  input.rs) with 11 bit-exact unit tests; keyboard+mouse → RawPadSlot mapping marked [S] (the
+  shipped bindings live in Master.def/FrontEnd.def, not extractable here). Docs:
+  docs/systems/driving-input.md (new), GAPS G-004 closed, UNKNOWNS U-003 partial. Suite on the
+  final tree: nf-game lib 181/0 (the 11 driving tests inside), nf-formats 64/0 + integration
+  (driving_golden 4 skips without the disc folder, weapon_live 1/0, pss_movies_live 3/0,
+  exact_vs_host_probe 3/0, facial_probe 1/0), nf-audio 9/0, nf-view 8/0, nf-game integration
+  23 bins 99/0; disc_golden 3 failed = the allowed slim-ISO trio. Total 373 passed / 3 allowed
+  failures / 1 ignored. The sandbox kills background jobs between tool calls, so the suite ran
+  as foreground chunks (scripts/run_suite_chunks.py) instead of the nohup runner.
+
+- (15:52) Final-tree correction: after merging origin/master a2958c03 the priority suite on the
+  merged tree gives nf_game lib 186/0 (the 11 driving tests inside), disc_golden 11/3 (the allowed
+  trio), driving_golden 4/0 (disc-folder skips), ~40 integration bins green, probe_pylon_render
+  down on the no-GPU wgpu adapter (known environment class). The 373/3/1 line above describes the
+  pre-merge tree; docs/reports/driving-input-path.md carries both.
