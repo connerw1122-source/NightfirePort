@@ -13608,3 +13608,35 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
 - (21:05) Started: branch from origin/master f59b47fb. Task: make FrontEnd's MP defaults match the game's
   MPSettings init (Location Damage On, Respawn Random, Explosive Scenery Locked via the reward gate), and add the
   Health Handicap third step to mp_setup_state with per-step prompt label/texture/value getters for the main agent.
+
+## mp-defaults-and-setup (2026-10-15, branch s/mp-defaults-and-setup) — DONE 22:52 UTC
+- (21:05-21:45) Research: MPSettings 0x2a47a0 inits in bootup_bootup 0x1c7e78 (memset 0x1dc + field
+  stores: +0x1C0=2 @0x1c7fac, +0x1C8=1 @0x1c7ff8, +0x1BC=0, +0x19C/+0x1A0=10, +0x1A4/+0x1AC/+0x1C4=1,
+  rest 0; roster 8×0x30 +0x20=team i&1, +0x28=1, +0x2c=0); EE snapshots match [L]. The codename
+  profile saves +0x1BC/+0x1C0/+0x1C4 into record+0x2e/2f/30 (Menu_UpdateDefaultCodename 0x1f8218 /
+  Menu_MapDefaultCodename 0x1f7fa8) — evidence only, not ported (save-format decision needed).
+- Explosive Scenery gate: Menu_UnlockMPSettings 0x1ff698 ORs bonus[0..3] @0x2e1b88 and sets
+  mp_stuff[0x370] @0x2df2d0 iff a type-3 id-0x3e reward is unlocked — the shipped RewardsTable
+  0x2bc920's only type-3 entry is level 0x07000014 counter 3 [D]. P_MPENVIROMODS 0x210030 binds the
+  locked row's single node (0x10, label 0x1000076), Left/Right no-ops, page close stores 0x10
+  [M 0x210464]; P_MPCONFIRM masks &1 [M 0x20f708/0x20f710]. Ported as mp_bonus_mask +
+  mp_explosive_unlocked() + mp_enviro_value_label() + the step/close/mask behavior.
+- Health Handicap: P_MPSETUP 0x20d7a8 + C_RBMPSETUP 0x20de58 give states 2/3/4/5 — the 0x4b state-3
+  arm builds 8 nodes (−75..+100, .data strings 0x30d390..0x30d3c8 [D], the literals P_CNMPOPTIONS
+  0x2144d8 shares for label 0x296), stores the pick in MPSettings+slot·0x30+0x2c; state 4 → 5 sets
+  mpjoin+1, and Menu_MPAreWeReady 0x1f78d8 sends 0x44/0x40000012. Port: mp_setup_state 2/3/4/5,
+  mp_handicap, MP_HANDICAPS, the handler (Confirm 2→3→4→5, Back 4→3→2-team-only per 0x6b), getters
+  mp_setup_prompt_label/mp_setup_image/mp_setup_value_text (0x37c/0x37d/0x296; 0x30001a3/0x30001a2
+  team, character previews, 0x30001a1 green cross).
+- Quick-Game fix: C_SBMPSCEN stores +0x1CC=2 Helicopters @0x20c734 (docs/systems/mp-menus.md §5
+  corrected) and +0x1D4=0 @0x20c748; +0x1C0 is never written — mp_quick_start now matches.
+- Tests: new mp_defaults_setup 10/10 (defaults table, the gate locked/unlocked + the 0x10 close
+  write + the &1 match-start mask, enviro value labels, quick start, the 3-prompt flow with
+  per-step pins, re-select, back walk, FFA, node table); mp_menu_flow updated for the 3-step flow
+  (4 paths) 9/9; menus_flow 36/36, dev_menu_flow 5/5. Suite slice on the final merged tree
+  (origin/master 8ba16019 merged; foreground --only — background runs are killed here):
+  410 passed / 0 failed over 18 binaries (menu family + MP set + the 4 crates' unit binaries);
+  359 test binaries build clean. The no-GPU fix_0c_pylon_live pair stays the known pre-existing
+  failure outside the slice.
+- Report docs/reports/mp-defaults-and-setup.md with 5 live checks (Locked row + the 0x10 read-back,
+  the On/Random rows, the handicap prompt/image/values, the team image swap, the render spots).
