@@ -22,3 +22,8 @@ Docs only. **Branch:** `s/live-backlog`.
 
 ---
 claimed-by: sandbox5 at 2026-10-15T17:04Z
+
+---
+## Report (done, 2026-10-15T18:37Z)
+
+Closed by the driver: the report is on `s/live-backlog` (docs/reports/live-backlog.md); the worker didn't run finish.sh.
