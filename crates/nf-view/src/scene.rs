@@ -2187,7 +2187,7 @@ impl Sim {
             let water = bond_cel.and_then(|cell| self.room_cell.iter().position(|&c| c == Some(cell)))
                 .map(|r| self.cels[r].water).filter(|w| *w > -400.0);
             let sink = input.crouch;
-            let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink, creepwalls: &self.creepwalls };
+            let ctx = nf_game::player::LadderCtx { ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims), water, sink, creepwalls: &self.creepwalls, level_bump_5fb: false };
             // The third-icon context [M ThirdIcon_Update 0x196e80 + Player_CollisionHandler 0x1949a8:22]:
             // the tick starts with +0x95F = 0xFF (none), then every ENABLED icon (its param-1 channel on,
             // or param 1 == 0 = always [M ThirdIcon_Create 0x197070:27-32]) whose straddle-cel set holds
@@ -2319,6 +2319,11 @@ impl Sim {
                 self.bond.pos[1] += self.drones.health.hit_push;
             }
             self.bond.tick_ctx(&self.world, &ctx, &input);
+            // audit-sound-calls: drain the jump launch / head-bump sounds into the Sim's sound
+            // pool (`Player_HandleJump` 0x1916b0:184,195-198 via `Bond::sfx_out`).
+            for (id, pos) in self.bond.sfx_out.drain(..) {
+                self.drones.audio.play3d(id, pos, None);
+            }
             // `obj+0x40 ← obj+0x30` — the moved pass's copy AFTER the cel change [M 0x1336f8:212].
             self.bond.prev_pos = prev_tick_pos;
             // `Player_WeaponNone` 0x1a9858 runs in `Player_CollLadder` on the grab [M 0x196118]: the

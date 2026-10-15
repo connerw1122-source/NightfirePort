@@ -26,6 +26,7 @@ pub mod png;
 pub mod ps2float;
 pub mod mpeg2;
 pub mod pss;
+pub mod refpack;
 pub mod sfx;
 pub mod soundbank;
 pub mod sha1;

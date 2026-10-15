@@ -124,7 +124,7 @@ fn a_character_next_to_the_muzzle_light_gets_brighter_that_frame() {
 #[test]
 fn the_create_draw_advances_the_shared_rng_even_for_zero() {
     let a = nf_game::drone::Rng::new(7);
-    let mut b = nf_game::drone::Rng { x: a.x, y: a.y };
+    let mut b = nf_game::drone::Rng { x: a.x, y: a.y, ..Default::default() };
     let mut ll = LightList::default();
     ll.create(1.0, 1.0, [0.0; 3], [255, 255, 255], 0, -1, 0, 0, &mut b);
     { let a = &a; assert_ne!((a.x, a.y), (b.x, b.y), "Rand_Rand(param_11) drew (the muzzle light fires on every shot)"); }
