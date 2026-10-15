@@ -13491,3 +13491,20 @@ Work Log (credits-data):
   suite failure `nf-view/tests/fix_scores_handoff_live.rs:104` "row 5: the no-kill run's stat" (left 100, right 0)
   — 614's test edit vs master's 111e PlrMissionStats handoff (progress.rs). Next: reproduce, decide from
   P_NFSTATS_Handler 0x209938 / the results rows what row 5 shows for a no-kill run, fix code or test, verify.
+
+## nfstats-model2 (2026-10-15, branch s/nfstats-model2) — the held failure fixed
+- The verdict: the held "row 5: the no-kill run's stat (left 100, right 0)" is a TEST bug, not a code bug — the
+  game's accuracy row copies the par (count 100) into the value FIRST and only rescales when shots were fired
+  [M PlrStat_GetScore 0x1984b0 — the store rows+0x6c ← rows+0x64, the DAT_002bcc24 (PlrMissionStats+0x04 fired)
+  != 0 guard]; P_NFSTATS 0x209938:57-66 displays that value verbatim; the capture reads "Accuracy 100% / 100% /
+  50,000" [L docs/reports/nfstats-model.md:54]. 614's `else { rows[5].count }` scorer IS the game; master's
+  `else { 0 }` was the misport; 614's edit of fix_scores_handoff_live.rs missed the row-5 loop entry.
+- The fix (test-only): row 5 out of the zero-loop; assert value 100 + raw = the generic formula (the full target)
+  + raw 50,000 (the capture). Before: the merged tree failed at line 104 (left 100, right 0). After: 1/1 green
+  through the real truck-ride walk.
+- The merge (c0f48e99): menu.rs union (Stats + CnName/ScreenAdjust/MP/Credits), WORKLOG union. nf-game full green,
+  mission_stats_rows 7/7, mission_stats_flow 3/3, menus_flow 36/36.
+- Suite on the final tree (foreground runner chunks — background jobs die here): ~252/348 binaries, 1030 passed /
+  6 failed / 26 ignored — the 6 = the 3 permitted disc_golden + 3 wgpu adapter-NotFound GPU probes
+  (probe_pylon_render, fix_0c_pylon_live ×2; environmental). Not run: the walk/walkreal tails + render/weapon
+  probes (~96) — flagged for the next window.
