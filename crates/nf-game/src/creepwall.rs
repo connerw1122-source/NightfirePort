@@ -31,12 +31,32 @@ impl CreepWall {
     /// The wall's axis endpoints: pos ± fwd(yaw + π/2) · half_len [M 0x196758:80-90: the two vectors
     /// `p + d` and `p − d` with `d = Cartesian(len, yaw + π/2, 0)`].
     pub fn endpoints(&self) -> (V3, V3) {
-        let (s, c) = (self.yaw + std::f32::consts::FRAC_PI_2).sin_cos();
-        let d = [s * self.half_len, 0.0, c * self.half_len];
-        (
-            [self.pos[0] + d[0], self.pos[1], self.pos[2] + d[2]],
-            [self.pos[0] - d[0], self.pos[1], self.pos[2] - d[2]],
-        )
+        // G-046 site (exact-sine-sites-3) [M Vec_Spherical_2_Cartesian 0x1e3948:22-26]: with the call
+        // `S2C(half_len, wall.yaw + π/2, 0)` (the +π/2 an EE FPU add at the caller, 0x1969d0:99-100),
+        // the pair is `PS2Sinf2(θ + π/2, θ)` → (cos θ, sin θ) plus `PS2Sinf2(φ + π/2, φ)` for φ = 0,
+        // and the lanes are `(len·sin θ)·cos φ` / `(len·cos θ)·cos φ` — so z's sine is the SECOND
+        // no-guard add `sin(θ + π/2)` and both lanes multiply by the game's own `sinf(π/2)` (`cos φ`).
+        // The ± endpoints are EE FPU adds/subs (0x1969d0:102-105).
+        if crate::trig::host_trig() {
+            let (s, c) = (self.yaw + std::f32::consts::FRAC_PI_2).sin_cos();
+            let d = [s * self.half_len, 0.0, c * self.half_len];
+            (
+                [self.pos[0] + d[0], self.pos[1], self.pos[2] + d[2]],
+                [self.pos[0] - d[0], self.pos[1], self.pos[2] - d[2]],
+            )
+        } else {
+            use nf_formats::ps2float as pf;
+            let half = crate::trig::HALF_PI;
+            let theta = crate::trig::add(self.yaw, half);
+            let (sin_t, cos_t) = (crate::trig::sinf(theta), crate::trig::sinf(crate::trig::add(theta, half)));
+            let cos_p = crate::trig::sinf(crate::trig::add(0.0, half)); // PS2Sinf2(0 + π/2, 0) lane 0
+            let dx = pf::mul(pf::mul(self.half_len, sin_t), cos_p);
+            let dz = pf::mul(pf::mul(self.half_len, cos_t), cos_p);
+            (
+                [crate::trig::add(self.pos[0], dx), self.pos[1], crate::trig::add(self.pos[2], dz)],
+                [crate::trig::sub(self.pos[0], dx), self.pos[1], crate::trig::sub(self.pos[2], dz)],
+            )
+        }
     }
 
     /// The closest point of the axis segment to `p` (the game's

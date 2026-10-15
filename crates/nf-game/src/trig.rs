@@ -5,8 +5,17 @@ use nf_formats::ps2float::{add_noguard, mul};
 
 /// EE FPU add / sub: no guard bit, rounded toward zero (`ps2float::add_noguard`; the model validated on poses and on
 /// live `ATAN2_APPROX` results, WORKLOG 0026).
-fn add(a: f32, b: f32) -> f32 { add_noguard(a, b, true) }
-fn sub(a: f32, b: f32) -> f32 { add_noguard(a, -b, true) }
+pub fn add(a: f32, b: f32) -> f32 { add_noguard(a, b, true) }
+pub fn sub(a: f32, b: f32) -> f32 { add_noguard(a, -b, true) }
+
+/// exact-sine-sites-3's side-by-side switch: while set, the four swapped player-motion sites
+/// (`player.rs` movement axes / ladder grab snap / creep snap / wire hand+sway, `creepwall.rs`
+/// endpoints) fall back to the pre-G-046 host trig so the same inputs can be run through both models
+/// (`exact_sine_sites3_live`'s 600-tick walk). Default false — the game's exact math.
+pub static HOST_TRIG: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// The sites' fallback read (G-046's side-by-side test switch, see [`HOST_TRIG`]).
+pub fn host_trig() -> bool { HOST_TRIG.load(std::sync::atomic::Ordering::Relaxed) }
 
 pub const PI: f32 = f32::from_bits(0x4049_0fdb);
 pub const TAU: f32 = f32::from_bits(0x40c9_0fdb);
