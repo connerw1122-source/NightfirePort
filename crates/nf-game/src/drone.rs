@@ -5519,6 +5519,10 @@ pub struct Drones {
     /// 0x100000/0x200000 arms pass f12 = 1.0 [M 0x12d0ec-0x12d0f0 `lui $at, 0x3f80; mtc1 $at, $f12`]
     /// with radius f13 = +0x08. Tuple: (pos, radius, damage, owner, weapon_type, script, scale).
     pub pending_blasts: Vec<(V3, f32, f32, usize, u16, u32, f32)>,
+    /// fix-gas-rng2: the player bullets' world-hit effect calls, recorded at the flight step and
+    /// flushed at the game's collide pass (see the flush in `tick`). Tuple: (bullet index, hit, n,
+    /// material, incoming dir, flags70, bounces, laser_beam).
+    pub pending_world_impacts: Vec<(usize, V3, V3, u8, V3, u32, u8, bool)>,
     /// The camera-shake amount: `Explode_Create` 0x17cbd0 calls `Camera_Shake(pos, radius)` when the
     /// radius reaches 0.5 [M 0x17cc28-0x17cc44]; the port decays it 10%/tick − 0.05 [*suggested*: the
     /// game's `Camera_Shake` curve is view-side, not modelled]. The view reads it for the offset. fix-explosions.
@@ -5885,6 +5889,7 @@ impl Drones {
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
             pending_blasts: Vec::new(),
+            pending_world_impacts: Vec::new(),
             level_current: 0,
             // fix-safe08: (script hash, stream) → the reserved pickup slot the renderer built for the
             // script's obj_type-0xF0 Entity (`Script_CreateEntity` 0x1d8968's Pickup_Create arm);
@@ -6248,7 +6253,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         for fb in &mut self.fuseboxes { fb.clear_hits(); }
         let frame = self.frame;
         let mut bullets = std::mem::take(&mut self.player_bullets);
-        for b in &mut bullets {
+        for (bi, b) in bullets.iter_mut().enumerate() {
             if b.dead { continue; }
             if b.travelled > b.range { b.dead = true; continue; }
             let mut step = if b.first { (self.rng.frand(0.5) + 0.5) * b.speed } else { b.speed };
@@ -6444,17 +6449,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // 0x1ce8a8 / `Effect_RicochetProb` 0x1cf290 (docs/atlas/effect.md). Bond is class 3,
                     // so `Effect_Bullet` skips its `Rand_Rand(2)` [M 0x1ce94c]. A ricochet keeps the
                     // bullet alive on the reflected direction [M 0x12d704].
-                    let mut ricochet: Option<(V3, V3)> = None;
+                    // fix-gas-rng2: the effects' shared-RNG draws (the NPC coin is skipped for the
+                    // player, but the debris rolls, `Gas_Init`'s 2-5 per puff and the ricochet roll
+                    // are not) belong to the game's COLLIDE pass — `Collide_Update` 0x1ea398 runs
+                    // after the whole update pass [M control_movement_object_handler 0x1336f8:238],
+                    // so every guard's update-pass roll precedes them. The old inline call drew them
+                    // mid-update (before the guards' AI rolls) and shifted the AI stream — the held
+                    // merge's cover/fire-rate failures. Recorded here, consumed at the flush after
+                    // the guard control loop (the collide tail); the guard bullets' own impacts (the
+                    // later loop) draw before Bond's older bullets, as the game's newest-first list
+                    // orders them [M control_create_object 0x1344e0 — the head insert].
                     if let Some((_, n, m)) = d.world.segment_surface(b.pos, end, false) {
-                        if laser_beam {
-                            // The `Effect_Laser` stand-in: Gas_Init(2.0, 3.0, …, kind 5, 0x7f7f64ff,
-                            // life) [M 0x1cef38:60-70] — the pool's puff without its per-surface mesh
-                            // (the EffectInfo+idx*0x88+0x10 field the port doesn't parse yet [S]; the
-                            // main agent's render check owns the look).
-                            self.gas.init(hit, 0.0, [0.0; 3], 2.0, 3.0, 5, [0x7f, 0x7f, 0x64, 0xff], 8.0);
-                        } else if let Some(dir) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, hit, n, m, b.dir, flags70, b.bounces, true) {
-                            ricochet = Some((hit, dir));
-                        }
+                        self.pending_world_impacts.push((bi, hit, n, m, b.dir, flags70, b.bounces, laser_beam));
                     }
                     // fix-weapon-effects: the impact explode — `Bullet_CollisionHandler` 0x12d068-0x12d0bc
                     // [M, disassembled]: after the effects, when the weapon's `+0x70` carries bit 2 (0x4)
@@ -6479,28 +6485,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // and push the generic 0x06000052, making the bolt arm dead code (the merge
                     // hold's symptom: the cyan player came only from cutscene-actors's separate
                     // direct spawn, and the generic player leaked through).
-                    if flags70 & (0x4 | 0x10_0000 | 0x20_0000) != 0 && b.bounces == 0 {
-                        let radius = d.weapons.records.get(b.weapon as usize)
-                            .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
-                        let damage = d.weapons.records.get(b.weapon as usize)
-                            .map_or(0.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
-                        let script = if flags70 & 4 != 0 { 0x0600_0052 } else { 0x0600_07c4 };
-                        // The scale is the game's f12: radius for the 0x4 arm, 1.0 for the bolt
-                        // arms [M 0x12d0ac / 0x12d0ec-0x12d0f0].
-                        let scale = if flags70 & 4 != 0 { radius } else { 1.0 };
-                        // Queued, not spawned: the grenade section's per-tick `explosions.clear()` runs
-                        // AFTER `update_player_bullets`, so a blast pushed here directly would be wiped
-                        // before the view sees it — the queue drains after that clear.
-                        self.pending_blasts.push((hit, radius, damage, usize::MAX, b.weapon, script, scale));
-                    } else if let Some((p, dir)) = ricochet {
-                        if b.bounces < 3 {
-                            b.dead = false;
-                            b.pos = p;
-                            b.dir = dir;
-                            b.bounces += 1;
-                            b.first = false;
-                        }
-                    }
+                    // fix-gas-rng2: the explode gate and the ricochet re-aim moved to the flush below
+                    // — both key on the deferred ricochet roll [M 0x12d068-0x12d7b8: the handler runs
+                    // the effects first, then the explode gate, else the re-aim].
                     // fix-blast-scripts2: cutscene-actors's separate direct `spawn_once` of
                     // 0x06007c4 at the world hit is GONE — the queued blast's `spawn_blast` now
                     // spawns the same script player (at the game's f12 scale) through the ONE
@@ -6564,7 +6551,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 }
             }
         }
-        bullets.retain(|b| !b.dead);
+        // fix-gas-rng2: the dead-bullet retain moved to the impact flush (the end of `tick`) —
+        // a deferred ricochet revives its bullet in place through `player_bullets[bi]`.
         self.player_bullets = bullets;
     }
 
@@ -8359,6 +8347,46 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
         }
         self.bullets.retain(|b| b.state < 2);
+        // fix-gas-rng2: the player bullets' impact effects at the game's collide pass — after the
+        // guards' update-pass rolls (the guard bullets' own impacts above already sit here). The
+        // order inside the flush follows `Bullet_CollisionHandler` 0x12ce80: the effects (their RNG
+        // draws) → the explode gate (`+0x70 & {4, 0x100000, 0x200000}`, non-ricochet contacts
+        // [M 0x12d068-0x12d188]) → else the ricochet re-aim [M 0x12d704-0x12d7f0]. The guard bullets
+        // drew first: the game's list is newest-first and a guard's reply bullet is newer than the
+        // player's shot it answers [M control_create_object 0x1344e0].
+        let pending = std::mem::take(&mut self.pending_world_impacts);
+        for (bi, hit, n, m, dir, flags70, bounces, laser_beam) in pending {
+            let mut ricochet: Option<V3> = None;
+            if laser_beam {
+                // The `Effect_Laser` stand-in: Gas_Init(2.0, 3.0, …, kind 5, 0x7f7f64ff,
+                // life) [M 0x1cef38:60-70] — no shared-RNG draws.
+                self.gas.init(hit, 0.0, [0.0; 3], 2.0, 3.0, 5, [0x7f, 0x7f, 0x64, 0xff], 8.0);
+            } else if let Some(nd) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, hit, n, m, dir, flags70, bounces, true) {
+                ricochet = Some(nd);
+            }
+            if flags70 & (0x4 | 0x10_0000 | 0x20_0000) != 0 && bounces == 0 {
+                let wi = self.player_bullets.get(bi).map_or(0, |b| b.weapon as usize);
+                let radius = d.weapons.records.get(wi)
+                    .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
+                let damage = d.weapons.records.get(wi)
+                    .map_or(0.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
+                let script = if flags70 & 4 != 0 { 0x0600_0052 } else { 0x0600_07c4 };
+                let scale = if flags70 & 4 != 0 { radius } else { 1.0 };
+                let weapon_type = self.player_bullets.get(bi).map_or(0, |b| b.weapon);
+                self.pending_blasts.push((hit, radius, damage, usize::MAX, weapon_type, script, scale));
+            } else if let Some(nd) = ricochet {
+                if let Some(b) = self.player_bullets.get_mut(bi) {
+                    if bounces < 3 {
+                        b.dead = false;
+                        b.pos = hit;
+                        b.dir = nd;
+                        b.bounces += 1;
+                        b.first = false;
+                    }
+                }
+            }
+        }
+        self.player_bullets.retain(|b| !b.dead);
         // Grenades (`Bullet_update` + `Bullet_CollisionHandler`, WORKLOG 0080): move under gravity, bounce off the
         // world, explode after the fuse (`Bullet_handle_object_destruction` 0x12cd98: `+0x68 & 0x4000` and
         // `+0x70 & 0x80204`; a bounce NEVER explodes [M 0x12ce80]). fix-explosions: the blast is `Explode_Create`

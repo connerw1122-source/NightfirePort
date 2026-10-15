@@ -287,8 +287,12 @@ fn sha1_lines(lines: &[String]) -> String {
 
 /// The smoke puffs (`Gas_Init` 0x1aacc8 / `gases_smoke` 0x1ab2d0) through the real input path: firing
 /// spawns a puff at the muzzle with the game's parameters (`Player_MuzzleFlash` 0x1a4298:91-103 —
-/// scale 0.05→0.1, mesh 0x2000039, type 7, rgba 0x48403080), it fades and dies. The scene draws every
-/// live puff as a billboarded `smoke_1_dust` quad. Fail-first: pre-fix, `drones.gas` did not exist.
+/// scale 0.05→0.1, mesh 0x2000039, type 7, rgba 0x48403080), it fades and dies on the game's
+/// lifetime: the decompile-dropped stack word `lhu 0xc0(sp)` 0x1aad24 = 0x80 = 128 ticks [M; the
+/// searchlight's own 0x80 at 0x1cbce0 confirms the site family], decremented once per pool tick
+/// [M 0x1ab2d0 tail: `life − FRAME_RATE_MUL`, obj+0xFE |= 1 at ≤ 0]. fix-gas-rng2: the drawn
+/// lifetime IS the field the game sets from its draw — the old 8-tick pin was the pre-110o [S]
+/// guess. The scene draws every live puff as a billboarded `smoke_1_dust` quad.
 #[test]
 fn firing_spawns_a_muzzle_smoke_puff_that_fades_and_dies() {
     use nf_game::player::{Bond, Input};
@@ -307,24 +311,26 @@ fn firing_spawns_a_muzzle_smoke_puff_that_fades_and_dies() {
         if let Some(g) = sim.drones.gas.puffs.iter().find(|g| g.kind == 7) { g0 = Some(g.clone()); break; }
     }
     let g0 = g0.expect("firing never spawned the muzzle smoke puff");
-    // By capture time the pool ticked once (the update runs at the next tick head), so the scale is
-    // 0.05 + one growth tick of (0.1−0.05)/8 = 0.00625.
+    // fix-gas-rng2: the puff is captured FRESH — the latch consumption runs after `drones.tick`'s
+    // pool tick (the game's collide pass), so no pool tick has touched it yet: scale 0.05, the
+    // unfaded 0x48403080, life 128. The windows below keep room for one tick either way.
     assert!(g0.scale >= 0.05 && g0.scale < 0.0563, "the game's start scale 0.05 [M 0x1a4298], got {}", g0.scale);
     assert_eq!(g0.kind, 7, "the game's type 7 [M 0x1a4298]");
-    // The rgba started at 0x48403080 and faded one tick (rate = start/life: r −9, a −16).
+    // The rgba started at 0x48403080 (rate = start/life: r −9, a −16 per tick).
     assert!((56.0..=72.0).contains(&g0.rgba[0]) && (112.0..=128.0).contains(&g0.rgba[3]),
         "the game's rgba 0x48403080 fading out, got {:?}", g0.rgba);
     // The spawn y is the eye at spawn time (pos + 1.5) minus the aim drop; Bond keeps settling after
     // the shot, so compare against the pre-fire pos with a unit window.
     assert!((g0.pos[1] - (spawn_y + 1.45)).abs() < 1.0, "the puff sits at the muzzle height, got {} vs {}", g0.pos[1], spawn_y + 1.45);
-    // It fades and dies (8 ticks [S], the decomp drops the game's life arg).
+    // It fades and dies ON TIME: life 0x80 = 128 ticks [M 0x1aad24 stack word; the pool tick
+    // decrements once [M 0x1ab2d0 tail]] — captured fresh, so gone after exactly 128 more.
     let mut ticks = 0;
     while sim.drones.gas.puffs.iter().any(|g| g.kind == 7) {
         sim.step_bond(Input::default(), false, false, false);
         ticks += 1;
-        assert!(ticks < 20, "the puff outlived its life");
+        assert!(ticks < 200, "the puff outlived its life");
     }
-    assert_eq!(ticks, 7, "life 8, one tick spent before capture: gone after 7 more");
+    assert_eq!(ticks, 128, "life 0x80 = 128 [M 0x1aad24], captured fresh before its first pool tick");
     // The sister: not firing spawns no muzzle smoke (fix-world-fx: the pool legitimately carries
     // the ripples' type-6 rings, so the check is the type-7 count).
     for _ in 0..30 { sim.step_bond(Input::default(), false, false, false); }

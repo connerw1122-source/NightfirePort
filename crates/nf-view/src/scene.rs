@@ -326,6 +326,12 @@ pub struct Sim {
     pub first_person: bool,
     /// The tick of Bond's last shot (the first-person flash).
     pub last_shot: Option<u32>,
+    /// fix-gas-rng2: the muzzle-flash latch (`+0x95b` [M Player_WeaponInitBullet 0x1a4bf0:188/203]).
+    /// The game's MuzzleFlash (the light's draw + the smoke's 6) runs from Player_CollisionHandler
+    /// 0x1949a8:189-191 — the collide pass, after the update pass's AI rolls and the bullets'
+    /// impact effects. The port consumes it right after `drones.tick` returns. (muzzle pos, light
+    /// radius, light rgb).
+    pub muzzle_latch: Option<([f32; 3], f32, [u8; 3])>,
     /// Bond fired during the latest `step_bond` (the muzzle light's one tick; `last_shot` is stamped before the
     /// drone tick advances the frame, so it cannot say this alone).
     pub shot_tick: bool,
@@ -3473,20 +3479,15 @@ impl Sim {
                     if light_gate {
                         let radius = f32::from_le_bytes([w[0x58], w[0x59], w[0x5a], w[0x5b]]);
                         let pos = [camera[0] + dir[0] * 0.5, camera[1] + dir[1] * 0.5, camera[2] + dir[2] * 0.5];
-                        self.drones.lights.create(radius, 2.0, pos, [w[0x56], w[0x55], w[0x54]], 0, 0, 1, 0, &mut self.drones.rng);
-                        let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
-                        if flags68 & 0x2000 == 0 {
-                            // `Gas_Init`'s `Rand_FRand(2π)` draw (the smoke puff's angle), in the game's
-                            // order — every MuzzleFlash tick, the stunner's no-target ones included
-                            // (the draw keeps the shared RNG's draw count bit-exact).
-                            let _angle = self.drones.rng.frand(6.2831854820251465);
-                            // The puff itself: `Gas_Init(0.05, 0.1, vel NULL, 0x2000039, 7, 0x48403080,
-                            // end 1, life 0x80 = 128)` [M disasm 0x1a4404-0x1a442c — the life the
-                            // decompile drops]. fix-gas-rng: `Gas_Init`'s own draws (spin 0x1ab060,
-                            // sign 0x1ab08c, kind-7 wind 0x1ab160/184/1a4) now ride the shared stream
-                            // right after this draw, 5 more per puff.
-                            self.drones.gas.init_muzzle_smoke(&mut self.drones.rng, pos);
-                        }
+                        // fix-gas-rng2: the LATCH, not the draws. `Player_MuzzleFlash` 0x1a4298 (the
+                        // light's `Light_Create` + the smoke's `Gas_Init` — 6 shared draws with the
+                        // 2π at 0x1a43ec) runs from `Player_CollisionHandler` 0x1949a8:189-191 on the
+                        // `+0x95b` latch [M Player_WeaponInitBullet 0x1a4bf0:188/203] — the game's
+                        // collide pass, after the update pass's guard AI rolls and the bullets'
+                        // impact effects. The old position drew them BEFORE `fire_player`'s spread
+                        // draws and before every guard's roll — the held merge's stream shift.
+                        // Consumed at the post-`drones.tick` hook below.
+                        self.muzzle_latch = Some((pos, radius, [w[0x56], w[0x55], w[0x54]]));
                     }
                     if spawn_shot {
                         self.last_shot = Some(self.drones.frame);
@@ -3671,6 +3672,22 @@ impl Sim {
             Some((self.view_datum_matrix(if alt { 5 } else { 1 }).unwrap_or_else(|| self.gun_matrix()), self.bond.pos[1]))
         } else { None };
         self.drones.tick(&d, &player);
+        // fix-gas-rng2: the muzzle latch consumed at the game's collide pass. The order matches
+        // `Player_CollisionHandler` 0x1949a8: the bullets' impact effects drew first (the flush at
+        // the end of `drones.tick` — the bullets head the object list, the player sits deeper), the
+        // guards' collide handlers between, then the player's `Player_MuzzleFlash`: the light's
+        // `Light_Create` draw, `Gas_Init`'s 2π (0x1a43ec) and its own 5 (spin 0x1ab060, sign
+        // 0x1ab08c, the kind-7 wind 0x1ab160/184/1a4). The 0x2000 no-smoke gate is the game's
+        // [M 0x1a42e8].
+        if let Some((pos, radius, rgb)) = self.muzzle_latch.take() {
+            self.drones.lights.create(radius, 2.0, pos, rgb, 0, 0, 1, 0, &mut self.drones.rng);
+            let w: &[u8] = self.weapons.records.get(self.gun.weapon as usize).map(|r| &r[..]).unwrap_or(&[]);
+            let flags68 = u32::from_le_bytes(w.get(0x68..0x6c).map_or([0; 4], |b| b.try_into().unwrap()));
+            if flags68 & 0x2000 == 0 {
+                let _angle = self.drones.rng.frand(6.2831854820251465);
+                self.drones.gas.init_muzzle_smoke(&mut self.drones.rng, pos);
+            }
+        }
         // fix-script-objects: the script-created AI volumes (`Drone_AIVolume_Create` 0x1376c0 via
         // `Script_CreateEntity` 0x1d8968's 0xF5 arm) join the level's volume list the tick their
         // script creates them (the game's `LList_Add` 0x2706c8 registration), and their matrix
@@ -5864,7 +5881,8 @@ impl Scene {
             // 0x1c7e78:25] and the front-end boot keeps it until 180-fix-menus wires the page's
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false,
+            muzzle_latch: None, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, laser_charge: 100.0, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,
                 view_alert: false,
