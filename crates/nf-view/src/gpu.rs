@@ -317,7 +317,7 @@ impl Renderer {
         // overrides; the pre-world sky pass ignores depth, the post-fog sky is pinned to the far plane (drawn only where
         // nothing else is).
         let make_pipeline = |d: Draw| {
-            let (compare, write) = match d.pass { 0 => (wgpu::CompareFunction::Always, false), 4 => (wgpu::CompareFunction::LessEqual, false), _ => (wgpu::CompareFunction::LessEqual, d.zwrite) };
+            let (compare, write) = match d.pass { 0 | 6 => (wgpu::CompareFunction::Always, false), 4 => (wgpu::CompareFunction::LessEqual, false), _ => (wgpu::CompareFunction::LessEqual, d.zwrite) };
             let alpha_keep = wgpu::BlendComponent { src_factor: wgpu::BlendFactor::Zero, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add };
             let blend = match d.blend {
                 1 => wgpu::BlendState { color: wgpu::BlendComponent { src_factor: wgpu::BlendFactor::SrcAlpha, dst_factor: wgpu::BlendFactor::One, operation: wgpu::BlendOperation::Add }, alpha: alpha_keep },
@@ -722,7 +722,8 @@ impl Renderer {
                 // no-depth-write alpha-list draws happened (the 0700000c pylon: zwrite off, against
                 // sky/sea — erased; its baked shadow survived because it writes depth). Slot map:
                 // pass 0 (pre-world sky) → 0, pass 1 (list 0) → 2, pass 4 (post-fog sky) → 3,
-                // pass 2 (characters) → 4, pass 3 (alpha list) → 6, pass 5 (effects) → 10.
+                // pass 2 (characters) → 4, pass 3 (alpha list) → 6, pass 5 (effects) → 10, pass 6 (sort list 2, drawn
+                // after `psiClearZ` [M Game_Draw 0x1e6f50:162-175] — no depth test) → 12.
                 let slot = match dc.pass { 4 => 3, p => p * 2 };
                 (slot, key, k)
             }));

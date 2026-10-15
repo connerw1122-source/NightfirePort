@@ -552,7 +552,8 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     //    0x05000090 resolves to the substitute skin's data — exactly the object the game builds.
     // 2. 07000014's 0x050000b1 (11 placements) has NO substitution (the disassembly covers only
     //    0x05000090) — the game's skin table accumulates every archive loaded in the session
-    //    (`AnimLoadFile` 0x1d8248 registers per map; nothing frees between levels), and 0x050000b1
+    //    (`AnimLoadFile` 0x1bdf40 registers per map; nothing frees between levels — 0x1d8248 is
+    //    `Script_Load`, the old mislabel), and 0x050000b1
     //    lives in 07000015/16's archives [D]. `CommonAnimFile` (the LoaderLoad type-4 name source,
     //    the variable at 0x30d860 [M 0x1d4a00 case 0: `param_2 = CommonAnimFile` — the only
     //    reference in ACTION.ELF, no writer]) is 0 at every level-start snapshot [L
@@ -563,10 +564,9 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     //    bucket; the per-skeleton lists are order-sensitive gameplay data — the WORKLOG's warning).
     {
         let mm = level.main_map();
-        }
-        let mm = level.main_map();
         // The substitution [M 0x1be910]: 0x05000090 → the level's own variant, before anything
-        // else looks the hash up. `GameState+0x12` is the current level id.
+        // else looks the hash up. The compared word is `GameState+0xC` @0x2a3774 (the current
+        // level id; the "+0x12" in older notes was the decompiler's decimal offset 12).
         match u32::from_str_radix(&archive[..8], 16).unwrap_or(0) {
             0x0700_000c | 0x0700_0014 => {
                 let level_id = u32::from_str_radix(&archive[..8], 16).unwrap_or(0);
@@ -653,6 +653,17 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                     foreign.maps.len(), foreign.skins.len());
             }
         }
+    }
+    }
+    // The sleeve substitution (fix-missing-drone-skins): `AnimProcessSkinData` 0x1bd500:159-166
+    // reroutes every 0x10-flagged MAIN entry through `AnimSleeveGetEntity(0)` 0x1c6590 — the first
+    // present entity of the fixed SleeveEnts list @0x2c6ed8 — before the celglist lookup; none
+    // present → celglist 0 (nothing drawn). The port applies it once here, after the session
+    // merges above, so every downstream reader (character_instances' mesh walk, the scene build,
+    // the sim) sees exactly the hashes the game's runtime skin records carry.
+    {
+        let present = |h: u32| level.by_hash.contains_key(&h);
+        for sk in level.skins.values_mut() { sk.substitute_sleeves(present); }
     }
     // The loadable cut-scene packs (fix-cutscenes): `SP_LoadScript` (0x1dbc08) checks `isLoadable(hash)`
     // (0x1d69a0 — the table filled by `LoaderProcess` 0x1d4880 case 0xC from the level archive's type-0xC
@@ -2776,7 +2787,7 @@ pub fn run() -> Result<()> {
                     if v.len() >= 3 { sim.bond = nf_game::player::Bond::new([v[0], v[1], v[2]], v.get(3).copied().unwrap_or(sim.bond.yaw)); if let Some(&pt) = v.get(4) { sim.bond.pitch = pt; } sim.step_bond(shot_input, false, false, false); }
                 }
             }
-            if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV }; }
+            if walk { let h = sim.bond.head(); cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV / sim.zoom }; }
             if walk { if let Some((p, yaw, pitch, fov)) = sim.script_camera() { cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov }; } }
             eprintln!("Bond at {:?}{}, health {}", sim.bond.pos, if sim.disabled { " (disabled by a script)" } else { "" }, sim.drones.health.health);
             for u in sim.unposed(&scene.characters) { eprintln!("unposed: {u}"); }
