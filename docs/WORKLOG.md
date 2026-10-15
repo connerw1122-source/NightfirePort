@@ -13584,3 +13584,53 @@ Work Log (drive-ai-traffic2):
   predicate, the turn-rate pair, the −13 gravity on camera, the Friction tun's dead keys) and the ntfy
   429 record. What's left for the next message: the VU0 macro (.vutext 0x324800), car↔world collision
   vs the track quads, suspension/world colliders, handbrake in the step, the Friction name normalizer.
+
+## drive-ai-traffic2 (2026-10-15, branch s/drive-ai-traffic2) — DONE 23:35 UTC
+
+Work Log (drive-ai-traffic2):
+- (22:13-22:25) Setup reused (repo/ISO/nf-queue present); branch created from origin/s/drive-ai-traffic
+  @ 1fb6f042, pushed with the start entry. Merged origin/master (506's driving.rs single file vs 507's
+  driving/ → the E0761 collision reproduced); WORKLOG conflict resolved "both kept".
+- (22:20-22:27) The layout: `git mv driving.rs driving/physics.rs` (the task's suggested layout) and
+  driving/mod.rs now declares `pub mod {ai, physics, road}` + one re-export line
+  `pub use physics::{Car, CarInput, CarParams, DT, FlatWorld, Friction, Rigid, SURFACES, Tuning};` —
+  every public path 506's tests/callers use survives (pinned by the layout test). No other file
+  touched; no internal `crate::driving` users existed.
+- (22:25-22:30) The wiring (the seam 507 left open): `ai::SimCar::of_car(&physics::Car)` (pos/vel/
+  the yaw's [sin,0,cos] forward row; alive = 1.0 [S — FUN_00195a30 is the actor layer]) and
+  `ai::AiDriver { brain: AiCar, car: Car, world, rigid }` — the FUN_00133ab0 command maps 1:1 onto
+  506's CarInput, Car::step integrates [M 0x1ff3d8's order], the PRE-integration sim speed drives the
+  progress (the AI reads |vel| before the vehicle sim integrates [M 0x133ab0:103-113];
+  `AiCar::advance_path` = the progress walk moved verbatim out of AiCar::step, rail behavior
+  unchanged), then the car lands back on the spline [M 0x222468] facing the travel direction. The
+  brake rest clamp [S] stops 506's brake integrating through zero into reverse (R is the gearbox's;
+  at rest the AI's own speed ≤ 0 early-out [M 0x133ab0:153] parks it). Known gap recorded:
+  Car::step does not read handbrake yet (506's own list) — the forced-stop test fails the day 506's
+  handbrake lands, on purpose.
+- (22:30-22:32) Tests crates/nf-game/tests/driving_ai_physics.rs (8, all green): the layout paths,
+  the sim view, the acceleration numbers with a bit-exact bare-Car replay (the driver adds no
+  physics of its own), the steering-angle falloff [M 0x18cef8:458-474], the arrival rest (no reverse
+  runaway), the forced-stop record, the clean-link crossing at the physics speed, standby.
+  Existing suites re-run: drive_physics 13/13 (506 on the moved file), driving_ai_follow 9/9 (507
+  after the advance_path refactor), objective_state 5/5.
+- (22:28-23:33) The suite on the final merged tree (origin/master @ the WORKLOG merge, no further
+  master movement fetched): the background suite.py died empty again (this sandbox reaps detached
+  processes — 507's note) → foreground slices. nf-game FULL: 41 binaries, 371 passed / 0 failed.
+  nf-formats + nf-audio FULL: 104 passed / 3 failed = exactly the 3 disc_golden slim-ISO tests
+  (allowed). nf-view (untouched by this task): 304 test binaries, ~81 executed serially before the
+  window closed — the only real failure is the known no-GPU fix_0c_pylon_live pair (2 tests, the
+  same environmental pair 507 recorded); campaign_flow_live (5/5) and fix_guard_weapons_live (3/3)
+  pass with 180 s budgets (my first 60 s cap was the timeout cause); the parallel-execution attempt
+  OOM-killed processes (rc 137) and is NOT counted — those binaries need a serial rerun next session.
+  A one-pass `cargo test -p nf-view` aborts at the first failing binary (cargo default) — use
+  --no-fail-fast.
+- (23:35) Report docs/reports/drive-ai-traffic2.md pushed; finish.sh; ntfy.
+
+Stage Summary:
+- One module layout: crates/nf-game/src/driving/{mod,physics,ai,road}.rs — physics.rs is 506's file
+  moved intact; mod.rs re-exports the 9 physics names; ai.rs gains SimCar::of_car + AiDriver +
+  advance_path (the refactor); road.rs untouched.
+- The AI now drives 506's physics model end to end, headless and deterministic; every 506/507 test
+  path kept green; 8 new tests pin the wiring.
+- Left for the next session: the nf-view serial sweep completion (~220 binaries), the real-data
+  NF_DRIVING golden (the 429 MB archive, disk-bound), the curve-eval live check L-3.
