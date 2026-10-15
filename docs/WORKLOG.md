@@ -13323,3 +13323,10 @@ Work Log (drive-crp-format):
 - Findings: the fix-melee guard-2 stand (60.4,27.1,100.4) has no floor in the sim — the Scorpion row uses the [L] chase-trace stand (79.86,22.92,96.0; guard 19.3 out in view); the 0c upper-walkway spot is walled off from the vent (end wall z −110.02, opening 3.2 up) — the doc's hatch row uses the burn stance (6.0,12.94,−110.5, floor 11.84 [L]); the 0a cubicle blocker is Bond-body only (eye ray blocked t≈0.46, the shot installs clean; fire straight after spawning — a settled Bond slides ~1.1 off the desk-edge spot).
 - Suite: this sandbox kills detached processes between tool calls (3 attempts) and OOM'd/disk-filled at the suite's -j4 build (3 GB RAM; pruned 2.4 GB of stale target artifacts) — the suite ran in foreground chunks against the 555 s tool cap: 94 binaries through chunk 0 (93 ok, 1 FAILED = probe_pylon_render: wgpu finds no GPU in this sandbox — environment, not code), 25 more ok in chunk 1 (cut mid-run). ~220 long NF_ISO binaries didn't fit the window. No failure attributable to this task (two new files only; no shared file touched).
 - Report: docs/reports/playtest-spots.md. Live checks for the main agent listed there + in spots.md (Q-Claw draw on cold 05, 0a walk-in, 0c ascent, 14 approach, 02 bathhouse hatches, 06 siren).
+## screen-adjust-model (2026-10-15, branch s/screen-adjust-model) — started 19:21 UTC
+- Task: AV Options → Screen Adjust. Port P_SCREENADJUST_Handler 0x217a58 / C_SBSCREEN_Handler 0x217b08 (the
+  picture-offset page: what offsets it edits, ranges/steps, how they save into the profile, what they change on
+  screen), the AV Restore Defaults reset list (P_CNAVOPTIONS_Handler 0x214818:100-106), and document Widescreen /
+  Speaker / Split-screen runtime effects (implement Widescreen 16:9 view aspect if simple: Camera_CalcViewAngles
+  0x1baf70 writes 16/9 when DAT_002a37c4 is set). Deliver docs/systems/screen-adjust.md first, then state/flow/
+  getters in nf-view menu.rs or nf_game, tests with sister assertions, report docs/reports/screen-adjust-model.md.
