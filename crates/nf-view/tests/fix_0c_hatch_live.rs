@@ -72,10 +72,16 @@ fn the_hatch_sweep_takes_the_game_rate_ticks() {
     // Sister: the blocker (#179, 2 keys, rate 10 [D]) — the last==1 special case advances 1/rate
     // per tick [M 0x1a9948:103-105], so its sweep is unchanged by the rate fix: ~10 ticks.
     assert!(t179_done <= 13, "the blocker (#179, rate 10 [D]) must sweep in ~10 ticks, took {t179_done}");
-    // Sister: the blocker STAYS up (the channel holds, the playhead does not return).
+    // Sister: the blocker STAYS up and the hatch STAYS open — the decomp's truth [M 0x1a9948:119-128]:
+    // the playhead counts PAST the last key (the (int) trunc wrap fires only at the next whole key
+    // boundary) while the POSE clamps at the last key, and the state completes to 0 (rearm = param 1
+    // = 1 [D #138/#179]) — states 0/0x40 never re-interp, so the matrix holds the end pose.
     for _ in 0..60 { sim.step_bond(Input::default(), false, false, false); }
-    assert!((sim.drones.sss.list[ss179].t - 1.0).abs() < 0.01, "the blocker stays risen while ch 18 holds");
-    assert!((sim.drones.sss.list[ss138].t - 5.0).abs() < 0.01, "the hatch stays open while ch 18 holds");
+    let (s179, s138) = (&sim.drones.sss.list[ss179], &sim.drones.sss.list[ss138]);
+    let open179 = nf_game::door::interp(&s179.keys, 0, (s179.keys.len() - 1) as u16, 1.0, s179.spline).expect("blocker end pose");
+    let open138 = nf_game::door::interp(&s138.keys, 0, (s138.keys.len() - 1) as u16, 5.0, s138.spline).expect("hatch end pose");
+    assert_eq!(s179.matrix, open179, "the blocker's pose holds its risen key [M 0x1a9948:73-77]");
+    assert_eq!(s138.matrix, open138, "the hatch's pose holds its open key [M 0x1a9948:73-77]");
 }
 
 /// Symptom 1's sister: the warehouse ventmesh #180 (6 keys, rate 50 [D]) — the same 5×-slow model

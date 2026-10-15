@@ -181,7 +181,12 @@ impl SsList {
                     s.t += step;
                     // The exact-landing epsilon [M :109-113]: an exact duration disarms without a wrap.
                     if s.duration > 0.0 && s.t > s.duration && (s.t - s.duration).abs() < 0.0002 { s.state = 0x40; }
-                    if s.t > last {
+                    // The overshoot wrap [M :119-128] compares (int)playhead — the C's
+                    // `(int)lastFrame < (int)fVar7` truncates the float — so a landing at 5.0000001
+                    // (rate 50's inexact step) does NOT wrap: the playhead keeps counting with the
+                    // pose clamped at the last key until the next whole key boundary. (State 8's
+                    // wrap at :66 is a plain float compare — the asymmetry is the game's.)
+                    if (last_k as i32) < (s.t as i32) {
                         s.t = 0.0;
                         s.state = if s.rearm == 0 { 0x40 } else { 0 }; // [M :119-128]
                     }

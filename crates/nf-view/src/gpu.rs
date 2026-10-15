@@ -534,7 +534,12 @@ impl Renderer {
     fn straddles_2_cels(&self, centre: [f32; 3], radius: f32) -> bool {
         let mut n = 0;
         for &(min, max) in &self.cel_boxes {
-            let d2: f32 = (0..3).map(|k| { let c = centre[k].clamp(min[k], max[k]); (centre[k] - c) * (centre[k] - c) }).sum();
+            let d2: f32 = (0..3).map(|k| {
+                let (lo, hi) = (min[k].min(max[k]), min[k].max(max[k])); // degenerate-safe
+                if !lo.is_finite() || !hi.is_finite() { return 0.0; }
+                let c = centre[k].clamp(lo, hi);
+                (centre[k] - c) * (centre[k] - c)
+            }).sum();
             if d2 <= radius * radius { n += 1; if n >= 2 { return true; } }
         }
         false
