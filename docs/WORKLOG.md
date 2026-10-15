@@ -13011,3 +13011,19 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
   the port (grep id / caller's port function), classify PORTED / MISSING / N/A, write
   docs/systems/sound-coverage.md, then port the 5 most-noticeable SP on-foot MISSING sites with
   NF_ISO tests asserting the sound reaches the Sim's sound list (NF_SILENT).
+- audit-sound-calls (16:18-18:12): the full sound-call audit + 5 ports. 195 direct call sites
+  enumerated (jal-scan + decomp id slots; the decomp's float-prototype scramble settled by dis —
+  e.g. Break_Kill 0x12b9d4-50: the 0x5F2 taken-branch delay slot vs the 0x5F3 fall-through).
+  docs/systems/sound-coverage.md is the table (PORTED/MISSING/N/A per site + summary). Whole-class
+  gaps: Sensor 0x29 beeps, SpaceLaser 0x50, SS 0x25 playback, Break 0x20 smash, picklock beeps
+  0x5DB/0x5DA, RB shot-thud, SSys_Msg alarms, sky thunder (sky.rs computes the event, no sim
+  wiring — G-019). Ported with NF_ISO tests (sound_coverage_live.rs, 4/4 pass): 0x10E
+  grenade-ammo launch (fire_player, Bullet_init 0x12c5a0:285-291), 0xA3/0x5FB jump launch + head
+  bump (Bond::sfx_out → scene drain, 0x1916b0:184,195-198; the level_tag+0x50 gate plumbed as
+  LadderCtx::level_bump_5fb, live check listed), 0x249+0x5DD laser burn-through (the watch-bullet
+  pass, 0x1ae3d8:90-93 + 0x12d890:473-478), 0x148 special-death cry (sfx_reqs outbox, 0x163c68
+  case 5). Shared hooks: drone.rs (fire_player +9, burn +9, ENTER +5, sfx_reqs field+drain),
+  player.rs (sfx_out + level_bump_5fb, own lines), nf-view scene.rs (the 6-line drain). The full
+  suite was started on the pre-edit tree and killed when the sandbox disk hit 100% (the stray
+  in-repo target/ 1.9 G deleted); the final-tree suite run is left to the next session. Report:
+  docs/reports/audit-sound-calls.md.
