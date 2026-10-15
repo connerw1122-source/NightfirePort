@@ -267,3 +267,135 @@ fn refpack_golden_covers_every_refpack_entry_of_all_23_archives() {
     assert!(!expected.iter().any(|(k, _)| k.ends_with(".MUS") || k.ends_with(".SPE")),
         "no .MUS/.SPE archive may carry refpack streams");
 }
+
+// ---- The .crp CARP container (driving phase 1, task 503) -------------------------------------------
+//
+// Every `.crp` of the 23 archives (89 entries [D, golden/crp_golden.tsv]) is RefPack-compressed or,
+// for the five MISC.VIV cars, plain, and decompresses to a CARP record pool: a root `CARP` record,
+// an `Arti`/`Shar`/`CDat`/`RNgp`/`Map ` pool, and a chunk directory (`DBN ` track name, `ELFd` +
+// `ELFr` — a real 32-bit LE MIPS relocatable object, `MapN`, `Sect`, instance-indexed `sn  `).
+// Consumers [M]: track loader 0x22f898 (DBN), module loader 0x1a9600 (ELFd/ELFr/Sect/sn),
+// record namer 0x2dc1b0 (Arti/Shar/CDat/RNgp/Map + nested Name). The parser is
+// `nf_formats::crp`; docs/formats/crp.md.
+//
+// The canonical row (must match golden/crp_golden.tsv byte for byte):
+// key | entry | decompressed | sha1 | root_flags | pool | chunks | elf | name | elfd_sha1, where
+// pool = "CODE×n" histogram (codes as the big-endian spelling, spaces → `_`, short tags "CODE#i"),
+// chunks = "CODE:size:payload_off" in directory order, elf = "t<e_type>.m<e_machine>.s<e_shnum>"
+// of the ELFd payload or "-", name = the DBN string or "-".
+
+fn crp_code_str(tag: u32) -> String {
+    tag.to_be_bytes().iter()
+        .map(|&b| if (32..127).contains(&b) { b as char } else { '.' })
+        .collect::<String>().replace(' ', "_")
+}
+
+fn crp_render(tag: u32, flags: u32) -> String {
+    let code = if flags & 1 != 0 { (tag & 0xffff_0000) | 0x2020 } else { tag };
+    if flags & 1 != 0 { format!("{}#{}", crp_code_str(code), tag & 0xffff) } else { crp_code_str(code) }
+}
+
+fn crp_canonical(key: &str, entry: &str, dec: &[u8]) -> String {
+    use nf_formats::crp::{Crp, tag};
+    let c = Crp::parse(dec).unwrap_or_else(|e| panic!("{key}: CARP parse failed: {e}"));
+    let mut pool_hist: std::collections::BTreeMap<String, u32> = Default::default();
+    for r in c.pool().unwrap_or_else(|e| panic!("{key}: pool: {e}")) {
+        *pool_hist.entry(crp_render(r.tag, r.flags)).or_default() += 1;
+    }
+    let pool: Vec<String> = pool_hist.into_iter().map(|(k, v)| format!("{k}×{v}")).collect();
+    let mut chunks = Vec::new();
+    let mut elfd: Option<(usize, usize)> = None;
+    for r in c.directory().unwrap_or_else(|e| panic!("{key}: directory: {e}")) {
+        let at = r.data_addr(dec).unwrap_or_else(|e| panic!("{key}: data_addr: {e}"));
+        chunks.push(format!("{}:{}:{:#x}", crp_render(r.tag, r.flags), r.size(), at));
+        if r.tag_code() == tag::ELFD { elfd = Some((at, r.size())); }
+    }
+    let elf = elfd.and_then(|(at, size)| -> Option<String> {
+        let e = dec.get(at..at + size)?;
+        if e.get(..4)? != b"\x7fELF" { return None; }
+        let u16le = |o: usize| u16::from_le_bytes([e[o], e[o + 1]]);
+        Some(format!("t{}.m{}.s{}", u16le(0x10), u16le(0x12), u16le(0x30)))
+    }).unwrap_or_else(|| "-".into());
+    let elfd_sha = match elfd {
+        Some((at, size)) => sha1_hex(&dec[at..at + size]),
+        None => "-".into(),
+    };
+    let name = c.track_name().unwrap_or_else(|e| panic!("{key}: track_name: {e}")).unwrap_or("-");
+    format!("{key}\t{entry}\t{}\t{}\t{:#x}\t{}\t{}\t{elf}\t{name}\t{elfd_sha}\n",
+        dec.len(), sha1_hex(dec), c.root.flags, pool.join(","), chunks.join(","))
+}
+
+#[test]
+fn driving_crp_files_parse_to_the_golden() {
+    let Some(dir) = driving_dir() else { eprintln!("skip: NF_DRIVING/DRIVING not available"); return };
+    let golden = include_str!("../golden/crp_golden.tsv");
+    let mut rows = Vec::new();
+    for (name, g, blobs) in archive_rows(&dir) {
+        for (i, (e, blob)) in g.entries.iter().zip(&blobs).enumerate() {
+            if !e.name.to_ascii_lowercase().ends_with(".crp") { continue; }
+            let key = format!("{name}#{i}");
+            let dec = if nf_formats::refpack::is_refpack(blob) {
+                nf_formats::refpack::decompress(blob)
+                    .unwrap_or_else(|err| panic!("{key}: {} refpack: {err}", e.name))
+            } else { blob.clone() };
+            rows.push(crp_canonical(&key, &e.name, &dec));
+        }
+    }
+    assert_eq!(rows.len(), 89, "every .crp entry of the 23 archives must be parsed");
+    let actual = format!("key\tentry\tdecompressed\tsha1\troot_flags\tpool\tchunks\telf\tname\telfd_sha1\n{}", rows.join(""));
+    let d = diff_tsv(golden, &actual);
+    assert!(d.is_empty(), "{} differences:\n{}", d.len(), d.join("\n"));
+    // Sister: a one-character change to one digest must be caught.
+    let mut lines: Vec<String> = actual.lines().map(String::from).collect();
+    let row = &mut lines[1];
+    let last = row.pop().unwrap();
+    row.push(if last == '0' { '1' } else { '0' });
+    lines.push(lines.last().unwrap().clone());
+    let tampered = lines.join("\n") + "\n";
+    assert_eq!(diff_tsv(golden, &tampered).len() >= 1, true, "sister: a one-character change must be caught");
+}
+
+#[test]
+fn driving_crp_structure_matches_the_consumer_split() {
+    let Some(dir) = driving_dir() else { eprintln!("skip: NF_DRIVING/DRIVING not available"); return };
+    use nf_formats::crp::{Crp, tag};
+    let mut tracks = 0usize;
+    let mut with_elf = 0usize;
+    let mut plain_misc_cars = 0usize;
+    for (name, g, blobs) in archive_rows(&dir) {
+        for (i, (e, blob)) in g.entries.iter().zip(&blobs).enumerate() {
+            if !e.name.to_ascii_lowercase().ends_with(".crp") { continue; }
+            let key = format!("{name}#{i}");
+            let dec = if nf_formats::refpack::is_refpack(blob) {
+                nf_formats::refpack::decompress(blob).unwrap()
+            } else { blob.clone() };
+            let c = Crp::parse(&dec).unwrap_or_else(|err| panic!("{key}: {err}"));
+            // Every root directory carries the module chunks the game loads [M 0x1a9600].
+            assert!(c.find(tag::ELFD).unwrap().is_some(), "{key}: no ELFd module chunk");
+            assert!(c.find(tag::SECT).unwrap().is_some(), "{key}: no Sect chunk");
+            with_elf += 1;
+            // Track containers: the DBN name + the MapN/RNgp/CDat pool the track path needs
+            // [M 0x22f898/0x2dc1b0; measured: the 8 data\track\*.crp entries].
+            if e.name.starts_with("data\\track\\") {
+                let n = c.track_name().unwrap().expect("{key}: the track .crp must carry a DBN name");
+                assert!(!n.is_empty(), "{key}: empty DBN name");
+                let pool = c.pool().unwrap();
+                assert!(pool.iter().any(|r| r.tag == tag::RNGP), "{key}: track pool must hold a road network");
+                assert!(pool.iter().any(|r| r.tag == tag::CDAT), "{key}: track pool must hold collision data");
+                assert!(c.find(tag::MAPN).unwrap().is_some(), "{key}: track must carry a MapN chunk");
+                tracks += 1;
+            }
+            // The five MISC.VIV car .crp entries are the only plain (non-RefPack) ones [D, census].
+            if !nf_formats::refpack::is_refpack(blob) {
+                assert!(name.ends_with("MISC.VIV") && e.name.starts_with("data\\car\\model\\"),
+                    "{key}: unexpected plain .crp outside MISC.VIV car models");
+                plain_misc_cars += 1;
+            }
+        }
+    }
+    assert_eq!(tracks, 8, "the eight track containers (one per mission archive)");
+    assert_eq!(plain_misc_cars, 5, "MISC.VIV's plain car models (docs/formats/driving-viv.md)");
+    assert_eq!(with_elf, 89, "every .crp embeds a MIPS ELF module");
+    // Sister: the track split is load-bearing.
+    assert_ne!(tracks, 7);
+}
