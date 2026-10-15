@@ -12458,3 +12458,11 @@ Work Log:
 
 Stage Summary:
 - The guided ride now takes the window's view in play, in the headless renders, with the arms and the crosshair hidden and the 15-tick restore; the Sentinel rockets fly at the measured 0.33666/0.2525 u/frame. Report: docs/reports/fix-sentinel-camera-play.md (the live checks: the guided speed gdbwatch, the other 0x200 records, the red tint).
+
+---
+Task: fix-hit-locations2
+Agent: worker (sandbox web-9248268a)
+Task: the held s/fix-hit-locations branch fails two of its own tests on current master (the 0x42-vs-0x40 shot-death on an aimed head kill; the 07 guest test's find step panics "07000007 has present mode-0xD guests") and combined with fix-flesh-impacts breaks a_p2k_body_shot_spawns_the_blood_puff_at_the_hit_point ("scale_rate = (6-3)/60, got 6"). Find what moved (death-state choice vs master's damage path, the 07 guest modes after master's AI changes, the spawned effect vs the flesh puff) and fix from the game's code. Keep fix_flesh_impacts_live green. Files: crates/nf-game/src/drone.rs.
+
+Work Log:
+- 02:55 UTC: branch s/fix-hit-locations2 created from origin/s/fix-hit-locations (69197145); origin/master (d5b22f91, 93 commits past the base's merge point) merged FIRST as instructed. Two conflicts: drone.rs (punch-path scream: kept master's fix-melee team arms, pointed at the base's send_hurt_message whose mode!=2 gate is decompile-verified at 0x145e28 — master's refactor had dropped the gate its own doc cites) and WORKLOG (append-only, both kept). Repro next.
