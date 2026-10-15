@@ -269,6 +269,7 @@ mod tests {
             decal, ricochet_n, restitution_bits: 0x3f,
             gas: [EffectGas { mesh: 0x0200_0039, kind: 9, rgba: [0x7f7f_7f7f, 0], scale: [0.005, 0.02], life: 32, wall_offset: 1, orient_normal: 0 }, Default::default(), Default::default()],
             debris_mesh: 0x0200_012c, debris_speed: 6.2, debris_spin: 0.785, debris_life: 55, debris_enable: 1, debris_count: 5,
+            emitter: 0,
         }
     }
 
@@ -384,7 +385,7 @@ mod tests {
         let mut e3 = Effects::new();
         let mut rng3 = Rng::new(1);
         let before3 = (rng3.x, rng3.y);
-        assert!(e3.bullet_impact(&mut rng3, Some(&surf3), &mut gas, &mut fx(), [0.0; 3], n, 10, dir, 0x12, 0, true).is_none());
+        assert!(e3.bullet_impact(&mut rng3, Some(&surf3), &mut gas, &mut fx(), [0.0; 3], n, 10, dir, 0x12, 0, true, 8).is_none());
         assert_eq!((rng3.x, rng3.y), before3, "N = 0: Effect_RicochetProb draws nothing");
     }
 
