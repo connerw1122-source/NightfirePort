@@ -74,6 +74,7 @@ fn probe2_starts() {
                 pos: p.translation,
                 yaw: p.rotation[1],
                 gate: p.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v as u16),
+                p3: 0, // fix-world-gravity's LevelStart.p3 (this test's starts are not the load path)
             })
             .collect()
     }).unwrap_or_default();
