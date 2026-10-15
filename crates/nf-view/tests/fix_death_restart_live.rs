@@ -182,19 +182,35 @@ fn death_menu_applies_by_itself_after_the_red_fade() {
     assert!(sim.drones.level_exit_restart, "on the entry checkpoint [M 0x216618:21]");
 }
 
-/// ── 3. A restart of a cold-loaded level: the zeroed entry buffer + the 50.0 health floor ───────
+/// ── 3. A restart of a cold-loaded level: the POST-load entry checkpoint, full health ────────────
 /// Die on 07000005 after taking damage, flipping an objective channel and picking a pickup up;
 /// restart through the real path (the menu → `fail_choose_restart` → the viewer's reload). The
-/// level was loaded COLD, so the game's RamSave buffer holds the BSS zeros — `Player_RamLoad`'s
-/// boost arg 1 floors the health at 50.0 [L ee_start_05.bin 0x30cc34-3c] — and `Player_InitWeapon`'s
-/// 07000005 case re-equips the fresh loadout over the zeroed blocks [M 0x1a7ef8]. The channels and
-/// the mission states come back as a clean load's. Sister: the DYING state's capture does NOT match
-/// (health 0, the channels carried) — the loop's mechanism, why the game re-serves the entry buffer.
+/// level was loaded COLD — and the game re-saves the RamSave buffer with the POST-load state on
+/// EVERY load (`Player_InitWeapon`'s unconditional `Player_RamSave` [M 0x1a7ef8:325]; the
+/// `Player_RamLoad` body is gated on `IsWarmReset` [M 0x1957a8:9], so `Player_Init`'s health 100 /
+/// armour 0 [M 0x1910f8:128-138] stand and the 05 case's fresh loadout is what's captured). The
+/// fail-menu's `Player_RamLoad(Bond, 1)` floors that at 50.0 — max(100, 50) = **100: FULL health**
+/// (fix-restart-health; the old zero-buffer model here asserted the playtest's "half health" 50.0).
+/// Sister: the DYING state's capture does NOT match (health 0, the channels carried) — the loop's
+/// mechanism, why the game re-serves the entry buffer.
 #[test]
-fn restart_of_a_cold_loaded_level_restores_the_zero_buffer_with_the_health_floor() {
+fn restart_of_a_cold_loaded_level_restores_the_post_load_entry_checkpoint() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso, "07000005.bin");
     let save = {
+        let sim = scene.sim.as_ref().unwrap();
+        // The game's entry checkpoint: the post-load re-save [M 0x1a7ef8:325] — health 100, the
+        // fresh loadout, the clean channels. (`nf_view::entry_checkpoint_save` is the App's hook;
+        // the mission payload is not this test's subject, so none rides — the load's own
+        // `Mission_Init` reset stands, as in the pre-carry tests.)
+        let mut z = RamSave::capture(&sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels);
+        z.health = z.health.max(50.0); // the fail-menu's floor [L ELF 0x30cc34-3c] — a no-op at 100
+        z
+    };
+    assert_eq!(save.health, 100.0, "a cold load's buffer holds Player_Init's health 100 [M 0x1910f8:138, 0x1a7ef8:325]");
+    // Kill → the sequence → the auto-restart, through the real input path.
+    let mut scene = load(&iso, "07000005.bin");
+    let (lv, cold) = {
         let sim = scene.sim.as_mut().unwrap();
         tick(sim, 10);
         // Pick things up: teleport Bond onto the first live pickup and tick (the real take path).
@@ -209,51 +225,33 @@ fn restart_of_a_cold_loaded_level_restores_the_zero_buffer_with_the_health_floor
         tick(sim, 2);
         assert!(sim.drones.health.health < 100.0 || !sim.drones.taken.is_empty() || sim.drones.channels.on(0x45),
             "the run is dirty: damage, a pickup or a channel");
-        RamSave::capture(&sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
-            .with_mission(&sim.drones.mission)
-    };
-    // Kill → the sequence → the auto-restart, through the real input path.
-    let mut scene = load(&iso, "07000005.bin");
-    let (lv, cold) = {
-        let sim = scene.sim.as_mut().unwrap();
-        tick(sim, 5);
         let (h, r) = (&mut sim.drones.health, &mut sim.drones.rng); h.pain_generic(r, 500.0, 1, 0x0700_0005, 0);
         tick_fire(sim, 2);
         tick(sim, 4);
         exit(sim)
     };
     assert!(lv == Some(0x0700_0005) && !cold, "the restart queued: the current level, warm [M 0x216618:19-21]");
-    // The viewer's reload (lib.rs): the ENTRY checkpoint — for a cold-loaded level the game's
-    // zeroed buffer, here zeroed at the live shapes with the 50.0 health floor.
-    let zeroed = {
-        let mut scene = load(&iso, "07000005.bin");
-        let sim = scene.sim.as_ref().unwrap();
-        let mut z = RamSave::capture(&sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels);
-        z.health = 50.0; z.armour = 0.0;
-        for v in z.carried.iter_mut() { *v = 0; }
-        for v in z.clip.iter_mut() { *v = 0; }
-        for o in z.owned.iter_mut() { *o = false; }
-        for k in z.keys.iter_mut() { *k = false; }
-        for ch in z.channels.iter_mut() { *ch = 0; }
-        for t in z.ch_time.iter_mut() { *t = 0; }
-        z
-    };
-    let mut restarted = load_carry(&iso, "07000005.bin", Some(&zeroed));
+    // The viewer's reload (lib.rs): the ENTRY checkpoint with the 50.0 floor — health 100.
+    let mut restarted = load_carry(&iso, "07000005.bin", Some(&save));
     tick(restarted.sim.as_mut().unwrap(), 5); // the Mission_Init latch (the game runs it in the load)
     let mut clean = load(&iso, "07000005.bin");
     tick(clean.sim.as_mut().unwrap(), 5); // the same ticks, so the monitor's states line up
     let (r, c) = (restarted.sim.as_ref().unwrap(), clean.sim.as_ref().unwrap());
-    assert_eq!(r.drones.health.health, 50.0, "the zeroed buffer's health floors at the 50.0 boost [L 0x30cc34-3c]");
-    assert_eq!(r.drones.health.armour, 0.0, "the zeroed armour [M 0x1957a8:36]");
-    assert_eq!(r.drones.channels.v, c.drones.channels.v, "the zeroed channels match a clean load's [M 0x1957a8:17]");
-    assert_eq!(r.drones.inventory.carried, c.drones.inventory.carried, "the loadout re-equips over the zeroed blocks [M 0x1a7ef8]");
+    assert_eq!(r.drones.health.health, 100.0, "the restart gives FULL health — max(entry 100, the 50.0 floor) [M 0x1a7ef8:325 + 0x1957a8; the user's report]");
+    assert_eq!(r.drones.health.armour, 0.0, "the entry checkpoint's armour 0 [M 0x1910f8:130, 0x1957a8:36]");
+    assert_eq!(r.drones.channels.v, c.drones.channels.v, "the entry checkpoint's channels match a clean load's [M 0x1957a8:17]");
+    assert_eq!(r.drones.inventory.carried, c.drones.inventory.carried, "the loadout re-equips over the entry blocks [M 0x1a7ef8]");
     assert_eq!(r.drones.inventory.owned, c.drones.inventory.owned, "owned weapons match a clean load");
     assert_eq!(r.drones.mission.states, c.drones.mission.states, "Mission_Init's objective states match a clean load [M 0x182270:68-129]");
     assert_eq!(r.drones.mission.status(), 1, "the mission is playing [M 0x182270:28]");
     assert!(!r.drones.channels.on(0x62), "Player_Init cleared the death channel [M 0x1910f8:26,30]");
     assert!(!r.drones.death.active, "the death state is fresh");
     // Sister: the WARM carried reload would NOT match — the carried health and channels (the loop).
-    let mut warm = load_carry(&iso, "07000005.bin", Some(&save));
+    let mut warm = load_carry(&iso, "07000005.bin", Some(&{
+        let sim = scene.sim.as_ref().unwrap();
+        RamSave::capture(&sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
+            .with_mission(&sim.drones.mission)
+    }));
     let w = warm.sim.as_ref().unwrap();
     assert!(w.drones.health.health != c.drones.health.health || w.drones.channels.v != c.drones.channels.v,
         "the warm carry differs from a clean load — why the restart must be cold");
