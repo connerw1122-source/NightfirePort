@@ -93,3 +93,16 @@ None new — this task is the index of them. The first sessions worth running, p
    L-319, L-301/L-304 on 06).
 3. 0700004a lift cluster (L-243, L-246, L-247, L-761, L-463) with the 16 door[7] E-check (L-244/L-760) on the way.
 4. 0700000c vent/hatch cluster (L-066, L-067, L-068, L-072, L-073, L-074, L-379, L-645, L-648, L-649, L-650).
+
+## ntfy failed
+
+All three fallbacks attempted at 2026-10-15 18:40 UTC; the ntfy.sh topic's daily message quota is exhausted:
+
+1. curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits
+   with a paid plan, see https://ntfy.sh/docs/publish/#limitations"}`
+2. python3 urllib.request: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. wget: exit 0 with no output — delivery not confirmable (a 429 body was not printed by `-q -O-`).
+
+The notification text that was to be sent: `live-backlog: done — docs/live/backlog.md: 814-row live-check
+ledger harvested from 204 reports + UNKNOWNS/GAPS, answered/obsolete marked, value-ordered clusters + level
+index; README rule added (branch s/live-backlog)`.
