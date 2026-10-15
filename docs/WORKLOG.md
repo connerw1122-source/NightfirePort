@@ -13134,3 +13134,11 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   head_look_live/ai_traces_live/fix_weapon_effects_live/anim_events_live/fix_searchlight_remainder_live/
   drone_portcheck_live/exact_vs_host_probe = 37/0/1. Total 102 passed / 0 failed / 5 ignored; the full suite
   didn't fit the window (background jobs die here), the affected paths are covered.
+
+## verify-ledger (s/verify-ledger, started 2026-10-15 ~17:10 UTC)
+- Task 600: extend the bit-exact call-verification machinery (045n) into a ledger: docs/verify/ledger.md
+  (one row per ported sim function: address, name, port fn, status), replay tests in diff_calls.rs style
+  for anything replayable without the emulator, gdbcall.py --spec recording requests for the rest, and a
+  test that fails if a row claims bit-exact without recording+replay behind it.
+- Plan: seed the ledger from the port map + atlas (hot paths first), wire existing recordings, write spec
+  requests for the missing ones, add the guard test, run the touched crates + full suite, push, report.
