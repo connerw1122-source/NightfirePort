@@ -51,7 +51,9 @@ pub struct Objective {
     pub text: u32,
     /// `+0x04`: the fail label (0xffffffff = none in every shipped record).
     pub fail: u32,
-    /// `+0x08`: the hint/long-description label (filled but never drawn by ACTION.ELF code).
+    /// `+0x08`: the hint/long-description label — the pause OBJECTIVES tab's ✕ shows it in the
+    /// ok-only option box (0x31d substituted for 0xffffffff) [M C_GCPAUSE_Handler 0x204408
+    /// 0x205bd0-0x205bdc → Menu_CreateOptionBox 0x202218; docs/systems/objective-hints.md].
     pub hint: u32,
     /// `+0x0C`: the condition channel (0 = the raw `switch_channels[0]`, which the disc's out-0
     /// triggers can write — the game has no zero guard [M 0x1827d8:33-37]).
@@ -88,6 +90,23 @@ pub static LEVELS: &[LevelDef] = &[
     c07000014::DEF, c07000015::DEF, c07000016::DEF,
     c0700001b::DEF,
 ];
+
+/// The pause OBJECTIVES tab's row data — the game's 4-word `OBJ_STATE` as `Mission_ObjectiveState`
+/// (0x182630) fills it. The game's [1] slot (a state-keyed label constant: 2 → 0x02000001,
+/// 3 → 0x02000000, 4 → 0x16f, else → 0x170) has NO reader — the only caller of 0x182630 is
+/// `C_GCPAUSE_Handler` 0x204408, and both of its uses read [0] (the marker), [2] (the row text,
+/// 0x2047e4) and [3] (the hint, 0x205bc8) only — the port omits it.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ObjectiveState {
+    /// The record's live runtime state (`+0x14`): 2 fail-objective pending, 3 announced,
+    /// 4 complete, 5 failed [M 0x1827d8's state machine; the populate's ~J marker tests == 4].
+    pub state: u32,
+    /// `record+0x00`: the title label (the row text, bank 4).
+    pub text: u32,
+    /// `record+0x08`: the hint label — the ✕ hint box's text. 0xffffffff = none; the pause
+    /// handler substitutes label 0x31d for it [M C_GCPAUSE_Handler 0x204408 0x205bd0-0x205bdc].
+    pub hint: u32,
+}
 
 /// What the mission layer did this tick — the port's stand-in for the game's `Text_AddMsg` calls,
 /// the fade/`GameFlow_PushState` effects and `ResetMap_LevelToLoad` [M 0x1827d8/0x182c60].
@@ -210,6 +229,38 @@ impl Mission {
                 }
             }
         }
+    }
+
+    /// `Mission_NumVisObjectives` (0x182540): how many rows the pause OBJECTIVES tab lists — the
+    /// mission's ANNOUNCED objectives (state > 1; the game's signed `< 0` arm covers no shipped
+    /// state), in LEVELS table order, prior parts included, future parts excluded.
+    pub fn num_vis_objectives(&self) -> usize { self.vis_walk().count() }
+
+    /// `Mission_ObjectiveState` (0x182630): the `vis`-th visible objective (0-based) — the same
+    /// walk, carrying the record's text (+0x00) and hint (+0x08) with its live state. None past
+    /// the end (the game leaves the caller's struct untouched there; the pause clamps instead
+    /// [M the handler reads control 8's row with msg 0x34 — the list bounds it]).
+    pub fn objective_state(&self, vis: usize) -> Option<ObjectiveState> { self.vis_walk().nth(vis) }
+
+    /// The shared walk [M 0x182540/0x182630]: LEVELS table order, skipping other missions'
+    /// records (the scan continues past them), STOPPING at the first record of this mission
+    /// whose part is beyond the current one (`ThisOrderNum < record.part` → return [M 0x182540's
+    /// early return; the same gate in 0x182630's scan]), yielding each state->1 objective's
+    /// OBJ_STATE fields.
+    fn vis_walk(&self) -> impl Iterator<Item = ObjectiveState> + '_ {
+        let mut stop = false;
+        LEVELS.iter().enumerate().filter_map(move |(li, l)| {
+            if stop { return None; }
+            if l.mission != self.base_map { return None; }       // skipped, the scan continues
+            if l.part > self.order { stop = true; return None; } // the part gate ends the walk
+            Some((li, l))
+        })
+        .flat_map(move |(li, l)| {
+            l.objectives.iter().enumerate().filter_map(move |(oi, o)| {
+                let st = *self.states.get(li)?.get(oi)?;
+                (st > 1).then_some(ObjectiveState { state: st, text: o.text, hint: o.hint })
+            })
+        })
     }
 
     /// `Mission_SetStatus` (0x1830d8): the global `MissionState`.
