@@ -101,4 +101,7 @@ end (expect 0x40000033 / 1), the team-announce label (settles the [S] inversion)
 
 ## ntfy
 
-(sent after this report — see the finish step; recorded here if it failed.)
+curl → HTTP 429 "limit reached: daily message quota reached"; python3 urllib → HTTP 429; wget
+→ exit 0 (accepted, or at least not rejected with a printed error). Not all three failed, so
+per the rules this is not an "ntfy failed" record — the exact outputs are here for the driver
+in case the message did not land (the same pattern the mp-menu-flow worker recorded).
