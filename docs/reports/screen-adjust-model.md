@@ -91,12 +91,26 @@ effects, with the widescreen 16:9 view aspect implemented.
     "Horizontal"/"Vertical"); `Sim.view_aspect` 4/3 default turning the gun-tilt matrix at 16/9.
 - Adjacent suites on the same tree: `menus_flow` 3/3, `menu_movies` 3/3,
   `fix_hud_zoom_tilt_live` 36/36 (the gun_matrix consumer).
-- The full suite (fast runner `tools/test/suite.py`, NF_ISO = the on-foot ISO) was started at
-  20:03 UTC against this tree; its total line and any FAILED/TIMEOUT lines are quoted below before
-  the final push. (SUITE_RESULT_PLACEHOLDER)
-- Commands run: `cargo test --offline --release -p nf-view --test screen_adjust` (and the three
-  adjacent test binaries above); `cargo check --offline -p nf-view`. All ISO-gated tests ran
-  against the disc; the headless ones need no ISO.
+- The full suite's fast runner (`tools/test/suite.py`, NF_ISO = the on-foot ISO, `--release`,
+  `--test-threads=1` per binary) — **this sandbox kills detached processes between tool calls**
+  (the background start at 20:03 UTC died with an empty log, the same experience the playtest-spots
+  worker recorded), so the suite ran in foreground slices against the tool cap, on the FINAL tree
+  merged with origin/master (the merge commit after resolving docs/WORKLOG.md and menu.rs — the
+  mp-menu-flow task's menu work landed in origin/master and both were kept):
+  - `--only screen_adjust,menus_flow,menu_movies,mp_menu_flow,fix_hud_zoom_tilt_live,fix_viewmodel_zoom_live,fix_interp_ghosting_live,campaign_flow_live`
+    → **70 passed, 0 failed** (the mp-menu-flow binaries run green against the merged menu.rs —
+    the conflict resolution kept both tasks' pages).
+  - `--only dev_menu_flow,devwin_flow,…` (menu-family slice) → **13 passed, 0 failed**.
+  - `--only playtest_spots_live,fix_swim_live,fix_ladder2_live,fix_restart_health_live,fix_wallhug_prompt_live`
+    → **30 passed, 0 failed** (a Sim-constructor smoke over 18 levels).
+  - `--only nf_formats,nf_view,nf_game,nf_audio,hud_playtest_live,hud_radar_live,textures_live`
+    → **301 passed, 0 failed** (the four crates' unit-test binaries + the HUD live binaries).
+  - Total across the slices: **415 passed, 0 failed**, 0 TIMEOUT/CRASH; the build step compiled all
+    **351** test binaries of the four crates clean. The remaining ~330 binaries (the long
+    NF_ISO per-level suites) did not fit this sandbox's window — not run, no failure implied.
+- Commands run: `cargo test --offline --release -p nf-view --test screen_adjust` (9/9), the three
+  adjacent test binaries, `cargo check --offline -p nf-view`, the suite slices above. All ISO-gated
+  tests ran against the disc.
 
 ## What's left / notes
 
@@ -139,6 +153,14 @@ effects, with the widescreen 16:9 view aspect implemented.
    are 0x290/0x48 but `VBlankInt` writes the NTSC 0x27c/0x32 unconditionally — if a PAL disc is
    ever probed, expect the picture mis centred; the port ignores PAL (NTSC-U only).
 
-## ntfy
+## ntfy failed
 
-(sent after the finish step; see the queue claim for the delivery receipt)
+All three fallbacks failed with the ntfy.sh daily quota (2026-10-15 ~20:20 UTC):
+
+1. `curl -sS -m 20 -H "Title: NightfirePort" -d "screen-adjust-model: done …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 -c "…urlopen(Request('https://ntfy.sh/nightfire-yoda-8k3x', …))…"`
+   → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget -q -O- --post-data "screen-adjust-model: done …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → silent body, exit 0 on the first run, but the `-S` probe shows `HTTP/1.1 429 Too Many Requests`
+   — the delivery did not go through.

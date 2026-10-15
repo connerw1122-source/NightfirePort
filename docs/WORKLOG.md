@@ -13431,3 +13431,17 @@ Work Log (credits-data):
 - (19:50-19:56) Tests crates/nf-view/tests/credits_data.rs (11, all green): count 0x242 + order pins (entries 0/1/2 = labels 0x10002a5/a6/a7 wide; 361 = 0x1000264 kind 2; 565 = 0x10002a1; 577 = a wide gap) + the slot accounting (209/504/241/202) + scroll rate (510 on entry, −2/frame exact) + the 14-frame period/mod-26 slots + the music fade window (686@vol700 → 0 at 578×14) + the exit/return pages (AV → CnAv, win → Main, no early fire) + the AV row opens the page + the NF_ISO pin: USATxt 0x198 binds "Credits", neighbour 0x197 does not. Fail-first evidence: the order pins caught the wrong tail index (553 vs the real 565) and a reversed sign in the scroll assert before the fixes.
 - (19:56) Run on this tree: nf-view lib 9/9, credits_data 11/11, menus_flow 36/36 (the file menu.rs touches); nf-view release build clean. The full suite didn't fit the window's tail (suite.py not on master; background jobs get reaped here) — the affected crates are nf-view only (no nf-game/nf-formats/nf-audio code changed).
 - (19:25) Extended verification on the final tree: campaign_flow_live 5/5, dev_menu_flow 5/5, fix_weapon_modes_live 6/6 (all the menu-driven nf-view suites) — 72 nf-view tests green total on this branch; no nf-game/nf-formats/nf-audio code touched. Finish steps ran (queue: done/613-credits-data.md carries the report); ntfy quota-429 on all three fallbacks, recorded in the report.
+## screen-adjust-model (2026-10-15, branch s/screen-adjust-model) — DONE 20:28 UTC
+- Merged origin/master mid-task: the mp-menu-flow task's menu work had landed in master — resolved
+  docs/WORKLOG.md (both kept) and crates/nf-view/src/menu.rs (both kept: the ScreenAdjust page and the
+  13 MP page variants coexist; the Left/Right remap list carries both additions; FrontEnd fields and
+  new() inits from both sides; the row_label Results arm merged into ScreenAdjust|Results).
+- Suite (this sandbox kills detached processes — background start died empty; foreground slices on the
+  final merged tree): screen_adjust 9/9 + menus_flow/menu_movies/fix_hud_zoom_tilt_live +
+  fix_viewmodel_zoom_live/fix_interp_ghosting_live/mp_menu_flow/campaign_flow_live = 70/0; menu-family
+  slice 13/0; playtest_spots_live+sim smoke 30/0; nf_{formats,view,game,audio} unit binaries +
+  hud_playtest_live/hud_radar_live/textures_live 301/0. Total 415 passed / 0 failed / 0 TIMEOUT, all
+  351 test binaries built clean. ~330 long per-level binaries didn't fit the window.
+- Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
+  0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
+  the PAL base note).
