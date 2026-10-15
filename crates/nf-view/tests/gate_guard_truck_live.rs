@@ -1,8 +1,9 @@
 //! fix-gate-guard-truck: the 07000005 truck-ride exit's gate guard (GAPS G-037, U-048's channel 0x22).
 //!
 //! The level-end chain by truck, every link now evidenced on disc + decompile:
-//!   1. SP #37 (placement 37, scripts [0x06000A22], mode 1) auto-plays the truck script from level load
-//!      [D placement params; M SP_CreateScriptPlayer 0x1db9a8's create-time load]. Its stream 8 creates
+//!   1. SP #37 (placement 37, scripts [0x06000A22], mode 1) auto-plays the truck script from the first
+//!      SP_Update (mode 1 primes at the first update — the create-time load is for mode ∉ {0,1} [M
+//!      SP_CreateScriptPlayer 0x1db9a8:74-86; D placement params]). Its stream 8 creates
 //!      the TouchOnce ch 0x5C plate at the gatehouse porch (entity 02000480, quad x 95.98–101.00 /
 //!      z 103.94–108.78 at y 27.05 [L the port's live trigger at creation t1884]); its streams 6/7 create
 //!      the park plate ch 0x70 and the bed-following Touch ch 0x71; stream 9 fires event 0xD [0x73,1].
