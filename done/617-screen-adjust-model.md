@@ -29,3 +29,7 @@ claimed-by: sandbox2 at 2026-10-15T19:15Z
 ## Report (done, 2026-10-15T20:08Z)
 
 Closed by the driver: the report is on `s/screen-adjust-model` (docs/reports/screen-adjust-model.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T20:19Z)
+
