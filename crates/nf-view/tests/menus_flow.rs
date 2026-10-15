@@ -1229,3 +1229,47 @@ fn the_option_pages_change_values() {
     assert!(g.action(Action::Left));
     assert_eq!(g.page, Page::Main, "◀ backs out");
 }
+
+/// PC mouse support: hovering a list row selects it, a click on it confirms, a click on a wheel's neighbour row scrolls
+/// the wheel, the value column's ◀ / ▶ step a value, the pause tabs take clicks (coordinates in the 640×480 menu space).
+#[test]
+fn the_mouse_drives_the_menus() {
+    // Main: hover row 2, click it → Codenames → Edit Codename.
+    let mut fe = FrontEnd::new();
+    fe.page = Page::Main;
+    assert!(fe.mouse_move(320.0, 343.0));
+    assert_eq!(fe.cursor, 2, "hovering the third main row selects it");
+    assert!(fe.mouse_click(320.0, 343.0));
+    assert_eq!(fe.page, Page::CnSelect);
+    // Sister: a click on empty space on the main menu does nothing.
+    let mut g = FrontEnd::new();
+    g.page = Page::Main;
+    assert!(!g.mouse_click(40.0, 40.0));
+    assert_eq!(g.page, Page::Main);
+    // A wheel: the row below the centre scrolls the wheel, the centre confirms.
+    let mut fe = FrontEnd::new();
+    fe.page = Page::CnMenu;
+    fe.cursor = 1;
+    assert!(fe.mouse_click(450.0, 215.0));
+    assert_eq!((fe.page, fe.cursor), (Page::CnMenu, 2), "a neighbour row scrolls the wheel to it");
+    fe.cursor = 3;
+    assert!(fe.mouse_click(450.0, 190.0));
+    assert_eq!(fe.page, Page::CnAdvanced, "the centre row confirms");
+    // The value column: ▶ steps Auto Aim (row 1, y 136) On → Off.
+    let auto_aim = menu::ADV_ROWS[1].ctrl;
+    assert_eq!(fe.opt_value(auto_aim), 1);
+    assert!(fe.mouse_click(560.0, 144.0));
+    assert_eq!(fe.cursor, 1);
+    assert_eq!(fe.opt_value(auto_aim), 0, "clicking the value side steps it");
+    // The pause tabs.
+    let mut p = FrontEnd::new();
+    p.flow.current_level = 0x0700_0005;
+    p.open_pause();
+    assert_eq!(p.page, Page::Pause);
+    assert!(p.mouse_click(400.0, 128.0));
+    assert_eq!(p.pause_tab, 2, "the CONTROLS tab takes the click");
+    assert!(p.mouse_click(130.0, 128.0));
+    assert_eq!(p.pause_tab, 0);
+    assert!(p.mouse_move(320.0, 242.0));
+    assert_eq!(p.cursor, 1, "hovering RESTART selects it");
+}

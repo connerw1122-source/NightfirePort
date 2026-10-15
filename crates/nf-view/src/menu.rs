@@ -1446,6 +1446,119 @@ impl FrontEnd {
         }
     }
 
+    // ── PC mouse support (the user, 2026-10-15: "mouse support for menu navigation") ──
+    // Every page keeps the keyboard's actions; the mouse maps onto them: hovering a list row selects it, a left click
+    // on the selected row (or anywhere on single-action pages) is Confirm, a click on a wheel's neighbour row scrolls
+    // the wheel to it, the ◀ ▶ columns of a value row are Left / Right, right click is Back and the wheel scrolls
+    // (Up / Down). Coordinates are the menu's 640×480 space.
+
+    /// The row cursor of the current page (the MP wheels keep their own counters).
+    fn page_row(&self) -> usize {
+        match self.page {
+            Page::MpScenario => self.mp_scenario_row, Page::MpMap => self.mp_map_row, Page::MpOptions => self.mp_options_row,
+            Page::MpBots => self.mp_bots_row, Page::MpBotChoose => self.mp_bot_char, _ => self.cursor,
+        }
+    }
+    fn set_page_row(&mut self, r: usize) {
+        match self.page {
+            Page::MpScenario => self.mp_scenario_row = r, Page::MpMap => self.mp_map_row = r, Page::MpOptions => self.mp_options_row = r,
+            Page::MpBots => self.mp_bots_row = r, Page::MpBotChoose => self.mp_bot_char = r, _ => self.cursor = r,
+        }
+    }
+    /// The value-list rows' y (640 space) on the list pages, or None off them.
+    fn list_rows_y(&self) -> Option<Vec<f32>> {
+        Some(match self.page {
+            Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().iter().map(|r| r.y).collect(),
+            Page::MpRules => vec![191.0, 223.0],
+            Page::MpPlayerMods => vec![143.0, 175.0, 207.0, 239.0, 271.0],
+            Page::MpEnviroMods => vec![143.0, 177.0, 209.0, 241.0, 273.0],
+            Page::MpBotSetup => (0..8).map(|i| 85.0 + 32.0 * i as f32).collect(),
+            _ => return None,
+        })
+    }
+    fn is_wheel_page(&self) -> bool {
+        matches!(self.page, Page::Codename | Page::Difficulty | Page::MissionSelect | Page::Dossier | Page::CnSelect | Page::CnMenu
+            | Page::MpScenario | Page::MpMap | Page::MpOptions | Page::MpBots | Page::MpBotChoose)
+    }
+
+    /// The pointer moved to (x, y): hovering a list row selects it. Returns whether the selection changed.
+    pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
+        let pick = |rows: &[(f32, f32)], x0: f32, x1: f32| rows.iter().position(|&(a, b)| y >= a && y < b && x >= x0 && x < x1);
+        let before = (self.page_row(), self.confirm_sel);
+        match self.page {
+            Page::Main => if let Some(i) = pick(&(0..3).map(|i| (262.0 + 32.0 * i as f32, 290.0 + 32.0 * i as f32)).collect::<Vec<_>>(), 167.0, 473.0) { self.cursor = i; },
+            Page::Pause if self.confirming_restart || self.confirming_quit => {
+                if let Some(i) = pick(&[(220.0, 254.0), (254.0, 288.0)], 238.0, 403.0) { self.confirm_sel = i; }
+            }
+            Page::Pause if self.pause_tab == 0 => {
+                if let Some(i) = pick(&(0..3).map(|i| (192.0 + 33.5 * i as f32, 225.5 + 33.5 * i as f32)).collect::<Vec<_>>(), 153.0, 487.0) { self.cursor = i; }
+            }
+            Page::Results if self.outcome == Outcome::Failed => {
+                if let Some(i) = pick(&[(200.0, 235.0), (235.0, 273.0)], 197.0, 443.0) { self.cursor = i; }
+            }
+            _ => {
+                if let Some(ys) = self.list_rows_y() {
+                    let rows: Vec<(f32, f32)> = ys.iter().map(|&y0| (y0 - 6.0, y0 + 22.0)).collect();
+                    if let Some(i) = pick(&rows, 40.0, 600.0) { self.cursor = i; }
+                }
+            }
+        }
+        (self.page_row(), self.confirm_sel) != before
+    }
+
+    /// A left click at (x, y), as the keyboard action it stands for. Returns whether anything happened.
+    pub fn mouse_click(&mut self, x: f32, y: f32) -> bool {
+        // Hover first, so a click lands on the row under the pointer.
+        self.mouse_move(x, y);
+        // The pause tabs [L page 0x4000004b's four type-1 controls at y 120].
+        if self.page == Page::Pause && !(self.confirming_restart || self.confirming_quit) && (110.0..140.0).contains(&y) {
+            let tabs = [(84.0, 191.0), (199.0, 331.0), (339.0, 457.0), (465.0, 555.0)];
+            if let Some(t) = tabs.iter().position(|&(a, b)| x >= a && x < b) {
+                if t != self.pause_tab {
+                    self.pause_tab = t;
+                    if t == 1 { self.pause_objectives_sel = self.pause_objectives.len().saturating_sub(1); }
+                }
+                return true;
+            }
+        }
+        // Wheels: a neighbour row scrolls the wheel to it, the centre row confirms.
+        if self.is_wheel_page() && x >= 290.0 {
+            for (slot, &wy) in WHEEL_Y.iter().enumerate() {
+                if y >= wy - 6.0 && y < wy + 23.0 {
+                    let d = slot as i32 - 2;
+                    if d == 0 { return self.action(Action::Confirm); }
+                    let r = self.page_row() as i32 + d;
+                    if r >= 0 && (r as usize) < self.rows() { self.set_page_row(r as usize); return true; }
+                    return false;
+                }
+            }
+            return false;
+        }
+        // Value rows: the ◀ / ▶ columns step the value; the rest of an action row confirms.
+        if let Some(ys) = self.list_rows_y() {
+            if !ys.iter().any(|&y0| y >= y0 - 6.0 && y < y0 + 22.0) { return false; }
+            let is_action = matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv)
+                && self.opt_rows().get(self.cursor).is_some_and(|r| r.kind == OptKind::Action);
+            if is_action { return self.action(Action::Confirm); }
+            if (340.0..400.0).contains(&x) { return self.action(Action::Left); }
+            if (400.0..600.0).contains(&x) { return self.action(Action::Right); }
+            return true;
+        }
+        match self.page {
+            // Pages whose rows are hovered: only a click ON a row confirms.
+            Page::Main => if (167.0..473.0).contains(&x) && (262.0..358.0).contains(&y) { return self.action(Action::Confirm); },
+            Page::Pause if self.confirming_restart || self.confirming_quit => if (238.0..403.0).contains(&x) && (220.0..288.0).contains(&y) { return self.action(Action::Confirm); },
+            Page::Pause if self.pause_tab == 0 => if (153.0..487.0).contains(&x) && (192.0..293.0).contains(&y) { return self.action(Action::Confirm); },
+            Page::Pause => {}
+            Page::Results if self.outcome == Outcome::Failed => if (197.0..443.0).contains(&x) && (200.0..273.0).contains(&y) { return self.action(Action::Confirm); },
+            // The letter grid and the MP setup panels keep the keyboard (typing / the per-agent steps).
+            Page::CnName | Page::MpSetup => {}
+            // Single-action pages (the title, the results page, the credits, the Join panel, the summary): a click is ✕.
+            _ => return self.action(Action::Confirm),
+        }
+        false
+    }
+
     /// The option page's rows (empty off the option pages).
     pub fn opt_rows(&self) -> &'static [OptRow] {
         match self.page { Page::CnAdvanced => ADV_ROWS, Page::CnMp => MP_ROWS, Page::CnAv => AV_ROWS, _ => &[] }
