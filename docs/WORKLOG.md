@@ -13526,6 +13526,15 @@ Work Log (credits-data):
 - Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
   0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
   the PAL base note).
+## drive-ai-traffic (2026-10-15, branch s/drive-ai-traffic) — started 20:55 UTC
+Task: the driving missions' AI cars (task 507). From DRIVING.ELF: path following on the track's AI
+splines (CRP/VIV data), speed control, attacks (chase/shooting), spawn/despawn per mission (MIS01.VIV
+scripts). Port the data (splines, per-mission spawn lists) and the AI step in nf_game::driving beside
+506's physics (not landed yet on master — coordinate through the data model). Tests: a headless AI car
+follows its spline at the game's speed numbers. No drawing.
+
+Work Log (drive-ai-traffic):
+- (20:55) Sandbox reused (repo + work/ + ISO present; no downloads needed). Branch s/drive-ai-traffic created from origin/master @ f59b47fb, pushed with this entry.
 
 ## drive-car-models (s/drive-car-models)
 
@@ -13609,6 +13618,41 @@ Work Log (async-level-load):
   objective_hints_flow 7/7, campaign_flow_live 5/5. Background suite on the pre-edit tree:
   3 expected disc_golden fails + walkreal_07000001 + fix_0c_pylon×2 (no GPU adapter in this
   sandbox) — pre-existing, see docs/reports/menu-sfx.md.
+Work Log (drive-ai-traffic):
+- (20:55-21:10) Research (two parallel Explore agents + own reads): the RNgp article reader FUN_00220c28
+  0x220c28 (RNhd = u16[5] counts rn/rs/ri/rr/rj; the five pointer tables DAT_0033a5fc..a60c), the
+  rn/rs/rr record layouts, the follow geometry (FUN_00222468 straight eval; FUN_00222d40→FUN_001a8380
+  4-point curve; FUN_00225c48 join; FUN_002247b0 next-segment), the AI step (FUN_0012e350 Update →
+  states 1..5; FUN_0012e808 target speed = the segment limit rs+0x4c; FUN_00133ab0 drive control:
+  arrival max(speed·0.5, 5.0), ramp min(|Δ|,7.5)/7.5 floor 0.05), the AIVehicle struct (0x2a0 B), the
+  AIEl database (FUN_0012b8b0) and the spawn pool (FUN_0013e688: 6 heap + 22 static vehicles + 16
+  helis). All [M]-tagged in docs/systems/driving-ai.md.
+- (21:13-21:45) The port: crates/nf-game/src/driving/{road,ai}.rs — RoadNet::parse_crp (the game's
+  RNgp walk incl. the count/instance rules and the rr occupancy zeroing), RoadNode/RoadSeg accessors,
+  seg_point (FUN_00222468), curve_point (control-polygon fallback, exact FUN_001a85d0 = live check
+  L-3), next_segment (the 0x2/0x200/0x400 + self-id + car-group filters), AiCar (states, the target
+  speed gates, drive_control = FUN_00133ab0's four vtbl calls as a pure DriveCommand, the 60 Hz step).
+  SimCar is the 506-physics seam (no throttle→accel model invented).
+- (21:45-21:55) Tests crates/nf-game/tests/driving_ai_follow.rs (9, all green): the fixture is a
+  hand-built format-exact .crp; follows-the-spline (25 units/s on a 100-unit segment, node crossing
+  onto the clean link, pos == seg_point exactly), arrival stop, the 00133ab0 ramp numbers (1.0, 5/7.5,
+  the 0.05 floor, the target 0.5 floor, the brake early-outs, the forced-stop handbrake), the 0012e808
+  gates, the 002247b0 filters, malformed-fixture rejection (sisters), the curved control-point eval,
+  and NF_DRIVING-gated real MIS01.VIV walk (skips without the folder — the slim ISO zeroes the
+  DRIVING archives' bytes; Nightfire-driving.7z exists on the host but 429 MB vs 545 MB free with the
+  suite compiling → not pulled this session).
+- (21:58-22:00) Merge origin/master mid-task (car-models + codename-entry + objective-hints landed):
+  WORKLOG both kept; no code overlap (lib.rs clean). Re-ran on the final tree: driving_ai_follow 9/9 +
+  objective_state 5/5, then the full nf-game suite 350 passed / 0 failed (39 binaries). nf-formats +
+  nf-audio: 89 passed / 3 failed = exactly the 3 disc_golden slim-ISO tests (allowed). nf-view two
+  foreground slices: 191 passed / 2 failed = the known no-GPU pylon set. The background suite.py
+  start died empty (this sandbox reaps detached processes — the screen-adjust-model note) → the
+  foreground slices above are the suite coverage; suite.out stayed empty.
+
+## drive-ai-traffic2 (2026-10-15, branch s/drive-ai-traffic2) — started 22:15 UTC
+
+Work Log (drive-ai-traffic2):
+- (22:15) Sandbox reused (repo + work/ + ISO + nf-queue present). Branch s/drive-ai-traffic2 created from origin/s/drive-ai-traffic @ 1fb6f042 (the HELD 507 branch: driving/{mod,ai,road}.rs). Next: merge origin/master (506's driving.rs single file) and restructure into one module layout, then wire the AI onto 506's physics.
 ## drive-physics (2026-10-15, branch s/drive-physics) — DONE 21:25 UTC
 - Added the real-file tests: the shipped vanquish.atr and Physics\Rigid\default.tun, extracted from
   MIS01.VIV through the repo's BIGF+RefPack readers (gated on /home/z/driving-refpack, override
@@ -13763,3 +13807,53 @@ Work Log (async-level-load):
   several times too fast on a fast display. She now ticks off her own 60 Hz wall-clock
   accumulator (`menu_clock`), matching `Game_Run`'s once-per-60 Hz-frame `psiDecompressWoman`
   [M 0x1c9790:36-41].
+
+## drive-ai-traffic2 (2026-10-15, branch s/drive-ai-traffic2) — DONE 23:35 UTC
+
+Work Log (drive-ai-traffic2):
+- (22:13-22:25) Setup reused (repo/ISO/nf-queue present); branch created from origin/s/drive-ai-traffic
+  @ 1fb6f042, pushed with the start entry. Merged origin/master (506's driving.rs single file vs 507's
+  driving/ → the E0761 collision reproduced); WORKLOG conflict resolved "both kept".
+- (22:20-22:27) The layout: `git mv driving.rs driving/physics.rs` (the task's suggested layout) and
+  driving/mod.rs now declares `pub mod {ai, physics, road}` + one re-export line
+  `pub use physics::{Car, CarInput, CarParams, DT, FlatWorld, Friction, Rigid, SURFACES, Tuning};` —
+  every public path 506's tests/callers use survives (pinned by the layout test). No other file
+  touched; no internal `crate::driving` users existed.
+- (22:25-22:30) The wiring (the seam 507 left open): `ai::SimCar::of_car(&physics::Car)` (pos/vel/
+  the yaw's [sin,0,cos] forward row; alive = 1.0 [S — FUN_00195a30 is the actor layer]) and
+  `ai::AiDriver { brain: AiCar, car: Car, world, rigid }` — the FUN_00133ab0 command maps 1:1 onto
+  506's CarInput, Car::step integrates [M 0x1ff3d8's order], the PRE-integration sim speed drives the
+  progress (the AI reads |vel| before the vehicle sim integrates [M 0x133ab0:103-113];
+  `AiCar::advance_path` = the progress walk moved verbatim out of AiCar::step, rail behavior
+  unchanged), then the car lands back on the spline [M 0x222468] facing the travel direction. The
+  brake rest clamp [S] stops 506's brake integrating through zero into reverse (R is the gearbox's;
+  at rest the AI's own speed ≤ 0 early-out [M 0x133ab0:153] parks it). Known gap recorded:
+  Car::step does not read handbrake yet (506's own list) — the forced-stop test fails the day 506's
+  handbrake lands, on purpose.
+- (22:30-22:32) Tests crates/nf-game/tests/driving_ai_physics.rs (8, all green): the layout paths,
+  the sim view, the acceleration numbers with a bit-exact bare-Car replay (the driver adds no
+  physics of its own), the steering-angle falloff [M 0x18cef8:458-474], the arrival rest (no reverse
+  runaway), the forced-stop record, the clean-link crossing at the physics speed, standby.
+  Existing suites re-run: drive_physics 13/13 (506 on the moved file), driving_ai_follow 9/9 (507
+  after the advance_path refactor), objective_state 5/5.
+- (22:28-23:33) The suite on the final merged tree (origin/master @ the WORKLOG merge, no further
+  master movement fetched): the background suite.py died empty again (this sandbox reaps detached
+  processes — 507's note) → foreground slices. nf-game FULL: 41 binaries, 371 passed / 0 failed.
+  nf-formats + nf-audio FULL: 104 passed / 3 failed = exactly the 3 disc_golden slim-ISO tests
+  (allowed). nf-view (untouched by this task): 304 test binaries, ~81 executed serially before the
+  window closed — the only real failure is the known no-GPU fix_0c_pylon_live pair (2 tests, the
+  same environmental pair 507 recorded); campaign_flow_live (5/5) and fix_guard_weapons_live (3/3)
+  pass with 180 s budgets (my first 60 s cap was the timeout cause); the parallel-execution attempt
+  OOM-killed processes (rc 137) and is NOT counted — those binaries need a serial rerun next session.
+  A one-pass `cargo test -p nf-view` aborts at the first failing binary (cargo default) — use
+  --no-fail-fast.
+- (23:35) Report docs/reports/drive-ai-traffic2.md pushed; finish.sh; ntfy.
+
+Stage Summary:
+- One module layout: crates/nf-game/src/driving/{mod,physics,ai,road}.rs — physics.rs is 506's file
+  moved intact; mod.rs re-exports the 9 physics names; ai.rs gains SimCar::of_car + AiDriver +
+  advance_path (the refactor); road.rs untouched.
+- The AI now drives 506's physics model end to end, headless and deterministic; every 506/507 test
+  path kept green; 8 new tests pin the wiring.
+- Left for the next session: the nf-view serial sweep completion (~220 binaries), the real-data
+  NF_DRIVING golden (the 429 MB archive, disk-bound), the curve-eval live check L-3.
