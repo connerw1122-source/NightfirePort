@@ -12863,3 +12863,20 @@ new test. Branch cut from origin/master 96405b35. (Prior task 110i finished and 
 docs/reports/fix-death-anim-events.md, fix_death_anim_events_live 2/2, the final-tree suite
 partials 1017 passed / 6 failed — disc_golden ×3 + the no-GPU pylon set ×3 — / 44 ignored over
 the binaries the window fit.)
+- (12:44-12:55) The decompile chain: the number-key-equivalent request write is the anim+0x63
+  byte — the cycle write is refused in view states {1,3,5,6,7,8,9,0xb,0xd,0xe,0xf,0x10} and
+  ALLOWED in {0,2,4,0xa,0xc,≥0x11} [M Player_WeaponChange 0x1a6f80:24-40, the (state−1) case
+  list]; Player_SetWeaponAnimObj 0x1a2e38 case 4 (the draw anim playing) re-checks +0x63 != +0x62
+  EVERY tick and retargets (LAB_001a39c8:492-497: AnimScriptSetPlayDirection(2) reverses the draw
+  → state 2; case 2's tail: +0x62 = +0x63 → state 3 draws the new) [M 0x1a2e38:309-315]; the swap
+  button path needs state 0 [M 0x1a24c8:210-211]. The cold load: Player_InitWeapon 0x1a7ef8:62
+  zeroes the view state and writes +0x63 = the kit — the game opens with a draw. FAIL-FIRST
+  shown: both tests fail pre-fix (the presses during the port's start switch are dropped; tick 1
+  prints state 1 request 0x11 weapon 0x2). FIX (scene.rs only): the switch_to request write
+  allowed while switch_state == 3 (the game's allowed draw state; 1/8 stay refused, the cycle
+  arms keep the idle gate) + the game's case-4 mid-draw retarget in the state-3 arm (reverse the
+  draw, saved_weapon = the being-drawn weapon, new port state 2 = the reversed-draw wait; its end
+  flushes clip/spare, swaps to the request, draws at 1.25x — mirroring the holst end's
+  bookkeeping) + the view_time floor for the reverse. fix_switch_after_cold_load_live 2/2
+  (07000016 mash + the first-possible-tick single press + the settled press; 07000012 kit 0x10
+  the same). Next: merge master, restart the suite on the final tree.
