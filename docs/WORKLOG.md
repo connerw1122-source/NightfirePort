@@ -12950,3 +12950,32 @@ flips); fix the ulp-wide stand-in the game's way, never revert the exact sine. G
   (cf4f33cd); merged origin/s/exact-sine-sites-1 (GAPS+WORKLOG conflicts: one combined G-046 entry, WORKLOG union)
   then origin/s/exact-sine-sites-3 (GAPS kept combined, WORKLOG union). Next: build, run the two failing tests
   fail-first, bisect the escort walk.
+- (15:17-15:36) Bisect: master (cf4f33cd) PASSES the escort walk in 81.4 s (the contact settles at
+  (−28.3, 6.3, 14.3), dxz ≈ 4.9 < 6.0 — the known stairwell-head stall; AND-touch does not fire);
+  master+110k PASSES in 255.0 s with level_exit at tick 469242 (110k even improves the walk) ⇒ 110m's
+  four player-motion sites are the sole cause. The 110m report's "fails on master@d38e945d with the
+  changes stashed" did not reproduce (master passes cleanly today; their stash most plausibly kept the
+  branch's trig hooks). Wire-icon: the old `centre == pos` was the host sin_cos stand-in's artifact —
+  the game's 0x133070/0x1e5168 chain (C0 = 1.0000001 factors + chop VU0 adds, [L]-verified on
+  07000005's obj+0x80) never makes the world centre bit-equal to the placement origin; the test now
+  expects the game-chain value [133.42567, 48.326435, −101.2065] with a <1e-3 sister — 4/4 green.
+- (15:38-15:55) Mechanism pinned from the per-round logs: identical through guard 0/13, then
+  `approach guard 19` arrives +112 ticks on exact vs +123 on master (clip 8 vs 7 — the fight ends one
+  shot later): Bond's exact-motion path crosses the walker's arrive radius 11 ticks earlier (ulps →
+  ~0.5 units via the floor-snap/wall feedback, the fix-exact-math-swap t28/t835 mechanism) → the
+  AllyLead hide windows flip (master r0: no guards, contact walks to (3.5,7.3); exact r0: hides at
+  (6.6,13.6), guards [5,6,7,11] re-arm) → the walker's host-timeline choreography wedges (the ammo
+  resupply leg stuck 6000 ticks on a door; 12 rounds grind) → the contact parks at (−18.8, 6.3, 14.3).
+  No unswapped stand-in exists on the path (G-046 complete; drone walk has no per-tick trig site; the
+  head-track sites are PORT_ONLY by the survey) — the exact outcome is the game-faithful one; the test
+  harness's choreography is what needs the next session (live checks listed in the report). Tooling:
+  `trig::host_trig_init_from_env` + the 1-line call in `nf_view::load` — NF_HOST_TRIG=1 runs any binary
+  with the four sites on host; the merged tree with it reproduces master+110k BIT-IDENTICALLY
+  (level_exit tick 469242), proving the four sites are the tree's only behavioural delta here.
+- (15:55-16:00) Verification chunks on the merged tree: fix_08_walls_live 4/4, exact_sine_sites_live
+  1/1, exact_sine_sites3_live 6/6, ai_live 35/35, trig_live 4/4, diff_calls 4/4,
+  walkreal_07000002_live 1/1, wire_live 2/0/2i, fix_ladder_live 3/0/1i, fix_wire2_live 3/0. The full
+  suite did not fit the window (documented in the report; the next session runs it on the final tree).
+- FINAL (16:0x): report docs/reports/exact-sine-sites-merge.md; finish.sh status blocked (the escort
+  fix needs the live evidence + walker re-choreography; the merge itself is landed and green
+  everywhere the window covered).
