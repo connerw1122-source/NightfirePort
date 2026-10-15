@@ -8411,8 +8411,37 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // decay (−f/6 per tick) erased the whiteout in ~6 ticks — invisible.
         self.health.flashbang = (self.health.flashbang - 1.0).max(0.0);
         self.shake = (self.shake * 0.9 - 0.05).max(0.0);
-        // The SimpleScripts' playheads (`SS_Update` 0x1a9948 — channel on → the last key, off → key 0).
-        self.sss.tick(&self.channels);
+        // The SimpleScripts (`SS_Update` 0x1a9948's state machine — fix-0c-hatch-latches). The
+        // `SS_Operate` 0x1a9df8 contacts, from the collision pass's registered dynamic set: the
+        // player's capsule box (bit 0) and this tick's player-bullet flight (bit 1) against each
+        // SS part's box (ids bit 41 | the ss index — the same parts `set_dynamic` holds). The
+        // 0c winches (#351/#364/#377, mask 0x2 [D]) are bullet-driven; the disc's other SS masks
+        // are 0x1 (channel-only) [D census].
+        let ss_contacts = {
+            let parts = d.world.dynamic_boxes();
+            let mut c = vec![0u8; self.sss.list.len()];
+            let (plo, phi) = (
+                [self.player_pos[0] - 0.4, self.player_pos[1] - 1.15, self.player_pos[2] - 0.4],
+                [self.player_pos[0] + 0.4, self.player_pos[1] + 0.95, self.player_pos[2] + 0.4],
+            );
+            for &(id, lo, hi) in &parts {
+                if id >> 40 != 0x2 { continue; }
+                let k = (id & 0xF_FFFF_FFFF) as usize;
+                if k >= c.len() { continue; }
+                if (0..3).all(|ax| hi[ax] >= plo[ax] && lo[ax] <= phi[ax]) { c[k] |= 1; }
+                if c[k] & 2 == 0 {
+                    for b in &self.player_bullets {
+                        if b.dead { continue; }
+                        let seg = [b.pos[0] - b.dir[0] * b.speed, b.pos[1] - b.dir[1] * b.speed, b.pos[2] - b.dir[2] * b.speed];
+                        let (mut blo, mut bhi) = ([0.0; 3], [0.0; 3]);
+                        for ax in 0..3 { blo[ax] = seg[ax].min(b.pos[ax]) - 0.05; bhi[ax] = seg[ax].max(b.pos[ax]) + 0.05; }
+                        if (0..3).all(|ax| hi[ax] >= blo[ax] && lo[ax] <= bhi[ax]) { c[k] |= 2; break; }
+                    }
+                }
+            }
+            c
+        };
+        self.sss.tick(&mut self.channels, &ss_contacts, self.frame);
         // The sound triggers (`SoundTrigger_Update` 0x1b2790 — the object walk's per-frame pass;
         // fix-06-alarm): the alarm siren starts the same frame its ON channel is up.
         self.sound_triggers.tick(&mut self.audio, &self.channels);

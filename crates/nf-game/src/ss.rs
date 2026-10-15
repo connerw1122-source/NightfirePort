@@ -42,8 +42,17 @@ pub struct Ss {
     pub spline: bool,
     /// `SS_Create` 0x1a9c58: ext+0x22 = param 0 — the state (`SS_Activate` 0x1a9ea8 arms it).
     pub state: u16,
-    /// ext+0x1E = param 2 — the activate mask (bit 2 = E-usable, `SS_Activate`'s gate).
+    /// ext+0x1E = param 2 — the activate mask (bit 2 = E-usable, `SS_Activate`'s gate) AND the
+    /// `SS_Operate` contact mask (ext+0x1E & the contact bits: player 0x8 / drone 0x10 / bullet
+    /// 0x2, `SS_Operate` 0x1a9df8:22-39; bit 0x1 gates the self-latch, `SS_Update` 0x1a9948:20).
     pub mask: u16,
+    /// ext+0x24 = param 1 — the rearm word: after a completed sweep the state becomes 0x40
+    /// (re-armed) when this is 0, 0 (dead) otherwise [M `SS_Update` 0x1a9948:121-126].
+    pub rearm: u16,
+    /// ext+0x08 = param 5 — the duration float, quantized down to whole steps at create
+    /// (`SS_Create` 0x1a9c58 last line `puVar2[2] = step * (int)(duration/step)`); the playing
+    /// state's exact-landing epsilon compares against it [M 0x1a9948:109-113].
+    pub duration: f32,
     /// The playhead in key units, 0..=count−1.
     pub t: f32,
     /// The posed matrix this tick (at rest: key 0).
@@ -52,6 +61,12 @@ pub struct Ss {
     /// mesh (`Collide_PickObj` walks the cel-linked objects; fix-party-mission item 7 — the safe
     /// door and the doorway bolt are solid like the doors).
     pub hash: u32,
+}
+
+/// One `KeyFrame_Interp`/`Spline_Interp` pose into the SS's matrix (`SS_Update` 0x1a9948:49-58,
+/// 92-101 — the key-frame form when ext+0x26 == 0, the spline form otherwise).
+fn interp_at(s: &mut Ss, t: f32, last_k: u16) {
+    if let Some(m) = interp(&s.keys, 0, last_k, t, s.spline) { s.matrix = m; }
 }
 
 impl Ss {
@@ -88,16 +103,24 @@ impl SsList {
             if keys.is_empty() { continue; }
             let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map_or(0, |&(_, v)| v);
             let rate = (p.extra[7] >> 16) as u32;
+            let rate = if rate == 0 { 75 } else { rate };
             let last = (count.min(keys.len()) - 1) as u16;
             let matrix = interp(&keys, 0, last, 0.0, param(6) != 0).unwrap_or(IDENT);
+            // The duration word quantizes down to whole steps (`SS_Create` 0x1a9c58's last line);
+            // 0 (the disc's every value [D census]) stays 0 and disables the epsilon arm.
+            let raw_duration = param(5) as f32;
+            let step0 = last as f32 / rate as f32;
+            let duration = if raw_duration > 0.0 && step0 > 0.0 { step0 * (raw_duration / step0) as i32 as f32 } else { 0.0 };
             list.push(Ss {
                 placement: i,
                 channel: param(3) as u16,
                 keys,
-                rate: if rate == 0 { 75 } else { rate },
+                rate,
                 spline: param(6) != 0,
                 state: param(0) as u16,
                 mask: param(2) as u16,
+                rearm: param(1) as u16,
+                duration,
                 t: 0.0,
                 matrix,
                 hash: hash(p),
@@ -106,28 +129,68 @@ impl SsList {
         SsList { list }
     }
 
-    /// `SS_Update`'s playhead: toward the last key while the channel is on, back to key 0 while off,
-    /// then the `KeyFrame_Interp` pose [M 0x1a9948 + 0x1e1140].
+    /// `SS_Update` 0x1a9948's state machine, ported whole (fix-0c-hatch-latches; the old scrub
+    /// model — toward the last key while the channel is on, back while off — plays scripts in
+    /// reverse and never re-arms, which the game never does [M 0x1a9948:48-130]).
     ///
-    /// The per-tick step is `SS_Create`'s ext+0x04 = **`(key count − 1) / rate`**, computed once at
-    /// create [M 0x1a9c58:51 `puVar2[1] = (float)last / (float)rate`], and the update adds
-    /// `step * FRAME_RATE_MUL` (the 2-key special case adds `step` alone, [M 0x1a9948:103-108]).
-    /// `GS_SetRefreshRate` 0x17d2b8:15 sets `FRAME_RATE_MUL = 60.0 / FRAME_RATE` — 1.0 at the game's
-    /// 60 Hz, which is the port's fixed tick — so the rate word is the whole sweep's duration in
-    /// ticks: 0700000c's `ventmesh-front` #138 (6 keys, rate 50 [D]) opens in 50 ticks, not 250
-    /// (fix-0c-hatch; the old 1/rate model was five times slow).
-    pub fn tick(&mut self, ch: &Channels) {
-        for s in &mut self.list {
+    /// The driver is `SS_Operate` 0x1a9df8: contact types player(3)→0x8 / drone(2)→0x10 /
+    /// bullet(5)→0x2 against the SS's mask word (ext+0x1E = param 2); no contact match → the
+    /// channel path: **1 iff channel != 0 AND switch_channels[channel] != 0** [M 0x1a9df8:46-51].
+    /// A channel-0 SS (the 0c winches #351/#364/#377, mask 0x2 [D]) is therefore driven ONLY by
+    /// contacts — a bullet hit — never by the channel array (fix-0c-vent2's read-stand-in
+    /// corrected). The self-latch [M 0x1a9948:20-23] writes `switch_channels[ch] = cond` only
+    /// when the mask's bit 0x1 is CLEAR, the channel word is non-zero and the channel value is 0.
+    ///
+    /// States [M 0x1a9948:48-130]: **0x40** armed — a cond tick starts the sweep (state 1);
+    /// **1** playing — `KeyFrame_Interp`/`Spline_Interp` at the playhead into `obj+0x90`, then
+    /// `t += step` (`SS_Create`'s ext+0x04 = (keys−1)/rate [M 0x1a9c58:51]; ×`FRAME_RATE_MUL` =
+    /// 1.0 at 60 Hz [M `GS_SetRefreshRate` 0x17d2b8:15], the 2-key case adds step alone — the
+    /// same value); the exact-landing epsilon (`duration < t && |t−duration| < 0.0002`,
+    /// :109-113) disarms to 0x40; the overshoot wrap (`last < t`, :119-128) resets t to 0 and
+    /// the state to **0x40 when param 1 (rearm) is 0, 0 (dead) otherwise** — the POSE holds the
+    /// last key either way (states 0/0x40 never interp). **8** free-loops with a bare wrap;
+    /// **0** and the rest are inert.
+    ///
+    /// `contacts` is per-SS Operate contact bits (bit 0 = the player, bit 1 = a bullet) — the
+    /// game's contact list (`obj+0xD0`) is built by the collision pass for every overlapping
+    /// body; the port feeds the player's capsule and the player-bullet segments (the drone/bullet
+    /// sources are inert on the disc's masks: every disc SS carries 0x1 or 0x2 [D census]).
+    pub fn tick(&mut self, ch: &mut Channels, contacts: &[u8], frame: u32) {
+        for (i, s) in self.list.iter_mut().enumerate() {
             if s.keys.len() < 2 { continue; }
             let last = (s.keys.len() - 1) as f32;
+            let last_k = (s.keys.len() - 1) as u16;
             let step = last / s.rate as f32;
-            // The channel INDEX is not special: `SS_Update` 0x1a9948:20-23 reads AND writes
-            // `switch_channels[ch]` for any channel word including 0 (the 0c pulley winches
-            // #351/#364/#377 listen on ch 0 [D]); only the channel VALUE gates the sweep.
-            let target = if ch.on(s.channel as u32) { last } else { 0.0 };
-            if s.t < target { s.t = (s.t + step).min(target); }
-            else if s.t > target { s.t = (s.t - step).max(target); }
-            if let Some(m) = interp(&s.keys, 0, (s.keys.len() - 1) as u16, s.t, s.spline) { s.matrix = m; }
+            let c = contacts.get(i).copied().unwrap_or(0);
+            let contact = (s.mask & 0x8 != 0 && c & 1 != 0) || (s.mask & 0x2 != 0 && c & 2 != 0);
+            let cond = contact || (s.channel != 0 && ch.on(s.channel as u32));
+            // The self-latch: mask bit 0x1 clear, channel non-zero, channel value 0 [M 0x1a9948:20-23].
+            if s.mask & 1 == 0 && s.channel != 0 && !ch.on(s.channel as u32) {
+                ch.set(s.channel as u32, cond as u8, frame);
+            }
+            match s.state {
+                // Armed: a cond tick starts the sweep (the sound handle is the stub arm) [M :85-90].
+                // The arming tick falls into the shared interp+advance (the C's flow-through), so the
+                // pose starts at the current playhead (0) and advances in the same tick.
+                0x40 => if cond { s.state = 1; interp_at(s, s.t.min(last), last_k); s.t += step; },
+                // Free loop: interp + advance, bare wrap [M :48-71].
+                8 => { interp_at(s, s.t, last_k); s.t += step; if s.t > last { s.t = 0.0; } }
+                // Playing [M :92-128].
+                1 => {
+                    interp_at(s, s.t.min(last), last_k);
+                    s.t += step;
+                    // The exact-landing epsilon [M :109-113]: an exact duration disarms without a wrap.
+                    if s.duration > 0.0 && s.t > s.duration && (s.t - s.duration).abs() < 0.0002 { s.state = 0x40; }
+                    if s.t > last {
+                        s.t = 0.0;
+                        s.state = if s.rearm == 0 { 0x40 } else { 0 }; // [M :119-128]
+                    }
+                }
+                // 0 and the rest: inert — no interp at all, the matrix stays wherever the last
+                // playing tick left it (the at-rest key 0 before the first play, the last key
+                // after a completed sweep) [M :73-77, the 0/0x40 arms have no interp].
+                _ => {}
+            }
         }
     }
 

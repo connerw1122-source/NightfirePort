@@ -1356,10 +1356,16 @@ pub fn eye_cell(graph: &CelGraph, state: &mut ViewerCel, eye: [f32; 3], world: O
         }
     }
     let found = find_cell_raycast(graph, eye, world);
-    state.pos = eye;
     match found {
-        Some(c) => { state.cell = Some(c); Some(c) }
+        Some(c) => { state.pos = eye; state.cell = Some(c); Some(c) }
         None => {
+            // The FindCel miss KEEPS the previous cel AND the previous prevPos — `viewer+0x34` is
+            // left stale on this path [M 0x1bae90:33-39: the early return never updates it]. The
+            // miss frames' portal segments therefore GROW from the last resolved position and hop
+            // the eye cel down through the fall's portals; advancing pos here (the old port) kept
+            // the segment a one-frame delta forever, parked the eye cel on the upper room through
+            // the whole no-cel stretch, and culled the lower rooms mid-drop (the 0c hatch fall's
+            // culling). fix-0c-hatch-latches.
             let keep = state.cell.or(Some(0)).filter(|&c| c < graph.cells.len());
             state.cell = keep;
             keep
