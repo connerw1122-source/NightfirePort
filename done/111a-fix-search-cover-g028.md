@@ -38,3 +38,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox4 at 2026-10-15T14:31Z
+
+---
+## Report (done, 2026-10-15T15:08Z)
+
+Closed by the driver: the report is on `s/fix-search-cover-g028` (docs/reports/fix-search-cover-g028.md); the worker didn't run finish.sh.
