@@ -3081,14 +3081,17 @@ pub fn run() -> Result<()> {
 /// Leak a `String` to a `&'static str` (the scenario name lives for the program's life).
 fn leak_str(s: &str) -> &'static str { Box::leak(s.to_string().into_boxed_str()) }
 
-/// The pause OBJECTIVES tab's rows: (label, done) for each VISIBLE objective of the running level [M C_GCPAUSE_Handler
+/// The pause OBJECTIVES tab's rows: the mission's visible objectives (label / hint / done) [M C_GCPAUSE_Handler
 /// 0x204408:251-268 lists `Mission_NumVisObjectives` rows; 0x182540 counts the objectives whose state (record+0x14)
 /// is > 1 or < 0; a row is done at state 4].
-fn pause_objective_rows(sim: &scene::Sim) -> Vec<(u32, bool)> {
-    nf_game::mission::LEVELS.iter().enumerate()
-        .find(|(_, l)| l.level == sim.level)
-        .map(|(li, l)| l.objectives.iter().enumerate().filter_map(|(oi, o)| {
-            let st = sim.drones.mission.states.get(li).and_then(|s| s.get(oi)).copied().unwrap_or(0) as i32;
-            (st > 1 || st < 0).then_some((o.text, st == 4))
-        }).collect()).unwrap_or_default()
+fn pause_objective_rows(sim: &scene::Sim) -> Vec<menu::PauseObjective> {
+    // objective-hints [M C_GCPAUSE_Handler 0x204408:251-271]: the rows come from
+    // Mission_NumVisObjectives 0x182540 + Mission_ObjectiveState 0x182630 — the WHOLE mission's
+    // announced objectives in LEVELS order (prior parts included, future parts and unannounced
+    // rows excluded), not just the current level's record. state 4 = the ~J done marker; the
+    // hint stays 0xffffffff for hint-less records (the view's ✕ applies the 0x31d fallback).
+    let m = &sim.drones.mission;
+    (0..m.num_vis_objectives()).filter_map(|i| m.objective_state(i))
+        .map(|o| menu::PauseObjective { text: o.text, hint: o.hint, done: o.state == 4 })
+        .collect()
 }

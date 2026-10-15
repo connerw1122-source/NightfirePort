@@ -500,6 +500,20 @@ impl Page {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Action { Up, Down, Confirm, Back, Side, Left, Right }
 
+/// objective-hints: one OBJECTIVES-tab row — the game's OBJ_STATE as the pause populate
+/// (C_GCPAUSE_Handler 0x204408:251-271) uses it: the row text (record+0x00), the ✕ hint box's
+/// label (record+0x08; 0xffffffff = none, the view substitutes 0x31d [M 0x205bd0-0x205bdc]) and
+/// the ~J (done, state 4) / ~I (pending) marker [M the strings .rodata 0x30d2e0/0x30d2e8].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct PauseObjective {
+    /// The row's text label (bank 4).
+    pub text: u32,
+    /// The hint box's label (record+0x08), 0xffffffff = none.
+    pub hint: u32,
+    /// state 4 → the ~J done marker [M the populate's `if (state == 4)`].
+    pub done: bool,
+}
+
 /// One option row of the codename option pages: the row control, its label, its y (640 space), the value items
 /// (label id — 0 for a literal — the literal, the value), and its kind.
 pub struct OptRow { pub ctrl: u32, pub label: u32, pub y: f32, pub items: &'static [(u32, &'static str, i32)], pub kind: OptKind }
@@ -925,10 +939,19 @@ pub struct FrontEnd {
     /// The pause page's tab: 0 MISSION / 1 OBJECTIVES / 2 CONTROLS / 3 SCORE [L page 0x4000004b's
     /// four type-1 controls LBL 0x167/0x176/0x168/0x169].
     pub pause_tab: usize,
-    /// fix-pause-menu2: the OBJECTIVES tab's rows — (label id, done) per visible objective, filled
-    /// by the host each frame from the sim's mission state [M C_GCPAUSE_Handler 0x204408:251-271
-    /// fills the game's list from Mission_ObjectiveState; state 4 = the ~J done marker].
-    pub pause_objectives: Vec<(u32, bool)>,
+    /// objective-hints: one OBJECTIVES row — the game's OBJ_STATE as the populate uses it: the
+    /// row text label (record+0x00), the ✕ hint box's label (record+0x08, 0xffffffff = none —
+    /// the VIEW applies the 0x31d fallback [M C_GCPAUSE_Handler 0x204408 0x205bd0-0x205bdc]), and
+    /// the ~J/~I marker (state 4 = done [M 0x204408:251-271; the strings .rodata 0x30d2e0/0x30d2e8]).
+    pub pause_objectives: Vec<PauseObjective>,
+    /// objective-hints: control 8's selected row — starts at the LAST row on every tab entry
+    /// (the populate's msg 0x1d = numVis−1 [M 0x204408 0x204840-0x204850]) and moves with ~V.
+    pub pause_objectives_sel: usize,
+    /// objective-hints: the ✕ hint box — Some(label) while the modal ok-only option box is up
+    /// (label 0x31d already applied) [M 0x204408 case 1 → Menu_CreateOptionBox 0x202218 with
+    /// box_id 10, ok_only 1; Confirm/Back pop it [M C_LBMSGOPTIONS 0x2022a0], the 0x4b-exit sweep
+    /// re-shows the list [M 0x204408 0x205670-0x205700] — the port just clears the field].
+    pub pause_hint: Option<u32>,
     /// fix-save-profile: the port's memory card — the profiles dir next to the port's config,
     /// one file per codename [M Menu_UpdateMessageBox 0x1f7de8:19/28 passes the codename buffer
     /// 0x2e1ae8 to LS_Load/LS_Save as the file name]. The host points it at the dir; None keeps
@@ -1046,6 +1069,9 @@ impl FrontEnd {
             pause_tab: 0,
             // fix-pause-menu2 (each new field on its own line [WORKLOG lesson 4]).
             pause_objectives: Vec::new(),
+            // objective-hints (each new field on its own line [WORKLOG lesson 4]).
+            pause_objectives_sel: 0,
+            pause_hint: None,
             // fix-save-profile (each new field on its own line [WORKLOG lesson 4]).
             profile_dir: None,
             profiles: Vec::new(),
@@ -1300,6 +1326,10 @@ impl FrontEnd {
             self.confirming_restart = false;
             self.confirming_quit = false;
             self.confirm_sel = 1;   // the YES/NO list opens on NO [L m0x1d:1; M 0x204408:181/204]
+            // objective-hints: a fresh pause has no hint box up and the objectives list's
+            // selection comes from the tab's populate (per-entry reset [M 0x204840-0x204850]).
+            self.pause_hint = None;
+            self.pause_objectives_sel = 0;
             true
         } else { false }
     }
@@ -1794,11 +1824,50 @@ impl FrontEnd {
                         Action::Side => return false,
                     }
                 }
+                // objective-hints: the ✕ hint box is modal (option-box page 0x4000002f pushed
+                // over the pause [M Menu_CreateOptionBox 0x1f9608:45]). Its OK row (0x4b) or a
+                // cancel (0x6d) pops it [M C_LBMSGOPTIONS_Handler 0x2022a0]; the pause re-shows
+                // the list through the 0x4b-exit sweep [M 0x204408 0x205670-0x205700] — the port
+                // just clears the field. Everything else idles.
+                if self.pause_hint.is_some() {
+                    match a {
+                        Action::Confirm | Action::Back => { self.pause_hint = None; return true; }
+                        _ => return false,
+                    }
+                }
+                // objective-hints: the OBJECTIVES tab's own list — ~V scrolls ITS selection and
+                // ✕ shows the selected objective's hint (control 1's 0x4b activation [M
+                // 0x204408 0x205b98-0x205c34]; the MISSION rows' cursor is idle here).
+                if self.pause_tab == 1 {
+                    let n = self.pause_objectives.len();
+                    match a {
+                        Action::Confirm => {
+                            if n == 0 { return false; }
+                            let sel = self.pause_objectives_sel.min(n - 1);
+                            let hint = self.pause_objectives[sel].hint;
+                            // No-hint records (−1 = 0xffffffff) show label 0x31d instead
+                            // [M 0x204408 `if (iStack_304 == -1) iStack_304 = 0x31d`].
+                            self.pause_hint = Some(if hint == 0xffff_ffff { 0x31d } else { hint });
+                            return true;
+                        }
+                        Action::Up if n > 0 => { if self.pause_objectives_sel > 0 { self.pause_objectives_sel -= 1; } return true; }
+                        Action::Down if n > 0 => { if self.pause_objectives_sel + 1 < n { self.pause_objectives_sel += 1; } return true; }
+                        _ => {}
+                    }
+                }
                 match a {
                     Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
                     // ~H Next: the tab cycle [L the page hint 0x201 "~A Select ~V Scroll ~H Next";
-                    // the four tabs are the page's type-1 controls].
-                    Action::Side => { self.pause_tab = (self.pause_tab + 1) % 4; return true; }
+                    // the four tabs are the page's type-1 controls]. Every entry re-populates the
+                    // tab — the OBJECTIVES list re-selects its LAST row (msg 0x1d = numVis−1
+                    // [M 0x204408 0x204840-0x204850]).
+                    Action::Side => {
+                        self.pause_tab = (self.pause_tab + 1) % 4;
+                        if self.pause_tab == 1 {
+                            self.pause_objectives_sel = self.pause_objectives.len().saturating_sub(1);
+                        }
+                        return true;
+                    }
                     Action::Up => { self.cursor = (self.cursor + 2) % 3; return true; }
                     Action::Down => { self.cursor = (self.cursor + 1) % 3; return true; }
                     Action::Back => { self.closed = true; return true; }   // resume [M the d1=6 case-0 arm → MenuManager_Delete]
@@ -2979,14 +3048,16 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
         1 => {
             // The list (98,147,445×190) [L page 0x4000004b d1=8]: rows from its top, the marker column then the label
             // (PCSX2 m22, 2026-10-15: "• Breach the castle walls", the bullet at x 137, the text at 149, middle y 159);
-            // the list's selection is the last row [M :271 msg 0x1d = count−1] — the yellow arrow at x ~107.
+            // the list's selection starts on the LAST row [M :271 msg 0x1d = count−1] and moves with ~V — the
+            // yellow arrow follows fe.pause_objectives_sel (objective-hints).
             let n = fe.pause_objectives.len().min(8);
-            for (i, (label, done)) in fe.pause_objectives.iter().enumerate().take(8) {
+            for (i, o) in fe.pause_objectives.iter().enumerate().take(8) {
                 let y = 159.0 + i as f32 * 22.0;
-                let marker = if *done { "~J" } else { "~I" };
-                glyph_row(h, font, &format!("{marker} {}", lbl(*label, "(objective)")), 135.0, y - 9.0, bright);
+                let marker = if o.done { "~J" } else { "~I" };
+                glyph_row(h, font, &format!("{marker} {}", lbl(o.text, "(objective)")), 135.0, y - 9.0, bright);
             }
-            if n > 0 { pause_cursor(h, 107.0, 159.0 + (n - 1) as f32 * 22.0, gs(YELLOW, 0xff)); }
+            let sel = fe.pause_objectives_sel.min(n.saturating_sub(1));
+            if n > 0 { pause_cursor(h, 107.0, 159.0 + sel as f32 * 22.0, gs(YELLOW, 0xff)); }
         }
         // The MISSION tab (default [L the page's initial state — the d1=6 list is the enabled one]).
         _ => {
