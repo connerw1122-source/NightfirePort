@@ -110,3 +110,12 @@ Suite runner on the final tree: build ok (348 binaries), then `--only codename_e
 → **"50 passed, 0 failed, 0 ignored"**, no FAILED/TIMEOUT lines. The full 348-binary run does not fit
 the window (the build alone is 338 s; this sandbox also kills detached processes, so the background
 start printed nothing) — the main agent should run the complete suite on the merged tree.
+
+## ntfy failed (partial)
+
+All three fallbacks attempted 2026-10-15 ~20:50 UTC:
+1. curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. wget: exit 0, empty body (ambiguous — same IP-wide daily quota likely applied).
+
+(The s/credits-data worker hit the same 429 daily quota earlier the same day.)
