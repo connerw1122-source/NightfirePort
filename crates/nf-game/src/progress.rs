@@ -276,6 +276,15 @@ fn gold_group(entry_idx: usize) -> (u16, usize, usize) {
     (REWARDS_TABLE[entry_idx].desc[0].bit + rank as u16, len, rank)
 }
 
+/// The game's ceil with the 1e-5 epsilon: `(int)x`, then +1 when the dropped fraction is at
+/// least 1e-5 [M `PlrStat_GetScore` 0x1984b0 — the bump appears on every raw-score store
+/// (:181-185, :213-218, :155-160)]. Float noise below 1e-5 does not bump.
+fn ceil_1e5(x: f32) -> f32 {
+    let t = x as i32; // trunc toward zero; the game's scores are non-negative here
+    let tf = t as f32;
+    if x - tf >= 1e-5 { (t + 1) as f32 } else { tf }
+}
+
 /// The outcome of one `PlrStat_GetScore` commit — what the results screen and the save show.
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Scored {
@@ -489,21 +498,36 @@ impl Progress {
             let r = &mut rows[i];
             if r.count == 0 { continue; }
             match i {
-                // Row 4, the undetected row: over par → the penalty ramp.
-                4 if r.count < r.value => {
-                    let pen = if self.table[idx].penalty == 0.0 { 0.03 } else { self.table[idx].penalty };
-                    let f = (1.0 - (r.value - r.count) as f32 * pen).max(0.0);
-                    r.raw = f * r.target as f32;
-                    r.ratio = f.clamp(0.0, 1.0);
-                }
-                // Row 7, the time row: value in 1/100 s, count in seconds.
-                7 => {
-                    let t = r.value as f32 / 100.0;
-                    if (r.count as f32) < t {
-                        r.raw = r.target as f32 * r.count as f32 / t;
-                        r.ratio = (r.count as f32 / t).clamp(0.0, 1.0);
+                // Row 4, the undetected row. Over par → the penalty ramp, CEILED with the game's
+                // 1e-5 epsilon [M 0x1984b0:213-218]. Within par → the FULL max, ratio 1.0
+                // [M 0x1984b0:225-233 — the else store of row+0x4 into row+0x10, then the 1.0
+                // ratio at LAB_00198bdc]. (The old fall-through into the proportional arm
+                // awarded 0 for a clean run — the capture's 100% / 25,000 is the disproof.)
+                4 => {
+                    if r.count < r.value {
+                        let pen = if self.table[idx].penalty == 0.0 { 0.03 } else { self.table[idx].penalty };
+                        let f = (1.0 - (r.value - r.count) as f32 * pen).max(0.0);
+                        r.raw = ceil_1e5(f * r.target as f32);
+                        r.ratio = f.clamp(0.0, 1.0);
                     } else {
                         r.raw = r.target as f32;
+                        r.ratio = 1.0;
+                    }
+                }
+                // Row 7, the time row: value in 1/100 s, count in seconds. BOTH branches are the
+                // same expression — raw = ceil₁ₑ₋₅(max × par / max(elapsed_s, 1)) — under par the
+                // score RISES above max [M 0x1984b0:118-170: the under-par arm computes
+                // max × par and divides by max(elapsed, 1); the over-par arm divides max by
+                // elapsed/par]. The PCSX2 capture's 01:19 / 09:00 → 170,887 =
+                // ceil(25000 × 540 / 79) is the proof (docs/systems/mission-stats.md).
+                7 => {
+                    let t = (r.value as f32 / 100.0).max(1.0);
+                    if (r.count as f32) < r.value as f32 / 100.0 {
+                        r.raw = ceil_1e5(r.target as f32 * r.count as f32 / t);
+                        r.ratio = (r.count as f32 / r.value as f32 * 100.0).round() * 0.01;
+                        r.ratio = r.ratio.clamp(0.0, 1.0);
+                    } else {
+                        r.raw = ceil_1e5(r.target as f32 * r.count as f32 / t);
                         r.ratio = 1.0;
                     }
                 }
@@ -512,10 +536,11 @@ impl Progress {
                     if r.count <= r.value { r.raw = r.target as f32; r.ratio = 1.0; }
                     else { r.raw = 0.0; r.ratio = 0.0; }
                 }
-                // The normal rows: raw = target · min(count, value) / count.
+                // The normal rows: raw = ceil₁ₑ₋₅(target · min(count, value) / count) [M
+                // 0x1984b0:171-185 — (int)f then the 1e-05 bump].
                 _ => {
                     let m = r.count.min(r.value);
-                    r.raw = r.target as f32 * m as f32 / r.count as f32;
+                    r.raw = ceil_1e5(r.target as f32 * m as f32 / r.count as f32);
                     r.ratio = (((m as f32 / r.count as f32) * 100.0).round() * 0.01).clamp(0.0, 1.0);
                 }
             }

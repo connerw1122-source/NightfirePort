@@ -43,6 +43,7 @@ pub mod pickup;
 pub mod player;
 pub mod progress;
 pub mod profile;
+pub mod stats;
 pub mod ps2math;
 pub mod searchlight;
 pub mod sky;
