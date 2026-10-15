@@ -119,3 +119,110 @@ fn swimming_into_the_ladder_still_grabs() {
     assert!(y > lad.top() - 0.6, "the top dismount did not reach the platform (y {y:.3} vs top {:.3})", lad.top());
     eprintln!("swim-grab pin: grabbed at +{t}, climbed out to y {y:.3}");
 }
+
+/// fix-ladder-water part 2 — the cut-scene skip must stop the playing voice:
+/// user playtest 1014-1725: "Skip the cutscene in the middle of dialogue, and the dialogue still kept
+/// going until it finished... just like the voice line itself." Level 07000004's intro runs the
+/// engine cut-scene with live kind-5 voice streams (5 at once [probe]).
+///
+/// Game evidence (ACTION.ELF):
+/// - The NIS voice is a kind-5 sound stream (`Script_SoundStart` 0x1d8820 sets the stream kind 5).
+///   `Script_KillStream` 0x1d9860:96-99 case 5 calls `Sound_Stop(stream+0x10)`, and `Script_Free`
+///   0x1da880:27 kills every stream when the script ends — the skip's fast-forward ends the script
+///   mid-line, so the game's voice stops AT the skip. The port's `kill()` ignored kind 5.
+/// - The dialogue text: `Script_FFwd` 0x1dac78:26-30 (the ScriptCam arm) calls
+///   `Text_FlushAllSubtitles` 0x1b15c8 (the type-4/5 messages die) at the skip; the port kept the
+///   shown line and the catch-up's remaining lines queued up in the HUD.
+#[test]
+fn skipping_the_cutscene_stops_the_dialogue_voice() {
+    let Some(_) = iso() else { eprintln!("NF_ISO not set — skipping"); return; };
+    let mut sim = {
+        let mut scene = nf_view::load(&iso().expect("NF_ISO"), "07000004.bin", false).expect("load 07000004");
+        scene.sim.take().expect("sim")
+    };
+    // Wait for the cut-scene's voices (no skip — let them start on the real path).
+    let listener = ([0.0f32; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+    let mut captured: Vec<((u32, u8), nf_game::sound::Handle)> = Vec::new();
+    let mut seen: std::collections::HashSet<(u32, u8)> = Default::default();
+    let mut removed = std::collections::HashSet::new();
+    for _ in 0..1500 {
+        step(&mut sim, Default::default());
+        sim.drones.audio.update(None, listener, &|_| true);
+        for c in sim.drones.audio.out.iter() {
+            match c {
+                nf_game::sound::Cmd::Start { handle, .. } => captured.retain(|(_, h)| h != handle),
+                nf_game::sound::Cmd::Remove { handle } => { removed.insert(*handle); }
+                _ => {}
+            }
+        }
+        sim.drones.audio.out.clear();
+        for (src, h, _) in sim.drones.script_sounds.iter() {
+            if seen.insert(*src) { captured.push((*src, *h)); }
+        }
+        if captured.len() >= 3 { break; }
+    }
+    assert!(!captured.is_empty(), "no NIS voice started within 25 s — nothing to skip");
+    // The skip through the real lane (`Scripts::skip_request`, what the viewer's key sets).
+    sim.drones.scripts.skip_request = true;
+    step(&mut sim, Default::default());
+    // The fade (<=45 ticks [M 0x1dac78:48-51]) then the catch-up and the free: the voices die here.
+    for _ in 0..150 {
+        step(&mut sim, Default::default());
+        sim.drones.audio.update(None, listener, &|_| true);
+        for c in sim.drones.audio.out.iter() {
+            if let nf_game::sound::Cmd::Remove { handle } = c { removed.insert(*handle); }
+        }
+        sim.drones.audio.out.clear();
+    }
+    let still: Vec<_> = captured.iter().filter(|(_, h)| !removed.contains(h)).collect();
+    assert!(still.is_empty(), "NIS voices kept playing after the skip: {still:?}");
+    eprintln!("skip stopped {} captured NIS sound(s)", captured.len());
+}
+
+/// Sister: a script that ends NORMALLY (no skip) also stops a still-playing sound — `Script_Free`
+/// 0x1da880:27 kills every stream, case 5 → `Sound_Stop` [M 0x1d9860:96-99]. Pre-fix neither path
+/// stopped a kind-5 stream (the sounds only died on their own `Script_SoundEnd` op 0x17).
+#[test]
+fn script_end_stops_a_still_playing_sound() {
+    let Some(_) = iso() else { eprintln!("NF_ISO not set — skipping"); return; };
+    let mut sim = {
+        let mut scene = nf_view::load(&iso().expect("NF_ISO"), "07000004.bin", false).expect("load 07000004");
+        scene.sim.take().expect("sim")
+    };
+    let listener = ([0.0f32; 3], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]);
+    let mut captured: Vec<((u32, u8), nf_game::sound::Handle)> = Vec::new();
+    let mut seen: std::collections::HashSet<(u32, u8)> = Default::default();
+    let mut removed = std::collections::HashSet::new();
+    for _ in 0..1500 {
+        step(&mut sim, Default::default());
+        sim.drones.audio.update(None, listener, &|_| true);
+        for c in sim.drones.audio.out.iter() {
+            match c {
+                nf_game::sound::Cmd::Start { handle, .. } => captured.retain(|(_, h)| h != handle),
+                nf_game::sound::Cmd::Remove { handle } => { removed.insert(*handle); }
+                _ => {}
+            }
+        }
+        sim.drones.audio.out.clear();
+        for (src, h, _) in sim.drones.script_sounds.iter() {
+            if seen.insert(*src) { captured.push((*src, *h)); }
+        }
+        if captured.len() >= 3 { break; }
+    }
+    assert!(!captured.is_empty(), "no NIS voice started within 25 s");
+    // Let the script(s) run out naturally: every captured sound must eventually get its Remove
+    // (its own end op or the script's free).
+    for _ in 0..2400 {
+        step(&mut sim, Default::default());
+        sim.drones.audio.update(None, listener, &|_| true);
+        for c in sim.drones.audio.out.iter() {
+            if let nf_game::sound::Cmd::Remove { handle } = c { removed.insert(*handle); }
+        }
+        sim.drones.audio.out.clear();
+        if captured.iter().all(|(_, h)| removed.contains(h)) { break; }
+    }
+    let missing: Vec<_> = captured.iter().filter(|(_, h)| !removed.contains(h)).collect();
+    assert!(missing.is_empty(), "NIS sounds outlived their scripts: {missing:?}");
+    eprintln!("natural ends stopped {} NIS sound(s)", captured.len());
+}
+

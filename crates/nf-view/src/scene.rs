@@ -499,11 +499,15 @@ pub struct Msg {
     /// pane's tests pin it) [M Text_AddMsg 0x1b0c30 stores the bound string; the id is the
     /// port's provenance for the game-label assertions].
     pub label: u32,
+    /// A script op-0x1e subtitle (`Text_AddMsg` type 4): the game's `Text_FlushAllSubtitles`
+    /// 0x1b15c8 deletes types 4/5 only, so the skip's flush drops these and nothing else
+    /// (fix-ladder-water).
+    pub script: bool,
 }
 
 impl Msg {
     pub fn new(text: String, time: f32) -> Msg {
-        Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false, label: 0 }
+        Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false, label: 0, script: false }
     }
 }
 
@@ -3334,12 +3338,17 @@ impl Sim {
         // Script op-0x1e text commands (`Script_TextStart` 0x1db2b8 → `Text_AddMsg(-1, 0, 4,
         // Txt_BindLabel(label), 0, time)` [M]): the raw labels drain to HUD messages with the same
         // bank binding as the pickup texts (fix-script-commands).
+        // The skip's subtitle flush [M Script_FFwd 0x1dac78:28-29 `Text_FlushAllSubtitles()`]: the
+        // script-sourced lines (type 4/5 [M 0x1b15c8]) die; the pickup/INFO queues stay.
+        if std::mem::take(&mut self.drones.text_flush) {
+            self.hud.msgs.retain(|m| !m.script);
+        }
         let lang = self.lang.take();
         let mut new_msgs: std::collections::VecDeque<Msg> = Default::default();
         if let Some(lang) = lang.as_ref() {
             for (label, time) in self.drones.script_msgs.drain(..) {
                 let text = lang.bind(label).unwrap_or("").trim().to_string();
-                if !text.is_empty() { new_msgs.push_back(Msg::new(text, time as f32)); }
+                if !text.is_empty() { new_msgs.push_back(Msg { script: true, ..Msg::new(text, time as f32) }); }
             }
         }
         // The INFO pane's label drain (fix-context-hints): the game binds at POST time
@@ -3414,7 +3423,7 @@ impl Sim {
                     // scales the life by the wrapped/orig length [M 0x1b0c30's +0x18 store]. The
                     // port wraps at draw time — the font lives in the scene's HudTables, which the
                     // Sim-side drain doesn't hold; the life scaling is not ported, see the report.)
-                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false, label: 0 });
+                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false, label: 0, script: false });
                 }
                 nf_game::mission::Event::FailLabel(l) => {
                     self.hud.fail_label = l;

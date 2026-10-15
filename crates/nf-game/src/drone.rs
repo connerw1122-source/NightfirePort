@@ -5299,6 +5299,9 @@ pub struct Drones {
     /// Op 0x1e script messages (`Text_AddMsg(-1, 0, 4, Txt_BindLabel(label), 0, time)`, drained to
     /// the HUD like `taken`): (label, display frames).
     pub script_msgs: Vec<(u32, u16)>,
+    /// One-tick flag: a `TextFlush` arrived this tick — the scene drops the script-sourced HUD lines
+    /// (fix-ladder-water; `Text_FlushAllSubtitles` deletes the type-4/5 messages [M 0x1b15c8]).
+    pub text_flush: bool,
     /// The section the IOP player reports (`0x2500CC`, read by `UpdateMusicalEvents`): the audio layer
     /// writes it each frame; the music update at the tick's end consumes it (fix-party-mission item 4 —
     /// the game's `UpdateMusicalEvents` runs every frame whether or not an output device exists).
@@ -5573,7 +5576,7 @@ impl Drones {
             gas: Default::default(),
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
-            letterbox: false, view_fade: None, script_msgs: Vec::new(),
+            letterbox: false, view_fade: None, script_msgs: Vec::new(), text_flush: false,
             death: Default::default(), bond_fire: false, aims_idle: 0, auto_restart: true, level_exit_cold: false,
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
@@ -6515,6 +6518,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // the raw label rides to nf-view (the Lang table lives above nf-game), the
                 // `drones.taken` pattern; the HUD pane shows it for `time` frames.
                 crate::nis::Request::Text { label, time } => self.script_msgs.push((label, time)),
+                // `Text_FlushAllSubtitles()` (0x1b15c8) from `Script_FFwd`'s skip arm [M 0x1dac78:28-29]:
+                // the pending script texts die here; the already-bound HUD lines drop on the viewer side
+                // (the `text_flush` flag the scene consumes), which keeps the game's type-4-only scope.
+                crate::nis::Request::TextFlush => { self.script_msgs.clear(); self.text_flush = true; }
                 // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
                 crate::nis::Request::Sound { id, at, src } => {
                     // `SFXStart` 0x115a68:18-20 / `SFXStart3D` 0x115bf0: a sound with id 0x172 (the NIS
