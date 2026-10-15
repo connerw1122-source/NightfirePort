@@ -13329,3 +13329,15 @@ Work Log (drive-crp-format):
   port vs a crisp picture in PCSX2 — suspected wrong interlaced predicted-picture reconstruction in
   oxideav-mpeg12video or our use of it. Plan: PSNR the port vs an independent ffmpeg decode per frame/picture
   type, find the cause, fix, pin with an NF_ISO test + sister.
+- Done: the decode itself was NEVER wrong — whole-ES PSNR port vs ffmpeg on the real 07350048 (range-fetched
+  from the retail image on the file host, SHA-1 verified against the golden manifest): 62.5–69.6 dB over 120
+  frames (I 69.4+, P 62.5+), and 07100005 65.1–76.1 dB (I/P/B); the crate's own conformance suite is 1462/0
+  (field pictures, dual-prime, 16x8, qmat). The user-visible ghost was PRESENTATION: the movies are BT.601
+  limited range (07350048 Y spans 14..218) and yuv420_to_rgb8 rendered Y raw with full-range chroma gains —
+  black at RGB(16,16,16), ~86% contrast, vs the game's IPU CSC which expands to full range. Fixed the matrix
+  (black now 0), plus VideoFrame::coding_type now reports the spec codes 1/2/3 (the crate enum is 0-based;
+  I pictures reported 0/"?" and P 1/"I" before). New: mpeg2_reference.rs (NF_ISO+movies-gated: per-frame
+  exact SHA-1 pin + reference block-grid MAD <= 2.0 over 120 frames, sister tests), golden
+  mpeg2_ref_digests_07350048.tsv + mpeg2_ref_psnr_07100005.tsv, dump_mpeg2_yuv/dump_pss_es examples,
+  pss.md decode-accuracy section. Pins 1f1fe7b0 -> 21d0739d (the CSC fix legitimately changes RGB8 output);
+  menu_movies/menu_backdrop_still re-pinned and green on a 3-movie mini ISO (NF_MOVIE_ISO).
