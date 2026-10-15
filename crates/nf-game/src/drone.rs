@@ -5299,6 +5299,12 @@ impl Drone {
         // `Light_Create(radius 7.0, intensity 1.0, the muzzle, rgb = weapon_data+0x56/+0x55/+0x54,
         // channel 0, life 0 → +0x20 = 1 (one tick), kind 1)` — before the bullet's spread draws.
         lights.create(7.0, 1.0, muzzle, [w[0x56], w[0x55], w[0x54]], 0, 0, 1, 0, rng);
+        // EXPERIMENT fix-gas-rng3: the anim-op's 2π draw (AnimProcessScriptCmds 0x1c1b38:456,
+        // Rand_FRand(0x40c90fdb)) — the game's fire op draws it after Light_Create, gated on the
+        // weapon's 0x2000 no-smoke bit.
+        if u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x2000 == 0 {
+            let _op_quat_z = rng.frand(6.2831854820251465f32);
+        }
         // fix-guard-weapons3: the game's next three draws — the flash-sprite orientation jitter
         // FRand(2π) 0x179268 / FRandHalf(0.2) 0x179288 / 0x1792ac — sit INSIDE
         // `if (lVar9 != 0)` (FireWeapon 0x17925c-0x1792b0): they run only when the kind-0x40

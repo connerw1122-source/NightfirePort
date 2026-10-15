@@ -75,21 +75,26 @@ fn a_muzzle_puff_advances_the_sim_rng_by_exactly_the_games_count() {
     assert!(sim.shot_tick, "the press fired this tick");
     assert_eq!(steps_between(&pre, &post) > 0, true, "the tick drew from the shared stream");
     let _ = post;
-    // The puff exists with the game's fixed args [M 0x1a4404-0x1a442c]. The pool already ran one
-    // update when the tick ends, so the read shows life 128−1 and scale 0.05+rate; the searchlight
+    // The puff exists with the game's fixed args [M 0x1a4404-0x1a442c]. fix-gas-rng3 re-derived the
+    // age: `gases_smoke` 0x1ab2d0 is control_funcs class 14's UPDATE handler [M the .data table at
+    // ACTION.ELF 0x26f890 + 14·0xc], which runs in the update pass BEFORE `Collide_Update` 0x1ea398
+    // spawns the muzzle puff in the same frame (Player_CollisionHandler 0x1949a8 → Player_MuzzleFlash
+    // 0x1a4298) — so the puff is created AFTER this tick's aging and the frame-end read shows the raw
+    // creation state: life 128, scale exactly 0.05, alpha exactly 0x80. (The old 127/aged expectation
+    // assumed the pool ticks after the collide pass; nothing in the frame does.) The searchlight
     // site's kind-7 puff carries the same 0.05 start but a 0.25 end — scale_rate separates them.
     let rate = (0.1 - 0.05) / 128.0;
     let puff = sim.drones.gas.puffs.iter().rev()
-        .find(|p| p.kind == 7 && p.scale_rate == rate && p.life == 127.0)
+        .find(|p| p.kind == 7 && p.scale_rate == rate && p.life == 128.0)
         .expect("the muzzle smoke puff exists (pre-fix: life 8.0, counter-hash fields)");
-    assert!(puff.scale > 0.05 && puff.scale < 0.051, "the puff grew one tick from the 0.05 start");
-    // The pool's update already faded the start rgba one tick; the rates are untouched and exact.
+    assert_eq!(puff.scale.to_bits(), 0.05f32.to_bits(), "the puff is unaged: the 0.05 start scale");
+    // The rates are exact (the game's reciprocal form) and the rgba sits at the start bytes.
     let inv = 1.0f32 / 128.0;
     assert_eq!(puff.rgba_rate, [
         (0.0 - 0x48 as f32) * inv, (0.0 - 0x40 as f32) * inv,
         (0.0 - 0x30 as f32) * inv, (1.0 - 0x80 as f32) * inv,
     ], "the end-1 bytes reach the alpha rate (the game's reciprocal form)");
-    assert!(puff.rgba[3] < 0x80 as f32, "the puff faded one tick");
+    assert_eq!(puff.rgba[3].to_bits(), (0x80 as f32).to_bits(), "the puff is unaged: the 0x80 start alpha");
     assert_eq!(puff.mesh, nf_game::gas::SMOKE_QUAD);
     assert_eq!(sim.drones.gas.puffs.iter().filter(|p| p.kind == 7 && p.scale_rate == rate).count(), 1,
         "one muzzle puff for one shot (Bond is in the sky: no impact puffs behind it)");
@@ -97,7 +102,7 @@ fn a_muzzle_puff_advances_the_sim_rng_by_exactly_the_games_count() {
     // the puff (the gun's accuracy/spread draws, the light, the flight-step draw…), reproduce the
     // puff's fields bit for bit. (Each draw advances the stream once, so k filler draws land on
     // the same state regardless of their kind.) Pre-fix the fields came from a counter hash: no k
-    // works. The kind-7 update the pool ran never touches spin/vel, so the read fields are raw.
+    // works. The read fields are raw (no pool update ran between the creation and the read).
     let rec = 1.0f32 / 60.0;
     let expect = |r: &mut Rng| {
         let _quat_z = r.frand(6.2831854820251465); // 0x1a43ec, 0x40c90fdb
@@ -119,6 +124,15 @@ fn a_muzzle_puff_advances_the_sim_rng_by_exactly_the_games_count() {
     }
     let k = hit.expect("the puff's fields = the game's 6 draws at a fixed stream offset (pre-fix: a counter hash, no such k)");
     eprintln!("[gas-rng] the 6 smoke draws sit {k} draws into the shot tick");
+    // Sister (the game's aging schedule): the NEXT tick's update pass (gases_smoke, class 14) is
+    // what ages the puff — one step later it shows 128−1, grown and faded.
+    scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
+    let sim = scene.sim.as_ref().unwrap();
+    let aged = sim.drones.gas.puffs.iter().rev()
+        .find(|p| p.kind == 7 && p.scale_rate == rate)
+        .expect("the puff survives into the next tick");
+    assert_eq!(aged.life, 127.0, "the next update pass ages the puff once (gases_smoke, class 14)");
+    assert!(aged.scale > 0.05 && aged.rgba[3] < 0x80 as f32, "grown and faded by that one update");
 }
 
 #[test]
