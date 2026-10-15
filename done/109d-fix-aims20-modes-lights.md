@@ -40,3 +40,7 @@ claimed-by: sandbox2 at 2026-10-15T01:17Z
 ## Report (done, 2026-10-15T02:59Z)
 
 Closed by the driver: the report is on `s/fix-aims20-modes-lights` (docs/reports/fix-aims20-modes-lights.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T02:59Z)
+
