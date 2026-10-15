@@ -91,10 +91,14 @@ the game side in one screenshot either way.
 - Regression sweep (the aims/weapon-mode neighbours): fix_aims20_modes_lights_live 5, gadgets_live
   3, fix_weapon_modes_live 2, fire_modes3_live 2, fix_silencer_modes_live 6, fix_weapons_all_live
   4, fix_auto_switch_live 4 — **26 passed, 0 failed**.
-- Full suite: this sandbox reaps background processes (the nohup/setsid suite died twice here as
-  in the previous sessions; the last restart at 05:29 UTC — read `tail -1 suite.out`, expected
-  still running or reaped). **No total line this session** — the next session should run it on the
-  final tree.
+- Full suite: this sandbox reaps background processes — the nohup/setsid suite died THREE times
+  here (03:59, 05:29, 05:33 UTC). A foreground `cargo test -p nf-view` chunk ran until it hung on
+  the `ai_05_truck` AI test for 10+ minutes (environmental in this sandbox; this task's diffs are
+  view-side only) — the two unit binaries completed 8+0 passed before it. **No total line this
+  session.** What DID run on the FINAL MERGED TREE (origin/master 2cbfd7e3 merged, WORKLOG both
+  kept): fix_aims20_lights_render 1/1, fix_aims20_modes_lights_live 3/3, gadgets_live 4/4,
+  turn_stutter_live 3/3 (the merge's lib.rs camera-bracket changes coexist) — 11 passed, 0 failed.
+  The next session should run the full suite on this tree.
 
 ## Files
 
