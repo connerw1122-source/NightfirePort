@@ -41,3 +41,7 @@ claimed-by: sandbox6 at 2026-10-15T14:09Z
 ## Report (done, 2026-10-15T15:26Z)
 
 Closed by the driver: the report is on `s/find-corona-creator` (docs/reports/find-corona-creator.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T15:51Z)
+
