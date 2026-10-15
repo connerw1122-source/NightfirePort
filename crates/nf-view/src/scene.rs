@@ -5682,6 +5682,10 @@ impl Scene {
                     }
                 } else {
                     match s.drones.player_bullets.get(slot as usize - GRENADE_SLOTS - TRACER_SLOTS) {
+                        // The ridden guided rocket is never drawn in its own camera: `Player_PositionCamera`
+                        // 0x18f5d8 case 0xc `View_SetDrawInOtherViewsOnly(BL+0x878, view)` [M]. Drawing it put
+                        // the eye inside the rocket's mesh — the big dark octagon the user saw instead of the view.
+                        Some(b) if b.guided_cam && s.missile_cam.is_some() => return far,
                         Some(b) if !b.dead => (b.pos, b.dir, s.weapons.projectile_mesh(b.weapon as usize)),
                         _ => return far,
                     }

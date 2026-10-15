@@ -15,7 +15,7 @@ const SH: f32 = 448.0;
 /// fix-context-hints added the third-icon context textures [M 0x2FC168 = 0x03000064+ctx; only 0x66
 /// (winch, ctx 2), 0x67 (hanging man, ctx 3) and 0x6A (figure, ctx 6) exist on the disc [D tex-list] —
 /// the table's other four ids never resolve in `hashtable_set_sprite` and the icon stays hidden].
-pub const TEXTURES: [u32; 20] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141, 0x0300_0066, 0x0300_0067, 0x0300_006a];
+pub const TEXTURES: [u32; 26] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141, 0x0300_0066, 0x0300_0067, 0x0300_006a, 0x0300_005e, 0x0300_004a, 0x0300_005f, 0x0300_005c, 0x0300_005d, 0x0300_0059];
 const CROSS_TEX: u32 = 0x0300_0026;
 const FONT_TEX: u32 = 0x0300_0003;
 /// SightPane textures [D 07000005.bin entries 71 + 56]: 0x03000034 = the scope overlay (256×256, the circular
@@ -172,7 +172,13 @@ impl Hud<'_> {
 
     /// A `SpriteInfo` sprite at the pane origin with colour `c`.
     fn sprite(&mut self, anchor: Anchor, at: (f32, f32), s: &SpriteInfo, c: [f32; 4]) {
-        let uv = s.uv.map(|k| k as f32);
+        let mut uv = s.uv.map(|k| k as f32);
+        // Zero UV extents = the whole texture, like the zero w/h below (the Redeemer brackets 3..8: uv 0, w/h 0 —
+        // drawn with zero extents they sampled one transparent texel and never showed).
+        if uv[2] == 0.0 && uv[3] == 0.0 {
+            let (tw, th) = self.tex_dims(s.texture);
+            if tw > 0.0 && th > 0.0 { uv = [0.0, 0.0, tw, th]; }
+        }
         // w/h 0 = the texture's own size (the icon sprites: crouch 19, air bubble, damage glow)
         // [M SpriteInfo: "w / h (0 = texture size)"] — resolved against the loaded texture.
         let (mut w, mut h) = (s.w as f32, s.h as f32);
@@ -182,7 +188,10 @@ impl Hud<'_> {
                 if h == 0.0 { h = self.textures[ti].1.height as f32; }
             }
         }
-        self.quad(anchor, s.layer as i32, s.texture, if s.flags & 0x100 != 0 { 1 } else if s.flags & 0x200 != 0 { 2 } else { 0 }, at.0 + s.x as f32, at.1 + s.y as f32, w, h, uv, (s.flags & 0x40 != 0, s.flags & 0x80 != 0), c);
+        // Through the tiled draw: a 0x400 sprite is a quarter design mirror-repeated (`HUD_UpdateRedeemerPane`'s
+        // ring 0x0300005E is a 64×64 quarter drawn 128×128 with flags 0x500 — drawn as one quad it showed four
+        // identical arcs, the zoom overlays' old 2×2 bug); without 0x400 this is the same single quad as before.
+        self.tiled_quad(anchor, s.layer as i32, s.texture, at.0 + s.x as f32, at.1 + s.y as f32, w, h, uv, s.flags, c);
     }
 
     /// Font 2 text with its top-left pen at (x, y − cap) (`FE 02`: right-aligned → x − width), colour `c`; flag 0x20:
@@ -294,10 +303,49 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     }
     let (Some(s), Some(t)) = (sim, scene.hud.as_ref()) else { return h.finish() };
     let frame = s.drones.frame;
+    // The guided-missile camera's pane 9 (`HUD_CreateRedeemer` 0x19dec0 + `HUD_UpdateRedeemerPane` 0x19e178,
+    // `RedeemerSprInfo` 0x2bda30 [L ACTION.ELF]; colours are 0xRRGGBBAA): sprite 0 the centre ring, 3..8 the
+    // bracket pieces (flag 0x40 mirrors the right-hand ones), 9 the full-screen red wash (0x300000ff) — all at
+    // their table layers while the camera rides. Sprite 1 is the full-screen scanline layer: every frame its
+    // colour becomes 0x7f0000XX with XX = Rand(24) + 27, plus `(ratio − 0.85)·3400` once the missile has used
+    // 85% of its range (`BU+0xF4 / weapon+0x1C`), capped at 0xff — the red static near the end; every other
+    // frame its v offset jumps to Rand(h − 1) (the scanline jitter, `Scrl_272`). With no live missile (the
+    // 15-tick freeze after impact, `BL+0x944`) the ratio is 1.0 (full red static) and sprite 2 (the full-screen
+    // 0x3000002 layer) is shown (layer 0x27). Sprite 10 is the copter lock bracket (no copters here: hidden).
+    // The pane's own RNG is not the sim's (a HUD draw must not move the game's draws): a per-frame hash.
+    let riding = s.missile_cam.is_some();
+    if let Some(mc) = s.missile_cam.as_ref() {
+        let hash = |k: u32| { let mut x = frame.wrapping_mul(0x9e37_79b9) ^ k.wrapping_mul(0x85eb_ca6b); x ^= x >> 15; x = x.wrapping_mul(0x2c1b_3c6d); x ^ (x >> 12) };
+        let live = s.drones.player_bullets.iter().find(|b| b.guided_cam && !b.dead);
+        let ratio = match live { Some(b) if mc.riding && b.range > 0.0 => b.travelled / b.range, _ => 1.0 };
+        let mut alpha = 27.0 + (hash(1) % 24) as f32;
+        if ratio > 0.85 { alpha += (ratio - 0.85) * 3400.0; }
+        let alpha = alpha.min(255.0) as u32;
+        let anchor_of = |sp: &SpriteInfo| if sp.w as i32 >= 0x200 { Anchor::Stretch } else { Anchor::Centre };
+        for (i, sp) in t.redeemer.iter().enumerate() {
+            match i {
+                1 => {
+                    let mut sp1 = sp.clone();
+                    // The v jitter on odd frames: `Rand(h − 1)` into the sprite's v [M 0x19e178 tail].
+                    let vh = (sp.uv[3] as i32).max(2) as u32;
+                    if frame & 1 != 0 { sp1.uv[1] = (hash(2) % (vh - 1)) as i16; }
+                    h.sprite(anchor_of(sp), (0.0, 0.0), &sp1, gs(0x7f0000, alpha));
+                }
+                2 => if live.is_none() || !mc.riding {
+                    let mut sp2 = sp.clone(); sp2.layer = 0x27;
+                    h.sprite(anchor_of(sp), (0.0, 0.0), &sp2, gs(sp.colour >> 8, sp.colour & 0xff));
+                },
+                10 => {}
+                _ => h.sprite(anchor_of(sp), (0.0, 0.0), sp, gs(sp.colour >> 8, sp.colour & 0xff)),
+            }
+        }
+    }
     // Health / armour pane (fade factor F = 1: `PlayerSetting+0xB` = 0 [L] holds `BL+0x8BC` at 1).
     let f = 1.0f32;
     let armour = s.drones.health.armour * 0.16;
-    if armour > 0.0 {
+    // The health pane hides while the guided camera rides ("the health bar and the crosshair are gone while it
+    // flies" [L PCSX2 2026-10-13]).
+    if armour > 0.0 && !riding {
         for k in 0..8 {
             let a = if k == 0 { 1.0 } else if (k as f32) < armour { 0.75 } else { 0.35 };
             let sp = &t.health[k];
@@ -306,12 +354,12 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     }
     let hp = s.drones.health.health.clamp(0.0, 100.0) * 0.07;
     let colour = if hp >= 4.0 { 0x52a88b } else if hp >= 2.0 { 0xc6984e } else { 0x9d1912 };
-    for i in 0..7 {
+    for i in (0..7).filter(|_| !riding) {
         let mut a = if (i as f32) < hp { 0.55 } else { 0.15 };
         if i == 0 && hp < 0.5 { a = if frame % 30 < 15 { 0.55 } else { 0.15 }; }
         h.sprite(Anchor::Left, HEALTH_AT, &t.health[8 + i], gs(colour, (a * f * 255.0) as u32));
     }
-    h.sprite(Anchor::Left, HEALTH_AT, &t.health[15], gs(colour, (f * 140.0) as u32));
+    if !riding { h.sprite(Anchor::Left, HEALTH_AT, &t.health[15], gs(colour, (f * 140.0) as u32)); }
     // Damage glow (sprites 20–23, `HealthSprInfo[20..24]`): full screen, additive, red at alpha `BL+0x968`,
     // gated per bit of `BL+0x967` — bit 1 → sprite 20 (tex 0x0300018D), bit 2 → 21 (flipped V), bit 4 → 22
     // (tex 0x0300018E), bit 8 → 23 (flipped U) [M HUD_UpdateHealthPane 0x19b9c8:92-113]. `pain_from`

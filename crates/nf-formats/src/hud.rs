@@ -96,6 +96,9 @@ pub struct HudTables {
     pub ammo: Vec<SpriteInfo>,
     /// The air/oxygen pane's 3 sprites (`HUD_UpdateAirPane` 0x1a11c8, `AirSprInfo` 0x2bd490).
     pub air: Vec<SpriteInfo>,
+    /// The guided-missile camera's pane 9 (`HUD_CreateRedeemer` 0x19dec0 / `HUD_UpdateRedeemerPane` 0x19e178,
+    /// `RedeemerSprInfo` 0x2bda30, 11 sprites).
+    pub redeemer: Vec<SpriteInfo>,
     /// Per ammo type: u, v, width, pixels per round.
     pub bullets: Vec<[f32; 4]>,
     /// Font 2 (`FONTSerpLight`, the HUD's).
@@ -155,7 +158,8 @@ impl HudTables {
         let font = parse_font("FONTSerpLight")?;
         let font_header = parse_font("FONTNFont2")?;
         let air = sprites("AirSprInfo")?;
-        Ok(HudTables { health: sprites("HealthSprInfo")?, ammo: sprites("AmmoSprInfo")?, air, bullets, font, font_header })
+        let redeemer = sprites("RedeemerSprInfo")?;
+        Ok(HudTables { health: sprites("HealthSprInfo")?, ammo: sprites("AmmoSprInfo")?, air, redeemer, bullets, font, font_header })
     }
 }
 
