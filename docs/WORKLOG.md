@@ -13445,3 +13445,8 @@ Work Log (credits-data):
 - Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
   0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
   the PAL base note).
+
+## mp-defaults-and-setup (2026-10-15, branch s/mp-defaults-and-setup)
+- (21:05) Started: branch from origin/master f59b47fb. Task: make FrontEnd's MP defaults match the game's
+  MPSettings init (Location Damage On, Respawn Random, Explosive Scenery Locked via the reward gate), and add the
+  Health Handicap third step to mp_setup_state with per-step prompt label/texture/value getters for the main agent.
