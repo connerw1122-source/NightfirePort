@@ -1562,6 +1562,8 @@ struct App {
     ticked: bool,
     /// This frame's 60 Hz tick count (the burning woman advances once per tick while a paused page shows her).
     frame_ticks: u32,
+    /// The paused menus' 60 Hz accumulator (seconds) for the animations that run while the game is paused.
+    menu_clock: f32,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -2801,7 +2803,13 @@ impl ApplicationHandler for App {
                         if shows_woman {
                             if let Some(w) = self.scene.woman.as_mut() {
                                 let mut changed = false;
-                                for _ in 0..self.frame_ticks { changed |= w.tick(); }
+                                // The paused frames' own 60 Hz clock: `frame_ticks` is the GAME's tick count and stays frozen
+                                // at its last value while a menu is up, so ticking by it ran the figure once per render frame
+                                // × that stale count (several times too fast on a fast display — the user's playtest).
+                                self.menu_clock += dt;
+                                let n = (self.menu_clock * 60.0) as u32;
+                                self.menu_clock -= n as f32 / 60.0;
+                                for _ in 0..n.min(8) { changed |= w.tick(); }
                                 if changed { g.renderer.update_woman(&g.queue, &w.rgba()); }
                             }
                         }
@@ -3109,7 +3117,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
         async_load: None, };
