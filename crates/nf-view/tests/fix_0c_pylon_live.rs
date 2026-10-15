@@ -46,7 +46,7 @@ fn render_full(scene: &Scene, cam: glam::Vec3, yaw: f32, pitch: f32, fov: f32, t
     });
     let view = target.create_view(&Default::default());
     let depth = gpu::depth_view(&device, w, h);
-    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp, cam.to_array(), ticks, &[], &gpu::HudFrame::default(), None);
+    let mut enc = r.render(&device, &queue, &view, &depth, vp, vp, cam.to_array(), ticks, &[], &gpu::HudFrame::default(), None, None);
     let row = (4 * w).next_multiple_of(256);
     let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (row * h) as u64, usage: wgpu::BufferUsages::COPY_DST | wgpu::BufferUsages::MAP_READ, mapped_at_creation: false });
     enc.copy_texture_to_buffer(
