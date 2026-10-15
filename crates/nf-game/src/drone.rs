@@ -5403,6 +5403,11 @@ pub struct Drones {
     /// 0x1a2e38:41-57 increments it while the view state is idle and resets on any anim/fire). Gates the
     /// view model's side lights (blink > 15, off > 45 [M Player_WeaponFiring 0x1a5460:264, 348]).
     pub aims_idle: u16,
+    /// fix-aims20-modes-lights: the game's `BLData+0x93e`, the weapon-raise cooldown the AIMS-20's
+    /// bone-9 light reads (`Player_WeaponFiring` 0x1a5460:275-281: dark when it has drained to 0).
+    /// `Player_SetWeaponAnimObj` 0x1a2e38:47-57 decrements it while the view anim is idle and
+    /// refills it to FRAME_RATE_INT·0x14 = 1200 on every non-idle tick [L ee_start_05 BL+0x93e = 1200].
+    pub aims_raise: u16,
     /// fix-death-restart: the pre-menu auto-restart. While 180-fix-menus has no drawing, the port
     /// answers the 0x40000042 menu with Restart immediately (`fail_choose_restart`); the flag turns
     /// that off so the view can answer instead.
@@ -5600,6 +5605,8 @@ impl Drones {
             // — the shared-constructor collisions, merge lesson 4).
             letterbox: false, view_fade: None, script_msgs: Vec::new(),
             death: Default::default(), bond_fire: false, aims_idle: 0, auto_restart: true, level_exit_cold: false,
+            // fix-aims20-modes-lights: BL+0x93e starts at the refill value [L ee_start_05].
+            aims_raise: 1200,
             // fix-restart-target: the fail-menu Restart's warm arm + the current level (GameState+0xC).
             level_exit_restart: false,
             pending_blasts: Vec::new(),
@@ -8134,8 +8141,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         // fix-satchel-tripbomb: the 0x80000 tripbomb arm plays the MINE's 0x446
                         // instead [M 0x12ce80:326-328] and overwrites `BU+0xFC = 120.0` [:330] (the
                         // phase box carries it); the 0x3b satchel shares the hat's 0x4a7 [:319-321].
-                        let stick_sound = if g.weapon_type == 0x3a { 0x446 } else { 0x4a7 };
-                        if let Some(t) = d.sfx { let h = t.get(stick_sound); self.audio.play3d(h.id, p, None); }
+                        // fix-remote-mine-play: the mine 0x37's own stick arm [:296-330] plays NO
+                        // sound — its block has no Sound_Play3D call at all (unlike 0x3b/0x45's
+                        // 0x4a7 and 0x3a's 0x446) — the stick is silent.
+                        let stick_sound = match g.weapon_type { 0x37 => None, 0x3a => Some(0x446), _ => Some(0x4a7) };
+                        if let Some(id) = stick_sound { if let Some(t) = d.sfx { let h = t.get(id); self.audio.play3d(h.id, p, None); } }
                         break;
                     }
                     // fix-satchel-tripbomb: the tripbomb's laser armed — the beam object created once
@@ -8338,8 +8348,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // — the 0x80000 stick arm walks the objects, counts the same-weapdef same-owner type-5 bullets
         // and marks the oldest (obj+0xEC smallest [*suggested*: the port's spawn order]) `+0xFE |= 1`
         // past 6]. Applied every tick over the placed set — the net effect matches.
+        // fix-remote-mine-play: the mine 0x37's stick arm carries the same walk [M 0x12ce80:296-330 —
+        // the record's base id 0x37, count < 6, else the oldest `+0xFE |= 1`]; its placed set joins
+        // the same every-tick consumer.
         let mut placed: Vec<usize> = self.grenades.iter().enumerate()
-            .filter(|(_, g)| g.weapon_type == 0x3a && g.stuck && g.state < 2)
+            .filter(|(_, g)| matches!(g.weapon_type, 0x3a | 0x37) && g.stuck && g.state < 2)
             .map(|(i, _)| i).collect();
         while placed.len() > 6 { let i = placed.remove(0); self.grenades[i].state = 2; }
         // fix-satchel-tripbomb: the tripbomb's laser [M `Bullet_update` case 3, the `+0x70 & 0x80000`

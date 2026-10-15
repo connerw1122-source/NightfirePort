@@ -89,9 +89,13 @@ fn mode_press_to_detonator(scene: &mut nf_view::scene::Scene) {
 }
 
 /// ── The detonator's fire detonates the placed mine and hands the mine back ───────────────────────
-/// Firing 0x38 sets the player's 0x37 mines' fuse to 10.0 [M 0x1a4bf0 disasm 0x1a4c84-0x1a4c88] —
-/// `Explode_Create(radius 8.0, damage 100.0)` lands 10-11 ticks later [M 0x12d890:268-281,388-393] —
-/// and requests the switch back to the base mine [M 0x1a4cac-0x1a4cb8 `sb v0,99(v1)`].
+/// Firing 0x38 sets the player's 0x37 mines' fuse to **−10.0** [M 0x1a4bf0 disasm 0x1a4c54-0x1a4c88
+/// `lui $at, 0xc120; mtc1 $at, $f0; …; swc1 $f0, 0xfc($a1)` = 0xc1200000 = −10.0f — fix-remote-mine-play
+/// corrected this file's earlier "+10.0" note; DoTrails' `0.0 <= fuse` gate fails on the pass after
+/// the mark] — `Explode_Create(radius 8.0, damage 100.0)` lands on the press tick in the port (the
+/// grenade update runs after the shot block within the step; the game's DoTrails booms the next
+/// update — a ≤1-tick window either way) — and requests the switch back to the base mine
+/// [M 0x1a4cac-0x1a4cb8 `sb v0,99(v1)`].
 #[test]
 fn the_detonator_detonates_the_placed_mine_and_switches_back_to_it() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
@@ -101,20 +105,29 @@ fn the_detonator_detonates_the_placed_mine_and_switches_back_to_it() {
     // Fire the detonator once.
     scene.sim.as_mut().unwrap().step_bond(Input::default(), true, false, false);
     let switch_back_tick = scene.sim.as_ref().unwrap().drones.frame;
+    // The marked mine blasts on the −10.0 mark's pass: the port's blast is visible on the press
+    // tick itself — the per-tick `explosions.clear()` (the grenade section's head) wipes it at the
+    // very next step, so look HERE first, then keep the ≤14-tick window for the game's
+    // next-update shape.
+    let mut blast = None;
+    {
+        let ex = &scene.sim.as_ref().unwrap().drones.explosions;
+        if !ex.is_empty() { blast = Some((switch_back_tick, ex.clone())); }
+    }
     scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
     // The game's arm ran on the press: the switch request is the mine [M 0x1a4cb8].
     assert_eq!(scene.sim.as_ref().unwrap().gun.switch_request, 0x37,
         "the detonator's fire requests the switch back to the mine [M 0x1a4bf0 disasm 0x1a4cb8]");
-    // The marked mine blasts within the 10-tick fuse (+ the tick the mark lands on).
-    let mut blast = None;
-    for t in 0..30u32 {
-        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
-        let ex = &scene.sim.as_ref().unwrap().drones.explosions;
-        if !ex.is_empty() { blast = Some((switch_back_tick + t, ex.clone())); break; }
+    if blast.is_none() {
+        for t in 0..30u32 {
+            scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+            let ex = &scene.sim.as_ref().unwrap().drones.explosions;
+            if !ex.is_empty() { blast = Some((switch_back_tick + t + 1, ex.clone())); break; }
+        }
     }
-    let (at, ex) = match blast { Some(v) => v, None => panic!("the detonator's fire detonates the placed mine within ~11 ticks") };
+    let (at, ex) = match blast { Some(v) => v, None => panic!("the detonator's fire detonates the placed mine (the −10.0 mark, ≤14 ticks)") };
     eprintln!("[detonate] explosion {} ticks after the press: {ex:?}", at - switch_back_tick);
-    assert!(at - switch_back_tick <= 14, "the 10.0 fuse lands within the 11-tick window, took {}", at - switch_back_tick);
+    assert!(at - switch_back_tick <= 14, "the −10.0 mark lands within the ≤14-tick window, took {}", at - switch_back_tick);
     assert!((ex[0].1 - 8.0).abs() < 1e-3, "the blast radius is weapon_data[0x37]+0x08 = 8.0 [L], got {}", ex[0].1);
     assert!((ex[0].2 - 100.0).abs() < 1e-3, "the blast damage is weapon_data[0x37]+0x0C = 100.0 [L], got {}", ex[0].2);
     assert_eq!(ex[0].4, 0x37, "the blast is the mine's record");

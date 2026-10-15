@@ -207,6 +207,13 @@ impl Grenade {
                 // the +0x200 fuse arm [M 0x12d890:262-285] still counts BU+0xFC down) — fall through
                 // to the shared fuse arm below with the movement skipped.
                 0x3b => {}
+                // fix-remote-mine-play: the mine's stuck fuse follows `Bullet_DoTrails` 0x12d890:268-273
+                // [M]: the 0x37 arm skips the decrement ONLY while BU+0xFC == 7777.0 (the player-armed
+                // wait-for-the-detonator state); ANY other fuse — a guard-thrown 420 [M 0x12c5a0:214-223]
+                // or the detonator's mark (BU+0xFC = −10.0 [M disasm 0x1a4c88]) — keeps counting in
+                // state 3 and detonates at < 0. The port's fuse model is `range − travelled`, so
+                // "not 7777.0" falls through to the shared fuse arm below.
+                0x37 => { if self.range >= 7777.0 { return None; } }
                 _ => return None,
             }
         }
@@ -313,9 +320,18 @@ impl Grenade {
                 // matrix to the NEGATED hit normal :256-266 and parks at `hit + normal·offset`:
                 // the 0x3b arm offset uVar12 = 0.04 + Sound 0x4a7 [:257-258, 319-323]; the 0x80000
                 // tripbomb arm offset 0.002 + Sound 0x446 + `BU+0xFC = 120.0` [:325-334]]. The tripbomb's
-                // 6-placed cap walk [:335-370] runs in the Sim's Stick consumer. (The mine 0x37's own
-                // stick branch [:326-370] is the mine task's scope — the port keeps its bounce.)
-                if matches!(self.weapon_type, 0x3a | 0x3b) {
+                // 6-placed cap walk [:335-370] runs in the Sim's Stick consumer.
+                // fix-remote-mine-play: the mine 0x37's own stick branch [M :296-330] — the record's
+                // +0x70 = 0x18300 carries 0x100 [L ee_snapshot.bin @ 0x2bf150 + 0x37·0x10C + 0x70], the
+                // walk matches by the record's base id (+0x02 == 0x37): count the same-weapdef
+                // same-owner type-5 bullets (in flight AND stuck — no state filter in the walk),
+                // `bVar4 = count < 6`, past the cap mark the OLDEST (min obj+0xEC [*suggested: the
+                // port's spawn order]) `+0xFE |= 1` and still park the new one; uVar13 stays 0.04
+                // (the mine never rewrites it) so the park is `hit + normal·0.04` [:345-352]. The
+                // arm writes NO fuse (BU+0xFC keeps Bullet_init's 7777.0 player / 420 guard [M
+                // 0x12c5a0:214-223]) and plays NO sound (no Sound_Play3D in the 0x37 arm — the
+                // Sim's Stick consumer mutes it; 0x3b/0x45 play 0x4a7, 0x3a plays 0x446).
+                if matches!(self.weapon_type, 0x37 | 0x3a | 0x3b) {
                     let off = if self.weapon_type == 0x3a { 0.002f32 } else { 0.04 };
                     let stuck_at = [hit[0] + normal[0] * off, hit[1] + normal[1] * off, hit[2] + normal[2] * off];
                     self.pos = stuck_at;
