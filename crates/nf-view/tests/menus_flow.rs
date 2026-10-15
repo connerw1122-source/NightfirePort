@@ -991,8 +991,12 @@ fn the_pause_objectives_tab_draws_the_objective_rows_with_their_markers() {
     assert!(fe.open_pause());
     fe.pause_tab = 1;
     let empty = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0).v.len();
-    // Two objectives: the first pending, the second done (state 4 [M 0x204408:259]).
-    fe.pause_objectives = vec![(0x0400_0000, false), (0x0400_0001, true)];
+    // Two objectives: the first pending, the second done (state 4 [M 0x204408:259]). The hints
+    // are the records' +0x08 labels (objective-hints; 0xffffffff = none).
+    fe.pause_objectives = vec![
+        menu::PauseObjective { text: 0x0400_0000, hint: 0x0400_005b, done: false },
+        menu::PauseObjective { text: 0x0400_0001, hint: 0xffff_ffff, done: true },
+    ];
     let f = menu::menu_overlay(&fe, &font, &font, None, &textures, 4.0 / 3.0);
     assert!(f.v.len() > empty, "the objectives rows add quads ({} -> {})", empty, f.v.len());
     // The 'J' marker's glyph quad: uv = (176,57) texels of the specialchar atlas, normalised by its
