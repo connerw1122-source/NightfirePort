@@ -15,7 +15,10 @@ const SH: f32 = 448.0;
 /// fix-context-hints added the third-icon context textures [M 0x2FC168 = 0x03000064+ctx; only 0x66
 /// (winch, ctx 2), 0x67 (hanging man, ctx 3) and 0x6A (figure, ctx 6) exist on the disc [D tex-list] —
 /// the table's other four ids never resolve in `hashtable_set_sprite` and the icon stays hidden].
-pub const TEXTURES: [u32; 26] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141, 0x0300_0066, 0x0300_0067, 0x0300_006a, 0x0300_005e, 0x0300_004a, 0x0300_005f, 0x0300_005c, 0x0300_005d, 0x0300_0059];
+pub const TEXTURES: [u32; 27] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141, 0x0300_0066, 0x0300_0067, 0x0300_006a, 0x0300_005e, 0x0300_004a, 0x0300_005f, 0x0300_005c, 0x0300_005d, 0x0300_0059, 0x0300_0145];
+/// The Micro-Camera's target brackets [D 07000005.bin map 15 batch 0]: "DroneScan" 0x02000832's
+/// texture, 64×64, one frame.
+const DRONE_SCAN_TEX: u32 = 0x0300_0145;
 const CROSS_TEX: u32 = 0x0300_0026;
 const FONT_TEX: u32 = 0x0300_0003;
 /// SightPane textures [D 07000005.bin entries 71 + 56]: 0x03000034 = the scope overlay (256×256, the circular
@@ -751,6 +754,14 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
                 for (x, y) in [(48.0, 120.0), (432.0, 120.0), (48.0, 256.0), (432.0, 256.0)] {
                     h.quad(Anchor::Centre, 39, 0x0300_0057, 1, x, y, tw57, th57, [0.0, 0.0, tw57, th57], (false, false), c);
                 }
+                // The target brackets (`HUD_UpdateCameraPane` 0x1a12d8) — one "DroneScan" sprite per
+                // drawn, living, non-WaitSwitch drone, drawn through walls (the user's report). The
+                // game's sprite is one frame deep (Debris_Update 0x1aac00 deletes it); the pane
+                // re-creates them every tick, so a per-frame draw list is the same picture.
+                for [x, y, w2, h2] in camera_brackets(s, aspect) {
+                    let (tw, th) = h.tex_dims(DRONE_SCAN_TEX);
+                    h.quad(Anchor::Centre, 38, DRONE_SCAN_TEX, 0, x - w2 / 2.0, y - h2 / 2.0, w2, h2, [0.0, 0.0, tw, th], (false, false), c);
+                }
             }
             // LaserPane 19 [L LaserSprInfo 0x2be288] — the Phoenix Samurai's (0x32/0x33) frame: six
             // solid-texture strips (top/bottom bars + four centre ticks), blend 1, colour 0x7f7f7f
@@ -774,6 +785,60 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
         }
     }
     h.finish()
+}
+
+// ─── The Micro-Camera's target brackets (CameraPane 11's per-drone sprites) ─────────────────
+// `HUD_UpdateCameraPane` 0x1a12d8:44-66: while the pane is enabled (the zoomed Micro-Camera view),
+// every drone on the level's list (`DAT_00298e14`, the game's 0x298E14 llist) that is drawn
+// (`obj+0xFC` != 0), alive (`Drone+0xac` > 0) and not in WaitSwitch (`obj+0xF4` != 1) gets a
+// sprite object created at its root (`obj+0x30`) with gfx 0x02000832 ("DroneScan", a 2×2
+// world-unit flat quad, texture 0x03000145 [D 07000005.bin map 15]) and `obj+0xF0 |= 0x2000`
+// (`View_AddObjects` 0x1e62d8's sort-list-2 route, which stamps `obj+0xFC = 2`). The object is
+// class 0x10 (`Debris_Update` 0x1aac00): its glist life +0x30 was zeroed at create, so it deletes
+// itself after one update — a one-frame bracket the pane re-creates every tick. No LOS test
+// anywhere in the chain: the brackets draw through walls (the user's report). The port projects
+// the drone roots with `View_3DPoint2Screen` 0x1e7708's math on the gameplay camera (the render's
+// own per-tick build, lib.rs: the eye, yaw, pitch·π/2, GAME_FOV/zoom — 60° vertical at zoom 1) and
+// sizes the box from the quad's 2×2 world extent, matching `Camera::view_proj`'s projection
+// (ndc_x = (f/aspect)·x/z, ndc_y = f·y/z) and the hud's NDC mapping (`Hud::ndc`: uniform
+// (4/3)/aspect pixel scale across, full height).
+pub fn camera_brackets(s: &crate::scene::Sim, aspect: f32) -> Vec<[f32; 4]> {
+    let pos = s.bond.head();
+    let yaw = s.bond.yaw;
+    let pitch = s.bond.pitch * std::f32::consts::FRAC_PI_2;
+    let fov = std::f32::consts::FRAC_PI_3 / s.zoom;
+    let f = 1.0 / (fov * 0.5).tan();
+    // The render's camera axes (`Camera::right`/`dir`, lib.rs): right from the yaw alone, up = right × fwd.
+    let fwd = [pitch.cos() * yaw.sin(), pitch.sin(), pitch.cos() * yaw.cos()];
+    let right = [-yaw.cos(), 0.0, yaw.sin()];
+    let up = [right[1] * fwd[2] - right[2] * fwd[1], right[2] * fwd[0] - right[0] * fwd[2], right[0] * fwd[1] - right[1] * fwd[0]];
+    let dot = |a: [f32; 3], b: [f32; 3]| a[0] * b[0] + a[1] * b[1] + a[2] * b[2];
+    let mut out = Vec::new();
+    for &i in &s.drones.llist {
+        let dr = &s.drones.list[i];
+        // The pane's gates [M 0x1a12d8:44-52]: obj+0xFC (stamped by `View_AddObjects` 0x1e62d8 on
+        // draw-list entry — the cel cull, NO LOS ray) is the port's present+enabled (+frustum,
+        // below); Drone+0xac > 0; obj+0xF4 != 1 (WaitSwitch). The port's `drawn` adds a LOS ray
+        // the game's byte never had — a walled guard must still bracket.
+        if !dr.present || !dr.enabled || dr.health <= 0.0 || dr.state == nf_game::drone::state::WAIT_SWITCH { continue; }
+        let rel = [dr.pos[0] - pos[0], dr.pos[1] - pos[1], dr.pos[2] - pos[2]];
+        let z = dot(fwd, rel);
+        // `View_3DPoint2Screen` 0x1e7708 returns −1 behind the camera; the world draw's frustum
+        // culls the rest — skip a bracket wholly outside the screen.
+        if z <= 0.0 { continue; }
+        let ndc_x = (f / aspect) * (dot(right, rel) / z);
+        let ndc_y = f * (dot(up, rel) / z);
+        let x = SW / 2.0 + ndc_x * (SW / 2.0) * (3.0 / 4.0) * aspect;
+        let y = SH / 2.0 - ndc_y * (SH / 2.0);
+        // The quad's 2×2 world extent projected: full width 2/z·f in NDC-y, the same in window
+        // pixels; the hud's x pixel is (3/4)·aspect window pixels wide (`Hud::ndc`), so the hud
+        // width loses the aspect and keeps the 4:3 pixel shape.
+        let w = f * (2.0 / z) * (SW / 2.0) * (3.0 / 4.0);
+        let h = f * (2.0 / z) * (SH / 2.0);
+        if x + w / 2.0 < 0.0 || x - w / 2.0 > SW || y + h / 2.0 < 0.0 || y - h / 2.0 > SH { continue; }
+        out.push([x, y, w, h]);
+    }
+    out
 }
 
 // ─── The multiplayer radar (MPPaneList slot 14) ─────────────────────────────────────────────
