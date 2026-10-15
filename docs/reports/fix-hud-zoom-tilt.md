@@ -98,3 +98,13 @@ nf-view (no GPU here; render-check the tilt, not the reticle). Spot: `nf-view 07
 PCSX2 (optional, only if the kick term gets its task): gdbwatch `BL+0x8e0`/`BL+0x8e4` (BL = the
 player's BLData) during sustained fire on 07000005 — expected: non-zero spikes on shots, ×0.75
 decay between them, and the view-model yaw kicking with them (Player_WeaponRecoil 0x1a3de8:54-57).
+
+## ntfy failed
+
+All three fallbacks failed with the same server-side error at 2026-10-15T15:50Z:
+1. `curl -sS -m 20 -H "Title: NightfirePort" -d "fix-hud-zoom-tilt: …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 urllib` → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget --post-data` → `HTTP request sent, awaiting response... 429 Too Many Requests` / `ERROR 429: Too Many Requests.`
+The quota is account/server-side (daily message quota), not a connectivity failure. The completion
+signal is also carried by the queue entry `done/110z-fix-hud-zoom-tilt.md` and this report.
