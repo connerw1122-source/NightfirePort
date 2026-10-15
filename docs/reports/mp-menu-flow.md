@@ -64,8 +64,8 @@ the lists and their state, headless-testable, no drawing. Deliverables: `docs/sy
 see the tail of this file's "Suite:" line — PASSED/FAILED summary filled in below before the
 finish call. On the slim ISO only the 3 `disc_golden` tests may fail.
 
-Suite: PARTIAL by the window (118/343 binaries run when this was written; the runner was still
-going). Of the binaries run: only fix_0c_pylon_live failed (2 tests, the no-GPU wgpu adapter
+Suite: PARTIAL by the window (136/343 binaries run at the last poll 19:17 UTC; the runner was
+still going). Of the binaries run: only fix_0c_pylon_live failed (2 tests, the no-GPU wgpu adapter
 error — byte-identical failures in the previous worker's suite.log from 15:47, i.e. pre-existing
 environmental). The touched area is fully green: mp_menu_flow 9/9 (inside the suite) and, run
 directly on the same tree, mp_menu_lists_live 5/5, menus_flow 36/36, menu_movies 3/3,
