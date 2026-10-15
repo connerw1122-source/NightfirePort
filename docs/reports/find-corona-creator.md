@@ -89,7 +89,9 @@ Two runs, the fast runner (tools/test/suite.py), both on this branch:
 - **Final tree** (branch merged with origin/master a2958c03, WORKLOG both kept): the full
   338-binary run was restarted at 15:30 UTC but **could not finish inside the sandbox window**
   (build ok in 221 s; then ~25 binaries per 5 min). At the finish push it stood at **76
-  binaries: 231 passed / 0 failed / 5 ignored, no FAILED/TIMEOUT/CRASH lines**. My delta vs.
+  binaries: 231 passed / 0 failed / 5 ignored**; the last reading before the window closed was
+  **91 binaries: 282 passed / 0 failed / 30 ignored — still no FAILED/TIMEOUT/CRASH lines**
+  (the environmental disc_golden/pylon binaries sit later in the list and had not run yet). My delta vs.
   the pre-merge tree is nothing but the WORKLOG merge — the code under test is identical —
   and the pre-merge run covered the same code 253 binaries deep with only the environmental
   set failing. The runner was left alive; if the sandbox lives on, later numbers are in
