@@ -62,12 +62,17 @@ sides). Everything below cites the game address; the fact tags are the task's.
 ## Suite
 
 - The first background run (18:14) died: the nohup shell had no cargo on PATH (suite.out shows the
-  FileNotFoundError). Restarted 19:31 UTC on the merged tree with `nf-env.sh` sourced
-  (`NF_ISO`, `CARGO_INCREMENTAL=0`). Read `tail -1 suite.out` + the FAILED/TIMEOUT lines before
-  judging this branch.
+  FileNotFoundError). Restarted 19:16 UTC on the merged tree with `nf-env.sh` sourced
+  (`NF_ISO`, `CARGO_INCREMENTAL=0`): "build ok: 347 test binaries in 346 s", then the run.
 - Foreground results on the merged tree before the restart: nf-game lib 205/205, nf-view lib
-  12/12 (the two crates this task touches). The 3 allowed disc_golden fails are the only expected
-  reds in nf-formats.
+  12/12 (the two crates this task touches).
+- FAILED/CRASH lines observed through 19:50 UTC (the run still in progress — 347 binaries, the
+  long NF_ISO set does not fit the sandbox window; 8 lines in suite.out): the 3 allowed
+  `disc_golden` fails (the slim ISO), `probe_pylon_render::probe_render_pylon_only` +
+  `fix_0c_pylon_live` × 2 (the known no-GPU pylon set), and `CRASH fix_death_restart_live
+  (exit -9)` — an OOM kill (SIGKILL) in this 3 GB sandbox, the same environmental crash the
+  drive-ptp report recorded. No secret-codes failure. The runner's total line prints only at the
+  end; it did not land before the sandbox expired.
 
 ## What's left / open items
 
