@@ -12450,3 +12450,6 @@ Work Log:
 
 Stage Summary:
 - The world's hold-jump stutter while turning is fixed at the source: the render bracket is now the last two ticks' cameras at every frame rate, the view model keeps its one-tick-bracket reattach, and nothing moves at a solid 60 fps. Files: crates/nf-view/src/lib.rs + crates/nf-view/tests/turn_stutter_live.rs (new); NO shared files touched; scratch probe (uncommitted): examples/tick_cost.rs. Report: docs/reports/fix-turn-stutter.md.
+
+## fix-silencer-visual (2026-10-15, branch s/fix-silencer-visual) — started
+Task 109m: the silenced P2K twin 0x03 works (no muzzle flash, its own sound) but the silencer MESH is not drawn on the view model (user 05: "The suppressor still stays on the gun, but visually it's not there"). Find the game's attachment for the silenced record (a different fp model or an attached sub-mesh) and draw it; render the P2K and the silenced P2K. Files: crates/nf-view/src/scene.rs (shared: drone/scene/player/lib small hooks only). Ground truth: docs/live/2026-10-14-weapon-measurements-pcsx2.md — a long cylindrical dark-grey tube (~1/3 slide length) screwed onto the barrel end, in line with the barrel, after the mode press swaps "Semi" -> "Silenced" with a short swap animation.
