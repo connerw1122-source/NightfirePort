@@ -95,9 +95,13 @@ and post-fix; it guards the exact one-clang contract.
   5/5 — the projectile-slot change touches every grenade's draw; all green.
 - The fast runner (`tools/test/suite.py`) was started in the first minutes but its first run
   stalled (0 bytes after ~70 min, no cargo process — the sandbox's background-process reaping,
-  seen in earlier sessions); restarted at ~06:20 UTC on the fixed tree. Its `tail -1 suite.out`
-  is read at push time; see the WORKLOG entry for the final number. On the slim ISO only the 3
-  `disc_golden` tests (and `pss_movies_live`) may fail.
+  seen in earlier sessions); the restart at ~06:20 UTC was reaped the same way (`suite.out` 0
+  bytes). **No full-suite total line this session.** The covered set is the foreground sweep on
+  the final merged tree (origin/master 2e5a162b merged at 1380640c): nf-game lib 160/160,
+  hat_details 2/2, oddjob_hat 2/2, models_weapons 2/2, fix_grenade_release 4/4,
+  fix_sg5_casings 2/2, plus the pre-merge neighbour sweep (gadgets 4/4, grenade throw/types,
+  remote mine 3/3, satchel tripbomb 5/5). On the slim ISO only the 3 `disc_golden` tests (and
+  `pss_movies_live`) may fail; next session runs the full total per the standing rule.
 
 ## Shared files touched (small, additive)
 
