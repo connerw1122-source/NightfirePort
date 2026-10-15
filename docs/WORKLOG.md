@@ -12682,3 +12682,7 @@ Task: SG5 casings fly huge across the screen while walking forward (user 05 play
 
 Stage Summary:
 - Branch s/fix-laser-watch-look @ the report commit; the laser watch's beam visibility/geometry/drain matched to the measured game on the real input path.
+
+## fix-missing-drone-skins (2026-10-15, branch s/fix-missing-drone-skins) — started
+Task 110c, GAPS G-021: 33 drone placements across the story levels reference skins their level archive doesn't carry; the game loads them from the common animation file (CommonAnimFile, LoaderLoad type 4) and/or substitutes sleeves (AnimSleeveGetEntity). Today the port's loader reports them as "N drones with a skin from another archive / unresolved" and the drones load with no skin. Plan: count per level through the real loader path, port the game's resolution order from the decompile (LoaderLoad, the common file's name/contents on disc, the sleeve rule), NF_ISO per-level golden test with before/after counts. Files: crates/nf-view/src/lib.rs (loader), crates/nf-formats/src/character.rs, new test file.
+- (08:59 UTC) Branch created from origin/master dc44c0e4; setup reused (repo/work/ISO/nf-queue/ALSA); suite.py started in background (pid 7782) to validate the base while the decompile read begins.
