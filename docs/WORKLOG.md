@@ -12787,6 +12787,42 @@ Task: per-level start loadouts from the game (the port gives nearly every story 
 - KNOWN ISSUE left for the casings-16 owner: the test's burst premise assumed the old P2K-in-hand 16 loadout; the game's cold 16 = the 14 kit, crossbow in hand (probe: request 17, owned {1,2,0x11,0x34,0x37,0x4e,0x50,0x54}). The re-pin attempt (`switch_to(2)`, owned + fp skin verified present) exposed a deeper pre-existing draw-machine issue: the switch STARTS (weapon 2, state 1) then the machine re-selects the loadout weapon (back to 0x11, state 3) — the loadout draw's saved-weapon re-select (Player_SetWeaponAnimObj 0x1a2e38's idle path) fights manual switches. The edit was REVERTED (not mine to half-land); probe scratch zz_loadout_switch_probe.rs uncommitted.
 - Report: docs/reports/fix-start-loadouts.md. Files: crates/nf-game/src/player.rs (task), crates/nf-view/tests/fix_start_loadouts_live.rs (new), crates/nf-view/tests/models_weapons_live.rs (the golden re-pin). pickup.rs/progress.rs untouched; no other shared file touched.
 - (09:16-10:42, sandbox2) Fresh sandbox: re-setup (repo cloned to /home/z/NightfirePort, work-slim + ISO re-downloaded via the static 7zz, ALSA prefix /home/z/alsausr), branch continued from origin/s/fix-satchel-stick-play (dea06acf), merged origin/master (92c85643, WORKLOG both kept). Re-verified on the fresh tree: fix_satchel_stick_play_live 5/5, fix_satchel_tripbomb_live 5/5, nf-game lib 164/164. Re-read the decompile first-hand: Bullet_update 0x12e7b0 decomp 393-414 (the grenade family's HITTEST radius = 0) and Bullet_CollisionHandler 0x12ce80:234-266 (the +0x100 world-hit stick arm, state 3, negated normal) — the port's stick-before-bounce order matches; grenade.rs:299-349 returns Stick on any 0x3b world hit. Full four-crate suite in foreground chunks (background jobs die between tool calls here): 1289 passed / 55 ignored; 3 disc_golden (allowed slim-ISO) + 3 pylon-render (another session's scope, pre-existing on master) FAILED; 5 wall-cuts at 90 s — 4 green at 270 s, weapon_matrix_live green solo at 600 s (6/0/24, ~5 min). Report: docs/reports/fix-satchel-stick-play.md (verdict: no repro, no fix; [S] the playtest build predated 8159e452; live checks + --bond spots listed).
+
+## fix-death-anim-events (2026-10-15, branch s/fix-death-anim-events) — started 10:56 UTC
+Task 110i: Bond's death script 0x6000151 (07000005, 07000005.bin) — one sequence window (1..297,
+0x040000a3) + four op-4 commands (args [5,5], [8,4], [98,4], [116,6]); the script clock runs 2
+frames per tick while dead ([L] +0x90 = 12/32/52 at dead frames 8/18/28). Find what op 4 does in
+AnimProcessScriptCmds 0x1c1b38 and what the player's handler does with args 4/5/6, document in
+docs/systems/anim-engine.md, reuse the fix-anim-events path if it runs op-4 for drones, fire each
+event on the dead-tick clock, test in crates/nf-view/tests/fix_death_anim_events_live.rs (kill
+Bond via sim.drones.health.health = 0.0 + step_bond; nothing fires while alive). Files:
+crates/nf-game/src/death.rs (new event-tick fn only, NOT death_root), the reused anim-event code,
+docs/systems/anim-engine.md, the new test. Branch cut from origin/master 0440c79c.
+- (11:25-11:50) The decompile chain pinned [M]: op-4's dispatch (0x1c1b38 case 4: kinds 0/4/5
+  ScriptFootstepFoot/Type, 1 the SMI +0x964 toggle, 2 the script's +0x70 handler — zeroed for
+  player scripts per AnimScriptInit 0x1c1600:51, 3 stop-sfx, 6 Effect_Create(1.0, animobj, obj,
+  0xc0), 7 fire); the DEAD player's consumption (obj+0xff = 0x12 [M 0x190810:72] → NOT class 3 →
+  AnimObjectUpdate 0x1befd8:184-199 takes the ScriptFootstepType arm → Effect_Create(0x42|foot) →
+  Effect_Player 0x1cec48's 0x40 arm = the footstep sound (EffectInfo+0x16) at the anim object's
+  +0x40 contact with SetAlertness(0); kind 6 → Effect_Body 0x1cf400 = the body sound
+  (EffectInfo+0x18) + ModAlertness(0.5)); the anim object's HITDATA shadow (+0x50 material,
+  +0x40 contact) is the feet ray's hit Player_FeetOnPoint 0x194188:183-191 copies in while
+  grounded (Drone_FeetOnPoint 0x140660:204 the same). The clock: 2.0 frames/dead tick [L] =
+  speed 1.0 [M 0x1c1600] × FRAME_RATE_MUL 2.0 [M GS_SetRefreshRate 0x17d2b8:15]; the death tick
+  runs the empty just-started window (1,1] (the alive path's tail AnimObjectUpdate 0x193600:358
+  ticks the just-added script the same tick), so frame 5 lands on dead tick 3. FAIL-FIRST shown:
+  the probe test on the pre-fix tree dies at "dead tick 3: frame 5's footstep sound 123 queued".
+  NOTE: nf-extract script-info prints args as HEX — the task's "frames 98/116" are 0x98=152 and
+  0x116=278 (the port's decimal Debug showed it; the census in anim-engine.md's op-4 line reads
+  decimal). Implementation: death.rs only — DeathEvent, Death.{script_time,events,footstep_right}
+  (own lines), death_script_events (the (from,to] windows over d.scripts[0x06000151], the
+  footstep/body sounds via the SurfaceSounds columns at the floor query, the body sound's hearing
+  entry at half weight), death_tick hooks (init + the per-tick call BEFORE the pane/ch62 logic —
+  the game's dead branch is AnimObjectUpdate → Player_HandleDeath [M 0x193600:317-319] and the
+  MP pause flag doesn't gate it). No drone.rs/scene.rs changes. fix_death_anim_events_live 2/2
+  (the once-at-tick mapping 5@3/8@5/152@77/278@140 with kinds/feet/sounds; the per-tick sounds
+  through flush_started position-anchored at the feet contact; the alive sister). Checkpoint
+  pushed before the docs + suite.
 ## fix-progress-remainder (2026-10-15, branch s/fix-progress-remainder) — started 09:41 UTC
 Task: GAPS G-045 remainder (docs/systems/progress.md): (1) the "detected" counter's live hook — find the vision-log call site the game uses to count Bond being detected, wire `PlrStat_Log*` there (hook in drone.rs, additive); (2) `Player_InitWeapon` 0x1a7ef8's per-difficulty autoaim distances from the decompile/ELF data into the auto-aim; (3) the `NewScoresRef` PTP hand-off for the on-foot score rows (what the port does where the game aborts on NULL). NF_ISO test per item through the real input path, fail-first on master. Files: crates/nf-game/src/progress.rs, crates/nf-game/src/drone.rs (additive), a new test file.
 
