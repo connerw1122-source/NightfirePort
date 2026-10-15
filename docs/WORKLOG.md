@@ -13763,3 +13763,16 @@ Work Log (async-level-load):
   several times too fast on a fast display. She now ticks off her own 60 Hz wall-clock
   accumulator (`menu_clock`), matching `Game_Run`'s once-per-60 Hz-frame `psiDecompressWoman`
   [M 0x1c9790:36-41].
+
+## fix-gas-rng4 (2026-10-15, branch s/fix-gas-rng4) — started 23:59 UTC
+
+Task: land 111d3's (s/fix-gas-rng3, tip fbf62779) deferred impact draws on top of master's
+G-041 HITDATA walk in Bullet_CollisionHandler. Both are about RNG draw ORDER: master walks the
+trace's HITDATA list inline (penetration roll Rand_Rand(0x3f) [M 0x12cfd0..0x12cfe4] per
+front-face hit, full effect stack, pierce retraces past the surface); 111d3 defers the shared-RNG
+impact draws to a flush after the guard control loop (Collide_Update 0x1ea398 [M
+control_movement_object_handler 0x1336f8:238]) via pending_world_impacts. A mechanical merge is
+wrong; porting the deferral onto the HITDATA walk, deciding from the disassembly where the
+penetration roll falls relative to the effect draws and whether a pierce's exit-side hits defer
+too, keeping the flush's per-hit order. Every G-041 test and every 111d3 test green; re-run the
+cover/fire-rate AI tests the first gas-rng hold broke.
