@@ -11674,6 +11674,30 @@ progress.rs, profile.rs. Status: setting up.
 - Pushed 56d9bff + the report commit to s/fix-weapon-fx-levels; docs/reports/fix-weapon-fx-levels.md (the mechanism, the three fixes with addresses, the table, the live checks incl. the Swoosh reference render, what's left). 0 unexplained missing effect cells; the +0x80 held-model residual and the headless foreign-fire block are the known leftovers.
 - Report: docs/reports/fix-oddjob-hat.md (the evidence chain, the live checks: the PCSX2 curve/
   stick/clang/expiry, the gdbwatch obj+0xF4=3 and BU+0xFC=1500 countdown, the nf-view render spots).
+fix-blast-scripts: started. Task: explosions — each blast plays its own effect script (the port's
+spawn_blast currently renders the generic one-shot 0x06000052 for every explosion, while the game passes
+a per-source effect script to Explode_Create 0x17cbd0). Plan: census every Explode_Create call site and
+the script id it passes from the decompile, carry the script id through the port's blast request, play
+that script; NF_ISO tests for the Samurai bolt, a frag, a rocket and a destroyable. Branch
+s/fix-blast-scripts cut from origin/master 509ec984.
+
+fix-blast-scripts: done. The census (13 Explode_Create 0x17cbd0 call sites, each pinned by disasm):
+the fuse death and the bit-2 contact arm pass 0x6000052 (the port already matched those); the
+0x100000/0x200000 BOLT arms pass 0x60007c4 (the Phoenix Samurai's bolt 0x32 — radius 8, damage 256 —
+reached by ○ from the beam twin 0x33 — and the 0x6b/0x6e specials); Destroy_Smash 0x12bb60 routes by
+the tag's type byte (tag+0x16 = placement param 2): 1 → 0x6000027, 2 → 0x600004f, other non-zero →
+0x6000052, type 0 → NO blast; the rest (copter/drone-delete/car/MP/GT/monitor) have no object lists
+in the port yet (pre-existing, documented). Fixes: drone.rs (pending_blasts + spawn_blast carry the
+script; NEW bolt arms on world AND drone hits with the same non-ricochet gate; the destroy smashes
+queue the type script), props.rs (additive: Destroy.kind/blast_damage parsed from params 2/5,
+bullet_hit returns the blast-carrying smashes), scene.rs (the blast pre-registration chains all four
+script hashes), explode.rs (the +0x34 doc). Tests: crates/nf-view/tests/fix_blast_scripts_live.rs —
+the Samurai bolt's cyan blast (radius 8/damage 256, one 0x06007c4 player, no 0x06000052), the
+destroyable type-1 smash plays 0x0600027 + the type-0 sister plays NOTHING, the frag/rocket sister
+pins 0x06000052 — shown failing on the pre-fix tree (the fix stashed), green post-fix.
+Suite on the merged tree: see docs/reports/fix-blast-scripts.md ("Suite"). Report:
+docs/reports/fix-blast-scripts.md (live checks: the PCSX2 bolt-blast confirmation + meter share,
+the bottle smash's script id/radius/position, the type-0 no-blast; the nf-view render spots).
 ---
 Task ID: 103c-fix-0c-vent2
 Agent: 0c-vent2 worker
@@ -12188,3 +12212,104 @@ Stage Summary:
   size/timing (instant on at CameraStart, instant off at KillStream — the game has no bar fade),
   and a script-camera frame projects at the console's 4:3, pillar-boxed on wider windows; gameplay
   widescreen untouched.
+## fix-cutscene-actors — s/fix-cutscene-actors (task 291, started 20:12 UTC)
+- Task: playtests on 07000007 — "models in that cutscene aren't accurate" (the Kimiko scene), "guards aren't in the proper place after the Kimiko cutscene", and on another scene "models are missing". For each cut-scene on 07000005/06/07: list the actors the script creates (Script_AnimStart, skins), compare with what the port draws (skin resolution), and where the actors end up when the scene hands back (the scene's last keys / Script_KillStream vs the drones' positions). Fix what differs, with a test per scene (actor skin hashes and the post-scene positions). Files: crates/nf-game/src/nis.rs, crates/nf-view/src/scene.rs.
+- Status: branch cut from origin/master 62c17571, pushed. Setup reused (work/, ISO, nf-queue present). Suite started in background (suite.out).
+- Research so far: Kimiko scene = 0x06000073 (pack 07800007.bin, 4326 ticks, 15 streams): anim actors skins 0x0500003b (script 0x060004f1), 0x05000015 (0x060004f2), 0x0500000d (0x06000225); entity 0x02000acb (obj_type 0x1f, keyed); freeze pair event 5 (tick 0) / event 7 (tick 0x10e6); player return event 6 (param 0) at stream 7, previous stream 6's entity (hash 0). Drake fly-through = 0x06000072 (pack 07900007.bin). 07000005/06 have no loadable packs — archive kind-7 scripts only. All three Kimiko skins are in 07000007's own archive [D bin-list].
+- DONE (21:07-21:50 UTC): the per-scene actor inventory pinned and one missing-models fix landed.
+  (1) Inventory [D bin-list/nis dumps]: the actor-carrying cut-scenes on the three levels are
+  07000005 0x060008c8/0x06000952/0x06000994/0x06000a22 (truck), 07000006 0x06000071 (dressing), and
+  07000007's packs 0x06000072 (fly-through, 13 guests) / 0x06000073 (Kimiko: 0500003b/0x060004f1,
+  05000015/0x060004f2, 0500000d/0x06000225); every Anim skin resolves in its own archive and every
+  character builds; all actor-scene SP bases are identity, so the port's root-in-world anim model
+  matches; the Kimiko hand-back chain verified game-accurate step by step (event-6 snapshot of
+  stream 6's key-498 entity → Bond at [91.52, 43.85, -31.09]; the ch-0x48 second-switch drones —
+  placement 414 et al., param 6 = 72, param 8 = 100, alert block 5 → GetDTYPENEW case 5 → mode 0x15
+  → DroneTypeSettings[0x15].alt = 0xb4 — delete through NDrone2_PreDroneControl 0x148db0 when the
+  freeze lifts; WaitSwitch drones hidden per 0x15b960 msg 1 = NDrone2_Enable(0)).
+  (2) FIX (models missing): `Bullet_CollisionHandler` 0x12ce80:212-231 Script_Loads **0x060007c4**
+  via Explode_Create on the weapon `+0x70` 0x100000/0x200000 arms (disc records 0x32/0x6e = 0x100000,
+  0x6b = 0x200000 [L scan]) — no placement references it, so the port's scene build never made its
+  entity instances (Laser_Blast_frame_1/2, Vertical_smoke, After_glow_test, cloud_1, smoke) and the
+  sim never spawned it. Fixed both sides; test fails-first on the pre-fix tree.
+  (3) Tests: crates/nf-view/tests/fix_cutscene_actors_live.rs — 5 (Kimiko actors + hand-back
+  positions, dressing, ledge, fly-through skins, the impact models; the last fails-first). Neighbour
+  binaries green: fix_cutscenes_live 5, fix_cutscenes2_live 4, models_characters_live 6,
+  fix_weapon_effects_live 4, impacts_live 6. The full suite did not fit the window (the 21:51
+  stop-new-work rule) — the next session should run it on the merged tree.
+
+## fix-blast-scripts2 — s/fix-blast-scripts2 (task 105c2, started 22:39 UTC 2026-10-14)
+- Task: blast scripts + cut-scene actors — ONE 0x060007c4 path. Base s/fix-blast-scripts, merged
+  origin/master, then origin/s/fix-samurai-fire (not on master), then origin/s/fix-cutscene-actors
+  (291). HELD at merge: fix_blast_scripts_live::the_samurai_bolt_plays_the_cyan_blast_script fails
+  "exactly one 0x060007c4 one-shot player (the bolt's cyan blast) — left 0, right 1". Make ONE path:
+  the bolt's contact (world and flesh) creates the explosion with script 0x060007c4 and its entities
+  draw. Keep fix_blast_scripts_live, fix_cutscene_actors_live, fix_samurai_fire_live green.
+- Work log:
+
+## fix-blast-scripts2 — s/fix-blast-scripts2 (task 105c2, finished 23:56 UTC 2026-10-14)
+- The ONE 0x060007c4 path, reconciled from s/fix-blast-scripts + origin/master + origin/s/fix-samurai-fire + origin/s/fix-cutscene-actors (291):
+  the merge root cause was the fire-modes3-shaped FIRST world arm whose gate included the bolt bits
+  (0x100000/0x200000) while pushing the generic script 0x06000052 — the bolt's own else-if arm was
+  dead code, and cutscene-actors's separate direct `spawn_once(0x06007c4)` at the world hit was the
+  only thing drawing the cyan blast (at scale 1, alongside a leaked generic 0x06000052 player).
+- Evidence [M, ACTION.ELF disasm, little-endian decode]: `Bullet_CollisionHandler` 0x12ce80 runs
+  THREE independent explode arms on every non-ricochet contact (world AND flesh) — `+0x70 & 4` →
+  `Explode_Create(f12 = +0x08, f13 = +0x08, f14 = +0x0C, script 0x6000052)` [0x12d0ac-0c0];
+  `+0x70 & 0x100000` and `+0x70 & 0x200000` → `Explode_Create(f12 = 1.0 [0x12d0ec-0f0 `lui $at,
+  0x3f80; mtc1 $at, $f12`], f13 = +0x08 [0x12d118], f14 = +0x0C, script 0x60007c4)` [0x12d154-88].
+  `Explode_Create` 0x17cbd0 stores param_1 (f12) into SCRIPTINFO+0x94 = the script player's scale,
+  and param_2 (f13) is the blast radius (Camera_Shake + obj fields) [0x17cbd0 body]. The fuse death
+  0x12cd98 passes f12 = +0x08 [0x12ce1c] and Destroy_Smash 0x12bb60 passes f12 = tag+0x8c [0x12bcdc].
+  So: the game's bolt cyan blast plays at SCALE 1.0 while the blast radius stays 8.0 — the
+  fix-blast-scripts test's scale-8.0 pin contradicted the disc and is corrected to 1.0.
+- Fixes (crates/nf-game/src/drone.rs): the world arm now picks script AND scale by bits in ONE arm
+  (the flesh arm already did; both cite the disasm); cutscene-actors's separate direct spawn is
+  GONE — the queued blast's `spawn_blast` spawns the same script player, whose entities draw from
+  the scene.rs sweep (all four hashes kept, the ONE path); `pending_blasts` gained the game's f12
+  as a 7th tuple element (every push site cites its arm's f12: 0x4/fuse/destroy = radius, bolt =
+  1.0), and `spawn_blast` takes the scale instead of deriving it from the radius.
+- Tests: crates/nf-view/tests/fix_blast_scripts_live.rs — the corrected cyan-scale pin (1.0 [M
+  0x12d0ec-0x12d0f0]) + the generic-script sister SHOWN FAILING pre-fix (the bolt's blast played
+  0x06000052 through the mis-routed arm; "the bolt must not play the generic 0x06000052" panics on
+  the pre-fix merged tree), green post-fix with the destroy + frag/rocket sisters. fix_cutscene_actors_live
+  5/5, fix_samurai_fire_live 3/3, fix_weapon_fire_modes_live 5/5 (the neighbouring gates).
+- Suite on the final tree (287 state entries + the second same-named fix_ai_remainder_live binary,
+  foreground --test-threads=1 chunks — this sandbox kills background jobs, the 102c/100f/oddjob-hat
+  precedent): 1154 passed / 6 failed / 63 ignored; the 6 = the 3 ALLOWED disc_golden + the 3
+  pre-existing pylon failures (probe_pylon_render 1, fix_0c_pylon_live 2, documented on
+  weapon-matrix4b). weapon_matrix_live green in-suite (6/24 ignored, 340 s — the held timeout stays gone).
+- Shared files touched: crates/nf-view/src/scene.rs (the merge conflict resolution keeps the
+  four-hash sweep, comment-only union — no behaviour change), crates/nf-view/src/matrix.rs (the dbg
+  has_ammo call gained master's clip_slot arg — a compile fix, no behaviour change), crates/nf-game/src/gun.rs
+  and crates/nf-view/tests/weapon_switch_live.rs + docs/reports/fix-samurai-fire.md + docs/reports/fix-cutscene-actors.md
+  arrived from the merges themselves. Report: docs/reports/fix-blast-scripts2.md (the render spots
+  for the main agent + the live checks).
+
+---
+Task ID: 108d-fix-flesh-impacts
+Agent: fix-flesh-impacts worker
+Task: fix-flesh-impacts — player bullets hitting characters must spawn the game's own contact effect: every contact goes through Bullet_CollisionHandler 0x12ce80 → Effect_Create 0x1ce688 with HITDATA+0x50's material; the port's drone-hit arm only runs NDrone2_DoHitEffects 0x1458e0 (damage + the 0x601/0x413 hit sounds, no visual). Also settle material 0x10 (docs/fields: flesh/none vs effect.rs GLASS) via the EffectInfo table 0x3037c0, the flesh pass-through rule (0x800 / 0x10 [M 0x12ce80:136-141]), and the same for guard bullets hitting Bond.
+
+Work Log:
+- (00:44 UTC) Setup reused (repo, work/, ISO, nf-queue). Branch s/fix-flesh-impacts created from origin/master (88cba630) and pushed with this entry.
+- (00:45-02:15 UTC) The research flipped the premise: a character hit reports HITDATA material 0
+  [M Collide_Jointy 0x1ec180:125/173], so Effect_Create's guard [M 0x1ce688:52] skips the bullet's
+  own contact effect on people — the port's absence was correct. Material 0x10 = GLASS (windows;
+  the pass-through rule 0x12ce80:136-141 + the row 0x10 dump [L 0x3037c0+0x10·0x88] settle it; the
+  docs' "0x10 = flesh/none" needs the correction). The flesh visual is the VICTIM's own puff [M
+  NDrone2_DealWithObjHit 0x13fff0:235-256]: Gas_Init(3.0, 6.0, 0x20008bc, kind 5, white, life
+  0x3c = 60 — the stack arg from the disassembly 0x140404/0x140460) at the hit point, per the
+  SHOOTER's weapon id (outside {0x2b, 0x34..0x37}, damage > 0; the Samurai bolt 0x32/0x33 →
+  0x200026e at 1.0/16.0); Bond's handler has no puff at all [M 0x194458]. Ported in
+  update_player_bullets' drone-hit arm (drone.rs only, no shared files, no shared-RNG draws).
+- (02:15 UTC) Pushed 83583795. The 4 new NF_ISO tests pass (the failing-first body-shot test +
+  the per-hit count, wall-unchanged and Samurai-bolt sisters). The full suite did NOT fit the
+  window (the background runner dies between tool calls here; the foreground chunks need ~30 min)
+  — the first item for the next message. Report: docs/reports/fix-flesh-impacts.md.
+
+Stage Summary:
+- Bullets on people now show the game's flesh puff (0x20008bc, 3.0→6.0, 60 ticks, at the hit
+  point) on every guard/civilian drone hit by a player bullet, the Samurai bolt's energy puff
+  instead, no effect on Bond (the game's own rule), walls unchanged, material 0x10 settled as
+  GLASS with the decompile + table evidence.
