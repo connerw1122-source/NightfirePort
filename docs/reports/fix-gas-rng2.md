@@ -112,3 +112,11 @@ expected total on the line.
 - `scene.rs`: the `muzzle_latch` field (own line in the struct and the constructor), the fire
   section's draw block → latch, the post-`drones.tick` consumption hook.
 - `models_misc_live.rs`: the life pin's comments + assertions only.
+
+## ntfy failed
+
+All three fallbacks tried at 16:47-16:49 UTC: curl → `HTTP 429 {"code":42908,"error":"limit reached:
+daily message quota reached"}`; python urllib → `HTTPError: HTTP Error 429: Too Many Requests`; wget
+→ first run exit 0 but the non-quiet re-check shows `ERROR 429: Too Many Requests` (the quota is
+exhausted, not delivered). The queue entry (done/111d-fix-gas-rng2.md, pushed 45fcb496) and this
+report carry the result.
