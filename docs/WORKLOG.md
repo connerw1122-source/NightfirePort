@@ -13354,3 +13354,6 @@ Work Log (drive-crp-format):
 - Tests: mp_menu_flow.rs 9 headless (flow + back-outs + locks + bots + start checks + Quick Game +
   loader handover, each with a sister assertion) + mp_menu_lists_live.rs 5 ISO-gated (the five
   tables + the side bytes vs the disc's ACTION.ELF). 14/14 green; suite run on the final tree.
+
+## drive-track-mesh (2026-10-15, branch s/drive-track-mesh)
+- Started: decode CRP track geometry into meshes (verts/indices/UVs/texture refs per section, collision/road surface if separable). Plan: read docs/formats/crp.md + the 503 parser, map the track-mesh chunks, add nf-formats mesh decode + `crp-mesh` OBJ export in nf-extract, goldens of per-section counts + SHA-1s of decoded buffers. In progress.
