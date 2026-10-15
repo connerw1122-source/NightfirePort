@@ -116,7 +116,8 @@ Full node/usability/anim tables: docs/systems/drone-cover.md. The selection chai
 
 - **Tick order**: `Drone_InitComms` (0x139520) refreshes the cover-node usability FIRST — `Drone_ProcessCoverNodes`
   (0x138e78: every 5th frame, counter −2 / < 1 → 10; the 8 target slots share one round-robin cursor over the
-  nodes and the walk stops after the first node that cast a sight ray, so later nodes keep 5-tick-old bits) —
+  nodes and each slot's walk stops at the first node whose check casts a sight ray, so only the crossed nodes
+  get fresh bits and the rest keep their previous ones) —
   then `Drone_ProcessOpponents` (0x1390c0) and `DroneVision_ProcessDroneSight` (0x176a28). The pass's inputs
   (switch channels, the target-slot position snapshot taken at :127-149, the collision world, the node owners)
   are not written by the passes in between, so the order is a conformance fact rather than a data dependency.
