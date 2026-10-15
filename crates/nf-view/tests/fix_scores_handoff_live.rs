@@ -40,7 +40,10 @@ fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
 /// The generic row's raw: `target · min(count, value) / count` [M 0x1984b0:174-191].
 fn expect_generic(count: u32, value: u32, target: u32) -> f32 {
-    target as f32 * count.min(value) as f32 / count as f32
+    // The game's generic raw: ceil₁ₑ₋₅(target · min(count, value) / count) [M 0x1984b0:181-185].
+    let x = target as f32 * count.min(value) as f32 / count as f32;
+    let t = x as i32;
+    if x - t as f32 >= 1e-5 { (t + 1) as f32 } else { t as f32 }
 }
 
 #[test]
@@ -97,25 +100,40 @@ fn truck_ride_finish_produces_the_results_rows() {
     assert_eq!((f.stats.dispatched, f.stats.disabled, f.stats.surrendered), (0, 0, 0),
         "the truck ride is a no-kill run");
     assert_eq!(f.stats.shots_fired, 0, "Bond never fires on the ride");
-    for i in [1usize, 2, 3, 4, 5, 8] {
+    for i in [1usize, 2, 3, 5, 8] {
         assert_eq!(f.rows[i].value, 0, "row {i}: the no-kill run's stat");
         assert_eq!(f.rows[i].raw, 0.0, "row {i} scores the zero rows");
     }
-    // The health row (6) scores from the run's snapshot: target · min(count, hp) / count.
+    // Row 4 (stealth): within par → the FULL max [M 0x1984b0:225-233 — the else store of row+0x4
+    // into row+0x10, ratio 1.0 at LAB_00198bdc]; over par → the penalty ramp. (The old port
+    // fell through to the proportional arm and scored 0 for a clean run — the capture's
+    // 100% / 25,000 is the disproof.)
     let idx = sim.drones.progress.table.iter().position(|e| e.hash == 0x0700_0005).unwrap();
+    let d = f.stats.detected;
+    let par4 = f.rows[4].count;
+    let want4 = if par4 < d {
+        let pen = if sim.drones.progress.table[idx].penalty == 0.0 { 0.03 } else { sim.drones.progress.table[idx].penalty };
+        let fvar = (1.0 - (d - par4) as f32 * pen).max(0.0);
+        let x = fvar * f.rows[4].target as f32;
+        let t = x as i32;
+        if x - t as f32 >= 1e-5 { (t + 1) as f32 } else { t as f32 }
+    } else { f.rows[4].target as f32 };
+    assert_eq!(f.rows[4].value, d, "row 4 carries the detection count");
+    assert_eq!(f.rows[4].raw, want4, "row 4's raw per the stealth formula [M 0x1984b0:201-233]");
+    // The health row (6) scores from the run's snapshot: target · min(count, hp) / count.
     let hp = f.stats.health as u32;
     assert_eq!(f.rows[6].value, hp, "row 6's fptoui of the health snapshot [M 0x1984b0:80]");
     assert_eq!(f.rows[6].raw, expect_generic(f.rows[6].count, hp, f.rows[6].target),
         "row 6's raw per the generic formula");
     // The time row (7): value = elapsed in 1/100 s, count = the par seconds [M 0x1984b0:104-139].
-    let t = f.stats.elapsed as f32 / 100.0;
-    let want7 = if (f.rows[7].count as f32) < t {
-        f.rows[7].target as f32 * f.rows[7].count as f32 / t
-    } else {
-        f.rows[7].target as f32
-    };
+    // BOTH branches are ceil(max × par / max(elapsed_s, 1)) — under par the score RISES above max
+    // [M :118-170; the capture's 01:19/09:00 → 170,887].
+    let t = (f.stats.elapsed as f32 / 100.0).max(1.0);
+    let x7 = f.rows[7].target as f32 * f.rows[7].count as f32 / t;
+    let t7 = x7 as i32;
+    let want7 = if x7 - t7 as f32 >= 1e-5 { (t7 + 1) as f32 } else { t7 as f32 };
     assert_eq!(f.rows[7].value, f.stats.elapsed, "row 7 carries the elapsed clock");
-    assert_eq!(f.rows[7].raw, want7, "row 7's time ratio");
+    assert_eq!(f.rows[7].raw, want7, "row 7's raw per the time formula [M 0x1984b0:118-170]");
 
     // The totals: base = Σ raw; bonus = base × the difficulty multiplier; last = base + bonus.
     let sum: f32 = f.rows.iter().map(|r| r.raw).sum();
