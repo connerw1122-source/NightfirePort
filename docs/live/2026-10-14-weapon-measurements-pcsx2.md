@@ -137,3 +137,11 @@ The friendly driver (drone team 3, stands by the truck's cab at about (69–70, 
 him fails the mission at once**: the "Mission Failed — REPLAY / QUIT" box appears as he dies (measured by accident:
 six P2K shots aimed at the stairs guard hit him). The port (104d-fix-06-driver) keeps him damageable; check that his
 death also fails the mission there.
+
+## The SG5 Commando 0x16 casings while walking forward (07000006, the guard's dropped SG5)
+
+Taken from the stairs guard (the SG5 is only on guards on 05/06), selected with L2, then forward + held fire; frames
+70 ms apart. The casings are **small brass shells** (about the size of the view model's front sight) ejected from the
+right side of the receiver, flying **up and to the LEFT, away from the camera**, gone off the top-left of the view
+within ~2 frames (~0.14 s). Walking forward does not bring them back across the screen or toward the camera, and they
+never get large. (The user on the port: "casings flying across my screen, like super large" — task 109l.)
