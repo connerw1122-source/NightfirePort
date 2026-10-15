@@ -299,6 +299,9 @@ pub struct Sim {
     pub nav: nf_game::nav::Network,
     pub covers: Vec<nf_game::cover::CoverNode>,
     pub tuning: nf_formats::tuning::Tuning,
+    /// mp-core: the MP match core (`nf_game::mp`) when `--mp` runs an arena — `MP_Update` 0x184bd0
+    /// runs per frame in gameplay [M]; `None` on every campaign level.
+    pub mp: Option<nf_game::mp::MpMatch>,
     pub hitboxes: nf_formats::hitbox::CollisionBones,
     pub sfx: Option<nf_formats::sfx::SfxTable>,
     pub volumes: Vec<nf_game::aivolume::AiVolume>,
@@ -396,6 +399,9 @@ pub struct Sim {
     /// `Some(true)` = the aim ray met a live guard within weapon_data+0x1c (the shot spawns and the
     /// taser beam draws), `Some(false)` = no target (no bullet, no beam), `None` = not holding fire.
     pub stunner_target: Option<bool>,
+    /// The laser watch's held-meter charge, 0–100 [S stand-in; M HUD_UpdateAmmoPane 0x19a7f0:160-176
+    /// — the state-0xb pane reads a 0–100 value, not the clip percent; D the measured ~31/s drain].
+    pub laser_charge: f32,
     /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
     /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
@@ -1695,6 +1701,12 @@ impl Sim {
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
+        // mp-core: `MP_Update` 0x184bd0 runs per frame in the gameplay flow state [M 0x184bd0:17-21];
+        // the port's fixed tick stands in for the game's wall-clock delta (the module doc's
+        // *Deviation*). Arena loads only — `None` on every campaign level.
+        if let Some(m) = self.mp.as_mut() {
+            m.update(1.0 / 60.0, false);
+        }
         // `Game_Run` 0x1c9790:33 runs `Light_Update` before the object movement each tick (fix-lighting):
         // lifetimes (the muzzle light of the previous tick dies here), the script-channel gate and the
         // flicker state machine. The flicker's RNG re-seeds ride the shared generator before this tick's draws.
@@ -1750,6 +1762,17 @@ impl Sim {
         // target test) → Player_CollisionHandler 0x1949a8:189-191 → Player_MuzzleFlash 0x1a4298 →
         // Draw_LaserBeam/Draw_TaserBeam — everything rides the refire that actually spent a round,
         // so at clip 0 the beam stops (the user's PCSX2 capture) and nothing burns while switching.
+        // fix-laser-watch-look: the laser watch's held meter — a tick where the beam ran drains the
+        // 0–100 charge ~31/s [D docs/live/2026-10-14-weapon-measurements-pcsx2.md "The laser watch
+        // 0x4e": 100 → 59 over ~1.3 s, ≈0.5/frame]; idle ticks refill it (the game's gadget regen
+        // shape, +1 per 4 frames [M Player_Update 0x193600 disasm 0x193f18-58] — [S] for the charge
+        // itself, live check in the report). The watch lasers only: the stunner fires in view state
+        // 9 (its +0x6C & 0x400 = 0 [L weapon_data 0x4a]), so 0x19a7f0's state-0xb pane — the charge
+        // read — never shows for it. Read at the top of the tick against the PREVIOUS tick's beam
+        // (the beam computes at the end of the shot tick), so every tick pays exactly once.
+        if nf_game::gadget::is_laser_weapon(self.gun.weapon) {
+            nf_game::gadget::laser_charge_tick(&mut self.laser_charge, self.laser_beam.is_some());
+        }
         self.laser_beam = None;
         self.stunner_target = None;
         self.smoke.retain(|s| !s.dead());
@@ -1811,7 +1834,12 @@ impl Sim {
         // weapon's `weapon_data[w].clip_size` (+0x92): clip[0x4A] (+0x530) and clip[0x4E] (+0x560) and
         // clip[0x33] (+0x41C) on `frame & 3 == 0`; clip[0x4C] (+0x548) and clip[0x4F] (+0x56C) on
         // `frame & 1 == 0`; clip[0x45] (+0x4F4, the grenade belt) on `frame % 6 == 0`. No ownership gate.
-        if !self.disabled && !fire_busy {
+        // The held laser/stunner parks its fire script at the last frame but stays in view state 9 (the regen's
+        // gate) until the release [L PCSX2 07000005: the clip drains exactly 1/frame for the whole hold, no +1 per
+        // 4 frames]; the port's `fire_busy` reads "script still advancing", so gate on the fire script too.
+        let held_fire_script = self.gun.fire_state && self.weapons.records.get(self.gun.weapon as usize)
+            .is_some_and(|w| self.view_script == u32::from_le_bytes(w[0xb0..0xb4].try_into().unwrap()));
+        if !self.disabled && !fire_busy && !held_fire_script {
             let frame = self.drones.frame;
             let gates: [(usize, bool); 6] = [
                 (0x4A, frame & 3 == 0), (0x4E, frame & 3 == 0), (0x33, frame & 3 == 0),
@@ -2407,7 +2435,9 @@ impl Sim {
     /// set) sharing the base's ammo type, else its own [M `Player_ReloadAmmoType` 0x1a1988:18-22 —
     /// `iVar4 = base` routes `clip[0x1B8 + slot·0xC]` to the base for such twins; the give path's
     /// `pickup.rs clip_slot` is the same unification]. One physical magazine per twin family.
-    fn clip_slot(&self, id: usize) -> usize {
+    // fix-hud-ammo-odd: pub(crate) — the dev window's ammo pin (dev.rs after_tick) resolves the
+    // twin slot with the same pick [M Player_AmmoIndex 0x1a9148]; no behaviour change.
+    pub(crate) fn clip_slot(&self, id: usize) -> usize {
         let base = self.weapons.base(id) as usize;
         if self.weapons.shares_base_clip(id) && self.weapons.ammo_type(id) == self.weapons.ammo_type(base) { base } else { id }
     }
@@ -2822,7 +2852,11 @@ impl Sim {
                 // and every refire tick re-queues the script through AnimScriptAdd — which DELETES the
                 // playing script and starts fresh [M 0x1c6d40] — keeping the beam + loop alive while held.
                 let script = self.gun.firing_anim_script(flags, u16::from_le_bytes([w[2], w[3]]), self.gun.clip, rd(0xb0), rd(0xb4), &mut self.drones.rng);
-                if script != 0 && !(was_fire_state && flags & 0x100400 != 0 && fire_anim_len != 0) {
+                // The hold applies to the laser/stunner family too (+0x68 & 0x400, +0x44 = 0): measured in PCSX2
+                // (07000005, held 1.5 s, per frame) the stunner's fire script plays 1→11 once and HOLDS at its last
+                // frame while held (the laser 1→16), with the meter draining every frame — no restart. The port's
+                // per-refire re-queue kept restarting the push-forward (the user: "still not pushing forward").
+                if script != 0 && !(was_fire_state && flags & 0x100400 != 0) {
                     self.view_script = script;
                     // [M `Player_WeaponFiring` 0x1a5460:676-685]: a record with +0x6C & 0x400 and a +0xB4
                     // script enters view state 0xb and the just-queued fire script plays at 1.5×
@@ -2832,6 +2866,12 @@ impl Sim {
                     // hand still on the pin (the user's report, four rounds).
                     let speed = if rd(0x6c) & 0x400 != 0 && rd(0xb4) != 0 { 1.5 } else { 1.0 };
                     (self.view_time, self.view_speed) = (0.0, speed);
+                } else if script != 0 && was_fire_state && flags & 0x400 != 0 && fire_anim_len == 0 {
+                    // The held laser/stunner fires EVERY tick, so this branch runs every tick and the shared
+                    // advance below never would: tick the held script here (`AnimScriptTick` runs on the anim
+                    // object regardless [M 0x1c2630]), parking at its last frame (`AnimScriptEnd`).
+                    let len = self.scripts.get(&self.view_script).map_or(0.0, |s| s.length as f32);
+                    self.view_time = (self.view_time + self.view_speed).min((len - 1.0).max(0.0));
                 }
             } else if self.gun.reload_state != 0 && was_reloading == 0 {
                 // Reload just started [M Player_WeaponFiring's shared tail 0x1a6250-0x1a631c]: state 6
@@ -2888,17 +2928,38 @@ impl Sim {
                 // [M 0x1a5460:677-679]. The port kept fire_state through the +0xB4 play so its own
                 // finish lands in the idle arm below (the game's case 0xc → 0 does the same).
                 let fire_last = rd(0xb4);
-                if self.gun.fire_state && (self.view_script == rd(0xb0) || (fire_last != 0 && self.view_script == fire_last))
+                // The laser/stunner family holds its fire script's last frame while the trigger is held and plays
+                // the release script only on release, at 1.0 [L PCSX2: release → a 27-frame script at +1.0/frame,
+                // then idle; the port played it at 1.5 the moment the script ended, trigger or not].
+                let holding = flags & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) && trigger;
+                if self.gun.fire_state && !holding && (self.view_script == rd(0xb0) || (fire_last != 0 && self.view_script == fire_last))
                     && self.view_time >= len - 1.0 {
                     if flags & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) {
                         self.view_script = fire_last;
-                        (self.view_time, self.view_speed) = (0.0, 1.5);
+                        (self.view_time, self.view_speed) = (0.0, 1.0);
                     } else if rd(0x6c) & 0x400 != 0 && fire_last != 0 && self.view_script == rd(0xb0) {
                         // The grenades' state 0xb [M `Player_SetWeaponAnimObj` 0x1a2e38 case 0xb]: the fire
                         // script stopped → `AnimScriptAdd(+0xB4)` (the next grenade coming up) at its own
                         // 1.0 [L PCSX2: the script after the throw runs +1.0 per frame], then idle.
                         self.view_script = fire_last;
                         (self.view_time, self.view_speed) = (0.0, 1.0);
+                    } else if rd(0x6c) & 0x400 != 0 && fire_last != 0 && self.view_script == fire_last {
+                        // State 0xc's end [M 0x1a2e38 case 0xc :521-551]: +0xB4 stopped → `Player_ReloadAmmoType`
+                        // → view state 3 → the DRAW (case 3: `AnimScriptAddSpeed(1.25, draw)` + the 0x281/0x282
+                        // draw sound, state 4; case 4's end zeroes the refire timer). Measured in PCSX2 on
+                        // 07000015 (the frag, per frame): +0xB0 at 1.5 to +47, +0xB4 at 1.0 to +83, the draw
+                        // at 1.25 (state 4) to ~+107, then idle with the clip refilled — the next throw ~+125
+                        // with repeated taps. The port went straight to idle and threw again at +84.
+                        self.gun.end_fire_state();
+                        let draw = self.weapons.draw_script(self.gun.weapon as usize);
+                        if draw != 0 {
+                            self.view_script = draw;
+                            (self.view_time, self.view_speed) = (0.0, 1.25);
+                            self.gun.switch_state = 3;
+                            self.drones.audio.play(if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { 0x281 } else { 0x282 });
+                        } else {
+                            self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0);
+                        }
                     } else {
                         if flags & 0x1000 == 0 { self.view_script = rd(0xa0); (self.view_time, self.view_speed) = (0.0, 1.0); }
                         self.gun.end_fire_state();
@@ -3189,8 +3250,26 @@ impl Sim {
                     // the flash branch), 0x36 'Smoke Grenade' (0/0, the occlude/re-arm branch). The old
                     // hardcode's sin was killing with EVERY type and on impact; the per-type records
                     // route each grenade to its own death branch [M 0x12dd60/0x12e104/0x12e1c0].
+                    // The launch origin [M `Player_WeaponInitBullet` 0x1a4bf0:212-240]: the head, moved to the
+                    // MIDPOINT of the head and the view model's DATUM 0 (`AnimGetBoneWorldTrans(BL+0x7e8, 0, 0)`) when
+                    // the record has a first-person model (+0xDC), +0x68 & 0x10000, isn't an excluded base (1, 0x52,
+                    // 0x54, 0x58, 0x59, 0x5b) and isn't a scoped weapon held zoomed. The view model's bone 0 is its
+                    // object origin (the root's local translation is 0 [D probe, 0x34 frame 26]) = `gun_matrix`,
+                    // which sits ~0.43 BEHIND the eye: the grenade starts behind the camera and comes into view
+                    // only once it has flown past — the game shows no grenade on the release frame (PCSX2 frozen at
+                    // the fire script's frame 26), where the eye origin drew a screen-filling frag.
+                    let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
+                    let fp_model = u32::from_le_bytes(w[0xdc..0xe0].try_into().unwrap()) != 0;
+                    let excluded = matches!(base, 1 | 0x52 | 0x54 | 0x58 | 0x59 | 0x5b);
+                    let zoomed_scope = self.aiming && flags68 & 0x40 != 0;
+                    let origin = if fp_model && !excluded && !zoomed_scope && flags68 & 0x10000 != 0 {
+                        // DATUM 0 [M 0x1c3120 — a non-negative id is a datum, not a bone]: the hand's mount.
+                        let g = self.gun_matrix();
+                        let d0 = self.view_datum(0).unwrap_or([g[3][0], g[3][1], g[3][2]]);
+                        [(camera[0] + d0[0]) * 0.5, (camera[1] + d0[1]) * 0.5, (camera[2] + d0[2]) * 0.5]
+                    } else { camera };
                     self.drones.grenades.push(nf_game::grenade::Grenade {
-                        pos: camera,
+                        pos: origin,
                         velocity: [sdir[0] * speed, sdir[1] * speed, sdir[2] * speed],
                         speed, travelled: 0.0, range: fuse, damage: f32_at(0x0c), radius: f32_at(0x08),
                         // The FIRED weapon's id, not the record's +0x02 base: the MGL's 'Delay' twin
@@ -3268,7 +3347,13 @@ impl Sim {
                         // shell at the view-model gun bone's world position (`AnimGetBoneWorldTrans`
                         // VECTOR out) — hand the posed gun matrix (`Player_PositionGun` 0x1a3b40's
                         // port) to the next fire_player so the casing spawns at the gun, not the eye.
-                        self.drones.eject_gun = Some(self.gun_matrix());
+                        // The player arm [M 0x12f678:88-99]: `AnimGetBoneWorldTrans(BL+0x7e8, 1, 0, pos, MATRIX)` —
+                        // DATUM 1 (a non-negative id is a datum [M 0x1c3120]); the 0x40000 alternating records with
+                        // `BL+0x958 == 0` use datum 5 (the other gun). The view model's origin (`gun_matrix`) sits
+                        // ~0.43 behind the eye: shells ejected there spawned at the camera — "big on my screen, but
+                        // I can't really see them" (the user, 1015-0046).
+                        let alt = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40000 != 0 && self.gun.alt_fire_toggle == 0;
+                        self.drones.eject_gun = Some(self.view_datum_matrix(if alt { 5 } else { 1 }).unwrap_or_else(|| self.gun_matrix()));
                         self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
                         // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:248-253]: a `+0x6C & 4` shot hands
                         // the view to the projectile — `Player_ChangeSubState(owner, 10)`, `BLData+0x878 =
@@ -3769,6 +3854,30 @@ impl Sim {
     }
 
     /// (sequence index, frame) the first-person gun's script shows.
+    /// The world position of the held weapon's view-model DATUM `id` at this tick's pose
+    /// (`AnimGetBoneWorldTrans(BLData+0x7e8, id, 0)` [M 0x1c3120: a non-negative id is a datum —
+    /// `QuatTransToMat(datum.q, datum.t) · bone world`]): the first-person skin (+0xDC), the view script's
+    /// sequence at the current frame (root translation zeroed, as the draw does), through `gun_matrix`.
+    pub fn view_datum(&self, id: u32) -> Option<[f32; 3]> {
+        self.view_datum_matrix(id).map(|m| [m[3][0], m[3][1], m[3][2]])
+    }
+
+    /// `view_datum`'s full world matrix (rotation rows + translation) — the `AnimGetBoneWorldTrans` MATRIX out.
+    pub fn view_datum_matrix(&self, id: u32) -> Option<Mat4> {
+        let w = self.weapons.records.get(self.gun.weapon as usize)?;
+        let skin = self.skins.get(&u32::from_le_bytes(w[0xdc..0xe0].try_into().ok()?))?;
+        let skel = self.skeletons.get(&skin.skeleton)?;
+        let dt = skin.datums.iter().find(|d| d.id == id && d.bone >= 0)?;
+        let script = self.scripts.get(&self.view_script)?;
+        let t = (1.0 + self.view_time) as u16;
+        let (a, _, q) = script.sequences().find(|(a, b, _)| *a <= t && t <= *b).or_else(|| script.sequences().last())?;
+        let seq = self.seqs.get(&q).filter(|s| s.skeleton == skin.skeleton)?;
+        let mut local = anim::local_pose(seq, skel, skin, (t.saturating_sub(a) + 1) as u32);
+        if let Some(r) = local.first_mut() { r.0 = [0.0; 3]; }
+        let world = anim::world_pose(&local, skin);
+        Some(anim::mul(&anim::mul(&anim::quat_trans_to_mat(dt.q, dt.t), world.get(dt.bone as usize)?), &self.gun_matrix()))
+    }
+
     pub fn view_frame(&self, skeleton: u8) -> Option<(usize, u32)> {
         let script = self.scripts.get(&self.view_script)?;
         let t = (1.0 + self.view_time) as u16;
@@ -4689,7 +4798,7 @@ impl Scene {
                         for id in 8u8..=11 {
                             let Some(dt) = skin.datums.iter().find(|d| d.id == id as u32 && d.bone >= 0) else { continue };
                             let linst = Instance { map: lmap, object: lobject, matrix: ident, placement: placement.clone() };
-                            add_instance(level, &linst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                            add_instance(level, &linst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                             attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: Some(id), projectile: None, script: None, gas: None, effect: None, silencer: false });
                         }
                     }
@@ -5556,12 +5665,13 @@ impl Scene {
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
-                wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, missile_cam: None,
+                wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, laser_charge: 100.0, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,
                 view_alert: false,
                 prev_aiming: false,
                 view_aim_anim: None,
                 view_aim_raising: false,
+                mp: None,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
@@ -5737,9 +5847,13 @@ impl Scene {
                     let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
                     let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
                     if len < 1e-4 { return far; }
-                    let dir = [d[0] / len, d[1] / len, d[2] / len];
-                    let yaw = dir[0].atan2(dir[2]);
-                    let pitch = -dir[1].atan2((dir[0] * dir[0] + dir[2] * dir[2]).sqrt());
+                    // fix-laser-watch-look: PositionBeam 0x1a9400 stores the spherical of (start − end)
+                    // with the elevation negated — the same +z-backward convention as Draw_LaserBeam
+                    // [M 0x1a9400 tail], whose −z geometry [D the "watch_lazer" mesh 0x2000133:
+                    // z ∈ [−1.0, 0]] flows start→end. The old +z pointed start→end.
+                    let v = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+                    let yaw = v[0].atan2(v[2]);
+                    let pitch = -v[1].atan2((v[0] * v[0] + v[2] * v[2]).sqrt());
                     let mut m = nf_formats::placement::object_matrix([pitch, yaw, 0.0], a);
                     for k in 0..3 { m[2][k] *= len; }
                     return m;
@@ -5756,19 +5870,47 @@ impl Scene {
                     };
                     if slot as usize != want { return far; }
                     let Some((mut a, b)) = s.laser_beam else { return far };
-                    // The beam leaves the view model's bone 0 (AnimGetBoneWorldTrans(BLData+0x7e8, 0, 0)
-                    // [M 0x1a4560:20]) — the posed view model's root, which is where the watch sits.
+                    // fix-laser-watch-look: the beam leaves the view model's POSED BONE 0 —
+                    // AnimGetBoneWorldTrans(BLData+0x7e8, 0, 0) [M 0x1a4560:20] — composed with the
+                    // object matrix (the first-person gun transform), the same composition the
+                    // attachment draw below uses. The old read took the Character's STATIC creation
+                    // matrix (identity) — the beam started at the WORLD ORIGIN and the user never
+                    // saw it ("the laser isnt visible").
                     if s.first_person {
                         if let Some(vm) = self.view_models.get(&s.gun.weapon) {
-                            if let Some(c) = self.characters.get(*vm) { a = [c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]]; }
+                            if let Some((_, world, m)) = &posed[*vm] {
+                                // A collapsed object matrix (the scoped-zoom hide) must not drag the
+                                // beam to the collapse point — the watch lasers never scope
+                                // (`+0x68 & 0x40` = 0 [L weapon_data 0x4e]), so this is a guard only.
+                                if m[3][1] > -9999.0 {
+                                    // `AnimGetBoneWorldTrans(obj, 0, 0)`'s second argument is a DATUM id when
+                                    // non-negative [M 0x1c3120: param_2 >= 0 looks up the skin's datum list,
+                                    // `QuatTransToMat(datum.q, datum.t) · bone world`; only negative ids index
+                                    // bones]: datum 0 of the watch view model — the watch face. Bone 0 put the
+                                    // beam's wide end at the screen edge (the main agent's 08 render).
+                                    let c = &self.characters[*vm];
+                                    let bm = match c.skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0) {
+                                        Some(dt) => anim::mul(&anim::mul(&anim::quat_trans_to_mat(dt.q, dt.t), &world[dt.bone as usize]), m),
+                                        None => anim::mul(&world[0], m),
+                                    };
+                                    a = [bm[3][0], bm[3][1], bm[3][2]];
+                                }
+                            }
                         }
                     }
                     let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
                     let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
                     if len < 1e-4 { return far; }
-                    let dir = [d[0] / len, d[1] / len, d[2] / len];
-                    let yaw = dir[0].atan2(dir[2]);
-                    let pitch = -dir[1].atan2((dir[0] * dir[0] + dir[2] * dir[2]).sqrt());
+                    // fix-laser-watch-look: the game's angles are the spherical of (start − end) with
+                    // the elevation negated [M 0x1a4560:44-62; the same tail in PositionBeam
+                    // 0x1a9400] — the object's +z points from the hit BACK to the watch, and the
+                    // sprite's geometry extends along −z [D the "lazer" mesh 0x2000131 on 07000005:
+                    // z ∈ [−1.0198, 0.00016]], so the wide origin end sits at the watch and the beam
+                    // tapers to the hit. The old +z pointed start→end: the −z sprite stretched
+                    // BACKWARDS through the camera ("The laser watch sucks").
+                    let v = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+                    let yaw = v[0].atan2(v[2]);
+                    let pitch = -v[1].atan2((v[0] * v[0] + v[2] * v[2]).sqrt());
                     let mut m = nf_formats::placement::object_matrix([pitch, yaw, 0.0], a);
                     for k in 0..3 { m[2][k] *= len; }
                     return m;
@@ -5797,7 +5939,12 @@ impl Scene {
                     // ≤ GRENADE_SLOTS live projectiles every one draws (the ring never bites below 512).
                     let gi = if s.drones.grenades.len() > GRENADE_SLOTS { s.drones.grenades.len() - GRENADE_SLOTS + slot as usize } else { slot as usize };
                     match s.drones.grenades.get(gi) {
-                        Some(g) if g.state < 2 => {
+                        // State 0 (spawned, not yet updated) has no mesh in the game: `Bullet_update` state 0
+                        // assigns `weapon+0x5C` (`hashtable_set_object_to_entity_gfx`, disasm 0x12e8f0-0x12e900
+                        // [M]) on the projectile's first update. The port drew it on the spawn tick at the
+                        // camera — a screen-filling frag on the release frame, which PCSX2 frozen at that frame
+                        // doesn't show (the user's "released while I'm still pulling the pin").
+                        Some(g) if g.state == 1 => {
                             // fix-satchel-tripbomb: a stuck satchel/tripbomb draws aligned to the
                             // NEGATED surface normal (the stick arm's `Mat_Align2Dir(obj+0x90,
                             // −normal, …)` [M 0x12ce80:256-266]) instead of the flight direction.
@@ -6265,6 +6412,26 @@ impl Scene {
         const FAR: Mat4 = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
         let fs = self.frame_state(choice, time, opts);
         let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
+        // fix-dev-spawn-visible: a LIVE drone's character (present + enabled — the dev NPC spawns, and
+        // the placed guards while they fight) must not vanish when the strict portal walk drops the
+        // room he stands in. The measured case: the skin-row guard settles 4.4 m in front of the
+        // 07000005 spawn into a room whose cell (31) is in NEITHER mask from the eye's cell (14) —
+        // game 75/137, strict 5/137 — while the player looks straight at him; the game draws an
+        // object there (View_AddCels' depth-0 frustum band covers 200 units, View_DrawObjList 0x1e69a0
+        // draws the VisCelList cels' object lists, and the object is linked to the room build_FindCel
+        // 0x1c8680 picks at its own position). The port's walk is the approximation that already
+        // needed `near_los_rescue` for the World draws (fix-portal-sweep: "the near unoccluded
+        // generics the walk drops where the port's per-cel attribution approximation disagrees");
+        // for a live NPC the palette trusts the position + the GPU clip instead of the walk. The
+        // hidden/present collapse below still removes dead and disabled ones.
+        // Only the dev panel's pool copies (`npc_pool` chars): exempting EVERY live drone let the strict
+        // walk's hidden rooms draw their partygoers (fix_portal_live's ballroom).
+        let live_drone = |ci: usize| {
+            self.npc_pool.iter().any(|s| s.chars.contains(&ci)) && self.sim.as_ref()
+                .and_then(|s| s.char_drone.get(ci).copied().flatten())
+                .and_then(|di| self.sim.as_ref().map(|s| (s, di)))
+                .map_or(false, |(s, di)| s.drones.list[di].present && s.drones.list[di].enabled)
+        };
         let vis_room = |pos: [f32; 3]| -> bool {
             vis.map_or(true, |v| self.cel_index_at(pos).map_or(true, |r| v.get(r).copied().unwrap_or(true)))
         };
@@ -6277,7 +6444,7 @@ impl Scene {
             let nb = c.skeleton.bones as usize;
             if fs.hidden[ci] { for k in 0..=nb { p[base + k] = collapse(&c.matrix); } continue; }
             let cpos = fs.posed[ci].as_ref().map_or(c.matrix[3], |(_, _, m)| m[3]);
-            if !vis_room([cpos[0], cpos[1], cpos[2]]) { for k in 0..=nb { p[base + k] = FAR; } continue; }
+            if !live_drone(ci) && !vis_room([cpos[0], cpos[1], cpos[2]]) { for k in 0..=nb { p[base + k] = FAR; } continue; }
             match &fs.posed[ci] {
                 Some((mats, _, m)) => {
                     p[base] = *m;
