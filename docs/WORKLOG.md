@@ -13012,3 +13012,23 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
   port can reuse its versions, and §7 open question 5 answered from code: the .crp track's
   consumer. Docs only, no gameplay code. Branch s/drive-elf-map cut from origin/master 0bcd8077;
   full suite started in background 16:17 UTC.
+- drive-elf-map (17:30 UTC): docs/atlas/driving-elf.md written — the phase-3 map. Main loop:
+  main FUN_00174bf0 has NO loop (disassembly-verified); the frame loop is the vblank thread
+  FUN_00167de8→FUN_00168060 over the world 0x3c87b0 scheduler FUN_00168280 (two passes, Update
+  = vtable+0x1c) with pad poll FUN_0025a4a8 first and present pacing FUN_00167e80; visibility
+  events via FUN_00168678. Timestep 1/60 NTSC / 1/50 PAL from table 0x3c1a38 = {60,60,50,60}
+  via FUN_002d6b90 + FUN_00110900(1/fps) — driving.md's 60 Hz [S] is now [M]. Mission setup
+  FUN_00175cf8→FUN_00176658 fully annotated by its progress prints (Reset Ray Shells … Leaving
+  StartUp; thread starts after Leaving StartUp). Subsystem inventory by address cluster with
+  RTTI class-name anchors (PVehicle, PBondCar, WRoadNav, AIVehicle, ActActor, RCamera…).
+  Shared-with-ACTION: tools/crosscheck/elf-shape-match.py (committed) — 329 matches (193
+  byte-exact) = libc/libm/libgcc/SDK/VSync/libmpeg only; zero game-side matches; no BIGF match
+  (driving's container reader is a different build). §7 Q5 answered from code: .crp consumer =
+  track object DAT_0033aac8 (ctor FUN_0022f820, filename FUN_0022f898 sprintf %s.crp 0x39b620,
+  async load FUN_001a9d70), chunk finders FUN_002d51f0/002d5a10 (0x10-byte dir records, flags
+  0x8/0x10 binary search, 0x2 relative pointers), chunks: DBN  + Map {Wmap,Rule,MSet,Audi,
+  Trgr,Envi,AIEl,Shad,VisC,in,iN,ps,pt,Arti,Name,Shar,CDat,RNgp,sr} mapped to consumers
+  (FUN_0022faf8 resolve, FUN_00230730 roads/AI join, FUN_0021eae8 VisC, FUN_002cd8c0/002dc1b0
+  art). DRIVING.SYM not extractable from the rebuilt ISO (zeroed /DRIVING dir records — raw
+  ISO9660 parse [D]). Phase-4 task description + 5 live checks at the end of the doc. Docs +
+  one research tool only; no gameplay code, no tests added.
