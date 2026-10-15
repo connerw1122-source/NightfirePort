@@ -50,7 +50,8 @@ arena report]; map 0x0700004b only hides one options entry [M P_MPOPTIONS_Handle
   per-mode array; "places" records are 0x60 = matrix + 0x1c config + script ptr [M].
 - **0xf0 → pickups** — the campaign pickup path (`Pickup_Create`), plus registration into
   `MPpickups` (64 × 0xa0 = 0x2800 @0x2a4b58) by `MP_RegisterPickup(obj)` 0x189d80: MP_PICKUP = obj
-  +0x00, pos +0x08, AI emitter +0x20, per-bot visit floats +0x70 (f32[4] respawn deadlines) [M].
+  +0x00, pos +0x08, AI emitter +0x20, per-bot visit floats +0x80 (f32[4] respawn deadlines [M
+  0x129958:24; the earlier +0x70 here was a misread]) [M].
   `Pickup_MakeRandomWeaponSet` fills a row of the 10×10 `PickupMatrix` (u16 weapon ids) keyed by
   `MPSettings+0x436` (weapon set 0..10) [M].
 
@@ -113,6 +114,23 @@ Win conditions: score/time limit via `MP_CheckForEndCondition` (frag limit 1..12
 
 ## 4. The bots
 
+**Status (mp-bots-data 2026-10-15).** The data layer is lifted: the per-bot config records
+(0x12 @0x2DEEAA) and the 29 `default_bot_stats` presets (0xE @0x26D2F0) are byte-exact tables in
+`crates/nf-game/src/mp/bots.rs` with golden tests; the 0xC3..0xF9 states are inventoried there
+(id → address from `NDrone2_StateFuncs` @0x29B300 [L], id → type from a 0x37-byte table at
+0x26F460 — one past `BOT_vars` — read by `BOTSTATE_getStateType` 0x1291f0 [M]); the
+`BotGlobal` 0x16E060 msg-dispatch skeleton is ported behind the `mp-bots` feature (tests only).
+`BOT_vars_t` is mapped field-by-field in [docs/fields/bot-vars.md](../fields/bot-vars.md).
+Corrections to this section from that pass: **BotGlobal is itself state id 0xC5**; the state
+names are 0xE9 BotStuck, 0xEA BotAlertToPosition, 0xEB BotGotoGoalPosition, 0xF7
+BotGuardFriendIdle (the "melee" arm of processGoals), 0xF9 BotIdle (the goal-processing hub);
+the 9 trait states 0xC6..0xCE are pure ENTER→0xF9 stubs — trait behavior lives in
+`BOTSTATE_getPreferredTraitOpponentObjIndex` 0x128b50 (trait 2 targets the *same-team* pool per
+the +0xB0 block's bit3 — the trait↔name table is still [S], live check queued); the per-bot
+pickup-visit floats are at **MP_PICKUP+0x80**, not +0x70 [M 0x129958:24]; and
+`BOTWEAP_setDroneArmour` 0x12AF70 is empty — the armour pool is `BOT_vars+0x769`, decremented by
+`BOT_handlePain` 0x125ED8 [M].
+
 **Architecture** — an MP bot is an ordinary campaign Drone object: `BOT_init` 0x1249e8 calls
 `Drone_Create` with a 0xB0 behaviour-prop block, then links the 0xD20 instance (`Drone+0xD1C`) to a
 **0x780-byte `BOT_vars_t`** in the global array **0x26D660 (4 entries, slots 4..7, slot−4 = bot
@@ -133,10 +151,10 @@ no global MP difficulty setting — difficulty is per-bot via this record [M].
 (+0x2C/+0x30/+0x34 = pickup classes 3/1/0, +0x38 objective), 5 s timeout, type +0x45 (1 pickup, 2
 objective, 3 hunt player), subtype +0x4A (1 flag … 8 demo/protect, 9 hunt) [M]. `pickGoal` 0x126b88
 scores mode objectives by the `MPSettings+0x1A4` gametype bitmask and up to 64 pickups (per-bot
-visit floats at MP_PICKUP+0x70, 45 s cooldown via `BOTSTATE_setPickupVisitTime` 0x129958 /
+visit floats at MP_PICKUP+0x80, 45 s cooldown via `BOTSTATE_setPickupVisitTime` 0x129958 /
 `MP_resetPickupBotVisitTimes` 0x18be50) [M]. `gotoGoal` 0x1278a8 drives the shared
-`AINetwork_SetupGoalPosition(ToObj)`; `processGoals` 0x127c78 validates/completes and switches to
-melee (state 0xF7) at dist² < 20.25 [M].
+`AINetwork_SetupGoalPosition(ToObj)`; `processGoals` 0x127c78 validates/completes and switches
+to state 0xF7 (BotGuardFriendIdle — the guard/hunt arm) at dist² < 20.25 [M].
 
 **Navigation** — `setNearestNavNode` 0x129420 just invalidates (0xFFFF at BOT_vars+0x760);
 `validateRoute` 0x129880 dispatches 12 thunks via table **0x2F3DE0** (jump table unresolved in the
