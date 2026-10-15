@@ -13163,3 +13163,18 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   P_CNOPTIONS_Handler 0x213f08 (Advanced), P_CNAVOPTIONS_Handler 0x214818 (AV),
   P_CNMPOPTIONS_Handler 0x2144d8 (MP), P_CNNAME_Handler 0x213790 / C_KEYBOARD_Handler 0x213a98
   (the letter grid). Menu-def page records: 07000048.bin kind-8 08000002.
+- profile-options (17:55-19:14): the codename options' data + effects. docs/systems/
+  profile-options.md: all five pages' rows/labels/bytes/defaults/runtime readers — the wheel's 7
+  page jumps (0x213528:28-60), Advanced's 8 rows (P_CNOPTIONS 0x213f08: two [S] guesses resolved:
+  +0x0C Flashing Objects [View_SetupRenderModes_Tweak 0x1e5888:24], +0x0B HUD auto-hide with the
+  inverted On/Off items [0x213f08:66-71; the BL+0x8BC decay Player_Update 0x193600:414-425]),
+  +0x03 = Manual Aim Toggle/Hold [Player_Weapon 0x1a24c8:45], MP's signed −75..+100 handicap,
+  AV's sliders/subtitles/DrawInfo/speaker-mode/widescreen + Restore Defaults [0x214818:96-110].
+  Port: profile.rs field renames (bit layout unchanged — the game's own chain still decodes [L]),
+  a profile::Options snapshot on Drones, and the effects wired: auto-aim seed (the flag was dead),
+  crosshair draw gate, crouch toggle-vs-hold (LadderCtx + crouch_prev edge), manual-aim latch,
+  auto-switch gate, hud_fade pin/decay/reset, volumes → nf-audio masters in sound_tick. Tests:
+  profile_options_live 5/5, profile_volumes_live 1/1, the profile unit tests 5/5 (the game-chain
+  decode [L] intact), nf-game --lib 186/186. The full suite on the final tree is left to the next
+  session (the sandbox's background run OOM-killed under disk pressure). Report:
+  docs/reports/profile-options.md.
