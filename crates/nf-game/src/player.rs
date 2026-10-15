@@ -96,6 +96,10 @@ pub struct Input {
     pub switch_to: Option<u8>,
     /// Right mouse held: zoom the scope (`Player_Zoom` 0x1a1a70, mouse-first like the game's aim button).
     pub zoom: bool,
+    /// The mouse's scope/aim button (the right button, held): drives the aim bit — the raise, then the zoom —
+    /// like the pad's aim button, but never the free-aim cursor window (PLAN.md D-002: the mouse aims
+    /// directly). The pad keeps `aiming` (aim) and `zoom` (its own zoom axis).
+    pub scope: bool,
     /// The fire action held this tick (action 9; the substates read it directly — the grapple's
     /// reel/hang/release [M Player_SSGrapple 0x192860's Input_Action(9, 1)]). The weapon fire path
     /// gets the same bit through its own parameter.

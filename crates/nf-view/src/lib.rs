@@ -2145,6 +2145,7 @@ impl ApplicationHandler for App {
                                     switch_to: self.weapon_switch_to.take(),
                                     fire: self.trigger,
                                     zoom: self.zoom,
+                                    scope: self.zoom,
                                     // The fire-mode button (pad ○; keyboard M) [M Player_Weapon 0x1a24c8].
                                     mode_switch: self.just.remove(&KeyCode::KeyB),
                                 };
