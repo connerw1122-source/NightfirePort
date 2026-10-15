@@ -67,3 +67,10 @@ NF_ISO tests.
 ## ntfy
 
 (see the finish step output; on failure the exact error lands here)
+
+## ntfy failed
+
+All three fallbacks failed with the daily-quota 429 (2026-10-15 18:16 UTC):
+1. curl → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan..."}`
+2. python urllib → `HTTPError: HTTP Error 429: Too Many Requests`
+3. wget → empty body, same 429 service-side (the finish.sh `OK done 111f-audit-sound-calls` line was still queued).
