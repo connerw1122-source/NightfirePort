@@ -1641,7 +1641,12 @@ impl App {
         let movie_iso = self.movie_iso_path();
         let Some(fe) = self.fe.as_mut() else { return };
         // A pending end_to request from mission_ended rides the same path a menu pick does.
-        if let Some(code) = fe.requested_level.take() { self.pending_level = Some(code); }
+        if let Some(code) = fe.requested_level.take() {
+            // A cold menu reload (the pause page's RESTART [M 0x204408:139 ResetMap_LevelToLoad(.., 0, 1)])
+            // must not carry the current state over: the sim's cold flag makes the switch load fresh.
+            if !fe.flow.warm_reset { if let Some(sim) = self.scene.sim.as_mut() { sim.drones.level_exit_cold = true; } }
+            self.pending_level = Some(code);
+        }
         let intro_up = fe.intro_playing && fe.flow.get_state() == menu::ST_MOVIE;
         if intro_up {
             // The intro owns the screen; the game stops any playing movie before starting the
@@ -2094,7 +2099,9 @@ impl ApplicationHandler for App {
                         fe.action(a);
                         let closed = fe.closed;
                         if let Some(code) = fe.requested_level.take() {
-                            // The menu picked a level: through the same reload path a LOAD_LEVEL uses.
+                            // The menu picked a level: through the same reload path a LOAD_LEVEL uses. A cold pick
+                            // (the pause page's RESTART [M 0x204408:139]) loads fresh, not with the current state.
+                            if !fe.flow.warm_reset { if let Some(sim) = self.scene.sim.as_mut() { sim.drones.level_exit_cold = true; } }
                             self.pending_level = Some(code);
                         }
                         // The pause page's Resume row (cursor 0) closes the menu [M C_GCPAUSE_Handler
@@ -2145,8 +2152,14 @@ impl ApplicationHandler for App {
                             self.grab(false);
                             // Esc in a mission opens the pause page [S: the game pauses on Start].
                             if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL {
+                                let base = self.scene.sim.as_ref().map(|s| s.drones.mission.base_map).filter(|&b| b != 0 && b != u32::MAX).unwrap_or(self.level_code);
                                 let fe = self.fe.get_or_insert_with(menu::FrontEnd::new);
                                 fe.flow.current_level = self.level_code;
+                                // RESTART reloads the running mission's base map [M 0x204408:138-141
+                                // Mission_BaseMapHCode()]: a level started straight from the command line never
+                                // went through the mission list, so pick the row from the mission itself (row 0
+                                // is the driving Paris Prelude 0x09000001, which the old default reloaded).
+                                if let Some(i) = menu::CAMPAIGN.iter().position(|c| c.3 == base) { fe.mission = i; }
                                 fe.open_pause();
                             }
                         } else { el.exit() }
@@ -2646,12 +2659,17 @@ impl ApplicationHandler for App {
                         // port replaced the HUD with the overlay]. The HUD's quads go FIRST so
                         // the menu draws over them (frame order = draw order).
                         if fe.page == menu::Page::Pause && !matches!(fe.flow.get_state(), menu::ST_MOVIE) {
+                            // The menu's runs shift by the HUD's vertex count (the HUD's vertices go first) and the HUD
+                            // keeps its own runs — the old merge shifted by the MENU's count and dropped the HUD's runs,
+                            // so the live pause page drew from the wrong vertices (the plate, the figure and most rows
+                            // missing, the cursor a square) and the radar/ammo vanished while paused.
                             let hud_frame = overlay_for(&self.scene, aspect);
-                            let base = f.v.len() as u32;
-                            let mut runs = std::mem::take(&mut f.runs);
+                            let base = hud_frame.v.len() as u32;
+                            let menu_runs = std::mem::take(&mut f.runs);
                             let mut v = hud_frame.v;
                             v.extend(f.v.drain(..));
-                            for (tex, blend, start, count) in runs.drain(..) {
+                            f.runs = hud_frame.runs;
+                            for (tex, blend, start, count) in menu_runs {
                                 f.runs.push((tex, blend, start + base, count));
                             }
                             f.v = v;
