@@ -12812,3 +12812,11 @@ Work Log (fix-death-retry-boost):
 - Reproduce: pre-fix probe (zz_boost_probe, scratch) — the port's RamLoad equivalent (`restore`) gave a 10.0 buffer back at 10.0 where the game's boost arm gives 50.0; the App-level symptom was masked by the viewer's hardcoded 50.0 (that is why the old comment said "not ported"). Post-fix: `fix_death_retry_boost_live.rs` 4/4 — the max-not-set rule + the difficulty pick + armour (pure), the real-input restart (drop to 10 → entry checkpoint → die → ✕ → `fail_choose_restart` → the serve floors to 50 → the reload comes back at 50.0) and the sister (the trigger-exit carry keeps 10.0).
 - Final tree (merge 302f7b34, master 0b91e999 incl. 109r's player.rs loadout work — auto-merged, no conflicts): the suite ran in foreground chunks (this sandbox reaps background jobs) — 324 unique binaries, **1275 passed / 6 failed / 66 ignored**, the 6 = the 3 allowed disc_golden + the pylon-render trio (2 fix_0c_pylon_live + probe_pylon_render, documented pre-existing on master by the fix-laser-watch-look stashed re-run). Final-tree re-runs after the merge: nf-game lib 168/0, my 4/4, fix_restart_health 8/0, fix_restart_target 3/0+1i, fix_death_restart 2/0, fix_start_loadouts (109r's) 6/0.
 - Files: crates/nf-game/src/player.rs (the boost + docs), crates/nf-game/src/death.rs (doc), crates/nf-view/src/lib.rs (the serve delegates — shared file, one call + doc), docs/systems/mission.md §8, crates/nf-view/tests/fix_death_retry_boost_live.rs (new). Report: docs/reports/fix-death-retry-boost.md (live checks for the main agent inside).
+
+## fix-door-react-path (110p) — started
+
+Task: port `Door_ReactToHit`'s real caller — the game runs it as the class-0x1C collide function
+from `Collide_Update` (0x1ea398) through the `obj+0xD0` proxy list; the port's anti-crush is
+unreachable since A-11b (G-035). Plan: `Collide_PickObj` 0x1eae80 mode 0x800 (the player's pick
+[M 0x194df0:204-382]) over the ForcedList doors, contacts forwarded to `obj+0xD0`, then the
+ReactToHit selection + reversal + tail in door.rs; NF_ISO test on 07000001's auto-closing doors.
