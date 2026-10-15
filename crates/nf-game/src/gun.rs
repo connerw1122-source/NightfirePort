@@ -328,6 +328,11 @@ pub struct GunParams {
     /// `+0x44`: the fire script's release frame — the tick the round spawns (`Player_SetWeaponAnimObj`
     /// case 9 0x1a2e38:416-420; `fire_anim_len == 0` spawns on the press tick [M 0x1a5460:688-690]).
     pub fire_anim_len: u32,
+    /// `+0xB0`: the fire script. `Player_SetFiringAnim` 0x1a3c70 enters view state 9 ONLY when a
+    /// fire script exists (its tail: `if (fp_model != 0 && hash != 0) { +0xf4 = 9; AnimScriptAdd }`).
+    pub fire_script: u32,
+    /// `+0xB4`: the fire-last / release script — the other half of the state-9 gate.
+    pub fire_last: u32,
 }
 
 impl GunParams {
@@ -360,6 +365,8 @@ impl GunParams {
             reload_end_ticks: len_of(end_h),
             ammo_type: w[0x90],
             fire_anim_len: u32_at(0x44),
+            fire_script: u32_at(0xb0),
+            fire_last: u32_at(0xb4),
         }
     }
 }
@@ -435,9 +442,18 @@ impl Gun {
                 if p.ammo_type == 0 || self.clip >= p.ammo_per_shot {
                     if p.ammo_type != 0 { self.clip -= p.ammo_per_shot; }
                     self.timer = p.interval.max(1.0);
-                    // `Player_SetFiringAnim` (0x1a3c70:50-54) enters view state 9 and queues the fire script;
-                    // the spawn latch follows `fire_anim_len` [M 0x1a5460:688-693].
-                    self.fire_state = true;
+                    // `Player_SetFiringAnim` (0x1a3c70) enters view state 9 ONLY when the fire script
+                    // exists — its tail is `if ((*(int *)(param_3 + 0xdc)) != 0 && iVar7 != 0)
+                    // { *(short *)(...+0xf4) = 9; AnimScriptAdd(...); }`, the hash falling back
+                    // +0xB4 → +0xB0. A script-less record (the watch pair 0x54/0x55: +0xB0/+0xB4 = 0
+                    // [D probe dump]) leaves the view state 0. The port's fire_state is the documented
+                    // `anim+0xF4 == 9` proxy — the mode block's `anim+0xf4 == 0` gate reads it
+                    // [M Player_Weapon 0x1a24c8:199-201 — `bVar5 != 0 && anim+0xf4 == 0`] — so the
+                    // latch gates the same way: the old unconditional latch wedged the camera's mode
+                    // block shut forever (the clear needs `view_script == +0xB0`, which never plays).
+                    // The spawn latch (+0x95C) is separate and stays: the +0x44 == 0 press-tick spawn
+                    // is behind `Player_RoundToFire`, not behind the state-9 store [M 0x1a5460:688-693].
+                    if p.fire_script != 0 || p.fire_last != 0 { self.fire_state = true; }
                     self.latch = p.fire_anim_len == 0;
                     fired = true;
                 } else { self.pending = 0; }
@@ -489,7 +505,7 @@ mod tests {
 
     #[test]
     fn one_shot_per_press_at_most_every_interval() {
-        let p = GunParams { shots_per_pull: 1, interval: 8.0, clip: 7, ammo_per_shot: 1, reload_ticks: reload_ticks(0, 0x0600_0827, 0x1004, &|_| Some(155)), one_at_a_time: false, reload_start_ticks: 0, reload_loop_ticks: 111, reload_end_ticks: 0, ammo_type: 1, fire_anim_len: 0 };
+        let p = GunParams { shots_per_pull: 1, interval: 8.0, clip: 7, ammo_per_shot: 1, reload_ticks: reload_ticks(0, 0x0600_0827, 0x1004, &|_| Some(155)), one_at_a_time: false, reload_start_ticks: 0, reload_loop_ticks: 111, reload_end_ticks: 0, ammo_type: 1, fire_anim_len: 0, fire_script: 0x0600_0823, fire_last: 0 };
         assert_eq!(p.reload_ticks, 111);
         let mut g = Gun::new(2, 7, 41);
         // Holding the trigger fires once.
