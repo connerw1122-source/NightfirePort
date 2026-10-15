@@ -87,10 +87,22 @@ gained the shared-RNG parameter and passes it only to the state-6 restart).
 
 ## Suite note (final tree)
 
-The suite rerun on the final tree (`tools/test/suite.py`, `--test-threads=1`, 600 s per binary)
-was launched right before this report; its last line and any FAILED/TIMEOUT lines are quoted in
-the WORKLOG entry `mp-match-rules` (appended after the run) — the build step passed (350 binaries)
-and the first pass's only failures were the two no-GPU `fix_0c_pylon_live` tests.
+`tools/test/suite.py` cannot run to completion in this sandbox: background processes are killed
+between tool calls (two nohup attempts died with an empty log), the sandbox's first full pass hit
+its own 580 s shell cap mid-run (build 254 s after the disk incident), and foreground runs are
+capped the same way. What did run, all on the final tree with `--test-threads=1` and the 600 s
+per-binary cap:
+
+- `--only mp_match_rules,mp_core_live,mp_menu_flow,mp_arenas_live` → **29 passed, 0 failed**.
+- `--only rng_live,ai_live,drone_portcheck_live,fields_live,pickup_live,trig_live,tuning_live,
+  level_live,diff_calls,spawner_kill` → **65 passed, 0 failed** (94/94 total, 14 binaries).
+- The first full-suite pass (~100 binaries before its cap) failed only `fix_0c_pylon_live` (2
+  tests) — a `wgpu request_adapter` panic: this sandbox has no GPU (lesson 6), unrelated to this
+  task's changes.
+
+The crates this task's tests touch (nf-game, nf-view) are fully covered by the 94; a complete
+350-binary suite pass is left for the main agent's machine (the no-GPU render tests cannot run
+here regardless).
 
 ## What's left
 

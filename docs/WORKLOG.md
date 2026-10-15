@@ -13393,3 +13393,9 @@ Work Log (drive-crp-format):
   with a sister assertion — 14/14 green. The suite build needed disk freed (the sandbox hit 100%;
   target/debug + caches deleted); the suite run is still going at report time — see the report.
 - Deliverable doc: docs/systems/mp-match-rules.md (every rule tagged, the deviations listed).
+- Suite on the final tree: background runs are killed between tool calls in this sandbox, so the
+  350-binary pass cannot complete here; foreground `--only` chunks on the final tree ran 94 tests
+  over 14 binaries (the mp set mp_match_rules/mp_core_live/mp_menu_flow/mp_arenas_live = 29/29,
+  plus rng_live/ai_live/drone_portcheck_live/fields_live/pickup_live/trig_live/tuning_live/
+  level_live/diff_calls/spawner_kill = 65/65), 0 failed; the first full-suite pass failed only the
+  2 no-GPU fix_0c_pylon_live render tests (wgpu request_adapter panic — lesson 6, unrelated).
