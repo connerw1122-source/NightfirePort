@@ -5,5 +5,9 @@ edition.workspace = true
 publish.workspace = true
 description = "Game simulation for 007: Nightfire (PS2): world collision, drones (guards), fixed 60 Hz logic tick"
 
+[features]
+# Phase-4 MP bot groundwork: compiles the BotGlobal dispatch skeleton (nothing calls it).
+mp-bots = []
+
 [dependencies]
 nf-formats = { path = "../nf-formats" }

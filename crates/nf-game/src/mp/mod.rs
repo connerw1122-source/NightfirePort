@@ -21,6 +21,11 @@
 use crate::drone::Rng;
 use crate::world::CollisionWorld;
 
+/// Bots groundwork (401 mp-bots-data): the per-bot config records, the `default_bot_stats` presets, the bot
+/// state table and the `BotGlobal` dispatch skeleton — see `bots.rs` and `docs/fields/bot-vars.md`. Nothing in
+/// the sim calls it yet; the dispatch is behind the `mp-bots` feature.
+pub mod bots;
+
 /// The scenario words (`MPSettings+0x420`, atlas §3) — phase 1 only constructs Deathmatch; the rest
 /// name the ids the registration gates on.
 pub mod scenario {
