@@ -1,0 +1,180 @@
+# Weapon measurements in PCSX2 (2026-10-14, main agent)
+
+Live measurements of the retail game (NTSC-U) in PCSX2 through the real pad input (the keyboard-mapped copy), read
+with PINE. They are the ground truth for the playtest 1014-1725 tasks (109a, 109b, 109e). Tools: scratchpad
+`projectile2.py` (new DynamicObjList objects + per-frame position), `firetiming.py` (the fire action float, the clip,
+new objects by frame), `burst.ps1` (screen frames at fixed intervals). The captures carry the user's CRT filter
+(presence/placement only, not colour).
+
+## Memory facts found on the way [L]
+
+- The DynamicObjList head pointer is at **0x270594** in a running level (newest first, next at obj+0x14; ~500
+  objects on 07000005). 0x2705a0 (docs/fields/obj-tag.md) reads 0 in these states.
+- The fire action float is PlayerSetting 0x2a38c8 + 0x14 + 9·4 = **0x2a3900** (non-zero while fire is held).
+- The game writes the clip on the **press frame** for both the rocket and the frag (the frag's count drops before
+  the throw animation).
+- A twin record shares its base's clip slot: the unguided 0x2d's rounds are counted on the base 0x2c's slot.
+- 07000005 holds no frag grenades: equipping 0x34 there is refused and the game falls back to the P2K.
+
+## The AT-420 Sentinel (07000005, castle approach)
+
+- **Unguided 0x2d: the rocket flies at 0.3367 units per frame**, constant over its flight (BU+0xF8 reads
+  0.33666, and the measured per-frame displacement is the same 0.3367; 76 units in ~227 frames). That is
+  0.25 × 1.3467 — the `+0x6C & 0x200` quarter-speed arm applies to a base speed of ~1.3467, not to 0.25. The port's
+  0.0625 is 5.4× too slow (the user: "The rockets are way too slow").
+- **Guided 0x2c: the view becomes the rocket.** For ~2 s after the press the whole screen is the rocket's
+  forward view with a **red tint** over the frame; no view model, no crosshair; the HUD's ammo pane stays
+  ("3-50 Guided"). The camera flies over the castle wall toward the keep. (The user: "The rocket launcher doesn't do
+  the first person" in the port.)
+
+## The frag grenade 0x34 (07000015, the start corridor)
+
+Frames 70 ms apart from the press (the count 9 → 8 shows on the press frame):
+
+1. 00: the grenade in the right hand (idle).
+2. 01–02: the off hand reaches over and pulls the pin (the hand sweeps across the lower left).
+3. 03: the grenade raised.
+4. 04–06: the throw; the hands leave the screen.
+5. 07: the grenade visible in flight down the corridor.
+6. 09: the next grenade comes up in the hand.
+
+**The grenade leaves the hand ≈ 0.3 s (≈ 18–21 game frames) after the press**, after the pin pull. (The user, three
+times: the port releases it "while I'm still pulling the pin".)
+
+## The stunner 0x4a (07000005, the spawn, selected through the gadget cycle)
+
+The gadget cycle on 07000005 (D-pad Up from the P2K): **Stunner → Laser → Grapple**. On 07000015 the cycle is Laser →
+Micro-Camera → Decryptor — **no stunner on 15**. (A first attempt poked the stunner's owned byte on 15: the HUD read
+"Stunner" with nothing in Bond's hands — a record the level doesn't carry; the user caught it. Never equip gadgets by
+poking; cycle them.)
+
+The stunner is a **handheld device** (not the watch). Frames 80 ms apart, nothing in front of it:
+
+- Idle: held upright in the right hand; HUD blue meter, "100 Stunner".
+- **The press (the first frame after it): the device swings forward and its tip lights blue.** It stays forward with
+  the blue tip for as long as fire is held.
+- The release: it swings back upright.
+- With no target the meter stays 100 (no charge spent) and nothing flies.
+
+So the real stunner **activates on the press** and holds while the button is held; the port activates on release
+(the user: "It only really activates on releasing the key"). The hit on a guard is still to be measured.
+
+## The laser watch 0x4e (07000005, the spawn, selected through the gadget cycle: Stunner → **Laser**)
+
+Frames 120 ms apart while fire is held, aimed past the trees at the gatehouse road:
+
+- Idle: the watch on the left wrist, face up, the hand low in the frame; HUD red meter "100 Laser".
+- **The press:** the hand rotates the wrist so the watch face points forward/up along the aim, and a **red beam**
+  runs from the watch face to the **crosshair point**: wide and glowing pink-white at the watch, tapering to a thin
+  red line that ends at the crosshair (the aimed-at surface). No other muzzle effect; the view model stays raised
+  while held.
+- **The meter drains while held:** 100 → 97 → 93 → 86 → 78 → 71 → 62 → 59 over ~1.3 s (≈31 per second, ≈0.5 per
+  frame).
+- The user on the port's laser (08, 0c): "the laser isnt visible", "The laser watch sucks", "Still not right".
+
+## Guard reaction on 07000006 (partial — alerted by a hit, not by sight)
+
+Fresh 07000006 load, Bond at the truck start (57.2, 39.3, 22.6) with the crosshair on the stairs guard; one P2K tap.
+By game frame (PINE: drone list 0x298E14, alertness drone+0x50C, attack-start drone+0x524; new bullet objects by
+BU+0xF8):
+
+- 38471: Bond's P2K bullet object (speed 5.0).
+- 38474/38475: the hit guard (drone 0x177b870 at (68.9, 39.1, 27.3)) — attack-start frame 38474, alertness 1.0.
+- 38484: the first enemy bullet object (speed 15.35) at (44.7, 43.0, 18.0) — ~10 frames (~0.15 s) after the alert;
+  its origin is NOT the hit guard, so which guard fired it is unresolved.
+- 38492: a second drone (0x17778b0 at (66.1, 39.2, 28.9)) alerts.
+- 38655: the first damage on Bond (100 → 98.3 per hit; ~3 s after the alert).
+
+So this setup does not answer the user's report (guards firing instantly after SIGHTING Bond). The sighting-to-first-
+shot measurement still needs a guard that sees Bond unalerted (06 courtyard searchlight / walking into view).
+
+## The P2K's silencer (07000005, the spawn)
+
+The mode press (in this save's controller layout the mode button is **○ (circle)**; □ is reload — the layout differs
+from the Classic Bond notes in 2026-10-13-weapon-modes-pcsx2.md) switches the HUD label "Semi" → "Silenced" and the
+view model gains a **long cylindrical silencer screwed onto the end of the barrel** (dark grey tube about a third of the
+slide's length, in line with the barrel). The swap plays a short gun animation. The user on the port: "The suppressor
+still stays on the gun, but visually it's not there" (task 109m).
+
+## Which levels carry what (the port's level data, 2026-10-14 probe) and a start-loadout bug
+
+From the levels' own pickups and the guards' weapons (port probe over the 21 story levels): the SG5 0x16 only from
+guards on 05/06; the AIMS-20 0x1a from pickups + guards on 14/15/16 (its grenade rounds 0x1b as pickups on 14); the
+remote mine 0x37 as pickups on 14 (at (38.7, 0, 33.6), (-28.0, 2.7, 6.9), (33.8, 3.6, -3.0)). In the REAL game the
+start loadouts differ by level — 07000014 starts with the Delta Repeater crossbow 0x11 in hand ("3-9 Single", in a
+crawl vent); 07000015's gadget cycle is Laser → Micro-Camera → Decryptor (no stunner); 07000005's is Stunner → Laser
+→ Grapple — while the port gives nearly every level the same `[1, 2, 4a, 4e, 50, 54]` (no crossbow on 14, a stunner
+on 15). In this save's layout L2 cycles weapons (□ reloads, ○ is the mode button).
+
+## The remote mine 0x37 (07000014, picked up from the pickup at (38.7, 0, 33.6))
+
+Frames 120 ms apart:
+
+- In hand: a round mine with a red light (a second, picked-up mine shows a cyan light).
+- **Fire throws it; it sticks where it lands** — it sits motionless on the surface from the first frame it lands, no
+  bounce (the user on the port: "The remote mine bounces for some reason").
+- **The mode button (○) switches to the detonator 0x38** (held id 0x38; the 2026-10-13 table's "→0x39" is wrong): the
+  left wrist comes up showing the watch and the HUD reads "Detonate". It is reached through the mine's mode press,
+  not the gadget cycle (the user: "you have it set to the watch rather than the alternate fire of the mine").
+- **Fire on the detonator blows the mine at once** (a full-screen blast the next frame), then the view returns to the
+  mine ("Grenade").
+
+## The AIMS-20 0x1a / 0x1b (07000014, picked up in the armoury at (-32.2, 1.7–2.3, 31–35))
+
+- **The side lights:** a row of four round lights on the left side of the receiver, **lit red from the moment it is
+  drawn** (no delay) and staying lit while idle. They are a display, not decoration: with grenade rounds 0 → pattern
+  red, red, dark, red; after picking up 90 9mm rounds in Burst mode → red, dark, red, red; in Grenade mode with 4 rounds
+  → all four lit. (The user on the port: "lights on the aim 20 arent on", "The lights aren't working on the gun".)
+- **The mode press (○) only swaps when the grenade twin has ammo:** with no grenade rounds the press did nothing (held
+  stays 0x1a, "Burst"); after picking up the 0x1b rounds (4) the press swapped to 0x1b, HUD "4-0 Grenade". (The user's
+  "Ames 20 wouldn't swap modes" may be this gate if the port's give didn't fill the grenade slot — check both.)
+- **The scope (aim, L1 held):** the whole screen goes dark red with a circular reticle in the centre and green-white
+  boot text at the lower left: "COMMAND.COM / LOAD BIOS / MEMORY SET / SYSTEM STATUS / OK"; the view model is hidden.
+
+## The 06 truck driver (07000006, the truck start)
+
+The friendly driver (drone team 3, stands by the truck's cab at about (69–70, 38, 28–29)) is damageable, and **killing
+him fails the mission at once**: the "Mission Failed — REPLAY / QUIT" box appears as he dies (measured by accident:
+six P2K shots aimed at the stairs guard hit him). The port (104d-fix-06-driver) keeps him damageable; check that his
+death also fails the mission there.
+
+## The SG5 Commando 0x16 casings while walking forward (07000006, the guard's dropped SG5)
+
+Taken from the stairs guard (the SG5 is only on guards on 05/06), selected with L2, then forward + held fire; frames
+70 ms apart. The casings are **small brass shells** (about the size of the view model's front sight) ejected from the
+right side of the receiver, flying **up and to the LEFT, away from the camera**, gone off the top-left of the view
+within ~2 frames (~0.14 s). Walking forward does not bring them back across the screen or toward the camera, and they
+never get large. (The user on the port: "casings flying across my screen, like super large" — task 109l.)
+
+## Guard sighting -> first shot (07000006, god mode on, Bond never fires)
+
+Fresh 07000006 load; Bond walks forward from the truck start for 6 s (past the stairs into the courtyard) and stands;
+health/armour held by the measurement client (one PINE client). By game frame (60/s):
+
+- 32990: the stairs guard (drone 0x177b870 at (72.7, 37.6, 26.9)) alerts with Bond **2.8 units** away (walking
+  into him from behind).
+- 33087: the first enemy bullet, from (76.3, 35.5, 30.0) — **+97 frames (~1.6 s) after that alert**; the guard's next
+  shots +105, +167, +216, +269 (bursts ~50–60 frames apart).
+- 33326: a courtyard guard (0x1785530 at (91.7, 35.1, 36.3)) alerts with Bond 16.7 away; a bullet from (81.5, 32.2,
+  33.7) +45 frames later (attribution weak: the origin is 11 units from him).
+- 33600: a third guard (0x177c6b0) alerts at 18.3 units.
+
+So in the real game a guard that spots Bond fires its first shot ~1.6 s later, not on the next frames. (The user on
+the port: "Shots are still happening instantly" — task 109f.)
+
+## The stunner on a guard (07000005, the gate-trench guard 0x16ea150 at (99.7, 16.9, 101.6), god mode on)
+
+Selected through the gadget cycle (D-pad Up), Bond placed ~1 unit behind the guard. Held fire; per game frame:
+
+- The press: the device swings forward, the tip glows blue (as with no target).
+- **The stunner only acts in contact range.** At ~2 units with the crosshair beside or on the guard's shoulder it did
+  nothing to him: the charge just pulses 100 → 99 → 100 per discharge. At ~1 unit (touching) it connects:
+- 40811: the guard (state 0x4 idle) reacts (state 0x72 — alerted by the contact), turns toward Bond.
+- **The charge drains while it connects:** 100 → 98 (41011) → 92 → 89 → 79 → 69 (41106) — ~32 per second.
+- 41106: the guard enters **state 0x4a**, then 0x4b (41138): stunned — he **drops his weapon** (Bond picks it up:
+  "Picked up Winter Covert Sniper") and staggers.
+- While connected the screen flashes red (Bond takes the guard's hits; god mode kept him at 100).
+- After release the charge refills (68 → 70 …).
+
+So: press-activated, contact-range, drains ~32/s while touching a target, and the target is stunned (0x4a/0x4b) and
+disarmed after ~1.5 s of contact. (The user on the port: "It only really activates on releasing the key" — 109b.)

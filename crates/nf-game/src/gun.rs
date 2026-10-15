@@ -130,7 +130,10 @@ impl Gun {
     /// BLData+0x4F4` — and `+0x4F4` is not a separate field: it is `clip[0x45]` (`0x1B8 + 0x45·0xC`), the
     /// carried grenade count [M 0x1a16c0:14-15; player.md "`+0x4F4` is NOT a separate field"].
     /// *Deviation*: the 0x20000 ground-pickup scan is a STANDIN (returns false; the pickup list is not in Gun).
-    pub fn has_ammo(w: u8, carried: &[i16], clip: &[i16], ammo_type: impl Fn(u8) -> usize, _flags: impl Fn(u8) -> u32) -> bool {
+    /// `clip_slot` is `Player_AmmoInGun` 0x1a9190's pick (see `ammo_in_gun_slot`) — the game calls
+    /// `Player_AmmoInGun` for this clip half [M 0x1a16c0:22-24], so every caller that holds the weapon
+    /// table passes the shared-slot resolver.
+    pub fn has_ammo(w: u8, carried: &[i16], clip: &[i16], ammo_type: impl Fn(u8) -> usize, _flags: impl Fn(u8) -> u32, clip_slot: impl Fn(u8) -> usize) -> bool {
         if w == 0x45 {
             // `(short)weapon_data._18638_2_ (= weapon_data[0x45].clip_size = 100) <= *(short*)(BL+0x4F4)`
             // [M 0x1a16c0:14-15]; G-029 previously stood in with `true`.
@@ -138,12 +141,24 @@ impl Gun {
         }
         let t = ammo_type(w);
         if carried.get(t).copied().unwrap_or(0) != 0 { return true; }
-        // `Player_AmmoInGun`: rounds in the clip.
-        if clip.get(w as usize).copied().unwrap_or(0) != 0 { return true; }
+        // `Player_AmmoInGun`: rounds in the clip (the shared-slot pick, 0x1a9190).
+        if clip.get(clip_slot(w)).copied().unwrap_or(0) != 0 { return true; }
         // `ammo_type == 0`: melee / unlimited weapons (fists, hands, gadgets) always have ammo [M 0x1a16c0].
         if t == 0 { return true; }
         // Flag 0x20000: check the ground for a matching ammo pickup. STANDIN: not ported (no object list in Gun).
         false
+    }
+
+    /// `Player_AmmoInGun` 0x1a9190's clip-slot pick: a twin record (`+0x05 != 0`) reads the BASE's
+    /// slot (record `+0x02`) unless the `+0x90` ammo-shared bytes differ (then its own); a non-twin
+    /// (whose `+0x02` bases to itself [L ee_start_05.bin +0x02 sweep]) reads its own. The Phoenix
+    /// Samurai's give fills `clip[0x33]` (the base 0x33's slot — both records' +0x90 is 0x1f [L
+    /// ee_start_05.bin @ 0x2bf150]), so the Overcharge twin 0x32's dry check reads [0x33]: without
+    /// this the mode press to 0x32 is forever inert and the Samurai fires nothing anywhere
+    /// (weapon-matrix4 red #1).
+    pub fn ammo_in_gun_slot(w: u8, base_of: impl Fn(u8) -> u8, shared90_of: impl Fn(u8) -> u8) -> usize {
+        let b = base_of(w);
+        if b != w && shared90_of(w) == shared90_of(b) { b as usize } else { w as usize }
     }
 
     /// `Player_GetBestWeapon` (0x1a9680): scans the `BestWeapon` table (0x2bede0, 18 u16) for the first owned,
@@ -313,6 +328,11 @@ pub struct GunParams {
     /// `+0x44`: the fire script's release frame — the tick the round spawns (`Player_SetWeaponAnimObj`
     /// case 9 0x1a2e38:416-420; `fire_anim_len == 0` spawns on the press tick [M 0x1a5460:688-690]).
     pub fire_anim_len: u32,
+    /// `+0xB0`: the fire script. `Player_SetFiringAnim` 0x1a3c70 enters view state 9 ONLY when a
+    /// fire script exists (its tail: `if (fp_model != 0 && hash != 0) { +0xf4 = 9; AnimScriptAdd }`).
+    pub fire_script: u32,
+    /// `+0xB4`: the fire-last / release script — the other half of the state-9 gate.
+    pub fire_last: u32,
 }
 
 impl GunParams {
@@ -345,6 +365,8 @@ impl GunParams {
             reload_end_ticks: len_of(end_h),
             ammo_type: w[0x90],
             fire_anim_len: u32_at(0x44),
+            fire_script: u32_at(0xb0),
+            fire_last: u32_at(0xb4),
         }
     }
 }
@@ -420,9 +442,18 @@ impl Gun {
                 if p.ammo_type == 0 || self.clip >= p.ammo_per_shot {
                     if p.ammo_type != 0 { self.clip -= p.ammo_per_shot; }
                     self.timer = p.interval.max(1.0);
-                    // `Player_SetFiringAnim` (0x1a3c70:50-54) enters view state 9 and queues the fire script;
-                    // the spawn latch follows `fire_anim_len` [M 0x1a5460:688-693].
-                    self.fire_state = true;
+                    // `Player_SetFiringAnim` (0x1a3c70) enters view state 9 ONLY when the fire script
+                    // exists — its tail is `if ((*(int *)(param_3 + 0xdc)) != 0 && iVar7 != 0)
+                    // { *(short *)(...+0xf4) = 9; AnimScriptAdd(...); }`, the hash falling back
+                    // +0xB4 → +0xB0. A script-less record (the watch pair 0x54/0x55: +0xB0/+0xB4 = 0
+                    // [D probe dump]) leaves the view state 0. The port's fire_state is the documented
+                    // `anim+0xF4 == 9` proxy — the mode block's `anim+0xf4 == 0` gate reads it
+                    // [M Player_Weapon 0x1a24c8:199-201 — `bVar5 != 0 && anim+0xf4 == 0`] — so the
+                    // latch gates the same way: the old unconditional latch wedged the camera's mode
+                    // block shut forever (the clear needs `view_script == +0xB0`, which never plays).
+                    // The spawn latch (+0x95C) is separate and stays: the +0x44 == 0 press-tick spawn
+                    // is behind `Player_RoundToFire`, not behind the state-9 store [M 0x1a5460:688-693].
+                    if p.fire_script != 0 || p.fire_last != 0 { self.fire_state = true; }
                     self.latch = p.fire_anim_len == 0;
                     fired = true;
                 } else { self.pending = 0; }
@@ -474,7 +505,7 @@ mod tests {
 
     #[test]
     fn one_shot_per_press_at_most_every_interval() {
-        let p = GunParams { shots_per_pull: 1, interval: 8.0, clip: 7, ammo_per_shot: 1, reload_ticks: reload_ticks(0, 0x0600_0827, 0x1004, &|_| Some(155)), one_at_a_time: false, reload_start_ticks: 0, reload_loop_ticks: 111, reload_end_ticks: 0, ammo_type: 1, fire_anim_len: 0 };
+        let p = GunParams { shots_per_pull: 1, interval: 8.0, clip: 7, ammo_per_shot: 1, reload_ticks: reload_ticks(0, 0x0600_0827, 0x1004, &|_| Some(155)), one_at_a_time: false, reload_start_ticks: 0, reload_loop_ticks: 111, reload_end_ticks: 0, ammo_type: 1, fire_anim_len: 0, fire_script: 0x0600_0823, fire_last: 0 };
         assert_eq!(p.reload_ticks, 111);
         let mut g = Gun::new(2, 7, 41);
         // Holding the trigger fires once.
@@ -623,11 +654,11 @@ mod tests {
         let carried = [0i16; 34];
         let ammo_type = |_w: u8| 0usize;
         let flags = |_w: u8| 0u32;
-        assert!(!Gun::has_ammo(0x45, &carried, &clip, ammo_type, flags), "count < 100: no ammo");
+        assert!(!Gun::has_ammo(0x45, &carried, &clip, ammo_type, flags, |w| w as usize), "count < 100: no ammo");
         clip[0x45] = 100;
-        assert!(Gun::has_ammo(0x45, &carried, &clip, ammo_type, flags), "count ≥ 100 [M]");
+        assert!(Gun::has_ammo(0x45, &carried, &clip, ammo_type, flags, |w| w as usize), "count ≥ 100 [M]");
         // Sister: other weapons ignore clip[0x45] entirely.
         clip[0x45] = 0;
-        assert!(Gun::has_ammo(1, &carried, &clip, |_w| 0usize, flags), "ammo_type 0 = melee: always true");
+        assert!(Gun::has_ammo(1, &carried, &clip, |_w| 0usize, flags, |w| w as usize), "ammo_type 0 = melee: always true");
     }
 }

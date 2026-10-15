@@ -83,11 +83,16 @@ fn pickup_census_every_level_creates_and_offers_its_pickups() {
         for (kind, id, rounds, tr) in &expected {
             // Kinds 7-11 never become pickups: `Pickup_Create` intercepts them into
             // `Pickup_CreateFromSet` — a kind-0 pickup of the matrix weapon [M 0x18dda0:104-105].
+            let level_code = u32::from_str_radix(&level_name[..8], 16).unwrap_or(0);
             let (ekind, eid, erounds) = if (7..=11).contains(kind) {
                 let set_w = nf_game::pickup::PICKUP_MATRIX_ROW0[(*kind - 7) as usize];
                 let base = sim.weapons.base(set_w as usize) as u16;
                 (0u16, base, (sim.weapons.clip_size(base as usize) as i16) * 2)
-            } else { (*kind, *id, *rounds) };
+            } else {
+                // `Pickup_Create`'s level-conditional rounds override [M 0x18dda0]: 07000008's
+                // 0x2c rocket pickup is created with 4 rounds whatever the placement says (5).
+                (*kind, *id, nf_game::pickup::Pickup::create_rounds_override(level_code, *id, *rounds))
+            };
             let hit = sim.drones.pickups.iter().find(|p|
                 p.kind == ekind && p.weapon == eid && p.rounds == erounds
                 && (p.m[3][0] - tr[0]).abs() < 0.5 && (p.m[3][1] - tr[1]).abs() < 0.5 && (p.m[3][2] - tr[2]).abs() < 0.5);
@@ -138,10 +143,13 @@ fn pickup_census_every_level_creates_and_offers_its_pickups() {
             }
             let legit_refusal = match p.kind {
                 // Armour at 50 refuses; an owned weapon's ammo at cap refuses [M 0x18e650]. The
-                // slot is `Player_EquipAmmo`'s own id's ammo type [M 0x1a8d18:11-19].
+                // slot is the COMPOSED id's ammo type — `Upgrade_Weapon` first, then
+                // `Player_EquipAmmo`'s own 0x1f/0x25 remap [M 0x18e650:142-144 + 0x1a8d18:11-19;
+                // fix-pickups-ammo: the id-6 boxes credit type 1, cap 70].
                 3 => armour >= 50.0,
                 0 | 1 => !loaded || take.is_none() && {
-                    let id = nf_game::pickup::Inventory::upgrade_ammo_id(p.weapon, 0, 1) as usize;
+                    let id = nf_game::pickup::Inventory::upgrade_ammo_id(
+                        nf_game::pickup::Inventory::upgrade_weapon(p.weapon, 0, 1), 0, 1) as usize;
                     let at = sim.weapons.ammo_type(id);
                     sim.drones.inventory.carried.get(at).copied().unwrap_or(0) >= sim.weapons.ammo_cap.get(at).copied().unwrap_or(0)
                 },

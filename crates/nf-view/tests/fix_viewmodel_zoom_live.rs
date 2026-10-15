@@ -32,6 +32,9 @@ fn the_gun_tilt_divides_by_the_zoom() {
         sim.gun.weapon = 0x24; // the sniper: flags 0x4080D0 (scoped), zoom 10 [L weapon_data]
         sim.gun.switch_request = 0x24; // clear the loadout's pending switch (it would take the slot back)
         sim.aiming = true;
+        // The pad's aim (free-aim: the cursor window) — the crosshair offset below is the pad's; the mouse never
+        // enters free-aim (mouse_scope_live).
+        sim.free_aim = true;
         // The smoothed crosshair offset (BL+0x120/0x124) with the raw cursor (BL+0x118/0x11C) equal to
         // it, so `Player_AutoAim`'s ease toward the cursor holds it still while the zoom ramps.
         sim.cursor = [0.25, -0.2];
