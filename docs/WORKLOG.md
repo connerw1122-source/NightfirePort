@@ -13018,3 +13018,34 @@ docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
   trio), driving_golden 4/0 (disc-folder skips), ~40 integration bins green, probe_pylon_render
   down on the no-GPU wgpu adapter (known environment class). The 373/3/1 line above describes the
   pre-merge tree; docs/reports/driving-input-path.md carries both.
+- find-corona-creator (U-042 / G-034, branch s/find-corona-creator, cut from origin/master cf4f33cd):
+  hunting the runtime creator of class-0x45 coronas (Corona_Update's LOS-fade class). Plan: scan
+  every control_create_object caller passing 0x45 + control_funcs slot assignments across
+  ACTION.ELF (Script_CreateEntity 0x1d8968's type switch, the searchlight/light builders, the
+  vehicle/explosion code); if a creator exists port it + the LOS fade into crates/nf-game/src/
+  corona.rs with an NF_ISO test on a level that creates one, else prove the full-caller scan and
+  close U-042 as dead code.
+- find-corona-creator (14:12-14:50): the U-042/G-034 hunt is a **dead-code closure**. The class
+  byte is obj+0xFF [M Control_DeleteAllObjectsOfType 0x1349e8:11]; the dispatcher calls
+  control_funcs[class] with stride 0xC (85 entries x {update,collide,third}) [M 0x1336f8:62-64],
+  and control_funcs[0x45] = {Corona_Update 0x18da78, NULL, NULL} [M table @0x26f890]. The create
+  helpers never write +0xFF, so a raw-opcode scan of ACTION.ELF's .text (322k words) was run:
+  exactly 110 `sb …,0xFF` stores, every one an immediate class ≠ 0x45 (the 3 param-looking sites
+  are constants: addiu $a2,0x27 @0x17e93c Hurt, $a2,0x25 @0x1a9d40 SS, $a3,0x40 @0x1b2704
+  SoundTrigger); no sw@0xFC/sh@0xFE on object bases (16 hits are AI-route/menu/MPEG structs; the
+  sq-class hits are VU0 sdc2 stack spills); no memcpy into the obj+0xF0..FF window;
+  control_funcs is read-only in code (2 lw refs, 0x133184 + 0x1337f0); Script_CreateEntity
+  0x1d8968's kind switch yields classes {0x20,0x2D,0x39,0x21,0x1D,pickup,0x2F,0x32,0} only;
+  searchlight 0x22, vehicles 0x28/0x4A/0x4D/0x3B, explosion/debris 0x21/0x10; no direct
+  jal 0x18da78; DRIVING.ELF has no corona symbols. Corona_Create 0x18da00's only caller is
+  parsemap case 0xFC (0x1d04f0:525) and it makes CLASS-1 objects (+0xFF=1) — the ported static
+  path. Corona_Update's own mechanism (parity guard vs obj+0xF4, Collide_LineOfSight viewer→corona,
+  alpha +0x106 ±0x10/tick, flags bit 0x2000) documented unported. New docs/systems/corona.md;
+  U-042 + G-034 closed; corona.rs doc comment sharpened. No gameplay code change, no new test
+  (nothing to reproduce — the symptom is the absence of an object no disc path can create).
+- (15:24) Merged origin/master a2958c03 into the branch (WORKLOG both kept; conflicts: none but
+  the WORKLOG end-append). The pre-merge tree's fast-runner partials: 253 binaries run, every
+  non-environmental one green; the 6 fails are the known environmental set — disc_golden ×3
+  (slim ISO) + the no-GPU pylon set ×3 (fix_0c_pylon_live ×2 + probe_pylon_render, wgpu
+  "adapter: NotFound" — the sandbox has no GPU adapter; same set WORKLOG fix-death-retry-boost
+  recorded). The required final-tree suite restarted on the merge (totals in the report).

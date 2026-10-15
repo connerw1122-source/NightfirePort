@@ -13,10 +13,14 @@
 //! (0x1e62d8) puts bit-0x1 objects in **draw list 1** with a mirrored (−1) distance sort key — the alpha
 //! list, drawn with each leaf's own GS blend state. `+0xDC = 0`, so the distance-fade branch is skipped.
 //!
-//! `Corona_Update` 0x18da78 exists but sits in `control_funcs[69]` (class 0x45): a *runtime* corona class
-//! with a LOS alpha fade (±0x10 per `GameState+52` parity tick, bit 0x2000 while the line of sight is
-//! clear). No class-0x45 object exists at level start and no creator of the class was found in the static
-//! disassembly (U-042) — nothing to port until one shows up.
+//! `Corona_Update` 0x18da78 exists but sits in `control_funcs[0x45]` (the 85×12 update table
+//! [M 0x26f890; dispatcher stride 0xC at 0x1336f8:62-64]): a *runtime* corona class with a LOS
+//! alpha fade (±0x10 per `GameState+52` parity tick, bit 0x2000 while the line of sight is
+//! clear). **No class-0x45 creator exists on the disc** — the full caller scan (every
+//! `sb …,0xFF` class store in ACTION.ELF's text, the create-call first args, the
+//! `Script_CreateEntity` 0x1d8968 kind switch, the searchlight/light/vehicle/explosion
+//! creators, direct `jal 0x18da78`) found none — so U-042 is closed as dead code and nothing
+//! of it is ported. Full mechanism + proof: docs/systems/corona.md.
 
 use nf_formats::placement::Placement;
 
