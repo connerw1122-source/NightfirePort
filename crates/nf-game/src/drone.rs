@@ -5883,6 +5883,13 @@ pub struct Drones {
     /// drive-ptp: the pending `Boot_LoadPTPData` return — set by the handover hook, consumed by
     /// the viewer's level reload (the mission status + the stats carry, crates/nf-view/src/lib.rs).
     pub driving_return: Option<crate::ptp::DriveReturn>,
+    /// The subtitle track (subtitles-data): the game's `TXT_MSG` type-4/5 queue for the op-0x1e
+    /// script lines and the briefing intro lines, on an absolute tick axis
+    /// (`crate::subtitle::SubtitleTrack`). `enabled` is `DAT_002a37c8` — the host wires it from the
+    /// profile's Subtitles byte (`Profile::gset.subtitles`, the AV row's control 0x10000136): the
+    /// game's `Text_AddMsg` 0x1b0c30 drops type-4 adds while it is 0, so the port gates both this
+    /// track and the `script_msgs` drain on it (the fresh profile's default is Off [M profile.rs]).
+    pub subtitle_track: crate::subtitle::SubtitleTrack,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -5958,6 +5965,9 @@ impl Drones {
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
             letterbox: false, view_fade: None, view_fade_script: false, script_cam_prev: false, script_msgs: Vec::new(), text_flush: false,
+            // subtitles-data: the fresh profile's Subtitles byte is Off [M profile.rs]; the host
+            // wires the AV row (control 0x10000136) / profile flag into `subtitle_track.enabled`.
+            subtitle_track: crate::subtitle::SubtitleTrack::new(false),
             death: Default::default(), bond_fire: false, aims_idle: 0, auto_restart: true, level_exit_cold: false,
             // fix-aims20-modes-lights: BL+0x93e starts at the refill value [L ee_start_05].
             aims_raise: 1200,
@@ -6970,11 +6980,22 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // Op 0x1e: `Text_AddMsg(-1, 0, 4, Txt_BindLabel(label, 0), 0, time)` [M 0x1db2b8] —
                 // the raw label rides to nf-view (the Lang table lives above nf-game), the
                 // `drones.taken` pattern; the HUD pane shows it for `time` frames.
-                crate::nis::Request::Text { label, time } => self.script_msgs.push((label, time)),
+                // subtitles-data: the game's AddMsg gate [M 0x1b0c30 — a type-4 add with id 0
+                // passes only when DAT_002a37c8 != 0] drops the add with the option Off, so both
+                // the HUD drain and the track skip it; the track push at `self.frame` (the script
+                // tick) keeps the absolute timeline the draw code queries.
+                crate::nis::Request::Text { label, time } => {
+                    if self.subtitle_track.enabled { self.script_msgs.push((label, time)); }
+                    self.subtitle_track.push(self.frame, label, time);
+                }
                 // `Text_FlushAllSubtitles()` (0x1b15c8) from `Script_FFwd`'s skip arm [M 0x1dac78:28-29]:
                 // the pending script texts die here; the already-bound HUD lines drop on the viewer side
                 // (the `text_flush` flag the scene consumes), which keeps the game's type-4-only scope.
-                crate::nis::Request::TextFlush => { self.script_msgs.clear(); self.text_flush = true; }
+                crate::nis::Request::TextFlush => {
+                    self.script_msgs.clear();
+                    self.text_flush = true;
+                    self.subtitle_track.flush(self.frame);
+                }
                 // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
                 crate::nis::Request::Sound { id, at, src } => {
                     // `SFXStart` 0x115a68:18-20 / `SFXStart3D` 0x115bf0: a sound with id 0x172 (the NIS
