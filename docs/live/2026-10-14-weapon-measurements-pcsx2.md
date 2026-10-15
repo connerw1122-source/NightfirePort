@@ -95,3 +95,53 @@ from the Classic Bond notes in 2026-10-13-weapon-modes-pcsx2.md) switches the HU
 view model gains a **long cylindrical silencer screwed onto the end of the barrel** (dark grey tube about a third of the
 slide's length, in line with the barrel). The swap plays a short gun animation. The user on the port: "The suppressor
 still stays on the gun, but visually it's not there" (task 109m).
+
+## Which levels carry what (the port's level data, 2026-10-14 probe) and a start-loadout bug
+
+From the levels' own pickups and the guards' weapons (port probe over the 21 story levels): the SG5 0x16 only from
+guards on 05/06; the AIMS-20 0x1a from pickups + guards on 14/15/16 (its grenade rounds 0x1b as pickups on 14); the
+remote mine 0x37 as pickups on 14 (at (38.7, 0, 33.6), (-28.0, 2.7, 6.9), (33.8, 3.6, -3.0)). In the REAL game the
+start loadouts differ by level — 07000014 starts with the Delta Repeater crossbow 0x11 in hand ("3-9 Single", in a
+crawl vent); 07000015's gadget cycle is Laser → Micro-Camera → Decryptor (no stunner); 07000005's is Stunner → Laser
+→ Grapple — while the port gives nearly every level the same `[1, 2, 4a, 4e, 50, 54]` (no crossbow on 14, a stunner
+on 15). In this save's layout L2 cycles weapons (□ reloads, ○ is the mode button).
+
+## The remote mine 0x37 (07000014, picked up from the pickup at (38.7, 0, 33.6))
+
+Frames 120 ms apart:
+
+- In hand: a round mine with a red light (a second, picked-up mine shows a cyan light).
+- **Fire throws it; it sticks where it lands** — it sits motionless on the surface from the first frame it lands, no
+  bounce (the user on the port: "The remote mine bounces for some reason").
+- **The mode button (○) switches to the detonator 0x38** (held id 0x38; the 2026-10-13 table's "→0x39" is wrong): the
+  left wrist comes up showing the watch and the HUD reads "Detonate". It is reached through the mine's mode press,
+  not the gadget cycle (the user: "you have it set to the watch rather than the alternate fire of the mine").
+- **Fire on the detonator blows the mine at once** (a full-screen blast the next frame), then the view returns to the
+  mine ("Grenade").
+
+## The AIMS-20 0x1a / 0x1b (07000014, picked up in the armoury at (-32.2, 1.7–2.3, 31–35))
+
+- **The side lights:** a row of four round lights on the left side of the receiver, **lit red from the moment it is
+  drawn** (no delay) and staying lit while idle. They are a display, not decoration: with grenade rounds 0 → pattern
+  red, red, dark, red; after picking up 90 9mm rounds in Burst mode → red, dark, red, red; in Grenade mode with 4 rounds
+  → all four lit. (The user on the port: "lights on the aim 20 arent on", "The lights aren't working on the gun".)
+- **The mode press (○) only swaps when the grenade twin has ammo:** with no grenade rounds the press did nothing (held
+  stays 0x1a, "Burst"); after picking up the 0x1b rounds (4) the press swapped to 0x1b, HUD "4-0 Grenade". (The user's
+  "Ames 20 wouldn't swap modes" may be this gate if the port's give didn't fill the grenade slot — check both.)
+- **The scope (aim, L1 held):** the whole screen goes dark red with a circular reticle in the centre and green-white
+  boot text at the lower left: "COMMAND.COM / LOAD BIOS / MEMORY SET / SYSTEM STATUS / OK"; the view model is hidden.
+
+## The 06 truck driver (07000006, the truck start)
+
+The friendly driver (drone team 3, stands by the truck's cab at about (69–70, 38, 28–29)) is damageable, and **killing
+him fails the mission at once**: the "Mission Failed — REPLAY / QUIT" box appears as he dies (measured by accident:
+six P2K shots aimed at the stairs guard hit him). The port (104d-fix-06-driver) keeps him damageable; check that his
+death also fails the mission there.
+
+## The SG5 Commando 0x16 casings while walking forward (07000006, the guard's dropped SG5)
+
+Taken from the stairs guard (the SG5 is only on guards on 05/06), selected with L2, then forward + held fire; frames
+70 ms apart. The casings are **small brass shells** (about the size of the view model's front sight) ejected from the
+right side of the receiver, flying **up and to the LEFT, away from the camera**, gone off the top-left of the view
+within ~2 frames (~0.14 s). Walking forward does not bring them back across the screen or toward the camera, and they
+never get large. (The user on the port: "casings flying across my screen, like super large" — task 109l.)
