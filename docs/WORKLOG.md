@@ -10978,6 +10978,7 @@ Work Log:
 - menu_movies.rs:282 E0614 fixed (present returns (u32,u32,&[u8]) by value [M movie.rs:226]); all 203 nf-view+nf-formats test binaries build with --features nf-view/movies; 202 run: 201 ok + disc_golden's 3 allowed slim-ISO fails; PSS-data tests skip on the slim stub image by contract; docs/tools/test-suite.md gained the movies-feature note; weapon_matrix_live (>600 s with or without movies — pre-existing) flagged for the suite gate. No shared source files touched.
 - Post-merge (origin/master 6691ef9 = fix-menus-real2, whose menu_movies copy still carried the (*w,*h) bug): merged, rebuilt menu_movies/menus_flow/movie_playback_flow with movies on the final tree — 7/7, 34/34, 10/10 ok; suite restarted on the merged tree (see report).
 
+
 ## fix-save-profile
 - Started 12:32 UTC. Branch s/fix-save-profile from origin/master 1496b80. Task: port the game's memory-card profile save (unlocked missions, difficulty per mission, high scores/medals = Dossier Records, Bond moves, options, controller style) to one file per codename next to the port's config; hooks in nf-view menu.rs; tests: round trip, unlock after completing a mission, sister assertions. Layout must come from the game's save code in the decompile.
 ## fix-swim-entry (started)
@@ -11420,6 +11421,30 @@ not fit the window (14:43 deadline); the remaining families are listed in the re
 draws added; no wall-clock in Sim.
 ## fix-save-profile
 - The game's profile save ported: the six-block chain PLRS/MSSN/MPSG/GSET/CHET/BNUS [M SaveIFFBlocks 0x2c74d8 static init; L the table + the game's own 1022-byte chain in ee_snapshot InBufData 0x3416e0] with every field cited (PLRS = PlayerSetting[slot] 0x2a38c8 stride 0x158, 12 fields in LS_MakePlrSettings 0x1cd418's push order, the decode matches Input_Init 0x17edd8's defaults; GSET 905 B incl. the 219 zero dwords + the version tag 4; MPSG radar/health; CHET 3 bits; the file name IS the codename [M Menu_UpdateMessageBox 0x1f7de8]). crates/nf-game/src/profile.rs (new) + the menu hooks: the card rows after the two defaults, create/load codename, the mission_ended(Complete) save, the Records page reading the active profile. Tests: 5 module (the game's own chain decodes field-for-field) + 4 NF_ISO flow (create, the chain through the page, unlock-after-mission via nf_view::load + step_bond + mission_ended, the corrupt-file refusal); 4/4 + 5/5 on the merged tree (c606b5f). Difficulty is NOT in the save [M none of the six make fns reads GameState+0x40] — the brief's "difficulty per mission" resolves to the MSSN best scores. progress.rs: 4 fns pub(crate) + Clone (additive). Report: docs/reports/fix-save-profile.md (Live checks inside: the save chain in gdbwatch, the Records third value, the style-7 template question).
+## fix-guard-weapons (2026-10-14, branch s/fix-guard-weapons)
+
+Task 103f: check the rest of the guard fire model against the game for every
+weapon guards carry — per-weapon damage (weapon_data+0x0C), fire interval and
+burst, accuracy/spread per difficulty, distance falloff, armour absorption on
+Bond. Port what differs, citing DroneWeap_*/Drone_Fire*/Player_Hurt. Tests:
+3 weapons x 3 difficulties, hit rate over 100 shots at 10 units and damage per
+hit equal the game's model. Files: crates/nf-game/src/{drone,damage}.rs.
+
+- (15:19-17:00 UTC) Resumed on the merged master (3019d54; the prior session's uncommitted WIP
+  committed first as a7b0999). Disassembled the whole fire chain with mipsdis (DoBulletAccuracy
+  0x179740, NextBulletTime 0x179d40, BurstDelay 0x179ba8, Drone_ModBulletDamage 0x139f50,
+  Player_HandlePain 0x1902c8), read the tuning statics from ACTION.ELF + the three ee_start
+  snapshots ([L]: per-level accuracy 0x30caf0-8, Plr_DMod 0x30cc50-8, TooClose 0x30cb14=3.0 live,
+  difficulty at GameState+0x28 = 1). Fixed: the interval 60-clamp (weapons 6/10/0x0e-0x10), the
+  burst sizing draws, the BOT_getAggressionMul burst cut (12→3), the 4 missing per-shot RNG draws
+  (light orientation ×3 + sound pitch), the backshot ×2 (weapon 0x12, mode ∉ {2,0x19}, level
+  ≠ 0x700001b, |angle| < 90°, 0x30cb20), the voice-set-0xC zero-damage gate, the 0x63-0x66
+  no-modifier gate, the damage_factor difficulty-0 arm, and the 0x30cb0c→0x30cb1c citation.
+  Verified numbers: 0x0e 40/100 vs model 37.5 with every hit exactly 2.5; 0x12 43/100 vs 37.5 with
+  exactly 0.75. Test: crates/nf-view/tests/fix_guard_weapons_live.rs (3×3 matrix + TooClose sister
+  + the interval/burst fail-first). Remaining: the matrix's later phases trip the harness
+  engagement budget (some guards never engage a parked Bond); the suite restart couldn't fit the
+  window. Report: docs/reports/fix-guard-weapons.md.
 
 ## fix-fire-modes3
 - Started: branch s/fix-fire-modes3 from origin/master (8295049, weapon-matrix2 merged). Task:
@@ -11600,6 +11625,28 @@ Stage Summary:
 
 
 ---
+Task ID: 103f2-fix-guard-weapons2
+Agent: guard-weapons2 worker
+Task: fix-guard-weapons2 — the branch fails on current master: merge origin/master into s/fix-guard-weapons first; six tests fail on the merge (fix_guard_weapons_live x3: 3x3 matrix 90/100 shots, fire-rate 4/40 shots, TooClose 2.5 vs 5; master-passing: fix_progress difficulty-scale, render2 dropped-guns-dim, fix_objects death-drop; walkreal_07000001_live in batch). Find what the merge changes in the guard fire path / damage scale, fix it, keep the rest green, full suite. Files: crates/nf-game/src/{drone,bullet}.rs (+ shared-file additive hooks listed in the report).
+
+Work Log:
+- (18:20 UTC) Branch s/fix-guard-weapons2 created from origin/s/fix-guard-weapons (60b5b8e); origin/master merged (ed718f8, fix-weapon-fx-levels) — WORKLOG conflict resolved append-only (both sides kept), merge commit 5186f76. Setup reused (repo, work/, ISO, nf-queue). Reproduction next.
+- (18:16-20:00 UTC) fix-guard-weapons2 on the merged tree (5186f76). The six failures decompose: (a) the branch's
+  boot difficulty default 1 was wrong — bootup 0x1c7e78:25 stores 2 to 0x2a3790 (Ghidra `_40_4_` is DECIMAL 40;
+  `sw t0,40(s1)` @0x1c7f88), the snapshots' 1 is PTP-restore/mission-start session state [M+disasm]; reverted to 2
+  with corrected citations, fix_progress green. (b) The two drop tests: the branch's game-correct per-shot RNG
+  draws (FireWeapon 0x179268/88/ac light orientation + 0x17949c pitch) shift the death tick so the corpse lands in
+  Pickup_Update's touch radius of the parked Bond and the walk-over pickup consumes the drop (fix_objects dump:
+  drop `gone true` 0.5 units from Bond) — both tests now step Bond clear first; green. (c) The branch's own tests
+  were never finished: harness now re-parks around a stalling guard (3000-tick stall, up to 4 re-parks); TooClose
+  rewritten to the real two-band model (CombatTooClose 0x173338 backs the guard to ~8.2; the FireWeapon
+  min-range gate 0x178f68:97-102 + 0x12a960 is inert for 0x0e whose +0x08 = 0.0; deltas exactly record × DMod ×
+  (dist<3 ? 2 : 1)); fire-rate pins the tight 60 clamp with 2-round bursts (Rand(2)+1 0x179ed4 — min gap exactly
+  60, not ≥75); matrix pins health-pool round-trip deltas (1.65 double-rounds through the f32 pool). Result:
+  fire-rate + too-close green, matrix 8/9 phases (every completed per-hit delta exact; rates within tolerance);
+  the 07000005-diff3-0x16 collection remains the documented engagement-budget residual. Full suite did not fit
+  the window (background jobs die here); walkreal's walk phase exceeds one foreground chunk. Report:
+  docs/reports/103f2-fix-guard-weapons2.md (live checks inside: the point-blank ×2 arm, the boot default page).
 Task ID: 103k2-fix-weapon-anims2
 Agent: weapon-anims2 worker
 Task: fix-weapon-anims2 — the three suite failures the s/fix-weapon-anims merge held (gadget_select's weapon-cycle-on-a-gadget, gadget_laser's parked beam, fix_weapon_sounds' silent sweep cells); fix code or justify test windows from the game's code.
@@ -12056,6 +12103,62 @@ Work Log:
 - Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
+
+---
+Task: fix-guard-weapons3
+Agent: worker (sandbox web-2cf47bf2)
+Task: the HELD merge of s/fix-guard-weapons2 + master (+ fix-aim-raise2) fails two master-passing tests: fix_guard_weapons_live::the_3x3_hit_rate_and_damage_matrix_matches_the_game ("07000005.bin diff 3 weapon 0x16: hit rate 0.520 vs model 0.975") and nf-game ai_live::guard_takes_cover_like_the_game ("UnderCoverAim lasted 90 (live 37)" — the known RNG-stream-shift symptom). Find the difficulty-3/0x16 hit-rate gap (the TooClose, first-moved, sighting-time gates vs master's Bond/drone state) and the moved Rand_* draw; match the game's draw order exactly. Files: crates/nf-game/src/{drone,bullet}.rs.
+
+Work Log:
+- 22:47 UTC: base s/fix-guard-weapons2 (e66aa360) checked out, origin/master merged (e10f157a — WORKLOG conflict resolved append-only). Branch s/fix-guard-weapons3 created. Reproduction next.
+- 22:48-23:40 UTC: both failures root-caused and fixed. (a) The RNG shift: gw2's four new per-shot
+  fire-path draws (the flash-sprite orientation trio FRand(2π)/FRandHalf×2 [M FireWeapon 0x179268-0x1792ac —
+  but gated inside `if (lVar9 != 0)` on the kind-0x40 flash-sprite object create 0x179248, which the port's
+  sim never performs] and the Sound_Play3D pitch `Rand_Rand(500)` 0x17949c — audio-side) shifted the shared
+  stream off the live-calibrated one: `ai_live::guard_takes_cover_like_the_game`'s cover-type pick
+  (`cover_anim` mode 6's `rng.rand(2)`, drone.rs) flipped lean-out 176 (51f @1.5 = 37 ticks) to step-out 178
+  (90f @1.0 = 90). Removed both sites with citations; master's 5-draw/shot stream restored; the cover test is
+  back at 37. (b) The matrix 0x16/diff-3 0.52-vs-0.975: NOT a fire-path bug — the game's own NewSighting gate
+  (`DoBulletAccuracy` 0x179740: `+0x270 >= 120 && !+0x41`; the port matches) auto-misses ~60 shots per sight
+  loss, and the harness's stall re-parks (Bond teleports) plus the pre-fix parks WITHOUT a line-of-sight check
+  put gated shots inside the collected samples (the merged stream re-rolled which cells got hit; guard 8 fired
+  450 shots with seen=0 at a wall). Harness fixes: LOS-checked parks, per-shot gate-clean filtering
+  (seen_ticks >= 120 — the model's domain), 200 shots/cell (a 100-shot ±0.10 2σ sample hit the 0.12 tolerance
+  on the re-rolled stream). nf-view fix_guard_weapons_live 3/3, nf-game ai_live 35/35 on the fixed tree.
+Task: fix-melee
+Agent: worker (sandbox web-461a08d8)
+Task: melee — fists 0x01 and any melee weapon vs the game: punch range/arc, damage, left/right alternation (flag 0x80000), strike frame (+0x44 = 6), knockouts vs kills, civilians' reaction (274's chain merged), sounds, stealth takedowns. Files: crates/nf-game/src/drone.rs + the fire path in scene.rs (small). Branch s/fix-melee from origin/master (eb52fb56).
+
+Work Log:
+- 22:20 UTC: branch created from origin/master (eb52fb56), pushed. work/ + ISO + nf-queue already present from the prior sandbox; setup skipped.
+- 22:20-22:59: the melee audit, every fact tagged. [L ee_start_05.bin record 1]: fists 5.0 dmg / 1.75 range / speed 1.0 / +0x44 = 6 strike frame / +0x40 = 30 refire / flags68 0x880A2 / ammo 0, +0x91 = 0; fire scripts 0x060006de (op-1 0x142 @ frame 7) / 0x060006dd (@ frame 9) len 23 each [D 07000005.bin dump]; sound 0x142 hearing weight 0.0 vs 0x403's 65 [L SFXOutputData]. Two port bugs found + fixed, each with a fail-first NF_ISO test: (1) the fire path fed EVERY weapon's hearing the 0x403 gunshot — a punch alerted the room at weight 65 (the game's punch is silent to the AI; the whoosh weighs 0) — scene.rs hearing_id now 0x142 for weapons 1/0x4b/0x4d; fail-first shown (hearer loudness 58.24 → 0.0). (2) punch_impact missed the fail-reason-6 arm [M 0x145f28:69-73] (unarmed non-team-1 on every level but 09/0a → ch 0x60) and had the team arms' SendHurtMessage/KO order swapped (team 1 KOs before the scream; non-team-1 screams even when the punch was the kill) — restructured 1:1, the level-7 guest tests still green. Verified-matching (no change): the damage 7.5 = 5·1.0·1.5 through the real path, the +0x44 = 6 release, the KO 0x42 (not 0x44), head→torso for 1/0x4a..0x4d [M 0x145558], armour 0 (DefaultInit 0x14b300:566 the only writer), no casing (+0x6C & 0x40 clear + ammo_data[0] mesh 0), the 0x80000 alternation (one Rand(100) > 50 per punch), interval 30, the whoosh op-1, AlertStatusSet(2). 5 new tests in crates/nf-view/tests/fix_melee_live.rs (all green). Suite restarted (the first run had died silently).
+- 23:00-23:50: the punch-neighbor suites green after the restructure (guests 3/3, party 8/8, death 15/15, nf-game 268/268); origin/master merged (4ea550b7, WORKLOG both sides kept); the full 286-binary suite ran on the final tree in foreground chunks (the sandbox kills background jobs — the nohup/setsid runner died twice): **1125 passed / 5 failed (3 disc_golden allowed + 2 pre-existing pylon) / 66 ignored**; weapon_matrix_live 345 s no timeout. Report docs/reports/fix-melee.md committed; ntfy delivered on the wget fallback (curl/python3 429). DONE.
+## fix-pickups-ammo — s/fix-pickups-ammo (task 107e, started 22:37 UTC 2026-10-14)
+- Started from origin/master 4ea550b7. Scope: the pickup layer vs the game — caps, owned-weapon
+  takes, dropped guns, ammo boxes, the take sound + message, auto-switch.
+- Audit: read Pickup_Handler 0x18e650, Pickup_Update 0x18e148, Pickup_Create 0x18dda0,
+  Player_EquipWeapon 0x1a8a58, Player_EquipAmmo 0x1a8d18, DroneWeap_DropWeapon 0x17a2a0,
+  Script_HideObj 0x1db808 + a disc-wide placement census (a scratch example, not committed).
+  Five divergences found, all fixed failing-first:
+  1. The take sound for kinds 0/1 must be FORCED 0xF5 [M 0x18e650 LAB_0018ee80] — the disc
+     places them with 0x13F (the 07000002 sniper, the 07000008 rockets, the 07000005 id-6
+     boxes) and 0xFFFF (the 0700000c/d 0x1f boxes); the port played the placement's word.
+  2. The ammo path's id is the COMPOSITION upgrade_ammo_id(upgrade_weapon(raw)) [M
+     0x18e650:142-144 + 0x1a8d18:11-19] — the id-6 boxes (07000001/05) credit the P2K's
+     type-1 pool (cap 70 [L weapon_data: record 6 is type 2]), not type 2 (cap 90).
+  3. Pickup_Create's 07000008 && id 0x2c → rounds = 4 override [M 0x18dda0] — the vault's
+     rocket placement says 5 [D]; the old port granted 4 loaded + 1 spare (4/5 vs 4/4).
+  4. A hidden pickup is still takeable — Pickup_Update's take path never reads obj+0xF0 [M];
+     the AR drop's invisible 0x1B grenade pile [M 0x17a2a0:110-112] was never collected.
+  5. The kind-4 label (the placement's param 6 → +0x34) rides the take and is the message when
+     non-zero [M 0x18e650 case 4] — 0700000b's id-0x47 item carries 0x2000036 [D].
+- Tests: nf-game pickup units 12/12 (3 new), nf-view fix_pickups_ammo_live 4/4 (new, NF_ISO:
+  the boxes' type-1 pool + the raw-type message, the drop taken twice to the cap, the vault
+  rocket 4/4 + the forced sound, the hidden pile take, the 0700000b label message), the census
+  (fix_pickups_remainder_live) green over the levels with the override + the composed-id
+  refusal model, fix_pickups_trace_live 2/2, fix_auto_switch_live 6/6, fix_hud_live 6/6,
+  fix_objects_live 2/2.
+
 ---
 Task: fix-ammo-pane2
 Agent: worker (sandbox web-2cf47bf2)
