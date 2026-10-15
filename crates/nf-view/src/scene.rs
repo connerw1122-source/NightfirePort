@@ -2038,8 +2038,19 @@ impl Sim {
             }
         }
         self.drones.weapon_switch_request = None;
-        if (self.gun.switch_state == 0 || self.gun.switch_state == 3)
-            && self.gun.reload_state == 0 && !fire_busy {
+        // fix-switch-after-cold-load: the request write is allowed while idle, while the DRAW plays
+        // (the port's state 3 ≈ the game's states 3+4) and during the retarget's reverse (the port's
+        // state 2): `Player_WeaponChange` 0x1a6f80:24-40 refuses only the view states {1, 3, 5, 6,
+        // 7, 8, 9, 0xb, 0xd, 0xe, 0xf, 0x10} — states 0 / 2 / 4 (the draw anim playing) are allowed,
+        // and `Player_SetWeaponAnimObj` 0x1a2e38 case 4 polls `+0x63` every tick mid-draw and
+        // retargets (case 2's tail applies the LATEST +0x63 at the stop). The pre-fix gate (idle
+        // only) dropped a number-key press during the level-start draw forever (switch_to is
+        // per-tick). The cycle arms keep the idle gate below (the game's states 0xa/0xc have no
+        // port counterpart).
+        let idle = self.gun.switch_state == 0;
+        let can_request = (idle || self.gun.switch_state == 2 || self.gun.switch_state == 3)
+            && self.gun.reload_state == 0 && !fire_busy;
+        if can_request {
             let owned = self.drones.inventory.owned.clone();
             let carried = self.drones.inventory.carried.clone();
             let clip = clip_view(&self.weapons, &self.drones.inventory.clip);
@@ -2058,14 +2069,6 @@ impl Sim {
             // and restores the remembered TWIN verbatim (line 113); the cycle walk carries the twin
             // step (0x1a6f80:179-198) — `cycle` takes &mut self for the marker clear.
             let base_of = |w: u8| weapons.base(w as usize) as u8;
-            // fix-switch-after-cold-load: the request write is allowed while the DRAW plays (the port's
-            // state 3 ≈ the game's states 3+4): `Player_WeaponChange` 0x1a6f80:24-40 refuses only the
-            // view states {1, 3, 5, 6, 7, 8, 9, 0xb, 0xd, 0xe, 0xf, 0x10} — state 4 (the draw anim
-            // playing) is allowed, and `Player_SetWeaponAnimObj` 0x1a2e38 case 4 polls `+0x63` every
-            // tick mid-draw and retargets. The pre-fix gate (idle only) dropped a number-key press
-            // during the level-start draw forever (switch_to is per-tick). The cycle arms keep the
-            // idle gate (the game's states 2/0xa/0xc have no port counterpart).
-            let idle = self.gun.switch_state == 0;
             let target = if let Some(id) = input.switch_to {
                 if id != self.gun.weapon && owned.get(id as usize).copied().unwrap_or(false)
                     && weapons.first_person(id as usize) != 0 { Some(id) } else { None }
