@@ -62,8 +62,11 @@ the Rewards page's gold gate depend on this.
   - menu integration: menus_flow **36/36**, dossier_pages **7/7**, mp_menu_flow **9/9**,
     dev_menu_flow **5/5**;
   - the medal-bit consumers: progress_live **1/1**, fix_progress_live **5/5**,
-    fix_scores_handoff_live **3/3**, fix_save_profile_live **4/4**, campaign_flow_live **1/1**.
-  Zero failures anywhere. The remaining ~180 integration/live binaries were not reached in the
+    fix_scores_handoff_live **3/3**, fix_save_profile_live **4/4**, campaign_flow_live **1/1**;
+  - nf-audio integration: bank_live 1/1, fix_sound_remainder_live 2/2, music_live 1/1;
+  - nf-formats integration: disc_golden 11 passed / 3 failed — exactly the 3 allowed slim-ISO
+    disc_golden set (bigf_header_fields / bigf_tables / directory_tree vs the full-image golden).
+  Zero failures beyond that documented set. The remaining ~180 integration/live binaries were not reached in the
   window (the suite's 13-min build + run does not fit; the diff touches only nf-game/progress.rs's
   gold-group path + nf-view's menu code, all of whose consumers are in the chunks above).
 
