@@ -128,4 +128,7 @@ Docs: `docs/systems/driving-ai.md` gained §8 (the wiring, evidence-tagged) and 
 
 ## ntfy failed
 
-(recorded below only if all three fallbacks fail — see the final section.)
+All three fallbacks ran, in order, at 2026-10-15T23:38Z and all hit the ntfy.sh daily-message quota:
+1. curl → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; …"}`
+2. python urllib → `HTTPError: HTTP Error 429: Too Many Requests`
+3. wget → exit code 8 (the same 429 body).
