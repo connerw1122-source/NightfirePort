@@ -4,7 +4,7 @@
 //! checked against the live layout in `work/ee_start_05.bin` [L] (5 doors on 07000005: 4 `Door_Locked_3/4`
 //! sliders without an anim and lock channel 200, 1 `Door_UNLocked` swing door with a 3-key anim).
 //!
-//! Not ported: the door→portal links (`Door_Link2Portal`, block 0x21), the text labels 0x2000003 / 0x200000b
+//! Not ported: the text labels 0x2000003 / 0x200000b
 //! (`Door_Update`'s unlock note, `Door_DoMsg` — no text system yet), and the collision-proxy list of
 //! `Door_ReactToHit` (`obj+0xD0`, as U-041): the proxy scan is stood in for by the same bounding-sphere test
 //! `Door_Update`'s proximity check uses.
@@ -191,6 +191,19 @@ pub struct Door {
 }
 
 impl Door {
+    /// `Door_IsClosed` (0x1367b0) [M]: a kind-1 door (`obj+0xF6`) always reads closed; a grouped
+    /// door (ext+0x6A != 0) reads `DoorGroupsStates[g] == 2` (the `Doors_Calc` OR); the rest read
+    /// `obj+0xF4 == CLOSED` exactly — OPENING/CLOSING leaves do not block. `group_states` is
+    /// `Doors::group_states` (the game's 0xCA-byte `DoorGroupsStates`); a group past the table
+    /// reads open (the game would read past its own table — none exists on our levels).
+    pub fn is_closed(&self, group_states: &[u16]) -> bool {
+        if self.kind == 1 { return true; }
+        if self.group != 0 {
+            return group_states.get(self.group as usize).copied().unwrap_or(0) == CLOSED;
+        }
+        self.state == CLOSED
+    }
+
     /// The pose at `pos01` (`Door_Interp`'s write; the create path always takes the spline mode).
     fn pose_at(&self, pos01: f32, spline: bool) -> Option<Mat4> {
         self.keys.as_ref().and_then(|k| interp(k, 0, self.frames, pos01 * self.frames as f32, spline))
@@ -245,6 +258,13 @@ fn visible_actors(actors: &[DoorActor]) -> impl Iterator<Item = (V3, f32)> + '_ 
 pub type SoundEvent = (u16, V3);
 
 impl Doors {
+    /// The per-door `Door_IsClosed` (0x1367b0) snapshot, indexed by `list` position — what the cel
+    /// walk consumes each frame through the portal links (`Vision_Recurse` 0x1e82e0 reads
+    /// `Door_IsClosed(portal+0xC)`; fix-door-portal-links).
+    pub fn closed_flags(&self) -> Vec<bool> {
+        self.list.iter().map(|d| d.is_closed(&self.group_states)).collect()
+    }
+
     /// `Door_Create` over the main map's placements. `path_blocks` is the level's 0x19 payloads (its
     /// `path_blocks()`); `object` resolves a placement to `(glist hashcode, gfx sphere centre, radius)`.
     pub fn create(
