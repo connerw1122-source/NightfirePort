@@ -12494,3 +12494,9 @@ Work Log (fix-sg5-casings):
 - (05:00-05:02) The fix: casing.rs `eject_bone` (the game's row-major bone transform, RNG order preserved bit-exact; `eject` delegates — guards unchanged), drone.rs `Drones.eject_gun: Option<[[f32;4];4]>` (own line) consumed in `fire_player`, scene.rs one additive hook: `self.drones.eject_gun = Some(self.gun_matrix())` (the port's Player_PositionGun 0x1a3b40).
 - (05:02-05:04) Regression sweep on the exact final tree (origin/master 2cbfd7e3 + fix): 13 binaries (all the fire/weapon/casing suites + nf-game/nf-view unit bins) — 47 passed, 0 failed, 6 ignored. Pushed ec1c5b0b. THE SANDBOX RESET at 05:04 (rootfs wiped); the branch survived on origin.
 - (05:10-05:25) Re-cloned s/fix-sg5-casings (ec1c5b0b intact), re-validated the pushed tree: rebuilt the env (rustup, ALSA prefix, work-slim + ISO), re-ran the sweep plus the weapon-asset/FX suites on the re-cloned tree — result below. Report: docs/reports/fix-sg5-casings.md.
+
+## fix-driver-air2 (2026-10-15, branch s/fix-driver-air2) — started 05:41 UTC
+Task: redo the 06 truck driver fix from unmerged s/fix-driver-air (109j) without regressing the 05 gate guard's cover timing (ai_live guard_takes_cover_like_the_game: UnderCoverAim lasted 90, live 37). Merge origin/s/fix-driver-air, read its report, gate the driver-only parts the way the game does (TruckDriverInit sets them only on the driver; check the 0x140968 settle's callers). Both fix_driver_air_live and ai_live must pass; full suite green.
+
+Work Log (fix-driver-air2):
+- (05:41) Branch s/fix-driver-air2 created from origin/master (ca2d63f5). Next: merge 109j, reproduce the ai_live failure on the merged tree before fixing.
