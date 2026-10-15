@@ -1189,6 +1189,16 @@ impl RamSave {
         self
     }
 
+    /// Attaches a pre-built mission snapshot — `fail_restart_save`'s serve carries the states in the
+    /// shape the game's `Mission_Init(level, 1)` leaves the `.data` in (previous parts kept,
+    /// current + future reset [M 0x182270:68-129]) because the port applies the carried snapshot
+    /// AFTER its `Mission_Init` latch (drone.rs), while the game's `Player_RamLoad` never touches
+    /// the states.
+    pub fn with_mission_snapshot(mut self, m: crate::mission::MissionSave) -> RamSave {
+        self.mission = Some(m);
+        self
+    }
+
     /// `Player_RamLoad` (0x1957a8), `IsWarmReset != 0` arm [M]: the whole body is gated on the warm flag,
     /// so a cold load (`save = None`) restores nothing. Restores health (`Player_SetHealth`), armour
     /// (+0x8B0), the saved weapon id (+0x934) and the four channel arrays. The `boost` argument (the death

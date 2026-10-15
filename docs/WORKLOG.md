@@ -12072,6 +12072,14 @@ Work Log:
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
 
+---
+Task ID: 109b-fix-stunner-press
+Agent: stunner-press worker
+Task: fix-stunner-press — the stunner 0x4a only fires on key release (playtest 1014-1725: "It only really activates on releasing the key"). Ground truth [D docs/live/2026-10-14-weapon-measurements-pcsx2.md]: the real stunner activates on the press, tip lights blue while held, swings back on release, no charge spent with no target. Find the fire path (Player_WeaponFiring 0x1a5460 for 0x4a/0x4b, held vs press, +0x68 flags) and the port's gate; fix so it fires on press, the beam/dart draws, and a guard hit is stunned (msg 7 taser path may be unported).
+
+Work Log:
+- (01:38 UTC) Branch s/fix-stunner-press created from origin/master bf2bd176 and pushed. Setup reused (repo, work/, ISO, nf-queue). Decompile + port rounds next.
+
 ## fix-aims20-modes-lights (2026-10-15, branch s/fix-aims20-modes-lights)
 - Task: AIMS-20 0x1a/0x1b mode swap on the B press (the twin rules, the shared clip slot) and the four side lights on the view model (BL+0x93a gate, 0x1a5460:264/314, the aims_light slots) — playtest 1014-1725: "Ames 20 wouldn't swap modes", "lights on the aim 20 arent on".
 - Started: ground truth docs/live/2026-10-14-weapon-measurements-pcsx2.md (AIMS-20 section), decomp Player_WeaponFiring 0x1a5460 (the 0x2000132 slot-8..11 light block), bldata.md +0x93A/+0x93E. Suite started in background.
@@ -12493,3 +12501,37 @@ Task: redo the ladder-into-water fix without breaking the walk-on grab — the m
 
 Work Log:
 - 05:2x UTC: branch s/fix-ladder-water2 from origin/master (2cbfd7e3), merged origin/s/fix-ladder-water (WORKLOG both kept), pushed.
+## fix-restart-health (2026-10-15, branch s/fix-restart-health) — started
+- (03:31 UTC) Branch created from origin/master d2ce47e5 and pushed. Setup reused (repo, work/, ISO, nf-queue). Task: after death the restart must give full health — find the game's restart/checkpoint health (ResetMap_LevelToLoad cold restart, Player_Init*, RamSave/RamLoad warm checkpoint) and fix the port. Files: crates/nf-game/src/{player,death,progress}.rs.
+
+## fix-restart-health (2026-10-15, branch s/fix-restart-health) — final
+- Evidence: EVERY SP level load ends in an unconditional `Player_RamSave` [M Player_InitWeapon 0x1a7ef8:325], so the buffer holds the POST-load state — on a cold load that is `Player_Init`'s health 100 / armour 0 [M 0x1910f8:128-138; the RamLoad body is gated on IsWarmReset 0x1957a8:9]. The fail-Restart's `Player_RamLoad(Bond,1)` [M 0x216618:19-21] floors the BUFFER health at 50.0 [L ACTION.ELF 0x30cc34-3c ×3] and the disasm writes the max back into the buffer (swc1 0x5fc at 0x1958e4) before Player_SetHealth (jal 0x1960b8 at 0x1958e8). Game model: cold-level restart = FULL 100; otherwise max(last save, 50).
+- The bug: the viewer's entry_save was the save the level was LOADED with — None after a cold load — and the restart served a zeroed buffer: 50.0 always (the playtest's "half health"); the merged test pinned it (old test 3 asserted 50.0, shown passing on the pre-fix tree this session).
+- Fix: nf_view::entry_checkpoint_save (the :325 mirror, captured after EVERY load) + nf_view::fail_restart_save (the serve: the entry checkpoint + the 50.0 floor + the mission payload in the Mission_Init(level,1) shape — previous parts kept, current+future reset [M 0x182270:68-129], since the port applies the carry AFTER its init latch); RamSave::with_mission_snapshot (player.rs, additive). The zero-buffer test re-pointed to the post-load entry checkpoint (health 100).
+- Tests: fix_restart_health_live.rs 2/2 through the real input path (cold 05 die→✕→menu→restart = 100.0 full; 07 full entry = 100.0, sub-50 entry = 50.0 the game's floor; no re-fail over 360 ticks); failing-first = compile errors on the pre-fix src + the old test's 50.0 pass pinned. Neighbours on the merged tree (d28d6f07, the turn-stutter merge): death/restart/carry/chain/campaign/progress/save-profile/stutter/ghosting/fps binaries + nf-game lib = 215 passed, 0 failed. Full suite: the nohup was reaped (the sandbox kills background jobs); the foreground chunks are the covered set — next session: the full total.
+- Report: docs/reports/fix-restart-health.md (live checks: the buffer 0x2b9440+0x5FC = 100 after a cold load, BL+0x894 = 100 after a cold-level Restart, 50.0 only for a sub-50 entry; --bond spots). Shared files: none beyond player.rs (task) + lib.rs's reload branch (the viewer's own).
+
+---
+Task ID: 109b-fix-stunner-press
+Agent: stunner-press worker
+Task: fix-stunner-press — the stunner 0x4a "only really activates on releasing the key" (playtest 1014-1725).
+
+Work Log:
+- Traced the game's fire path: with the stunner's refire denormal-0 [L record +0x40] the game fires every held tick and restarts the fire script every tick via AnimScriptAdd (the view state is 0xb, never 9 — the restart gate never applies) [M 0x1a5460/0x1a3c70/0x1c6d40/0x1c1600]. The port's sim does the same — the press side was right; the user's symptom is the unported tase (nothing happens to the guard) plus the held frame-1 pose question.
+- Ported the msg-7 tase path: DealWithObjHit's 0x4a/0x4c → msg 7 [M 0x13fff0:269-300], HandleImpact case 7 (the +0xBC accumulator vs 2·health, the fall) [M 0x1469b8:111-176], the taser family TASER 0x4a / STUNNED 0x4b / STUNNED_RECOVER 0x4c with their enter/tase/timer arms [M 0x162b98/0x162eb0/0x1630b8], RecoverTime's taser arm = 1200 ticks [M 0x147188].
+- The family swallows its own messages (HandleImpact's default returns 1 [M 0x1469b8:366]) — the port's GLOBAL arms (alarm/sound/shout/anim-done) pulled the tased guard back into AIM_STAND_FIRE 0x68 (found by backtrace); the family now intercepts before them.
+- Tests: fix_stunner_press_live — the press contract (state 9 + 0x600048a + 1 round, the release rings out at 1.5x, the passive regen noted), the tased guard (falls at hold tick 20, no damage, alert 2, stays down), the P2K sister. 3 passed. nf-game lib 160/160, nf-view lib 8/8.
+- Open: the full suite did not fit the window (run before merge); the held frame-1 pose needs the main agent's render; the weapon drop (ChangeWeapon 1/6) not modelled (Drone::weapon is the model id); the first-tase-tick re-entry and the behaviour-0x32 arm skipped.
+- Report: docs/reports/fix-stunner-press.md. Files: crates/nf-game/src/drone.rs, crates/nf-view/tests/fix_stunner_press_live.rs (+ the probe_stunner.rs scratch).
+
+Stage Summary:
+- Branch s/fix-stunner-press @ c85f6796 + the report commit; the tase path ported end to end; the press verified on the real input path.
+## fix-sg5-casings (2026-10-15, branch s/fix-sg5-casings) — started 04:40 UTC
+Task: SG5 casings fly huge across the screen while walking forward (user 05 playtest 1014-1725: "bullet casings flying across my screen, like super large"). Suspects: world-space spawn + camera moving into them, wrong scale, near plane. First read docs/live/2026-10-14-weapon-measurements-pcsx2.md. Plan: repro via real input path (nf_view::load + Sim::step_bond), find Bullet_init_casing 0x12fde0 in the decomp, fix the draw/scale.
+
+Work Log (fix-sg5-casings):
+- (04:40-05:00) The decomp read: `Bullet_init_casing_ex` 0x12f678 line 160 — `Vec_Copy2(bone_pos, obj+0x30, obj+0x40)` re-positions the casing at `AnimGetBoneWorldTrans(shooter, weapon_datum)`'s VECTOR out (the view-model gun bone, on the record's +0xE0 offset [L ee_start_05: SG5 (0.028, 0.203, −0.244)]); the port ejected at `camera` — the EYE (scene.rs passed the fire origin, drone.rs `casings.eject(..., from, ...)`). `FRAME_RATE_MUL` = 60/FRAME_RATE = 1 at 60 Hz [M 0x17d2b8] — the velocity model was already right; only the origin (and the bone basis) were wrong.
+- (05:00) FAIL-FIRST on the pre-fix tree: the walked SG5 burst ejected at eye distance 0.021/0.071/0.091 (the assertion `>= 0.15` failed — "super large" is the shell drawn 2 cm from the eye). Post-fix 0.309/0.273/0.257 with the measured up-left drift, 2/2 green (fix_sg5_casings_live, real input path, dev give 0x16, 07000005).
+- (05:00-05:02) The fix: casing.rs `eject_bone` (the game's row-major bone transform, RNG order preserved bit-exact; `eject` delegates — guards unchanged), drone.rs `Drones.eject_gun: Option<[[f32;4];4]>` (own line) consumed in `fire_player`, scene.rs one additive hook: `self.drones.eject_gun = Some(self.gun_matrix())` (the port's Player_PositionGun 0x1a3b40).
+- (05:02-05:04) Regression sweep on the exact final tree (origin/master 2cbfd7e3 + fix): 13 binaries (all the fire/weapon/casing suites + nf-game/nf-view unit bins) — 47 passed, 0 failed, 6 ignored. Pushed ec1c5b0b. THE SANDBOX RESET at 05:04 (rootfs wiped); the branch survived on origin.
+- (05:10-05:25) Re-cloned s/fix-sg5-casings (ec1c5b0b intact), re-validated the pushed tree: rebuilt the env (rustup, ALSA prefix, work-slim + ISO), re-ran the sweep plus the weapon-asset/FX suites on the re-cloned tree — result below. Report: docs/reports/fix-sg5-casings.md.

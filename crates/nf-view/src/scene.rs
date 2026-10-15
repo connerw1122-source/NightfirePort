@@ -3168,6 +3168,11 @@ impl Sim {
                             _ => 0x403,
                         };
                         let sound = self.sfx.as_ref().map(|t| t.get(hearing_id)).unwrap_or(nf_formats::sfx::SfxHearing { id: hearing_id, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false });
+                        // fix-sg5-casings [M Bullet_init_casing_ex 0x12f678:160]: the game ejects the
+                        // shell at the view-model gun bone's world position (`AnimGetBoneWorldTrans`
+                        // VECTOR out) — hand the posed gun matrix (`Player_PositionGun` 0x1a3b40's
+                        // port) to the next fire_player so the casing spawns at the gun, not the eye.
+                        self.drones.eject_gun = Some(self.gun_matrix());
                         self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
                         // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:248-253]: a `+0x6C & 4` shot hands
                         // the view to the projectile — `Player_ChangeSubState(owner, 10)`, `BLData+0x878 =
