@@ -120,3 +120,10 @@ ricochet tags), `crates/nf-game/tests/ai_live.rs` (the seed re-pick + the doc), 
 tests/impact_remainder_live.rs` (the new fail-first test), `docs/WORKLOG.md`, this report.
 Shared-file hooks: `drone.rs` only — two comment blocks + the env block move (listed per the task's
 shared-file rule). No game bytes, no credentials committed.
+
+## ntfy failed
+
+All three fallbacks failed with the daily-quota 429:
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python3 urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: no output, non-zero (the same 429).
