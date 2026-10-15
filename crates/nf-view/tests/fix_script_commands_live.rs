@@ -137,6 +137,9 @@ fn text_command_queues_the_subtitle_label() {
     assert!(scene.sim.as_ref().unwrap().drones.scripts.lib.contains_key(&0x0600_0961), "0x06000961 in 07000500's lib");
     {
         let sim = scene.sim.as_mut().unwrap();
+        // subtitles-data: the fresh profile's Subtitles byte is Off [M profile.rs] — the game's
+        // `Text_AddMsg` 0x1b0c30 drops type-4 adds while it is 0. This test pins the ON behaviour.
+        sim.drones.subtitle_track.enabled = true;
         sim.drones.scripts.spawn_once(0x0600_0000, 0x0600_0961, [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]]);
     }
     for _ in 0..100 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }

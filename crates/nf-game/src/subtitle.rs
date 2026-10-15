@@ -180,11 +180,11 @@ pub fn intro_script_for(movie_code: u32) -> Option<u32> {
 }
 
 fn read_u16(cmds: &[u8], p: usize) -> Option<u16> {
-    cmds.get(p..p + 2).map(|b| u16::from_be_bytes([b[0], b[1]]))
+    cmds.get(p..p + 2).map(|b| u16::from_le_bytes([b[0], b[1]]))
 }
 
 fn read_u32(cmds: &[u8], p: usize) -> Option<u32> {
-    cmds.get(p..p + 4).map(|b| u32::from_be_bytes([b[0], b[1], b[2], b[3]]))
+    cmds.get(p..p + 4).map(|b| u32::from_le_bytes([b[0], b[1], b[2], b[3]]))
 }
 
 /// The decode lens of the ops the intro scripts use (nf_formats::nis's lens, replicated for the
@@ -280,9 +280,10 @@ mod tests {
     /// chain orders same-tick texts.
     #[test]
     fn from_script_walks_waits_and_texts() {
-        // op 5 Wait(183), op 0x1e Text(label 0x06000068, time 1132), op 4 End — the disc's
-        // 0x06000961 opening (fix-script-commands_live's `1e 68 00 00 06 6c 04 1e` [D]).
-        let cmds: Vec<u8> = vec![0x05, 0x00, 0xb7, 0x00, 0x1e, 0x06, 0x00, 0x00, 0x68, 0x04, 0x6c, 0x01, 0x04, 0x00, 0x2c, 0x01];
+        // The disc's 0x06000961 opening (fix-script-commands_live's `1e 68 00 00 06 6c 04 1e` [D],
+        // little-endian fields): Wait(183), Text(label 0x06000068, time 1132), End. The Wait's
+        // release tick is 184 (the pre-increment clock reaches 183 on the 184th update).
+        let cmds: Vec<u8> = vec![0x05, 0xb7, 0x00, 0x06, 0x1e, 0x68, 0x00, 0x00, 0x06, 0x6c, 0x04, 0x1e, 0x04, 0x2c, 0x01, 0x04];
         let nis = Nis { hashcode: 0x0600_0961, camera: false, loop_start: 0, length: 300, streams: vec![nf_formats::nis::Stream { first_key: 0, last_key: 0, commands: cmds }], keys: Vec::new() };
         let t = SubtitleTrack::from_script(&nis, true);
         assert_eq!(t.active_subtitle(183), None, "sister: the Wait(183) releases on the next tick");
