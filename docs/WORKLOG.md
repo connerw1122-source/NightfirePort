@@ -12912,3 +12912,10 @@ the binaries the window fit.)
   5/0, fix_weapon_modes_live 6/0, fix_samurai_fire_live 3/0, fix_weapons_all_live 4/0,
   weapon_switch_live 2/0 (nf-game), tuning_live 2/0 (nf-game). The fast suite on the final tree
   running (started 12:58); fix_switch_after_cold_load_live passed inside it as well.
+- find-corona-creator (U-042 / G-034, branch s/find-corona-creator, cut from origin/master cf4f33cd):
+  hunting the runtime creator of class-0x45 coronas (Corona_Update's LOS-fade class). Plan: scan
+  every control_create_object caller passing 0x45 + control_funcs slot assignments across
+  ACTION.ELF (Script_CreateEntity 0x1d8968's type switch, the searchlight/light builders, the
+  vehicle/explosion code); if a creator exists port it + the LOS fade into crates/nf-game/src/
+  corona.rs with an NF_ISO test on a level that creates one, else prove the full-caller scan and
+  close U-042 as dead code.
