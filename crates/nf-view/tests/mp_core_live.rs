@@ -241,6 +241,6 @@ fn the_mp_load_spawns_bond_and_runs_the_clock() {
     // Sister 2: the clock is bit-deterministic — a fresh match accumulates the same f32 value.
     let mut m2 = MpMatch::init(MpSettings::deathmatch(0x07000023));
     m2.settings.started = true;
-    for _ in 0..60 { m2.update(1.0 / 60.0, false); }
+    for _ in 0..60 { m2.update(1.0 / 60.0, false, &mut nf_game::drone::Rng::new(1)); }
     assert_eq!(m2.game.clock, c60, "the clock is bit-deterministic: the same 60-tick fold");
 }
