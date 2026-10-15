@@ -6626,7 +6626,17 @@ impl Scene {
                 // index `n_doors + k`, and `pick_base − door_base` = max door-or-ss index + 1.
                 let dpos = s.drones.doors.list.get(k).map(|d| d.matrix[3])
                     .or_else(|| s.drones.sss.list.get(k - s.drones.doors.list.len()).map(|q| q.matrix[3]));
-                if dpos.is_some_and(|p3| !vis_room([p3[0], p3[1], p3[2]])) { p[l.door_base as usize + k] = FAR; continue; }
+                // A door linked to a portal (`build_LinkDoors2Portals` 0x1c8ac8, `obj+0xF0 |= 0x8000`) straddles the
+                // two cels its portal joins (`Collide_StraddleCels` 0x1eac98) and draws while EITHER is visible — the
+                // shut door is what you see from the near side once its portal stops the walk (render, 07000001: the
+                // shoji vanished and the sky showed through the doorway when only its centre's cel counted).
+                let linked: Vec<usize> = self.cel_graph.portal_doors.iter().enumerate()
+                    .filter(|(_, d)| **d == Some(k as u32))
+                    .filter_map(|(e, _)| self.cel_graph.portals.get(e))
+                    .flat_map(|pe| [pe.cel_a, pe.cel_b]).collect();
+                let straddle_seen = !linked.is_empty() && vis.is_some_and(|v| self.cel_graph.room_to_cell.iter().enumerate()
+                    .any(|(r, c)| c.is_some_and(|c| linked.contains(&c)) && v.get(r).copied().unwrap_or(false)));
+                if !straddle_seen && dpos.is_some_and(|p3| !vis_room([p3[0], p3[1], p3[2]])) { p[l.door_base as usize + k] = FAR; continue; }
                 p[l.door_base as usize + k] = match s.drones.doors.list.get(k) {
                     Some(d) => d.matrix,
                     None => s.drones.sss.list.get(k - s.drones.doors.list.len()).map_or(FAR, |q| q.matrix),

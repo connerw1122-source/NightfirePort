@@ -128,6 +128,21 @@ fn a_shut_portalled_door_hides_the_room_behind_it_on_07000001() {
     let sides = { let pl = nf_view::gpu::extract_frustum(vp); [pl[0], pl[1], pl[2], pl[3]] };
     let game = scene::portal_visible_cels_game_from_cell_doors(&scene.cel_graph, cell, eye, &depth0, &sides, Some(&closed)).expect("the game mask runs");
     assert!(!game[dest], "the game mask also keeps the shut door's room out");
+    // The shut door itself still draws: it straddles both cels of its portal (`Collide_StraddleCels` 0x1eac98),
+    // so the near cel's visibility keeps it (render, 07000001: with only its centre's cel counted the shoji
+    // vanished and the sky showed through the doorway). The palette is the room mask the renderer feeds it.
+    {
+        let g = &scene.cel_graph;
+        let room_vis: Vec<bool> = g.room_to_cell.iter().map(|m| m.map(|c2| vis[c2]).unwrap_or(true)).collect();
+        let (layout, _) = scene.skin_layout();
+        let (pal, _) = scene.skin_palette(&layout, None, 0.0, nf_view::scene::ViewOpts::default(), Some(&room_vis));
+        let m = pal[layout.door_base as usize];
+        assert!(m[3][1] > -9999.0, "door 0 is drawn while shut and its room is hidden (got {:?})", m[3]);
+        // Sister: with no room of either side visible, the door is culled like any object.
+        let none = vec![false; room_vis.len()];
+        let (pal0, _) = scene.skin_palette(&layout, None, 0.0, nf_view::scene::ViewOpts::default(), Some(&none));
+        assert!(pal0[layout.door_base as usize][3][1] <= -9999.0, "no visible side: the door culls");
+    }
     // Sister: the block holds from the OTHER side too — both portal halves carry the door.
     let ctr = quad_centre(&p3.corners);
     let back = [ctr[0] - p3.n_fwd[0] * 2.0, ctr[1] - p3.n_fwd[1] * 2.0, ctr[2] - p3.n_fwd[2] * 2.0];
