@@ -107,3 +107,17 @@ nf-view (render spots; the hand-off is data-only — nothing draws):
 3. `--bond` at the 07000005 truck ride's end (the gate_guard_truck spots still apply): the run
    should end in the exit to 07000006 exactly as before the change (the hook is inert off the
    exit latch; levels_sweep_live re-verified every level's 600 ticks).
+
+## ntfy failed
+
+All three fallbacks were tried in order; the ntfy.sh topic's daily message quota is exhausted
+(HTTP 429 from the server each time — the transport itself was reachable):
+
+1. curl: exited 0 but the response body was
+   `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. python urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. wget: exit 8 (server error response), no body printed.
+
+The one-line result that would have been sent: `fix-scores-handoff: done — the level-end
+NewScoresRef score-row production ported (finish_level + the tick-end hook), NF_ISO truck-ride
+test + sisters green, report on the branch`.
