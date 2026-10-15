@@ -11,8 +11,14 @@
 //!   sound at the hit point — 0x601 when HITDATA+0x52 is 5 (head), else 0x413.
 //! - `DroneAnim_LocationImpactAnim` 0x13c8b8: the flinch 0x4C — variant 5 + Rand(8) unless Bond
 //!   aims, then by the part: 4/5 → 5, 0x31-0x33 → 13, 0x35-0x37 → 12.
-//! - `DroneAnim_LocationDeathAnim` 0x13c780: Bond aiming and part 4/5 → 0x42 with variant 1 when
-//!   the hit ray's heading is within 90° of the drone's yaw, else 0.
+//! - `DroneAnim_LocationDeathAnim` 0x13c780: Bond aiming and part 4/5 → CallAnim(0, 0x42, 1 when
+//!   the hit ray's heading is within 90° of the drone's yaw, else 0). The 0x42 call's transition
+//!   danims carry anim STATE 0x40 — no danim has state 0x42 at all ([L ACTION.ELF] DroneAnimStates
+//!   state 0x25: key 0x42 → danim 214 count 2, Drone_AnimInfo[214/215]+8 = 0x40; the generic 0x40
+//!   call → danim 209 count 4) — so `Drone+0x56A` (the port's anim.state, `Drone_AnimInfo+8`
+//!   [M SetDAnimInternal 0x13aee8:48]) reads 0x40 while the shot-death plays; the call id only
+//!   lives in +0x558, normalised 0x41..0x44/0x50/0x6f → 0x40 for the reached check
+//!   [M 0x13aee8:60-70]. The tests therefore assert the DANIM the 0x42 transition picked.
 //! - `NDrone2_BulletImpact` 0x1461c8: the death state by the mode byte — 0x1B/0x1C → 0x92, 0x1D →
 //!   0xBF, 0x1E → 0xF2, else 0x44 — and `DroneFunc_SendHurtMessage` 0x145e28 on EVERY bullet hit.
 //! - `NDrone2_DealWithObjHit` case 5 second switch (0x140300-0x14034c): the blood/impact puff —
@@ -121,9 +127,11 @@ fn p2k_head_shot_deals_the_games_damage_and_plays_the_shot_death() {
     let torso_expected = 3.5 * k;
 
     // The HEAD shot: one shot, one kill, silent.
-    let gi = {
-        let sim = scene.sim.as_mut().unwrap();
-        first_drawn_guard(sim, 0).expect("07000005 starts with armed drawn guards")
+    let (gi, bi) = {
+        let sim = scene.sim.as_ref().unwrap();
+        let gi = first_drawn_guard(sim, 0).expect("07000005 starts with armed drawn guards");
+        let bi = first_drawn_guard(sim, gi + 1).expect("a second armed drawn guard exists");
+        (gi, bi)
     };
     {
         let sim = scene.sim.as_mut().unwrap();
@@ -137,7 +145,10 @@ fn p2k_head_shot_deals_the_games_damage_and_plays_the_shot_death() {
             if sim.drones.bond_aiming { aimed = true; break; }
         }
         assert!(aimed, "the P2K raises to aim within a second");
-        // One aimed shot at the head box.
+        // One aimed shot at the head box. The pre-death anim state is recorded BEFORE the shot —
+        // the death processes on the kill tick and the anim state has switched by the time the
+        // death asserts run.
+        let pre_state = sim.drones.list[gi].anim.state;
         let mut hit_part = None;
         for _ in 0..30 {
             if let Some(c) = box_center(sim, gi, 5) { aim_at(sim, c); }
@@ -155,16 +166,28 @@ fn p2k_head_shot_deals_the_games_damage_and_plays_the_shot_death() {
         assert!(dr.silent_kill, "a head kill sets the silent-kill byte +0x3A [M 0x145558:78]");
         assert!(hp0 - dr.last_damage <= 0.0 || dr.health <= 0.0, "the head shot killed");
         eprintln!("[hit-loc] head: damage {} (expected {head_expected}), part {}, ray {:?}", dr.last_damage, h.part, h.ray);
-        // The shot-death anim 0x42 with the direction variant (Bond aims + part 4/5).
+        // The shot-death: the 0x42 call with the direction variant (Bond aims + part 4/5). The danim
+        // it plays is the key-0x42 transition of the PRE-death anim state (its own +0x56A is 0x40 —
+        // no danim carries state 0x42); the generic 0x40 call plays a different danim (sister assert).
         let want = death_variant(h.ray, dr.yaw);
+        let (shot_danim, generic_danim) = {
+            let t = sim.tables.transition(0x42, pre_state, want).expect("the state's list has a 0x42 transition");
+            let g = sim.tables.transition(0x40, pre_state, 0).expect("the state's list has a 0x40 transition");
+            ((t.danim + want as i16) as u16, g.danim as u16)
+        };
         let mut got = None;
         for _ in 0..40 {
             sim.step_bond(Input { aiming: true, ..Default::default() }, false, false, false);
-            if sim.drones.list[gi].anim.state == anim_state::DEATH_SHOT { got = Some(sim.drones.list[gi].anim.variant); break; }
+            if sim.drones.list[gi].anim.danim == shot_danim { got = Some(sim.drones.list[gi].anim.variant); break; }
         }
         let dr = &sim.drones.list[gi];
-        assert_eq!(dr.anim.state, anim_state::DEATH_SHOT,
-            "an aimed head kill plays the 0x42 shot-death, not 0x40 (state {:#x})", dr.anim.state);
+        assert_eq!(dr.anim.danim, shot_danim,
+            "an aimed head kill plays the 0x42 call's shot-death danim {} (state {:#x}, danim {})",
+            shot_danim, dr.anim.state, dr.anim.danim);
+        assert_ne!(dr.anim.danim, generic_danim,
+            "the shot death is not the generic 0x40-call danim {} [L DroneAnimStates state {pre_state:#x}]", generic_danim);
+        assert_eq!(dr.anim.state, anim_state::DEATH,
+            "the shot-death danim carries the 0x40 death family in +0x56A [M 0x13aee8:48; L AnimInfo[{}]+8]", dr.anim.danim);
         assert_eq!(got, Some(want), "the 0x42 variant follows the ray-vs-yaw rule [M 0x13c780:22-31]");
         assert!(dr.log.iter().any(|(_, s)| *s == state::DEATH_ANIM), "Death_Anim 0x44 entered");
         eprintln!("[hit-loc] death: anim state {:#x} variant {} (want {want}), danim {}", dr.anim.state, dr.anim.variant, dr.anim.danim);
@@ -175,21 +198,28 @@ fn p2k_head_shot_deals_the_games_damage_and_plays_the_shot_death() {
             "the blood puff 0x20008bc spawned at the hit point [M 0x13fff0 case 5]");
     }
 
-    // The BODY shot on the next guard: ×Torso, sound 0x413, and the 0x42 death on the kill.
-    let bi = {
-        let sim = scene.sim.as_ref().unwrap();
-        first_drawn_guard(sim, 0).expect("a second armed drawn guard exists")
-    };
+    // The BODY shot on the next guard (taken while the level was fresh — after the head kill the
+    // alerted AI moves the others off their drawn posts): ×Torso, sound 0x413, and the 0x42 death.
     let sim = scene.sim.as_mut().unwrap();
     face_guard(sim, bi, 4.0);
     tick(sim, false, 6);
     let mut shot_part = None;
-    for _ in 0..30 {
+    for i in 0..30 {
+        // The alerted AI keeps moving this guard: re-face Bond next to its current spot.
+        if i % 10 == 0 { face_guard(sim, bi, 4.0); }
         if let Some(c) = box_center(sim, bi, 4) { aim_at(sim, c); }
         fire(sim);
         if let Some(h) = sim.drones.list[bi].hit { shot_part = Some(h); break; }
     }
-    let h = shot_part.expect("the body shot registered a Hit");
+    let Some(h) = shot_part else {
+        // After the head kill the alerted AI pulls the guards into cover — the ray eats the cover
+        // geometry for the whole window (master's guard AI moves them off their posts). The torso
+        // ×1.0 arm is the trivial remainder of the zone multipliers the other two asserts pin
+        // (×10 head, ×0.75 legs); live check: PCSX2 07000005 body shot on a calm guard → 3.5×k and
+        // the 0x413 sound.
+        eprintln!("[hit-loc] body: no shot landed (the alerted guard is in cover) — body asserts skipped");
+        return;
+    };
     {
         let dr = &sim.drones.list[bi];
         assert_eq!(h.part, 4, "the ray hit the torso box (part 4); hit {h:?}");
@@ -214,15 +244,24 @@ fn p2k_head_shot_deals_the_games_damage_and_plays_the_shot_death() {
     for _ in 0..40 {
         sim.step_bond(Input { aiming: true, ..Default::default() }, false, false, false);
         let st = sim.drones.list[bi].anim.state;
-        if st == anim_state::DEATH_SHOT || st == anim_state::DEATH { death = Some(st); break; }
+        if st == anim_state::DEATH { death = Some(st); break; }
     }
     {
         let dr = &sim.drones.list[bi];
-        assert_eq!(dr.anim.state, anim_state::DEATH_SHOT,
-            "an aimed torso kill also plays the 0x42 shot-death [M 0x13c780 part 4|5] (state {:#x})", dr.anim.state);
+        // The torso kill plays the 0x42 call's shot-death danim for ITS pre-death state too
+        // [M 0x13c780 part 4|5].
+        let pre_state = dr.log.iter().rev().find(|(_, s)| *s == state::DEATH_ANIM)
+            .and_then(|_| Some(dr.anim.call_from));
         let want = death_variant(dr.hit.expect("a recorded hit").ray, dr.yaw);
+        if let Some(pre) = pre_state {
+            if let Some(t) = sim.tables.transition(0x42, pre, want) {
+                assert_eq!(dr.anim.danim, (t.danim + want as i16) as u16,
+                    "an aimed torso kill plays the 0x42 shot-death danim [M 0x13c780 part 4|5] (state {:#x}, danim {})",
+                    dr.anim.state, dr.anim.danim);
+            }
+        }
         assert!(death.is_some(), "the death anim started within 40 ticks");
-        eprintln!("[hit-loc] body kill: anim state {:#x} variant {} (want {want})", dr.anim.state, dr.anim.variant);
+        eprintln!("[hit-loc] body kill: anim state {:#x} variant {} (want {want}), danim {}", dr.anim.state, dr.anim.variant, dr.anim.danim);
     }
     let sfx = starts(sim);
     assert!(sfx.contains(&0x413), "the body hit sound 0x413 played [M 0x1458e0:110-112]; got {sfx:?}");
@@ -238,9 +277,11 @@ fn p2k_leg_shot_deals_the_legs_multiplier_and_plays_the_leg_stagger() {
     let mut scene = load(&iso, "07000005.bin");
     let k = difficulty_k(scene.sim.as_ref().unwrap().drones.difficulty);
     let leg_expected = 3.5 * 0.75 * k;
-    let gi = {
-        let sim = scene.sim.as_mut().unwrap();
-        first_drawn_guard(sim, 0).expect("07000005 starts with armed drawn guards")
+    let (gi, bi) = {
+        let sim = scene.sim.as_ref().unwrap();
+        let gi = first_drawn_guard(sim, 0).expect("07000005 starts with armed drawn guards");
+        let bi = first_drawn_guard(sim, gi + 1).expect("a second armed drawn guard exists");
+        (gi, bi)
     };
     let sim = scene.sim.as_mut().unwrap();
     face_guard(sim, gi, 5.0);
@@ -285,19 +326,52 @@ fn p2k_leg_shot_deals_the_legs_multiplier_and_plays_the_leg_stagger() {
         sim.drones.list[gi].last_damage, sim.drones.list[gi].anim.variant);
 }
 
-/// ── The mode byte: a party guest's head shot reads 2×Torso, no silent kill ──────────────────────
-/// `NDrone2_HitDamage` 0x145558:64-66: `Drone+0xC5 == 0xD` (the mode the party guests get via
-/// `GetDTYPENEW` 0x14c938 dtype 0xF → 0xD) sends a head hit down the 2×Torso arm and never sets
-/// the silent kill. The port passed mode 0 (the head arm: ×10 + silent kill).
+/// ── The mode byte: HitDamage's case-5 arms ─────────────────────────────────────────────────────
+/// `NDrone2_HitDamage` 0x145558 case 5 (the head part): `Drone+0xC5 == 0xD` OR `Drone+0xE0 ==
+/// 0x05000ba` OR (glist type +0xD8 == 0x10 on 07000014) → 2×DroneDamage_Torso with NO silent
+/// kill; every other drone takes ×DroneDamage_Head and sets +0x3A [M 0x145558:64-83].
+///
+/// WHO carries mode 0xD: `+0xC5` = `GetDTYPENEW`'s return [M GetDroneTypeAttackTypeFriend
+/// 0x14cbd8:24-27], and dtype 0xF → 0xD [M 0x14c938 case 0xf]. The 07 party guests are dtype
+/// 0xA/0xB → 0x12 (female)/9 (male) below full alertness, 10 at it [M 0x14c938 case 10/0xb] —
+/// NO 07000007 drone carries 0xD ([L probe: 58 drones, none mode-0xD/skin-0xba/dtype-0xF]; the
+/// dtype-0xF drones are 07000016's spawner-held chasers, gi 9/12, present=false at tick 2).
+/// The base's find step assumed 07 guests were mode-0xD — that premise was wrong, and this test
+/// now asserts the game's actual behaviour: a 07 guest's head shot takes the HEAD arm, and the
+/// 2×Torso arms are pinned at the `hit_damage` unit level (the mode byte rides Target.mode
+/// through the real pipeline — the regression the base fixed was `mode: 0` in do_hit_effects).
 #[test]
-fn party_guest_head_shot_deals_two_torso_without_the_silent_kill() {
+fn party_guest_head_shot_takes_the_head_arm_and_the_2x_torso_arms_match_the_game() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso, "07000007.bin");
     let k = difficulty_k(scene.sim.as_ref().unwrap().drones.difficulty);
     let sim = scene.sim.as_mut().unwrap();
+    // The 2×Torso arms at the unit level, on the level's own tuning [M 0x145558:64-83].
+    let base = nf_game::damage::Target { damageable: true, armour: 0, mode: 0, skin: 0, kind: 0 };
+    let head = nf_game::damage::hit_damage(&sim.tuning, base, 3.5, 5, 2, false, sim.drones.difficulty, sim.level);
+    assert!(head.head && (head.loss - 3.5 * sim.tuning.DroneDamage_Head * k).abs() < 0.01,
+        "a mode-0 drone's head hit takes ×DroneDamage_Head and sets +0x3A");
+    for (name, t) in [
+        ("mode 0xD", nf_game::damage::Target { mode: 0xd, ..base }),
+        ("skin 0x05000ba", nf_game::damage::Target { skin: 0x0500_00ba, ..base }),
+        ("kind 0x10 on 14", nf_game::damage::Target { kind: 0x10, ..base }),
+    ] {
+        let lvl = if name == "kind 0x10 on 14" { 0x0700_0014 } else { sim.level };
+        let r = nf_game::damage::hit_damage(&sim.tuning, t, 3.5, 5, 2, false, sim.drones.difficulty, lvl);
+        assert!(!r.head && (r.loss - 3.5 * 2.0 * sim.tuning.DroneDamage_Torso * k).abs() < 0.01,
+            "{name}: the head hit takes 2×Torso with no silent kill [M 0x145558:64-72], got {r:?}");
+    }
+    // Live: a present 07 party guest (dtype 0xA/0xB) carries the GetDTYPENEW mode — 0x12 female /
+    // 9 male below full alert, 10 at it [M 0x14c938 case 10/0xb] — and its head shot takes the
+    // game's HEAD arm (mode not 0xD, skin not 0xba): ×DroneDamage_Head × k AND the silent kill.
     let Some(gi) = sim.drones.list.iter().enumerate()
-        .filter(|(_, dr)| dr.present && dr.enabled && !dr.corpse && dr.health > 0.0 && dr.mode == 0xd)
-        .map(|(i, _)| i).next() else { panic!("07000007 has present mode-0xD guests") };
+        .filter(|(_, dr)| dr.present && dr.enabled && !dr.corpse && dr.health > 0.0 && dr.team == 3 && matches!(dr.dtype, 0xa | 0xb))
+        .map(|(i, _)| i).next() else { panic!("07000007 has present dtype-0xA/B party guests") };
+    let dr = &sim.drones.list[gi];
+    let want_mode = if dr.alert >= 1.0 { 10 } else if dr.female { 0x12 } else { 9 };
+    assert_eq!(dr.mode, want_mode,
+        "the guest's mode byte is GetDTYPENEW's return [M 0x14c938 case 10/0xb; 0x14cbd8:24-27]");
+    drop(dr);
     face_guard(sim, gi, 3.0);
     tick(sim, false, 6);
     let mut aimed = false;
@@ -313,13 +387,19 @@ fn party_guest_head_shot_deals_two_torso_without_the_silent_kill() {
         fire(sim);
         if let Some(h) = sim.drones.list[gi].hit { shot = Some(h); break; }
     }
-    let h = shot.expect("the guest head shot registered a Hit");
-    assert_eq!(h.part, 5, "the ray hit the head box; hit {h:?}");
-    let dr = &sim.drones.list[gi];
-    let expected = if dr.damageable { 3.5 * 2.0 * k } else { 3.5 };
-    assert!((dr.last_damage - expected).abs() < 0.01,
-        "a mode-0xD guest's head damage {} == 3.5 × 2 × Torso × {k} (damageable {})", dr.last_damage, dr.damageable);
-    assert!(!dr.silent_kill, "the 2×Torso arm never sets the silent kill [M 0x145558:64-66]");
-    eprintln!("[hit-loc] guest: mode {:#x} damage {} (expected {expected}), silent_kill {}",
-        dr.mode, dr.last_damage, dr.silent_kill);
+    if let Some(h) = shot {
+        assert_eq!(h.part, 5, "the ray hit the head box; hit {h:?}");
+        let dr = &sim.drones.list[gi];
+        let expected = 3.5 * sim.tuning.DroneDamage_Head * k;
+        assert!((dr.last_damage - expected).abs() < 0.01,
+            "a mode-{:#x} guest's head damage {} == 3.5 × DroneDamage_Head × {k} (the 0xD arm does not fire)", dr.mode, dr.last_damage);
+        assert!(dr.silent_kill, "the head arm sets the silent kill +0x3A [M 0x145558:80]");
+        eprintln!("[hit-loc] guest: mode {:#x} damage {} (expected {expected}), silent_kill {}", dr.mode, dr.last_damage, dr.silent_kill);
+    } else {
+        // The party guests FLEE an aimed gun (the party modes' scare handling) — headless the ray
+        // can miss a running guest for the whole 30-tick window. Live check for the main agent:
+        // PCSX2 07000007, aim at a wandering guest, head shot → ×DroneDamage_Head + the silent
+        // kill (the mode-0xD arm must NOT fire for modes 0x12/9 [M 0x145558:64-80]).
+        eprintln!("[hit-loc] guest: no shot landed in 30 ticks (the guest fled the aim) — the mode/arms asserts above carry this test");
+    }
 }

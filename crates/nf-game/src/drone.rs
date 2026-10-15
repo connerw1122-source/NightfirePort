@@ -6050,22 +6050,6 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     if hit.damage > 0.5 && d.weapons.hit_flags(b.weapon as usize) & 0x180 == 0 {
                         self.audio.play3d(if part == 5 { 0x601 } else { 0x413 }, hit.point, None);
                     }
-                    // `NDrone2_DealWithObjHit` case 5's blood/impact puff (0x13fff0 second switch,
-                    // 0x140300-0x14034c): Gas_Init(3.0, 6.0, cel, HIT+0x40, 0, 0, 0x20008bc, 5, -1,
-                    // 0xffffff00) — gated on the UNALIGNED f32 at weapondef+0x06 > 0 (bytes [class,
-                    // pad, min-range lo/hi]; the class byte non-zero makes the denormal positive),
-                    // skipped for the explosives 0x2b / 0x34-0x37; the stun guns 0x32/0x33 use mesh
-                    // 0x200026e with (1.0, 17.0), no gate and no flag (0x14031c). The default arm's
-                    // puff gets gas flags |= 8 [M 0x14034a]. Life: the game's 11th Gas_Init arg is
-                    // dropped by the decompiler at every site (gas.rs module doc) — 0.5 s [S]; the
-                    // packed colours: start -1 (white opaque), end 0xffffff00.
-                    let wdef6 = d.weapons.records.get(b.weapon as usize)
-                        .map_or(0f32, |r| f32::from_le_bytes(r[6..10].try_into().unwrap()));
-                    if matches!(b.weapon, 0x32 | 0x33) {
-                        self.gas.init_ex(0x0200_026e, hit.point, 0.0, [0.0; 3], 1.0, 17.0, 5, [0xff; 4], 0xffff_ff00, 0.5);
-                    } else if wdef6 > 0.0 && !matches!(b.weapon, 0x2b | 0x34..=0x37) {
-                        self.gas.init_ex(0x0200_08bc, hit.point, 0.0, [0.0; 3], 3.0, 6.0, 5, [0xff; 4], 0xffff_ff00, 0.5);
-                    }
                     let rng = &mut self.rng;
                     let dr = &mut self.list[i];
                     dr.hit_by_player = true; // +0x2B4 = the player [M 0x145bd0; fix-actors]
@@ -6109,22 +6093,30 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // NOT what characters show: the anim-coll hit writes HITDATA+0x50 = 0
                     // [M Collide_Jointy 0x1ec180:125/173] and `Effect_Create` 0x1ce688:52 returns
                     // unless `material & 0x3f != 0` — no Effect_Bullet contact on a person. The flesh
-                    // visual is the VICTIM's own: `NDrone2_DealWithObjHit` 0x13fff0 case 5 puffs
+                    // visual is the VICTIM's own: `NDrone2_DealWithObjHit` 0x13fff0 case 5's second
+                    // switch puffs at the hit point for every weapon outside the explosives, the
+                    // DEFAULT arm gated on the unaligned f32 at weapondef+0x06 > 0
+                    // [M 0x13fff0 switchD_001400e0 default arm: `0.0 < *(float *)(weapondef + 6)`]:
                     // `Gas_Init(3.0, 6.0, obj+0x20, HITDATA+0x40, 0, 0, 0x20008bc, 5, 0xffffffff,
-                    // ~0, life 0x3c)` at the hit point for every weapon outside {0x2b, 0x34..0x37}
-                    // with damage > 0, and the Phoenix Samurai bolt (0x32/0x33) puffs 0x200026e at
-                    // 1.0/16.0 instead (no damage gate on its case) [M 0x13fff0:235-256; the life
-                    // 0x3c from the disassembly `sw $v0, ($sp)` at 0x140404/0x140460]. Only the blood
-                    // block sets the gas obj's +0xf0 |= 8 — a draw flag the port's Gas doesn't model
-                    // [S; documented deviation]. No shared-RNG draws (the gas pool's counter stand-in
-                    // — the same discipline as the port's other puff sites).
+                    // 0xffffff00)` — start white opaque, end white with alpha 0 — and the default
+                    // arm's gas obj gets +0xf0 |= 8 (a draw flag the port's Gas doesn't model
+                    // [S; documented deviation]); the Phoenix Samurai bolt (0x32/0x33) puffs
+                    // 0x200026e at 1.0/16.0 instead (0x41800000, NO wdef6 gate on its case)
+                    // [M 0x13fff0:235-256]. The life is the 11th Gas_Init arg the decompiler drops
+                    // at every site: the disassembly's `sw 0x3c` = 60 ticks [M 0x140404/0x140460].
+                    // The `hit.damage > 0` gate is master's stand-in for the case-5 shooter flow
+                    // (BU+0x30 != 0 → the victim's +0xac health > 0 gate — DealWithObjHit runs
+                    // BEFORE HandleImpact applies the damage, so a kill still puffs; `damage > 0`
+                    // covers the no-damage grazes the port's Hit records).
+                    let wdef6 = d.weapons.records.get(b.weapon as usize)
+                        .map_or(0f32, |r| f32::from_le_bytes(r[6..10].try_into().unwrap()));
                     let victim_puff = match b.weapon {
                         0x32 | 0x33 => Some((1.0, 16.0, 0x0200_026e)),
-                        w if !matches!(w, 0x2b | 0x34 | 0x35 | 0x36 | 0x37) && hit.damage > 0.0 => Some((3.0, 6.0, 0x0200_08bc)),
+                        w if !matches!(w, 0x2b | 0x34 | 0x35 | 0x36 | 0x37) && hit.damage > 0.0 && wdef6 > 0.0 => Some((3.0, 6.0, 0x0200_08bc)),
                         _ => None,
                     };
                     if let Some((s0, s1, mesh)) = victim_puff {
-                        self.gas.init_ex(mesh, hit.point, 0.0, [0.0; 3], s0, s1, 5, [0xff, 0xff, 0xff, 0xff], 0, 60.0);
+                        self.gas.init_ex(mesh, hit.point, 0.0, [0.0; 3], s0, s1, 5, [0xff, 0xff, 0xff, 0xff], 0xffff_ff00, 60.0);
                     }
                 }
                 (_, Some(w)) => {
