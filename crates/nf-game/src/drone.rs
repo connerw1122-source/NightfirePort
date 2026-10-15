@@ -5960,6 +5960,27 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         let scale = if flags70h & 4 != 0 { radius } else { 1.0 };
                         self.pending_blasts.push((hit.point, radius, damage, usize::MAX, b.weapon, script, scale));
                     }
+                    // fix-flesh-impacts: the victim's flesh puff. The bullet's own contact effect is
+                    // NOT what characters show: the anim-coll hit writes HITDATA+0x50 = 0
+                    // [M Collide_Jointy 0x1ec180:125/173] and `Effect_Create` 0x1ce688:52 returns
+                    // unless `material & 0x3f != 0` — no Effect_Bullet contact on a person. The flesh
+                    // visual is the VICTIM's own: `NDrone2_DealWithObjHit` 0x13fff0 case 5 puffs
+                    // `Gas_Init(3.0, 6.0, obj+0x20, HITDATA+0x40, 0, 0, 0x20008bc, 5, 0xffffffff,
+                    // ~0, life 0x3c)` at the hit point for every weapon outside {0x2b, 0x34..0x37}
+                    // with damage > 0, and the Phoenix Samurai bolt (0x32/0x33) puffs 0x200026e at
+                    // 1.0/16.0 instead (no damage gate on its case) [M 0x13fff0:235-256; the life
+                    // 0x3c from the disassembly `sw $v0, ($sp)` at 0x140404/0x140460]. Only the blood
+                    // block sets the gas obj's +0xf0 |= 8 — a draw flag the port's Gas doesn't model
+                    // [S; documented deviation]. No shared-RNG draws (the gas pool's counter stand-in
+                    // — the same discipline as the port's other puff sites).
+                    let victim_puff = match b.weapon {
+                        0x32 | 0x33 => Some((1.0, 16.0, 0x0200_026e)),
+                        w if !matches!(w, 0x2b | 0x34 | 0x35 | 0x36 | 0x37) && hit.damage > 0.0 => Some((3.0, 6.0, 0x0200_08bc)),
+                        _ => None,
+                    };
+                    if let Some((s0, s1, mesh)) = victim_puff {
+                        self.gas.init_ex(mesh, hit.point, 0.0, [0.0; 3], s0, s1, 5, [0xff, 0xff, 0xff, 0xff], 0, 60.0);
+                    }
                 }
                 (_, Some(w)) => {
                     b.dead = true;

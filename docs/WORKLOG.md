@@ -12121,3 +12121,31 @@ Work Log:
   and crates/nf-view/tests/weapon_switch_live.rs + docs/reports/fix-samurai-fire.md + docs/reports/fix-cutscene-actors.md
   arrived from the merges themselves. Report: docs/reports/fix-blast-scripts2.md (the render spots
   for the main agent + the live checks).
+
+---
+Task ID: 108d-fix-flesh-impacts
+Agent: fix-flesh-impacts worker
+Task: fix-flesh-impacts — player bullets hitting characters must spawn the game's own contact effect: every contact goes through Bullet_CollisionHandler 0x12ce80 → Effect_Create 0x1ce688 with HITDATA+0x50's material; the port's drone-hit arm only runs NDrone2_DoHitEffects 0x1458e0 (damage + the 0x601/0x413 hit sounds, no visual). Also settle material 0x10 (docs/fields: flesh/none vs effect.rs GLASS) via the EffectInfo table 0x3037c0, the flesh pass-through rule (0x800 / 0x10 [M 0x12ce80:136-141]), and the same for guard bullets hitting Bond.
+
+Work Log:
+- (00:44 UTC) Setup reused (repo, work/, ISO, nf-queue). Branch s/fix-flesh-impacts created from origin/master (88cba630) and pushed with this entry.
+- (00:45-02:15 UTC) The research flipped the premise: a character hit reports HITDATA material 0
+  [M Collide_Jointy 0x1ec180:125/173], so Effect_Create's guard [M 0x1ce688:52] skips the bullet's
+  own contact effect on people — the port's absence was correct. Material 0x10 = GLASS (windows;
+  the pass-through rule 0x12ce80:136-141 + the row 0x10 dump [L 0x3037c0+0x10·0x88] settle it; the
+  docs' "0x10 = flesh/none" needs the correction). The flesh visual is the VICTIM's own puff [M
+  NDrone2_DealWithObjHit 0x13fff0:235-256]: Gas_Init(3.0, 6.0, 0x20008bc, kind 5, white, life
+  0x3c = 60 — the stack arg from the disassembly 0x140404/0x140460) at the hit point, per the
+  SHOOTER's weapon id (outside {0x2b, 0x34..0x37}, damage > 0; the Samurai bolt 0x32/0x33 →
+  0x200026e at 1.0/16.0); Bond's handler has no puff at all [M 0x194458]. Ported in
+  update_player_bullets' drone-hit arm (drone.rs only, no shared files, no shared-RNG draws).
+- (02:15 UTC) Pushed 83583795. The 4 new NF_ISO tests pass (the failing-first body-shot test +
+  the per-hit count, wall-unchanged and Samurai-bolt sisters). The full suite did NOT fit the
+  window (the background runner dies between tool calls here; the foreground chunks need ~30 min)
+  — the first item for the next message. Report: docs/reports/fix-flesh-impacts.md.
+
+Stage Summary:
+- Bullets on people now show the game's flesh puff (0x20008bc, 3.0→6.0, 60 ticks, at the hit
+  point) on every guard/civilian drone hit by a player bullet, the Samurai bolt's energy puff
+  instead, no effect on Bond (the game's own rule), walls unchanged, material 0x10 settled as
+  GLASS with the decompile + table evidence.
