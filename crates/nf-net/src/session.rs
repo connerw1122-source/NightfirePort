@@ -194,6 +194,10 @@ struct Peer {
     last_send_ms: u64,
     /// What the peer has acked of our input sends (contiguous tick).
     their_ack: Option<u32>,
+    /// Highest contiguous tick WE have acked to this peer (the sliding base
+    /// for our ack scan — recv_ticks may be pruned below this, so the scan
+    /// must never restart from start_tick).
+    our_ack: u32,
     /// Ticks we have received from the peer (for the ack we send them).
     recv_ticks: BTreeSet<u32>,
     remote_hashes: HashMap<u32, u64>,
@@ -226,6 +230,10 @@ pub struct Session<T: Transport> {
     last_hash: Option<(u32, u64)>,
     last_ready: Option<u32>,
     stalled: bool,
+    /// Stalled/Resumed are detected by the app's sequential `ready_inputs`
+    /// queries and flushed as events on the next `poll`.
+    pending_stall: Option<(u32, Vec<u8>)>,
+    pending_resume: Option<u32>,
     keepalive_seq: u32,
     host_timed_out: bool,
     listen_emitted: bool,
@@ -253,6 +261,8 @@ impl<T: Transport> Session<T> {
             last_hash: None,
             last_ready: None,
             stalled: false,
+            pending_stall: None,
+            pending_resume: None,
             keepalive_seq: 0,
             host_timed_out: false,
             listen_emitted: false,
@@ -277,6 +287,8 @@ impl<T: Transport> Session<T> {
             last_hash: None,
             last_ready: None,
             stalled: false,
+            pending_stall: None,
+            pending_resume: None,
             keepalive_seq: 0,
             host_timed_out: false,
             listen_emitted: false,
@@ -293,7 +305,13 @@ impl<T: Transport> Session<T> {
     }
 
     /// Record the local agent's input for `tick`. Idempotent per tick.
+    /// Ignored until the client's slot is assigned (host: always slot 0) —
+    /// the app samples controls only after `Event::Connected`/`MatchStarted`,
+    /// so nothing is lost.
     pub fn local_input(&mut self, tick: u32, input: Input) {
+        if let Role::Client { slot: None, .. } = &self.role {
+            return;
+        }
         self.inputs[self.local_slot as usize].insert(tick, input);
     }
 
@@ -313,11 +331,16 @@ impl<T: Transport> Session<T> {
 
     /// The 4 agents' inputs for `tick`, or `None` while any human input is
     /// missing (stall — never guess). Non-human slots are NEUTRAL on the host.
+    ///
+    /// Call this SEQUENTIALLY (start_tick, start_tick+1, ...) as the sim
+    /// advances: the sequence drives `Event::Stalled` / `Event::Resumed`
+    /// (flushed on the next `poll`).
     pub fn ready_inputs(&mut self, tick: u32) -> Option<[Input; MAX_AGENTS]> {
         if !self.started {
             return None;
         }
         let mut out = [NEUTRAL; MAX_AGENTS];
+        let mut complete = true;
         for s in 0..MAX_AGENTS {
             let v = if s == self.local_slot as usize {
                 self.inputs[s].get(&tick).copied()
@@ -330,9 +353,26 @@ impl<T: Transport> Session<T> {
             } else {
                 self.inputs[s].get(&tick).copied()
             };
-            out[s] = v?;
+            match v {
+                Some(x) => out[s] = x,
+                None => complete = false,
+            }
         }
-        Some(out)
+        if complete {
+            if self.stalled {
+                self.stalled = false;
+                self.pending_resume = Some(tick);
+            }
+            self.last_ready = Some(tick);
+            Some(out)
+        } else {
+            if !self.stalled {
+                self.stalled = true;
+                let missing = self.missing_slots(tick);
+                self.pending_stall = Some((tick, missing));
+            }
+            None
+        }
     }
 
     /// Slots missing an input for `tick` (for `Event::Stalled` diagnostics).
@@ -465,6 +505,7 @@ impl<T: Transport> Session<T> {
             addr: SocketAddr,
             slot: u8,
             their_ack: Option<u32>,
+            our_ack: u32,
             recv_ticks: Vec<u32>,
             idle_for_ms: u64,
         }
@@ -477,6 +518,7 @@ impl<T: Transport> Session<T> {
                     addr: p.addr,
                     slot: p.slot,
                     their_ack: p.their_ack,
+                    our_ack: p.our_ack,
                     recv_ticks: p.recv_ticks.iter().copied().collect(),
                     idle_for_ms: now_ms.saturating_sub(p.last_send_ms),
                 })
@@ -488,6 +530,7 @@ impl<T: Transport> Session<T> {
                         addr: p.addr,
                         slot: p.slot,
                         their_ack: p.their_ack,
+                        our_ack: p.our_ack,
                         recv_ticks: p.recv_ticks.iter().copied().collect(),
                         idle_for_ms: now_ms.saturating_sub(p.last_send_ms),
                     }]
@@ -497,7 +540,22 @@ impl<T: Transport> Session<T> {
         let mut plans: Vec<(SocketAddr, Packet)> = Vec::new();
         for s in &snaps {
             if self.started {
-                if let Some(pkt) = self.build_input_packet(s.slot, s.their_ack, &s.recv_ticks) {
+                if let Some(pkt) = self.build_input_packet(s.slot, s.their_ack, s.our_ack, &s.recv_ticks) {
+                    if let Packet::Input { ack_tick, .. } = &pkt {
+                        if let Role::Host { peers, .. } = &mut self.role {
+                            if let Some(p) = peers.iter_mut().find(|p| p.addr == s.addr) {
+                                if *ack_tick != u32::MAX {
+                                    p.our_ack = *ack_tick;
+                                }
+                            }
+                        } else if let Role::Client { host_peer, .. } = &mut self.role {
+                            if let Some(p) = host_peer {
+                                if *ack_tick != u32::MAX {
+                                    p.our_ack = *ack_tick;
+                                }
+                            }
+                        }
+                    }
                     plans.push((s.addr, pkt));
                 }
             }
@@ -550,37 +608,11 @@ impl<T: Transport> Session<T> {
         }
     }
 
-    /// Window start for an input send: the unacked window in full, widened
-    /// backwards by `redundancy` (the last N inputs ride along even when
-    /// acked), never older than the start tick, and if the unacked span
-    /// outgrows the packet cap we send oldest-unacked-first so the ack can
-    /// advance (a peer stalls rather than silently skipping ticks).
-    fn send_window_start(&self, their_ack: Option<u32>, newest: u32, cap: usize, start_floor: u32) -> u32 {
-        let n = (self.cfg.redundancy as usize).max(1);
-        let ack = their_ack;
-        let unacked_from = match ack {
-            Some(a) if a.wrapping_add(1) > start_floor => a.wrapping_add(1),
-            _ => start_floor,
-        };
-        // Newest tick we actually hold from `start_floor`:
-        if newest < unacked_from {
-            return newest; // nothing unacked
-        }
-        let span = newest.wrapping_sub(unacked_from) as usize + 1;
-        if span > cap {
-            return unacked_from; // oldest-first so the ack advances
-        }
-        // Redundancy: reach back N-1 ticks before the unacked start (never
-        // past the floor).
-        let redundant_from = unacked_from.saturating_sub((n - 1) as u32).max(start_floor);
-        redundant_from
-    }
-
     /// Build the INPUT packet for a peer. Host: everything that client needs
     /// (all slots but its own), from its ack cursor up to the newest
     /// fully-ready tick. Client: the client's own inputs from the host's ack
     /// cursor up to the newest sampled input.
-    fn build_input_packet(&self, peer_slot: u8, their_ack: Option<u32>, recv_ticks: &[u32]) -> Option<Packet> {
+    fn build_input_packet(&self, peer_slot: u8, their_ack: Option<u32>, our_ack: u32, recv_ticks: &[u32]) -> Option<Packet> {
         let (mask, newest): (u8, u32) = match &self.role {
             Role::Host { .. } => {
                 let newest = self.last_ready?;
@@ -607,27 +639,43 @@ impl<T: Transport> Session<T> {
         } else {
             self.start_tick.min(newest)
         };
-        let start = self.send_window_start(their_ack, newest, cap, floor);
-        if newest < start {
-            return None;
-        }
-        let has_unacked = match their_ack {
-            Some(a) => newest.wrapping_sub(a) > 0,
-            None => true,
+        // Send window (see the module docs): the full unacked span when it
+        // fits the packet; when it overflows the cap, the OLDEST unacked
+        // ticks go first with the window END truncated — the peer's ack can
+        // always advance, so nothing is ever silently skipped; plus
+        // redundancy reach-back (the last N inputs ride along) when there
+        // is room under the cap.
+        let n = (self.cfg.redundancy as usize).max(1);
+        let unacked_from = match their_ack {
+            Some(a) if a.wrapping_add(1) > floor => a.wrapping_add(1),
+            _ => floor,
         };
-        if !has_unacked {
-            return None; // fully acked; keepalives cover liveness
+        if newest < unacked_from {
+            return None; // nothing unacked; keepalives cover liveness
         }
-        let (ack_tick, ack_bits) = self.ack_for(recv_ticks);
-        let count = (newest.wrapping_sub(start) + 1) as usize;
+        let (start, end) = {
+            let span = newest.wrapping_sub(unacked_from) as usize + 1;
+            if span > cap {
+                let end = unacked_from.wrapping_add(cap as u32 - 1).min(newest);
+                (unacked_from, end)
+            } else {
+                let reach = ((n - 1) as u32).min(cap as u32 - span as u32);
+                let start = unacked_from.saturating_sub(reach).max(floor);
+                (start, newest)
+            }
+        };
+        let (ack_tick, ack_bits) = self.ack_for(recv_ticks, our_ack);
+        let count = (end.wrapping_sub(start) + 1) as usize;
         let mut inputs = Vec::with_capacity(count * per_tick);
-        for t in start..=newest {
+        for t in start..=end {
             for s in 0..MAX_AGENTS {
                 if mask & (1 << s) == 0 {
                     continue;
                 }
-                let v = self.slot_input_for_send(s, t)?;
-                inputs.push(v);
+                match self.slot_input_for_send(s, t) {
+                    Some(v) => inputs.push(v),
+                    None => return None,
+                }
             }
         }
         Some(Packet::Input { base_tick: start, agent_mask: mask, ack_tick, ack_bits, inputs })
@@ -649,10 +697,11 @@ impl<T: Transport> Session<T> {
     }
 
     /// The ack we send for the ticks a peer sent us: highest contiguous tick
-    /// from the start, plus a 32-tick bitmap past it (u32::MAX = nothing).
-    fn ack_for(&self, recv_ticks: &[u32]) -> (u32, u32) {
-        let floor = self.start_tick;
-        let mut t = floor;
+    /// from our sliding base `our_ack`, plus a 32-tick bitmap past it
+    /// (u32::MAX = nothing acked yet). The base slides with the ack so old
+    /// pruned ticks can never break contiguity.
+    fn ack_for(&self, recv_ticks: &[u32], our_ack: u32) -> (u32, u32) {
+        let mut t = our_ack;
         while recv_ticks.contains(&t) {
             t = t.wrapping_add(1);
         }
@@ -730,6 +779,7 @@ impl<T: Transport> Session<T> {
                         last_recv_ms: self.now_ms,
                         last_send_ms: self.now_ms,
                         their_ack: None,
+                        our_ack: 0,
                         recv_ticks: BTreeSet::new(),
                         remote_hashes: HashMap::new(),
                         go_confirmed: false,
@@ -783,7 +833,10 @@ impl<T: Transport> Session<T> {
                     if let Some(p) = peers.iter_mut().find(|p| p.addr == from) {
                         p.last_recv_ms = self.now_ms;
                         p.remote_hashes.insert(tick, hash);
-                        p.remote_hashes.insert(prev_tick, prev_hash);
+                        // prev_tick == tick marks "no previous hash yet".
+                        if prev_tick != tick {
+                            p.remote_hashes.insert(prev_tick, prev_hash);
+                        }
                     }
                 }
             }
@@ -862,6 +915,7 @@ impl<T: Transport> Session<T> {
                         last_recv_ms: self.now_ms,
                         last_send_ms: self.now_ms,
                         their_ack: None,
+                        our_ack: 0,
                         recv_ticks: BTreeSet::new(),
                         remote_hashes: HashMap::new(),
                         go_confirmed: false,
@@ -925,7 +979,9 @@ impl<T: Transport> Session<T> {
                     if let Some(p) = host_peer {
                         p.last_recv_ms = self.now_ms;
                         p.remote_hashes.insert(tick, hash);
-                        p.remote_hashes.insert(prev_tick, prev_hash);
+                        if prev_tick != tick {
+                            p.remote_hashes.insert(prev_tick, prev_hash);
+                        }
                     }
                 }
             }
@@ -1043,35 +1099,18 @@ impl<T: Transport> Session<T> {
         }
     }
 
-    /// Track the stall/resume boundary at `last_ready + 1`.
+    /// Flush the stall/resume events the app's `ready_inputs` queries
+    /// detected, then compare hashes and prune old state.
     fn detect_stall(&mut self, events: &mut Vec<Event>) {
         self.check_desync(events);
+        if let Some((tick, missing)) = self.pending_stall.take() {
+            events.push(Event::Stalled { tick, missing });
+        }
+        if let Some(tick) = self.pending_resume.take() {
+            events.push(Event::Resumed { tick });
+        }
         if !self.started {
             return;
-        }
-        // Catch up while ticks are ready (bounded: 2 seconds of ticks).
-        let mut t = self.last_ready.map_or(self.start_tick, |v| v.wrapping_add(1));
-        let mut steps = 0;
-        while steps < 240 {
-            match self.ready_inputs(t) {
-                Some(_) => {
-                    if self.stalled {
-                        events.push(Event::Resumed { tick: t });
-                        self.stalled = false;
-                    }
-                    self.last_ready = Some(t);
-                    t = t.wrapping_add(1);
-                    steps += 1;
-                }
-                None => {
-                    if !self.stalled {
-                        self.stalled = true;
-                        let missing = self.missing_slots(t);
-                        events.push(Event::Stalled { tick: t, missing });
-                    }
-                    break;
-                }
-            }
         }
         // Prune old state (bounded memory on long matches).
         if let Some(lr) = self.last_ready {
@@ -1084,13 +1123,13 @@ impl<T: Transport> Session<T> {
             if let Role::Host { peers, .. } = &mut self.role {
                 for p in peers.iter_mut() {
                     p.remote_hashes.retain(|k, _| *k >= cutoff);
-                    let ack_floor = p.their_ack.map(|a| a.saturating_sub(512)).unwrap_or(0);
+                    let ack_floor = p.our_ack.saturating_sub(512);
                     p.recv_ticks.retain(|t| *t >= ack_floor);
                 }
             } else if let Role::Client { host_peer, .. } = &mut self.role {
                 if let Some(p) = host_peer {
                     p.remote_hashes.retain(|k, _| *k >= cutoff);
-                    let ack_floor = p.their_ack.map(|a| a.saturating_sub(512)).unwrap_or(0);
+                    let ack_floor = p.our_ack.saturating_sub(512);
                     p.recv_ticks.retain(|t| *t >= ack_floor);
                 }
             }

@@ -31,7 +31,7 @@ pub mod session;
 pub mod settings;
 pub mod shim;
 
-pub use input::Input;
+pub use input::{Input, NEUTRAL};
 pub use net::UdpTransport;
 pub use session::{Config, DropPolicy, Event, LeaveReason, RefuseReason, Session, SessionError};
 pub use settings::MatchSettings;

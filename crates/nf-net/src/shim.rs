@@ -130,6 +130,18 @@ impl Shim {
     pub fn in_flight(&self) -> usize {
         self.core.borrow().in_flight.len()
     }
+
+    /// Set datagram drop probability in 1/1000.
+    pub fn set_loss(&self, per_mille: u32) {
+        self.core.borrow_mut().drop_per_mille = per_mille;
+    }
+
+    /// Set one-way latency and jitter (both ms).
+    pub fn set_latency(&self, latency_ms: u64, jitter_ms: u64) {
+        let mut c = self.core.borrow_mut();
+        c.latency_ms = latency_ms;
+        c.jitter_ms = jitter_ms;
+    }
 }
 
 /// A transport handle bound to one shim endpoint; give one per session.
