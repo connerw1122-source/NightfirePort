@@ -41,3 +41,7 @@ claimed-by: sandbox4 at 2026-10-15T12:38Z
 ## Report (done, 2026-10-15T14:31Z)
 
 Closed by the driver: the report is on `s/fix-progress-detected-hook` (docs/reports/fix-progress-detected-hook.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T14:32Z)
+
