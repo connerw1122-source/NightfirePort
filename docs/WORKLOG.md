@@ -13744,3 +13744,22 @@ Work Log (async-level-load):
 - Report docs/reports/async-level-load.md with 6 live checks (the dots' cadence on a warm
   transition, the cold + fail-Restart arms, the movie-wrapped load, the weapon-give hitch left
   synchronous, the failure path).
+
+## fix-ingame-lag + pause-woman clock (2026-10-15, main agent, branch mine/pc-menus2)
+
+- User's playtest: "very laggy and also the pause background is going wayy too fast".
+- Lag [L NF_DEBUG_FPS probe, 07000005 gameplay, since removed]: frames averaged 52 ms (~19 fps).
+  Render+submit took 2.9 ms, the sim ticks 6.7 ms, surface acquire 0.1 ms, and `skin_palette` 44 ms.
+  Inside the palette, `colour_mults` took 34.5 ms; frame_state, the character loop and the
+  door/pickup loops were each under 1 ms.
+  - Cause: `colour_mults` walked EVERY character vertex (`char_verts`) to collect the distinct
+    pickup/attachment keys. The effect pools (decal/casing/debris/gas/projectile slots — 8561
+    attachments for 73 characters on 07000005) put a mesh's vertices behind every slot.
+  - Fix: compute the multiplier once per pickup and once per attachment index. Keys no vertex
+    carries are never read: the palette's colour slot and `posed_vertices`' lookup are per vertex.
+    Headless timing on 07000005: palette 35 ms → 1.4 ms, colour_mults 0.4 ms.
+- Pause backdrop: the burning woman ticked `frame_ticks` times per RENDER frame. `frame_ticks` is
+  the game's tick count, which freezes at its last value while a menu is up, so the figure ran
+  several times too fast on a fast display. She now ticks off her own 60 Hz wall-clock
+  accumulator (`menu_clock`), matching `Game_Run`'s once-per-60 Hz-frame `psiDecompressWoman`
+  [M 0x1c9790:36-41].
