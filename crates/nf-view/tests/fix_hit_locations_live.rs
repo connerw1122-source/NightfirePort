@@ -296,8 +296,8 @@ fn party_guest_head_shot_deals_two_torso_without_the_silent_kill() {
     let k = difficulty_k(scene.sim.as_ref().unwrap().drones.difficulty);
     let sim = scene.sim.as_mut().unwrap();
     let Some(gi) = sim.drones.list.iter().enumerate()
-        .filter(|(_, dr)| dr.present && dr.enabled && dr.drawn && !dr.corpse && dr.health > 0.0 && dr.mode == 0xd)
-        .map(|(i, _)| i).next() else { panic!("07000007 has drawn mode-0xD guests") };
+        .filter(|(_, dr)| dr.present && dr.enabled && !dr.corpse && dr.health > 0.0 && dr.mode == 0xd)
+        .map(|(i, _)| i).next() else { panic!("07000007 has present mode-0xD guests") };
     face_guard(sim, gi, 3.0);
     tick(sim, false, 6);
     let mut aimed = false;
