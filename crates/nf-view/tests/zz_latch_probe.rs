@@ -98,6 +98,8 @@ fn sphere_outside(planes: &[[f32; 4]; 6], c: [f32; 3], r: f32) -> bool {
 
 fn pt(p: [f32; 3]) -> String { format!("({:.3},{:.3},{:.3})", p[0], p[1], p[2]) }
 
+// Scratch probe kept for its data citations (109n); no assertions — not part of the suite run.
+#[ignore]
 #[test]
 fn probe_latch_skip_reasons() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set; skipping"); return };

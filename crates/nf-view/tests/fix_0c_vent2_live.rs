@@ -2,13 +2,13 @@
 //! "he can't crouch through"). 101g-fix-0c-hatch verified the drop through the open wall hole
 //! onto the inner ledge; this session mapped the rest of the route and found the next blockers:
 //!
-//! 1. **Channel 0 was a dead channel in the port.** The level's pulley winches #351/#364/#377 —
-//!    the level doc's "the vent route ... is the way down" — are SimpleScripts listening on
-//!    **ch 0** [D #351/#364/#377: rate 75, ch 0, collision hashes 802d0092/9f/ac]. The game's
-//!    `SS_Update` 0x1a9948:20-23 reads `switch_channels[ch]` and self-writes it while the channel
-//!    VALUE is 0, for any channel word including 0; the trigger/AND writers copy Out into the
-//!    array unconditionally [M 0x1b1a78]. The port's `Channels::set` early-returned on c == 0 and
-//!    `Channels::on` hardcoded false — a ch-0 SS could never run. Fixed: ch 0 is a real channel.
+//! 1. **Channel 0 is a real channel in the port** (the `Channels::set`/`on` ch-0 fix, kept as
+//!    `channel_0_is_a_real_channel`). The level's pulley winches #351/#364/#377 are SimpleScripts
+//!    on **ch 0** [D #351/#364/#377: rate 75, ch 0, collision hashes 802d0092/9f/ac] — but
+//!    fix-0c-hatch-latches (109n) read the driver properly: they are mask 0x2 (the BULLET contact
+//!    bit) and `SS_Operate` 0x1a9df8:46-51 returns 0 on the channel path for a channel-0 SS, so
+//!    the ch-0 word is never their driver — a bullet hit is. This file's original
+//!    "ch 0 rises → the winches sweep" stand-in is re-pointed to that refutation below.
 //! 2. The verified legs, as a regression: from the duct top the crouched capsule drops through
 //!    the open hole onto the balcony (14.61-14.81, z −112.5..−121.5) and walks it.
 //!
@@ -22,6 +22,7 @@
 //!
 //! Opt-in via `NF_ISO`.
 
+use nf_game::door::interp;
 use nf_game::player::Input;
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
@@ -60,23 +61,27 @@ fn channel_0_is_a_real_channel() {
     assert!(!ch.on(0), "a zero write clears ch 0");
 }
 
-/// The winches: their SSs sit on ch 0 [D #351/#364/#377]; with ch 0 raised the playhead advances
-/// like any SS (`SS_Update` gates nothing on the channel INDEX — the port's tick reads on(ch)).
+/// The winches #351/#364/#377 are mask 0x2 (the BULLET contact bit) on channel 0 [D params 2/3].
+/// `SS_Operate` 0x1a9df8:46-51: no contact match → the channel path, which returns 0 for a
+/// channel-0 SS — **channel 0 can never drive them** (109n's refutation of this file's original
+/// read-stand-in, kept as a regression pin: raising ch 0 alone must leave every winch playhead
+/// at rest). The bullet-driven start is fix_0c_hatch_latches_live's real-shot test.
 #[test]
-fn the_pulley_winches_sweep_once_channel_0_rises() {
+fn the_pulley_winches_do_not_sweep_on_channel_0_alone() {
     let Some(_) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load_at([5.8, 15.8, -107.5], std::f32::consts::PI);
     let sim = scene.sim.as_mut().unwrap();
     let ss351 = sim.drones.sss.of_placement(351).expect("the pulley SS exists [D #351]");
     let ss364 = sim.drones.sss.of_placement(364).expect("the pulley SS exists [D #364]");
     let ss377 = sim.drones.sss.of_placement(377).expect("the pulley SS exists [D #377]");
-    let (r351, r364, r377) = (
-        sim.drones.sss.list[ss351].rate,
-        sim.drones.sss.list[ss364].rate,
-        sim.drones.sss.list[ss377].rate,
+    let (m351, m364, m377) = (
+        sim.drones.sss.list[ss351].mask,
+        sim.drones.sss.list[ss364].mask,
+        sim.drones.sss.list[ss377].mask,
     );
-    assert_eq!((r351, r364, r377), (75, 75, 75), "the winch SSs' rate word [D #351/#364/#377]");
-    // Raise ch 0 the way a game writer would and tick: the playheads must move off key 0.
+    assert_eq!((m351, m364, m377), (2, 2, 2), "the winch SSs' Operate mask is the bullet bit [D params 2]");
+    // Raise ch 0 the way a game writer would and tick: no winch may move — the channel path is
+    // dead for a channel-0 SS [M 0x1a9df8:47-50 `channel == 0 → return 0`].
     let frame = sim.drones.channels.time[18];
     sim.drones.channels.set(0, 1, frame + 1);
     assert!(sim.drones.channels.on(0), "ch 0 holds");
@@ -86,9 +91,9 @@ fn the_pulley_winches_sweep_once_channel_0_rises() {
         sim.drones.sss.list[ss364].t,
         sim.drones.sss.list[ss377].t,
     );
-    assert!(t351 > 0.0, "winch #351's playhead advances with ch 0 on [M 0x1a9948], got {t351}");
-    assert!(t364 > 0.0, "winch #364's playhead advances with ch 0 on, got {t364}");
-    assert!(t377 > 0.0, "winch #377's playhead advances with ch 0 on, got {t377}");
+    assert_eq!((t351, t364, t377), (0.0, 0.0, 0.0),
+        "no winch may move on ch 0 alone — the bullet contact is the driver [M 0x1a9df8:46-51], \
+         got {t351}/{t364}/{t377}");
 }
 
 /// The verified legs as a regression (101g's open-hole drop): from the duct top the crouched
@@ -101,7 +106,15 @@ fn from_the_duct_top_the_hole_drops_bond_onto_the_balcony() {
     for _ in 0..120 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
     let sim = scene.sim.as_mut().unwrap();
     let ss138 = sim.drones.sss.of_placement(138).expect("ventmesh-front SS [D #138]");
-    assert!((sim.drones.sss.list[ss138].t - 5.0).abs() < 0.01, "the hatch is fully open");
+    // The open hatch [M SS_Update 0x1a9948:119-128]: the playhead wrapped (t 0) and the POSE holds
+    // the last key — the scrub model's t==5.0 pin was the old model's clamped playhead.
+    {
+        let ss = &sim.drones.sss.list[ss138];
+        let last_k = (ss.keys.len() - 1) as u16;
+        let open = interp(&ss.keys, 0, last_k, last_k as f32, ss.spline).expect("the last key interp");
+        assert_eq!(ss.matrix, open, "the hatch's pose holds the open (last) key");
+        assert_eq!(ss.t, 0.0, "the playhead wrapped after the sweep [M 0x1a9948:119-120]");
+    }
     sim.step_bond(Input { crouch: true, ..Default::default() }, false, false, false);
     assert!(sim.bond.crouched, "the crouch key crouched Bond");
     // Crouch-walk forward off the duct edge, through the hole, onto the balcony.

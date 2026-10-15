@@ -14,6 +14,7 @@
 //!
 //! Opt-in via `NF_ISO`.
 
+use nf_game::door::interp;
 use nf_game::player::Input;
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
@@ -98,19 +99,29 @@ fn burning_the_four_hinges_opens_the_display_vent() {
         }
     }
     let burned = sim.drones.locks.iter().filter(|l| (14..=17).contains(&l.out) && l.burned).count();
-    // The playhead rate: #138 rate 50 over 5 key-units = 250 ticks; give 300.
+    // The rate word is the whole sweep in ticks [M SS_Create 0x1a9c58:51]: #138 rate 50 over 5
+    // key-units = 50 ticks + the wrap's overshoot; give 300.
     for _ in 0..300 { sim.step_bond(Input::default(), false, false, false); }
     let sim = scene.sim.as_ref().unwrap();
     let ss138 = sim.drones.sss.of_placement(138).expect("ventmesh-front SS exists [D #138]");
     let ss179 = sim.drones.sss.of_placement(179).expect("VentBlockingPoly SS exists [D #179]");
-    let t138 = sim.drones.sss.list[ss138].t;
-    let t179 = sim.drones.sss.list[ss179].t;
     let blocked = ray_hits(sim);
     let ch18 = sim.drones.channels.on(18);
     assert_eq!(burned, 4, "the aimed beam burns all four hinges [M 0x1ae3d8 case 0]");
     assert!(ch18, "the AND mux #505 raised ch 18 [D #505 list 14,15,16,17]");
-    assert!((t138 - 5.0).abs() < 0.01, "ventmesh-front played to its last key (t {t138:.2})");
-    assert!((t179 - 1.0).abs() < 0.01, "VentBlockingPoly played to its last key (t {t179:.2})");
+    // The end-of-sweep truth [M SS_Update 0x1a9948:119-128]: the playhead WRAPS to 0 and the state
+    // goes dead (param 1 rearm = 1 [D #138/#179]) — what persists is the POSE at the last key
+    // (states 0/0x40 never interp). The old scrub model clamped t at 5.0 forever; the game's
+    // observable is the posed matrix (the hatch open, the blocker up) — asserted bit-exact.
+    for (k, name) in [(ss138, "ventmesh-front"), (ss179, "VentBlockingPoly")] {
+        let ss = &sim.drones.sss.list[k];
+        let last_k = (ss.keys.len() - 1) as u16;
+        let last = last_k as f32;
+        let open = interp(&ss.keys, 0, last_k, last, ss.spline).expect("the last key interp");
+        assert_eq!(ss.matrix, open, "{name}'s posed matrix must hold the last (open) key after the sweep");
+        assert_eq!(ss.state, 0, "{name} is dead after its sweep (rearm = 1 [D]) [M 0x1a9948:121-125]");
+        assert_eq!(ss.t, 0.0, "{name}'s playhead wrapped to 0 [M 0x1a9948:119-120]");
+    }
     assert!(!blocked, "the open vent lets the ray through — the soft lock is gone");
 }
 
@@ -139,6 +150,15 @@ fn the_warehouse_vent_latch_opens_its_hatch() {
     assert!(sim.drones.channels.on(84), "the latch burn wrote ch 84 [M 0x1ae3d8:194]");
     let ss180 = sim.drones.sss.of_placement(180).expect("ventmesh SS [D #180]");
     let ss184 = sim.drones.sss.of_placement(184).expect("VentmeshBlockingPloy SS [D #184]");
-    assert!((sim.drones.sss.list[ss180].t - 5.0).abs() < 0.01, "ventmesh played to its last key");
-    assert!((sim.drones.sss.list[ss184].t - 1.0).abs() < 0.01, "the blocker cleared");
+    // The end-of-sweep truth [M SS_Update 0x1a9948:119-128] — the playhead wraps to 0, the state
+    // dies (rearm = 1 [D #180/#184]) and the POSE holds the last key (the hatch open, the blocker
+    // cleared). The old t==5.0/1.0 pins were the scrub model's clamped playhead, not the game's.
+    for (k, name) in [(ss180, "ventmesh"), (ss184, "VentmeshBlockingPloy")] {
+        let ss = &sim.drones.sss.list[k];
+        let last_k = (ss.keys.len() - 1) as u16;
+        let open = interp(&ss.keys, 0, last_k, last_k as f32, ss.spline).expect("the last key interp");
+        assert_eq!(ss.matrix, open, "{name}'s posed matrix must hold the last (open) key after the sweep");
+        assert_eq!(ss.state, 0, "{name} is dead after its sweep [M 0x1a9948:121-125]");
+        assert_eq!(ss.t, 0.0, "{name}'s playhead wrapped to 0 [M 0x1a9948:119-120]");
+    }
 }

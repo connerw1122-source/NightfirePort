@@ -5,6 +5,8 @@
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
+// Scratch diagnostics kept for the SS param citations (109n); run with --ignored --nocapture.
+#[ignore]
 #[test]
 fn dump_ss_params() {
     use nf_formats::level::Level;
