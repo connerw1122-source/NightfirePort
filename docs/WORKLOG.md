@@ -13475,3 +13475,9 @@ Work Log (credits-data):
   7 (last-row selection, per-row hints, the 0x31d fallback, modal, Back-vs-unpause, clamps, NF_ISO binds 0x202/0x31d/
   0x266 from USATxt.dat), each with a sister assertion; menus_flow.rs updated to the new row struct. All green on the
   merged tree (ce62cd7e). Doc: docs/systems/objective-hints.md; mission.md's "hint never drawn" + gap lines corrected.
+
+## mp-debriefing-data (2026-10-15, branch s/mp-debriefing-data) — started 21:38 UTC
+- Task: port the MP match end + debriefing: scenario end rules (time/score limits from the MP settings), the
+  debriefing rows/columns (label ids, values, award rules), ordering, and the return flow. Handlers:
+  P_MPDEBRIEFING_Handler 0x212198, C_RBMPFINISH_Handler 0x20db48. State + getters for the draw code; no drawing.
+- Status: branch created from origin/master; research starting.
