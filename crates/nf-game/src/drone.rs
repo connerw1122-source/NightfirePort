@@ -886,6 +886,15 @@ pub struct Drone {
     pub in_air: bool,
     /// `anim+0x60 & 8`: feet on a walkable surface this tick (`Drone_FeetOnPoint`).
     pub on_surface: bool,
+    /// `Drone+0xA0`: the ANIMATED hip height — `DroneAnim_PreTransCallback` 0x13b490:58-67 rewrites it
+    /// every anim resolve as `clamp(animObj+0x5C − 0.02, 0.2)` (+0x5C = the resolve's consumed root
+    /// height, 0x1c35f8:374-378; DefaultInit 0x14b300:48 starts it at 1.0). The floor snap, the
+    /// down-ray length and the on-surface test all read it (`Drone_FeetOnPoint` 0x140660), so a
+    /// sitting anim (the 06 driver's start script: the face track's zero consumed root → the 0.2
+    /// clamp [L 05-truck.trace: his y settles to the crate top + 0.2]) sits ON its seat instead of
+    /// floating a standing hip above it. The port's draw (`draw_y`) keeps mapping the POSE root, which
+    /// already equals this for single-window anims; only the collision anchor was hard 1.0.
+    pub hip_anim: f32,
     /// Trace of (frame, state) changes, for comparisons with PCSX2.
     pub log: Vec<(u32, u8)>,
     /// `Drone+0x4F8 & 0x1000000`: knocked out (`KnockedOut_Anim` ENTER [M 0x172ab0-c4]). Makes
@@ -981,6 +990,7 @@ impl Drone {
             // fix-progress tally outboxes (fields on their own lines — merge lesson 4):
             surrender_logged: false,
             hit_log: 0,
+            hip_anim: 1.0,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
             switch_channel: param(3) as u8, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
@@ -1807,6 +1817,11 @@ impl Drone {
                 self.move_by(d, step);
             }
         }
+        // fix-driver-air: the anim-root hip tracking is NOT ported — the game's per-anim hip needs the
+        // resolve's +0x60 addend (0x1c35f8:376) which the traces contradict between the guard anims
+        // (the y tracks the root exactly: state 1 → 3 = 39.003 → 39.155 [L 05-truck.trace]) and the
+        // sit/cower clamps (39.2 / 39.196 [L both traces]) — the live checks own it. The port's hip
+        // stays at its state-set value (1.0; the sit's 0.2 below).
         self.root_prev = root;
     }
 
@@ -2439,8 +2454,20 @@ impl Drone {
                 let side = [side[0] / sl, side[1] / sl, side[2] / sl];
                 let mp = axis_angle_mat(side, hp);
                 let my = axis_angle_mat(neck, -hy);
-                let m = nf_formats::anim::mul(&world[5], &mp);
-                world[5] = nf_formats::anim::mul(&m, &my);
+                // The game turns ONLY the head's orientation: HeadTrack hands Quat_QuatToMat
+                // (0x1e3e80) the palette entry itself (0x1bfcc0 `lw $a1, 0xd8($sp)` = palette +
+                // bone·0x40, 0x1bfcc4 `jal 0x1e3e80`), and that helper stores offsets 0x00..0x2c
+                // — the three rotation rows — never the +0x30 translation row. The head keeps the
+                // anim-posed position on the neck while only its rotation turns. The full-matrix
+                // product below used to rotate the translation row about the object origin, so at
+                // the saturated track angles (yaw ±1.1, pitch ±1.0, e.g. a guest at ~1 unit) the
+                // head detached onto the shoulders/back (the 07000007 playtest's sideways heads).
+                let mut rot = world[5];
+                rot[3] = [0.0, 0.0, 0.0, 1.0];
+                let m = nf_formats::anim::mul(&rot, &mp);
+                let mut turned = nf_formats::anim::mul(&m, &my);
+                turned[3] = world[5][3];
+                world[5] = turned;
             }
         }
         Some((world, hip))
@@ -2918,10 +2945,24 @@ impl Drone {
 
     /// `Drone_CollisionHandler` (0x140968): the per-tick collision + gravity driver. Clears the in-air flag, runs the
     /// down-ray (`feet_on_point`), and when off the surface accumulates `WldGravity · REC_FRAME_RATE` into `velocity`
-    /// and steps `pos += velocity · REC_FRAME_RATE`. On the surface the velocity is zeroed and `pos.y` snaps to
-    /// `floor + hip` (the port's ground convention: `pos.y = floor + 1.0`, feet at `pos.y − 0.6`). The `free_root` path
-    /// (SpecialDeath) bypasses this; `bounded = false` (the AI-boundary push-out flag) also skips it. [M] constants:
-    /// WldGravity (0,−9.8,0), REC_FRAME_RATE 1/60, hip+0.6 ray, 0.2 on-surface.
+    /// and steps `pos += velocity · REC_FRAME_RATE`. On the surface the velocity is zeroed and `pos.y` runs the tail's
+    /// settle — gated by the game's SECOND probe relation, not the correction itself: the disassembly compares the
+    /// hit against `drone+0x400` — `NDrone2_Collision` 0x140e90's probe `obj.pos + up·(0.4 − hip)` [M 0x140c44-60:
+    /// `c2 = hit+0x40 − drone+0x400`; 0x140e30-48: the settle runs while `c2 > −0.1`; the ×0.125 feed is
+    /// `Drone_FeetOnPoint` 0x140660's correction out-param, 0x140e50] — so the gate is
+    /// `correction < 0.5 − hip` (0.4 − hip − correction > −0.1). Through the ANIMATED hip that is the driver-only
+    /// gating the game does itself: the sit's 0.2 clamp settles the whole on-surface band (correction < 0.3 — the
+    /// trace's ×0.125 decay [L 05-truck.trace 39.305 → 39.2]), while the standing hip 1.0 settles only the deep-sink
+    /// band (correction < −0.5, a 0.1-wide slice of the ray's [−0.6, 0.2] reach) and is otherwise NOT re-adjusted —
+    /// the game owns the standing y through the animated hip (`DroneAnim_PreTransCallback` 0x13b490 rewrites +0xA0
+    /// per resolve), which the port has only for the sit (the +0x60 addend unread — the fix-driver-air residual).
+    /// The port keeps its snap for that un-settling band: without the animated hip a no-op would float standing
+    /// drones up to 0.2 (the live traces pin the snap's heights; the fix-driver-air2 probe showed the 109j
+    /// settle-everywhere transients flipped the seeded cover RNG — danim 178 90@1.0 instead of lean-out 176 51@1.5
+    /// → UnderCoverAim 90 vs live 37). The `free_root` path (SpecialDeath) bypasses this; `bounded = false` (the
+    /// AI-boundary push-out flag) also skips it. [M] constants: WldGravity (0,−9.8,0), REC_FRAME_RATE 1/60,
+    /// hip+0.6 ray, 0.2 on-surface, probe 0.4 (0x140e90; 0.55 when +0xd8 == 0xc and 0.3 when +0x2f — unmodelled,
+    /// the gate's band only shifts, the sit/stand split does not change), 0.125 settle rate.
     pub fn collision_handler(&mut self, world: &CollisionWorld) {
         if self.free_root || self.corpse || !self.bounded { return; }
         // `+0x4F8 & 0x4000` cleared at the top.
@@ -2931,9 +2972,18 @@ impl Drone {
         let on_surface = self.feet_on_point(world);
         self.on_surface = on_surface.is_some();
         if let Some(floor) = on_surface {
-            // Snap the feet to the floor and zero the velocity (the game sets `anim+0x60 & 8`).
-            self.pos[1] = floor + self.hip();
+            // Zero the velocity (the game sets `anim+0x60 & 8`), then the tail's settle gated through the
+            // second probe: `correction < 0.5 − hip` (see the doc above — [M 0x140968 @0x140c44-60 +
+            // 0x140e30-48, the probe 0x140e90]).
             self.velocity = [0.0; 3];
+            let correction = self.pos[1] - self.hip() - floor;
+            if correction < 0.5 - self.hip() {
+                self.pos[1] -= correction * 0.125;
+            } else {
+                // The un-settling band: the port's standing-y management (the game re-adjusts nothing here;
+                // its animated hip owns the standing height — the port's snap stands in until that lands).
+                self.pos[1] = floor + self.hip();
+            }
         } else {
             self.in_air = true;
             // `velocity += WldGravity · REC_FRAME_RATE` (gravity per tick²).
@@ -2947,9 +2997,11 @@ impl Drone {
         self.pos[2] += self.velocity[2] * r;
     }
 
-    /// `Drone+0xA0`: the hip height (the offset from `pos` to the feet). Default 1.0; the port's ground convention is
-    /// `pos.y = floor + hip` and `feet() = pos − 0.6` (the 0.6 is the port's own feet offset, not the game's).
-    fn hip(&self) -> f32 { 1.0 }
+    /// `Drone+0xA0`: the hip height — the ANIMATED value (`hip_anim`, `DroneAnim_PreTransCallback`
+    /// 0x13b490:58-67), not a hard 1.0: `Drone_FeetOnPoint` 0x140660 reads +0xA0 for both the down-ray
+    /// length (+0xA0 + 0.6) and the feet (`pos.y − +0xA0`), and the sitting driver's is the 0.2 clamp
+    /// [L 05-truck.trace]. DefaultInit 0x14b300:48 starts it at 1.0.
+    fn hip(&self) -> f32 { self.hip_anim }
 
     /// `NDrone2_SetAngleToCover`: low node or as-low cover → the opponent; side 1 → node yaw − π/2; side 2 → node yaw.
     fn set_angle_to_cover(&mut self, d: &Data) {
@@ -4067,6 +4119,15 @@ impl Drone {
                 if self.start_script != 0 {
                     let script = self.start_script;
                     self.start_script = 0;
+                    // fix-driver-air: the sitting hip — the game's driver y settles to the crate top
+                    // (Object_Crates_Seat hi y 38.9987) + 0.2 through the whole 880-frame sit script
+                    // [L 05-truck.trace 07000006: 39.305 → 39.19 → 39.2, the ×0.125 settle shape],
+                    // i.e. the PreTransCallback clamp floor (0x13b490:64-66) — the sit's consumed
+                    // root lands ≤ 0.22 there (the +0x60 addend unread, the report's residual). The
+                    // port's floor snap + down-ray read this hip (0x140660), so the sit sits ON the
+                    // crate seat instead of floating a standing hip above it — the playtest's
+                    // "he's sitting in the air".
+                    self.hip_anim = 0.2;
                     self.play_script(d, script, 0x24, 0x11a, 0, msg::ANIM_DONE);
                     return true;
                 }
@@ -4078,13 +4139,13 @@ impl Drone {
             // node cursor — the port models no per-node path walk, and the game's driver is never shown
             // leaving on a mission path in the traces) → 0x34; only a running mission path would take
             // 0x35. The driver steps into TruckDriverIdle ("hands behind back", the user's C1).
-            (TRUCK_DRIVER_INIT, msg::ANIM_DONE) => { self.set_state(TRUCK_DRIVER_IDLE); true }
+            (TRUCK_DRIVER_INIT, msg::ANIM_DONE) => { self.hip_anim = 1.0; self.set_state(TRUCK_DRIVER_IDLE); true }
             // fix-06-driver: the game's arm is msgs 0x11/0x12/0x13/0x16/0x1e → 0x33 [M 0x160bd0:97-105] —
             // msg 0x14 (SOUND, DroneFunc_HandleSoundAlerts' dispatch) has NO arm (default → unhandled):
             // the driver never reacts to heard gunfire. The port's SOUND half sent him into the guard
             // heard-noise chain (0xa2-0xa5) whose ATTACK arm drew him a weapon (+0x66 → weapon 6, anim set 4)
             // — the playtest's "shoot the driver, he flies back like a guard with the guard death sound".
-            (TRUCK_DRIVER_INIT, msg::ALARM) => { self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
+            (TRUCK_DRIVER_INIT, msg::ALARM) => { self.hip_anim = 1.0; self.set_state(TRUCK_DRIVER_INIT_ALERT); true } // 0x11/0x12/0x13/0x16/0x1e → 0x33
             (TRUCK_DRIVER_INIT, msg::BULLET) => self.on_bullet_resume(d, rng, frame, TRUCK_DRIVER_INIT_ALERT, false), // HandleImpact(0x33, 0)
             // TruckDriverInitAlert (0x160d98): anim done → CivilianScared (0x12); bullets/noise HandleImpact(0, …).
             (TRUCK_DRIVER_INIT_ALERT, msg::ANIM_DONE) => { self.set_state(CIVILIAN_SCARED); true }
@@ -5468,9 +5529,18 @@ pub struct Drones {
     /// state's exact lifecycle — who clears +0x235 — is not decoded; the port parks the alpha at the
     /// target and re-arms only from an empty state].
     pub view_fade: Option<ViewFade>,
+    /// The running fade is on the cut-scene viewer (`Camera_SetFade(.., 0)`): it belongs to the script camera's
+    /// view and ends with it — the gameplay view the camera hands back to never had it (the Kimiko scene's
+    /// near-end fade left the screen black after the hand-back, playtest 1015-0046).
+    pub view_fade_script: bool,
+    /// The script camera ran last tick (the hand-back edge for `view_fade_script`).
+    pub script_cam_prev: bool,
     /// Op 0x1e script messages (`Text_AddMsg(-1, 0, 4, Txt_BindLabel(label), 0, time)`, drained to
     /// the HUD like `taken`): (label, display frames).
     pub script_msgs: Vec<(u32, u16)>,
+    /// One-tick flag: a `TextFlush` arrived this tick — the scene drops the script-sourced HUD lines
+    /// (fix-ladder-water; `Text_FlushAllSubtitles` deletes the type-4/5 messages [M 0x1b15c8]).
+    pub text_flush: bool,
     /// The section the IOP player reports (`0x2500CC`, read by `UpdateMusicalEvents`): the audio layer
     /// writes it each frame; the music update at the tick's end consumes it (fix-party-mission item 4 —
     /// the game's `UpdateMusicalEvents` runs every frame whether or not an output device exists).
@@ -5750,7 +5820,7 @@ impl Drones {
             gas: Default::default(),
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
-            letterbox: false, view_fade: None, script_msgs: Vec::new(),
+            letterbox: false, view_fade: None, view_fade_script: false, script_cam_prev: false, script_msgs: Vec::new(), text_flush: false,
             death: Default::default(), bond_fire: false, aims_idle: 0, auto_restart: true, level_exit_cold: false,
             // fix-aims20-modes-lights: BL+0x93e starts at the refill value [L ee_start_05].
             aims_raise: 1200,
@@ -6296,15 +6366,23 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     let flags6c_w = d.weapons.records.get(b.weapon as usize)
                         .map_or(0u32, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()));
                     let laser_beam = flags6c_w & 0x100 != 0;
-                    if !laser_beam {
+                    // fix-wallhug-prompt: the sound rides the SAME gate as the effects [M
+                    // Bullet_CollisionHandler 0x12ce80:187-190 — effect flags |= 0x61 only with
+                    // weapon_data+0x70 & 2, and `Effect_Bullet` 0x1ce8a8:86-90 plays the
+                    // `EffectInfo+0x14` impact sound only on flags 0x40]. The Q-Claw bolt carries
+                    // +0x70 = 0x40 — the grapple bit, no effects bit [L ee_start_05.bin 0x2bf150 +
+                    // 0x50/0x51·0x10C] — so its world hit (the hook latch) is SILENT: the user's
+                    // "hook latched, pulled me in, but I also heard a bullet impact". The old
+                    // unconditional sound also voiced the stunner (0x800) and the gadgets.
+                    let flags70 = d.weapons.records.get(b.weapon as usize)
+                        .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                    if !laser_beam && flags70 & 2 != 0 {
                         self.impact_sound(d, b.pos, end);
                     }
                     // `Bullet_CollisionHandler` 0x12ce80 → `Effect_Create` 0x1ce688 / `Effect_Bullet`
                     // 0x1ce8a8 / `Effect_RicochetProb` 0x1cf290 (docs/atlas/effect.md). Bond is class 3,
                     // so `Effect_Bullet` skips its `Rand_Rand(2)` [M 0x1ce94c]. A ricochet keeps the
                     // bullet alive on the reflected direction [M 0x12d704].
-                    let flags70 = d.weapons.records.get(b.weapon as usize)
-                        .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
                     let mut ricochet: Option<(V3, V3)> = None;
                     if let Some((_, n, m)) = d.world.segment_surface(b.pos, end, false) {
                         if laser_beam {
@@ -6692,7 +6770,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // re-arms only when nothing is running [S: the viewer state's exact lifecycle is not
                 // decoded]. The same state carries the script's auto-fades (Script_Update's
                 // length−20 fade-out and the −22 handback fade-in) and nf-view draws it.
-                crate::nis::Request::Fade { ticks } => {
+                crate::nis::Request::Fade { ticks, viewer } => {
                     // `Camera_SetFade(duration, 4, 0xff, 0)` [M 0x1bbdd8]: rate = 1/duration per tick;
                     // a NEGATIVE duration starts at alpha 1.0 and fades in, a positive one starts at
                     // 0.0 and fades out (op 0x13 passes the script f32 negated, so a script fade of
@@ -6700,12 +6778,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     if self.view_fade.is_none() {
                         let (alpha, rate) = if ticks < 0.0 { (1.0, 1.0 / ticks) } else if ticks > 0.0 { (0.0, 1.0 / ticks) } else { (0.0, 0.0) };
                         self.view_fade = Some(ViewFade { alpha, rate });
+                        self.view_fade_script = viewer == 0;
                     }
                 }
                 // Op 0x1e: `Text_AddMsg(-1, 0, 4, Txt_BindLabel(label, 0), 0, time)` [M 0x1db2b8] —
                 // the raw label rides to nf-view (the Lang table lives above nf-game), the
                 // `drones.taken` pattern; the HUD pane shows it for `time` frames.
                 crate::nis::Request::Text { label, time } => self.script_msgs.push((label, time)),
+                // `Text_FlushAllSubtitles()` (0x1b15c8) from `Script_FFwd`'s skip arm [M 0x1dac78:28-29]:
+                // the pending script texts die here; the already-bound HUD lines drop on the viewer side
+                // (the `text_flush` flag the scene consumes), which keeps the game's type-4-only scope.
+                crate::nis::Request::TextFlush => { self.script_msgs.clear(); self.text_flush = true; }
                 // `Script_SoundStart`: 2-D, or 3-D at the stream's object (its position each frame, `Script_Interp` 5).
                 crate::nis::Request::Sound { id, at, src } => {
                     // `SFXStart` 0x115a68:18-20 / `SFXStart3D` 0x115bf0: a sound with id 0x172 (the NIS
@@ -7056,6 +7139,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         for dr in &mut self.list {
             if dr.los {
                 dr.seen_ticks += 1;
+                // fix-guard-first-shot2: `ProcessDroneSight` 0x176a28:216-223 resets the unseen
+                // counter (+0x274) to 0 on EVERY opponent-visible tick — BEFORE the
+                // `HaveOpponentSight` call and unconditionally on the raw LOS (disasm 0x176de8
+                // `sw $zero, 0x274($s0)` between the flag-2 test and `jal 0x175ef0`), NOT on the
+                // reaction ack. Every game reader treats +0x274 as "ticks since the last LOS
+                // tick" (the 0x10/0xf DSTATE gates, CombatState 0x148338:67/151/208/235,
+                // SetCombatMoveAnim's 180-tick fire-request hold 0x13cfb0:73, DoFiring's
+                // +0x274 < 0x10 gate 0x17a080:24-25), so counting it up during the reaction
+                // window (the 109f writer) flipped every movement/engagement reader into the
+                // lost-sight arms and moved the 3x3 guards' settle. The first-shot hold is NOT
+                // +0x274: it is the sight flag 4 — HaveOpponentSight 0x175ef0:41-44 sets it only
+                // once +0x270 >= ReactionTime — gating the fire request +0x3b in the combat
+                // arms (0x148338:108-113 etc.) plus Ready2Fire's aim-class + muzzle-tolerance
+                // gates (0x178c48), which the port mirrors (face_and_aim/ready_to_fire).
                 dr.unseen_ticks = 0;
                 if dr.seen_ticks >= dr.reaction_time(d.level) {
                     if !dr.seen && std::env::var_os("NF_AILOG").is_some() {
@@ -7269,6 +7366,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             if f.rate > 0.0 { f.alpha = (f.alpha + f.rate).min(1.0); }
             else if f.rate < 0.0 { f.alpha = (f.alpha + f.rate).max(0.0); }
         }
+        // The hand-back: when the script camera stops, a fade running on the cut-scene viewer ends with it — the
+        // game draws it on that viewer only (`Camera_SetFade(.., 0)`), the gameplay viewer never had it.
+        let cam_now = self.scripts.camera().is_some();
+        if self.script_cam_prev && !cam_now && self.view_fade_script { self.view_fade = None; self.view_fade_script = false; }
+        self.script_cam_prev = cam_now;
         // Script objects with collision data join the collision world where they now are: animations' discrete
         // parts and drawn entities (`Collide_PickObj`; triggers and AI volumes are not obstacles).
         // Id: object index · 64 + part (stable while the object lives) for the ride (`ground_motion`).
@@ -8074,11 +8176,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     crate::bullet::BulletEvent::World(p) => {
                         let end = [p[0] + dir[0] * 0.1, p[1] + dir[1] * 0.1, p[2] + dir[2] * 0.1];
                         if let (Some(s), Some((_, n, m))) = (d.surfaces, d.world.segment_surface(from, end, false)) {
-                            if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
-                            // `Bullet_CollisionHandler` 0x12ce80: the effects + ricochet. The shooter is a
-                            // drone (not class 3), so `Effect_Bullet` draws its `Rand_Rand(2)` [M 0x1ce94c].
+                            // fix-wallhug-prompt [M Bullet_CollisionHandler 0x12ce80:187-190 +
+                            // Effect_Bullet 0x1ce8a8:86-90]: the impact sound only with the effects bit
+                            // (weapon_data+0x70 & 2 → flags 0x61, the sound arm 0x40) — the claw bolt's
+                            // +0x70 = 0x40 [L] dies silent (site 1 has the same gate).
                             let flags70 = d.weapons.records.get(b.weapon as usize)
                                 .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                            if flags70 & 2 != 0 {
+                                if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
+                            }
+                            // `Bullet_CollisionHandler` 0x12ce80: the effects + ricochet. The shooter is a
+                            // drone (not class 3), so `Effect_Bullet` draws its `Rand_Rand(2)` [M 0x1ce94c].
                             if let Some(nd) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, p, n, m, b.dir, flags70, b.bounces, false) {
                                 if b.bounces < 3 {
                                     // The bullet continues on the reflected direction [M 0x12d7a8..0x12d7f0].
@@ -8657,6 +8765,7 @@ mod tests {
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0,
             grenade_weapon: 0x35, grenade_count: 0, pending_grenade: false, shots: Vec::new(),
             surrender_logged: false, hit_log: 0,
+            hip_anim: 1.0,
             log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, start_script: 0, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: 0, lost_sight: false,
             damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
@@ -8708,14 +8817,27 @@ mod tests {
 
     #[test]
     fn drone_stands_on_the_floor() {
-        // A drone whose feet (pos.y − hip 1.0) are 0.1 above the floor at y=0 is on the surface: the down-ray hits
-        // within 0.2 below the feet, velocity zeroes and pos snaps to floor + hip = 1.0.
+        // A drone whose feet (pos.y − hip 1.0) are 0.1 above the floor at y=0 is on the surface: velocity zeroes,
+        // but the tail's gate is `correction < 0.5 − hip` [M 0x140968 @0x140c44-60 + 0x140e30-48] — 0.1 < −0.5
+        // fails, so the standing drone takes the port's snap (the game re-adjusts nothing there; its animated hip
+        // owns the standing y — fix-driver-air2).
         let w = floor_world();
         let mut dr = drone_at([0.0, 1.1, 0.0]);
         dr.collision_handler(&w);
-        assert!((dr.pos[1] - 1.0).abs() < 1e-5, "snaps to floor+hip: {}", dr.pos[1]);
+        assert!((dr.pos[1] - 1.0).abs() < 1e-5, "the un-settling band keeps the snap: {}", dr.pos[1]);
         assert!(dr.on_surface && !dr.in_air);
         assert!(dr.velocity[1].abs() < 1e-9);
+        // Sister: the sit's animated hip 0.2 settles the whole band — one tick = correction × 0.125
+        // [M 0x140968 tail; L 05-truck.trace 39.305 → 39.289].
+        let mut sit = drone_at([0.0, 0.35, 0.0]); // feet 0.15 above the floor, hip 0.2
+        sit.hip_anim = 0.2;
+        sit.collision_handler(&w);
+        assert!((sit.pos[1] - (0.35 - 0.15 * 0.125)).abs() < 1e-6, "the sit settles at ×0.125: {}", sit.pos[1]);
+        // Sister: the deep-sink band (correction < −0.5, within the ray's [−0.6, 0.2] reach) rises at ×0.125 —
+        // the game's own deep path [M 0x140e50-68], which replaces the old snap fallback.
+        let mut deep = drone_at([0.0, 0.45, 0.0]); // feet −0.55
+        deep.collision_handler(&w);
+        assert!((deep.pos[1] - (0.45 + 0.55 * 0.125)).abs() < 1e-6, "the deep sink rises at ×0.125: {}", deep.pos[1]);
     }
 
     #[test]

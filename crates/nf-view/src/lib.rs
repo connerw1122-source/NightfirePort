@@ -179,7 +179,7 @@ fn quat_rows(q: [f32; 4]) -> nf_formats::anim::Mat4 {
 /// would be det −1 — a reflection — which no quaternion represents.)
 fn cam_view_to_world(cam: &Camera) -> nf_formats::anim::Mat4 {
     let f = cam.dir();
-    let l = Vec3::Y.cross(f).normalize_or_zero(); // the viewer's left = −(f×Y) [M 0x1a3b40's gl]
+    let l = -cam.right(); // the viewer's left = −(f×Y) [M 0x1a3b40's gl], from the yaw (no ±90° degeneracy)
     let u = f.cross(l); // the game's gu = gf×gl [M 0x1a3b40] (cam_axes' up = right×f, same vector)
     [[l.x, l.y, l.z, 0.0], [u.x, u.y, u.z, 0.0], [f.x, f.y, f.z, 0.0], [cam.pos.x, cam.pos.y, cam.pos.z, 1.0]]
 }
@@ -212,6 +212,10 @@ fn view_model_entries(scene: &scene::Scene, l: &scene::SkinLayout) -> Option<Vec
     // anim set [M `Player_ChangeSubState(10)`; L PCSX2 "no view model"]) — frame_state hides the
     // arms' palette; the reattach skips too.
     if s.missile_cam.is_some() { return None; }
+    // fix-wallhug-prompt: the creep's third-person camera hides the view model too [M
+    // `Player_PositionCamera` 0x18f5d8 case 0xb: `View_SetDrawInNoViews(BLData+0x7e8)`; the entry
+    // holsters the weapon, `Player_WeaponNone` 0x196758:114].
+    if s.bond.substate == nf_game::player::SS_CREEP { return None; }
     let ci = *scene.view_models.get(&s.gun.weapon)?;
     let base = *l.char_base.get(ci)? as usize;
     let nb = scene.characters.get(ci)?.skeleton.bones as usize;
@@ -252,6 +256,9 @@ pub fn reattach_view_model(out: &mut [nf_formats::anim::Mat4], prev: &[nf_format
 }
 
 impl Camera {
+    /// The screen-right axis from the yaw alone — `dir() × Y` normalised for |pitch| < 90°, and still defined at
+    /// ±90° (the game's clamp limit), where the cross product degenerates and the view flipped upside down.
+    fn right(&self) -> Vec3 { Vec3::new(-self.yaw.cos(), 0.0, self.yaw.sin()) }
     fn dir(&self) -> Vec3 { Vec3::new(self.pitch.cos() * self.yaw.sin(), self.pitch.sin(), self.pitch.cos() * self.yaw.cos()) }
     /// Right-handed view, wgpu clip depth 0..1, 60° vertical field of view (column-major for the shader).
     /// (full view-projection, the same with the eye at the origin for sky objects that follow the viewer).
@@ -259,7 +266,11 @@ impl Camera {
         let (near, far, f) = (0.05f32, 4000.0f32, 1.0 / (self.fov * 0.5).tan());
         let proj = Mat4::from_cols_array_2d(&[[f / aspect, 0.0, 0.0, 0.0], [0.0, f, 0.0, 0.0], [0.0, 0.0, far / (near - far), -1.0], [0.0, 0.0, near * far / (near - far), 0.0]]);
         let fw = self.dir().normalize();
-        let s = fw.cross(Vec3::Y).normalize();
+        // The right axis from the yaw alone (the game builds its view from yaw/pitch angles, not a
+        // look-at): `fw × Y` degenerates at ±90° pitch (the game's own clamp limit, `Player_ViewClamping`
+        // 0x1a92e8 ±1.0) and flipped the screen upside down there (the user, 1015-0046). For |pitch| < 90°
+        // this is the same vector `fw × Y` normalised.
+        let s = self.right();
         let u = s.cross(fw);
         let view = |e: Vec3| Mat4::from_cols_array_2d(&[[s.x, u.x, -fw.x, 0.0], [s.y, u.y, -fw.y, 0.0], [s.z, u.z, -fw.z, 0.0], [-s.dot(e), -u.dot(e), fw.dot(e), 1.0]]);
         ((proj * view(self.pos)).to_cols_array_2d(), (proj * view(Vec3::ZERO)).to_cols_array_2d())
@@ -1029,7 +1040,7 @@ fn posed_vertices(scene: &scene::Scene, choice: Option<usize>, time: f32, opts: 
 fn snow_for(scene: &scene::Scene, cam: &Camera) -> Vec<scene::Vertex> {
     let Some(sim) = scene.sim.as_ref() else { return Vec::new() };
     let f = cam.dir();
-    let right = f.cross(Vec3::Y).normalize_or_zero();
+    let right = cam.right();
     let up = right.cross(f).normalize_or_zero();
     let mut out = sim.snow_quads(right.to_array(), up.to_array());
     out.extend(sim.particle_quads(right.to_array(), up.to_array()));
@@ -1135,7 +1146,7 @@ pub fn shot_hud(scene: &scene::Scene, aspect: f32, menu: Option<&gpu::HudFrame>)
 /// The camera's screen axes for the corona billboards (same basis as the snow quads).
 fn cam_axes(cam: &Camera) -> ([f32; 3], [f32; 3]) {
     let f = cam.dir();
-    let right = f.cross(Vec3::Y).normalize_or_zero();
+    let right = cam.right();
     let up = right.cross(f).normalize_or_zero();
     (right.to_array(), up.to_array())
 }
@@ -2175,7 +2186,7 @@ impl ApplicationHandler for App {
                 }
                 let speed = if self.keys.contains(&KeyCode::ShiftLeft) { 40.0 } else { 8.0 } * dt;
                 let fwd = self.cam.dir();
-                let right = fwd.cross(Vec3::Y).normalize_or_zero();
+                let right = self.cam.right();
                 let mut mv = Vec3::ZERO;
                 for (k, d) in [(KeyCode::KeyW, fwd), (KeyCode::KeyS, -fwd), (KeyCode::KeyD, right), (KeyCode::KeyA, -right), (KeyCode::Space, Vec3::Y), (KeyCode::ControlLeft, -Vec3::Y)] {
                     if self.keys.contains(&k) { mv += d; }
@@ -2325,6 +2336,12 @@ impl ApplicationHandler for App {
                             // ride hide + hud.rs's gate).
                             if let Some((p, d)) = sim.view_override() {
                                 self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw: d[0].atan2(d[2]), pitch: d[1].clamp(-1.0, 1.0).asin(), fov: GAME_FOV };
+                            }
+                            // fix-wallhug-prompt [M `Player_PositionCamera` 0x18f5d8 case 0xb → `camera_tracking`
+                            // 0x1ba5e0]: the wall shimmy's camera is the game's third-person tracking camera
+                            // (the user's "when I entered a prompt it was in first person. should be 3rd person").
+                            if let Some((p, yaw, pitch, fov)) = sim.creep_camera() {
+                                self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov: GAME_FOV / fov };
                             }
                         }
                         // HUD stand-in: Bond's health (`BL+0x894`) and the hit flash (`BL+0x968`) in the title.
@@ -2634,7 +2651,12 @@ pub fn run() -> Result<()> {
             // zoom overlays (the overlay draws only while the key is held; `Player_Zoom` 0x1a1a70 raises the
             // zoom on the held input — the same path the fix-zoom-overlays tests drive).
             let zoom_hold = args.iter().any(|a| a == "--zoom-hold");
-            let shot_input = nf_game::player::Input { aiming: zoom_hold, zoom: zoom_hold, ..Default::default() };
+            // fix-aims20-lights-render: hold a strafe stick deflection every tick — the analog half of the
+            // idle-counter reset (DAT_002a3a1c [M 0x17ee88:80-84]), so the aims lights' gates evaluate on a
+            // moving Bond exactly as the main agent's strafing render does, instead of the dead-still all-off
+            // state 0.75 s in.
+            let strafe_hold = args.iter().any(|a| a == "--strafe-hold");
+            let shot_input = nf_game::player::Input { aiming: zoom_hold, zoom: zoom_hold, strafe: if strafe_hold { 1.0 } else { 0.0 }, ..Default::default() };
             // `--channels`: every switch channel on first (as K).
             if args.iter().any(|a| a == "--channels") { for c in 1..=255 { sim.drones.set_channel(c) } }
             // `--bond x,y,z`: Bond starts exactly there (in the air he falls), instead of the level start.
@@ -2660,6 +2682,32 @@ pub fn run() -> Result<()> {
                 None => Vec::new(),
             };
             if let Some(w) = draw { sim.step_bond(nf_game::player::Input { switch_to: Some(w), ..shot_input }, false, false, false); }
+            // fix-aims20-lights-render: the headless `--shot` path honours `--give` too — the same equip +
+            // switch_request the window path applies below (the shot path returned before that block, so
+            // `nf-view <iso> <level> --dev --give 0x1a --shot …` rendered the level's starting gun and the
+            // main agent could never get the AIMS-20's view model into a headless render). Runs BEFORE the
+            // ticks, so the draw anim completes and the aims lights' gates evaluate on the held 0x1a/0x1b.
+            if let Some(list) = args.iter().position(|a| a == "--give").and_then(|i| args.get(i + 1)) {
+                let wd = sim.weapons.clone();
+                let mut first = None;
+                for t in list.split(',') {
+                    let t = t.trim();
+                    let id = if let Some(h) = t.strip_prefix("0x") { usize::from_str_radix(h, 16).ok() } else { t.parse().ok() };
+                    let Some(id) = id.filter(|&i| i < 0x72) else { eprintln!("--give: bad id {t:?}"); continue };
+                    let rounds = wd.clip_size(id).max(1);
+                    if sim.drones.inventory.equip_weapon(&wd, id, rounds, true) {
+                        sim.drones.inventory.equip_ammo(&wd, id, (rounds * 3).max(rounds));
+                        first.get_or_insert(id as u8);
+                        eprintln!("--give: equipped {id:#04x}");
+                    } else if sim.drones.inventory.owned.get(id).copied().unwrap_or(false) {
+                        first.get_or_insert(id as u8);
+                        eprintln!("--give: {id:#04x} already owned — drawing it");
+                    } else {
+                        eprintln!("--give: {id:#04x} refused (no first-person model)");
+                    }
+                }
+                if let Some(id) = first { sim.gun.switch_request = id; }
+            }
             for t in 1..=time as u32 {
                 if skip_cuts && sim.disabled { sim.drones.scripts.skip_request = true; }
                 // `--mode 70,90`: the fire-mode press (the B key) on those ticks.

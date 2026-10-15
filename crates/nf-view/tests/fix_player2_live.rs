@@ -121,7 +121,9 @@ fn grenade_throw_spawns_at_the_release_frame_and_the_gun_recovers() {
     assert!((g.speed - 0.167).abs() < 1e-3, "speed = weapon_data+0x20 [L ee_start_07000001.bin record 0x35]: {}", g.speed);
     assert!(g.range >= 200.0, "the 210-tick fuse [M Bullet_init 0x12c5a0:192-233]: {}", g.range);
 
-    // The state machine returns to idle (the throw script ends → idle script [M 0x1a2e38 case 9 → 0]).
+    // The state machine returns to idle — after the throw (+0xB0 at 1.5), +0xB4 (state 0xc) and the next
+    // grenade's DRAW (state 3/4) [M 0x1a2e38 cases 0xb/0xc/3/4; L PCSX2: ready ~111 frames after the press].
+    for _ in 0..60 { sim.step_bond(Default::default(), false, false, false); }
     let idle = sim.weapons.idle_script(0x35);
     assert_eq!(sim.view_script, idle, "after the throw the view script is back to idle {idle:08x}");
 

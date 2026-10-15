@@ -163,3 +163,55 @@ fn the_blast_puffs_draw_camera_facing() {
     // live this frame. The billboard semantics on whatever DOES draw are asserted in the loop.
     eprintln!("[blast] live script-entity attachments checked: {checked}");
 }
+
+/// The launch origin [M Player_WeaponInitBullet 0x1a4bf0:212-240]: the midpoint of the head and the view model's
+/// DATUM 0 (`AnimGetBoneWorldTrans(vm, 0, 0)` — a non-negative id is a datum [M 0x1c3120]), the hand's mount.
+/// Sister: it is not at the eye (the old origin, which drew a screen-filling frag on the release frame).
+#[test]
+fn the_frag_launches_from_the_head_hand_midpoint() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load_weapons(&iso, "07000015.bin", false, &[0x34]).expect("load 07000015");
+    let sim = scene.sim.as_mut().unwrap();
+    let wd = sim.weapons.clone();
+    sim.drones.inventory.equip_weapon(&wd, 0x34, 1, true); sim.drones.inventory.equip_ammo(&wd, 0x34, 3);
+    sim.step_bond(Input { switch_to: Some(0x34), ..Input::default() }, false, false, false);
+    for _ in 0..120 { sim.step_bond(Input::default(), false, false, false); }
+    let mut spawned = None;
+    for t in 0..40 {
+        let eye = sim.bond.head();
+        let d0 = sim.view_datum(0);
+        sim.step_bond(Input::default(), t == 0, false, false);
+        if let Some(g) = sim.drones.grenades.first() { spawned = Some((g.pos, eye, d0)); break; }
+    }
+    let (p, eye, d0) = spawned.expect("the frag spawned");
+    let d0 = d0.expect("the frag's view model has a datum 0");
+    let mid = [(eye[0] + d0[0]) * 0.5, (eye[1] + d0[1]) * 0.5, (eye[2] + d0[2]) * 0.5];
+    let err = ((p[0] - mid[0]).powi(2) + (p[1] - mid[1]).powi(2) + (p[2] - mid[2]).powi(2)).sqrt();
+    let off = ((p[0] - eye[0]).powi(2) + (p[1] - eye[1]).powi(2) + (p[2] - eye[2]).powi(2)).sqrt();
+    // The first update may already have moved it one (half-speed) step along its velocity.
+    assert!(err < 0.4, "the frag starts at the head/datum-0 midpoint (off by {err})");
+    assert!(off > 0.1, "the frag does not start at the eye (offset {off})");
+}
+
+/// The throw cycle [M 0x1a2e38 cases 0xb/0xc/3/4; L PCSX2 07000015 per frame]: +0xB0 at 1.5, +0xB4 at 1.0, then
+/// the DRAW at 1.25 (state 4) before the next throw — the game is ready again ~111 frames after the press (the
+/// frag; the mine ~94). Sister: the old cycle (straight to idle after +0xB4) threw again 84 ticks apart.
+#[test]
+fn the_frag_throw_cycle_runs_the_draw_before_the_next_throw() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load_weapons(&iso, "07000015.bin", false, &[0x34]).expect("load 07000015");
+    let sim = scene.sim.as_mut().unwrap();
+    let wd = sim.weapons.clone();
+    sim.drones.inventory.equip_weapon(&wd, 0x34, 1, true); sim.drones.inventory.equip_ammo(&wd, 0x34, 6);
+    sim.step_bond(Input { switch_to: Some(0x34), ..Input::default() }, false, false, false);
+    for _ in 0..150 { sim.step_bond(Input::default(), false, false, false); }
+    let (mut n, mut spawns) = (0usize, Vec::new());
+    for t in 0..400u32 {
+        sim.step_bond(Input::default(), t % 6 < 2, false, false); // repeated taps
+        if sim.drones.grenades.len() > n { spawns.push(t); }
+        n = sim.drones.grenades.len();
+    }
+    assert!(spawns.len() >= 3, "three throws in 400 ticks of tapping ({spawns:?})");
+    let gap = spawns[1] - spawns[0];
+    assert!((100..=120).contains(&gap), "throw-to-throw {gap} ticks (the game: ready ~111 after the press)");
+}
