@@ -151,7 +151,9 @@ pub struct Player {
     /// `psiMovieFinished`].
     looping: bool,
     last: Option<(u32, u32, Vec<u8>)>,
+    /// Frames pulled since `started` (the pacing clock).
     tick: u32,
+    started: Option<std::time::Instant>,
     ended: bool,
     /// The ONE decoder path: the closed-GOP streaming worker.
     #[cfg(feature = "movies")]
@@ -191,7 +193,7 @@ impl Player {
         let iso = nf_formats::iso9660::IsoImage::open(iso_path).map_err(|e| StartError::NoMovieData(e.to_string()))?;
         let m = Movie::load(&iso, &format!("{code:08X}")).map_err(|e| StartError::NoMovieData(e.to_string()))?;
         #[cfg(not(feature = "movies"))]
-        { let _ = (&m, looping); Ok(Player { code, looping, last: None, tick: 0, ended: true }) }
+        { let _ = (&m, looping); Ok(Player { code, looping, last: None, tick: 0, started: None, ended: true }) }
         #[cfg(feature = "movies")]
         {
             // Audio first: the whole PCM is in memory after the demux; each decoded frame's slice
@@ -206,7 +208,7 @@ impl Player {
                 Ok(s) => Some(s),
                 Err(e) => { eprintln!("movie: {code:08x}: {e}"); None }
             };
-            Ok(Player { code, looping, last: None, tick: 0, ended: stream.is_none(), stream, pcm, pcm_at: 0, ring: Some(ring), _pcm: out })
+            Ok(Player { code, looping, last: None, tick: 0, started: None, ended: stream.is_none(), stream, pcm, pcm_at: 0, ring: Some(ring), _pcm: out })
         }
     }
 
@@ -221,14 +223,19 @@ impl Player {
     /// a declined start) this is true immediately, exactly like the game's un-started movie.
     pub fn finished(&self) -> bool { self.ended }
 
-    /// One render frame. Pulls a new decoded frame on every second call (the game's 30 fps pacing,
-    /// main 0x00109080) and returns the frame to show as the full-screen plane, if any has arrived.
+    /// One render frame. Pulls the next decoded frame when one is due at the game's 30 fps (main 0x00109080 decodes
+    /// on every second 60 Hz vblank) by the wall clock, and returns the frame to show as the full-screen plane, if any
+    /// has arrived. (Pulling on every second CALL tied the movie to the render rate: ~66 frames a second on a fast
+    /// display, measured 2026-10-15.)
     pub fn present(&mut self) -> Option<(u32, u32, &[u8])> {
-        self.tick = self.tick.wrapping_add(1);
+        let now = std::time::Instant::now();
+        let start = *self.started.get_or_insert(now);
+        let due = ((now - start).as_secs_f64() * 30.0) as u32 + 1;
         #[cfg(feature = "movies")]
-        if self.tick % 2 == 0 || self.last.is_none() {
+        if self.tick < due || self.last.is_none() {
             if let Some(s) = self.stream.as_mut() {
                 if s.advance() {
+                    self.tick = self.tick.wrapping_add(1);
                     if let Some(f) = s.frame().cloned() {
                         // The frame's audio slice goes out with its picture (the game feeds the IOP
                         // ring from the same callback that produces the frame [M 0x107100]); a
