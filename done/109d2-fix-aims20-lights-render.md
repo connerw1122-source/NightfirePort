@@ -44,3 +44,8 @@ can't reproduce a symptom, say exactly what you tried; don't guess a fix.
 
 ---
 claimed-by: sandbox6 at 2026-10-15T03:43Z
+
+---
+## Report (done, 2026-10-15T05:01Z)
+
+Closed by the driver: the report is on `s/fix-aims20-lights-render` (docs/reports/fix-aims20-lights-render.md); the worker didn't run finish.sh.
