@@ -13004,3 +13004,21 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
   (slim ISO) + the no-GPU pylon set ×3 (fix_0c_pylon_live ×2 + probe_pylon_render, wgpu
   "adapter: NotFound" — the sandbox has no GPU adapter; same set WORKLOG fix-death-retry-boost
   recorded). The required final-tree suite restarted on the merge (totals in the report).
+
+---
+Task ID: drive-ptp (checkpoint 1)
+Agent: drive-ptp worker
+Task: port the PTP handover block (Boot_GetPTPData 0x1c8198), the 12 PlrStats driving slots, and the ACTION↔DRIVING level-transition hook
+
+Work Log:
+- Measured Boot_GetPTPData 0x1c8198 (968 B) field-by-field: every PTP offset it writes (block at 0x31c090, size 0xa50)
+- Measured the return mirror Boot_LoadPTPData 0x1c8560: Mission_SetStatus from PTP+0x978 (0→6, 4→3, else→2), GameState+0x28 codes (0→0x40000036, 1/2/4→0x4000001c), resume = ResetMap_LevelToLoad(0x7000048) always
+- Measured DRIVING main 0x174bf0: PTP+0x960 valid gate, PTP+0x974 mission index drives the key switch (1=paris_mis01, 2=uw_mis11, 3=junglea_mis13a, 4=jungleb_mis13b, 5=snow1a_mis3, 6=snow2a_mis4, 7=junglec_mis13c, 8=snow2a_race, default=paris_map) [D strings at 0x374da8..]
+- Measured Mission_Update 0x182c60 case 6: the 8 on-foot→interlude pairs (0x7000004→0x7300004 … 0x700001b→0x730001b)
+- Measured ResetMap_LevelToLoad 0x1d3800: only 0x900000X ids push GameFlow state 9 (the launch); PTP+0x974 = GameState._8_4_ - 0x9000000 [M 0x1c8198]
+- Measured PlrStats_Get/SetDrivingData 0x199ac8/0x199b18: 12 entries, stride 0x3c, +0x00 record ptr, +0x18 id; values at record+8; table root PTR 0x2bc658 → table 0x2bbda0..0x2bc5c8 [L ee_start_05.bin: all rec+8 = 0]
+- Found psiGetDrivingData 0x120a88 / Boot_LoadPTPData 0x1c8560 (the return path) and psiLaunchDriving 0x120af0 (writes PTP+0x97c = 1 after the copy)
+
+Stage Summary:
+- Next: write crates/nf-game/src/ptp.rs + the nf-view hook + tests + driving.md update
+- Open ([S], live check listed): the interlude-code → drive-index link lives in the hub menu (sp_level table) — not read in this window; the port uses the task's own example (castle 0x07000004 → index 1, paris_mis01) and flags it [S]
