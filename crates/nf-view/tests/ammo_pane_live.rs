@@ -58,6 +58,18 @@ fn game_bullet(elf: &[u8], kind: usize) -> [f32; 4] {
 /// The pane's count text for a state, exactly what 0x19a7f0 sprintfs at rest (0x19aad4/0x19ab18):
 /// kinds 0x14/0x1a → `clip·100/max`; kind 0x1f → the depleted `min(max−clip, max−12)` of `max−12`
 /// [M 0x19a7f0:129-136]; every other kind → "%d-%d" clip-spare (the spare = `BL+0x170+kind·2`).
+/// The pane weapons' boot-memory label ids [L ee_snapshot 0x2BF150 + w·0x10C] (+0x30 mode 0, +0x38 name):
+/// 0x06 P2K, 0x1e the sniper, 0x2a the MGL, 0x4a (its name and mode label are the same id).
+fn labels(w: u8) -> (u32, u32) {
+    match w {
+        0x06 => (0x0500_000e, 0x0500_0036),
+        0x1e => (0x0500_0010, 0x0500_0029),
+        0x2a => (0x0500_0005, 0x0500_0032),
+        0x4a => (0x0500_0042, 0x0500_0042),
+        _ => unreachable!("the pane test's four weapons only"),
+    }
+}
+
 fn pane_text(kind: u8, clip: u32, spare: u32, clip_cap: u32) -> String {
     match kind {
         0x14 | 0x1a => format!("{}", clip * 100 / clip_cap.max(1)),
@@ -86,9 +98,12 @@ fn the_four_weapons_pane_text_labels_and_icons_match_the_game() {
         // Sister: percent kinds show one number, never "clip-spare" (the Stunner's charge counts down).
         if matches!(kind, 0x14 | 0x1a | 0x1f) { assert!(!txt.contains('-')); } else { assert!(txt.contains('-')); }
         // The label ids equal the game's bytes: mode 0 = +0x30, the name = +0x38 — the sim's own
-        // table vs a fresh parse of the disc's ACTION.ELF (both off NF_ISO).
-        assert_eq!(s.weapons.fire_mode_label(w as usize, 0), field(&wd, w, 0x30), "w {w:#04x} mode-0 label id");
-        assert_eq!(s.weapons.name_label(w as usize), field(&wd, w, 0x38), "w {w:#04x} name label id");
+        // table AND a fresh parse of the disc's ACTION.ELF against the boot-memory [L] literals
+        // (ee_snapshot 0x2BF150 + w·0x10C, read once; the #[ignore]d probe re-checks all 115).
+        assert_eq!(field(&wd, w, 0x30), labels(w).0, "w {w:#04x}: the disc's mode-0 label id (+0x30) [L ee_snapshot]");
+        assert_eq!(field(&wd, w, 0x38), labels(w).1, "w {w:#04x}: the disc's name label id (+0x38) [L ee_snapshot]");
+        assert_eq!(s.weapons.fire_mode_label(w as usize, 0), labels(w).0, "w {w:#04x} mode-0 label id");
+        assert_eq!(s.weapons.name_label(w as usize), labels(w).1, "w {w:#04x} name label id");
         if w == 0x1e {
             assert_eq!(lang.bind(s.weapons.name_label(w as usize)), Some("Winter Tactical Sniper"), "the task's compare name");
             assert_eq!(lang.bind(s.weapons.fire_mode_label(w as usize, 0)), Some("Single"), "the live pass's sniper mode label");
@@ -150,7 +165,7 @@ fn the_level_start_switch_pins_the_timer_then_it_decays_to_the_rest_pane() {
 
 #[test]
 fn the_kind_1f_display_is_the_depleted_clip_of_max_minus_12() {
-    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let Some(_iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     // [M 0x19a7f0:129-136]: kind 0x1f → clip' = min(max − clip, max − 12), max' = max − 12.
     // The Samurai pair (0x32/0x33) are the kind-0x1f weapons [L ee_snapshot +0x90 = 0x1f, +0x92 = 100].
     let wd = weapon_data();
