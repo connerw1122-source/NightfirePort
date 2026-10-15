@@ -101,9 +101,15 @@ was 109f's misreading of the writer, not the game's rule.
   109f merge, which is the driver's own repro).
 - Sisters: `fix_searchlight_alarm_live` 5/5, `fix_searchlights_guards_live` 2/2, `fix_drone3_live` 2/2
   (all NF_ISO, real input path).
-- Full suite: `tools/test/suite.py` was started on the final tree (suite_gs2.out) near the deadline; read
-  the total line there (the sandbox reaps background jobs between calls — if it died, the four suites
-  above plus the 3x3 are the affected set, all green).
+- Full suite: the background nohup got reaped by the sandbox (the known issue) and there was no
+  window for all 305 binaries in the foreground; the suite ran with `--only` over the ENTIRE
+  AI/guard-affected set — `ai_live, ai_traces_live, drone_portcheck_live, fix_06_alarm_live,
+  fix_ai_remainder_live, fix_drone3_live, fix_drone4_live, fix_guard_first_shot_live,
+  fix_guard_misc_live, fix_samurai_fire_live, fix_searchlight_alarm_live,
+  fix_searchlight_remainder_live, fix_searchlights_guards_live, searchlight_live` — on the final
+  tree (merged with origin/master 2cbfd7e3): **76 passed, 0 failed, 0 ignored (6 min)**, plus the
+  two matrix runs (the 3x3 twice). The writer hunk's blast radius is the drone AI family — all of
+  it green.
 
 ## Files touched
 
