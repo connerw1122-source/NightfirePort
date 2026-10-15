@@ -3097,7 +3097,15 @@ impl Sim {
                         self.shot_tick = true;
                         // The hearing sound: the P2K's 0x403 by default, or the remapped op-1 id for other weapons.
                         // The drones' hearing list uses the sfx table's entry for this id.
+                        // fix-melee: the melee swings are NOT gunshots — the fists' fire scripts' op-1 is
+                        // 0x142 (the whoosh, frames 7/9 of 0x060006de/0x060006dd [D 07000005.bin dump]),
+                        // whose SFXOutputData hearing entry weighs 0 (inner 5, outer 30, weight 0.0 [L]) —
+                        // a punch alerts nobody until the victim screams or sees Bond. The taser-CC twins
+                        // 0x4b/0x4d swing on 0x0600048d, which carries no op-1 at all [D] — equally silent.
+                        // The old `_` arm fed both the 0x403 gunshot (weight 65, outer 40 [L]): every
+                        // punch alerted the room like a P2K shot.
                         let hearing_id = match self.gun.weapon {
+                            1 | 0x4b | 0x4d => 0x142,
                             7 | 9 => 2,
                             3 | 5 => 2,
                             0x14 => 0x1fb,

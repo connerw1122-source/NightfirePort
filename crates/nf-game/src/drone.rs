@@ -1928,23 +1928,34 @@ impl Drone {
         if d.level == 0x0700_0007 && !self.obj_armed() {
             self.fail_reason = Some(crate::ally::mission_fail_reason(5));
         }
-        if self.health <= 0.0 {
-            // 0x145f28:60-84: enemy or not, mode != 0x1E → 0x42 (the KO); 0x1E → 0xF2 (bots, not ported).
-            self.set_state(state::KNOCKED_OUT_ANIM);
-            return true;
+        // 0x145f28:69-73: outside the team-1 arm, an UNARMED victim on every level but
+        // 07000009/0700000a raises fail reason 6 (the civilians' channel 0x60, label 0x4000034
+        // [M 0x13e560 case 1/3/6/9]). On 07000007 the reason-5 arm above ran first for the same
+        // victim, so the label is the last call's — the civilians' — and both channels end up set
+        // (the drain applies this reason; the mission monitor's standing ch-0x60 hook re-sets
+        // ch 99 [M 0x1827d8:98-107]). The 05 guards are team 1: this arm never fires for them.
+        if self.team != 1 && !matches!(d.level, 0x0700_0009 | 0x0700_000a) && !self.obj_armed() {
+            self.fail_reason = Some(crate::ally::mission_fail_reason(6));
         }
         // `Drone_AlertStatusSet(2)` [M 0x145f28:30] — the port's alert-status-2 = alert ≥ 0.66
-        // (the convention crate::drone line ~2703 uses for the stun family).
+        // (the convention crate::drone line ~2703 uses for the stun family). The game stamps it
+        // before the damage; the port reaches the same value for every living victim.
         self.alert = self.alert.max(1.0);
-        self.pain_talk(d);
-        // `DroneFunc_SendHurtMessage` 0x145e28:19-57 (prop 0x32 = the scream property, the +8
-        // once-per-life bit, +0xc5 != 2): the hurt civilian SCREAMS — msg 0x12 broadcast with the
-        // victim as the alert source. The queue drains in the shared pass (the send needs the
-        // other drones, unreachable from inside this one's borrow).
-        if self.health > 0.0 && self.prop(d, 0x32) && !self.screamed {
-            self.screamed = true;
-            self.pending_shout = Some((msg::SCREAM, self.pos));
+        // 0x145f28:57-84 — the two team arms, in the game's order: team 1 KOs BEFORE the hurt
+        // message (a punched-out guard never screams); team ≠ 1 sends it FIRST — even when the
+        // punch was the kill — then KOs.
+        let ko = |s: &mut Self| {
+            // 0x145f28:60-84: mode != 0x1E → 0x42 (the KO); 0x1E → 0xF2 (bots, not ported).
+            s.set_state(state::KNOCKED_OUT_ANIM);
+        };
+        if self.team == 1 {
+            if self.health <= 0.0 { ko(self); return true; }
+            self.send_hurt_scream(d);
+        } else {
+            self.send_hurt_scream(d);
+            if self.health <= 0.0 { ko(self); return true; }
         }
+        self.pain_talk(d);
         if allow {
             // `CallAnim(0, 0x51, 0, *(Drone+0x118), 0, 0)` + both flinch stamps (0x145f28:89-94).
             self.call_anim(d, anim_state::PUNCHED, self.impact_resume, 0);
@@ -1954,6 +1965,17 @@ impl Drone {
         }
         if valid(setv) { self.set_state(setv); }
         true
+    }
+
+    /// `DroneFunc_SendHurtMessage` 0x145e28:19-57 (prop 0x32 = the scream property, the +8
+    /// once-per-life bit, +0xc5 != 2): the hurt civilian SCREAMS — msg 0x12 broadcast with the
+    /// victim as the alert source. The queue drains in the shared pass (the send needs the
+    /// other drones, unreachable from inside this one's borrow).
+    fn send_hurt_scream(&mut self, d: &Data) {
+        if self.prop(d, 0x32) && !self.screamed {
+            self.screamed = true;
+            self.pending_shout = Some((msg::SCREAM, self.pos));
+        }
     }
 
     /// `NDrone2_ObjectIsArmed` 0x178768 on this drone's own class byte: classes 2..0x47 and 0x6a..0x71 are
