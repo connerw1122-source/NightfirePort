@@ -131,3 +131,12 @@ presenter.
    line 0x06000069 shows centred at (256, 402)/(256, 422) in the 512×448 HUD space — the render at
    `--movie 07100005 --frame 700` (≈ tick 1400) should show the line's second row at y 422 when the
    text wraps past 276 px.
+
+## ntfy failed
+
+All three fallbacks ran at 2026-10-15T22:39Z; the daily message quota was already exhausted by the
+earlier session's notifications:
+
+- curl: `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+- python3 urllib: `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+- wget: exit 0, empty body (ambiguous — the quota 429 page; no message delivered beyond the earlier ones)
