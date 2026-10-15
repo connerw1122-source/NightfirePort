@@ -30,3 +30,7 @@ claimed-by: sandbox6 at 2026-10-15T19:13Z
 ## Report (done, 2026-10-15T20:37Z)
 
 Closed by the driver: the report is on `s/codename-entry` (docs/reports/codename-entry.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T20:47Z)
+
