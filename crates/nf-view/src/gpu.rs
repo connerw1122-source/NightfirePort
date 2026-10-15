@@ -528,6 +528,23 @@ impl Renderer {
     /// collision tie-break when the placement re-finds. `None` (the walk cannot run: no portals /
     /// no cel) = the fix-render3 box test everywhere, and `NF_NOPORTAL` forces it (the walk is the
     /// default again, fix-portal).
+    /// `Collide_StraddleCels` (via `Controls_StraddleTest` 0x134778:38) — does the world sphere
+    /// (centre, radius) overlap ≥2 room cels? Room-cel bboxes (`cel_boxes`, the glist bboxes
+    /// `parsemap_block_map_data_static` 0x1d1998 copied to `cel+0x40..0x58`).
+    fn straddles_2_cels(&self, centre: [f32; 3], radius: f32) -> bool {
+        let mut n = 0;
+        for &(min, max) in &self.cel_boxes {
+            let d2: f32 = (0..3).map(|k| {
+                let (lo, hi) = (min[k].min(max[k]), min[k].max(max[k])); // degenerate-safe
+                if !lo.is_finite() || !hi.is_finite() { return 0.0; }
+                let c = centre[k].clamp(lo, hi);
+                (centre[k] - c) * (centre[k] - c)
+            }).sum();
+            if d2 <= radius * radius { n += 1; if n >= 2 { return true; } }
+        }
+        false
+    }
+
     pub fn cel_visibility(&mut self, eye: [f32; 3], view_proj: [[f32; 4]; 4], world: Option<&nf_game::world::CollisionWorld>) -> Option<Vec<bool>> {
         let planes = extract_frustum(view_proj);
         let portal_enabled = std::env::var_os("NF_NOPORTAL").is_none();
@@ -784,7 +801,13 @@ impl Renderer {
                 if cel_cull && dc.layer == Layer::World {
                     let hidden = match (cell_visible, dc.node) {
                         (Some(cv), n) if n != u32::MAX => !cv[n as usize],
-                        _ => dc.cel.is_some_and(|c| !cel_visible[c as usize]),
+                        // Controls_StraddleTest 0x134778:47-57 + View_AddForcedObjects 0x1e5fb8:85-145:
+                        // a dynamic object whose world sphere straddles ≥2 room cels draws via the
+                        // forced list regardless of its home cel's visibility (the straddled-cels
+                        // visibility check at :107-145 runs for drones only — class 0x3A locks skip
+                        // it). The 0c hatch's two bottom hinges (#139/#141 [D]) straddle the upper
+                        // walkway cel and the lower display cel and must draw from the walkway side.
+                        _ => dc.cel.is_some_and(|c| !cel_visible[c as usize]) && !self.straddles_2_cels(dc.centre, dc.radius),
                     };
                     if hidden {
                         if trace { cel_culled += 1; }
