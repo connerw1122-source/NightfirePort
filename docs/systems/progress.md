@@ -68,6 +68,45 @@ the copy's row-7 ×100 [M 0x1984b0:52-54] live in `progress.rs`.
 Medals: P_NFRESULTS 0x208e78:119-146 compares `last` against the entry's thresholds
 (≥ +0x10 platinum 4, ≥ +0xC gold 3, ≥ +8 silver 2 — the doc prints silver as medal 1 in the
 compare chain; the port's `Scored.medal` follows the chain 1 bronze .. 4 platinum, 5 none).
+
+## The level-end hand-off (fix-scores-handoff, the G-045 remainder)
+
+The results data's game path: `P_NFRESULTS_Handler` 0x208e78:77 calls `PlrStat_GetScore(0)` —
+commit mode [M 0x1984b0:301-315] — with `Mission_Status() == 6` (state 6 is what the mission
+monitor set before the front end loads [M 0x182c60:85-122]); the scored entry then carries what
+the page reads: the 9 rows (count/target static, value the run's stat, +0xC ratio, +0x10 raw)
+and the totals (+0x2C base, +0x24 dif, +0x28 bonus, +0x34 last) [M 0x1984b0:100-333,
+0x208e78:80-146]. The same scoring runs at the DRIVING→ACTION program hand-off:
+`Boot_LoadPTPData` 0x1c8560 loads the PTP block 0x31c090 (0xa50 bytes; `psiGetDrivingData`
+stages the driving side's copy at 0x31b090), sets the handed-off map hash, and calls
+`PlrStat_GetScore(0)` before `ResetMap_LevelToLoad(0x7000048,0,0)` [M].
+
+`NewScoresRef` 0x30cc6c — the 0x09-map row source — is the PTPDATA tail 0x31ca38 = PTP+0x9a8,
+9 rows × 3 s32 `[value, count, target]`, row 7's value ×100 at the copy [M 0x1984b0:50-64].
+Writers/readers, exhaustively: ACTION.ELF's ONLY references are bootup 0x1c7e78:86 (the pointer
+store) and `PlrStat_GetScore` 0x1984b0:45-64 (the reader) [M the whole-decompile grep; the
+whole-ELF constant scan finds no other 0x31ca38/0x31c090 reference in ACTION.ELF, and
+DRIVING.ELF/SLUS_205.79 hardcode none of the PTP addresses — the driving side receives the block
+pointer at boot (the loader's dispatch rule, research-driving's open item)]. So nobody fills the
+rows in the shipped game — [L ee_start_05] the pointer is 0x31ca38 and the rows read zero — and
+the 0x09 maps score zero rows. The neighbouring PTP stats copy is
+`PlrStats_GetDrivingData`/`SetDrivingData` 0x199ac8/0x199b18: per ScoringTable entry, the rows
+pointer (+0x18) and the row-0 value (rows+8, the moments row) cross the hand-off at PTP 0x31c1e4
+/ 0x31c214 [M].
+
+The port's production (`Progress::finish_level` + the tick-end hook on the level-exit latch):
+at every level end the Sim builds the rows the game would hand to the results screen — the same
+formula at status 6 [M 0x1984b0:316-333] — as a plain `FinishedLevel` (the 9 scored rows, base/
+dif/bonus/last, the entry's untouched best, the would-be medal, and the `PlrMissionStats`
+snapshot the rows were produced from). Read-mode (commit = false): a mid-mission part exit
+(07000005's truck ride into 07000006 — a trigger LOAD_LEVEL, not a mission end) must not stamp
+best/last; the results page's own scoring (`menu.rs results_enter` → `get_score(..., commit=true)`,
+the game's `GetScore(0)` [M 0x208e78:77]) does the commit. The hook runs at the end of
+`Drones::tick` when the latch stands (the trigger LOAD_LEVELs, the mission-complete LevelEnd the
+viewer latches, the fail-menu paths); re-running while the latch stands is inert. Tests: the
+unit pair (`finish_level_handoff_no_kills_zero_rows` — the sister's zero rows, and
+`finish_level_handoff_kill_run`) and the NF_ISO run through the real truck-ride exit
+(`fix_scores_handoff_live`, fail-first recorded: the hook disabled → the rows are None).
 `Progress::set_level_bonus` = `Menu_SetLevelBonus` 0x1ffa10: set every counter bit ≤ medal via
 `PlrStarts_ProcessRewardCounter` 0x199210 (kind-4 descriptors spread their bit by the rank within
 the packed-word group — CastleExterior/TowerA/Tower2A share gold bits 0..2, HendersonA/

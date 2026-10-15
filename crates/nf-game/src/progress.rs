@@ -294,6 +294,50 @@ pub struct Scored {
     pub medal: u32,
 }
 
+/// The level-end score hand-off (`fix-scores-handoff`, the G-045 remainder): the rows and totals
+/// the Sim produces when a level exits — the plain data the end-of-level results screen reads.
+/// No UI; the results page (`menu.rs results_enter`) re-runs the game's own scoring on entry.
+///
+/// The game's results path is `P_NFRESULTS_Handler` 0x208e78:77 `PlrStat_GetScore(0)` — commit
+/// mode [M 0x1984b0:301-315] — with `Mission_Status() == 6` [M 0x182c60:85-122 sets state 6
+/// before the front end loads]; the scored entry then carries what the page reads [M :80-146].
+/// The same scoring runs at the DRIVING→ACTION hand-off (`Boot_LoadPTPData` 0x1c8560's
+/// `PlrStat_GetScore(0)` before `ResetMap_LevelToLoad(0x7000048)`). This production runs
+/// READ-mode (commit = false): the rows/totals are exactly what the page's entry would hold,
+/// while `best`/`last` stay the game's — a mid-mission part exit (07000005's truck ride into
+/// 07000006) must not stamp them; only the results page commits.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FinishedLevel {
+    /// The base map hash the rows were scored under (`Mission_BaseMapHCode`'s port,
+    /// `mission.base_map`).
+    pub base_map: u32,
+    /// The results-path mission status the production runs under (6 — the game's step 6 keeps
+    /// the scores only there [M 0x1984b0:316-333]).
+    pub mission_status: u32,
+    /// The entry's 9 rows after the build: count/target the static design data, value the run's
+    /// stat, ratio (+0xC) and raw (+0x10) the formula's output [M 0x1984b0:100-293].
+    pub rows: [ScoringRow; 9],
+    /// `Σ raw` [M entry +0x2C].
+    pub base: u32,
+    /// The difficulty multiplier applied [M entry +0x24; `ScoringTableDifMul` 0x2bc910].
+    pub dif: u32,
+    /// `base × dif` [M entry +0x28].
+    pub bonus: u32,
+    /// `base + bonus` — the score the results page prints [M 0x208e78:96-98 reads entry +0x34].
+    pub last: u32,
+    /// The entry's best after the production (unchanged — the read-mode call; the results page's
+    /// own `GetScore(0)` commits [M 0x1984b0:301-315]).
+    pub best: u32,
+    /// The medal the page's compare chain would award on `last` (1 bronze .. 4 platinum, 5 none)
+    /// [M 0x208e78:98-146].
+    pub medal: u32,
+    /// The mission tally snapshot the rows were produced from (`PlrMissionStats[0]` as of the
+    /// exit tick) — "the stats the run produced".
+    pub stats: PlrMissionStats,
+    /// The difficulty the production ran with (GameState+40 DECIMAL = +0x28, 0x2a3790's port).
+    pub difficulty: u32,
+}
+
 /// The whole progress layer: the port's `PlrMissionStats` + `BondMoments` + `ScoringTable`
 /// runtime + `bonus` + `sp_level` flags + the game-complete flag. Lives on `Drones` (the Sim);
 /// the menus (180-fix-menus) read it through `Drones::progress`.
@@ -338,6 +382,10 @@ pub struct Progress {
     /// page 0x40000038 while it stands [M 0x208e78:49-52]. Cleared at every SetLevelBonus entry
     /// [M :56].
     pub new_reward: bool,
+    /// The last level-end production (`finish_level`) — the score rows the game would hand to
+    /// the results screen, as plain data (fix-scores-handoff). Rebuilt on every exit tick while
+    /// the level-exit latch stands; consumed by tests/the menus, never committed back.
+    pub finished: Option<FinishedLevel>,
 }
 
 impl Default for Progress {
@@ -357,6 +405,7 @@ impl Default for Progress {
             new_scores: Some([[0; 3]; 9]),
             difficulty: 2,
             new_reward: false,
+            finished: None,
         }
     }
 }
@@ -510,6 +559,49 @@ impl Progress {
         let medal = if e.last >= th[3] { 4 } else if e.last >= th[2] { 3 }
             else if e.last >= th[1] { 2 } else if e.last >= th[0] { 1 } else { 5 };
         Some(Scored { base: e.base, bonus: e.bonus, last: e.last, best: e.best, done_better, medal })
+    }
+
+    /// The level-end hand-off (`fix-scores-handoff`): at a level exit the Sim produces the rows
+    /// the game would hand to the end-of-level results screen, as plain data (no UI). The
+    /// game's scoring moment is the results page's `PlrStat_GetScore(0)` with
+    /// `Mission_Status() == 6` [M P_NFRESULTS 0x208e78:77-146; the state-6 gate 0x182c60:85-122;
+    /// the same call at the DRIVING→ACTION hand-off, `Boot_LoadPTPData` 0x1c8560], so the
+    /// production runs the same formula at status 6 — but READ-mode (commit = false): the entry's
+    /// `best`/`last` stay the game's (a mid-mission part exit must not stamp them; the results
+    /// page's own commit, already ported in `menu.rs results_enter`, updates them). Returns the
+    /// produced `FinishedLevel` (None when the hash is not a `ScoringTable` entry) and mirrors it
+    /// on `Progress::finished` — rebuilt on every exit tick while the latch stands (the same
+    /// inputs score the same rows; the last tick's data is the final hand-off).
+    pub fn finish_level(&mut self, base_map: u32, difficulty: u32) -> Option<FinishedLevel> {
+        // The results-path status: step 6 keeps the scores only at Mission_Status 6
+        // [M 0x1984b0:316-333]; the commit flag false leaves the entry's best/last alone
+        // [M :301-315 — the param_1 != 0 arm].
+        self.get_score(base_map, 6, difficulty, false)?;
+        let idx = self.table.iter().position(|e| e.hash == base_map)?;
+        let e = self.table[idx];
+        // The page reads `last` (entry +0x34) off the committed entry; the read-mode entry
+        // carries this run's totals in base/bonus [M :294-300 — the unconditional stores], so
+        // the run's total (the page's would-be +0x34) is base + bonus.
+        let total = e.base.wrapping_add(e.bonus);
+        // The medal compare chain on the run's total [M 0x208e78:98-146 — the +0x10/+0xc/+8/+4
+        // threshold cascade].
+        let medal = if total >= e.thresholds[3] { 4 } else if total >= e.thresholds[2] { 3 }
+            else if total >= e.thresholds[1] { 2 } else if total >= e.thresholds[0] { 1 } else { 5 };
+        let out = FinishedLevel {
+            base_map,
+            mission_status: 6,
+            rows: e.rows,
+            base: e.base,
+            dif: e.dif,
+            bonus: e.bonus,
+            last: total,
+            best: e.best,
+            medal,
+            stats: self.stats[0],
+            difficulty,
+        };
+        self.finished = Some(out);
+        Some(out)
     }
 
     /// `PlrStarts_ProcessRewardCounter` 0x199210: the counter c (1 bronze .. 4 platinum) of
@@ -891,5 +983,63 @@ mod tests {
         p2.set_level_bonus(0x0700_0005, 2, 0);
         assert!(p2.has_medal(0x0700_0005, 1, 0) && p2.has_medal(0x0700_0005, 2, 0));
         assert!(!p2.has_medal(0x0700_0005, 3, 0), "the gold counter is above the silver medal");
+    }
+
+    /// The level-end hand-off (fix-scores-handoff): `finish_level` produces the rows the results
+    /// screen would read, as plain data, and a run with no kills gives the zero rows (the task's
+    /// sister). Read-mode: the entry's best/last are untouched (the commit belongs to the
+    /// results page's own `GetScore(0)` [M 0x208e78:77, 0x1984b0:301-315]).
+    #[test]
+    fn finish_level_handoff_no_kills_zero_rows() {
+        let mut p = Progress::default();
+        // A run with no kills: nothing logged. The kill rows (1 dispatched / 2 disabled /
+        // 3 surrendered), the detection row (4), the accuracy row (5, no shots) and the bonus
+        // row (8) all score zero; the time row still scores full (elapsed 0 ≤ the 540 s par).
+        let f = p.finish_level(0x0700_0005, 2).expect("07000005 is a ScoringTable entry");
+        assert_eq!(f.base_map, 0x0700_0005);
+        assert_eq!(f.mission_status, 6, "the production runs the results-path status");
+        assert_eq!(f.stats, *p.stats(), "the snapshot is the run's tally");
+        for i in [1usize, 2, 3, 4, 5, 8] {
+            assert_eq!(f.rows[i].value, 0, "row {i}: the empty tally's stat");
+            assert_eq!(f.rows[i].raw, 0.0, "row {i} scores zero on a no-kill run");
+        }
+        // The static design data survives in the hand-off rows.
+        assert_eq!(f.rows[1].count, SCORING_TABLE[1].rows[1].count);
+        assert_eq!(f.rows[1].target, SCORING_TABLE[1].rows[1].target);
+        assert_eq!(f.rows[7].raw, SCORING_TABLE[1].rows[7].target as f32, "elapsed 0 → the full time target");
+        // base = Σ raw = the time row only; difficulty 2 → ×1.0 → last = base + bonus.
+        assert_eq!(f.base, 25_000);
+        assert_eq!(f.dif, 1);
+        assert_eq!(f.bonus, 25_000);
+        assert_eq!(f.last, 50_000);
+        assert_eq!(f.medal, 1, "50000 ≥ 07000005's bronze 50000, < the silver 125000");
+        assert_eq!(f.best, 0, "the read-mode production commits nothing");
+        assert_eq!((p.table[1].last, p.table[1].best), (0, 0), "the entry's last/best stay the game's");
+        assert_eq!(p.finished, Some(f), "the hand-off mirrors on Progress::finished");
+        // Sister: re-running while the latch stands is inert (the same inputs, the same rows).
+        assert_eq!(p.finish_level(0x0700_0005, 2), Some(f));
+        // Sister: an unknown hash produces nothing.
+        assert_eq!(p.finish_level(0x0700_0048, 2), None, "the front end is not a table entry");
+    }
+
+    /// The hand-off's formula on a non-trivial tally: a kill run's dispatched row scores
+    /// `target · min(count, value) / count` [M 0x1984b0:174-191], and the snapshot carries the
+    /// stats the rows were produced from.
+    #[test]
+    fn finish_level_handoff_kill_run() {
+        let mut p = Progress::default();
+        let ms = 1; // the tally gate's playing status
+        for _ in 0..7 { p.log_enemy_dispatched(ms); }
+        p.log_health(ms, 80.0);
+        p.log_update_elapsed(12_000); // 120.00 s of the 540 s par
+        let f = p.finish_level(0x0700_0005, 3).expect("scores");
+        assert_eq!(f.stats.dispatched, 7);
+        assert_eq!(f.rows[1].value, 7);
+        let m = f.rows[1].count.min(7);
+        assert_eq!(f.rows[1].raw, f.rows[1].target as f32 * m as f32 / f.rows[1].count as f32,
+            "the generic row's raw = target · min(count, value) / count [M 0x1984b0:186]");
+        assert_eq!(f.rows[6].value, 80, "the health snapshot's fptoui [M 0x1984b0:80-81]");
+        // Difficulty 3 → the multiplier 2.0 [M 0x1984b0:294-297].
+        assert_eq!(f.dif, 2, "difficulty 3 doubles");
     }
 }

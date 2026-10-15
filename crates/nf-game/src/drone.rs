@@ -854,6 +854,11 @@ pub struct Drone {
     /// 0x15d610 disasm 0x15d754-a4]). Drained by `Drones::tick` through `foley_entry` (the game's
     /// shared gates: the 30-frame post-load, the entry's repeatDelay, the stamp-before-play).
     pub foley_reqs: Vec<usize>,
+    /// audit-sound-calls: raw `(sound id, position)` requests queued by the state arms that have
+    /// no `Drones` access — the special-death cry 0x148 (`NDrone2_DSTATE_SpecialDeath_Anim`
+    /// 0x163c68 case 5). Drained by `Drones::tick` straight into `drones.audio`. Own line (merge
+    /// lesson 4).
+    pub sfx_reqs: Vec<(u32, V3)>,
     /// `comm+0x73c`'s stand-in for `BOT_handlePain` (0x125ed8): the handle of the currently playing
     /// pain grunt, stopped before the next pool play (`Sound_Stop_Ref` 0x1de370) [M 0x126168-0x1261a0].
     pub pain_grunt: Option<u32>,
@@ -1067,6 +1072,7 @@ impl Drone {
             kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
             // fix-room-sound: the foley one-shot outbox + the pain-grunt handle (own lines — merge lesson 4).
             foley_reqs: Vec::new(), pain_grunt: None,
+            sfx_reqs: Vec::new(),
             // fix-facial3: the blink driver state + the facial script slots (own line — merge lesson 4).
             facial_state: 0, facial_timer: 0, facial_reappend: false, facial_idle: None, facial_blink: None, last_tick: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
@@ -2301,6 +2307,13 @@ impl Drone {
                 if bond_ok && near && facing {
                     self.set_death_channel();
                     self.death_pending = false;
+                    // [M NDrone2_DSTATE_SpecialDeath_Anim 0x163c68 case 5]: when the special-death
+                    // script is 0x0600021F the game plays the scripted-death cry 0x148 at the drone
+                    // (the game's `glb_players != 0` gate — the port's tick always has the player).
+                    // sound-coverage port (audit-sound-calls) — queued for the tick's drain.
+                    if self.special_death == 0x0600_021f {
+                        self.sfx_reqs.push((0x148, self.pos));
+                    }
                     // The object is the hip from here (feet + `Drone+0xA0`; the port's position is otherwise feet + 1).
                     let hip = self.root_value(d).map_or(0.0, |r| r[1]);
                     self.pos[1] += crate::damage::drone_height(hip) - 1.0;
@@ -6184,6 +6197,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
 
     pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf_formats::sfx::SfxHearing) {
         let Some(w) = d.weapons.records.get(weapon as usize) else { return };
+        // [M Bullet_init 0x12c5a0:285-291]: a weapon whose ammo type (+0x90 byte) is 0x0e — the
+        // grenade ammo pool (docs/fields/ammo-data.md rec 14: the frag/cluster grenades 0x2c-0x31's
+        // rocket/torpedo kin) — also plays the launch whoosh 0x10e at the shooter, on top of the
+        // fire sound. sound-coverage port (audit-sound-calls).
+        if w[0x90] == 0x0e { self.audio.play3d(0x10e, from, None); }
         let f = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
         for _ in 0..u32::from_le_bytes(w[0x18..0x1c].try_into().unwrap()).clamp(1, 16) {
@@ -6373,7 +6391,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 let hits: Vec<usize> = self.locks.iter().enumerate()
                     .filter(|(_, lk)| !lk.burned && Self::segment_hits_sphere(b.pos, end, lk.pos, lk.radius.max(0.5)))
                     .map(|(k, _)| k).collect();
-                for k in hits { self.locks[k].burn(&mut self.channels, frame); }
+                for k in hits {
+                    if self.locks[k].burn(&mut self.channels, frame) {
+                        // The burn-through sounds: `Lock_Update` 0x1ae3d8:90-93 plays 0x249 (the
+                        // mechanism's release clunk) and calls `Lock_Unlock`; the trail side
+                        // `Bullet_DoTrails` 0x12d890:473-478 plays 0x5dd when the burn life runs
+                        // out on the watch's beam. The port burns instantly (base 0), so both fire
+                        // at the same tick here. sound-coverage port (audit-sound-calls).
+                        self.audio.play3d(0x249, self.locks[k].pos, None);
+                        self.audio.play3d(0x5dd, self.locks[k].pos, None);
+                    }
+                }
             }
             self.bullet_path_weapons.push(b.weapon);
             let tw = d.world.segment(b.pos, end);
@@ -8250,6 +8278,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     }
                 }
             }
+            // audit-sound-calls: the state arms' raw sound requests (the special-death cry 0x148).
+            for (id, pos) in std::mem::take(&mut dr.sfx_reqs) {
+                self.audio.play3d(id, pos, None);
+            }
             if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
             // `DroneFunc_OnInitDeath`'s verdict: the FailLabel event + the fail channel [M 0x13e560
             // applied per 0x145bd0's reasons; fix-actors]. The monitor's standing hooks (ch 0x60/0x61
@@ -8963,6 +8995,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // row 6 reads; the port writes it once per tick (the game's last write wins too).
             self.progress.log_health(ms, self.health.health);
         }
+        // fix-scores-handoff (G-045 remainder): the level-end score-row production. When the
+        // level-exit latch stands at the tick's end (the trigger LOAD_LEVELs, the
+        // mission-complete LevelEnd the viewer latches, the fail-menu paths), the Sim produces
+        // the rows the game would hand to the end-of-level results screen — the fold above is
+        // done, so the snapshot is the run's final tally. The production is the read-mode
+        // scoring (no best/last commit — the results page's own GetScore(0) does that
+        // [M 0x208e78:77]); re-running while the latch stands is inert (the same inputs score
+        // the same rows).
+        if self.level_exit.is_some() {
+            let (base, dif) = (self.mission.base_map, self.difficulty);
+            self.progress.finish_level(base, dif);
+        }
         // `UpdateMusicalEvents` 0x114e70 — once per tick, after the drones (their script requests and the
         // mission's pulses are this tick's EventList) [M]. The audio layer feeds `iop_section`.
         self.prev_event2 = self.music.events[2];
@@ -9019,6 +9063,7 @@ mod tests {
             kick_sp: None, kick_node: None, ally_wait_node: None, kick_attempt: false, no_bunching: 0,
             // fix-room-sound: the foley one-shot outbox + the pain-grunt handle (own lines — merge lesson 4).
             foley_reqs: Vec::new(), pain_grunt: None,
+            sfx_reqs: Vec::new(),
             // fix-anim-events: the EventFunc outboxes (own lines — merge lesson 4).
             weapon_swap: 0, pending_melee: None, pending_weapon_swap: false, recoil_weapon: false,
             // fix-facial3: the blink driver state + the facial script slots (own line — merge lesson 4).
