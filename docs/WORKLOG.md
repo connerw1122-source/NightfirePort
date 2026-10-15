@@ -12769,3 +12769,28 @@ event on the dead-tick clock, test in crates/nf-view/tests/fix_death_anim_events
 Bond via sim.drones.health.health = 0.0 + step_bond; nothing fires while alive). Files:
 crates/nf-game/src/death.rs (new event-tick fn only, NOT death_root), the reused anim-event code,
 docs/systems/anim-engine.md, the new test. Branch cut from origin/master 0440c79c.
+- (11:25-11:50) The decompile chain pinned [M]: op-4's dispatch (0x1c1b38 case 4: kinds 0/4/5
+  ScriptFootstepFoot/Type, 1 the SMI +0x964 toggle, 2 the script's +0x70 handler — zeroed for
+  player scripts per AnimScriptInit 0x1c1600:51, 3 stop-sfx, 6 Effect_Create(1.0, animobj, obj,
+  0xc0), 7 fire); the DEAD player's consumption (obj+0xff = 0x12 [M 0x190810:72] → NOT class 3 →
+  AnimObjectUpdate 0x1befd8:184-199 takes the ScriptFootstepType arm → Effect_Create(0x42|foot) →
+  Effect_Player 0x1cec48's 0x40 arm = the footstep sound (EffectInfo+0x16) at the anim object's
+  +0x40 contact with SetAlertness(0); kind 6 → Effect_Body 0x1cf400 = the body sound
+  (EffectInfo+0x18) + ModAlertness(0.5)); the anim object's HITDATA shadow (+0x50 material,
+  +0x40 contact) is the feet ray's hit Player_FeetOnPoint 0x194188:183-191 copies in while
+  grounded (Drone_FeetOnPoint 0x140660:204 the same). The clock: 2.0 frames/dead tick [L] =
+  speed 1.0 [M 0x1c1600] × FRAME_RATE_MUL 2.0 [M GS_SetRefreshRate 0x17d2b8:15]; the death tick
+  runs the empty just-started window (1,1] (the alive path's tail AnimObjectUpdate 0x193600:358
+  ticks the just-added script the same tick), so frame 5 lands on dead tick 3. FAIL-FIRST shown:
+  the probe test on the pre-fix tree dies at "dead tick 3: frame 5's footstep sound 123 queued".
+  NOTE: nf-extract script-info prints args as HEX — the task's "frames 98/116" are 0x98=152 and
+  0x116=278 (the port's decimal Debug showed it; the census in anim-engine.md's op-4 line reads
+  decimal). Implementation: death.rs only — DeathEvent, Death.{script_time,events,footstep_right}
+  (own lines), death_script_events (the (from,to] windows over d.scripts[0x06000151], the
+  footstep/body sounds via the SurfaceSounds columns at the floor query, the body sound's hearing
+  entry at half weight), death_tick hooks (init + the per-tick call BEFORE the pane/ch62 logic —
+  the game's dead branch is AnimObjectUpdate → Player_HandleDeath [M 0x193600:317-319] and the
+  MP pause flag doesn't gate it). No drone.rs/scene.rs changes. fix_death_anim_events_live 2/2
+  (the once-at-tick mapping 5@3/8@5/152@77/278@140 with kinds/feet/sounds; the per-tick sounds
+  through flush_started position-anchored at the feet contact; the alive sister). Checkpoint
+  pushed before the docs + suite.
