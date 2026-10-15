@@ -12494,3 +12494,11 @@ Work Log (fix-sg5-casings):
 - (05:00-05:02) The fix: casing.rs `eject_bone` (the game's row-major bone transform, RNG order preserved bit-exact; `eject` delegates — guards unchanged), drone.rs `Drones.eject_gun: Option<[[f32;4];4]>` (own line) consumed in `fire_player`, scene.rs one additive hook: `self.drones.eject_gun = Some(self.gun_matrix())` (the port's Player_PositionGun 0x1a3b40).
 - (05:02-05:04) Regression sweep on the exact final tree (origin/master 2cbfd7e3 + fix): 13 binaries (all the fire/weapon/casing suites + nf-game/nf-view unit bins) — 47 passed, 0 failed, 6 ignored. Pushed ec1c5b0b. THE SANDBOX RESET at 05:04 (rootfs wiped); the branch survived on origin.
 - (05:10-05:25) Re-cloned s/fix-sg5-casings (ec1c5b0b intact), re-validated the pushed tree: rebuilt the env (rustup, ALSA prefix, work-slim + ISO), re-ran the sweep plus the weapon-asset/FX suites on the re-cloned tree — result below. Report: docs/reports/fix-sg5-casings.md.
+
+---
+Task: fix-dev-spawn-visible (109s)
+Agent: worker
+Task: a guard spawned from the dev window's NPCs page must show up and fight — both "spawn at crosshair" (MenuAction::Spawn → Dev::spawn_guard) and the skin rows (MenuAction::SpawnNpcSkin → panel::spawn_npc) log a spawn but nothing is visible near Bond at the 07000005 spawn (105, 25, 109). Diagnose (under the floor / never drawn / portal-culled / missing from the palette), fix both rows through the game's own spawn path where one exists, prove with a headless NF_ISO test through dev::apply_menu_action_to_scene + step_bond (on the floor in front of Bond, in a visible cel, posed, notices and shoots in normal mode) and a --shot render description.
+
+Work Log:
+- 06:45 UTC: branch s/fix-dev-spawn-visible from origin/master (2e5a162b), pushed. Setup reused (repo/ISO/work/nf-queue).
