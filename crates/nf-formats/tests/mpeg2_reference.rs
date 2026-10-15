@@ -34,6 +34,7 @@ fn parse_row(line: &str) -> Result<(usize, u8, u16, f32, String, Vec<u8>), Strin
 
 /// The 16×14 grid of 32×32-block luma means of one packed YUV420 frame (512×448) — the same
 /// reduction the golden stores for the reference decode.
+#[cfg(feature = "movies")]
 fn block_grid(f: &nf_formats::mpeg2::VideoFrame) -> Vec<u8> {
     let (w, h) = (f.width, f.height);
     assert_eq!((w, h), (512, 448), "the digest is for a 512x448 stream");
@@ -49,6 +50,7 @@ fn block_grid(f: &nf_formats::mpeg2::VideoFrame) -> Vec<u8> {
 }
 
 /// Mean absolute difference of two block grids.
+#[cfg(feature = "movies")]
 fn grid_mad(a: &[u8], b: &[u8]) -> f64 {
     a.iter().zip(b).map(|(x, y)| (i32::from(*x) - i32::from(*y)).abs()).sum::<i32>() as f64 / a.len() as f64
 }
