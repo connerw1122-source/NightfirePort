@@ -12904,6 +12904,47 @@ the binaries the window fit.)
   bookkeeping) + the view_time floor for the reverse. fix_switch_after_cold_load_live 2/2
   (07000016 mash + the first-possible-tick single press + the settled press; 07000012 kit 0x10
   the same). Next: merge master, restart the suite on the final tree.
+
+## read-vu1-microcode (2026-10-15, branch s/read-vu1-microcode) — started 14:00 UTC
+Task 110v (G-014): the renderer's batch semantics (signed V4-8 = normal + no-kick flag, UV use,
+entry points 0 = clipped / 2 = unclipped, lighting) are measured from the data, but the VU1
+microcode itself (ACTION.ELF .vutext 0x241c80, 0x2880 bytes, plus the DVP overlays) has never
+been read. Do: write a small VU1 disassembler in tools/ (public VU manual, cited), map the
+packet entry points (0 = clipped, 2 = unclipped), follow the unpacked qwords through the vertex
+transform / normal use / ST-Q handling / clip test / lighting / kick, write
+docs/formats/vu1-microcode.md (per entry point: input qword layout, output to the GIF,
+addresses), and mark ps2gfx.md's "medium" batch assumptions confirmed / refuted / open. No
+renderer changes. Files: tools/ (the disassembler), docs/formats/vu1-microcode.md,
+docs/formats/ps2gfx.md, docs/GAPS.md (G-014).
+- (14:00-15:00) Setup: branch from origin/master 404d7dc1, pushed with the entry. Full suite started
+  in the background early (tools/test/suite.py). The microcode: .vutext (EE 0x241c80, file 0x13bb80,
+  0x2880 bytes) — first 0x10 bytes = an upload header (DMA tag word 0x7000025c + VIF MPG 0x4a000000),
+  program = .vutext+0x10 = micro qword 0 (692 qwords per the ovlytab chunk sizes; chunks map to VU
+  byte offsets 0x0/0x800/0x1000/0x1800/0x2000/0x0). The six .DVP.overlay sections are ALL ZERO bytes
+  [D verified] — no second program exists on the disc. tools/vu1dis.py written (opcode tables from
+  PCSX2's public DisVUmicro.h/DisVUops.h, cited; ILW/SQ addressing from mVUaddrFix/VUops.cpp: VU1 data
+  = quadword-indexed ×16, ILW lanes = u16 at bytes 0/2/4/6; decoder self-tested against hand-built
+  encodings).
+- (15:00-15:15) The read (all [M], addresses = micro qwords): MSCALF 0 → 0x000 (B 0x034: vi14 = 0x400
+  = clip-enable, BAL 0x24f = JR vi01 setup), MSCALF 2 → 0x002 (same minus vi14); both set vi02 = 2 and
+  E; per-batch MSCNT resumes the dispatch loop 0x01e/0x03f (control ptr at data (vi02+20), jump table =
+  data16[vi01+6] + data16[22], JR), handlers return to the XGKICK block (0x027/0x06c), vi02 += 15, E.
+  Transform: vf20 = vf01..vf04 (data 0-3) · pos; DIV Q = 1/w; position out = FTOI4(p·Q); ST out =
+  LQIxy(B+0xc7+i)·Q with output Q = 1.0 (vf17.zw = (1,1)) — the ST·Q mechanism, port's direct-UV
+  confirmed. Clip: 3 verts/iter CLIP + FCAND 0x3ffff, AND/OR masks → trivial reject (0x0a2: NLOOP 0,
+  XGKICK, E) / pass-through (0x06c); edge interpolation = MR32 rolls + DIV Q + ABS, w forced 0
+  (MFIRw vf27, vi00); 5 plane masks 0x800/0x400/0x200/0x100/0x80 drive the emitters; output NLOOP
+  counter vi11 written via ISW.w (0x099); output = double-buffered data 0x25/0x3e (selector toggled at
+  0x1c5-0x1d0, init by entry-0's continuation 0x039-0x03d), one XGKICK per batch. No lighting anywhere
+  in the read paths. Normals/RGBA ride the in-place rewritten batch (stride-3 record walk confirmed at
+  0x26f/0x27e; UV at B+0xc7 confirmed).
+- (15:15) Docs: docs/formats/vu1-microcode.md (new), ps2gfx.md confidence updates (entries/UV/lighting
+  → confirmed; normal w byte stays medium), GAPS.md G-014 marked done-with-remainder. Open: handlers
+  0x2e0-0x50e (~40%: the w-flag consumption, the skinning palette walk at 0x4f4-0x50c, 14 lower-op
+  words 0x810273ff-class the public tables lack — LQD-like, in the skin-dispatch save/restore around
+  the 0x24f JR-vi01 trampoline). Live checks listed in the doc (5 PCSX2 items; no nf-view spots — no
+  renderer changes).
+
 - (13:05-13:35) Final-tree verification: merged origin/master (815714d6, WORKLOG both kept); the
   refinement pushed (the request write also allowed during the retarget's reverse — the game's
   case list allows state 2 and case 2's tail applies the LATEST +0x63 at the stop [M 0x1a2e38
@@ -12940,3 +12981,79 @@ Work Log (drive-refpack):
 - (16:00-16:10) Research: the game's own RefPack decompressor found and disassembly-verified — DRIVING.ELF 0x00323bb0 (gate: byte[1]==0xFB, flags 0x10/0x90 accepted, 0x1E/0x9E → unregistered callback at 0x3C8150 → always fails), 0x00323e98 (decode: header bit 0x80 → 4-byte size, bit 0x01 → skip same-width compressed-size field; opcode loop), 0x00323cc8 (size probe; quirk: ignores bit 0x01). ACTION.ELF has NO RefPack decompressor (negative search). Callers: FUN_003069c0/00306b38 (read+decompress), the VIV layer FUN_002d7338 → 002d7138/002d7400 → 003069c0.
 - (16:10-16:20) Cross-check built first (scratch, not committed): Python decode from the disassembled semantics over ALL RefPack entries of the 8 mission VIVs (the only archives with refpack streams; census [D] says MISC all plain, MUS/SPE all audio): 1,126/1,126 decompress to EXACTLY their header-announced size AND consume the stream to the last byte; census counts match (146/82/125/150/114/184/168/157); paris_mis01.crp 2,123,627 → 6,826,240 (the doc's 6,825,216 was a transcription error — size-field bytes 10 fb 68 29 00). Divergence from the published spec CONFIRMED EMPIRICALLY: the public 0x00-0x7F ordering (literals-first, (op&3)+1) fails 1,123/1,126 streams; the game's ordering (D1 before literals, count op&3) passes all.
 - (16:20-16:35) crates/nf-formats/src/refpack.rs (new, ~150 lines + 9 unit tests on hand-built streams covering every opcode class: header variants 0x10/0x90/0x11/0x91, pure literal runs, 00-7F with/without literals + 10-bit offset, 80-BF prefixed literals + 14-bit offset, C0-DF RLE + 17-bit offset with the 0x10000 bit, all four stop variants, six malformed-stream error cases, a round-trip on the measured default.tun keys). lib.rs: one-line `pub mod refpack;`. Golden driving_refpack.tsv (1,126 rows: key=archive#table-index cross-referencing bigf_entries.tsv, entry, compressed, decompressed, sha1) + 2 golden tests in driving_golden.rs (decode+compare with tamper sister; coverage vs the census split). All 6 driving_golden tests green with NF_DRIVING_REFPACK set.
+
+
+## driving-input-path (2026-10-15, branch s/driving-input-path) — started 14:08 UTC
+
+Task 110w (G-004, U-003): the driving levels' input path from DRIVING.ELF is unported. Plan: (1)
+find the pad read, dead-zone chop/scale, steering/throttle/brake mapping and ramps in
+work/decomp/DRIVING.ELF, document in docs/systems/driving-input.md with addresses, compare with
+the on-foot ACTION.ELF path (input.md §2: threshold 40, scale 127/87); (2) port as pure module
+crates/nf-game/src/input/driving.rs (raw pad bytes in, vehicle controls out) with bit-exact unit
+tests; (3) map keyboard+mouse bindings onto it, note where a driving level would call it, don't
+wire the driving levels. Files: input/driving.rs (new), docs/systems/driving-input.md (new),
+docs/GAPS.md (G-004), docs/UNKNOWNS.md (U-003).
+- (14:06-15:20) driving-input-path (G-004/U-003) done on this branch. The decode: the SYM hint
+  addresses stay absent [M-negative], but our DRIVING.ELF matches the Raikaru shipped-ELF layout —
+  PS2PadDevice::PollDevice = FUN_00169288 [M]. The device vtable is 8-byte-stride (adj,func) at
+  0x374880, vptr at obj+0x18 [M 0x167bc8 pattern]; slots: 2 = the InputTable registration
+  (FUN_00168b08, 32 named values ALX/ALY/ARX/ARY + 12 AButton pressures + 16 DButton bits,
+  records 0x34 = kind+name+4 buffer pointers), 3 = PollDevice, 4 = value count (32), 5 = HasChanged.
+  PollDevice [M 0x169288, disasm-checked]: axes = LX, −LY, RX, −RY through b*0x3c008081f−1
+  (0x3c008081 = exactly f32(2/255) [M 0x169218]), all-sticks-zero guard zeroes only the axes,
+  then the dead zone FUN_00167c48(−0.3, 0.3) = strict lo<v<hi → 0 with NO rescale [M 0x167c48] —
+  a different mechanism from on-foot's byte threshold 40 + 127/87 (input.md §2). Pressures
+  b/192 capped 1 [M 0x169248]; digital mode 4 remaps DButton floats {29,31,28,30,20..} over the
+  AButton slots. The action layer: FUN_00168678 evaluates per-value 0xc-byte bindings {type,arg,
+  action} through 7 helpers (pressed/released edges 0.5/−0.5, crossings, centre ±0.2 [0x3e4ccccd],
+  auto-repeat with the strict `last+delay < now` clock and repeat state stored in message buffers
+  C/D), sends {action, device, value} via FUN_00165850 (ids 1..0x40; 0x1f FIRESECONDARY dropped
+  behind DAT_00339f54). Action ids from the .data pairs at 0x32c098 (STEER=1 .. RESUMEAUTODRIVE=0x40).
+  NO ramps in the input path [M-negative] — the only time-based behaviour is the auto-repeat.
+  Port: crates/nf-game/src/input/driving.rs (pure; wired via one `pub mod driving;` line in
+  input.rs) with 11 bit-exact unit tests; keyboard+mouse → RawPadSlot mapping marked [S] (the
+  shipped bindings live in Master.def/FrontEnd.def, not extractable here). Docs:
+  docs/systems/driving-input.md (new), GAPS G-004 closed, UNKNOWNS U-003 partial. Suite on the
+  final tree: nf-game lib 181/0 (the 11 driving tests inside), nf-formats 64/0 + integration
+  (driving_golden 4 skips without the disc folder, weapon_live 1/0, pss_movies_live 3/0,
+  exact_vs_host_probe 3/0, facial_probe 1/0), nf-audio 9/0, nf-view 8/0, nf-game integration
+  23 bins 99/0; disc_golden 3 failed = the allowed slim-ISO trio. Total 373 passed / 3 allowed
+  failures / 1 ignored. The sandbox kills background jobs between tool calls, so the suite ran
+  as foreground chunks (scripts/run_suite_chunks.py) instead of the nohup runner.
+
+- (15:52) Final-tree correction: after merging origin/master a2958c03 the priority suite on the
+  merged tree gives nf_game lib 186/0 (the 11 driving tests inside), disc_golden 11/3 (the allowed
+  trio), driving_golden 4/0 (disc-folder skips), ~40 integration bins green, probe_pylon_render
+  down on the no-GPU wgpu adapter (known environment class). The 373/3/1 line above describes the
+  pre-merge tree; docs/reports/driving-input-path.md carries both.
+- find-corona-creator (U-042 / G-034, branch s/find-corona-creator, cut from origin/master cf4f33cd):
+  hunting the runtime creator of class-0x45 coronas (Corona_Update's LOS-fade class). Plan: scan
+  every control_create_object caller passing 0x45 + control_funcs slot assignments across
+  ACTION.ELF (Script_CreateEntity 0x1d8968's type switch, the searchlight/light builders, the
+  vehicle/explosion code); if a creator exists port it + the LOS fade into crates/nf-game/src/
+  corona.rs with an NF_ISO test on a level that creates one, else prove the full-caller scan and
+  close U-042 as dead code.
+- find-corona-creator (14:12-14:50): the U-042/G-034 hunt is a **dead-code closure**. The class
+  byte is obj+0xFF [M Control_DeleteAllObjectsOfType 0x1349e8:11]; the dispatcher calls
+  control_funcs[class] with stride 0xC (85 entries x {update,collide,third}) [M 0x1336f8:62-64],
+  and control_funcs[0x45] = {Corona_Update 0x18da78, NULL, NULL} [M table @0x26f890]. The create
+  helpers never write +0xFF, so a raw-opcode scan of ACTION.ELF's .text (322k words) was run:
+  exactly 110 `sb …,0xFF` stores, every one an immediate class ≠ 0x45 (the 3 param-looking sites
+  are constants: addiu $a2,0x27 @0x17e93c Hurt, $a2,0x25 @0x1a9d40 SS, $a3,0x40 @0x1b2704
+  SoundTrigger); no sw@0xFC/sh@0xFE on object bases (16 hits are AI-route/menu/MPEG structs; the
+  sq-class hits are VU0 sdc2 stack spills); no memcpy into the obj+0xF0..FF window;
+  control_funcs is read-only in code (2 lw refs, 0x133184 + 0x1337f0); Script_CreateEntity
+  0x1d8968's kind switch yields classes {0x20,0x2D,0x39,0x21,0x1D,pickup,0x2F,0x32,0} only;
+  searchlight 0x22, vehicles 0x28/0x4A/0x4D/0x3B, explosion/debris 0x21/0x10; no direct
+  jal 0x18da78; DRIVING.ELF has no corona symbols. Corona_Create 0x18da00's only caller is
+  parsemap case 0xFC (0x1d04f0:525) and it makes CLASS-1 objects (+0xFF=1) — the ported static
+  path. Corona_Update's own mechanism (parity guard vs obj+0xF4, Collide_LineOfSight viewer→corona,
+  alpha +0x106 ±0x10/tick, flags bit 0x2000) documented unported. New docs/systems/corona.md;
+  U-042 + G-034 closed; corona.rs doc comment sharpened. No gameplay code change, no new test
+  (nothing to reproduce — the symptom is the absence of an object no disc path can create).
+- (15:24) Merged origin/master a2958c03 into the branch (WORKLOG both kept; conflicts: none but
+  the WORKLOG end-append). The pre-merge tree's fast-runner partials: 253 binaries run, every
+  non-environmental one green; the 6 fails are the known environmental set — disc_golden ×3
+  (slim ISO) + the no-GPU pylon set ×3 (fix_0c_pylon_live ×2 + probe_pylon_render, wgpu
+  "adapter: NotFound" — the sandbox has no GPU adapter; same set WORKLOG fix-death-retry-boost
+  recorded). The required final-tree suite restarted on the merge (totals in the report).
