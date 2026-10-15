@@ -1524,21 +1524,15 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
     let lbl = |id: u32, fb: &str| -> String { let s = bind(id); if s.is_empty() { fb.into() } else { s } };
     // The backdrop plate (45,107,550×266) TEX 0x03000070 [L the page's 0x10000001 control].
     tex_quad_or_plate(h, textures, 0x0300_0070, 45.0, 107.0, 550.0, 266.0, [0.0, 0.0, 512.0, 256.0], gs(0x7f7f7f, 0xff));
-    // fix-pause-menu2: THE FIGURE — the disc texture 0x030000db decodes 8bpp through its own
-    // palette: the figure's texels are ALL index 0x43 whose palette entry is pure WHITE [L the
-    // retail palette pal[067]=ffffff80; the index histogram: a flat run of 987 0x4343 words in
-    // the figure's bbox x29..62 y15..125 of the 64×128 word view], and the palette-card blobs sit
-    // in the LEFT half of the 128×128 texture — the control's uv rect samples the right half
-    // only. The control carries msg 0x6c = 0x100 [M P_PAUSE_Handler 0x203c28:91 → Label_Update
-    // 0x218cb8:173], and psiDrawSprites draws flags 0x100 with ALPHA_1 = 0x48 = (Cs−0)·As + Cd
-    // [M 0x120e68:56-68] — additive: the black background adds nothing (it vanishes over the
-    // panel) and the white figure takes the sprite's orange modulation. The port draws the right
-    // half through blend 1 (the port's additive = the game's 0x48 in gpu.rs) tinted orange
-    // [S — the control's colour word was not parsed; the live check compares the tint].
+    // THE FIGURE: control 0x10000184 draws texture 0x030000db, whose disc texels are only a placeholder (palette
+    // blobs and a basketball player) — the game overwrites them every other paused frame with the burning woman
+    // (`psiDecompressWoman` 0x1202a8, crate::woman: the archive's "woman" mask filled from the fire texture 0x030000da,
+    // through 0x030000da's CLUT). The loader seeds the HUD texture with the first frame and the frame loop advances
+    // it while the page shows. The control carries msg 0x6c = 0x100 [M P_PAUSE_Handler 0x203c28] and psiDrawSprites
+    // draws flags 0x100 with ALPHA_1 = 0x48 = (Cs−0)·As + Cd [M 0x120e68:56-68]: additive, the black around her adds
+    // nothing. PCSX2 (07000005 fail menu, 2026-10-15): the fiery woman with a pistol on the panel's right.
     {
-        // uv 64..128 × 0..128 of the 128×128 texture — the figure half [L the index histogram];
-        // blend 1 = the game's flags-0x100 additive (gpu.rs), the orange modulation [S above].
-        h.quad(Anchor::Centre, 0, 0x0300_00db, 1, mx(385.0), my(121.0), mx(202.0), my(218.0), [64.0, 0.0, 64.0, 128.0], (false, false), gs(ORANGE, 0x80));
+        h.quad(Anchor::Centre, 0, 0x0300_00db, 1, mx(385.0), my(121.0), mx(202.0), my(218.0), [0.0, 0.0, 128.0, 128.0], (false, false), gs(0x808080, 0xff));
     }
     // The four tabs [L the page's four type-1 controls 0x10000028 at (84/199/339/465,120,107/132/118/90×16),
     // LBL 0x167 MISSION / 0x176 OBJECTIVES / 0x168 CONTROLS / 0x169 SCORE; base colour 0x7d6d59ff →
@@ -1708,7 +1702,8 @@ fn results_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: 
             // The fail menu's art [L page 0x40000042's controls: the plate 0x10000001 (45,107,550×266)
             // TEX 0x03000070, the Bond image 0x10000184 (385,121,202×218) TEX 0x030000db].
             tex_quad_or_plate(h, textures, 0x0300_0070, 45.0, 107.0, 550.0, 266.0, [0.0, 0.0, 512.0, 256.0], gs(0x7f7f7f, 0xff));
-            tex_quad_or_plate(h, textures, 0x0300_00db, 385.0, 121.0, 202.0, 218.0, [0.0, 0.0, 128.0, 128.0], gs(0x7f7f7f, 0xff));
+            // The burning woman, as on the pause page (crate::woman; flags 0x100 additive).
+            h.quad(Anchor::Centre, 0, 0x0300_00db, 1, mx(385.0), my(121.0), mx(202.0), my(218.0), [0.0, 0.0, 128.0, 128.0], (false, false), gs(0x808080, 0xff));
             // The header (105,120,431×16) LBL 0x2fd "Mission Failed" [L the page's 0x10000001 m0x18].
             h.text(Anchor::Centre, font, -2, &lbl(0x2fd, "MISSION FAILED"), mx(105.0 + 215.0), my(120.0 + 8.0), false, bright, true);
             // The rows [L the 0x100001a4 list (197,186,246×115) m0x11 rows 0x5bc "R E P L A Y" /

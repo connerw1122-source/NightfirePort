@@ -29,6 +29,7 @@ pub mod scene;
 pub mod replay;
 pub mod panel;
 pub mod weapon_assets;
+pub mod woman;
 /// The weapon matrix (task 100d): every on-foot level × every weapon, measured headless.
 pub mod matrix;
 
@@ -740,6 +741,20 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         hud: nf_formats::hud::HudTables::from_action_elf(&elf).map_err(|e| eprintln!("HUD tables: {e}")).ok(),
     };
     let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
+    // The pause/fail menus' burning woman [M `psiDecompressWoman` 0x1202a8]: the archive's kind-16 "woman" run-length
+    // mask filled from the fire texture 0x030000da, drawn into 0x030000db's texels through 0x030000da's CLUT (the
+    // disc's 0x030000db is a placeholder). The HUD texture starts on the first decoded frame.
+    {
+        let tex = |h: u32| level.maps.iter().flat_map(|m| m.textures.iter()).find(|t| t.hashcode == h);
+        if let (Some(e), Some(fire)) = (lb.entries.iter().find(|e| e.kind == 16), tex(0x0300_00da)) {
+            let mut w = woman::Woman::new(lb.data(&data, e).to_vec(), fire.frame(0).to_vec(), fire.palette_rgba8());
+            w.tick();
+            if let Some((_, t)) = scene.hud_textures.iter_mut().find(|(h, _)| *h == 0x0300_00db) {
+                if t.width as usize == woman::W && t.height as usize == woman::H { t.rgba = w.rgba(); }
+            }
+            scene.woman = Some(w);
+        }
+    }
     // The HUD's language strings (`fix-hud`): `Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` — the
     // NTSC-U default is `USATxt.dat` [D FILES.BIN; FNames 0x244680]. Parsed per its on-disc layout.
     if let Some(s) = scene.sim.as_mut() {
@@ -1502,6 +1517,8 @@ struct App {
     prev_lock_ch: bool,
     /// Render interpolation state: the cameras and palettes of the last two ticks, and whether a tick ran this frame.
     ticked: bool,
+    /// This frame's 60 Hz tick count (the burning woman advances once per tick while a paused page shows her).
+    frame_ticks: u32,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -2302,6 +2319,7 @@ impl ApplicationHandler for App {
                     // G-043: the loop's tick scheduling, extracted verbatim into `ticks_for_frame`
                     // (the fps-determinism test drives the same arithmetic headless).
                     let elapsed = ticks_for_frame(&mut self.anim_time, dt, max_ticks);
+                    self.frame_ticks = elapsed;
                     // fix-ingame-dev-menu: the open menu pauses the sim — 0 ticks unless F11's
                     // one-shot step was pressed (`paused_tick_count`).
                     let n_ticks = match self.dev.as_deref_mut() {
@@ -2557,6 +2575,16 @@ impl ApplicationHandler for App {
                         // fix-pause-menu2: the OBJECTIVES tab's rows come from the sim's mission
                         // states (Mission_ObjectiveState's data [M 0x204408:251-271]; state 4 =
                         // the done marker), refreshed while the pause page is up.
+                        // The burning woman (crate::woman): `Game_Run` 0x1c9790:36-41 runs `psiDecompressWoman` once per
+                        // frame in the paused branch — the pause page and the fail menu both pause the game.
+                        let shows_woman = fe.page == menu::Page::Pause || (fe.page == menu::Page::Results && fe.outcome == menu::Outcome::Failed);
+                        if shows_woman {
+                            if let Some(w) = self.scene.woman.as_mut() {
+                                let mut changed = false;
+                                for _ in 0..self.frame_ticks { changed |= w.tick(); }
+                                if changed { g.renderer.update_woman(&g.queue, &w.rgba()); }
+                            }
+                        }
                         if fe.page == menu::Page::Pause {
                             if let Some(sim) = self.scene.sim.as_ref() {
                                 fe.pause_objectives = nf_game::mission::LEVELS.iter().enumerate()
@@ -2719,6 +2747,15 @@ pub fn run() -> Result<()> {
         // first, so Bond is placed for the feature test and the rendered frame shows it.)
         let mut scene = scene;
         if let Some(n) = &scenario { apply_scenario(&mut scene, n); }
+        // The burning woman for the paused-page renders: advance her by the shot's tick count, as the paused frames
+        // would (crate::woman), so `--page pause|failed --frame N` shows frame N/2 of her loop.
+        if args.iter().position(|a| a == "--page").and_then(|i| args.get(i + 1)).is_some_and(|p| p == "pause" || p == "failed" || p == "results") {
+            if let Some(w) = scene.woman.as_mut() {
+                for _ in 0..time as u32 { w.tick(); }
+                let rgba = w.rgba();
+                if let Some((_, t)) = scene.hud_textures.iter_mut().find(|(h, _)| *h == 0x0300_00db) { if t.rgba.len() == rgba.len() { t.rgba = rgba; } }
+            }
+        }
         if let Some(sim) = scene.sim.as_mut() {
             // `--pull 100,130`: the trigger is pressed on those ticks (one tick each).
             let pulls: Vec<u32> = match args.iter().position(|a| a == "--pull") {
@@ -2839,7 +2876,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, };
     if dev {

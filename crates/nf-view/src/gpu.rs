@@ -219,6 +219,8 @@ pub struct Renderer {
     hud_sub_pipeline: wgpu::RenderPipeline,
     hud_vbuf: wgpu::Buffer,
     hud_bgs: Vec<wgpu::BindGroup>,
+    /// The burning woman's updatable HUD texture (0x030000db): (texture, width, height).
+    woman_tex: Option<(wgpu::Texture, u32, u32)>,
     /// fix-menu-movies2: the hud bind-group layout + sampler. The ONE movie plane (fix-movie-playback's
     /// `movie_tex`/`movie_bg`) builds its bind group from them in render(); the menu's looping backdrop
     /// and the intro draw through the same plane.
@@ -437,6 +439,26 @@ impl Renderer {
         let mut tex_bgs = vec![make_tex(1, 1, &[255, 255, 255, 255])];
         let mut tex_frames = vec![(0, 1, 1)];
         let hud_bgs = std::iter::once(make_tex(1, 1, &[255, 255, 255, 255])).chain(scene.hud_textures.iter().map(|(_, t)| make_tex(t.width, t.height, &t.rgba))).collect();
+        // The burning woman's texture (0x030000db, crate::woman): its own updatable texture — the frame loop rewrites its
+        // texels while a paused page shows it. Its bind group replaces the static one built above.
+        let mut hud_bgs: Vec<wgpu::BindGroup> = hud_bgs;
+        let woman_tex = scene.hud_textures.iter().position(|(h, _)| *h == 0x0300_00db).map(|i| {
+            let t = &scene.hud_textures[i].1;
+            let size = wgpu::Extent3d { width: t.width, height: t.height, depth_or_array_layers: 1 };
+            let tex = device.create_texture(&wgpu::TextureDescriptor {
+                label: Some("woman"), size, mip_level_count: 1, sample_count: 1, dimension: wgpu::TextureDimension::D2,
+                format: wgpu::TextureFormat::Rgba8Unorm, usage: wgpu::TextureUsages::TEXTURE_BINDING | wgpu::TextureUsages::COPY_DST, view_formats: &[],
+            });
+            queue.write_texture(
+                wgpu::TexelCopyTextureInfo { texture: &tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+                &t.rgba, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * t.width), rows_per_image: Some(t.height) }, size);
+            let view = tex.create_view(&Default::default());
+            hud_bgs[i + 1] = device.create_bind_group(&wgpu::BindGroupDescriptor {
+                label: None, layout: &tbgl,
+                entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::TextureView(&view) }, wgpu::BindGroupEntry { binding: 1, resource: wgpu::BindingResource::Sampler(&sampler) }],
+            });
+            (tex, t.width, t.height)
+        });
         for t in &scene.textures {
             tex_frames.push((tex_bgs.len(), 1 + t.more.len() as u32, t.rate));
             tex_bgs.push(make_tex(t.width, t.height, &t.rgba));
@@ -505,7 +527,7 @@ impl Renderer {
         // movies.md §Presentation], so the quad draws BEFORE the HUD runs (under the page
         // controls); state 6 suppresses the overlay while its movie plays, so the draw position
         // is equivalent there.
-        Renderer { snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
+        Renderer { woman_tex, snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
     }
 
     /// The game's depth-0 pyramid for the walk [M `Vision_Calculate_View_Fustrum` 0x1e7df8,
@@ -528,6 +550,16 @@ impl Renderer {
     /// collision tie-break when the placement re-finds. `None` (the walk cannot run: no portals /
     /// no cel) = the fix-render3 box test everywhere, and `NF_NOPORTAL` forces it (the walk is the
     /// default again, fix-portal).
+    /// Upload the burning woman's current frame (crate::woman) into her HUD texture.
+    pub fn update_woman(&self, queue: &wgpu::Queue, rgba: &[u8]) {
+        let Some((tex, w, h)) = self.woman_tex.as_ref() else { return };
+        if rgba.len() != (*w * *h * 4) as usize { return; }
+        let size = wgpu::Extent3d { width: *w, height: *h, depth_or_array_layers: 1 };
+        queue.write_texture(
+            wgpu::TexelCopyTextureInfo { texture: tex, mip_level: 0, origin: wgpu::Origin3d::ZERO, aspect: wgpu::TextureAspect::All },
+            rgba, wgpu::TexelCopyBufferLayout { offset: 0, bytes_per_row: Some(4 * w), rows_per_image: Some(*h) }, size);
+    }
+
     pub fn cel_visibility(&mut self, eye: [f32; 3], view_proj: [[f32; 4]; 4], world: Option<&nf_game::world::CollisionWorld>, doors: Option<&[bool]>) -> Option<Vec<bool>> {
         let planes = extract_frustum(view_proj);
         let portal_enabled = std::env::var_os("NF_NOPORTAL").is_none();
