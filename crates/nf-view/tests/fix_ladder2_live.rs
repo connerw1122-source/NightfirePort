@@ -28,7 +28,42 @@ fn load(iso: &str) -> Sim {
 }
 
 /// Walk Bond into the nearest ladder and return (grab tick, ladder). Mirrors fix_ladder_live's drive.
+/// Per tick it prints the pick's two stages (fix-ladder-water2's regression diagnostics): the stage-1
+/// sphere distance vs the ×1.5 reach and the stage-2 mesh-column decomposition, plus the substate.
+fn pick_diag(lad: &nf_game::ladder::Ladder, pos: [f32; 3], radius: f32, cc: f32) -> String {
+    let a = [pos[0], pos[1] + 0.55, pos[2]]; // the WALK arm's A [M Player_Collision 0x194df0 case 0/6]
+    let b = [pos[0], pos[1] + radius - cc, pos[2]]; // B = pos + up·(+0x7CC − cc), the radius slot's own base
+    let ab = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let ap = [lad.centre[0] - a[0], lad.centre[1] - a[1], lad.centre[2] - a[2]];
+    let ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+    let t = if ab2 < 1e-9 { 0.0 } else { (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab2 };
+    let t = t.clamp(0.0, 1.0);
+    let cx = a[0] + ab[0] * t - lad.centre[0];
+    let cy = a[1] + ab[1] * t - lad.centre[1];
+    let cz = a[2] + ab[2] * t - lad.centre[2];
+    let dist = (cx * cx + cy * cy + cz * cz).sqrt();
+    let reach = lad.radius * 1.5 + radius;
+    let dx = pos[0] - lad.centre[0];
+    let dz = pos[2] - lad.centre[2];
+    let (s, c) = lad.yaw.sin_cos();
+    let frontal = dx * s + dz * c;
+    let lateral = dx * c - dz * s;
+    format!("s1 dist {dist:.3}/{reach:.3}{} s2 front {frontal:+.3} (≤{radius}) lat {lateral:+.3} (≤{:.2})",
+        if dist <= reach { "✓" } else { "✗" }, 0.4 + radius)
+}
+
 fn grab_nearest_ladder(sim: &mut Sim) -> (usize, nf_game::ladder::Ladder) {
+    // The level-start NIS (fix-cutscenes) arms on the FIRST step and step_bond zeroes the input and
+    // skips the player tick while `disabled` — the walk below would never run (the 109i2 regression's
+    // root: the old loose pick grabbed the FROZEN Bond standing 1.13 off the plane, which the game's
+    // walk-capsule refine never does). Skip it the way the game lets the player — hold the skip
+    // action until control returns (the fix_ladder_live load pattern) — and only then place Bond.
+    for t in 0..3000 {
+        if t >= 1 && !sim.disabled { break; }
+        if sim.disabled { sim.drones.scripts.skip_request = true; }
+        sim.step_bond(Default::default(), false, false, false);
+    }
+    assert!(!sim.disabled, "07000002's level-start cut-scene never handed control back");
     let start = sim.bond.pos;
     let li = (0..sim.ladders.len()).min_by(|a, b| {
         let d = |l: &nf_game::ladder::Ladder| (l.centre[0] - start[0]).powi(2) + (l.centre[2] - start[2]).powi(2);
@@ -42,9 +77,19 @@ fn grab_nearest_ladder(sim: &mut Sim) -> (usize, nf_game::ladder::Ladder) {
     let yaw = lad.yaw + std::f32::consts::PI;
     sim.bond = nf_game::player::Bond::stand_at(&sim.world, stand, yaw);
     sim.bond.yaw = yaw;
+    eprintln!("ladder centre {:?} r {} yaw {} → stand {stand:?} yaw {yaw}", lad.centre, lad.radius, lad.yaw);
     let fwd = nf_game::player::Input { forward: 1.0, ..Default::default() };
     for t in 0..900 {
+        // The level's scripts grab Bond into cut-scenes within seconds of any step — every tick
+        // carries the game's own skip action like the walkreal walker [M nis.rs; the
+        // fix_ladder_water_live::step pattern]. While one plays the input is zeroed (the freeze
+        // above); between them the walk advances.
+        if sim.disabled { sim.drones.scripts.skip_request = true; }
         sim.step_bond(fwd, false, false, false);
+        eprintln!("t{t}: dis {} sub {} pos {:?} cc {:.3} local {:?} grd {} {} {}", sim.disabled, sim.bond.substate, sim.bond.pos, sim.bond.cc,
+            sim.bond.local, sim.bond.grounded,
+            pick_diag(&lad, sim.bond.pos, nf_game::player::WALK_PICK_RADIUS, sim.bond.cc),
+            if sim.bond.regrab != 0 { format!("regrab {}", sim.bond.regrab) } else { String::new() });
         if sim.bond.substate == nf_game::player::SS_CLIMB { return (t, lad); }
     }
     panic!("walking into the ladder never attached");
