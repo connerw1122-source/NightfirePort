@@ -514,10 +514,11 @@ pub struct HudState {
     pub msgs: std::collections::VecDeque<Msg>,
     /// How many `drones.taken` events `hud_tick` has converted into messages.
     pub taken_seen: usize,
-    /// `BL+0x95E`: 60 ticks after a weapon whose record's +2 word changed; the ammo pane shows the
-    /// fire-mode label bright while it runs, then the weapon name (`HUD_UpdateAmmoPane` 0x19a7f0).
+    /// `BL+0x95E`: re-set to 60 every frame a differing switch request is pending, then −1/frame;
+    /// while it runs the ammo pane shows the weapon name alone (`HUD_UpdateAmmoPane` 0x19a7f0).
     pub weapon_label_timer: u8,
-    /// `obj+0x63`: the weapon id the HUD last saw (the timer's change test) [M 0x19a7f0:206-213].
+    /// Retired by fix-ammo-pane: the timer arms on the pending request (drone+0x63 vs +0x62), not
+    /// on a last-seen weapon id. Kept so existing saves/replays keep their layout.
     pub hud_weapon: u8,
     /// The health pane's `CrouchIconTimer` (60 after Bond stands; fades sprite 19 over the last 30)
     /// [M `HUD_UpdateHealthPane` 0x19b9c8:305-328].
@@ -3293,17 +3294,21 @@ impl Sim {
     /// `Text_AddMsg` 0x1b0c30; `Text_UpdateMsg` 0x1b11d8 decrements the head's time by FRAME_RATE_MUL
     /// = 1 and deletes it at ≤ 0).
     fn hud_tick(&mut self) {
-        // The weapon-name timer: set to 60 when the HUD's weapon id differs from the last seen one and
-        // the two records' +2 words differ [M 0x19a7f0:206-213]; counts down every frame.
+        // The weapon-name timer (`HUD_UpdateAmmoPane` 0x19a7f0:212-217): while a switch request
+        // differs from the current weapon (drone+0x63 vs +0x62) and the two records' +2 words
+        // differ, the timer is RE-SET to FRAME_RATE (60) every pending frame — the name covers the
+        // whole draw animation plus the 60-tick decay [M]. fix-ammo-pane: the old arm-on-flip fired
+        // once at the completion tick, so the port's name window missed the pending draw entirely
+        // and ran 60 ticks from there; the game arms through it.
         let w = self.gun.weapon;
-        if self.hud.hud_weapon != w && w != 0 {
-            let changed = match (self.weapons.records.get(self.hud.hud_weapon as usize), self.weapons.records.get(w as usize)) {
+        let req = self.gun.switch_request;
+        if req != 0 && req != w {
+            let changed = match (self.weapons.records.get(w as usize), self.weapons.records.get(req as usize)) {
                 (Some(a), Some(b)) => a[2..4] != b[2..4],
                 _ => false,
             };
             if changed { self.hud.weapon_label_timer = 60; }
         }
-        self.hud.hud_weapon = w;
         self.hud.weapon_label_timer = self.hud.weapon_label_timer.saturating_sub(1);
         // The crouch icon: the timer holds 60 while crouched, then fades after standing
         // [M 0x19b9c8:305-328].
