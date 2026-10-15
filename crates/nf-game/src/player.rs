@@ -232,6 +232,15 @@ pub struct Bond {
     /// nearest wire when the jump is pressed with 3 (the cable context). The Sim (scene.rs) owns the
     /// reset + the icon writes.
     pub icon_ctx: u8,
+    /// The level's `WldGravity` (0x2d8890..0x2d889c, 16 B [M work/action-symtab.tsv]). The game's
+    /// `Player_Init` 0x1910f8 writes the default (0, −9.8, 0) at every spawn (disasm 0x19151c-
+    /// 0x191550: `sw zero` → x, `swc1 f0` with 0xc11ccccd → y, `sw zero` → z), then zeroes the
+    /// WHOLE vector when the player-start placement's param 3 == 2 (`jal Vec_Zero(&WldGravity)`,
+    /// disasm 0x1915f4-0x19161c; the 0xB0 block `Player_Start` 0x190fd0 hands over, p3 at
+    /// +0x38). Readers in scope: `Player_Collision` 0x194df0:107/161 (the fall,
+    /// `vel += WldGravity·REC_FRAME_RATE`) and `Player_ChangeSubState` 0x190630 case 0xd/0xe
+    /// (the death-anim pick, see `death_script`). fix-world-gravity.
+    pub world_gravity: [f32; 3],
 }
 
 impl Bond {
@@ -245,7 +254,16 @@ impl Bond {
             cel: None,
             prev_pos: pos,
             creep: None,
+            world_gravity: [0.0, -9.8, 0.0],
         }
+    }
+
+    /// The death-anim pick the main agent's death branch calls: `Player_ChangeSubState`
+    /// 0x190630 case 0xd/0xe [M :68-73] — `WldGravity.y == 0.0` (the exact float test, the
+    /// zero-g write is `Vec_Zero`) plays 0x60008e0 (the space death), else 0x6000151 (the
+    /// ground death). `Player_HandleDeath` 0x190bb0:15 shares the same test.
+    pub fn death_script(&self) -> u32 {
+        if self.world_gravity[1] == 0.0 { 0x6000_8e0 } else { 0x6000_151 }
     }
 
     /// On the floor below `p` (within 10 units), as a level start places him.
@@ -1052,7 +1070,10 @@ impl Bond {
         // integration is also the swim tail's job alone (it clamps first) — skip it here when swimming.
         if swimming {
         } else if !self.grounded || self.floor_ny < 0.5 {
-            self.vel[1] += GRAVITY / 60.0;
+            // The fall rides the level's `WldGravity` [M Player_Collision 0x194df0:107/161,
+            // `vel += WldGravity · REC_FRAME_RATE`] — −9.8/60 per tick on the default levels,
+            // 0 on the p3==2 (spacewalk) starts (fix-world-gravity).
+            self.vel[1] += self.world_gravity[1] / 60.0;
         } else if self.jump != 1 {
             self.vel = [0.0; 3];
         }
@@ -1254,7 +1275,14 @@ impl RamSave {
 /// channel — placement type 0x24's parameter 0 [M `parsemap_create_dynamic_objects` 0x1d04f0 case 0x24 →
 /// `Player_AddNewStartPos` 0x195c00: param block +0x2C lands at entry+0x50].
 #[derive(Clone, Copy, Debug)]
-pub struct LevelStart { pub pos: V3, pub yaw: f32, pub gate: u16 }
+pub struct LevelStart {
+    pub pos: V3,
+    pub yaw: f32,
+    pub gate: u16,
+    /// The placement's param 3 (level_tag+0x38) — the zero-g selector `Player_Init` 0x1910f8
+    /// switches on (== 2 → `Vec_Zero(&WldGravity)`; else the default (0, −9.8, 0)) [M].
+    pub p3: u32,
+}
 
 /// `Player_Start` (0x190fd0) [M]: pass 1 — the first entry with kind 1 whose gate is 0 or whose channel is
 /// on; pass 2 (fallback) — the first kind-1 entry (the game zeroes its gate so a later `Player_Start` in
