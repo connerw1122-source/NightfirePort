@@ -36,3 +36,7 @@ claimed-by: sandbox1 at 2026-10-15T00:16Z
 ## Report (done, 2026-10-15T00:50Z)
 
 Closed by the driver: the report is on `s/fix-gpu-facial-morphs` (docs/reports/fix-gpu-facial-morphs.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-15T01:22Z)
+
