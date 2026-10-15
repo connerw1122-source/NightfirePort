@@ -52,7 +52,7 @@ fn probe_render_pylon_only() {
         };
         let (right, up) = { let cp = pitch.cos(); let fw = glam::Vec3::new(cp * yaw.sin(), pitch.sin(), cp * yaw.cos()).normalize();
             let s = fw.cross(glam::Vec3::Y).normalize(); let u = s.cross(fw); (s.to_array(), u.to_array()) };
-        let vis = r.cel_visibility(cam.to_array(), vp, sc.sim.as_ref().map(|s| &s.world));
+        let vis = r.cel_visibility(cam.to_array(), vp, sc.sim.as_ref().map(|s| &s.world), None);
         let mut opts = ViewOpts::default();
         opts.right = right; opts.up = up;
         r.update_skin(&queue, sc, None, 30.0, opts, vis.as_deref());

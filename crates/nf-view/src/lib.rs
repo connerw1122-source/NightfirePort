@@ -379,14 +379,17 @@ pub fn load_with_carry_dev(iso: &str, archive: &str, all: bool, save: Option<&nf
 /// difficulty's `ContinueHealthBoost*` — 50.0 on all three [L ACTION.ELF 0x30cc34-3c] — and the
 /// disasm writes the max BACK INTO the buffer (`swc1 $f12, 0x5fc` at 0x1958e4) before
 /// `Player_SetHealth` (jal 0x1960b8 at 0x1958e8, $f12 = the floored value, $a0 = BLData). The
-/// reload's `Player_InitWeapon` then re-runs the level's entry arm over that buffer and re-saves
-/// it [M 0x1a7ef8:325]. So the serve is the ENTRY checkpoint — the buffer as of this level's load
-/// — with the 50.0 floor: after a COLD load the buffer holds the fresh load's health 100
-/// (`Player_Init` 0x1910f8:128-138 sets it; the `Player_RamLoad` body is gated on `IsWarmReset`
-/// [M 0x1957a8:9], so nothing overwrites it; the unconditional re-save captures it) — the user's
-/// "if I die ... I should be at full health". `entry = None` = no load has completed yet (the
-/// game's BSS zeros — unreachable in play, since every load ends in the 0x1a7ef8:325 re-save): the
-/// shapes are zeroed at the live sizes and the floor keeps the health at 50.0.
+/// boost arg 1 is the port's `RamSave::continue_boost` on this serve (fix-death-retry-boost),
+/// with the difficulty global's port mirror `GameState+0x40` = `Progress::difficulty`
+/// [M 0x1957a8:23]. The reload's `Player_InitWeapon` then re-runs the level's entry arm over
+/// that buffer and re-saves it [M 0x1a7ef8:325]. So the serve is the ENTRY checkpoint — the
+/// buffer as of this level's load — with the boost floor: after a COLD load the buffer holds the
+/// fresh load's health 100 (`Player_Init` 0x1910f8:128-138 sets it; the `Player_RamLoad` body is
+/// gated on `IsWarmReset` [M 0x1957a8:9], so nothing overwrites it; the unconditional re-save
+/// captures it) — the user's "if I die ... I should be at full health". `entry = None` = no load
+/// has completed yet (the game's BSS zeros — unreachable in play, since every load ends in the
+/// 0x1a7ef8:325 re-save): the shapes are zeroed at the live sizes and the boost keeps the health
+/// at the floor (max(0, 50.0) = 50.0 [M 0x1957a8:21-34]).
 pub fn fail_restart_save(entry: Option<&nf_game::player::RamSave>, sim: &scene::Sim) -> nf_game::player::RamSave {
     let mut s = entry.cloned().unwrap_or_else(|| {
         let mut z = nf_game::player::RamSave::capture(
@@ -400,7 +403,10 @@ pub fn fail_restart_save(entry: Option<&nf_game::player::RamSave>, sim: &scene::
         for t in z.ch_time.iter_mut() { *t = 0; }
         z
     });
-    s.health = s.health.max(50.0); // [L ACTION.ELF 0x30cc34-3c, all three 50.0]
+    // The handler's `Player_RamLoad(Bond, 1)` [M 0x216618:21 → 0x1957a8:21-34]: the difficulty's
+    // `ContinueHealthBoost*` max, written into the serve (the game writes it into the resident
+    // buffer at 0x1958e4) — `continue_boost` is the game-logic port, not a viewer constant.
+    s.continue_boost(sim.drones.progress.difficulty);
     // fix-objective-messages: the mission record states ride the game's `.data` and the restart
     // resets only the player (`P_ENDMISSION_Handler` 0x216618:19-21 — no mission reinit), so the
     // LIVE mission states ride the serve (the reloaded level's fresh `Mission` must not re-announce
@@ -1348,7 +1354,9 @@ fn shot(scene: &scene::Scene, cam: &Camera, out: &str, choice: Option<usize>, ti
     let cut = scene.sim.as_ref().is_some_and(|s| s.script_camera().is_some());
     let (proj_aspect, band) = if cut { cutscene_frame(w as f32, h as f32) } else { (w as f32 / h as f32, [0.0; 4]) };
     let (vp_shot, _) = cam.view_proj(proj_aspect);
-    let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot, scene.sim.as_ref().map(|s| &s.world));
+    // The doors' `Door_IsClosed` snapshot for the walk's portal gate (fix-door-portal-links).
+    let door_closed = scene.sim.as_ref().map(|s| s.drones.doors.closed_flags());
+    let vis_shot = r.cel_visibility(cam.pos.to_array(), vp_shot, scene.sim.as_ref().map(|s| &s.world), door_closed.as_deref());
     r.update_skin(&queue, scene, choice, time, opts, vis_shot.as_deref());
     r.lights = scene.frame_lights();
     // `NF_BENCH=N`: time the per-frame CPU side N times (posing + vertex build, and the upload) for profiling.
@@ -2458,7 +2466,8 @@ impl ApplicationHandler for App {
                 // The Toggles page's portal-culling row: off passes no world, so the walk returns
                 // everything (the whole level draws — the isolation view).
                 let portal = self.dev.as_deref().map_or(true, |d| d.portal_cull);
-                let vis = g.renderer.cel_visibility(draw_cam.pos.to_array(), vp0, if portal { self.scene.sim.as_ref().map(|s| &s.world) } else { None });
+                let door_closed = if portal { self.scene.sim.as_ref().map(|s| s.drones.doors.closed_flags()) } else { None };
+                let vis = g.renderer.cel_visibility(draw_cam.pos.to_array(), vp0, if portal { self.scene.sim.as_ref().map(|s| &s.world) } else { None }, door_closed.as_deref());
                 // G-043: build the palette only when a tick ran, then draw between the last two ticks.
                 if self.ticked || self.pal_cur.is_none() {
                     let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts, vis.as_deref());

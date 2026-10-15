@@ -47,6 +47,11 @@ pub struct Casing {
     /// The landing sound plays once ([S] the game re-triggers while below the plane every tick;
     /// the port gates it — see the report).
     pub landed: bool,
+    /// The player's shell waits for its eject (`Bullet_init_casing` 0x12fde0 only reserves the slot and the
+    /// delay; `Bullet_init_casing_ex` 0x12f678 reads the view model's datum and draws the RNG when the delay
+    /// runs out [M 0x12faa0:31-37]) — `local` is the weapon's eject vector (+0xf8, −+0xfc, +0x100).
+    pub pending: bool,
+    pub local: V3,
 }
 
 /// The 32-slot pool (`ShellCasings[32]` + `NextCasing`, 0x3495e0/0x3495dc [M 0x12fd48]).
@@ -61,7 +66,7 @@ impl Default for Casings { fn default() -> Self { Self::new() } }
 impl Casings {
     pub fn new() -> Casings { Casings { list: (0..POOL).map(|_| Casing {
         state: 2, delay: 0.0, pos: [0.0; 3], vel: [0.0; 3], spin: [0.0; 3], rot: 0.0, age: 0.0,
-        landing_y: 0.0, mesh: 0, material: 0, landed: false,
+        landing_y: 0.0, mesh: 0, material: 0, landed: false, pending: false, local: [0.0; 3],
     }).collect(), next: 0 } }
 
     /// `Bullet_init_casing` 0x12fde0 + `Bullet_init_casing_ex` 0x12f678, collapsed into one call
@@ -118,20 +123,65 @@ impl Casings {
         let slot = &mut self.list[self.next];
         *slot = Casing {
             state: 3, delay, pos: origin, vel, spin, rot: 0.0, age: 0.0, landing_y, mesh, material, landed: false,
+            pending: false, local,
         };
         self.next = (self.next + 1) % POOL;
+    }
+
+    /// The player's shot: `Bullet_init_casing` 0x12fde0 — reserve the next pool slot (state 3, the weapon's
+    /// `+0x78` delay, the ammo type's shell mesh) and nothing else; the eject itself (datum, RNG, landing
+    /// plane) waits for the delay [M 0x12fde0:9-30]. The Frinesi's 53-tick delay puts its shell out mid-pump,
+    /// next to the camera (PCSX2 07000001, 2026-10-15) — computed at the shot it left from the pre-pump gun.
+    pub fn reserve(&mut self, ammo: &nf_formats::sfx::AmmoData, weapon: &[u8]) {
+        let Some(&mesh) = ammo.casing_mesh.get(weapon[0x90] as usize) else { return };
+        if mesh == 0 { return; }
+        let f = |o: usize| f32::from_le_bytes(weapon[o..o + 4].try_into().unwrap());
+        let slot = &mut self.list[self.next];
+        *slot = Casing {
+            state: 3, delay: weapon[0x78] as f32, pos: [0.0; 3], vel: [0.0; 3], spin: [0.0; 3], rot: 0.0, age: 0.0,
+            landing_y: 0.0, mesh, material: (weapon[0x50] & 0x3f) as u16, landed: false, pending: true,
+            local: [f(0xf8), -f(0xfc), f(0x100)],
+        };
+        self.next = (self.next + 1) % POOL;
+    }
+
+    /// `Bullet_init_casing_ex` 0x12f678 for a reserved player shell: the datum's world matrix NOW, the 7 RNG
+    /// draws in the game's order, the landing plane from the shooter's y.
+    fn arm(c: &mut Casing, bone: &[[f32; 4]; 4], shooter_y: f32, rng: &mut Rng) {
+        let local = c.local;
+        let spin = [frand_mvar2(rng, 0.1, 0.05), frand_mvar2(rng, 0.1, 0.05), frand_mvar2(rng, 0.1, 0.05)];
+        let jitter = [frand_mvar2(rng, 0.01, 0.005), frand_mvar2(rng, 0.01, 0.005), frand_mvar2(rng, 0.01, 0.005)];
+        let e = [
+            bone[0][0] * local[0] + bone[1][0] * local[1] + bone[2][0] * local[2],
+            bone[0][1] * local[0] + bone[1][1] * local[1] + bone[2][1] * local[2],
+            bone[0][2] * local[0] + bone[1][2] * local[1] + bone[2][2] * local[2],
+        ];
+        c.vel = [e[0] + jitter[0], e[1] + jitter[1], e[2] + jitter[2]];
+        c.spin = spin;
+        c.landing_y = shooter_y - (rng.frand(0.5) + 1.0);
+        c.pos = [bone[3][0], bone[3][1], bone[3][2]];
+        c.pending = false;
     }
 
     /// `Bullet_casing_update` 0x12faa0 per tick. `play` receives the landing sound id. Sound table
     /// [M 0x12fb48..0x12fbcc]: the default shell mesh (0x2000548) with material ∉ {0xd, 0xe} → 0x1fd;
     /// otherwise by material: 1/0x14 → 0x1ff, 3/4 → 0x203, 5 → 0x204, 6 → 0x200, 10/0x15 → 0x1fe,
     /// 0xd/0xe → 0x202, 0xf..0x12 → 0x201, else silent.
-    pub fn update(&mut self, mut play: impl FnMut(u16, V3)) {
+    /// `player_bone`: the view model's eject datum matrix this tick and the player's y, for reserved player
+    /// shells (`None` with no view model — a due shell is dropped).
+    pub fn update(&mut self, player_bone: Option<(&[[f32; 4]; 4], f32)>, rng: &mut Rng, mut play: impl FnMut(u16, V3)) {
         for c in self.list.iter_mut() {
             match c.state {
                 3 => {
                     c.delay -= 1.0;
-                    if c.delay <= 0.0 { c.state = 0; }
+                    if c.delay <= 0.0 {
+                        if c.pending {
+                            match player_bone {
+                                Some((bone, y)) => { Self::arm(c, bone, y, rng); c.state = 0; }
+                                None => { c.pending = false; c.state = 2; }
+                            }
+                        } else { c.state = 0; }
+                    }
                 }
                 0 => {
                     // Age first (the game adds FRAME_RATE_MUL to data+0x24 before the tests) [M 0x12fb30].
@@ -206,7 +256,7 @@ mod tests {
         cs.eject(&a, &weapon(0, 1), [10.0, 1.0, 10.0], 0.0, 0.0, 1.0, &mut rng);
         assert_eq!(cs.list.iter().filter(|c| c.state == 3).count(), 1, "exactly one slot armed");
         let mut sounds = Vec::new();
-        for _ in 0..240 { cs.update(|id, p| sounds.push((id, p))); }
+        for _ in 0..240 { cs.update(None, &mut Rng::new(1), |id, p| sounds.push((id, p))); }
         let c = cs.list.iter().find(|c| c.material == 3).unwrap();
         assert!(c.landed, "the casing landed within its lifetime");
         assert!(c.pos[1] <= c.landing_y + 1e-3, "it fell below the landing plane");
