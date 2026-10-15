@@ -82,6 +82,34 @@ pub fn ticks_for_frame(anim_time: &mut f32, dt: f32, max_ticks: u32) -> u32 {
     *anim_time += dt * 60.0;
     (*anim_time as u32).saturating_sub(before).min(max_ticks)
 }
+/// The render camera bracket after a frame's ticks (fix-turn-stutter): `cam_prev`/`cam_cur` must
+/// stay the LAST TWO TICKS' cameras — exactly one tick apart — so that `lerp_cam` at
+/// `anim_time.fract()` draws the camera at one tick behind the sim clock, the fixed-step scheme's
+/// invariant. Extracted verbatim from the pair update the `RedrawRequested` handler ran so the
+/// headless turn-stutter test drives the same arithmetic the winit loop runs (the
+/// `ticks_for_frame` precedent). `second_last`/`last` are the per-tick camera captures (recorded
+/// after each `step_bond`); `ran` = the ticks the frame actually executed (a replay exhaustion
+/// break runs none; noclip ticks record no camera).
+pub fn update_cam_bracket(cam_prev: &mut Option<Camera>, cam_cur: &mut Option<Camera>, ran: u32, second_last: Option<Camera>, last: Option<Camera>) {
+    match ran {
+        // Nothing ran this frame (the pause page, the dev menu, a replay exhausted): the pair
+        // stays — the draw keeps blending the last two ticks, which is still what the alpha
+        // spans.
+        0 => {}
+        // The solid-60 frame: exactly one tick — the previous frame's camera and the new one,
+        // the one-tick-behind pair the scheme has always drawn.
+        1 => { *cam_prev = *cam_cur; *cam_cur = last; }
+        // THE FIX: a loaded frame ran 2+ ticks. The old pair update kept the previous FRAME's
+        // camera as `cam_prev`, so the bracket spanned every tick the frame ran while the blend
+        // alpha (`anim_time.fract()`) only spans one — the drawn camera crawled through the wide
+        // bracket, then jumped at the boundary: the world's hold-jump stutter while turning
+        // (playtest 1015; the view model, pinned to the draw camera by the reattach, stayed
+        // smooth and unmasked it). The bracket is the LAST TWO TICKS' cameras — one tick apart —
+        // so `lerp_cam` at `anim_time.fract()` draws exactly one tick behind the sim clock at
+        // every frame rate (turn_stutter_live::loaded_frames_render_one_tick_behind_exactly).
+        _ => { *cam_prev = second_last; *cam_cur = last; }
+    }
+}
 /// The palette half of the G-043 interpolation: the draw loop blends the previous tick's skin
 /// palette into the latest one while `lerp_cam` blends the camera by angle. fix-interp-ghosting:
 /// world matrices blend as ROTATION (slerp of the rotation part [M `Quat_Slerp_Acc` 0x1e4188] — a
@@ -1339,6 +1367,12 @@ struct App {
     prev_lock_ch: bool,
     /// Render interpolation state: the cameras and palettes of the last two ticks, and whether a tick ran this frame.
     ticked: bool,
+    /// fix-turn-stutter: the tick count of the frame that last rebuilt the palette/bracket pair.
+    /// The view model's camera-space reattach needs the palette pair and the camera pair from the
+    /// SAME one-tick bracket; a 2+ tick frame's palette spans its wide bracket while the cameras
+    /// span one, so there the reattach keeps the plain world blend (the pre-ghosting behavior
+    /// under load).
+    bracket_ticks: u32,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -1654,6 +1688,14 @@ impl App {
             // The game's own placement clears the viewer's cel [M 0x1b9920] — the next
             // `Camera_CheckLocation` re-finds it at Bond's position.
             if let Some(g) = self.gfx.as_mut() { g.renderer.viewer_cel = crate::scene::ViewerCel::default(); }
+        }
+        // "spawn at crosshair" (`Dev::spawn_guard`) adds a Character; the renderer's skin layout was
+        // built for the old count and `skin_palette` indexed past it (a panic on the next frame — the
+        // main agent's playtest-check dry run). Rebuild the renderer like the weapon-asset reload does.
+        if let Some(g) = self.gfx.as_mut() {
+            if g.renderer.skin_layout.char_base.len() != self.scene.characters.len() {
+                g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
+            }
         }
         if let Some(d) = self.dev.as_deref_mut() { d.result_msg = Some(msg); d.result_timer = 180; }
     }
@@ -2114,6 +2156,10 @@ impl ApplicationHandler for App {
                 if self.noclip || self.scene.sim.is_none() { self.cam.pos += mv * speed; }
                 // One animation frame per 60 Hz game update (FRAME_RATE_MUL = 1), docs/formats/animation.md.
                 self.ticked = false;
+                // fix-turn-stutter: the per-tick camera captures (the render bracket's raw
+                // material) and the tick count the frame actually executed. Declared here so the
+                // pair update below the tick gate can hand them to `update_cam_bracket`.
+                let (mut last_cam, mut second_last, mut ran) = (None, None, 0u32);
                 self.poll_panel();
                 // fix-pause-audio: the pause page holds the sound. `MenuManager_Create` with
                 // `pause_sound` runs `SFXPause` (batch op 9) + `SFXPauseAllStreams` (op 0x16) and
@@ -2228,6 +2274,15 @@ impl ApplicationHandler for App {
                             }
                             self.prev_lock_ch = on;
                             if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
+                            // fix-turn-stutter: the camera is captured at EVERY tick — the render
+                            // bracket is the LAST TWO ticks' cameras (`update_cam_bracket`), so
+                            // the loop must record each one, not just the frame's last.
+                            let h = sim.bond.head();
+                            let mut c = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV / sim.zoom };
+                            if let Some((p, yaw, pitch, fov)) = sim.script_camera() { c = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov }; }
+                            second_last = last_cam;
+                            last_cam = Some(c);
+                            ran += 1;
                         }
                         // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
                         // (Moved below the sim borrow — see the end of this block.)
@@ -2314,8 +2369,10 @@ impl ApplicationHandler for App {
                     let new = self.scene.skin_palette(&g.renderer.skin_layout, self.choice, self.anim_time, self.opts, vis.as_deref());
                     self.pal_prev = self.pal_cur.take();
                     self.pal_cur = Some(new);
-                    self.cam_prev = self.cam_cur;
-                    self.cam_cur = Some(self.cam);
+                    // fix-turn-stutter: the bracket comes from the per-tick captures through
+                    // `update_cam_bracket` (extracted; the headless test drives the same code).
+                    update_cam_bracket(&mut self.cam_prev, &mut self.cam_cur, ran, second_last, last_cam);
+                    self.bracket_ticks = ran;
                 }
                 let interp = interp0;
                 let alpha = alpha0;
@@ -2329,7 +2386,14 @@ impl ApplicationHandler for App {
                             // uses for the view — so mid-turn the gun cannot swim against the
                             // view. With a live script camera the tick cams are not Bond's: the
                             // gun keeps the plain world blend there.
-                            if self.scene.sim.as_ref().map_or(true, |s| s.script_camera().is_none()) {
+                            // fix-interp-ghosting's reattach needs the palette pair and the
+                            // camera pair from the SAME one-tick bracket (fix-turn-stutter): a
+                            // 2+ tick frame rebuilt the palette across its wide bracket while
+                            // `update_cam_bracket` closed the cameras to the last two ticks —
+                            // reattaching there would pose the gun from mismatched ticks. Those
+                            // frames keep the plain world blend (the pre-ghosting behavior under
+                            // load).
+                            if self.bracket_ticks == 1 && self.scene.sim.as_ref().map_or(true, |s| s.script_camera().is_none()) {
                                 if let (Some(entries), Some(cp), Some(cc)) =
                                     (view_model_entries(&self.scene, &g.renderer.skin_layout), self.cam_prev, self.cam_cur) {
                                     reattach_view_model(&mut blended, pp, pal, alpha, &cp, &cc, &draw_cam, &entries);
@@ -2655,7 +2719,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, bracket_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, };
     if dev {
@@ -2717,6 +2781,17 @@ pub fn run() -> Result<()> {
                 let rounds = wd.clip_size(id).max(1);
                 if sim.drones.inventory.equip_weapon(&wd, id, rounds, true) {
                     sim.drones.inventory.equip_ammo(&wd, id, (rounds * 3).max(rounds));
+                    // The panel give's twin fill (fix-aims20-modes-lights, panel.rs): a twin-linked record
+                    // (+0x05, the AIMS-20 0x1a ↔ its grenade 0x1b) needs rounds in the twin's own slot or
+                    // the mode press is refused (`Player_WeaponHasAmmo` 0x1a16c0) — the playtest check's
+                    // `--give 0x1a` left B dead and the grenade light dark.
+                    let twin = wd.records.get(id).map(|r| r[5] as i8).unwrap_or(0);
+                    if twin != 0 {
+                        let t = (id as i32 + twin as i32) as usize;
+                        if let Some(c) = sim.drones.inventory.clip.get_mut(t) {
+                            if *c == 0 { *c = wd.clip_size(t).max(1); }
+                        }
+                    }
                     first.get_or_insert(id as u8);
                     eprintln!("--give: equipped {id:#04x}");
                 } else if sim.drones.inventory.owned.get(id).copied().unwrap_or(false) {
