@@ -153,6 +153,14 @@ effects, with the widescreen 16:9 view aspect implemented.
    are 0x290/0x48 but `VBlankInt` writes the NTSC 0x27c/0x32 unconditionally — if a PAL disc is
    ever probed, expect the picture mis centred; the port ignores PAL (NTSC-U only).
 
-## ntfy
+## ntfy failed
 
-(sent after the finish step; see the queue claim for the delivery receipt)
+All three fallbacks failed with the ntfy.sh daily quota (2026-10-15 ~20:20 UTC):
+
+1. `curl -sS -m 20 -H "Title: NightfirePort" -d "screen-adjust-model: done …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 -c "…urlopen(Request('https://ntfy.sh/nightfire-yoda-8k3x', …))…"`
+   → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget -q -O- --post-data "screen-adjust-model: done …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → silent body, exit 0 on the first run, but the `-S` probe shows `HTTP/1.1 429 Too Many Requests`
+   — the delivery did not go through.
