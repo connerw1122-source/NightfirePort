@@ -12030,3 +12030,18 @@ Work Log:
 - Suite (282 binaries, foreground chunks — the nohup death, the 102c/100f precedent): 1073 passed, 3 failed (the allowed disc_golden trio), 35 ignored, 1 TIMEOUT (weapon_matrix_live at 600 s — the base branch's open item, volume on this 2-core box). One suite regression caught mid-run (the stun_loop unit pinned the old dist semantics) and fixed.
 - Open (the ignored test's reason): the stun release chain stalls in 0x4d for guards whose anim set lacks 0x2d/0x2e (DroneAnim_CallAnim's no-datum fallback) — guard 0 advanced, the chosen gi never left Impact. Also documented: the smoke trail bit (+0x6C & 2), GlobalBlur, AI-sight occlusion (no decompile reader of class-0x2A found — the clouds stay visual).
 - Report: docs/reports/fix-grenade-types.md. Files: drone.rs, bullet.rs (2 fields), scene.rs (fuse + overlay pass-through), hud.rs (the white quad), the new test file.
+
+---
+Task: fix-gpu-facial-morphs (108c)
+Agent: worker (sandbox web-9248268a)
+Task: apply the facial morph targets on the GPU skinning path (nf-view gpu.rs + the skinning shader + scene.rs upload): per-character weight vector + morph deltas, blended before skinning, so faces move in play and renders.
+
+Work Log:
+- 00:22 UTC: branch from origin/master (c9ada8c8), setup reused, pushed.
+- 00:30-01:10: the decompile read [M SkinIt 0x10bf30:88-118 — the morph term on the source position BEFORE the VU1 skinning macro, (morph + Morph_Index[m])·12 triplet addressing; AnimObjectDraw 0x1c4490:141-200 — Morph_Weight marshalling, identity Morph_Index, desc sort + |w|<1e-6 trim; psiDrawSkinObjectMatrix 0x111828 — the per-draw LOD gates, not ported]. The failing-first tests written and tuned (the driver's first-crossing eval; the Kimiko scene needs Bond in TouchOnce #412's volume — fix_cutscenes2_live's spot).
+- 01:18-01:30: the fix. scene.rs: SkinAttr's mtb/mwb/cnt/tend + SkinLayout's wt_stride/n_tgt, skin_layout fills them, morph_target_blob + skin_morph_weights, the CPU un-gate (facial3 item 3). gpu.rs: shader bindings 3/4 + morph_pos (channel-order, pre-blend), the attr layout, the weight/target buffers + bind group, update_skin/upload_morph_weights. lib.rs: ONE upload call after the live path's upload_skin (the shared-file hook). gpu_skin_live's oracle apply gains the term.
+- 01:31: checkpoint pushed. Failing-first on the pre-fix src: the driver test FAILED (frozen 0.000008 — the gate), post-fix frozen 0.001709 / morphed 0.000008; the Kimiko symptom 0.004147 → 0.000000 with the term; the buffers oracle 0.00000000/0.0000076 (zeroed-weight sister catches 0.0041/0.0023).
+- 01:34: merge origin/master 9d8918d4 (WORKLOG both entries kept). facial_gpu_live 3/3, gpu_skin_live 3/3 (worst 3e-5), facial2 2/2, facial3 3/3, fix_cutscenes2 5/5.
+
+Stage Summary:
+- The GPU skinning path now carries SkinIt's morph term: the weights upload per tick, the targets once, the shader displaces the bind-pose vertices before the palette blend — faces move in play (drone-backed, un-gated) and in every render path (--shot, the live window). Report: docs/reports/fix-gpu-facial-morphs.md (live checks inside).
