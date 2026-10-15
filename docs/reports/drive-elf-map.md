@@ -88,6 +88,15 @@ breakpoint on `FUN_00261920`; the skip-flag world+0x9c watch).
 - No source files touched; `docs/atlas/driving-elf.md` and
   `tools/crosscheck/elf-shape-match.py` are new files.
 
-## ntfy
+## ntfy failed
 
-(sent after this report; recorded here if it fails)
+All three fallbacks were attempted in order and all returned the same quota error:
+
+1. `curl -sS -m 20 -H "Title: NightfirePort" -d "drive-elf-map: …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. `python3 urllib` → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget --post-data` → `ERROR 429: Too Many Requests.` (HTTP request sent, awaiting response... 429)
+
+(The daily ntfy.sh quota was already exhausted by earlier tasks today — see WORKLOG
+find-corona-creator's identical 429 note. The finish.sh queue ack itself succeeded:
+`OK done 501-drive-elf-map`.)

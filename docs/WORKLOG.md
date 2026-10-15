@@ -13032,3 +13032,8 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
   art). DRIVING.SYM not extractable from the rebuilt ISO (zeroed /DRIVING dir records — raw
   ISO9660 parse [D]). Phase-4 task description + 5 live checks at the end of the doc. Docs +
   one research tool only; no gameplay code, no tests added.
+- (17:58) Verification closed out: all four crates' 338 test binaries build green on the
+  branch; bounded foreground suite chunk (formats+audio, 9 binaries) 27 passed / 3 failed =
+  the 3 slim-ISO disc_golden allows. Full background sweep impossible in this sandbox (jobs
+  killed between tool calls). Report docs/reports/drive-elf-map.md pushed; finish.sh acked
+  (OK done 501-drive-elf-map); ntfy 429 on all three fallbacks (recorded in the report).
