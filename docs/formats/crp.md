@@ -67,17 +67,20 @@ word (`FUN_002d5920`'s 4-arg form additionally matches a normalized short tag wi
 | `DBN ` | the track **name** (payload = NUL-terminated string, size = flags>>8) | track loader `FUN_0022f898` 0x22f898: scans the root window for 0x44424e20, takes the payload string and registers the track under it (`FUN_001697e0` 0x1697e0) |
 | `ELFd` | the embedded **ELF module**: a 32-bit little-endian MIPS relocatable object (`e_type=1 ET_REL`, `e_machine=8 MIPS`) | module loader `FUN_001a9600` 0x1a9600 → `FUN_0029f7c8`/`FUN_0029f820` (load + relocate) |
 | `ELFr` | the module's relocations | 0x1a9600 (`FUN_0029f820(..., elfr, 1, ...)`) |
-| `MapN` | map name (payload string) | present in track directories (measured; consumer not yet pinned) |
+| `MapN` | map name (payload string; measured: `paris_map`, 14 B for MIS01) | present in track directories (measured; consumer not yet pinned) |
 | `Sect` | sections descriptor, size = flags>>8 | 0x1a9600 tail → `FUN_002daa18` 0x2daa18 (with `Shar`) |
-| `sn  ` | instance-indexed sub-resource (tag = `sn` + index in the low half) | 0x1a9600 loop: names via format string 0x37f318 + registry `FUN_001cfd80`, indexes `(&PTR_PTR_003336a0)[index]` |
+| `sn  ` | instance-indexed sub-resource (tag = `sn` + index in the low half); the payload is a **filename** — measured: `sn#0` = `paris_mis01.ssh`, the per-level particle sheet (docs/formats/driving-viv.md's `data\render\` particle `.ssh`) | 0x1a9600 loop: names via format string 0x37f318 + registry `FUN_001cfd80`, indexes `(&PTR_PTR_003336a0)[index]` |
 
 ## 4. What is inside each kind of container [D, golden/crp_golden.tsv]
 
 - **Track** (8 files): pool `Arti×(231..494) + CDat + Map  + RNgp + Shar`, directory
   `DBN  + ELFd + ELFr + MapN + Sect + sn#0`. The `DBN ` names are exactly the level-key suffixes:
   `paris` (MIS01), `underwater` (MIS11), `jungle` (MIS13A/B/C), `snow1a` (MIS3), `snow2a`
-  (MIS4 and RACE). The embedded ELFs are the largest chunks (paris: ELFd 3,926,032 B at 0x99c00 +
-  ELFr 678,800 B); the paris ELFd has 6 sections, `t1.m8.s6`.
+  (MIS4 and RACE). The `MapN` payloads are `<name>_map` (`paris_map`). The articles are the
+  track's geometry/deco pieces — measured paris names: `S6_CustomLowRBnknRoad`, `P_CustomCRNR_V1`,
+  `sky01`/`sky02`, `007logo`, `window_25`, `T_window_4x`. The embedded ELFs are the largest chunks
+  (paris: ELFd 3,926,032 B at 0x99c00 + ELFr 678,800 B, whose head shows the section-name strings
+  `data/shstrtab/strtab/symtab/rel.data`); the paris ELFd has 6 sections, `t1.m8.s6`.
 - **Car/weapon** (81 files): pool `Arti×1 + Shar×1` (weapons: `Arti×(1..3) + Shar×1`), directory
   `ELFd + ELFr + Sect + sn#0` — no `DBN `, no `MapN`, no `RNgp`/`CDat` pool.
 - Every one of the 89 files embeds a MIPS ET_REL module (`t1.m8.*`), section counts 3–8.
@@ -125,7 +128,8 @@ above: 8 tracks with DBN+MapN+RNgp+CDat, 5 plain MISC cars, 89 ELF modules).
    `FUN_0022f898` 0x22f898 right after the `DBN ` scan; confirm the string at the resolved payload
    equals the golden's `name` (`paris`, `snow2a`, …) for a couple of levels.
 2. **The `sn  ` instance names**: the format string at 0x37f318 and the pointer table at
-   0x3336a0 — dump both in PCSX2 (what do `sn` sub-resources *mean*? sounds? [S]).
+   0x3336a0 — dump both in PCSX2. Measured on disc: `sn#0`'s payload is the per-level particle
+   sheet filename (`paris_mis01.ssh`), so the instances likely name resources to load by index [S].
 3. **The `MapN` payload**: track directories carry it (14 B for paris, string) — confirm its
    consumer (grep candidates `FUN_0022faf8`/`FUN_00230730`/`FUN_00230ab0`/`FUN_00176658`/`FUN_00212ce8`,
    which reference `Map ` constants) and that the string matches the golden.
