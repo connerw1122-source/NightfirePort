@@ -78,6 +78,7 @@ fn walking_backwards_never_ejects() {
     let mut scene = nf_view::load(&iso, "07000016.bin", false).expect("load");
     {
         let sim = scene.sim.as_mut().unwrap();
+        give_p2k(sim);
         for _ in 0..4 { sim.step_bond(Input::default(), false, false, false); }
     }
     let c0 = alive_casings(&scene);
@@ -105,4 +106,15 @@ fn walking_backwards_never_ejects() {
         sim.step_bond(Input { forward: -1.0, ..Default::default() }, false, false, false);
         assert_eq!(alive_casings(&scene), after_burst, "the backpedal spawned a casing beyond the burst's own shells");
     }
+}
+
+/// 109r (fix-start-loadouts): a cold load now gets the level's own kit [M `Player_InitWeapon` 0x1a7ef8], not
+/// the old default P2K. This test is about a P2K shot, so it gives and draws the P2K itself — the `--draw`
+/// path's equip, then the switch request (`M_CONTROL+0x63`, the draw machine holsters and draws it).
+fn give_p2k(sim: &mut nf_view::scene::Sim) {
+    let wd = sim.weapons.clone();
+    let rounds = wd.clip_size(2).max(1);
+    if sim.drones.inventory.equip_weapon(&wd, 2, rounds, true) { sim.drones.inventory.equip_ammo(&wd, 2, rounds * 3); }
+    sim.gun.switch_request = 2;
+    for _ in 0..90 { sim.step_bond(nf_game::player::Input::default(), false, false, false); }
 }

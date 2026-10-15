@@ -119,7 +119,9 @@ fn every_woken_and_spawned_guard_takes_damage() {
         let dp = sim.drones.list[20].pos;
         sim.bond.pos = [dp[0], dp[1], dp[2] + 3.5];
         sim.bond.vel = [0.0; 3];
-        sim.gun.weapon = 2; sim.gun.switch_request = 2; sim.gun.switch_state = 0;
+        give_p2k(sim);
+        sim.bond.pos = [dp[0], dp[1], dp[2] + 3.5];
+        sim.bond.vel = [0.0; 3];
     }
     w.wait(30);
     clean_shot_probe(&mut w, 20, "the SPAWNED reinforcement (spawner 2, trig 0x6)");
@@ -150,4 +152,15 @@ fn script_objects_after_the_intro() {
     let scripted = w.scene.characters.iter().filter(|c| c.script.is_some()).count();
     eprintln!("[J] script objects alive: {objs}; character instances still script-driven: {scripted} of {}", w.scene.characters.len());
     assert!(scripted <= 1, "intro actors persisting as drawn characters: {scripted} — they would look like unkillable NPCs");
+}
+
+/// 109r (fix-start-loadouts): a cold load now gets the level's own kit [M `Player_InitWeapon` 0x1a7ef8], not
+/// the old default P2K. This test is about a P2K shot, so it gives and draws the P2K itself — the `--draw`
+/// path's equip, then the switch request (`M_CONTROL+0x63`, the draw machine holsters and draws it).
+fn give_p2k(sim: &mut nf_view::scene::Sim) {
+    let wd = sim.weapons.clone();
+    let rounds = wd.clip_size(2).max(1);
+    if sim.drones.inventory.equip_weapon(&wd, 2, rounds, true) { sim.drones.inventory.equip_ammo(&wd, 2, rounds * 3); }
+    sim.gun.switch_request = 2;
+    for _ in 0..90 { sim.step_bond(nf_game::player::Input::default(), false, false, false); }
 }
