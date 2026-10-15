@@ -6865,13 +6865,25 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         for dr in &mut self.list {
             if dr.los {
                 dr.seen_ticks += 1;
-                dr.unseen_ticks = 0;
+                // fix-guard-first-shot: `ProcessDroneSight` 0x176a28 resets the unseen counter (+0x274)
+                // ONLY on the opponent-visible branch (`+0x170 != 0 && +0x228 & 2` — the branch that
+                // calls `HaveOpponentSight`), and the sight flag 4 rides that call's reaction gate
+                // (`+0x270 < ReactionTime` returns early [M 0x175ef0:41-46]). During the reaction
+                // window the game's +0x274 KEEPS GROWING (the not-visible branch 0x176a28:206-208
+                // runs instead), so `DoFiring`'s `+0x274 < 0x10` gate [M 0x17a080:24-25] holds the
+                // first bullet until the ack. The port reset it on the raw LOS tick, so a woken
+                // guard whose burst was already scheduled fired the same tick as first sight
+                // (the playtest's "shots are still happening instantly"; the fail-first probe:
+                // guard 20, sight→shot 0 ticks, seen=false).
                 if dr.seen_ticks >= dr.reaction_time(d.level) {
                     if !dr.seen && std::env::var_os("NF_AILOG").is_some() {
                         eprintln!("[ailog] guard {} SEEN! (seen_ticks={} >= reaction_time={}, dist={:.1}, state={:#x})",
                             dr.index, dr.seen_ticks, dr.reaction_time(d.level), dr.dist, dr.state);
                     }
                     dr.seen = true; dr.ever_seen = true;
+                    dr.unseen_ticks = 0;
+                } else {
+                    dr.unseen_ticks += 1;
                 }
             } else {
                 dr.seen_ticks = 0;
