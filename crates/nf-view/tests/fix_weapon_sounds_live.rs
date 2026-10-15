@@ -268,8 +268,10 @@ fn every_weapon_on_07000005_draws_fires_and_reloads_with_sounds() {
         // (`+0x944 = 0xf`); Player_Update 0x193600:242-256]. The AT-420 Sentinel's guided rocket
         // (0x2c — the only camera-bit carrier [L ee_start_05.bin @ 0x2bf150], the sweep's segment a
         // dozen weapons earlier) fires it, and since the quarter-speed spawn fix [M 0x12c5a0:188-190:
-        // `+0x6C & 0x200` → speed × 0.25] that rocket flies at its true 0.0625 u/tick (0.25 [L
-        // record +0x20] × 0.25) over its 200-unit range [L +0x1C] — ≈3200 ticks of camera ride that
+        // `+0x6C & 0x200` → speed × 0.25, × the measured 4.04 flight scale — fix-sentinel-camera-play
+        // [L PCSX2 2026-10-14: the 0x2d's BU+0xF8 = 0.33666, constant]) that rocket flies at its
+        // 0.2525 u/tick (0.25 [L record +0x20] × 0.25 × 4.04) over its 200-unit range [L +0x1C] —
+        // ≈790 ticks of camera ride that
         // swallows the fire windows of every later weapon up to the mine 0x37 (the merge-hold's
         // "0x37/0x59: none of its missing sounds ever played": no mine fired, so its detonation
         // sound 0x458 never started a voice anywhere in the sweep). The game's player could not fire

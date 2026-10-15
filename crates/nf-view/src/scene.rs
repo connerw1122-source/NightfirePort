@@ -5723,7 +5723,18 @@ impl Scene {
             if !opts.firing || tick % 8 >= 2 { return collapse(&datum); }
             muzzle_flash_matrix(&datum, (tick / 8) ^ (k as u32).wrapping_mul(0x9e37_79b9))
         }).collect();
-        let hidden: Vec<bool> = self.characters.iter().enumerate().map(|(ci, c)| hidden(c, ci)).collect();
+        let mut hidden: Vec<bool> = self.characters.iter().enumerate().map(|(ci, c)| hidden(c, ci)).collect();
+        // fix-sentinel-camera-play: the guided ride draws no view model — the game's player
+        // substate 10 cleared the anim set [M `Player_ChangeSubState(10)`, `Player_Update`
+        // 0x193600:242-256; L PCSX2 "no view model, no crosshair"] — the palette collapse (the
+        // port's established not-drawn state) does it, and it restores when the ride ends.
+        if self.sim.as_ref().is_some_and(|s| s.missile_cam.is_some()) {
+            if let Some(s) = self.sim.as_ref() {
+                if let Some(&vm) = self.view_models.get(&s.gun.weapon) {
+                    if let Some(h) = hidden.get_mut(vm) { *h = true; }
+                }
+            }
+        }
         FrameState { posed, attach, hidden }
     }
 

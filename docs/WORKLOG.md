@@ -12315,6 +12315,14 @@ Stage Summary:
   size/timing (instant on at CameraStart, instant off at KillStream — the game has no bar fade),
   and a script-camera frame projects at the console's 4:3, pillar-boxed on wider windows; gameplay
   widescreen untouched.
+
+---
+Task: fix-sentinel-camera-play (109a)
+Agent: worker (sandbox web-9248268a)
+Task: the Sentinel's guided-rocket first-person camera doesn't happen in play (the merged tests ride), and the rockets are far too slow (the 0x200 speed-x0.25 read). Files: crates/nf-view/src/{scene,lib}.rs, crates/nf-game/src/drone.rs (small).
+
+Work Log:
+- 01:26 UTC: branch s/fix-sentinel-camera-play created from origin/master (d7afed5a) and pushed. Setup reused (repo, work/, ISO, nf-queue). Reading the PCSX2 measurements first.
 ## fix-cutscene-actors — s/fix-cutscene-actors (task 291, started 20:12 UTC)
 - Task: playtests on 07000007 — "models in that cutscene aren't accurate" (the Kimiko scene), "guards aren't in the proper place after the Kimiko cutscene", and on another scene "models are missing". For each cut-scene on 07000005/06/07: list the actors the script creates (Script_AnimStart, skins), compare with what the port draws (skin resolution), and where the actors end up when the scene hands back (the scene's last keys / Script_KillStream vs the drones' positions). Fix what differs, with a test per scene (actor skin hashes and the post-scene positions). Files: crates/nf-game/src/nis.rs, crates/nf-view/src/scene.rs.
 - Status: branch cut from origin/master 62c17571, pushed. Setup reused (work/, ISO, nf-queue present). Suite started in background (suite.out).
@@ -12426,3 +12434,16 @@ Work Log:
 - (01:14-01:55 UTC) Evidence round: the [L] record sweep off work/ee_snapshot.bin (0x37 +0x70 = 0x18300 carries the stick bit; 0x38 = sel 0 / twin −1 / +0x68 0x00020010; the stick family 0x3a/0x3b/0x45 vs frag/stun/smoke), the stick branch [M 0x12ce80:255-330], DoTrails' !=7777 fuse skip [M 0x12d890:268-285], and the detonator arm disasm [M 0x1a4c30-0x1a4cd4] — which settles the mark at BU+0xFC = **−10.0f** (0xc1200000; the port's earlier "+10.0" note dropped the sign). A scratch probe through the real input path reproduced both symptoms on master (the mine bounced 4× then rested; the detonator's mark took ~11 ticks — and master's B-route/cycle-exclusion were already right, matching the main agent's 2026-10-14 live measurements on 14).
 - (01:41-02:00) Fixes: the mine joins the +0x100 stick arm (0.04 offset, no fuse write, silent), the stuck 0x37 fuse follows DoTrails' !=7777 rule, the mark writes −10.0, the Stick consumer mutes 0x37 + the 6-placed cap joins the mine (drone.rs, shared additive). 3 NF_ISO tests through the real input path; 2 shown FAILING pre-fix (the tick-48 bounce; the stick never lands), all green post-fix and on the merged tree (origin/master bf2bd176 — whose live measurements confirm every fix). Neighbours green (satchel/tripbomb/hat/explode/throw/types/fire-modes/samurai/switch + nf-game lib 157).
 - (02:00+) The full fast suite runs on the final tree; the report (docs/reports/fix-remote-mine-play.md) carries the live checks + the repro steps.
+
+---
+Task: fix-sentinel-camera-play (109a)
+Agent: worker (sandbox web-9248268a)
+Task: the Sentinel's guided-rocket first-person camera doesn't happen in play (the merged tests ride), and the rockets are far too slow (the 0x200 speed-x0.25 read). Files: crates/nf-view/src/{scene,lib}.rs, crates/nf-game/src/drone.rs (small).
+
+Work Log:
+- 01:26 UTC: branch from origin/master (d7afed5a), setup reused, pushed. The PCSX2 measurements read first (docs/live/2026-10-14-weapon-measurements-pcsx2.md).
+- 01:30-02:05: the decompile read. [M Bullet_init 0x12c5a0:207-211] — the speed arm scales weapon_data+0x20 by 0.25 on +0x6C & 0x200 (the port implements it faithfully; the records [L ee_start_05 @ 0x2bf150]: 0x2c +0x20 = 0.25, 0x2d +0x20 = 0.3333, both 0x200) — so the port's 0.0625 is the INIT speed, but the game's flight is 0.33666 u/frame [L PCSX2] = 4.04× that. Bullet_update rewrites BU+0xF8 per tick (0x12e7b0 at 0x12ecf8, the Vec_NormaliseLen step) and the object's control integrates the move; the internal ×4.04 source is unresolved (the state-1 mover, control_movement_object_handler, FRAME_RATE_DIV=1.0/REC_FRAME_RATE=1/60 at 0x30d0d4/dc all read) — the port applies the measured ×4.04 on the measured twins (0x2c/0x2d) only, live check requested. The camera: `view_override()` had ZERO callers — the window built its camera from Bond's head (+ the script camera) only; the sim rode, the screen stayed. The mode-button hypothesis CLEARED with a test: the press reaches the twin through the real Input lane.
+- 02:06-02:35: the fix + the tests. lib.rs: view_override in the live tick block and in shot(); view_model_entries skips during the ride. scene.rs: frame_state hides the view-model character during the ride. hud.rs (one gate, listed): the crosshair skips during the ride. drone.rs: the ×4.04 measured flight scale on 0x2c/0x2d. sentinel_camera_live 3/3 through the real Input lanes; failing-first on the pre-fix src: the speed 0.06250 vs the measured 0.25250, the arms' hidden false on master. The affected suites green (fire_modes3 5/5, fix_weapon_fire_modes 5/5, fix_weapon_sounds 3/3 — its stale 0.0625 comment updated, fix_zoom_overlays 6/6); merge origin/master 0fbd0e4a (WORKLOG both kept).
+
+Stage Summary:
+- The guided ride now takes the window's view in play, in the headless renders, with the arms and the crosshair hidden and the 15-tick restore; the Sentinel rockets fly at the measured 0.33666/0.2525 u/frame. Report: docs/reports/fix-sentinel-camera-play.md (the live checks: the guided speed gdbwatch, the other 0x200 records, the red tint).
