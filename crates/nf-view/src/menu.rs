@@ -900,6 +900,17 @@ impl FrontEnd {
         (entry.best, entry.rows[0].value, bonuses)
     }
 
+    /// The Records page's medal for campaign row `row`: `(label, emblem texture)` or None when no medal is earned [M
+    /// C_RBDSRECORDS 0x20bf00:58-110 — the level's four bonus flags k1..k4 (Menu_GetLevelBonuses +4/+0x10/+0x1c/+0x28):
+    /// all four → 0x307/0x300013e, k1..k3 → 0x306/0x300013f, k1+k2 → 0x308/0x3000140, k1 → 0x309/0x300013d].
+    pub fn record_medal(&self, row: usize) -> Option<(u32, u32)> {
+        let profile = self.profile.as_ref()?;
+        let hash = nf_game::progress::SP_LEVEL_HASHES.get(row).copied()?;
+        let k = |n: u32| profile.progress.has_medal(hash, n, 0);
+        if !k(1) { return None; }
+        Some(if k(2) && k(3) && k(4) { (0x307, 0x0300_013e) } else if k(2) && k(3) { (0x306, 0x0300_013f) } else if k(2) { (0x308, 0x0300_0140) } else { (0x309, 0x0300_013d) })
+    }
+
     /// The intro movie the P_INTRO run currently shows [M 0x209e88's movie_283 counter].
     pub fn intro_movie_code(&self) -> u32 { INTRO_MOVIES[self.intro_index.min(INTRO_MOVIES.len() - 1)] }
 
@@ -1224,7 +1235,7 @@ impl FrontEnd {
 /// sizes from the archive: 0x03000074 512×512 title art, 0x030000b3 512×256 panel, 0x030000bf 128×128
 /// ring emblem, 0x03000084/b6/c4/a5 the ring-masked previews, 0x0300016d 256×128 logo,
 /// 0x0300014c 256×256 stamp, 0x03000042 64×64 button/arrow atlas].
-pub const MENU_TEXTURES: [u32; 32] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0300_00bf, 0x0300_0084, 0x0300_00b6, 0x0300_00c4, 0x0300_00a5, 0x0300_016d, 0x0300_014c,
+pub const MENU_TEXTURES: [u32; 36] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0300_00bf, 0x0300_0084, 0x0300_00b6, 0x0300_00c4, 0x0300_00a5, 0x0300_016d, 0x0300_014c,
     // The hint-bar icon font `specialchar` [M 0x2dd8d8: every entry's texture is 0x03000075].
     0x0300_0075,
     // The 12 per-mission ring previews = sp_level[i]+0x00 [L ee_snapshot 0x2df2e0; all 12 live in the
@@ -1242,7 +1253,10 @@ pub const MENU_TEXTURES: [u32; 32] = [0x0300_0042, 0x0300_0074, 0x0300_00b3, 0x0
     // fix-menus-real2: the page headers' bold-italic face — FontTable[0] = FONTNFont2, texture
     // 0x03000005 [L ee_snapshot 0x2dd8b0; the page dump's header NAME strings \xff\x01]. 512×128
     // in the front-end archive [L nf-extract tex-list 07000048.bin].
-    0x0300_0005];
+    0x0300_0005,
+    // The difficulty wheel's per-row previews [L ee_snapshot table 0x2df4c0 +0x00] and the Records medals
+    // [M C_RBDSRECORDS 0x20bf00:58-110].
+    0x0300_00a6, 0x0300_00a7, 0x0300_013e, 0x0300_013f];
 
 /// The menu text renderer's special-character table `specialchar` (0x2dd8d8, 17 × 0x18 bytes: the token
 /// char, the texture hash 0x03000075, u0, v0, w, h, advance, height) [M ACTION.ELF symtab + the table's
@@ -1326,15 +1340,16 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             // [M 0x20a408] and 0x375 to the plate, flashing on the 240-frame cycle.]
             quad640(&mut h, 0x0300_0074, 0.0, 0.0, MW, MH, [0.0, 0.0, 512.0, 512.0], gs(0x7f7f7f, 0xff));
             if fe.press_start_on {
-                centred(&mut h, font, -2, &bind(0x100_01eb), mx(320.5), my(317.0), gs(YELLOW, 0xff), true, 1.0);
+                centred(&mut h, font, -2, &bind(0x100_01eb), mx(320.5), my(326.0), gs(YELLOW, 0xff), true, 1.25); // PCSX2 m00: 266 units wide, middle y 320
             }
             let legal = bind(0x375);
             if !legal.is_empty() {
                 // The legal text wraps inside its plate (50,332,540×108) and each line is centred in it
                 // [L the main agent's PCSX2 captures 2026-10-13; the port's raw 92-column run went off
                 // the right edge]. Wrap to the plate's pixel width, centre at the plate's centre x=320.
-                for (i, line) in wrap_px(&legal, font, 500.0).iter().take(6).enumerate() {
-                    centred(&mut h, font, -3, line, mx(320.0), my(334.0 + i as f32 * 18.0), gs(CREAM, 0xc0), false, 1.0);
+                // PCSX2 m00 (2026-10-15): lines up to ~482 units, middles from y 345 at pitch 18, full cream with shadow.
+                for (i, line) in wrap_px(&legal, font, mx(490.0)).iter().take(6).enumerate() {
+                    centred(&mut h, font, -3, line, mx(320.0), my(351.0 + i as f32 * 18.0), gs(CREAM, 0xff), true, 1.0);
                 }
             }
         }
@@ -1348,12 +1363,14 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             // record] — see the plate comment above.]
             for (i, &lbl) in MAIN_ITEMS.iter().enumerate() {
                 let y = 262.0 + i as f32 * 32.0;
-                let (c, scale) = if i == fe.cursor { (cream, 1.35) } else { (gs(0x73330f, 0x80), 1.2) };
-                centred(&mut h, font, -2, &bind(lbl), mx(167.0 + 153.0), my(y + 6.0), c, true, scale);
+                // The rows draw in the header face, centred in their controls (PCSX2 07000048 main, 2026-10-15:
+                // "NightFire" centred on x 320, middles at 279/311/343).
+                let c = if i == fe.cursor { cream } else { gs(0x73330f, 0x80) };
+                centred_tex(&mut h, hfont, 0x0300_0005, -2, &bind(lbl), mx(167.0 + 153.0), my(y + 14.0 + 3.0 + 6.0), c, true, 1.0);
             }
-            centred(&mut h, font, -2, &bind(MAIN_DESCS[fe.cursor.min(2)]), mx(103.0 + 217.0), my(357.0 + 14.0), cream, true, 1.0);
+            label(&mut h, font, &bind(MAIN_DESCS[fe.cursor.min(2)]), 103.0, 357.0, 434.0, 42.0, cream, true, 1.0);
             hint_bar(&mut h, font, &hint(0x54e, "~V Scroll  ~A Select"), 50.0, 419.0, cream);
-            logo_stamp(&mut h);
+            // No logo or stamp: the page's only art is its aux FMV.
         }
         Page::Codename => {
             // Select Codename [M menu-def page 0x40000025 (parsed 2026-10-14): header 0x10000001
@@ -1371,9 +1388,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             wheel(&mut h, fe, font, lang, |fe, row| fe.row_label(lang, row), if fe.confirming_default_profile { dimmest } else { cream });
             // The row's description under the wheel [M 0x1f89f0's desc binds].
             let desc = if fe.cursor == 0 { bind(0x100_0004) } else { bind(0x100_0003) };
-            for (i, line) in wrap_px(&desc, font, 500.0).iter().take(4).enumerate() {
-                centred(&mut h, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), bright, true, 1.0);
-            }
+            desc_block(&mut h, font, &desc, bright);
             // The confirm box: the game pops it for "Play without saving" [M C_SBNFCN 0x20b390:19-21
             // Menu_CreateOptionBox(0x10000bb, 9, 1, 1); the plate 0x100001f2].
             if fe.confirming_default_profile {
@@ -1390,13 +1405,13 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             // plate 0x100001ee (50,301,540×113); the hint bar LBL 0x218.]
             page_header(&mut h, hfont, &bind(0x1f8));
             panel(&mut h);
-            emblem(&mut h, 0x0300_00a5, 0x0300_00bf);
+            // The preview is per row [M C_SBNFDFCTY_Handler 0x216ca8 → Menu_UpdateWheel with the table 0x2df4c0; L
+            // ee_snapshot: +0x00 = 0x030000a5/a6/a7].
+            emblem(&mut h, [0x0300_00a5, 0x0300_00a6, 0x0300_00a7][fe.cursor.min(2)], 0x0300_00bf);
             wheel(&mut h, fe, font, lang, |_fe, row| bind(DIFFICULTIES[row.min(2)]), cream);
             // The description wraps inside its plate (50,301,540×113) [L the main agent's captures:
             // the port's single line ran off the right edge].
-            for (i, line) in wrap_px(&bind(DIFFICULTY_DESCS[fe.cursor.min(2)]), font, 500.0).iter().take(4).enumerate() {
-                centred(&mut h, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), bright, true, 1.0);
-            }
+            desc_block(&mut h, font, &bind(DIFFICULTY_DESCS[fe.cursor.min(2)]), bright);
             hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
@@ -1416,9 +1431,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             // The description: +0x08 for an unlocked row, +0x14 for a locked one [M 0x1f8388], wrapped
             // inside the plate.
             let desc = if fe.unlocked_row(row) { bind(CAMPAIGN[row].2) } else { bind(LOCKED_DESC) };
-            for (i, line) in wrap_px(&desc, font, 500.0).iter().take(4).enumerate() {
-                centred(&mut h, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), bright, true, 1.0);
-            }
+            desc_block(&mut h, font, &desc, bright);
             hint_bar(&mut h, font, &hint(0x208, "~A Select  ~Y Dossier  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
@@ -1438,9 +1451,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             let row = fe.cursor.min(3);
             emblem(&mut h, DOSSIER_ROWS[row].0, 0x0300_00bf);
             wheel(&mut h, fe, font, lang, |_fe, r| bind(DOSSIER_ROWS[r.min(3)].1), cream);
-            for (i, line) in wrap_px(&bind(DOSSIER_ROWS[row].2), font, 500.0).iter().take(4).enumerate() {
-                centred(&mut h, font, -2, line, mx(320.0), my(301.0 + 28.0 + i as f32 * 18.0), bright, true, 1.0);
-            }
+            desc_block(&mut h, font, &bind(DOSSIER_ROWS[row].2), bright);
             hint_bar(&mut h, font, &hint(0x218, "~A Select  ~V Scroll  ~B Back"), 50.0, 419.0, cream);
             logo_stamp(&mut h);
         }
@@ -1456,27 +1467,40 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             // binds (the level's own high score / best / upgrades) — headless has no save data, so
             // the values draw as 0.]
             page_header(&mut h, hfont, &bind(0x280));
-            panel(&mut h);
+            // The three framed boxes [L the b0=1 frame controls (68,120,505×34), (68,162,505×113), (68,285,505×60)]:
+            // translucent black with a thin dark border (PCSX2 07000048 Records, 2026-10-13). No ring art.
+            for (x, y, w, hh) in [(68.0f32, 120.0f32, 505.0f32, 34.0f32), (68.0, 162.0, 505.0, 113.0), (68.0, 285.0, 505.0, 60.0)] {
+                frame640(&mut h, x, y, w, hh);
+            }
             let m = fe.cursor.min(CAMPAIGN.len() - 1);
-            // The selected mission's name in the list control [M P_DSRECORDS 0x217248:11-13 fills
-            // 0x10000174 from sp_level — the name labels are CAMPAIGN's +0x04].]
-            centred(&mut h, font, -2, &bind(CAMPAIGN[m].1), mx(132.0 + 188.0), my(124.0 + 8.0), bright, true, 1.0);
-            const RECORD_ROWS: [(u32, f32, f32, f32); 3] = [(0x302, 83.0, 169.0, 248.0), (0x165, 83.0, 202.0, 352.0), (0x305, 83.0, 235.0, 352.0)];
-            for (lbl, x, y, w) in RECORD_ROWS {
-                centred(&mut h, font, -2, &bind(lbl), mx(x + w / 2.0), my(y + 8.0), cream, true, 1.0);
+            // The spinner 0x10000174 (132,124,376×16): the mission name centred, a yellow ◀ ▶ at its ends (PCSX2:
+            // x 144 / 497) [M P_DSRECORDS 0x217248:11-13 fills it from sp_level].
+            const REC_SCALE: f32 = 1.25; // the Records labels measure 1.25× the port's base face (PCSX2: "High Score" 120 units)
+            label(&mut h, font, &bind(CAMPAIGN[m].1), 132.0, 124.0, 376.0, 16.0, bright, true, REC_SCALE);
+            for (cx, left) in [(144.0f32, true), (497.0, false)] {
+                let yellow = gs(0xfec43e, 0xff);
+                let (a, b, d) = if left { ((cx + 8.0, 126.0), (cx + 8.0, 140.0), (cx - 8.0, 133.0)) } else { ((cx - 8.0, 126.0), (cx - 8.0, 140.0), (cx + 8.0, 133.0)) };
+                let q = |p: (f32, f32)| HudVertex { p: h.ndc(Anchor::Centre, mx(p.0), my(p.1)), uv: [0.0, 0.0], c: yellow };
+                let v = [q(a), q(b), q(d), q(a), q(d), q(d)];
+                h.ndc_solid(-3, v, yellow);
             }
-            // The value controls (375,169/202/235,185×16) [L parsed; Label_Update centres them].
-            // fix-save-profile: the values come from the ACTIVE profile's progress [M
-            // C_RBDSRECORDS 0x20bf00:26-28 sprintf's the level's best (ScoringTable+0x30), the
-            // moments value and the bonus count]; without one they stay 0 (headless).
+            // The rows [L LBL 0x302/0x165/0x305 at (83,169/202/235)] left-aligned, the values [L 0x10000175/177/178
+            // (375,·,185×16)] right-aligned to x 560 (PCSX2 558).
             let (best, moments, bonuses) = fe.record_row(m);
-            for (y, v) in [(169.0f32, best), (202.0, moments), (235.0, bonuses)] {
-                centred(&mut h, font, -2, &v.to_string(), mx(375.0 + 92.5), my(y + 8.0), cream, true, 1.0);
+            for ((id, y), v) in [(0x302u32, 169.0f32), (0x165, 202.0), (0x305, 235.0)].into_iter().zip([best, moments, bonuses]) {
+                let yc = my(y + 12.5 + 6.0);
+                h.text_scaled(Anchor::Centre, font, -2, &bind(id), mx(83.0), yc, false, cream, true, REC_SCALE);
+                h.text_scaled(Anchor::Centre, font, -2, &v.to_string(), mx(560.0), yc, true, cream, true, REC_SCALE);
             }
-            quad640(&mut h, 0x0300_013d, 435.0, 282.0, 128.0, 64.0, [0.0, 0.0, 255.0, 127.0], gs(0x7f7f7f, 0xff));
-            centred(&mut h, font, -2, &bind(0x307), mx(76.0 + 120.0), my(306.0 + 8.0), cream, true, 1.0);
+            // The medal: shown only once earned [M C_RBDSRECORDS 0x20bf00:58-110 — the level's four bonus flags pick
+            // 0x307/0x300013e, 0x306/0x300013f, 0x308/0x3000140 or 0x309/0x300013d; none → both controls hidden].
+            if let Some((lbl_id, tex)) = fe.record_medal(m) {
+                quad640(&mut h, tex, 435.0, 282.0, 128.0, 64.0, [0.0, 0.0, 255.0, 127.0], gs(0x7f7f7f, 0xff));
+                label(&mut h, font, &bind(lbl_id), 76.0, 306.0, 240.0, 16.0, cream, true, REC_SCALE);
+            }
             hint_bar(&mut h, font, &hint(0x49e, "~V Change  ~B Back"), 50.0, 419.0, cream);
-            logo_stamp(&mut h);
+            // Only the logo [L 0x10000001 (434,38,156×43) TEX 0x0300016d] — this page has no ring stamp.
+            quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
         }
         Page::Options => { page_rows(&mut h, fe, font, "OPTIONS", dim, bright); }
         Page::Pause => pause_page(&mut h, fe, font, lang, textures, cream, bright, dim),
@@ -1851,16 +1875,38 @@ fn wheel_dim(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, _lang: Op
             -1 | 1 => (dimmed(base, 0x80), 1.0),
             _ => (dimmed(base, 0x40), 1.0),
         };
-        // Locked rows go grey [M Menu_UpdateWheel 0x1f8388:210-234 sends the locked rows 0x484848xx].
-        if locked(fe, row) { c = gs(0x484848, 0x80); }
+        // Locked rows go grey at half the slot's alpha [M Menu_UpdateWheel 0x1f8388:210-234: 0x48484880 selected,
+        // 0x48484840 the neighbours, 0x48484820 the outer rows].
+        if locked(fe, row) { c = gs(0x484848, match d { 0 => 0x80, -1 | 1 => 0x40, _ => 0x20 }); }
         let s = label(fe, row);
         // The label sprite centres in its control: x = ctrl.x + ctrl.w/2, y = ctrl.y + ctrl.h/2
         // [M Label_Update 0x218cb8:177-182 (x), :202-206 (y); the default format's fe 03].
-        centred(h, font, -2, &s, mx(WHEEL_X[slot] + WHEEL_W[slot] / 2.0), my(WHEEL_Y[slot] + 8.5), c, true, scale);
+        // Left-aligned at the control's x, vertically centred (PCSX2 07000048 codename/difficulty/missions,
+        // 2026-10-15: the selected row's ink starts at x 303, the neighbours' at 331, middles at 162/193/221).
+        let _ = WHEEL_W;
+        left_text(h, font, &s, mx(WHEEL_X[slot]), my(WHEEL_Y[slot] + 8.5 + 6.0), c, true, scale);
     }
 }
 
 fn dimmed(mut c: [f32; 4], a: u32) -> [f32; 4] { c[3] = gs(0, a)[3]; c }
+
+/// A wheel page's description, wrapped to 500 units and centred in its plate (50,301,540×113): the lines' middles at
+/// pitch 28 around y 366 (PCSX2 07000048 codename/difficulty/missions, 2026-10-15: two lines at 352/380, one at 366).
+fn desc_block(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, c: [f32; 4]) {
+    // The wrap width is 520 640-space units (PCSX2's codename text breaks after "able to", a 502-unit line).
+    let lines = wrap_px(text, font, mx(520.0));
+    let n = lines.len().min(4);
+    for (i, line) in lines.iter().take(4).enumerate() {
+        let mid = 366.0 + (i as f32 - (n as f32 - 1.0) / 2.0) * 28.0;
+        centred(h, font, -2, line, mx(320.0), my(mid + 6.0), c, true, 1.0);
+    }
+}
+
+/// Left-aligned text: the first glyph's ink starts at screen x `x`.
+fn left_text(h: &mut Hud, font: &nf_formats::hud::Font, s: &str, x: f32, y: f32, c: [f32; 4], shadow: bool, scale: f32) {
+    let x0 = font.layout(s, 0.0, 0.0).0.first().map(|p| p.x).unwrap_or(0.0) * scale;
+    h.text_scaled(Anchor::Centre, font, -2, s, x - x0, y, false, c, shadow, scale);
+}
 
 /// Centre one text row at 640-space x `xc` [M `__Font_DrawText` 0x1eee48:69-71 — the format's fe 03
 /// flag 2 applies `x -= width * 0.5`; every menu label carries fe 03 (Label_Init 0x218638:53's
@@ -1915,7 +1961,10 @@ fn centred_tex(h: &mut Hud, font: &nf_formats::hud::Font, tex: u32, layer: i32, 
 /// NAME = ff 00 01 00 00 00 …]. FontTable[0] = {tex 0x03000005, FONTNFont2 0x305a58} [L
 /// ee_snapshot 0x2dd8b0].]
 fn page_header(h: &mut Hud, hfont: &nf_formats::hud::Font, s: &str) {
-    centred_tex(h, hfont, 0x0300_0005, -1, s, mx(238.0), my(48.5), gs(CREAM, 0xff), true, 1.2);
+    // Left-aligned at the control's x 50 at the face's own size, middle on y 48.5 (PCSX2 07000048: every header's ink
+    // starts at x 51; "Select Codename" measures 261 units).
+    let x0 = hfont.layout(s, 0.0, 0.0).0.first().map(|p| p.x).unwrap_or(0.0);
+    h.text_scaled_tex(Anchor::Centre, hfont, -1, 0x0300_0005, s, mx(50.0) - x0, my(48.5 + 6.0), false, gs(CREAM, 0xff), true, 1.0);
 }
 
 /// The panel behind the rows [M pages 0x40000025/0x40000023/0x4000001c/0x4000002b control (50,53,590×295)
@@ -1935,8 +1984,10 @@ fn emblem(h: &mut Hud, preview: u32, ring: u32) {
 
 /// `emblem` with per-quad colours (the locked rows' preview dims to 0x60 [M 0x1f8388's 0x60606060]).
 fn emblem_col(h: &mut Hud, preview: u32, ring: u32, c: [f32; 4], ring_c: [f32; 4]) {
+    // The ring texture 0x030000bf only masks the preview to the disc: PCSX2 shows the preview filling the 150-unit
+    // circle with no rim or square of its own (07000048 codename/difficulty/missions, 2026-10-15).
+    let _ = (ring, ring_c);
     circle_clipped_quad(h, preview, 114.0, 118.0, 150.0, 150.0, [0.0, 0.0, 128.0, 128.0], c);
-    quad640(h, ring, 114.0, 118.0, 150.0, 150.0, [0.0, 0.0, 128.0, 128.0], ring_c);
 }
 
 /// A textured quad clipped to the rect's inscribed circle: 24 vertical strips, each the chord of the
@@ -1944,7 +1995,7 @@ fn emblem_col(h: &mut Hud, preview: u32, ring: u32, c: [f32; 4], ring_c: [f32; 4
 /// draw order + the square-box render); a `HudFrame` has no per-pixel mask, so the port clips
 /// geometrically — 24 strips' chord steps are under 0.1 px at the 150-px emblem.
 fn circle_clipped_quad(h: &mut Hud, tex: u32, x: f32, y: f32, w: f32, hh: f32, uv: [f32; 4], c: [f32; 4]) {
-    let n = 24;
+    let n = 96;
     let (cx, cy, r) = (x + w / 2.0, y + hh / 2.0, w / 2.0);
     for k in 0..n {
         let sx0 = x + w * k as f32 / n as f32;
@@ -1965,7 +2016,6 @@ fn circle_clipped_quad(h: &mut Hud, tex: u32, x: f32, y: f32, w: f32, hh: f32, u
 /// The logo (434,38,156×43 TEX 0x0300016d) and the stamp (the 0x10000224 control, whose position
 /// `MenuManager_Create` forces to (340,198) [M 0x21b908:305-314], 255×255 TEX 0x0300014c).
 fn logo_stamp(h: &mut Hud) {
-    quad640(h, 0x0300_014c, 340.0, 198.0, 255.0, 255.0, [0.0, 0.0, 256.0, 256.0], gs(0x7f7f7f, 0x60));
     quad640(h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
 }
 
@@ -2106,6 +2156,23 @@ fn quad_uv(h: &mut Hud, tex: u32, x: f32, y: f32, w: f32, hh: f32, uv: [f32; 4],
 
 /// A flat coloured plate (the menu backdrop / the confirm box), inside the centred 4:3 band — see
 /// `quad640` [L the main agent's captures].
+/// A 640-space framed box: a translucent black fill and a thin dark border (the b0=1 frame controls, PCSX2 07000048
+/// Records 2026-10-13).
+fn frame640(h: &mut Hud, x: f32, y: f32, w: f32, hh: f32) {
+    let rect = |h: &mut Hud, x0: f32, y0: f32, x1: f32, y1: f32, layer: i32, c: [f32; 4]| {
+        let (a, b) = (h.ndc(Anchor::Centre, mx(x0), my(y0)), h.ndc(Anchor::Centre, mx(x1), my(y1)));
+        let q = |p: [f32; 2]| HudVertex { p, uv: [0.0, 0.0], c };
+        let v = [q([a[0], a[1]]), q([b[0], a[1]]), q([b[0], b[1]]), q([a[0], a[1]]), q([b[0], b[1]]), q([a[0], b[1]])];
+        h.ndc_solid(layer, v, c);
+    };
+    rect(h, x, y, x + w, y + hh, -1, [0.0, 0.0, 0.0, 0.55]);
+    let e = [0.04, 0.02, 0.01, 0.9];
+    rect(h, x, y, x + w, y + 1.5, -1, e);
+    rect(h, x, y + hh - 1.5, x + w, y + hh, -1, e);
+    rect(h, x, y, x + 1.5, y + hh, -1, e);
+    rect(h, x + w - 1.5, y, x + w, y + hh, -1, e);
+}
+
 fn plate(h: &mut Hud, x: f32, y: f32, w: f32, hh: f32, c: [f32; 4]) {
     let (a, b) = (h.ndc(Anchor::Centre, x, y), h.ndc(Anchor::Centre, x + w, y + hh));
     let p = |q: [f32; 2]| HudVertex { p: q, uv: [0.03, 0.03], c };
