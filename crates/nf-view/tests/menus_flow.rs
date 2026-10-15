@@ -220,28 +220,30 @@ fn the_results_pages_split_complete_from_failed() {
     assert_eq!(fe.page, Page::MissionSelect);
     assert_eq!(fe.flow.page, 0x4000_001c);
     assert_eq!(fe.requested_level, None, "a page change, not a level load [M 0x208e78:43]");
-    // The FAILED page is P_ENDMISSION 0x216618: its three arms stay [M :19-27].
+    // The FAILED page 0x40000042: its list holds TWO items — REPLAY (value 0) and QUIT (value 2) [L the 07000005
+    // mission menu-def]; P_ENDMISSION reads the item VALUE (msg 0x35) [M 0x216618:12-26], so the BaseMap arm 1 is
+    // unreachable from this page. PCSX2 07000005 (2026-10-15): REPLAY / QUIT.
     fe.mission_ended(Outcome::Failed, Stats::default());
-    assert_eq!(fe.rows(), 3);
-    // Cursor 0 = restart the CURRENT level, warm, on the entry checkpoint
+    assert_eq!(fe.rows(), 2);
+    assert_eq!(fe.page_id(), menu::PAGE_FAIL_MENU, "the fail menu is its own page (no aux movie)");
+    assert_eq!(menu::aux_movie_for(fe.page_id()), 0);
+    // Row 0 (REPLAY, value 0) = restart the CURRENT level, warm, on the entry checkpoint
     // [M 0x216618:19-21: ResetMap_LevelToLoad(GameState._12_4_, 1, 1) + Player_RamLoad(Bond, 1)].
     fe.cursor = 0;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0005));
-    assert!(fe.flow.warm_reset, "row 0 is the warm arm [M 0x216618:20]");
-    // Cursor 1 = restart the mission from its first map, cold
-    // [M 0x216618:15-17: ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)].
+    assert!(fe.flow.warm_reset, "REPLAY is the warm arm [M 0x216618:20]");
+    // Row 1 (QUIT, value 2) = quit to the menu [M 0x216618's value-2 arm].
     fe.mission_ended(Outcome::Failed, Stats::default());
     fe.cursor = 1;
     assert!(fe.action(Action::Confirm));
-    assert_eq!(fe.requested_level, Some(0x0700_0005));
-    assert!(!fe.flow.warm_reset, "row 1 is the cold arm [M 0x216618:16]");
-    // Cursor 2 = quit to the menu [M 0x216618's level==2 arm].
-    fe.mission_ended(Outcome::Failed, Stats::default());
-    fe.cursor = 2;
-    assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL));
     assert_eq!(fe.flow.page, 0x4000_001c);
+    // Sister: the cursor wraps over the two rows.
+    fe.mission_ended(Outcome::Failed, Stats::default());
+    fe.cursor = 0;
+    fe.action(Action::Down); assert_eq!(fe.cursor, 1);
+    fe.action(Action::Down); assert_eq!(fe.cursor, 0);
 }
 
 #[test]
@@ -1038,24 +1040,20 @@ fn the_pause_score_tab_shows_the_disc_targets() {
     assert!(f.v.len() > 60, "the SCORE tab draws the header and the rows ({} verts)", f.v.len());
 }
 
-/// (NF_ISO) The pause page's figure: texture 0x030000db loads as the 64×128 alpha mask (the 5551
-/// alpha-bit silhouette), not the 8bpp blob card. Before the fix the load produced the palette-card
-/// picture (coloured blobs + white figure) the user saw.
+/// (NF_ISO) The pause page's figure: texture 0x030000db is a placeholder on the disc (palette blobs and a basketball
+/// player); the loader replaces its texels with the burning woman's first frame (crate::woman,
+/// `psiDecompressWoman` 0x1202a8) — fire-coloured texels inside her silhouette, black around.
 #[test]
 fn the_pause_figure_texture_loads_as_the_silhouette_mask() {
     let Some(iso) = std::env::var("NF_ISO").ok() else { return };
     let scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
     let (_, t) = scene.hud_textures.iter().find(|(h, _)| *h == 0x0300_00db).expect("the pause figure texture loads");
     assert_eq!((t.width, t.height), (128, 128), "the figure texture is 128×128 [L the map header]");
-    // The figure = index 0x43 whose palette entry is pure WHITE [L pal[067]=ffffff80; the index
-    // histogram: a flat run of 987 0x4343 words in the figure's bbox]. The white pixels sit in the
-    // texture's RIGHT half (x ≥ 64) — the blobs (the left half) never enter the menu's uv rect.
-    let white: Vec<(usize, usize)> = (0..128usize).flat_map(|y| (0..128usize).map(move |x| (x, y)))
-        .filter(|&(x, y)| { let i = (y * 128 + x) * 4; t.rgba[i] == 255 && t.rgba[i + 1] == 255 && t.rgba[i + 2] == 255 })
-        .collect();
-    assert!(white.len() >= 900, "the white silhouette is present ({} px)", white.len());
-    let left = white.iter().filter(|(x, _)| *x < 64).count();
-    assert!(left * 10 < white.len(), "the silhouette sits in the texture's right half ({} left-half px of {})", left, white.len());
+    let w = scene.woman.as_ref().expect("the woman decoder is set up");
+    assert_eq!(t.rgba, w.rgba(), "the HUD texture holds the woman's current frame");
+    // Sister: the disc's placeholder had a pure-white figure (palette entry 0x43); the woman has none.
+    let white = (0..128 * 128).filter(|&k| t.rgba[k * 4] == 255 && t.rgba[k * 4 + 1] == 255 && t.rgba[k * 4 + 2] == 255).count();
+    assert!(white < 50, "no white placeholder silhouette ({white} px)");
 }
 
 // ── fix-menus-real2: the headers' bold-italic face ──────────────────────────────────────────────

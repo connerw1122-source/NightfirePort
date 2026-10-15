@@ -1313,7 +1313,7 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
         let want = if intro {
             Some(menu::INTRO_MOVIES[args.iter().position(|a| a == "--intro").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<usize>().ok()).unwrap_or(0).min(menu::INTRO_MOVIES.len() - 1)])
         } else {
-            let aux = menu::aux_movie_for(fe.page.id());
+            let aux = menu::aux_movie_for(fe.page_id());
             (aux != 0).then_some(aux)
         };
         if let Some(code) = want {
@@ -1662,7 +1662,7 @@ impl App {
         } else {
             // The page's aux loop [M 0x21c858:338]: stop when the page has no aux, (re)start when
             // the playing code differs from the page's.
-            let aux = menu::aux_movie_for(fe.page.id());
+            let aux = menu::aux_movie_for(fe.page_id());
             let wrong = match &self.movie {
                 Some(p) => aux == 0 || p.code() != aux || !p.is_looping(),
                 None => aux != 0,

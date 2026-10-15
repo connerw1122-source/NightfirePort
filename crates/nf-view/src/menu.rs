@@ -605,7 +605,7 @@ impl FrontEnd {
             // The FAILED results page is P_ENDMISSION's three rows [M 0x216618:19-27]; the
             // COMPLETED results page (P_NFRESULTS 0x208e78) has NO row list — the page's own
             // action is the hint's ~A Continue (Confirm anywhere).
-            Page::Results => if self.outcome == Outcome::Complete { 1 } else { 3 },
+            Page::Results => if self.outcome == Outcome::Complete { 1 } else { 2 },
         }
     }
 
@@ -1143,10 +1143,10 @@ impl FrontEnd {
             },
             Page::Results => match a {
                 Action::Side => {}
-                Action::Up => { self.cursor = (self.cursor + 2) % 3; return true; }
-                Action::Down => { self.cursor = (self.cursor + 1) % 3; return true; }
+                Action::Up | Action::Down => { self.cursor = (self.cursor + 1) % 2; return true; }
                 Action::Confirm => {
-                    match self.cursor {
+                    // The list's item VALUES [L page 0x40000042: REPLAY = 0, QUIT = 2; M 0x216618 msg 0x35].
+                    match [0usize, 2][self.cursor.min(1)] {
                         // The arms in row order [M P_ENDMISSION_Handler 0x216618:19-27]:
                         // row 0 → `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)`
                         // — the CURRENT level, WARM, on the entry checkpoint (fix-restart-target; the old
@@ -1179,10 +1179,17 @@ impl FrontEnd {
                         _ => {}
                     }
                 }
-                Action::Back => { self.cursor = 2; return true; }
+                Action::Back => { self.cursor = 1; return true; }
             },
         }
         false
+    }
+
+    /// The menu-def page the screen is: `Page::Results` is TWO pages — the fail menu 0x40000042 (a mission
+    /// archive's own menu-def, no aux movie: it draws over the paused, red-faded frame [L 07000005 08000001]) and the
+    /// results page 0x40000036 (the front-end's, aux 0x07350048).
+    pub fn page_id(&self) -> u32 {
+        if self.page == Page::Results && self.outcome == Outcome::Failed { PAGE_FAIL_MENU } else { self.page.id() }
     }
 
     /// The first unlocked row (the cursor's landing spot when the page opens).
@@ -1300,7 +1307,7 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
     // own background texture, not an overlay [M movies.md §Presentation; PS2UploadBGMImage 0x108740].
     // When the plane has no live frame (no `movies` feature, or the slim ISO's zeroed PSS files [L])
     // the port keeps the dark plate the pages fade from [M the pages' 0x1b/0x1c fade colours].
-    let aux = aux_movie_for(fe.page.id());
+    let aux = aux_movie_for(fe.page_id());
     // fix-pause-menu: the IN-GAME pages (pause 0x4000004b, fail menu 0x40000042) draw OVER THE PAUSED
     // FRAME — the game dims nothing full-screen; their own backdrop plate (45,107,550×266, TEX 0x03000070
     // [L the pages' 0x10000001 control]) carries the menu.
@@ -1702,21 +1709,30 @@ fn results_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: 
             // The fail menu's art [L page 0x40000042's controls: the plate 0x10000001 (45,107,550×266)
             // TEX 0x03000070, the Bond image 0x10000184 (385,121,202×218) TEX 0x030000db].
             tex_quad_or_plate(h, textures, 0x0300_0070, 45.0, 107.0, 550.0, 266.0, [0.0, 0.0, 512.0, 256.0], gs(0x7f7f7f, 0xff));
-            // The burning woman, as on the pause page (crate::woman; flags 0x100 additive).
-            h.quad(Anchor::Centre, 0, 0x0300_00db, 1, mx(385.0), my(121.0), mx(202.0), my(218.0), [0.0, 0.0, 128.0, 128.0], (false, false), gs(0x808080, 0xff));
-            // The header (105,120,431×16) LBL 0x2fd "Mission Failed" [L the page's 0x10000001 m0x18].
-            h.text(Anchor::Centre, font, -2, &lbl(0x2fd, "MISSION FAILED"), mx(105.0 + 215.0), my(120.0 + 8.0), false, bright, true);
-            // The rows [L the 0x100001a4 list (197,186,246×115) m0x11 rows 0x5bc "R E P L A Y" /
-            // 0x16c "Q U I T"; row 1 = 0x16b "R E S T A R T" [S — the pause page's own label; the
-            // game fills the middle row at runtime]. The ACTIONS are the handler's arms [M
-            // 0x216618:19-27].]
-            let rows = [(0x5bcu32, "REPLAY"), (0x16b, "RESTART"), (0x16c, "QUIT")];
+            // The burning woman, as on the pause page (crate::woman; flags 0x100 additive) at the control's colour
+            // 0x7f7f7f50 [L the 0x10000184 control's m0x1b/0x1c] — dimmer than full.
+            h.quad(Anchor::Centre, 0, 0x0300_00db, 1, mx(385.0), my(121.0), mx(202.0), my(218.0), [0.0, 0.0, 128.0, 128.0], (false, false), gs(0x7f7f7f, 0x50 * 2));
+            // The header (105,120,431×16) LBL 0x2fd "Mission Failed", colour 0x7d6d59 [L the page's 0x10000001 control
+            // m0x18/0x1b], centred in the control (Label_Update puts the label at ctrl.x + w/2 [M 0x218cb8:177-182])
+            // in the same face size as the hint bar (PCSX2 07000005: the header's glyphs match the hint's).
+            centred(h, font, -2, &lbl(0x2fd, "MISSION FAILED"), mx(105.0 + 215.5), my(134.0), gs(0x7d6d59, 0xff), true, 1.25);
+            // The rows: the 0x100001a4 list (197,186,246×115) holds exactly TWO items — m0x11 0x5bc "R E P L A Y"
+            // (value 0) and 0x16c "Q U I T" (value 2) [L the mission menu-def, page 0x40000042]; the handler reads
+            // the chosen item's VALUE (msg 0x35) [M P_ENDMISSION_Handler 0x216618:12-26], so the BaseMap arm 1 is
+            // unreachable from this page. PCSX2 (07000005, 2026-10-15): REPLAY / QUIT, the yellow arrow left of the
+            // selected row. Row pitch 40 like the pause list (the capture's two rows).
+            let rows = [(0x5bcu32, "REPLAY"), (0x16c, "QUIT")];
             for (i, (id, fb)) in rows.iter().enumerate() {
                 let c = if i == fe.cursor { bright } else { dim };
-                h.text(Anchor::Centre, font, -2, &lbl(*id, fb), mx(197.0 + 123.0), my(186.0 + 12.0 + i as f32 * 36.0), false, c, false);
+                // Centred on the list (Label_Update ctrl.x + w/2 [M 0x218cb8:177-182]); PCSX2 07000005: the row centres
+                // at y 216 / 254 of 480, the arrow at x 205.
+                centred(h, font, -2, &lbl(*id, fb), mx(197.0 + 123.0), my(223.0 + i as f32 * 38.0), c, false, 1.0);
             }
+            pause_cursor(h, 205.0, 216.0 + fe.cursor.min(1) as f32 * 38.0, gs(YELLOW, 0xff));
             // The hint (97,341,446×18) LBL 0x5c8 [L the page's 0x1000006f].
-            hint_bar(h, font, &hint_wrap(lang, 0x5c8, "~A Select  ~V Scroll"), 97.0, 341.0, cream);
+            // The hint control (97,341,446×18) is centred on x = 320 like the 540-wide bars hint_bar assumes [L]:
+            // hint_bar takes the 540-bar's left edge.
+            hint_bar(h, font, &hint_wrap(lang, 0x5c8, "~A Select  ~V Scroll"), 320.0 - 270.0, 341.0, cream);
         }
         Outcome::Complete => {
             // The results page's layout [L page 0x40000036's controls: header 0x10000001 (50,40,376×17)
@@ -1950,13 +1966,18 @@ fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
                 _ => (0.0, nat),
             };
             items.push(Item::Text { x: adv_sum, ink: (adv_sum + a, adv_sum + b) });
-            adv_sum += nat;
+            // A word's trailing spaces don't advance the pen far enough before the next icon: PCSX2 leaves ~10 units
+            // from the word's last ink to the icon (07000005 fail menu, 2026-10-15).
+            adv_sum = (adv_sum + nat).max(adv_sum + b + mx(10.0));
         }
         match after.chars().nth(1).and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
             Some(&(_, tex, u, v, w, hh, adv)) => {
                 let (iw, ih) = (mx(w), my(hh));
-                items.push(Item::Icon { tex, uv: [u, v, w, hh], w: iw, hh: ih, ink: (adv_sum - iw / 2.0, adv_sum + iw / 2.0) });
-                adv_sum += mx(adv) + 2.0;
+                // The icon occupies [pen, pen + iw] and its word follows ~6 units after (PCSX2 07000005 fail
+                // menu 2026-10-15: "✕ Select" — a 6-unit gap; the table's advance alone overlapped the next word).
+                let _ = adv;
+                items.push(Item::Icon { tex, uv: [u, v, w, hh], w: iw, hh: ih, ink: (adv_sum, adv_sum + iw) });
+                adv_sum += iw + mx(6.0);
             }
             _ => { adv_sum += mx(16.0); }
         }
@@ -1977,7 +1998,10 @@ fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
     let bar_c = mx(x640 + 270.0);
     let pen0 = bar_c - (ink_lo + ink_hi) / 2.0;
     if std::env::var_os("NF_DEBUG_HINT").is_some() { eprintln!("[hint] text={text:?} items={} ink=({ink_lo},{ink_hi}) bar_c={bar_c} pen0={pen0}", items.len()); }
-    let y = my(y640);
+    // Label_Update centres the label vertically in its 18-px control [M 0x218cb8:202-206]: PCSX2 puts every hint
+    // row's centre ~y + 9 (main menu 430, pause/fail 350 of 480 — 2026-10-13/15 captures); the port's text pen
+    // drew it ~16 higher.
+    let y = my(y640 + 15.0);
     // Draw from the collected items: each text segment re-lays-out at its absolute pen (the ink
     // spans land where the measure put them), the icons at theirs.
     let mut rest = text;
@@ -1990,7 +2014,9 @@ fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
         if !before.is_empty() {
             let x = pen0 + seg_pen;
             h.text(Anchor::Centre, font, -2, before, x, y, false, c, true);
-            seg_pen += font.layout(before, 0.0, 0.0).1;
+            let (placed, nat) = font.layout(before, 0.0, 0.0);
+            let ink_end = placed.last().map_or(nat, |pl| pl.x + font.glyphs[pl.glyph].w as f32);
+            seg_pen = (seg_pen + nat).max(seg_pen + ink_end + mx(10.0));
             ti += 1;
         }
         match after.chars().nth(1).and_then(|t| SPECIALCHAR.iter().find(|s| s.0 == t)) {
@@ -2002,8 +2028,11 @@ fn hint_bar(h: &mut Hud, font: &nf_formats::hud::Font, text: &str, x640: f32, y6
                 let iw = mx(w);
                 let ih = my(hh);
                 // The icon's ink [pen − iw/2, pen + iw/2] — same anchor as the measure pass.
-                h.quad(Anchor::Centre, -2, tex, 0, pen0 + seg_pen, y - ih + my(12.0), iw, ih, [u, v, w, hh], (false, false), c);
-                seg_pen += mx(adv) + 2.0;
+                // Level with the text's middle (PCSX2: the ✕/scroll icons sit level with their words; drawn from
+                // y − ih + 12 they hung ~8 low).
+                h.quad(Anchor::Centre, -2, tex, 0, pen0 + seg_pen, y - ih + my(3.5), iw, ih, [u, v, w, hh], (false, false), c);
+                let _ = adv;
+                seg_pen += iw + mx(6.0);
                 ti += 1;
             }
             _ => { seg_pen += mx(16.0); }
