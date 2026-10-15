@@ -52,10 +52,9 @@ call layer).
 - Commands (`AnimProcessScriptCmds`; script +8): op 0 `[a, b, seq]` — the sequence (0x04000000 | seq) plays over
   frames a..b (frame = time − a + 1, `AnimSeqSet`); op 1 `[frame, sfx]` — a sound at the object (weapon-specific id
   swaps: 1 → 2 for weapons 7 / 9, 0x403 → 2 for 3 / 5, 0xFA → 0x1FB for 0x14, 0x106 → 0x284 for 0x1E–0x23, 0x1E1 →
-  0x602 for 0x10, 4 → 0x604 for 0x16 / 0x17; pitch Rand(500) − 250); op 4 `[frame, event, arg]` — 0 / 4 / 5
-  footsteps, 1 player toggle, 2 the on-event callback (drones: `DroneAnim_EventFunc` with arg), 3 stop sound, 6
-  effect, 7 fire a bullet from the weapon datum (+ light, smoke). A command fires when its frame lies in the passed
-  interval (wrap-aware).
+  0x602 for 0x10, 4 → 0x604 for 0x16 / 0x17; pitch Rand(500) − 250); op 4 `[frame, event, arg]` — see the op-4
+  dispatch below; a command fires when its frame lies in the passed interval (wrap-aware), latched by the per-command
+  fired bits in the script's +0x7C (`iStack_c0` sets / clears them at 0x1c1b38:465-471), so each fires once per pass.
 - Anim rotation (flag 0x20000; `AnimObjectUpdate`): the root bone's rotated forward → yaw; the change since last tick
   is added to the object yaw (`obj+0x54`) and removed from the root quaternion — the animation turns the object.
 - Then `AnimSeqTick` per sequence (root motion, docs/formats/animation.md) and `AnimFrameResolve`.
@@ -72,6 +71,70 @@ call layer).
 - Afterwards scripts faded out (0x200000 with 0x100000) and those with fade 0 are deleted.
 - Root motion is rotated by the object matrix — or by the saved rotation of the first script in anim-rotation mode —
   passed to the pre-translation callback (drones: `DroneAnim_PreTransCallback`) and added to the position.
+
+## The op-4 event kinds (`AnimProcessScriptCmds` 0x1c1b38 case 4) [M]
+
+The command words are `[frame, kind, arg?]` (`puVar12[1..]`). After the facial-sequence gate
+(`animobj+0x58 & 0x40000` skips everything) and the fired-bit check, the kind switch:
+
+| kind | effect |
+|---|---|
+| 0 | `ScriptFootstepFoot` toggles, then the footstep-type set below |
+| 1 | the player toggle: `*(*(obj+0x1c) + 0xe0) + 0x964` (the SMI's weapon-anim byte) flips [M :374-379; `Player_SetWeaponAnim` 0x1a9338 sets it from weapon_data+0x68 & 8] |
+| 2 | the script's on-event callback `*(*(script+0x70))(obj, animobj, script, arg)` [M :382-385] — drones get `DroneAnim_EventFunc` (fix-anim-events); `AnimScriptInit` 0x1c1600:51 zeroes +0x70, so player-only scripts (the death script) have no handler |
+| 3 | `Sound_StopAllWithId(arg)` [M :387-389] |
+| 4 / 5 | `ScriptFootstepFoot` = false / true, then the footstep-type set: `ScriptFootstepType` = 1 when the script's hash is 0x6000099 / 0x60000ae, else 2 [M :391-403] |
+| 6 | `Effect_Create(1.0, *(obj+0xdc), obj, 0xc0)` [M :406-410] — see below |
+| 7 | fire a bullet from the weapon datum + the muzzle `AnimDatumSetEntity` flash + `Light_Create` + `Gas_Init` smoke [M :411-457] |
+
+The footstep consumer is `AnimObjectUpdate` 0x1befd8 (per object, after the script tick):
+`ScriptFootstepType` is cleared at :126; for a **class-3 object** (`obj+0xff == 3`, the living
+player) the walk accumulator at `SMI+0x924` (`+= |animobj+0xd8|`, the stride 1.65 — 0.4125 when
+`obj+0xf6 == 1`) drives the footstep instead and the script's byte is ignored [M :159-176]; the
+class-3 arm plays the hardcoded footstep sound 0x286 + `Sound_SetAlertness(0, h)` [M :198-202].
+For every other class (a drone, or the DEAD player — the death marker sets `obj+0xff = 0x12`
+[M `Player_CheckForDeath` 0x190810:72]) the script's `ScriptFootstepType` sets the anim object's
+datum flag bit 4 (`*(animobj+0xdc)+0x60 |= 4`) [M :184-186], and the bit-4 block calls
+`Effect_Create(1.0, animobj, obj, 0x42 | foot)` — foot 8 while `ScriptFootstepFoot`, else 4
+[M :189-199]. Everything is skipped while a script camera is up (`ScriptCam != 0`, set by
+`Script_CameraStart` 0x1d9140 / cleared by `Script_Free` 0x1da880) [M :188-189].
+
+`Effect_Create`'s "HITDATA" here is the **anim object itself**, whose +0x40..+0x58 shadow holds
+the last feet contact: `Player_FeetOnPoint` 0x194188:183-191 (`Drone_FeetOnPoint` 0x140660:204
+for drones) `amemcpy`s the feet ray's 0x60-byte hitdata into `obj+0xdc` while grounded (skipped
+while airborne — the same +0x50 byte reads 0xd/0xe then, `Player_HandleJump` 0x1916b0:194; the
+fields doc's animobject.md +0x50 row carries both readings). The shadow's +0x40 is the contact
+point (the sound position), +0x50 & 0x3f the contact's material — `Effect_Create`'s guard
+`material != 0` [M 0x1ce688] mutes everything when it is 0, and `Bullet_init_casing_ex`
+0x12f678:186 reads the same byte as the casing's material. `Effect_Player` 0x1cec48's 0x40 arm
+plays the surface's **footstep** sound (`EffectInfo + material·0x88 + 0x16`) at the contact with
+`Sound_SetAlertness(0, h)` [M 0x1de210] (silent to the AI) and its 0xc arm lays the footprint
+decal (not ported). Kind 6's flags 0xc0 → `Effect_Body` 0x1cf400: the surface's **body** sound
+(`EffectInfo + material·0x88 + 0x18`) at the contact with `Sound_ModAlertness(0.5, h)` [M
+0x1de220] — the node's alertness halves. The columns are `nf_formats::sfx::SurfaceSounds`'s
+`footstep` / `body` (parsed from the `EffectInfo` symbol).
+
+## The death script 0x06000151 (fix-death-anim-events) [M 0x190630 case 0xd]
+
+`Player_ChangeSubState(obj, 0xd/0xe)` (the death substate) deletes the anim set and
+`AnimScriptAdd(obj, 0x6000151)` — the 0x60008e0 arm plays only while the gravity global
+`DAT_002d8894` is 0.0, which retail never is (−9.4 from `bootup` 0x1c7e78:73 / `Player_Init`
+0x1910f8:153). The script (07000005.bin, `nf-extract script-info … 6000151` — **the tool prints
+args as hex**): one sequence window (1..297, seq 0x040000a3) + four op-4 commands — frame 5 kind
+5, frame 8 kind 4, frame 0x98=152 kind 4, frame 0x116=278 kind 6. The dead tick runs
+`AnimObjectUpdate` then `Player_HandleDeath` and nothing else [M `Player_Update` 0x193600:317-319;
+the MP pause flag `GS_PausePlayer` 0x17d280 writes is not read there], so the script plays out
+behind the red fade. Its clock runs 2.0 frames per dead tick — speed 1.0 [M 0x1c1600] ×
+`FRAME_RATE_MUL` 2.0 [M `GS_SetRefreshRate` 0x17d2b8:15 = 60/FRAME_RATE; the capture ran the
+30 Hz arm] — [L] PCSX2 trace: +0x90 reads 12, 32, 52 at dead frames 8, 18, 28. The death tick
+itself ticks the just-added script through the alive path's tail `AnimObjectUpdate`
+[0x193600:358] — the just-started window (1, 1], empty for this script — so the events land on
+dead ticks 3 (frame 5), 5 (frame 8), 77 (frame 152), 140 (frame 278) with the clock at 2·tick−1.
+Port: `nf_game::death::death_script_events` (Death.script_time / events / footstep_right) runs
+the same (from, to] windows over `d.scripts[0x06000151]` each dead tick BEFORE the pane/channel
+logic, plays the footstep / body sounds through the same SurfaceSounds columns at the floor query
+under Bond (the drone-footstep pattern), pushes the body sound's hearing entry at half weight,
+and records every event in `Death.events` — fix_death_anim_events_live 2/2 (fail-first shown).
 
 ## Port
 
