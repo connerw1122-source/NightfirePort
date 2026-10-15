@@ -163,10 +163,6 @@ pub struct EmitterFx {
     /// normal (`Emitter_Create` 0x17ae00): rows [Norm = v, Up = normal, Dir = u] — the spawn's
     /// local +y rides the normal. `None` → the placement euler matrix (the 0xf2 path).
     pub basis: Option<[[f32; 4]; 4]>,
-    /// Updates this object has already had: `Emitter_Create` runs mid-walk (the bullet's collide
-    /// phase), so the first `Emitter_Update` is the NEXT frame's — the creation tick must not
-    /// spawn [M Collide_Update 0x1ea398 vs Control_Update's class walk].
-    age_ticks: u32,
 }
 
 impl EmitterFx {
@@ -266,7 +262,7 @@ impl WorldFx {
                         parts: (0..d.max).map(|_| EmitterParticle {
                             pos: [0.0; 3], vel: [0.0; 3], age: 99999.0, life: 0.0, rgba: [0; 4],
                         }).collect(), counter: i as u32,
-                        shared_rng: false, basis: None, age_ticks: 0,
+                        shared_rng: false, basis: None,
                     });
                 }
                 _ => {}
@@ -301,7 +297,7 @@ impl WorldFx {
             parts: (0..d.max).map(|_| EmitterParticle {
                 pos: [0.0; 3], vel: [0.0; 3], age: 99999.0, life: 0.0, rgba: [0; 4],
             }).collect(),
-            counter: 0, shared_rng: true, basis: Some(basis), age_ticks: 0,
+            counter: 0, shared_rng: true, basis: Some(basis),
         });
     }
 
@@ -354,14 +350,18 @@ impl WorldFx {
         // Emitters [M 0x17b080]: the rate countdown, the channels, the blink, the spawn, the motion.
         for e in &mut self.emitters {
             let Some(def) = self.defs.get(&e.def).cloned() else { continue; };
-            e.age_ticks += 1;
-            if e.age_ticks == 1 {
-                // The creation tick: `Emitter_Create` ran mid-walk (the collide phase), so the
-                // object does not update this frame at all — no spawn (its one-shot burst lands on
-                // the first REAL update, where `+0x49` is still 0; the all-dead latch increments at
-                // that update's tail [M 0x17b080:300-320]).
-                continue;
-            }
+            // Creation-tick timing (fix-impact-remainder2): the game's object list is NEWEST-FIRST
+            // (`control_add_object_to_list` 0x134698 prepends to the 0x2705a0 head; the pass-1 walk
+            // in `control_movement_object_handler` 0x1336f8 follows head+0x14 first) and the walk
+            // cursor never revisits the head, so an object created mid-walk (the impact emitter,
+            // during the bullet's collide phase) is NOT updated its creation frame [M Collide_Update
+            // 0x1ea398 vs Control_Update's class walk] and is the FIRST object updated the next
+            // frame — ahead of the older drones. The port's `Drones::tick` runs this fx pass BEFORE
+            // the bullet collide phase of the same frame, so an emitter created at tick N is first
+            // seen HERE at tick N+1 — which IS the game's first `Emitter_Update` (the burst draws
+            // then, not one tick later; the creation-frame skip is already implicit in the call
+            // order, and gating it again delayed every burst by a tick and shifted every AI roll
+            // after a wall hit).
             // The out channel resets every tick and re-sets while any particle lives [M 0x17b080].
             if e.ch_out != 0 { ch.set(e.ch_out as u32, 0, frame); }
             // The blink (param 5): ON half the period, OFF the whole period [M 0x17b080:105-120].
@@ -390,9 +390,8 @@ impl WorldFx {
             }
             if alive > 0 && e.ch_out != 0 { ch.set(e.ch_out as u32, 1, frame); }
             // The spawn pass: batch-capped respawns of dead slots while enabled [M 0x17b080:191-260].
-            // The impact emitters skip their creation tick (created mid-walk — see `age_ticks`).
             let mut batch = def.batch;
-            if def.max > 0 && def.batch > 0 && e.dead_ticks == 0 && enabled && e.age_ticks > 1 {
+            if def.max > 0 && def.batch > 0 && e.dead_ticks == 0 && enabled {
                 for p in e.parts.iter_mut() {
                     if batch == 0 { break; }
                     let dead = p.life < p.age || p.age >= 99999.0;
@@ -409,6 +408,9 @@ impl WorldFx {
                         pitch = def.pitch_base + def.pitch_var * crate::effect::frand_half(rng, 1.0);
                         speed = def.speed_base + def.speed_var * crate::effect::frand_half(rng, 1.0);
                         life = def.life_base + def.life_var * crate::effect::frand_half(rng, 1.0);
+                        if std::env::var_os("NF_RNGLOG").is_some() {
+                            eprintln!("[rnglog] emitter_burst +4 (draw #{})", rng.draws);
+                        }
                     } else {
                         e.counter = e.counter.wrapping_add(0x9e37_79b9);
                         yaw = def.yaw_base + def.yaw_var * jitter(e.counter, 1);
@@ -524,7 +526,7 @@ mod tests {
             toggle_state: true, expired: false, dead_ticks: 0, parts: (0..8).map(|_| EmitterParticle {
                 pos: [0.0; 3], vel: [0.0; 3], age: 99999.0, life: 0.0, rgba: [0; 4],
             }).collect(), counter: 0,
-            shared_rng: false, basis: None, age_ticks: 0,
+            shared_rng: false, basis: None,
         });
         let mut ch = Channels::default();
         let mut rng = crate::drone::Rng::new(1);

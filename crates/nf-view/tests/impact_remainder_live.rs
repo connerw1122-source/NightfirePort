@@ -226,3 +226,92 @@ fn a_wall_shot_draws_the_games_count_and_a_sky_shot_draws_nothing() {
     }
     assert!(scene.sim.as_ref().unwrap().drones.effects.decals.len() <= 200);
 }
+
+/// fix-impact-remainder2 (the 110q hold's root cause): the burst must draw on the FIRST fx tick
+/// after the hit tick. The game's object list is NEWEST-FIRST (`control_add_object_to_list`
+/// 0x134698 prepends to the 0x2705a0 head; the pass-1 walk in `control_movement_object_handler`
+/// 0x1336f8 reads head+0x14 first and never revisits it), so the impact emitter — created
+/// mid-walk during the bullet's collide phase — is not updated its creation frame [M
+/// Collide_Update 0x1ea398] and is the FIRST object updated the NEXT frame, ahead of the older
+/// drones: the burst's 4 × min(max, batch) draws precede that frame's AI rolls. The port's fx
+/// pass (`Drones::tick`) runs BEFORE its collide phase, so the first fx tick after the hit tick
+/// IS the game's first `Emitter_Update` — gating it again (110q's `age_ticks` skip) put the burst
+/// a tick late and shifted every AI roll in between (`UnderCoverAim lasted 90 (live 37)`). Run
+/// with NF_RNGLOG=1 for the per-tick caller log (penetration_roll / debris_count / ricochet_roll
+/// / emitter_burst tags, draw-numbered).
+#[test]
+fn the_burst_lands_on_the_first_update_after_the_hit_like_the_games_walk() {
+    let Some(iso) = std::env::var("NF_ISO").ok() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).unwrap();
+    let (hit_tick, next_delta, spawned, burst) = {
+        let sim = scene.sim.as_mut().unwrap();
+        let eye0 = [sim.bond.pos[0], sim.bond.pos[1] + 1.2, sim.bond.pos[2]];
+        let mut aim: Option<f32> = None;
+        for k in -16..=16i32 {
+            let yaw = k as f32 * 0.08;
+            let dir = [yaw.sin(), -0.05, yaw.cos()];
+            let end = [eye0[0] + dir[0] * 30.0, eye0[1] + dir[1] * 30.0, eye0[2] + dir[2] * 30.0];
+            if let Some((t, _, _)) = sim.data().world.segment_surface(eye0, end, false) {
+                if t < 0.98 { aim = Some(yaw); break; }
+            }
+        }
+        let yaw = aim.expect("a wall within 30 units of the 07000005 start");
+        sim.bond.yaw = yaw;
+        sim.bond.pitch = (-0.05f32).asin();
+        sim.bond.eye = 0.0;
+        sim.step_bond(Input { fire: true, ..Input::default() }, true, false, false);
+        // Step to the hit tick: the tick that ends with the impact emitter in the list. The
+        // emitter was created DURING the tick (mid-walk, the collide phase) — the game does not
+        // update it this frame, and neither does the port (its fx pass already ran).
+        let mut hit_tick = None;
+        let mut per_tick: Vec<u64> = Vec::new();
+        for k in 0..90 {
+            let d0 = sim.drones.rng.draws;
+            sim.step_bond(Input::default(), false, false, false);
+            per_tick.push(sim.drones.rng.draws - d0);
+            eprintln!("[rnglog] tick {k} end draws={} (+{})", sim.drones.rng.draws, per_tick[k]);
+            if sim.drones.fx.emitters.iter().any(|e| e.placement == usize::MAX) { hit_tick = Some(k); break; }
+        }
+        let hit = hit_tick.expect("the wall shot spawns an impact emitter");
+        let fx = &sim.drones.fx;
+        let e = fx.emitters.iter().find(|e| e.placement == usize::MAX).unwrap();
+        let def = fx.defs().get(&e.def).cloned().expect("the impact emitter's def resolves");
+        assert!(e.parts.iter().all(|p| p.age >= 99999.0), "the creation tick spawns nothing (the game skips it mid-walk)");
+        // The next tick: the game's first Emitter_Update — the newest object, first in the walk.
+        let d0 = sim.drones.rng.draws;
+        sim.step_bond(Input::default(), false, false, false);
+        let next_delta = sim.drones.rng.draws - d0;
+        eprintln!("[rnglog] burst tick (hit+1) delta {next_delta}, burst {burst}", burst = 4 * (def.max as u64).min(def.batch as u64));
+        let spawned = sim.drones.fx.emitters.iter().find(|e| e.placement == usize::MAX).unwrap()
+            .parts.iter().filter(|p| p.age < 99999.0).count();
+        let want = (def.max as usize).min(def.batch as usize);
+        assert_eq!(spawned, want, "the first update after the hit spawns the batch ({want})");
+        assert!(next_delta >= 4 * (def.max as u64).min(def.batch as u64),
+            "the tick after the hit draws the burst: delta {next_delta} < {}", 4 * (def.max as u64).min(def.batch as u64));
+        (hit, next_delta, spawned, 4 * (def.max as u64).min(def.batch as u64))
+    };
+    eprintln!("[g041r2] hit tick {hit_tick}, burst tick +{next_delta} ({spawned} spawned, burst {burst})");
+    // Sister: the same shot into the sky — no impact emitter ever exists, so no burst-shaped tick
+    // follows the flight (the game draws nothing for a sky shot [D records; the count test]).
+    let mut scene2 = nf_view::load(&iso, "07000005.bin", false).unwrap();
+    {
+        let sim = scene2.sim.as_mut().unwrap();
+        let eye0 = [sim.bond.pos[0], sim.bond.pos[1] + 1.2, sim.bond.pos[2]];
+        let yaw = 0.0f32;
+        let up = [yaw.sin() * 0.5, 0.866, yaw.cos() * 0.5];
+        let up_end = [eye0[0] + up[0] * 200.0, eye0[1] + up[1] * 200.0, eye0[2] + up[2] * 200.0];
+        if sim.data().world.segment(eye0, up_end).is_some() {
+            eprintln!("[g041r2] the sky aim hits something — sister skipped");
+            return;
+        }
+        sim.bond.pitch = 1.0;
+        sim.bond.yaw = yaw;
+        sim.bond.eye = 0.0;
+        sim.step_bond(Input { fire: true, ..Input::default() }, true, false, false);
+        for k in 0..=(hit_tick + 1) {
+            sim.step_bond(Input::default(), false, false, false);
+            assert!(sim.drones.fx.emitters.iter().all(|e| e.placement != usize::MAX),
+                "a sky shot spawns no impact emitter (tick {k})");
+        }
+    }
+}

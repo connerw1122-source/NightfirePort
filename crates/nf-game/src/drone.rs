@@ -7131,10 +7131,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         if events.iter().any(|e| matches!(e, crate::mission::Event::MissionFailed)) { self.music.event(7, 1); }
         if events.iter().any(|e| matches!(e, crate::mission::Event::MissionComplete { .. })) { self.music.event(8, 1); }
         self.mission_events = events;
+        // `Game_Run`: `Env_Update` (one `Rand_Rand(20000)`, then `UpdateDrops`) runs BEFORE the
+        // object handler (fix-impact-remainder2: moved above the fx pass — the game's order is
+        // Mission_Update → Env_Update → `control_movement_object_handler` 0x1c9790:24-34, so the
+        // env draw precedes every object-side draw, the impact emitters' burst included).
+        if let Some((kind, boxes)) = self.env_pending.take() { self.env = Some(crate::env::Drops::new(kind, boxes, d.level, &mut Rng::new(0x5eed_0001))); }
+        if let Some(env) = self.env.as_mut() {
+            self.rng.rand(20000);
+            env.update(&mut self.rng, &mut self.fill_rng, player.eye, atan2_approx(player.aim[0], player.aim[2]));
+        }
         // The presentation FX tick (ripples/flicker/clouds/apocalypse/emitters, fix-world-fx): the
         // game's object handler updates them per frame in the same control pass. The impact
-        // emitters (G-041) consume the SHARED stream on their own update ticks — after the AI,
-        // matching the game's list order (created during the collide phase, updated next frame).
+        // emitters (G-041) consume the SHARED stream on their own update ticks. Position
+        // (fix-impact-remainder2): the object list is NEWEST-FIRST (0x134698 prepends; the pass-1
+        // walk 0x1336f8 reads head+0x14 first), so the freshly created emitter — made mid-walk in
+        // the bullet's collide phase — is the FIRST object updated the next frame, ahead of the
+        // older drones. This fx pass runs BEFORE this frame's collide phase, so an emitter created
+        // at tick N is first ticked here at N+1: exactly the game's first `Emitter_Update`, before
+        // the bullets and the AI of that frame — the interleave the game itself produces.
         self.fx.tick(&mut self.channels, player.pos, frame, &mut self.gas, &mut self.rng);
         // Music: `Drone_InitComms` resets the attack gate; `DroneFunc_CheckAlarmRaised` (07000005 / 06) posts event 2 = 3
         // for the first 58 frames of channel 0xA4, then = 1 for the first 598 of channel 0x37 or 0x61; Bond dead →
@@ -7158,12 +7172,6 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // `Player_CheckForDeath` 0x190810 + `Player_HandleDeath` 0x190bb0 (fix-death-restart): the
         // death sequence gates ch 0x62 on the blood pane's cover or the player's ✕ [M 0x190bb0:29-33].
         self.death_tick(d, player.pos, frame);
-        // `Game_Run`: `Env_Update` (one `Rand_Rand(20000)`, then `UpdateDrops`) before the object handler.
-        if let Some((kind, boxes)) = self.env_pending.take() { self.env = Some(crate::env::Drops::new(kind, boxes, d.level, &mut Rng::new(0x5eed_0001))); }
-        if let Some(env) = self.env.as_mut() {
-            self.rng.rand(20000);
-            env.update(&mut self.rng, &mut self.fill_rng, player.eye, atan2_approx(player.aim[0], player.aim[2]));
-        }
         // `Drone_ProcessOpponents` (0x1390c0): Bond's visibility factor from the AI volumes holding him (crouching
         // ×0.75 is not modelled: the port's Bond does not crouch), then each drone's opponent info. Inside
         // `Drone_InitComms`' `NPCGlobals != 0` block [M 0x139520:124-284] — frozen drones keep their last state.

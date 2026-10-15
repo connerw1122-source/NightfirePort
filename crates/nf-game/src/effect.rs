@@ -119,6 +119,9 @@ pub fn penetration_roll(rng: &mut Rng, material: u8, weapon_id: u16) -> bool {
     let mut pierce = material & 0x40 != 0;
     if material & 0x80 != 0 {
         pierce |= rng.rand(0x3f) & 1 != 0;
+        if std::env::var_os("NF_RNGLOG").is_some() {
+            eprintln!("[rnglog] penetration_roll +1 (draw #{})", rng.draws);
+        }
     }
     pierce
 }
@@ -179,6 +182,9 @@ impl Effects {
         if flags & 0x20 != 0 && rec.debris_enable != 0 && rec.debris_mesh != 0 {
             // `Rand_Rand(EffectInfo+0x83)` → count [M 0x1ce7b0]; `Debris_Create` 0x1aaa00 per particle:
             let count = rng.rand(rec.debris_count as u32) + 1;
+            if std::env::var_os("NF_RNGLOG").is_some() {
+                eprintln!("[rnglog] debris_count +1 (draw #{})", rng.draws);
+            }
             let basis = orthonormal_basis_sum(if glass { [-n[0], -n[1], -n[2]] } else { n });
             for _ in 0..count {
                 let scale = rng.frand(0.1) + 0.4;                       // data+0xe8 [M 0x1aaad8]
@@ -231,6 +237,9 @@ impl Effects {
             // on a PIERCE contact — the roll still draws, but can never reflect [M 0x12d6f8:
             // `uVar16 = 8; … if (bVar7 != 0) uVar16 = 0;`].
             if rng.rand(rec.ricochet_n as u32) as u8 & ricochet_mask as u8 != 0 {
+                if std::env::var_os("NF_RNGLOG").is_some() {
+                    eprintln!("[rnglog] ricochet_roll +1 (draw #{})", rng.draws);
+                }
                 // Reflect: `dir + normal·(−(rest+1)·dot(dir,normal))`, normalised, with the restitution
                 // read as raw f32 bits from `EffectInfo+0x1c` [M 0x12d704..0x12d7a8].
                 let rest = f32::from_bits(rec.restitution_bits);
