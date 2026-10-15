@@ -12957,3 +12957,9 @@ Task: multiplayer phase 4 after 401 — port the states the `BotGlobal` skeleton
   alpha +0x106 ±0x10/tick, flags bit 0x2000) documented unported. New docs/systems/corona.md;
   U-042 + G-034 closed; corona.rs doc comment sharpened. No gameplay code change, no new test
   (nothing to reproduce — the symptom is the absence of an object no disc path can create).
+- (15:24) Merged origin/master a2958c03 into the branch (WORKLOG both kept; conflicts: none but
+  the WORKLOG end-append). The pre-merge tree's fast-runner partials: 253 binaries run, every
+  non-environmental one green; the 6 fails are the known environmental set — disc_golden ×3
+  (slim ISO) + the no-GPU pylon set ×3 (fix_0c_pylon_live ×2 + probe_pylon_render, wgpu
+  "adapter: NotFound" — the sandbox has no GPU adapter; same set WORKLOG fix-death-retry-boost
+  recorded). The required final-tree suite restarted on the merge (totals in the report).
