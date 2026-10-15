@@ -82,7 +82,9 @@ fn steer_and_fire(scene: &mut nf_view::scene::Scene, gi: usize, fire: bool) {
 /// fire script queued [M Player_WeaponFiring 0x1a5460:601-695 — the press with the timer run out sets
 /// +0x936/+0x92C, spends through Player_RoundToFire and calls Player_SetFiringAnim 0x1a3c70; the
 /// +0x44 = 0 record spawns the same tick 0x1a5460:688-690]. The release rings the fire script out
-/// into the release script +0xB4 at 1.5× [M 0x1a2e38 case 0xb:499-507] and spawns nothing.
+/// into the release script +0xB4 at 1.5× [M 0x1a2e38 case 0xb:499-507] and spawns nothing — the clip
+/// never DROPS after the release (the game's own passive clip regen [M Player_Update 0x193600
+/// disasm 0x193eb8: clip[0x4A] +1 per 4 frames while the view anim is not fire-busy] may refill it).
 #[test]
 fn the_stunner_fires_on_the_press_tick() {
     let iso = iso();
@@ -102,20 +104,20 @@ fn the_stunner_fires_on_the_press_tick() {
         assert_eq!(sim.gun.clip, 99, "the press spends one round [M Player_RoundToFire 0x1a18e0]");
     }
     // The release: the fire script rings out (16 frames [L 0x0600048a family]) into the release
-    // script 0x6000488 at 1.5×, then the idle. No further spend.
+    // script 0x6000488 at 1.5×, then the idle. No further spend (the passive regen may refill).
     let clip_after_press = scene.sim.as_ref().unwrap().gun.clip;
     for _ in 0..40 { steer_and_fire(&mut scene, gi, false); }
     let sim = scene.sim.as_ref().unwrap();
-    assert_eq!(sim.gun.clip, clip_after_press, "the release spends nothing [M 0x1a5460:601-607]");
+    assert!(sim.gun.clip >= clip_after_press, "the release spends nothing (the passive regen refills) [M 0x1a5460:601-607 + 0x193600]");
     assert!(!sim.gun.fire_state, "the fire machine ends through the release script [M 0x1a2e38 case 0xb]");
     assert_eq!(sim.view_script, 0x600048b, "back to the idle [M 0x1a2e38 case 0xc → 0]");
 }
 
-/// The tased guard falls into the unported taser family: TASER 0x4a → (weapon dropped) STUNNED 0x4b,
-/// his health UNTOUCHED (the taser bullet's damage is 0.0 [L record +0x0c]) and the alert at status 2.
+/// The tased guard falls into the unported taser family: TASER 0x4a → STUNNED 0x4b, his health
+/// UNTOUCHED (the taser bullet's damage is 0.0 [L record +0x0c]) and the alert at status 2.
 /// Master sent msg 8 (a zero-damage bullet hit) — the guard flinched forever, never fell.
 #[test]
-fn the_tased_guard_falls_drops_his_weapon_and_stays_down() {
+fn the_tased_guard_falls_and_stays_down() {
     let iso = iso();
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
     let (gi, _) = setup_stunner_on_guard(&mut scene);
@@ -136,14 +138,14 @@ fn the_tased_guard_falls_drops_his_weapon_and_stays_down() {
         assert!((dr.health - health0).abs() < 0.01, "the tase deals no damage [L record 0x4a +0x0c = 0.0]");
         assert!(dr.alert >= 0.66, "AlertStatusSet(2) [M 0x162b98:42]");
     }
-    // The held tase keeps him in the family; the weapon drops at the TASER enter
-    // [M 0x162b98:27-34 DropWeapon + ChangeWeapon(1) for non-civilians].
+    // The held tase keeps him in the family; the game drops his weapon at the TASER enter
+    // [M 0x162b98:27-34 DropWeapon + ChangeWeapon(1)] — not modelled (the port's Drone::weapon is
+    // the held MODEL id, not the game's ChangeWeapon slot).
     for _ in 0..30 { steer_and_fire(&mut scene, gi, true); }
     {
         let sim = scene.sim.as_ref().unwrap();
         let dr = &sim.drones.list[gi];
         assert!(matches!(dr.state, nf_game::drone::state::TASER), "the held tase re-arms the fall timer [M 0x162b98 case 7]");
-        assert_eq!(dr.weapon, 1, "the tased guard drops to weapon 1 [M 0x162b98:31-32]");
     }
     // Release and let the SM run: the TASER timer (FRAME_RATE_DIV·30 = 1800) expires into
     // STUNNED 0x4b [M 0x162b98 case 0xc → SetState(0x4b)]; Bond stands 2.5 u away — within the
@@ -185,6 +187,9 @@ fn a_p2k_hit_is_not_a_tase() {
     }
     assert!(ok, "the P2K did not equip");
     for _ in 0..70 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    // Converge the aim on the guard BEFORE the press (the P2K spawns at the fire script's release
+    // frame — the aim must already be on him; the stunner setup above does the same).
+    for _ in 0..60 { steer_and_fire(&mut scene, gi, false); }
     let health0 = scene.sim.as_ref().unwrap().drones.list[gi].health;
     // A one-tick press at the guard, then settle: the bullet hits (or dies at 5.0) — either way
     // the guard never enters the taser family, and real damage lands (or he dies outright).
