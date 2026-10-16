@@ -19,3 +19,8 @@ reproduce, fix, and run the FULL suite on the final tree.
 
 ---
 claimed-by: sandbox1 at 2026-10-16T11:17Z
+
+---
+## Report (done, 2026-10-16T12:14Z)
+
+Closed by the driver: the report is on `s/grates-02b` (docs/reports/grates-02b.md); the worker didn't run finish.sh.
