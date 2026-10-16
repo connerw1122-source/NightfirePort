@@ -1464,6 +1464,7 @@ impl Drone {
     /// script keeps playing** (no `SetHTAnim`): e.g. an unarmed guard (anim set 0xC) has no death or corpse script, so
     /// the last one holds instead of an empty pose.
     fn set_danim(&mut self, d: &Data, danim: u16, blend: u16) {
+        if danim == 0x188 && std::env::var_os("NF_SDLOG").is_some() { eprintln!("[sd] -> 188 blend {}", blend); }
         // The replaced danim: a 180° turn (info flag 0x100) still running.
         let old_info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
         let old_turn = self.anim.danim != 0 && old_info[1] & 1 != 0 && self.anim.script.is_some() && !self.anim.held;
@@ -5582,13 +5583,22 @@ pub fn flash_amount(head: V3, blast: V3, px: f32, pz: f32, yaw: f32, has_los: bo
 
 /// Stand-in for the renderer's "drawn" (`obj+0xFC`) and `Drone_PositionVisible`: within 60° of Bond's aim (or within
 /// 2 units) and any of five body points in line of sight from his eye (thin occluders hide one ray, not a cel).
+/// guards-0c: the game's draw test is `Vision_InView` (0x1e89e0 [M], the four fov side planes) over the PORTAL-VISIBLE
+/// cels (`View_AddObjects` 0x1e62d8 walks `Vision_Portal_Recurse` first) — no occlusion rays anywhere. The sim has no
+/// portal graph, so the rays stand in for the room gate — but they run on the BULLET segment (the pass-flagged hits
+/// drop, [M `Collide_Intersect` 0x1ebff0-0x1ec010 for the bit-0x8 queries]): the renderer draws through the
+/// pass-flagged surfaces (the 0c museum's glass displays, the foliage), and the old flat-segment rays marked those
+/// guards undrawn — `NDrone2_DoAnimation` (0x149f88 [M]) then slides them at the danim's speed (0.02 for walk 392)
+/// with no gait, ON SCREEN: the playtests' "the walking animation is kind of fucked" (1012-1723/2105). Opaque
+/// occluders (the 05 castle behind the switch-trace patroller [L work/switch_trace.tsv]) block both segment kinds,
+/// so the live-pinned slide of that guard is untouched.
 pub fn visible_to(player: &Player, world: &CollisionWorld, pos: V3, head: V3) -> bool {
     let v = [pos[0] - player.eye[0], pos[2] - player.eye[2]];
     let (a, l) = ([player.aim[0], player.aim[2]], (v[0] * v[0] + v[1] * v[1]).sqrt());
     let al = (a[0] * a[0] + a[1] * a[1]).sqrt();
     let side = [-v[1] / l.max(1e-6) * 0.5, v[0] / l.max(1e-6) * 0.5];
     let pts = [head, pos, [pos[0] + side[0], pos[1], pos[2] + side[1]], [pos[0] - side[0], pos[1], pos[2] - side[1]], [pos[0], pos[1] - 0.8, pos[2]]];
-    l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5 && pts.iter().any(|&q| world.line_of_sight(player.eye, q)))
+    l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5 && pts.iter().any(|&q| world.segment_bullet(player.eye, q).is_none()))
 }
 
 /// Every drone placement of the level's main map, in placement order (`Drone_Create`); spawner templates included

@@ -15593,3 +15593,14 @@ must be faded/off those actors when it plays.
   each patrol guard completes its route loop within the game's period, with the walk anim rate
   tied to its speed.
 - Started: branch created from origin/master (22be196b); the fast suite launching in the background.
+- guards-0c close-out: the trace (guards_0c_live) found the walk-anim slide's root cause — the
+  drawn gate's five LOS rays on the FLAT segment hid guards the game draws (the 0c glass displays;
+  the game's draw test is the portal-visible cels + Vision_InView 0x1e89e0, a pure plane test, no
+  rays [M 0x1e62d8/0x1e7df8]) and NDrone2_DoAnimation 0x149f88 slides an undrawn guard at the
+  danim's AnimInfo+4 speed (0.02 for walk 392) with no gait [L switch_trace]. Landed: the drawn
+  gate's rays on the BULLET segment (pass-flagged hits drop [M 0x1ebff0-0x1ec010]) — opaque
+  occluders still block, so ai_live's castle-patroller live pin is bit-identical (35/35 green).
+  #39 before/after: 71 anim frames over 1797 ticks (frozen) → 1783 over 1766 (the full gait).
+  The route-block park (#15) = the un-modelled LinkCreep backward creep (nav.rs [S]) — follow-up.
+  The frustum-only prototype broke the pin (the cel gate is load-bearing) — pulled back, the
+  portal-walk wiring documented in the report. walkreal 1/2/4/5 green; the full suite pending.
