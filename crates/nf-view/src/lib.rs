@@ -1690,6 +1690,13 @@ struct App {
     /// frontend-music: the host's SFXStart handle counter (the game's RPC passes the EE node
     /// handle; the port's driver dedupes/tracks by it).
     menu_handle: u32,
+    /// frontend-music (menu-audio-state): the game's music statics, which are .bss bytes that
+    /// outlive every menu manager [M 0x1dceb8's `DAT_002e1b11`; L `MusicMasterVolume`
+    /// 0x30c958]. Stashed from the front end on every manager drop (`stash_music_statics`) and
+    /// restored into every fresh one (`inherit_music_statics`).
+    music_bank_flip: bool,
+    music_loaded_bank: u32,
+    music_master: i32,
     /// The game's strings (USATxt.dat) for the front end when the loaded map has no Sim to hold them.
     lang: Option<nf_formats::hud::Lang>,
     /// The gamepad backend (fix-input), behind the `gamepad` cargo feature. `None` without a pad
@@ -1740,8 +1747,9 @@ struct LevelLoad {
 /// 07000001 → 07000002 (PS2LSActive 2 → 0, measured in PCSX2 2026-10-15) — long enough to read
 /// the objective and the hint while the dots sweep (183.5 ms a step, the port's 11-vblank cadence
 /// exactly). The port builds a level in 1-2 s, so the screen flashed by (playtest 1015-2142); the
-/// user chose to hold it a few seconds [S — a PC-port choice, not the game's timing].
-const LOADING_HOLD: f64 = 5.0;
+/// user chose to hold it a few seconds [S — a PC-port choice, not the game's timing]. Pub for the
+/// flow tests (pause-results-flows): the headless suite pins the 5 s = 300-tick window.
+pub const LOADING_HOLD: f64 = 5.0;
 
 /// microcam-wheel-zoom: where a wheel notch goes. While the aim (right) button is held on a weapon
 /// that can zoom — the game's own scope flag +0x68 & 0x40 with a magnification above 1 [M
@@ -1866,8 +1874,32 @@ impl App {
                 for id in [menu::SFX_MENU_OPEN_MOVE, menu::SFX_MENU_OPEN_SELECT] { drv.remove(0, Some(id)); }
             });
         }
+        self.stash_music_statics();
         self.fe = None;
         if self.scene.sim.is_some() { self.grab(true); }
+    }
+
+    /// frontend-music (menu-audio-state): the music statics are .bss bytes that OUTLIVE every
+    /// menu manager — `DAT_002e1b11` (the bank alternation) persists across front-end loads and
+    /// rides the PTP data across boots [M 0x1dceb8:94-101, Boot_LoadPTPData 0x1c8560:61], and
+    /// `MusicMasterVolume` @ 0x30c958 outlives the managers the same way [L ACTION.ELF .data].
+    /// The port keeps them per-`FrontEnd`, so every drop of a manager stashes them here and
+    /// every create of one (the gameplay pause's `get_or_insert_with`, `demo_results`) restores
+    /// them — without it a fresh pause front end re-played the boot's jingle on the
+    /// quit-to-front-end load instead of the alternation's other one.
+    fn stash_music_statics(&mut self) {
+        if let Some(fe) = self.fe.as_ref() {
+            self.music_bank_flip = fe.music.bank_flip;
+            self.music_loaded_bank = fe.music.loaded_bank;
+            self.music_master = fe.music.music_master;
+        }
+    }
+
+    /// The create side of [`App::stash_music_statics`]: a fresh front end inherits the statics.
+    fn inherit_music_statics(fe: &mut menu::FrontEnd, bank_flip: bool, loaded_bank: u32, master: i32) {
+        fe.music.bank_flip = bank_flip;
+        fe.music.loaded_bank = loaded_bank;
+        fe.music.music_master = master;
     }
 
     // ── net-match-host: the online session's app surface ────────────────────────────────────────
@@ -2052,6 +2084,7 @@ impl App {
                 if load.next != menu::FRONTEND_LEVEL
                     && self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() != menu::ST_MOVIE)
                 {
+                    self.stash_music_statics();
                     self.fe = None;
                     if self.scene.sim.is_some() { self.grab(true); }
                 }
@@ -2067,6 +2100,10 @@ impl App {
                         if let Some(s) = self.sound.as_mut() { s.driver.set_primary(if hash == 0x38 { 1 } else { 0 }); }
                     }
                     self.fe_music_page = None; // the manager re-create re-runs the page's 0x4c [M 0x21b908:127]
+                    // The load's own MenuManager_Create re-opens the queued page [M 0x1d6360:160-163]:
+                    // the quit arms' 0x4000001c lands on the mission list, not the placeholder page
+                    // they left up during the load (pause-results-flows).
+                    if let Some(fe) = self.fe.as_mut() { fe.reopen_queued_page(); }
                 }
                 eprintln!("level: loaded {name} (loading screen {:.1} s)", load.job.elapsed_ticks() as f64 / 60.0);
             }
@@ -2149,11 +2186,13 @@ impl App {
         let mut fe = menu::FrontEnd::new();
         // frontend-music: `DAT_002e1b11` and `MusicMasterVolume` are statics, not per-manager —
         // the demo fe inherits the bank-flip state (the next front-end load must flip like the
-        // game's), the resident bank and the music volume [M 0x1dceb8:94-101, 0x30c958].
+        // game's), the resident bank and the music volume [M 0x1dceb8:94-101, 0x30c958]. The
+        // stash outlives the dropped manager (menu-audio-state): a mission runs with no front
+        // end at all, so the statics come from the last stash when the results open.
         if let Some(old) = self.fe.take() {
-            fe.music.bank_flip = old.music.bank_flip;
-            fe.music.loaded_bank = old.music.loaded_bank;
-            fe.music.music_master = old.music.music_master;
+            Self::inherit_music_statics(&mut fe, old.music.bank_flip, old.music.loaded_bank, old.music.music_master);
+        } else {
+            Self::inherit_music_statics(&mut fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
         }
         // The demo hook stands in for Mission_Update 0x182c60, which fires in state 2 — the flow
         // must be in a state reset_map_level_to_load accepts (its gate [M 0x1d3800]) for the outro
@@ -2186,19 +2225,16 @@ impl App {
     /// the tick gate, which the front end skips). Silent under NF_SILENT: without an output
     /// device `build_sound` returns None and the commands just bookkeep on the state machine.
     fn menu_music_tick(&mut self) {
-        if self.fe.is_some() {
-            let page = self.fe.as_ref().unwrap().page;
-            if self.fe_music_page != Some(page) {
-                // The credits page closing restores the music volume and restarts the pair [M
-                // 0x2152b0:20-38]; every other change runs the new page's enter arm.
-                if self.fe_music_page == Some(menu::Page::Credits) {
-                    if let Some(fe) = self.fe.as_mut() { fe.music.credits_leave(); }
-                }
-                if let Some(fe) = self.fe.as_mut() { fe.music.page_enter(page); }
-                self.fe_music_page = Some(page);
+        // frontend-music (menu-audio-state): the transitions + the drain live in the extracted
+        // `fe_music_step` (menu_music.rs) so the headless flows drive the SAME glue the window
+        // runs. This wrapper only applies the commands to the sound driver.
+        let cmds = if self.fe.is_some() {
+            let mut cmds = Vec::new();
+            if let Some(fe) = self.fe.as_mut() {
+                cmds = menu_music::fe_music_step(fe, &mut self.fe_music_page);
             }
-        }
-        let cmds = self.fe.as_mut().map(|fe| fe.music.take_cmds()).unwrap_or_default();
+            cmds
+        } else { Vec::new() };
         if !cmds.is_empty() {
             // `StartJingle` only sounds on the front end: with a mission's bank as the primary the
             // game's own `SFXStart(0x1d7/0x470)` finds no effect (the mission banks lack both ids —
@@ -2868,12 +2904,21 @@ impl ApplicationHandler for App {
                             if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL {
                                 let base = self.scene.sim.as_ref().map(|s| s.drones.mission.base_map).filter(|&b| b != 0 && b != u32::MAX).unwrap_or(self.level_code);
                                 let fe = self.fe.get_or_insert_with(menu::FrontEnd::new);
+                                // frontend-music: the fresh manager still meets the game's
+                                // statics (menu-audio-state — the stash from the front-end close;
+                                // the quit-to-front-end load must flip to the OTHER bank).
+                                Self::inherit_music_statics(fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
                                 fe.flow.current_level = self.level_code;
                                 // RESTART reloads the running mission's base map [M 0x204408:138-141
                                 // Mission_BaseMapHCode()]: a level started straight from the command line never
                                 // went through the mission list, so pick the row from the mission itself (row 0
                                 // is the driving Paris Prelude 0x09000001, which the old default reloaded).
                                 if let Some(i) = menu::CAMPAIGN.iter().position(|c| c.3 == base) { fe.mission = i; }
+                                // The GameState rides the runner state while a mission plays [M
+                                // GameFlow_Main 0x1c98c8 case 2 — the game's stack sits on 2 under
+                                // Mission_Update], so the pause arms' ResetMap_LevelToLoad accepts
+                                // (its state gate 0x1d3800:11-17 wants {2,7,8,0xd,0xe}).
+                                fe.flow.stack = vec![menu::ST_RUNNER];
                                 fe.open_pause();
                             }
                         } else { el.exit() }
@@ -3737,7 +3782,10 @@ pub fn run() -> Result<()> {
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
         net: None, net_lobby: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,
-        async_load: None, };
+        async_load: None,
+        music_bank_flip: false,
+        music_loaded_bank: 0xc,
+        music_master: 70, };
     if dev {
         // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
         // menu carries ALL of its functions now (through the same `panel::apply` command layer).

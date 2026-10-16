@@ -14034,6 +14034,14 @@ Stage Summary:
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
 
+## frame-cost-guard (2026-10-16, branch s/frame-cost-guard)
+- Task: NF_ISO-gated release-only budget tests timing per-frame CPU work headless on the single-player level
+  archives (skin_palette, frame_state, colour_mults, posed_vertices if on a per-frame path, HUD/menu overlay
+  builders, cel_visibility if GPU-free), median-of-N after warm-up, generous asserted budgets, measured numbers
+  printed; plus an audit of loops over char_verts/vertices/attachments/groups on the RedrawRequested path whose
+  cost scales with pools rather than live objects; bit-identical palette/colour output proven on 3 levels;
+  sister assertion (a deliberately slow closure must fail the budget helper).
+- (start) branch created from origin/master 0f5f07f4; work started.
 ## net-determinism (2026-10-15, branch s/net-determinism) — lockstep audit, started
 - Task: prove the MP match sim (mp-core/mp-bots/match-rules/MpSettings) is a pure function of
   (settings, seed, per-tick inputs): audit nondeterminism sources (wall clock, HashMap order,
@@ -14571,6 +14579,15 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
   the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
   docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
+
+## menu-e2e-singleplayer (2026-10-16, branch s/menu-e2e-singleplayer)
+- Branch created from origin/master (f42de6ff). Task: every single-player path from boot to a level request, driven ONLY
+  through `action()`, `mouse_*()`, `tick()` and the host-side calls — never by assigning page/cursor/state fields.
+  Title → intro (skip and play out) → Main → NightFire; each Select Codename branch; each difficulty → the mission list
+  → every unlocked row; assert requested_level against CAMPAIGN and the sp_level table [M]; the driving-notice path
+  (mission_ended results/NfBonus routing, save prompt, next row unlocking, restart); Back at every step; fresh profile
+  vs unlock_all.
+- Started the fast suite in the background on the branch-point tree (baseline).
 ## microcam-wheel-zoom (2026-10-16, branch s/microcam-wheel-zoom) — start
 - Branch created from origin/master (6bab6409). Task: while right-click (aim) held, mouse wheel steps the
   zoom between the weapon's per-weapon min/max zoom range (Player_Weapon zoom input arm / weapon_data zoom
@@ -14694,6 +14711,79 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   mid-session "stall" was a harness bug — a dropped start_match arm in the ported test — traced
   and fixed; all 4 ported tests pass.)
 - Report: docs/reports/net-consolidate.md; no live checks needed (no game-referenced behaviour).
+
+## drake-cutscene-06 (2026-10-16, branch s/drake-cutscene-06)
+- Branch created from origin/master (f42de6ff). Task: playtest 1015-2142 — "drake cutscene on o6 has
+  some lag and glitchiness with objects" (07000006 Drake cut-scene, the script camera's NIS).
+- Plan: (1) headless profile of the cut-scene's per-frame CPU cost (sim tick, script players,
+  frame_state / skin_palette, script entities), extend 649's frame-cost-guard budget tests to it,
+  fix spikes with results unchanged, before/after numbers; (2) list every script entity/character
+  the cut-scene drives with per-frame matrices, flag discontinuities (jump/pop/teleport), compare
+  against the game's script interp [M Script_GetInterp 0x1da158, entity create/delete ops], fix
+  sim-side causes (wrong key interp, missed delete, drawn-before-create), report draw-only problems;
+  (3) tests: cut-scene runs to completion headless, flagged entities' matrices continuous.
+
+## frame-cost-guard (2026-10-16, branch s/frame-cost-guard) — close-out
+- Budget tests: crates/nf-view/tests/frame_cost_live.rs (release-only, NF_ISO-gated). frame_budgets_hold_on_
+  every_single_player_archive times the per-frame CPU phases headless on all 34 SP archives (27 on-foot
+  [levels_sweep enumeration] + driving 07000023-29 [levels.md:91]): frame_state / colour_mults / skin_palette
+  (with the real room mask) / hud::overlay / the cel_visibility composition replicated headless (gpu.rs:567's
+  body is pure CPU; cutscene_models' recipe) — median-of-7 after 2 warm-ups; posed_vertices timed with NO
+  budget (off the window's per-frame path: only caller is NF_BENCH, lib.rs:1462; level-dependent 0.4-716 ms).
+  menu_overlay over the 6 front-end pages ≤0.014 ms (budget 3).colour_attach_map_covers_every_slot_on_the_lag_
+  levels pins the invariant that kept fix 1 dead. a_deliberately_slow_closure_fails_the_budget_helper: a 25 ms
+  closure panics against a 5 ms budget, a fast one passes (the sister assertion, no ISO/release gate).
+- Fixes (bit-identical, FNV-1a palette/colour/mults hashes at t=120/121 on all 34 archives — 68/68 identical
+  before vs after, and again after the master merge):
+  1. skin_palette's per-attachment fallback loop was DEAD (colour_mults inserts every index 0..len whenever
+     sim is Some; the loop ran only under `has` ⇒ sim Some ⇒ contains_key always true): deleted — 8561 hash
+     lookups/frame on 07000005, 12724 on the biggest.
+  2. colour_mults' pickup/attach HashMaps preallocated to their loop bounds (no rehash-grow to 12k/frame).
+  Before→after: colour_mults 0.45-0.59 → 0.16-0.32 ms; skin_palette −0.3…−0.5 ms (07000005 1.806→1.322,
+  07000014 4.051→3.580). Budgets: 8 ms fs/cm/sp, 3 ms hud/cel/menu — ≥2.2× headroom on the worst level.
+- Audit (report "Left/candidates"): uniform staging scales with ALL materials (gpu.rs:662-686 staged/clone×2/
+  per-draw pick2, ~0.5-1.5 ms + 1.4 MB/frame — unfixable headless, needs --shot before/after); lerp_palette
+  blends the full 12k palette every rendered frame (lib.rs:2969-2989 — a x==y fast path is ULP-different, not
+  bit-identical); upload_skin re-uploads ~0.9 MB on idle frames; frame_state poses hidden chars before the
+  hidden check (would change attachment collapse translations); view_model_entries scans all attachments/frame.
+- Ran: the budget test on pre-fix / post-fix / merged trees (34/34 each, 172 s on the merged tree); gpu_skin 3/3,
+  cutscene_models 4/4, fix_portal 6/6, render3 3/3, portal_eyecel 1/1, door_portal 2/2, fix_portal3 4/4+2 ign,
+  character_lighting 4/4, fix_hud 6/6, menus_flow 37/37, nf-game lib 212/212. Suite (final merged tree):
+  144/372 binaries completed in the window — 143 passed, 1 failed (walkreal_07000001's contact-route AI-nav
+  assert, pre-existing: failed identically on the pre-fix tree), 0 TIMEOUT/CRASH; the rest did not fit.
+- Report: docs/reports/frame-cost-guard.md (the 34-row before/after table is in the test's [cost]/[budget]
+  output; [hash] lines are the bit-identity vehicle for future cost fixes).
+
+## drake-cutscene-06 close-out (2026-10-16, branch s/drake-cutscene-06)
+- Playtest 1015-2142 "drake cutscene on o6 has some lag and glitchiness with objects": the
+  cut-scene is the dressing NIS 0x06000071 (SP #810, the level's only script camera, 1129 ticks:
+  164-key camera [D hold to t875 then sweep, hard cuts at 150/549/874], two `Script_AnimStart`
+  actors — suit Bond 0x05000007 on anim 060001fc, tux 0x0500000d on 060001fb [D — no entity
+  streams], events 4/5 at t0, sounds 0x119/0x172, fade -82 at t1049, ch 0x83 at t1052, events
+  6+0xD[2,1]+0x12[07000007] at t1129), driven headless through the real LoadPoint #746 → ch 0x83
+  path (walk_07000006_live's route, carry [0x1d,0x45,0x70]).
+- **Lag found + fixed**: `Pickup_Update`'s port cast the take-ray (`segment_take_scoped`) for
+  EVERY pickup every tick — `touches()` computed the LOS before the distance gate, while the
+  game short-circuits it (`Vec_SqDist3D < r² &&` Collide_LineOfSight [M 0x18e148:210-214]).
+  NF_PROFILE through the scene: update_pickups 1.0 ms/tick during the scene (0.56 idle) of a
+  1.67/1.33 ms sim tick — the largest scoped block. Reordered to the game's own gate
+  (bit-identical boolean, pickup.rs `touches`): update_pickups 0.001 ms, sim tick **1.67 → 0.54
+  ms/tick in the scene (−68 %), 1.33 → 0.83 idle (−37 %)**; render phases flat through the scene
+  (frame_state 1.7, skin_palette 2.1, colour_mults 0.17, cel_vis ≤0.006 ms — the script camera's
+  one-room mask).
+- **Objects audited**: every matrix the scene drives tracked per tick (cutscene_06_live): the
+  camera, the two actor roots (script_pose_together → world_pose, the draw path's own pose) and
+  the SP live matrix. All discontinuities are the game's own data: the camera's 3 key-time cuts
+  [D stream 0] and the actors' root jumps at f550→551 (suit 9.92 m, tux 5.79 m) + f875→876 (tux
+  2.62 m) — present in the sequences' own ROOT channels [D seq 04000174/04000173], each landing
+  on a camera cut tick (the game's teleport-under-the-cut staging; nothing to fix, no draw-only
+  suspects beyond the docs' known F3 tux-skin hand-back note).
+- Tests: cutscene_06_live (the scene runs 1128 ticks to level_exit 07000007 + the objective
+  completes; camera cuts exactly {150,549,874}; every actor jump coincides with a cut ±2 ticks
+  and reproduces the raw sequence root data), frame_cost_live's
+  frame_budgets_hold_through_the_07000006_dressing_cutscene (the scene phases + the sim-tick
+  median, budget 1.5 ms — the pre-fix tick would fail it). pickup_live/rng_live/
+  walk_07000006_live/14 pickup unit tests green on the fix.
 ## satchel-stick2 (2026-10-16, branch s/satchel-stick2)
 - Task: the playtest's satchel charge (0x3b, 07000005, thrown at the low wall by the start, --bond
   105.97,24.87,110.12,-4.369,-0.166) never sticks — "even standing directly at a wall and throwing it at it, it
@@ -14908,3 +14998,183 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   fix-party-mission/fix-actors; only 7 was missing), mission.md's SetMissionFailReason line.
 - Out of scope, noted: DSTATE_Taser/StunDartImpact ENTER set fail reasons 0xd/0xe for victims with
   the byte +0xc5 ∈ {0x11, 0x0c} [M 00162b98 case 1 / 00163430] — a separate mechanic, not ported.
+
+## npc-doors (2026-10-16, branch s/npc-doors) — start
+- Branch created from origin/master (6bab6409). Task: NPCs can't open doors (playtests 1012-1723,
+  1013-1825; 07000001 escort Mayhew stalls, guards/guests don't path through on 07000006/07000007).
+  Plan: port the drone side of door use from the NDrone route/door code — how a route reaches a door,
+  the Door_Activate call, wait-for-open, locked/scripted refusal — then tests: Mayhew's escort route
+  through its door, a 07000006 guard chasing Bond through a closed door, a locked door refusing drones,
+  and sister assertions that a closed door still blocks a drone that doesn't open it.
+
+## npc-doors (2026-10-16, branch s/npc-doors) — close-out
+- Fixed the route follow's permanent block: `LinkCreep_Decrement` 0x15a148 at creep step 0 calls
+  `AINetwork_SetupNextNode(-1)` — the route steps back a node and re-creeps (the game never
+  hard-blocks there; the 9/0xc terminal codes come through the route+2 latch [M 0x15b110]). The
+  port returned BLOCKED forever, so every followed route (mission/patrol/chase/0x63) wedged the
+  first time its straight line grazed an AI wall end (repro: the 0x63 Mayhew wedge at
+  (2.4,4.3)→(4.8,5.8), 0.096 off the boundary corner at (3.88,5.75,5.11)).
+- Fail-first: the escort test without the fix parks Mayhew at (3.2,7.4) 4 short of the shoji for
+  60k ticks (the playtest's "escort stalls at doors"); with it: 0x81 at +3730, the shoji OPEN at
+  +3760 with Bond 9.5 away and no E, crossed at +3818. Green on the merged tree too.
+- Tests: crates/nf-view/tests/npc_doors_live.rs — the escort no-E shoji walk, the 05 locked-door
+  refusals + the closed-door-blocks sister, and the 05/06/07 census + 07 watch + wall probes.
+  nf-game lib 234/234 (both trees); branch-point suite 1700/6/66 (the allowed set); the final-tree
+  suite re-run started in the sandbox's last minutes (suite2.out — read `tail -1` next session).
+- Report: docs/reports/npc-doors.md; remaining: the 07 party girls' missing AssignAIPath(8)
+  routes (a route-assignment gap, not doors), the backward-creep half [S], and the walkreal_07000001
+  harness note (its clear-guard loop predates mobile guards — the step-back un-wedges the port's
+  guards, and guard 15 at health 1.0 / dist 2.7 now outlasts the suite's 600 s window).
+- Late additions: the 06 chase test (guard #2 hears Bond's shots through the closed door #1, enters
+  0x81 at +401, opens at +408, crosses) and the 0x63 isolation drive rescooped to the un-wedge +
+  closed-door-blocks proof (closest 1.44 to the shut shoji; the region route carries no door nodes).
+  All 7 npc_doors_live tests green on the final tree; branch 79c669f8.
+
+## alarm-panel-06 (2026-10-16, branch s/alarm-panel-06) — start
+- Task: playtest 1015-2142 (07000006) "no panel to turn off the alarm" — the wall panel/switch
+  Bond can use to silence the alarm is missing in the port. Plan: find the alarm system's
+  objects/channels [M], the script/switch object that ends it, the Player_Activate 0x1a5170 arm
+  that uses it; find the panel's placement on 07000006 (type/hash, glist/prompt); find why the
+  port has none (not created / no prompt / channel write missing); port the missing part so E at
+  the panel stops the alarm exactly as the game does (channel, sound stop, guard state).
+  Headless: raise alarm on 07000006, walk Bond to the panel, use it, assert alarm state + sound
+  + channel clear; sister: use with no alarm. Branch created from origin/master f42de6ff.
+
+## alarm-panel-06 (2026-10-16, branch s/alarm-panel-06) — the panel is a walk-in trigger + inverter; the siren's keep byte was the bug — DONE 07:41 UTC
+- Playtest 1015-2142 "no panel to turn off the alarm" root-caused: there is NO E-usable switch on
+  07000006 [L SwitchList=0 @0x002bf0f8; the only 0x29 placements (map 4 #2/#15, ch 1) are in a map
+  that is never instanced; all 61 live SPs are ownerless]. The game's silencer: TouchOnce #765
+  (out ch 177, mask 8 = player contact, volume = object 195's world tris (31.1,42.2,−59.1)..(37.0,
+  46.8,−48.9)) → InverterTrigger #749 (0x41, in 177 → forces ch 55 = 0 every frame [M 0x1b30a8,
+  the game's only channel-clearing object]) → the searchlight-latched alarm ch 55 clears and the
+  siren SoundTrigger #702 (global sound 329, ON ch 55, OFF ch 177 [M 0x1b2628/0x1b2790]) stops.
+- Fix: SoundTriggers::create read keep_on = params.len(); the game reads param 7 (level-tag +0x48
+  [M 0x1b2628:48]). #702 has 8 params → keep byte 8 → the stop-when-ON-clears arm (keep_on == 0)
+  never fired → the siren rode ch 55 forever. Also the difficulty gate is param 6, not raw +0x44
+  [M 0x1b2628:24]. Added SoundTriggers::playing(id) as the test probe.
+- Tests (nf-view alarm_panel_06_live, real loader + step_bond): raise the alarm via a tracking gate
+  searchlight (ch 55 + siren live), head gives up after 900 ticks but ch 55 STAYS LATCHED with the
+  siren riding (the symptom), then the panel fires ch 177, the inverter holds ch 55 low and the
+  siren releases its voice; sister: no alarm → the panel still fires ch 177, ch 55 stays low, no
+  siren. Both pass; nf-game lib 234, nf-view lib 15, sound_coverage_live 4, alarm_panel_06_live 2.
+  Report: docs/reports/alarm-panel-06.md (render asks + 3 live checks; suite owed — the sandbox
+  reaped the background fast runner twice mid-build).
+
+## menu-graph-walk (2026-10-16, branch s/menu-graph-walk)
+- Branch created from origin/master (f42de6ff). Task: headless explorer that walks the whole reachable menu
+  graph from FrontEnd::new() by actions + ticks only (never direct field writes), with per-step invariants
+  (no panic, cursor < rows(), known page id, Back leaves within N steps, every page can reach Main,
+  requested_level never set twice per confirm, no dead-end pages), coverage print, plus a randomized
+  version (20 seeded runs x 5000 actions+ticks). Findings fix menu code where game evidence is clear [M],
+  else listed in the report.
+- menu-graph-walk close-out: the headless explorer (crates/nf-view/tests/menu_graph_walk.rs) walks
+  the front end from FrontEnd::new() by actions/ticks/host-calls only — 5 roots (raw boot; Main by
+  actions; pause via open_pause; results via mission_ended+results_enter; win via the final mission
+  under --unlock-all), BFS over (page, cursor, sub-state) with per-step invariants (no panic, cursor
+  < rows(), known page id, Back leaves within 8, every page reaches Main by actions — the mini-BFS
+  depth covers the 0x242-line credits roll [M 0x1f9a88], requested_level never set twice per
+  confirm, no dead ends) + 20 seeded runs × 5000 random actions/ticks. FrontEnd isn't Clone
+  (Box<dyn MpSession>), so nodes re-drive their paths (deterministic headless). Result: 38/42 pages
+  reached, every invariant green; the walk caught the MP setup page opening with the map wheel's
+  cursor riding in (cursor 1 on a 1-row page) — fixed: enter_mp_setup resets the row cursor [M
+  C_RBMPSETUP 0x20de58's 0x4c re-selects the list; the pick lives in mp_setup_sel]. Unreached (4,
+  reasons in the report): Options 0x40000068 (no opener in the whole decompile), MpDebriefing
+  (quit-during-MP-match only), MpLobby (needs a session; covered by mp_net_lobby), CheatMedal
+  0x4000004c (opener unknown — unlock-popups2's open question). Win/credits take no input by design
+  [M 0x215100/0x2152b0]. Report: docs/reports/menu-graph-walk.md (3 live-check asks).
+- menu-e2e-singleplayer close-out: crates/nf-view/tests/menu_sp_e2e.rs — 9 e2e tests driven only through
+  action()/tick()/the host-side calls (set_profile_dir, --unlock-all, requested_level/phase2_resolved takes,
+  the lib.rs demo_results flow prep before mission_ended, results_enter/bonus_enter/sync_profile_progress/
+  win_movie_finished, the card dialog answers); the name grid walked by d-pad BFS over CN_GRID (no other
+  window input path exists for it). Coverage: intro skip + playout; Back at every step to the title; all
+  three Select Codename branches (New Codename incl. the 0x3bc empty-name refusal + create + save + reload,
+  Play without saving's cancel/re-arm, an existing saved codename); the clamped difficulty wheel × all rows;
+  CAMPAIGN == SP_LEVEL_HASHES; all 12 rows' exact requested_level (driving rows → the notice, both
+  dismissals); the complete walk (results fields, the save prompt → ASK_OVERWRITE → the write → the NfBonus
+  hop → the list on the highest unlocked row → Double Cross through the chained driving rows → the file and
+  reload carry rows 0-2); the fail menu (REPLAY warm / QUIT); Equinox → the real 0x0730001b outro wrap →
+  just_completed → WinGame → Credits. Merged origin/master ad761677 mid-task (WORKLOG conflict resolved,
+  both entries kept). Findings: the fail-menu REPLAY sequencing (the headless front-end load clobbers
+  GameState+0x12 before the answer — the test answers in the disc's streaming window; live check asked) and
+  the per-leg phase2_resolved consume the walker mirrors from lib.rs 2326. Report:
+  docs/reports/menu-e2e-singleplayer.md (2 live checks).
+## menu-e2e-local-mp (2026-10-16, branch s/menu-e2e-local-mp) — start
+- Task: drive the FrontEnd ONLY through action()/mouse_*/tick (never assign page/cursor/state) and
+  cover every local-MP path to a match request: Main -> Multiplayer -> Local -> join (codename,
+  ready); for EVERY scenario row (Quick Game too), EVERY map row, both team/FFA setups: setup
+  (team -> character -> handicap) -> options hub (Rules, Player Mods, Enviro Mods, Bots + bot setup)
+  -> Continue -> Confirm -> requested_level + mp_match_settings validated against the choices.
+  Second Confirm while a request is pending must be refused. Back out from EVERY page at EVERY
+  prompt and walk forward again (setup page re-enters on the right prompt for the scenario's team
+  bit [M P_MPSETUP 0x20d7a8]). Locked rows/scenarios refuse. Debriefing returns to the scenario page.
+
+## menu-e2e-local-mp (2026-10-16, branch s/menu-e2e-local-mp) — close-out
+- menus_e2e_mp.rs: 5 action-driven tests covering all 13 scenario rows (locked refuse with the
+  0x010000ab desc [M C_SBMPSCEN:40-42], Quick Game's fixed config, team/FFA setup prompts per
+  P_MPSETUP 0x20d7a8's team bit), all 8 map rows to their requests (Ravine solo correctly refused
+  0x39e per C_SBMPOPTIONS's humans+bots > 1), every options sub-page with values riding into
+  mp_match_settings, back-out of every page at every prompt with correct re-entry, locked
+  characters refusing, and the debriefing returning to the scenario wheel via the new
+  mp_debrief_enter [M C_GCPAUSE 0x204408:146 / C_MPDBG 0x217860].
+- FIX: mp_confirm_start now maps friendly_fire into MpSettings (+0x198, read by
+  MP_RegisterBulletHit 0x1857c0:43-57) — the choice used to be dropped at handover.
+- Ran: menus_e2e_mp 5, menus_e2e 5, mp_menu_flow 9, mp_net_lobby 9, menu_music_flow 14,
+  menu_sfx_flow 14 — all green on the final tree. The fast suite built 394 binaries ok but its
+  run phase was cut by the sandbox (background jobs reaped between tool calls; the foreground run
+  hit the 9.5-min tool cap) — no total line; details in docs/reports/menu-e2e-local-mp.md.
+---
+
+menu-audio-state (2026-10-16)
+- Task: the menu music/sfx state must be right through every front-end flow. Playtest found menu music
+  playing in gameplay and during pause, and "audio breaks and there's no main menu music" after the intro.
+- Plan: drive the FrontEnd headless ONLY through action()/mouse_*/tick and host glue (movie_tick, menu_after,
+  page-enter music hook), assert the MenuMusic command stream and jingle state per flow against the game
+  [M frontend-music.md]: boot (intro full/skipped -> title -> Main), attract (natural/skipped), every backdrop
+  movie page, credits, SP mission start (music stops), pause (held, not removed), quit to front end, MP match
+  start and debriefing. Invariant: never two menu-music sources at once, none during gameplay.
+- Branch s/menu-audio-state created from origin/master (ad761677). Work in progress; report will be at
+  docs/reports/menu-audio-state.md.
+- menu-audio-state: the flows found four real state bugs and the fixes are in. The jingle
+  restarted UNDER the intro (the early page flip fired Main's 0x4c — fe_music_step now holds
+  the transition while intro_playing [M 0x209e88]); the main menu sat silent after a skipped
+  intro (the skip arm now runs the 0x50 finish restart [M 0x209e88:23-28] and open_pair_sfx/
+  remove_pair drive the music channel so a tick-queued restart lands at the next redraw, not
+  the next keypress); the pair played under the briefing (the SP pick and the MP start now
+  kill it — the game deletes the manager at the pick [M 0x20b8d8 case 0x4b]); the bank
+  alternation reset at the pause (the App now stashes the .bss statics across manager drops
+  and restores them into the pause's fresh fe and the demo results [M 0x1dceb8; L 0x30c958]).
+  enter_page(Credits) no longer starts the pair (the credits 0x4c is the swap [M 0x2152b0]).
+  tests/menu_audio_flows.rs: 9 action-driven flows with the per-frame invariants (<=1 audible
+  source, none during gameplay, never jingles + credits track). Report:
+  docs/reports/menu-audio-state.md (live checks 1-6).
+## pause-results-flows (2026-10-16, branch s/pause-results-flows) — start
+- Task: queue 674 — the in-mission menus end to end (pause page: Esc open, all tabs, Continue/Restart/Quit
+  with YES/NO; fail menu on death; mission complete -> results -> NfBonus/MissionSelect), driven ONLY through
+  action()/mouse_*/tick and host glue on a live 07000005 scene (NF_ISO). Assert page+request at each step,
+  sim paused while a menu is up, Restart restores full health + entry checkpoint, Quit returns to a working
+  front end, repeated presses during transitions don't double-fire, and the 5 s LOADING_HOLD eats input during
+  loads. Branch from master ad761677; suite started in background.
+
+## pause-results-flows (2026-10-16, branch s/pause-results-flows) — close-out
+- Nine headless end-to-end tests on live scenes (pause_results_flows_live.rs): Esc pause open +
+  sim frozen + resume, the four tabs (Left/Right/Tab, live OBJECTIVES rows on 07000007 — 05's first
+  objective waits for its enable channel [M 0x1827d8:41-54]), Continue, Restart YES/NO → cold
+  BaseMap full-health reload [M 0x204408:134-141, 0x1910f8:128-138], Quit YES → the front end with
+  a working mission list [M 0x204408:142-149], the fail menu on a real death → warm entry-checkpoint
+  restart via fail_restart_save [M 0x216618:19-21, 0x1957a8] and the quit row, mission complete →
+  results → NfBonus/MissionSelect [M 0x182c60:85-122, 0x208e78, 0x209670], the 5 s LOADING_HOLD pin
+  + the take-once/double-press guards. All host glue mirrored with lib.rs line cites; no page/cursor
+  assignments anywhere.
+- Fixes: (1) the quit's queued page re-opens after the front-end load — FrontEnd::reopen_queued_page
+  called by the host swap branch [M 0x1d6360:160-163]; a model-path edge was tried and REVERTED (it
+  perturbed the boot flow, menus_e2e 0/5). (2) The Esc arm rides ST_RUNNER [M 0x1c98c8 case 2,
+  0x1d3800:11-17]. (3) LOADING_HOLD pub. A fail-rows guard was also reverted after
+  menus_flow's results test showed it refused the first row press (the arm's queued request stands
+  at page-open; the game's one-press rule rides the arm's page move [M 0x216618:26]).
+- Verified: pause_results_flows_live 9/9, menus_e2e 5/5, menus_flow 42/42, front_end_chain_live 2/2,
+  fix_restart_target_live 2/2. The background fast runner was reaped by the sandbox three times
+  (known here) — no full-suite total; the report lists the per-crate runs and a chunked-run plan.
+- Findings for later: the sim-side fail menu keeps the drones ticking where the game freezes the
+  pump [M 0x182c60:78 + 0x1c9790:30-35]; results stats are Stats::default (host gap); Esc during a
+  cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
+  (live checks 1-3).

@@ -180,18 +180,19 @@ fn grid_moves_tick_only_on_change() {
 /// The open pair rides the page transitions into the pair-playing pages, still under `menu_movie`
 /// [M the twelve handlers' 0x4c case; the port's page correspondence is docs/systems/menu-sfx.md §3].
 #[test]
-fn credits_open_plays_the_pair_when_menu_movie_is_clear() {
+fn credits_open_swaps_the_pair_for_the_credits_track() {
     let mut fe = FrontEnd::new();
     drain(&mut fe);
     fe.page = menu::Page::CnAv;
     fe.menu_movie = false; // an intro/attract movie end cleared it [M 0x209e88:44,58]
     assert!(fe.open_credits(nf_view::credits::PAGE_CN_AV, 100, false), "the credits open");
+    // menu-audio-state (672): the credits' 0x4c is the music SWAP — the pair is removed,
+    // `menu_movie = 0` and `SFXStartMusic(0x27, 0)` plays the credits track [M P_CREDITS
+    // 0x2152b0:89-94]; the pair is NOT restarted (it used to start for under a frame).
     let ev = drain(&mut fe);
-    assert_eq!(ev, vec![
-        MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_MOVE },
-        MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_SELECT },
-    ], "P_CREDITS is one of the twelve pair pages");
-    assert!(fe.menu_movie, "the static is set again after the pair [M P_CREDITS 0x2152b0]");
+    assert!(ev.iter().all(|e| e.id != SFX_MENU_OPEN_MOVE && e.id != SFX_MENU_OPEN_SELECT),
+        "the credits open starts no menu-music pair: {ev:?}");
+    assert!(!fe.menu_movie, "the static stays clear while the credits track plays [M 0x2152b0]");
 }
 
 
