@@ -26,3 +26,7 @@ scratch probes (`hatch_crouch_probe.rs` was removed in the merge).
 
 ---
 claimed-by: sandbox4 at 2026-10-16T11:34Z
+
+---
+## Report (blocked, 2026-10-16T15:12Z)
+
