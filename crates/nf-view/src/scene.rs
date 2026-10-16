@@ -4780,6 +4780,21 @@ fn casing_matrix(c: &nf_game::casing::Casing) -> Mat4 {
 
 /// Tracer slots (bullets drawn at once).
 const TRACER_SLOTS: usize = 32;
+
+/// A unit-axis matrix (rows = axes) whose z row points along `dir` at `pos`, x kept horizontal
+/// (up × z; world x when `dir` is vertical). sg5-laser-draw: the yaw/pitch euler the tripbomb beam
+/// uses is only right for level beams — `object_matrix`'s z row is (sin ry, −sin rx·cos ry,
+/// cos rx·cos ry), so an atan2 yaw with a tilted beam pointed it off its end.
+fn z_basis(dir: [f32; 3], pos: [f32; 3]) -> [[f32; 4]; 4] {
+    let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
+    let z = [dir[0] / l, dir[1] / l, dir[2] / l];
+    // up × z = (z.z, 0, −z.x)
+    let (hx, hz) = (z[2], -z[0]);
+    let hl = (hx * hx + hz * hz).sqrt();
+    let x = if hl < 1e-6 { [1.0, 0.0, 0.0] } else { [hx / hl, 0.0, hz / hl] };
+    let y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]];
+    [[x[0], x[1], x[2], 0.0], [y[0], y[1], y[2], 0.0], [z[0], z[1], z[2], 0.0], [pos[0], pos[1], pos[2], 1.0]]
+}
 /// Projectile mesh slots (`models-weapons-items`): 0..GRENADE_SLOTS are the simulation's grenades
 /// (`Sim::drones.grenades`), GRENADE_SLOTS..+TRACER_SLOTS the drone bullets (`Sim::drones.bullets`, the same
 /// indices the tracer attachments use), and the last PLAYER_BULLET_SLOTS Bond's (`Sim::drones.player_bullets`).
@@ -5353,7 +5368,11 @@ impl Scene {
                 // beam object with `hashtable_set_object_to_entity_gfx(uVar9, 0x2000133)` [M
                 // `Bullet_update` case 3, the +0x70 & 0x80000 arm 0x12ee30-0x12ee50]; two slots
                 // (the 6-placed cap keeps placed tripbombs bounded; the port draws the first two).
-                (TRACER_SLOTS + 3, 0x0200_0133), (TRACER_SLOTS + 4, 0x0200_0133)] {
+                (TRACER_SLOTS + 3, 0x0200_0133), (TRACER_SLOTS + 4, 0x0200_0133),
+                // sg5-laser-draw: the weapon laser sight (`Player_LaserPointer` 0x1a65d8) — the beam
+                // sprite 0x2000133 and the red dot 0x2000132 [M ll. 189-205, the `Player_InitWeapon`
+                // 0x1a7ef8 objects]; both follow `Sim::laser_sight`.
+                (TRACER_SLOTS + 5, 0x0200_0133), (TRACER_SLOTS + 6, 0x0200_0132)] {
                 if drones.is_some() {
                     if let Some(&(bmap, bobj)) = level.by_hash.get(&hash) {
                         let binst = Instance { map: bmap, object: bobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
@@ -6283,6 +6302,31 @@ impl Scene {
                 // and 0x200026d "taser" [M 0x1a46a8]), and `Draw_LaserBeam`'s stretch is the beam
                 // object's own scale (obj+0xE8 = the muzzle→hit distance) with the yaw/pitch of
                 // muzzle→hit in obj+0x50 (the negated-yaw euler) [M 0x1a4560:44-62].
+                if slot as usize >= TRACER_SLOTS + 5 {
+                    // sg5-laser-draw: the laser sight [M Player_LaserPointer 0x1a65d8]. Slot +5 the
+                    // beam, datum → end, stretched like the tripbomb beam below (the same −z mesh);
+                    // view-only in first person [M: `BLData+0x950 == 0`]. Slot +6 the dot at
+                    // hit + normal·0.01, its z on the normal, scale 1 + d²/MAX_VIEW_CONE (2000) capped
+                    // at 4 with d = datum → end [M ll. 189-205; L 0x30d0fc]. The flicker (Rand_FRand
+                    // on the size byte) and the night-sight sprite 0x2000131 are not drawn yet.
+                    let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
+                    let Some(s) = self.sim.as_ref() else { return far };
+                    let Some((a, b, dot)) = s.laser_sight else { return far };
+                    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if slot as usize == TRACER_SLOTS + 5 {
+                        if !s.first_person || len < 1e-4 { return far; }
+                        // The mesh's −z runs start→end (the +z-backward convention below), so z = a − b.
+                        let mut m = z_basis([a[0] - b[0], a[1] - b[1], a[2] - b[2]], a);
+                        for k in 0..3 { m[2][k] *= len; }
+                        return m;
+                    }
+                    let Some((p, n)) = dot else { return far };
+                    let sc = (1.0 + len * len / 2000.0).min(4.0);
+                    let mut m = z_basis(n, [p[0] + n[0] * 0.01, p[1] + n[1] * 0.01, p[2] + n[2] * 0.01]);
+                    for r in 0..3 { for k in 0..3 { m[r][k] *= sc; } }
+                    return m;
+                }
                 if slot as usize >= TRACER_SLOTS + 3 {
                     // fix-satchel-tripbomb: the tripbomb's laser beam (mesh 0x2000133 [M the beam
                     // create]) — the sim rebuilds `tripbomb_beams` (start, end) every tick [M the
@@ -6299,10 +6343,9 @@ impl Scene {
                     // with the elevation negated — the same +z-backward convention as Draw_LaserBeam
                     // [M 0x1a9400 tail], whose −z geometry [D the "watch_lazer" mesh 0x2000133:
                     // z ∈ [−1.0, 0]] flows start→end. The old +z pointed start→end.
-                    let v = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-                    let yaw = v[0].atan2(v[2]);
-                    let pitch = -v[1].atan2((v[0] * v[0] + v[2] * v[2]).sqrt());
-                    let mut m = nf_formats::placement::object_matrix([pitch, yaw, 0.0], a);
+                    // sg5-laser-draw: built from the direction (`z_basis`) — the atan2 euler missed a
+                    // tilted beam's end; level beams are unchanged.
+                    let mut m = z_basis([a[0] - b[0], a[1] - b[1], a[2] - b[2]], a);
                     for k in 0..3 { m[2][k] *= len; }
                     return m;
                 }
@@ -7288,5 +7331,29 @@ mod tests {
         assert_eq!([12, 17, 30, 0, 60, 255].map(ticks_per_frame), [5, 3, 2, 1, 1, 1]);
         // Sister: the old reading (the byte as ticks) disagrees.
         assert_ne!(ticks_per_frame(12), 12);
+    }
+
+    /// sg5-laser-draw: the beam mesh's local (0, 0, −len) (its far end, the −z geometry) lands on
+    /// the beam's end for a TILTED beam, and the axes stay orthonormal.
+    #[test]
+    fn z_basis_puts_the_beam_end_on_the_end() {
+        let (a, b) = ([107.3f32, 25.04, 109.91], [108.84f32, 24.75, 109.10]);
+        let v = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let mut m = z_basis(v, a);
+        for k in 0..3 { m[2][k] *= len; }
+        let far = nf_formats::placement::transform(&m, [0.0, 0.0, -1.0]);
+        for k in 0..3 { assert!((far[k] - b[k]).abs() < 1e-4, "end {far:?} vs {b:?}"); }
+        let m1 = z_basis(v, a);
+        let dot = |i: usize, j: usize| (0..3).map(|k| m1[i][k] * m1[j][k]).sum::<f32>();
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] { assert!(dot(i, j).abs() < 1e-5); }
+        assert!(m1[0][1].abs() < 1e-6, "x stays horizontal");
+        // Sister: the tripbomb's atan2 yaw/pitch euler misses the end of the same tilted beam.
+        let yaw = v[0].atan2(v[2]);
+        let pitch = -v[1].atan2((v[0] * v[0] + v[2] * v[2]).sqrt());
+        let mut e = nf_formats::placement::object_matrix([pitch, yaw, 0.0], a);
+        for k in 0..3 { e[2][k] *= len; }
+        let efar = nf_formats::placement::transform(&e, [0.0, 0.0, -1.0]);
+        assert!((0..3).any(|k| (efar[k] - b[k]).abs() > 0.05), "the euler build should miss: {efar:?}");
     }
 }
