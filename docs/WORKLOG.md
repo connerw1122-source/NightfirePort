@@ -15824,3 +15824,12 @@ fix_swim_entry_live, fix_swim_vent_live, fix_swim_vent5_live, walkreal_07000005_
 LADDER-02 FINAL SUITE (14:16 UTC): the final-tree fast-runner total `1808 passed, 6 failed,
 72 ignored (42 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes; no
 regressions from the cel-scoped hit-below fix.
+
+## spurious-complete-16 (2026-10-16, branch s/spurious-complete-16) — start 15:16 UTC
+
+Playtest 1013-1825 (07000016): a "mission complete" banner pops up in mission 16 for no reason and the mission still
+can't continue. Hunting what posts it (a script setting channel 100 / an objective-complete message mislabelled /
+the type-3 banner from a sub-objective / an inherited channel) [M Mission_Update, the 16 scripts' channel writes,
+the objective message types]; plan: walk 16's route headless (the 16 door/corridor tests have fixtures), log every
+mission message, fix the gate so the banner shows only on the game's real completion, test that the walk posts no
+"Mission Complete" before the end condition.
