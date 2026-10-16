@@ -1689,7 +1689,16 @@ struct LevelLoad {
     /// drive-ptp: the DRIVING return (`Boot_LoadPTPData` 0x1c8560), taken from the OLD sim at
     /// spawn and applied to the NEW one at the swap (see `swap_in_scene`).
     ptp_return: Option<nf_game::ptp::DriveReturn>,
+    /// The finished build, parked while the loading screen's minimum time runs (`LOADING_HOLD`).
+    ready: Option<Option<Result<scene::Scene, String>>>,
 }
+
+/// The loading screen's minimum time on screen. The PS2's disc load kept it up ~11.5 s on
+/// 07000001 → 07000002 (PS2LSActive 2 → 0, measured in PCSX2 2026-10-15) — long enough to read
+/// the objective and the hint while the dots sweep (183.5 ms a step, the port's 11-vblank cadence
+/// exactly). The port builds a level in 1-2 s, so the screen flashed by (playtest 1015-2142); the
+/// user chose to hold it a few seconds [S — a PC-port choice, not the game's timing].
+const LOADING_HOLD: f64 = 5.0;
 
 impl App {
     /// One menu action from the keyboard or the mouse (PC mouse support, 2026-10-15): the movie skip, the pause page's
@@ -1889,7 +1898,7 @@ impl App {
             } else if dev { load_with_carry_dev(&iso, &name, all, save.as_ref()) } else { load_with_carry(&iso, &name, all, save.as_ref()) }
                 .map_err(|e| e.to_string())
         });
-        self.async_load = Some(LevelLoad { job, next, ptp_return });
+        self.async_load = Some(LevelLoad { job, next, ptp_return, ready: None });
     }
 
     /// One frame of the running load (async-level-load): `false` = the worker still runs — the
@@ -1899,14 +1908,22 @@ impl App {
     /// the swap is done, the caller falls through to normal play.
     fn poll_async_load(&mut self) -> bool {
         let Some(load) = self.async_load.as_mut() else { return true; };
-        let Some(res) = load.job.poll() else {
+        if load.ready.is_none() { load.ready = load.job.poll(); }
+        // A successful build into a level with a loading screen waits out LOADING_HOLD (the
+        // front-end map draws no loading screen [M ResetMap_GenLoadScreen skipped for 0x07000048];
+        // a failure goes at once).
+        let hold = load.next != menu::FRONTEND_LEVEL
+            && load.job.elapsed_ticks() < (LOADING_HOLD * 60.0) as u32
+            && !matches!(load.ready, Some(Some(Err(_))) | Some(None));
+        if load.ready.is_none() || hold {
             let (level, dots) = (load.next, loading::dots_lit(load.job.elapsed_ticks()));
             self.draw_loading_screen(level, dots);
             if let Some(g) = &self.gfx { g.window.request_redraw(); }
             return false;
-        };
+        }
         // The job is over whatever the result: take it and let the frame finish normally.
-        let load = self.async_load.take().unwrap();
+        let mut load = self.async_load.take().unwrap();
+        let res = load.ready.take().unwrap();
         match res {
             Some(Ok(scene)) => {
                 let name = level_archive_name(load.next);
@@ -1924,7 +1941,7 @@ impl App {
                     }
                     self.fe_music_page = None; // the manager re-create re-runs the page's 0x4c [M 0x21b908:127]
                 }
-                eprintln!("level: loaded {name}");
+                eprintln!("level: loaded {name} (loading screen {:.1} s)", load.job.elapsed_ticks() as f64 / 60.0);
             }
             Some(Err(e)) => eprintln!("level: failed to load {}: {e}", level_archive_name(load.next)),
             None => eprintln!("level: load of {} panicked (worker thread died)", level_archive_name(load.next)),
