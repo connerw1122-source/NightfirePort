@@ -13952,3 +13952,10 @@ Stage Summary:
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+## sim-tick-cost (2026-10-16, branch s/sim-tick-cost) — started
+- Task: profile and cut the Sim's per-tick cost without changing results. Headless tick-cost probe
+  (NF_ISO, release-only): each single-player level, 600 ticks of a fixed input script, per-tick
+  median/p95/max per Sim phase (drones/AI, bullets, collision, triggers/scripts, sound batch,
+  pickups, doors). Fix top hotspots; determinism bar = identical per-tick state hash before/after
+  for every level over the 600 ticks. No behaviour changes; report any fix that would change results
+  instead of making it.
