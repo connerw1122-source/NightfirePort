@@ -26,3 +26,8 @@ First check whether current master already behaves like the game. If it does, pi
 
 ---
 claimed-by: sandbox5 at 2026-10-16T19:58Z
+
+---
+## Report (done, 2026-10-16T20:38Z)
+
+Closed by the driver: the report is on `s/rocket-trail-gas` (docs/reports/rocket-trail-gas.md); the worker didn't run finish.sh.
