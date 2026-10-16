@@ -15582,3 +15582,41 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+## mp-debriefing-data2 (2026-10-16, branch s/mp-debriefing-data2) — STARTED
+
+- Task: land 621's (s/mp-debriefing-data, HELD) debriefing on top of master's 402 (s/mp-match-rules)
+  match rules: keep 402's single MP_Update/MP_CheckForEndCondition state machine, port only what 621
+  adds on top (mp/debrief.rs board, end status + handover/debriefing/restart requests, Top Agent
+  elimination input, Action::Extra arms). Reconcile disagreements from the disassembly.
+- Reconciled 621 onto 402 (all from the decomp, `work/decomp/ACTION.ELF/`): (1) the demo/prot
+  arm enters state 6 WITHOUT latching switch_channels[0xfe] [M 0x184268:57-60] — 402 latched it
+  and returned early, skipping the shared frag latch + final dispatch (decomp lines 170-184 run
+  for demo/prot too; only 0x10 jumps past the latch); (2) the general 0xfe latch has no
+  `limit > 0` gate [M :142-143] — 621's `limit > 0.0 &&` was wrong (that gate is the demo/prot
+  state-6 arm's alone); (3) the state-6 restart fires at `5.0 < timer` STRICTLY [M 0x184bd0:85]
+  — 402's `>=` was wrong; (4) MP_SortOutWhoWon's 0x10 count re-increments after a tie-zero
+  [M 0x1848d0:32-40] — 402's tie-flag missed it ([3,3,1] crowns the 1, 402 drew); (5) the FFA
+  qualifier loop has NO obj gate [M :56-71] — 402's pos filter was wrong; (6) 621's caller-marked
+  `out` folded into 402's `death-path` dead flag (the state-byte stand-in; the 0x02 alive
+  exemption and the 0x02→0x11 flip are unobservable in the port); (7) MpGame gains
+  handover_flag/request_debriefing/restart_pending/end_status; 621's top_score = 402's high.
+- Added mp/debrief.rs (get_mp_score 0x203af8 + debriefing 0x212198), MpPlayer.codename (+0x00),
+  menu.rs: Action::Extra (KeyQ [S]) + arms, MP_CHARACTERS_SMALL [L 0x2df8f8], the page consts,
+  open_mp_debriefing + rows/result/portrait getters, the C_MPDBG 0x5d replay arm, the confirm's
+  codename handover. Tests: nf-game/tests/mp_debriefing.rs (10) + nf-view/tests/mp_debriefing_flow.rs
+  (6) adapted from 621; 402's mp_match_rules (14) all green on the merged machine.
+
+## mp-debriefing-data2 (2026-10-16, branch s/mp-debriefing-data2) — DONE
+
+- Merged origin/master mid-task (the driving batch + the online-MP chain): the mp/mod.rs conflict
+  was both sides' module declarations (debrief + hash + replay all kept); menu.rs auto-merged and
+  the new Rewards/Gadgets/Weapons pages got their idle Action::Extra arms; WORKLOG both kept.
+- Suite: foreground slices (the sandbox reaps background jobs) over all 364 binaries on the
+  branch tree: 1565 passed / 7 failed / 66 ignored — the 3 disc_golden (allowed on the slim ISO),
+  3 no-GPU wgpu probes (probe_pylon_render, fix_0c_pylon_live), 1 TIMEOUT at the 480 s cap on the
+  pre-existing walkreal_07000001_live full-level walk. On the final merged tree: nf-game FULL
+  452/1/2 (the 1 = driving_ai_follow's real-data walk, pre-existing on master's tip — driving/ is
+  byte-identical to origin/master on my branch) + the MP slice 87/0 + the nf-view menu-flow set
+  85/0. Details in docs/reports/mp-debriefing-data2.md.
+- Report: docs/reports/mp-debriefing-data2.md (the reconciliation table, the verification, 5
+  live-check asks); systems doc docs/systems/mp-debriefing.md.

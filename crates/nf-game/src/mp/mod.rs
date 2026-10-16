@@ -16,6 +16,12 @@
 //! `MP_CreateObject` (the immediate-create path) stores the record without building an object
 //! (phase 1 drives no MP objects).
 //!
+//! Match end + debriefing (mp-debriefing-data2, on top of 402's machine): the full
+//! `MP_CheckForEndCondition` 0x184268 latch/dispatch, the `MP_Update` 0x184bd0 end states with the
+//! handover/debriefing/restart requests, `MP_SortOutWhoWon` 0x1848d0's end status, and
+//! [`debrief`]'s board (`P_MPDEBRIEFING` 0x212198) — see `docs/systems/mp-debriefing.md` and the
+//! reconciliation table in `docs/reports/mp-debriefing-data2.md`.
+//!
 //! Placement wiring ([M] `parsemap_create_dynamic_objects` 0x1d04f0 case 0x25/0x26 ←
 //! `parsemap_block_map_data_dynamic` 0x1d1b68): the dispatch passes the placement's translation,
 //! rotation and its 0xb0 params block (values written by key: value[key] lands at block+0x2c+key·4)
@@ -30,6 +36,11 @@ use crate::world::CollisionWorld;
 /// state table and the `BotGlobal` dispatch skeleton — see `bots.rs` and `docs/fields/bot-vars.md`. Nothing in
 /// the sim calls it yet; the dispatch is behind the `mp-bots` feature.
 pub mod bots;
+
+/// The debriefing data builder (mp-debriefing-data2, ported from 621): `MpMatch::get_mp_score` /
+/// `MpMatch::debriefing` — the `P_MPDEBRIEFING_Handler` 0x212198 msg-0x4c rows, ranks and result
+/// line. See `docs/systems/mp-debriefing.md` §4.
+pub mod debrief;
 
 /// The lockstep state hash (`state_hash(&MpMatch) -> u64`, FNV-1a 64 over the state's bit
 /// patterns) — the desync detector the future `nf-net` UDP lockstep exchanges per tick. See
@@ -83,6 +94,10 @@ pub struct MpPlayer {
     /// [WORKLOG lesson 4]; the game's record is 0x30 wide, the port's compact struct skipped
     /// +0x28 (its armor_bonus is +0x2c).
     pub radar_on: u32,
+    /// +0x00: the codename string (`C_RBMPCNAME` 0x20d448 stores it; the debriefing's name column
+    /// and the winner line read `MPSettings+s·0x30+0x00` [M 0x212198:169-171,
+    /// 0x212a64-0x212a7c]). The boot default is "Player N" [M bootup_bootup 0x1c7e78:50-67].
+    pub codename: String,
 }
 
 /// `MPSettings` @0x2a47a0 — the match config. Only the fields the phase reads/writes are carried;
@@ -150,7 +165,7 @@ impl MpSettings {
     /// and the derivations are the game's.
     pub fn deathmatch(level_code: u32) -> MpSettings {
         MpSettings {
-            players: std::array::from_fn(|_| MpPlayer { team: 0, skin: 0, armor_bonus: 0, radar_on: 1 }),
+            players: std::array::from_fn(|_| MpPlayer { team: 0, skin: 0, armor_bonus: 0, radar_on: 1, codename: String::new() }),
             started: false,
             gametype_mask: 0,
             player_count: 1,
@@ -322,8 +337,35 @@ pub struct MpGame {
     pub frag_latched: bool,
     /// +0x18C (i32, Ghidra `_396_4_`): the running high score — max(team 0, team 1), then max over
     /// the 8 slot scores for FFA (the demo/prot branch takes both) [M 0x184268:147-172]. The
-    /// frag-limit latch compares it against `MPSettings+0x19C`.
+    /// frag-limit latch compares it against `MPSettings+0x19C`. (621's `top_score` — the merge
+    /// reuses this one field; there is no second +0x18C.)
     pub high: i32,
+    /// `GameState+0x24 = 1` at state 3→4 [M 0x184bd0:59; disasm 0x184e6c `sw $v1,0x24($a1)`].
+    pub handover_flag: bool,
+    /// The case-4 navigation request: `GameState+0x1C = 0x40000033` + `ResetMap_LevelToLoad`
+    /// (0x7000048) + the fade [M 0x184bd0:62-78; disasm 0x184e70-0x184e94] — the host consumes it
+    /// and opens the front end at the debriefing (`FrontEnd::open_mp_debriefing`).
+    pub request_debriefing: bool,
+    /// The case-6 restart request: state 0 + `MP_RestartScenario` after 5 s (demo/prot)
+    /// [M 0x184bd0:79-92] — the host re-runs the scenario init. The restart itself already runs
+    /// here ([`MpMatch::restart_scenario`], the game's own call site); the flag is the host's
+    /// observable.
+    pub restart_pending: bool,
+    /// The end status `MP_SortOutWhoWon` 0x1848d0 computes for the status sprite (the game writes
+    /// it straight into the string buffer; the port stores it for the HUD/debrief).
+    pub end_status: MpEndStatus,
+}
+
+/// The status line `MP_SortOutWhoWon` 0x1848d0 builds [M :21-92] — ids/texts per the USATxt bank.
+#[derive(Clone, Debug, PartialEq, Default)]
+pub enum MpEndStatus {
+    /// Still playing (no sort has run).
+    #[default]
+    None,
+    /// "Player %s Won" 0x2000022 / "Game Over : %s Won" (0x2000024 + 0x2000027) — the codename.
+    Won(String),
+    /// "A Draw" 0x2000023 / "Game Over : A Draw" (0x2000024 + 0x2000023).
+    Draw,
 }
 
 impl MpGame {
@@ -352,6 +394,10 @@ impl MpGame {
             time_up: false,
             frag_latched: false,
             high: 0,
+            handover_flag: false,
+            request_debriefing: false,
+            restart_pending: false,
+            end_status: MpEndStatus::None,
         }
     }
 }
@@ -575,12 +621,16 @@ impl MpMatch {
     ///
     /// The end states: 1 → `MP_SortOutWhoWon` [M :51-52]; 2 → the 0x10 fall-through into state 1's
     /// body, every other scenario straight to 3 (the time-up text is skipped — numbers only) [M
-    /// :42-49]; 3 → 4 at once for non-0x10, 0x10 waits the 5 s debrief timer [M :54-61]; 4 → 5
-    /// (the game loads the front-end map here — the port has no loader, *Deviation*) [M :62-78];
-    /// 6 → the 5 s restart timer then `MP_RestartScenario` back to 0 [M :79-92]. `rng` is the
-    /// shared bit-exact RNG — it is drawn only by the state-6 restart's site re-pick. The scenario
-    /// objects are the caller's [`MpMatch::update_objects`] call (the game's `MP_ObjectUpdate` is
-    /// driven by the object system the same way, and the KOTH hill volume is level data).
+    /// :42-49]; 3 → 4 (setting `GameState+0x24 = 1`, the port's `handover_flag`) at once for
+    /// non-0x10, 0x10 waits the 5 s debrief timer — the gate compare is `5.0 <=` [M :54-61, decomp
+    /// line 56]; 4 → 5 with the debriefing request (`GameState+0x1C = 0x40000033` + the
+    /// `ResetMap_LevelToLoad(0x7000048)`/fade/`GS_PausePlayer` calls — the port exposes the
+    /// request, the host drives the rest, *Deviation*) [M :62-78]; 6 → the restart timer (the
+    /// 2.5 s status text is the renderer's) then at `5.0 <` timer — STRICTLY greater [M :85, decomp
+    /// line 85] — state 0 + `MP_RestartScenario` + `restart_pending`. `rng` is the shared bit-exact
+    /// RNG — it is drawn only by the state-6 restart's site re-pick. The scenario objects are the
+    /// caller's [`MpMatch::update_objects`] call (the game's `MP_ObjectUpdate` is driven by the
+    /// object system the same way, and the KOTH hill volume is level data).
     pub fn update(&mut self, dt: f32, paused: bool, rng: &mut Rng) {
         if self.settings.master == 0 || !self.settings.started {
             return; // [M 0x184bd0:13-16]
@@ -615,101 +665,84 @@ impl MpMatch {
                     self.game.debrief_timer += dt; // REC_FRAME_RATE per frame [M 0x184bd0:54-61]
                     if self.game.debrief_timer >= 5.0 {
                         self.game.state = 4;
+                        self.game.handover_flag = true; // GameState+0x24 = 1 [M 0x184bd0:59]
                     }
                 } else {
                     self.game.state = 4;
+                    self.game.handover_flag = true; // GameState+0x24 = 1 [M 0x184bd0:59]
                 }
             }
             4 => {
-                // GameState._28_4_ = 0x40000033, ResetMap_LevelToLoad(0x7000048) + the flow push
-                // [M 0x184bd0:62-78] — the port has no loader; state 5 marks the wait.
+                // GameState._28_4_ = 0x40000033, ResetMap_LevelToLoad(0x7000048) + the flow push +
+                // the per-slot Player_SetCamMode/GS_PausePlayer [M 0x184bd0:62-78] — the port has
+                // no loader and no player pipeline; it exposes the request (state 5 marks the wait).
+                self.game.request_debriefing = true;
                 self.game.state = 5;
             }
             5 => {} // waiting for the front-end load [S]
             6 => {
                 self.game.restart_timer += dt; // [M 0x184bd0:79-92]
-                if self.game.restart_timer >= 5.0 {
+                if self.game.restart_timer > 5.0 {
+                    // 5.0 < timer, STRICTLY [M 0x184bd0:85] — the state-3 debrief gate is the
+                    // inclusive 5.0 <=, this one is not.
                     self.game.state = 0;
-                    self.restart_scenario(rng);
+                    self.game.restart_pending = true; // the host's observable [M :86-90]
+                    self.restart_scenario(rng); // the game's own call site [M :87]
                 }
             }
             _ => {}
         }
     }
 
-    /// `MP_CheckForEndCondition` 0x184268 — the full rule set:
+    /// `MP_CheckForEndCondition` 0x184268 — the full rule set (reconciled against the decomp in
+    /// mp-debriefing-data2; the reconciliation table is in the report):
     ///
-    /// - the clocks: the elapsed delta (+0x19A) adds always, the round clock (+0x190) when not
+    /// - the clocks: the elapsed delta (+0x19C) adds always, the round clock (+0x190) when not
     ///   paused [M 0x184268:44-46,55,140] (the fixed tick stands in for the wall clock);
-    /// - demo/prot: `limit > 0 && limit <= clock` latches the time-up switch and enters state 6
-    ///   [M :57-60];
-    /// - scenario 0x10: the out-count — humans (class 0x12) and bots (0x11) with
-    ///   `frag_limit <= deaths`; `(total_players − 1) <= out` or `humans_out == player_count`
-    ///   enters state 1 [M :85-135] (the all-humans-out bot-marking branch needs live bot
-    ///   objects — the port's tests drive humans; noted in the doc);
-    /// - the time-up latch (`switch_channels[0xfe]`) when `time_limit != −1 && limit <= clock`
-    ///   [M :142-145];
-    /// - the high score (+0x18C) = max(team 0, team 1), then max over the 8 slot scores for FFA
-    ///   (the demo/prot branch takes both) [M :147-172];
-    /// - the frag-limit latch (`switch_channels[0xfd]`) when `frag_limit != −1 && frag_limit <=
-    ///   high` — skipped for 0x10 (lives only) [M :170-172];
-    /// - final: state 1 on the frag latch, else state 2 on the time latch [M :173-184].
+    /// - demo/prot (decomp lines 50-80): inside the gate `0.0 < limit && switch_channels[0xfe]
+    ///   clear`, `limit <= clock` enters **state 6 and does NOT latch 0xfe** [M :57-60] — the
+    ///   general 0xfe latch at :142 belongs to the OTHER branch and never runs for demo/prot;
+    /// - scenario 0x10 (decomp lines 85-135): the out-count — every obj-live slot whose deaths
+    ///   reached the lives limit counts, split by the `obj+0xff` state byte (0x12 humans vs
+    ///   0x11/0x02 bots; a 0x02 slot showing the fully-alive signature is exempt) into two
+    ///   counters that sum. The port counts `dead`-marked slots (its state-byte stand-in) — the
+    ///   exemption is unobservable (any slot with deaths ≥ 1 is `dead`), the one-per-call
+    ///   0x02→0x11 flip only lifts that same exemption, so neither is modeled (*Deviation*, the
+    ///   systems doc §1). `(total_players − 1) <= outs` or `humans_out == human_count` enters
+    ///   state 1 [M :120-123];
+    /// - the time-up latch (decomp lines 142-143, the non-demo/prot branch): `time_limit != −1
+    ///   && 0xfe clear` → `0xfe = limit <= clock` — **no `limit > 0` gate here** (that gate is
+    ///   the demo/prot state-6 arm's alone); state is NOT set;
+    /// - the high score (+0x18C) = max(team 0, team 1), then max over the 8 slot scores — always
+    ///   for demo/prot, otherwise for a non-team game [M :66-79,149-167];
+    /// - the frag latch (decomp lines 170-172) is **shared by demo/prot and the general branch**
+    ///   (only 0x10 jumps past it — its +0x19C is the lives limit): `frag_limit != −1` → `0xfd =
+    ///   frag_limit <= high` [M :168-172];
+    /// - final dispatch (LAB_00184884, decomp lines 173-184): `0xfd` set → state 1, else `0xfe`
+    ///   set → state 2, else the state stays as the scenario arms left it (a demo/prot state 6
+    ///   or a 0x10 elimination state 1 both survive when the latches are clear).
     fn check_for_end_condition(&mut self, dt: f32) {
         self.game.elapsed += dt; // [M 0x184268:44-46]
         let s = self.settings.scenario;
         if s == scenario::DEMOLITION || s == scenario::PROTECTION {
             self.game.clock += dt; // [M :55]
             if self.game.limit > 0.0 && !self.game.time_up && self.game.limit <= self.game.clock {
-                self.game.time_up = true; // switch_channels[0xfe] [M :142-145]
-                self.game.state = 6; // [M :58-60]
+                self.game.state = 6; // [M :58-60] — 0xfe is NOT written here (decomp lines 57-59)
             }
-            // the high score: max(team, team) then max over the slots [M :147-167]
-            let t0 = self.game.team_scores[0] as i32;
-            let t1 = self.game.team_scores[1] as i32;
-            self.game.high = t0.max(t1);
-            for slot in &self.game.slots {
-                self.game.high = self.game.high.max(slot.score as i32);
+            self.update_high(true); // [M :66-79]
+        } else {
+            if s == scenario::DEATH_LIMIT_FFA {
+                self.top_agent_elimination(); // [M :85-135]
             }
-            return; // LAB_00184734's branch flows to the latch tail with the same result [S]
+            self.game.clock += dt; // [M :140]
+            if self.settings.time_limit != -1 && !self.game.time_up {
+                // the 0xfe latch — no limit>0 gate (that gate is the demo/prot arm's) [M :142-143]
+                self.game.time_up = self.game.limit <= self.game.clock;
+            }
+            self.update_high(false); // [M :149-167]
         }
-        if s == scenario::DEATH_LIMIT_FFA {
-            // the out-count [M :85-135]: humans class 0x12, bots 0x11 — the port counts its
-            // `dead`-marked slots whose deaths reached the limit (the class bytes are the BLData
-            // pipeline's; *Deviation* noted in the doc)
-            let mut out = 0u32;
-            let mut humans_out = 0u32;
-            let limit = self.settings.frag_limit;
-            for (i, slot) in self.game.slots.iter().enumerate() {
-                if slot.pos.is_none() {
-                    continue; // the obj != 0 gate [M :88]
-                }
-                let human = i < 4; // humans 0..3, bots 4..7 [M atlas §2]
-                if limit <= slot.deaths {
-                    out += 1;
-                    if human {
-                        humans_out += 1;
-                    }
-                }
-            }
-            if (self.settings.total_players as u32).wrapping_sub(1) <= out
-                || humans_out == self.settings.player_count as u32
-            {
-                self.game.state = 1; // [M :103-135]
-            }
-        }
-        self.game.clock += dt; // [M :55,140]
-        if self.settings.time_limit != -1 && !self.game.time_up {
-            self.game.time_up = self.game.limit <= self.game.clock; // [M :142-145]
-        }
-        // the high score [M :147-172]
-        let t0 = self.game.team_scores[0] as i32;
-        let t1 = self.game.team_scores[1] as i32;
-        self.game.high = t0.max(t1);
-        if self.settings.team_game == 0 {
-            for slot in &self.game.slots {
-                self.game.high = self.game.high.max(slot.score as i32);
-            }
-        }
+        // the shared frag latch + final dispatch [M :168-184]: reached by demo/prot AND the
+        // general branch; 0x10 jumps past the latch (LAB_00184884 at decomp line 168).
         if s != scenario::DEATH_LIMIT_FFA && self.settings.frag_limit != -1 {
             self.game.frag_latched = self.settings.frag_limit <= self.game.high; // [M :170-172]
         }
@@ -717,6 +750,51 @@ impl MpMatch {
             self.game.state = 1; // [M :173-184]
         } else if self.game.time_up {
             self.game.state = 2;
+        }
+    }
+
+    /// The top-score scratch `MPGame+0x18C` (the port's `high`) [M 0x184268:66-79 (demo/prot),
+    /// :149-167 (others)]: the two team scores as ints, then — always for demo/prot, otherwise
+    /// only for a non-team game — every slot's score as int. (The game's float→int casts; scores
+    /// are small. 621 named it `top_score`; the merge keeps 402's single `high`.)
+    fn update_high(&mut self, demo_prot: bool) {
+        let t0 = self.game.team_scores[0] as i32;
+        let t1 = self.game.team_scores[1] as i32;
+        let mut top = t0.max(t1);
+        if demo_prot || self.settings.team_game == 0 {
+            for slot in &self.game.slots {
+                top = top.max(slot.score as i32);
+            }
+        }
+        self.game.high = top;
+    }
+
+    /// The Top Agent elimination [M 0x184268:85-135]: every obj-live slot whose deaths reached
+    /// the lives limit counts as out (the game splits the count by the `obj+0xff` state byte —
+    /// 0x12 humans / 0x11+non-alive 0x02 bots — into two counters that sum; the port's `dead`
+    /// flag, set by the death path, stands in for the byte). `(total − 1) <= outs` or all humans
+    /// out enters state 1 [M :120-123]. The game's follow-up flips one state-0x02 bot to 0x11
+    /// per call when the humans are all out [M :124-135] — it only lifts the alive-exemption
+    /// this port cannot observe, so it is not modeled (*Deviation*, the systems doc §1).
+    fn top_agent_elimination(&mut self) {
+        let limit = self.settings.frag_limit;
+        let mut outs = 0u32;
+        let mut humans_out = 0u32;
+        for (i, slot) in self.game.slots.iter().enumerate() {
+            if slot.pos.is_none() || !slot.dead {
+                continue; // the obj != 0 gate [M :91]; `dead` = the state-byte stand-in
+            }
+            if limit <= slot.deaths {
+                outs += 1;
+                if i < 4 {
+                    humans_out += 1; // the 0x12 counter — humans 0..3, bots 4..7 [M atlas §2]
+                }
+            }
+        }
+        if (self.settings.total_players as u32).wrapping_sub(1) <= outs
+            || humans_out == self.settings.human_count
+        {
+            self.game.state = 1; // [M :120-123]
         }
     }
 }
