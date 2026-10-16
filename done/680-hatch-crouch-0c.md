@@ -20,3 +20,7 @@ the hatch object's collision after it opens, and any crawl-space trigger.
 
 ---
 claimed-by: sandbox1 at 2026-10-16T08:46Z
+
+---
+## Report (done, 2026-10-16T10:11Z)
+
