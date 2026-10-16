@@ -16173,3 +16173,11 @@ docs/reports/pistol-sound-12.md.
   the spawner release on [M DroneSpawner_Control 0x137e68]. Decouple the game's way or fix the
   segment query. Keep guards_0c_live AND all of fix_finale_live green.
 - Started: branch = origin/s/guards-0c (7b3c746a) merged with origin/master; suite starting next.
+## spurious-complete-16 (2026-10-16, branch s/spurious-complete-16) — start 15:16 UTC
+
+Playtest 1013-1825 (07000016): a "mission complete" banner pops up in mission 16 for no reason and the mission still
+can't continue. Hunting what posts it (a script setting channel 100 / an objective-complete message mislabelled /
+the type-3 banner from a sub-objective / an inherited channel) [M Mission_Update, the 16 scripts' channel writes,
+the objective message types]; plan: walk 16's route headless (the 16 door/corridor tests have fixtures), log every
+mission message, fix the gate so the banner shows only on the game's real completion, test that the walk posts no
+"Mission Complete" before the end condition.

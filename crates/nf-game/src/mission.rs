@@ -216,8 +216,23 @@ impl Mission {
                 // record whose `level <= current` at the new level (07000007 stacked 07000005/06's
                 // banners; the restart re-announced them). Mark those fabricated 0s announced — the
                 // monitor's own 0→2/3 transition [M 0x1827d8:47-51], without queueing a message.
+                // spurious-complete-16: a prior-part record whose condition ALREADY holds sits
+                // COMPLETE in the game's `.data`, not announced — the earlier level's monitor
+                // folded it [M 0x1827d8:78-85]: [L ee_start_0700000a.bin @ 0x2a3f90+0x14 = 4 —
+                // 07000009's ch-0x47 record (fired in 07000009) at 0700000a's start]. Fabricating 3
+                // re-completed every carried record on the first monitor tick — N× "OBJECTIVE
+                // COMPLETE" stacked at the arrival while the mission stayed open (playtest
+                // 1013-1825's "a mission complete thing popped up for some reason"): every load
+                // without a mission snapshot (the pause-menu Restart, the driving return, boot
+                // level-select) burst. Fail records keep 2 either way: the channel-ON case is the
+                // standing hooks' / the state-2 arm's fail, which the first tick re-arms exactly
+                // like the game's own record would [M 0x1827d8:68-77, 98-117].
                 for (j, o) in l.objectives.iter().enumerate() {
-                    if self.states[i][j] == 0 { self.states[i][j] = if o.flags & 2 != 0 { 2 } else { 3 }; }
+                    if self.states[i][j] == 0 {
+                        if o.flags & 2 != 0 { self.states[i][j] = 2; continue; }
+                        let raw = ch.v.get(o.channel as usize).copied().unwrap_or(0);
+                        self.states[i][j] = if raw != 0 { 4 } else { 3 };
+                    }
                 }
                 continue;
             }
@@ -475,4 +490,38 @@ pub struct MissionSave {
     pub base_map: u32, pub order: u32, pub internal: u32, pub state: u32,
     pub fail_label: u32, pub to_end: u32,
     pub states: Vec<u32>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::triggers::Channels;
+
+    /// spurious-complete-16: the fabricator's shape matches the game's own `.data` at a
+    /// mid-mission arrival [L ee_start_0700000a.bin @ 0x2a3f78 — 07000009's rec at 0700000a's
+    /// start: the fired ch-0x47 record state 4, the unfired ch-0x46 record state 3, the fail
+    /// record state 2].
+    #[test]
+    fn prior_parts_fabricate_complete_when_their_condition_already_holds() {
+        // 07000016's cold-load shape: the carried 07000014/15 chain (the five part-0 channels ON,
+        // 0x8e still unfired — the spawn plate #252 owns it).
+        let mut ch = Channels::default();
+        for &c in &[0x47u32, 0x48, 0x4a, 0x54, 0xce] { ch.set(c, 1, 0); }
+        let mut m = Mission::new();
+        m.init(0x0700_0016, false, &mut ch, 0);
+        assert!(m.states[20].iter().all(|&s| s == 4),
+            "the carried part-0 records sit COMPLETE (the earlier level's monitor folded them [M 0x1827d8:78-85]), got {:?}", m.states[20]);
+        assert_eq!(m.states[21][0], 3, "the unfired prior record sits announced [L the snapshot's ch-0x46 record]");
+        assert_eq!(m.states[22][0], 1, "the current part waits on its enable channel");
+        assert_eq!(m.states[22][1], 1);
+        // The fail record (07000009's alarm, the 0700000a arrival's shape): announced-fail either
+        // way — the channel-ON case re-arms through the state-2 arm / the standing hooks [M
+        // 0x1827d8:68-77, 98-117], never through a fabricated complete.
+        let mut ch2 = Channels::default();
+        ch2.set(0x61, 1, 0);
+        let mut m2 = Mission::new();
+        m2.init(0x0700_000a, false, &mut ch2, 0);
+        assert_eq!(m2.states[8][0], 2, "the fail record stays announced-fail");
+        assert_eq!(m2.states[8][1], 3, "the unfired record stays announced");
+    }
 }
