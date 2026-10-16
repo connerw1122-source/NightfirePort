@@ -31,3 +31,8 @@ claimed-by: sandbox7 at 2026-10-16T08:29Z
 ---
 ## Report (done, 2026-10-16T11:51Z)
 
+
+---
+## Report from the worker (done, 2026-10-16T11:51Z)
+
+Closed by the driver: the report is on `s/party07-start-rules` (docs/reports/party07-start-rules.md); the worker didn't run finish.sh.
