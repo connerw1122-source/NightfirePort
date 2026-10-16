@@ -14969,6 +14969,36 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## party07-start-rules (2026-10-16, branch s/party07-start-rules) — start
+- Task: verify/fix 07000007 party start rules from the first frame — Bond holds fists (not gun),
+  guards not hostile until the trigger, punch on a guard = mission fail with the game's fail text,
+  no guest fires, guests react to gunfire the game's way; cold start AND the 06 -> 07 carry.
+- Evidence anchors: party script channels, weapon lock Player_Weapon 0x1a24c8:242-275, guards'
+  friendly/alert start state, punch -> fail hook, guests' drone classes.
+
+## party07-start-rules (2026-10-16, branch s/party07-start-rules) — close-out
+- Verified the 07000007 start rules end-to-end (new crates/nf-view/tests/party_start_rules_live.rs,
+  6 tests, all green): cold AND 06→07 carry — the loadout request is 1 (fists), armour 0, the P2K
+  owned-but-holstered, the spawn plate fires ch 0x47, no drone is in a combat state while Bond is
+  unarmed, every guest unarmed (ObjectIsArmed 0x178768's classes) + prop 0x1f=0 (deaf to sound
+  alerts) + prop 0x54=1 + a bound anim (no T-pose) at start; the punch on a bouncer → reason 5 →
+  ch 99 + label 0x4000033 + the "Mission Fail" banner + MissionState 2, from cold AND the carry;
+  gunfire (broad hearing radius, 8 P2K shots among the guests) panics no guest and no guest gains
+  a weapon; the spawn-plate position assert (#0 33.4,44.5,−70.6) holds on the carry.
+- THE fix: the tase fail (the last unported party fail path) — `Drone::on_tase` now runs
+  HandleImpact case 7's mission-fail arm BEFORE the accumulator [M 0x1469b8:58-68, dis
+  0x146a9c-0x146ad4]: on 07000007 tasing an UNARMED person (ObjectIsArmed 0x178768) → reason 7 →
+  label 0x4000033 + ch 99 [M 0x13e560]. Game shape kept: the taser family's own case-7 arms bypass
+  it (DSTATE_Taser 0x162b98 / DSTATE_Stunned 0x162eb0 don't call HandleImpact) while
+  DSTATE_Stunned_Recover 0x1630b8 case 7 FORWARDS to HandleImpact, so its port arm calls on_tase(d)
+  and re-runs the check. Disasm note: the doc's "bullet/impact → reason 7" was a mislabel — msg 7
+  is only the Stunner dart (0x13fff0:269-274); a real bullet (msg 8) has no fail hook in the game.
+- Docs refreshed: 07000007.md §6 + the walkthrough note (reason 2/0xb were already ported by
+  fix-party-mission/fix-actors; only 7 was missing), mission.md's SetMissionFailReason line.
+- Out of scope, noted: DSTATE_Taser/StunDartImpact ENTER set fail reasons 0xd/0xe for victims with
+  the byte +0xc5 ∈ {0x11, 0x0c} [M 00162b98 case 1 / 00163430] — a separate mechanic, not ported.
+
 ## npc-doors (2026-10-16, branch s/npc-doors) — start
 - Branch created from origin/master (6bab6409). Task: NPCs can't open doors (playtests 1012-1723,
   1013-1825; 07000001 escort Mayhew stalls, guards/guests don't path through on 07000006/07000007).
@@ -15342,6 +15372,216 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+## sg5-semi-laser — started
+- Branch s/sg5-semi-laser from origin/master (aa3bc1f5). Task: SG5 semi-auto mode should
+  light its laser sight; find the mode-dependent laser, port sim state (mode→laser, beam
+  start/end), expose a getter, test semi→on + wall hit point, full-auto→off.
+- Setup reused from prior sandbox (repo, work/, ISO, nf-queue all present). Fast suite
+  started in background on first minutes.
+
+## sg5-semi-laser — done
+- The SG5's sight laser is the weapon record's +0x68 bit 0x8 [M Player_SetWeaponAnim 0x1a9338:21-26
+  latches BLData+0x964 per completed draw; Player_LaserPointer 0x1a65d8 gates on it from
+  Player_CollisionHandler 0x1949a8:188]. Disc: semi twin 0x17 = 0x88 (bit set), full-auto 0x16 =
+  0x80 [D weapon_data 0x2bf150] — semi lights it, full-auto doesn't (playtest 1015-1738).
+- Ported: WeaponData::has_laser_sight (nf-formats), Gun::laser_on latch set at every swap commit
+  (the port's four `weapon = switch_request` sites, scene.rs), the per-tick beam in Sim::run
+  (bone-4 datum via view_datum_matrix, local +Z·100 far end, head→far `segment_surface_bullet`
+  — the bit-0x8 drop-pass query [M Collide_RayIntersect u32=8], end clamped to the hit, dot =
+  hit + normal·0.01), getter Sim::laser_sight(). MAX_VIEW_CONE = 2000.0 [L symtab 0x30d0fc].
+- Tests: weapon_live disc test (0x17 bit / 0x16 / P2K), fix_sg5_laser_live (semi → on + end on a
+  re-traced floor hit + dot math; back to full-auto → off; fresh P2K → off). Suite on the final
+  tree: 1781 passed, 6 failed (3 disc_golden = the slim-ISO expected set; 3 wgpu no-GPU sandbox
+  failures), 72 ignored. Report: docs/reports/sg5-semi-laser.md
+## casings-persist (2026-10-16, branch s/casings-persist) — start
+- Task: queue 683 — port exactly what the game does after a casing lands (rest state, lifetime, fade, the
+  32-casing pool's recycling order [M Bullet_InitCasingLists 0x12fd48, casing update/deletion, nf_game::casing]),
+  then a PC-port option "Keep shell casings: N" (0, 32, 64, 128; default = game behaviour) keeping the newest N
+  resting casings, oldest-first recycling. Deterministic, no wall-clock. Tests: fire 40 rounds → game count +
+  lifetime by default; keep=64 holds resting casings, oldest-first; sister: in-flight casings still collide and
+  bounce the same. Branch from master aa3bc1f5; suite started in background.
+
+## casings-persist (2026-10-16, branch s/casings-persist) — close-out
+- [M] correction first: the armed slot's class byte is 0x0d (`Bullet_init_casing` 0x12fde0:24) and
+  `control_funcs` 0x26f890 class 0x0d = update 0x12faa0, collide NULL — the game's casings NEVER
+  collide/bounce/rest/fade: the landing plane is a sound-only trigger parked at 0xc9742400 (−1e6)
+  after the sound [M 0x12fb88-94], the casing sinks through the floor, despawn at age > 240 → state
+  2 + undrawn + age 32767 [M 0x12fc58-94] (the tick still integrates after the despawn stores). The
+  state-1 ×0.1-gravity arm is unreachable for class 0x0d. The old [S] "the sound re-triggers every
+  tick" was wrong; the port now parks the plane exactly like the game.
+- Ported: the exact plane store + `landed` derived from it; the age-32767 store; the despawn-tick
+  integration. PC-port option `Casings::set_keep(n)` (0 = the game): n > 0 grows the pool to
+  max(32, n), rests each crossing casing on its plane (vel/spin zeroed, no integration, no despawn
+  for rests; in-flight still die at 240), the game's NextCasing order recycles oldest-first.
+  `Casings::ejected` counts slot takeovers. nf-view's casing attachment pool sizes to KEEP_MAX (128)
+  so kept casings have draw slots (default visual identical — the state-0 + mesh guards).
+- Tests: 7 unit (casing.rs — 40-round default cap+despawn, keep-64 hold + oldest-first recycle,
+  sister flight-identity with keep 0/64: bit-identical pos/vel + sound schedule until the landing);
+  1 live through step_bond (104 real rounds: default ≤ 32 + drains at 240; keep 64 fills all 64
+  slots, holds the rests past 240, the 105th round recycles slot 8). nf-game lib 240 ✓,
+  impacts_live 5 ✓, fix_shell_eject_live 2 ✓; full suite on the final tree (see the report).
+- Report: docs/reports/casings-persist.md
+## pss-vag-recheck — GAPS G-008: pss.rs / vag.rs on every movie
+
+Plan: (1) branch s/pss-vag-recheck from origin/master; (2) complete the PSS legs on
+`MOVIES/30_FPS/*.PSS` — video picture count vs the GOP walk, audio-vs-video duration at ±1 frame
+(the existing live test allows ±1 s), and every picture decoding without error; (3) the VAG/stream
+leg — every bank-referenced VAG stream decoded with sample count and loop points checked (the
+unmerged s/verify-pss-vag work is the reference; re-verified on this tree); (4) goldens: numbers
+and SHA-1s only; (5) docs/formats + close G-008.
+
+## pss-vag-recheck — GAPS G-008 closed: pss.rs / vag.rs on every movie
+
+- Branch s/pss-vag-recheck from origin/master. The slim on-foot ISO stubs all 22 `MOVIES/30_FPS/*.PSS`
+  (size 0), so the retail `007 - Nightfire (USA)` image was downloaded into the sandbox for the movie legs
+  (never committed; the repo's own .gitignore covers it).
+- The VAG half: `s/verify-pss-vag`'s unmerged golden test (`pss_vag_golden.rs` + `pss_vag.tsv`) was ported to
+  master's tree and re-verified green on the slim image (4/4, 111 s); the G-008 loop-point leg was added —
+  every looped bank sample's loop points validated (frame multiples, start < end, end = the extent) and
+  pinned per bank (`loop_sha1`, `loop_starts_sum`). `vag.rs` keeps the survey-corrected decoder attribution
+  (doc-only diff vs master).
+- The movie half: `pss_movies_g008.rs` + `golden/pss_movies_g008.tsv` (numbers/SHA-1s only) — on all 22
+  movies of the retail image the GOP walk equals the picture scan (no pictures outside a GOP), the demuxed
+  ES SHA-1s are pinned, audio kind/rate/channels + sample counts hold, audio-vs-video duration is within
+  ±1 frame for 15/20 audio-bearing movies (5 muxer-padded audio beds recorded: 0730000D −3040, 073B0048
+  −2880, 07300017 −2160, 073F0048 −1200, 073A0048 −1160 mf; 2 menu movies silent), and every picture decodes
+  without error with the all-frames YUV SHA-1 pinned per movie (~50 fps decoder; PIN_ONLY re-pin helper).
+- 5/5 g008 tests + 4/4 vag golden tests green on their images; sisters prove the goldens catch tampering.
+- Report: docs/reports/pss-vag-recheck.md (the full-suite status and what ran is in it).
+
+## grates-02b (2026-10-16, branch s/grates-02b) — start
+- Task: queue 677b — land s/grates-02 (677) without breaking the 0c vent latches: with the grates
+  branch merged, fix_level_0c_live::burning_the_four_hinges_opens_the_display_vent and
+  ::the_warehouse_vent_latch_opens_its_hatch fail; the shared ss.rs (SimpleScript) arm must be made
+  specific to what the game's evidence says differs (the grate's object class or flags vs the
+  hatch's) [M]. Branch from master, merge s/grates-02, reproduce, fix, full suite on the final tree.
+
+## grates-02b (2026-10-16, branch s/grates-02b) — the shared-arm hypothesis dissolved; the stale test re-pointed — DONE 12:15 UTC
+- Reproduced by un-reverting the held merge (master's 366f5d49 revert; `git revert` of the revert on
+  s/grates-02b): fix_level_0c_live's two vent tests fail exactly as reported; fix_ss_grate_live and
+  the re-pointed 0c files pass.
+- [M] the brief's premise tested and rejected: SS_Update 0x1a9948 / SS_Operate 0x1a9df8 / SS_Create
+  0x1a9c58 have NO per-class or per-flags grate-vs-hatch arm (the only class reads are SS_Operate's
+  presence bits vs the CONTACT chain's classes 2/3/5). The objects differ only in disc data [D probe
+  over FILES.BIN: display pair state 0x40 p1=1 mask 1 ch 18; warehouse pair state 0x40 p1=0 mask 1
+  ch 84; 02 grates state 0x40 mask 0x4/0x1 ch 0/1/2] — all mapped faithfully by the merged ss.rs
+  (the hatches channel-driven via the fallback, the ch-0 grates not, exactly as the game's == 0
+  short-circuit says).
+- The real break: fix_level_0c_live asserted the OLD channel-seek model's parked playhead
+  (t == last key). The game wraps the playhead to 0 past the last key [M 0x1a9948:119-128] — p1=1
+  disarms (hold the end pose), p1=0 re-arms (the sweep re-runs while ch 84 stays latched [M
+  0x1ae3d8:194]). The 677 merge re-pointed its own 0c files but missed this older one.
+- Fix (test-only): the two tests now assert the reached-last-key tick, the wrap (t rests 0 + the
+  held end pose for the display pair; the playhead back below last for the warehouse pair), the
+  ray-through-the-opening and the mux asserts unchanged. 4/4 fix_level_0c_live, 4/4 fix_ss_grate_live,
+  fix_0c_hatch_live + fix_0c_vent2_live green.
+- Report: docs/reports/grates-02b.md (live check: the warehouse pair's re-sweep in PCSX2).
+## guard-drops-flashbang (2026-10-16, branch s/guard-drops-flashbang) — start
+Task 681: guards drop exactly the game's drops on death; the stun/flash grenade (0x35) stuns and
+never kills. Plan: read DroneWeap_DropWeapon + the death pickup-create path + the stun explode arm;
+write the 5-guard drop-list test, the 3-guard flashbang no-damage test, and the sisters (frag
+kills, empty-handed guard drops nothing); fix any mismatch against the decompile.
+
+## guard-drops-flashbang (2026-10-16, branch s/guard-drops-flashbang) — DONE 10:50 UTC
+The playtest's two symptoms on 07000005. (1) Drops: the port's per-death drop was already the
+game's ONE object (`DroneWeap_DropWeapon` 0x17a2a0 — held gun, `base · (0.25|0.5 + FRand(0.5))`
+rounds, weapon byte cleared; the fists record 1 carries model 0 so a disarmed guard drops nothing
+on death; the captain grenade drop `DroneFunc_OnInitDeath` 0x145bd0 needs `Drone+0x19`, and
+07000005's 16 guards are all kind 2 with props 9/5 clear — no captains, no grenade drops at
+difficulties 1-2). Locked by the 5-guard drop-list test (placements 3/5/7/9/66, skins
+0x2e/0x2f/0x30, SG5 + sniper): exactly one pickup, the right base id, the rounds bands [7..=22] /
+[2..=7]. (2) The flashbang: the fuse death already took the `& 0x2000` flash branch with NO
+damage — but the stun loop skipped disabled guards and stunned through walls. Port fixes [M]:
+the broadcast now rides the state machine — msg 0x18 (`DroneFunc_HandleImpact` case 0x18
+0x1469b8:250-313) delivered by `Drone_MessageObjVicinity` 0x13a438's rule (class 2 within 20.0
+`0x41a00000` + `NDrone2_CanSeeObject` head→blast LOS 0x176f18, no enabled gate — WaitSwitch drops
+it [M 0x15b960 `return 0`] and the SM's GLOBAL fallback still lands case 0x18); the drop +
+ChangeWeapon(1) moved into the StunGrenadeImpact ENTER (its own case 1 [M 0x172bb0:15-18]); the
+flashed waiter re-enables [S — the game's re-enable path unpinned, live check in the report].
+Tests: crates/nf-game/tests/guard_drops_flashbang_live.rs (4) — flash among 3 guards: no health
+loss, stun family, disarm, no explosion record; sisters: frag kills (incl. the yard's pl 303 in
+radius), the stunned fists-holding yard killed by a frag adds NO pickups; recovery holds (3600).
+Ran: nf-game full 446/446 (50 bins), nf-view grenade suites 15/15, suite.py on the pre-fix tree
+1779 passed / 6 failed (3 disc_golden allowed + 3 pylon render = the main agent's GPU) / 72
+ignored; the fresh suite.py run on this final tree is suite_final.out.
+## head-track (2026-10-16, s/head-track)
+
+Task: guards' heads turn the wrong direction/angle (playtests 1013-1758, 1015-0046). Port and
+verify the head/neck tracking: target choice, yaw/pitch limits and rates, the bone(s) driven and
+the composition order with the body animation [M drone update / AnimProcess head-track code,
+limit constants]. Plan: reproduce through the real input path headless, assert the head bone's
+world yaw/pitch for 3 guard poses (Bond left/right/above) against values computed from the game's
+formula, check the limits clamp, report any convention flip. Work starts now; status: setup done,
+branch pushed.
+
+## head-track (2026-10-16, s/head-track) — the verification round
+
+Task: playtests 1013-1758/1015-0046 heads "turning the wrong direction, wrong angle". Setup done;
+branch pushed. Delivered `crates/nf-view/tests/head_track_trace_live.rs`: a frame-stepped headless
+trace (real `Sim::step_bond` path, 07000007) asserting EVERY tick's stored head yaw/pitch against
+the game's formula transcribed independently in the test: `Ang_RotateToBearing` 0x1e0f10 (wrap
+both to [0,2π), diff to [−π,π], step cur+clamped·rate, snap 1e-4), rates 0.07/0.14 (alert>0.66,
+`NDrone2_DoHeadTracking` 0x1472c8 disasm), the 3.0 range gate (SetHeadTracking 0x1c6748's
+0x40400000²=9.0; HeadTrack 0x1bf618:191 skips both blocks beyond → wants 0), the clamps (yaw
+±1.1, |yaw|>2.6→0, pitch [−1.0,+0.6] game-positive-down = port [−0.6,+1.0] positive-up). The
+measure sub-steps re-verified against the DISASSEMBLY this session: neck = Vec_UnitVector(out,
+bone2pos, headpos) = unit(head−bone2) [0x1bf728 jal 0x1e2d28, args 0x1bf6e8/0x1bf714/0x1bf72c],
+side = Vec_CrossNormalise(neck, head row2) = unit(neck×fwd) [0x1bf738 jal 0x1e3078 — helper body:
+cross(param1,param2)→param3], yaw sign via ScalarTriple(fwd,to,neck) [0x1bfa48], pitch via the
+side triple, the per-plane 0.25 gates + the pitch behind-skip + the one-plane coupling, the +0x96
+freeze (Rand(15)+6 frames at track start, SetHeadTracking arg5) — all match the port's
+head_track_want. Result: side-b 90/90 tracked ticks follow the formula (tol 4e-3 = the want
+measured one anim-tick earlier), yaw eases 0→1.099 (the ±1.1 clamp), fwd→bond 1.3→0.33 rad
+(TOWARD Bond — no direction flip), upright ≥0.988 (no roll); the ease-back beyond the gate → 0.
+No port code change needed. Findings: (1) the game's RotateToBearing returns [0,2π) while the
+port stores the signed equivalent (mod-2π equal — pose uses sin/cos; documented in the test);
+(2) the port lacks the game's +0x96 start freeze (Rand(15)+6 frames) AND its Rand(15) draw at
+every (re)target — an RNG-stream divergence vs the game, left untouched (any draw lands in the
+shared stream and re-pins seeds per the 0072 procedure); (3) the port's aim/stop branches ease at
+a fixed 0.07 where the game uses the alert-aware stored rate (0.14 alerted, +0x70 patched by
+DoHeadTracking's stop path) — minor, unported; (4) the composition (q_yaw⊗q_pitch premultiplied,
+rotation rows only) is 101c/fix-heads-07's, NOT independently re-derived — the inline VU multiply
+order in 0x1bf618 (16 ops, 0x1bfc1c..0x1bfc58 + the bone-quat group) resisted this session's
+decode; the game's formula the test pins covers measure+ease+gates+clamps. Suite (background,
+base tree): 1779 passed / 6 failed / 72 ignored — the 3 disc_golden documented; probe_pylon_render
++ 2 fix_0c_pylon_live fail on master's code (pre-existing, this task added no lib code). Report:
+docs/reports/head-track.md (live checks: the balcony above-pose PCSX2 compare, the VU multiply
+order watch, the pylon failures).
+## cutscene-walk-stutter (2026-10-16, branch s/cutscene-walk-stutter) — start
+Task 686: the 07000007 Kimiko cut-scene's walking guest (the red dress) stutters on her walk
+toward the other two (playtest 1015-1738). Plan: headless run of that scene, tracing the walking
+actor's root position + pose frame per tick; find the discontinuity (Script_GetInterp 0x1da158 key
+step, a frame repeat/skip in the anim playback, or a root-motion double application); fix the sim
+side to the game's evidence; assert a monotone root with bounded per-tick deltas over the whole
+walk; sister = a deliberately doubled frame trips the check.
+
+## cutscene-walk-stutter (2026-10-16, branch s/cutscene-walk-stutter) — DONE 12:00 UTC
+The 07000007 Kimiko scene's walking guest (playtest 1015-1738: "the one in the red dress,
+stuttered a little bit while she was walking towards the other two"). Headless trace through the
+real trigger path (Bond into TouchOnce #412 → SP #420's scene script 0x06000073 → the guests' pack
+anim scripts): the red-dress walker = the Anim object of skin 0x0500003b playing 0x060004f1 (body
+sequence 0x04000332, the world-space root that carries the actor). Findings [M, every link checked
+in the decomp]: the frame advances EXACTLY 1/tick (Script_Update 0x1da998 advances every stream
+clock by FRAME_RATE_MUL; Script_Interp case 2 0x1d9a08:157-166 writes clock−start_clock+start_frame
+clamped [1, len] and zeroes the advance; AnimScriptTick 0x1c2630's advance is skipped on the
+AnimSeqSet 0x1c7460 start bit 0x20000000, which is never cleared; AnimSeqTick 0x1c28d0:62-63 maps
+anim time → sequence frame 1:1 — no frame-rate multiplier, no window hand-off mid-walk — both
+op-0 windows of 060004f1 run [1..0x10e6/7] from frame 1); and the root shows exactly THREE one-tick
+jumps (seq frames 936/2735/3966, |Δ| 0.279/0.371/0.880 against the walk's 0.005-0.027 steps) —
+each a 1-2-frame LINEAR bridging segment IN THE DISC'S OWN ROOT POLYNOMIALS of 04000332 (dumped:
+seg49 [935..936] slope −0.227/frame, C0-continuous with seg48/seg50 at both ends; likewise 2735 and
+3966), isolated lunges from a standstill inside the walk. The game samples the same integer frames
+of the same polynomials (AnimFrameCopy 0x1c5668's segment walk = the port's Sequence::value,
+bit-exact per WORKLOG 0017), so the jumps are the disc data playing — NO sim-side fix without
+deviating from the game. The lock: crates/nf-view/tests/cutscene_walk_stutter_live.rs — the
+whole-scene trace asserts 1 frame/tick and no root delta beyond 0.05 unless it is exactly one of
+the disc's three slides (all three verified present); the sister feeds a doubled frame (frame
+repeat) and a non-disc jump and trips the checker; a disc slide passes. No lib code changed. The
+render side has no interpolation of its own to report: the view poses the character at the sim's
+integer frame (script_anim → script_pose_together), and the game's AnimFrameSet fractional blend is
+a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
+three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
+must be faded/off those actors when it plays.
 
 ## cross-process-determinism (2026-10-16, branch s/cross-process-determinism) — start
 - Branch created from origin/master (e416e5f0). Task: the sim must give the same result in every

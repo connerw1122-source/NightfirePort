@@ -137,8 +137,11 @@ straight-line stand-ins).
   `pause_objectives_sel`/`pause_hint` FrontEnd state and the ✕ flow — docs/systems/objective-hints.md);
   the DRAWING of the ✕ hint box is the main agent's.
 - The fail/death 0x40000042 menu is a level restart; the red death fade is not drawn.
-- `DroneFunc_SetMissionFailReason` (0x13e560) is not wired to the drone paths that call it (the punch/
-  alarm reasons) — the channels 0x60/0x61 hooks are.
+- ~~`DroneFunc_SetMissionFailReason` (0x13e560) is not wired to the drone paths that call it~~ → wired
+  (fix-party-mission: the punch reasons 5/6 `punch_impact`, the death reasons `on_init_death`, the
+  PartyGirl 0xb; party07-start-rules: the tase reason 7 in `Drone::on_tase`, 0x1469b8:58-68 — the
+  taser family's own case-7 arms bypass it, and Stunned_Recover's forwarded case 7 re-runs it). The
+  channels 0x60/0x61 hooks are, and `mission_fail_reason` mirrors 0x13e560's label/channel switch.
 - A cold load of a mid-mission level leaves previous parts' objectives at their `.data` states (the
   game's saves carry them via LS_MakeMission — `MissionSave` is the port's hook for 210-fix-progress).
 - Ch-0 conditions read the raw `switch_channels[0]` (the game has no zero guard [M 0x1827d8:33-37]);
