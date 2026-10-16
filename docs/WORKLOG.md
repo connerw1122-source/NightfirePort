@@ -16227,3 +16227,11 @@ fix_cutscenes_live 4/4, fix_cutscenes2_live 5/5, fix_kimiko_handback_live 1/1,
 models_characters_live 6/6, fix_party_mission_live 9/9, scenario_live 6/6. The pre-change
 full-suite run `1864 passed, 6 failed, 72 ignored (50 min)` (the 3 allowed disc_golden + the 3
 pre-existing pylon render probes); the final-tree fast-runner suite started 16:41 UTC.
+
+## uncited-gameplay-audit (710)
+- started 2026-10-16 17:50 UTC, branch s/uncited-gameplay-audit cut from master c10b530f.
+- Goal: audit the uncited ACTION.ELF gameplay groups (NDrone2 states, Script_*, camera_*,
+  C_NIS_Handler, MP objective helpers, BOTSTATE/BOTWEAP, Radio_*, Creature_*, TextBox_Update,
+  AINetwork helpers): (a) retail reachability, (b) port equivalents found and cited so the
+  coverage counts them, (c) missing behaviour. Deliverable docs/systems/uncited-audit.md ranked
+  by player impact, with ready-to-queue task descriptions for the top 10 gaps.
