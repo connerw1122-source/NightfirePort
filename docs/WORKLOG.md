@@ -14462,3 +14462,11 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+## npc-doors (2026-10-16, branch s/npc-doors) — start
+- Branch created from origin/master (6bab6409). Task: NPCs can't open doors (playtests 1012-1723,
+  1013-1825; 07000001 escort Mayhew stalls, guards/guests don't path through on 07000006/07000007).
+  Plan: port the drone side of door use from the NDrone route/door code — how a route reaches a door,
+  the Door_Activate call, wait-for-open, locked/scripted refusal — then tests: Mayhew's escort route
+  through its door, a 07000006 guard chasing Bond through a closed door, a locked door refusing drones,
+  and sister assertions that a closed door still blocks a drone that doesn't open it.
