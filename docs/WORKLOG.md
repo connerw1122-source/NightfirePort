@@ -16227,3 +16227,14 @@ fix_cutscenes_live 4/4, fix_cutscenes2_live 5/5, fix_kimiko_handback_live 1/1,
 models_characters_live 6/6, fix_party_mission_live 9/9, scenario_live 6/6. The pre-change
 full-suite run `1864 passed, 6 failed, 72 ignored (50 min)` (the 3 allowed disc_golden + the 3
 pre-existing pylon render probes); the final-tree fast-runner suite started 16:41 UTC.
+
+options-persist-roundtrip (started 17:44 UTC): task 708 — prove 651 (settings-persist) end to end
+through the real input path. Plan: (1) branch s/options-persist-roundtrip from origin/master
+(e05a8370); (2) map the config file code from 651 and the FrontEnd options pages (Advanced /
+Multiplayer / AV): the Left/Right row change path, Confirm, and Back (throw away); (3) tests: a
+full roundtrip — change every Advanced / Multiplayer / AV row through Left/Right + Confirm, drop
+the FrontEnd, a fresh FrontEnd on the same NF_CONFIG_DIR temp dir shows the same values; the AV
+volume rows reach the sound layer's volumes at boot; Back discards edits (file unchanged); unknown
+keys and out-of-range values tolerated (clamped); (4) fix whatever the roundtrip exposes, each fix
+citing the game address; (5) run the crates the tests touch, then the full fast suite (background
+start per the task message), report.
