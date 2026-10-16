@@ -14104,3 +14104,15 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
 - Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
   (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
   attract page draws the movie fullscreen over black, no controls, no plate.
+
+## menu-audio-leaks (2026-10-16, branch s/menu-audio-leaks)
+- Branch created from origin/master (306c5d93). Task: the playtest audio leaks — the menu music under the
+  EA logo movie / during pause / after leaving the pause menu (results id 1015-1738), plus the "old menu
+  with no background" after the intro ends.
+- Plan: (1) stop the looping page-backdrop movie (0x07350048/0x07330048) when no front-end page wants it
+  (App::movie_tick's early return when self.fe is None); (2) the 0x1d7/0x470 front-end menu MUSIC pair —
+  port every SFXRemove(0,id) site [M the twelve handlers' msg-0x4c, P_ATTRACT_Handler 0x20a1f0, the
+  front-end exit] and carry the removal through the driver (a remove event beside drain_sfx), building on
+  625's attract code; (3) sweep for every other survival path (intro pair vs backdrop, level music vs
+  front-end map); (4) reproduce the intro-end "old menu" headless and fix from the game's flow [M].
+  Headless flow tests per case, NF_SILENT.
