@@ -15633,3 +15633,36 @@ must be faded/off those actors when it plays.
   escort_follow_07000001_live green.
 - Branch s/escort-01b = origin/s/escort-01 (f499138d) merged with origin/master (22be196b);
   the WORKLOG conflict resolved append-only (both sides' entries kept in order).
+
+## escort-01b (2026-10-16, work entry)
+- The merge failure root-caused — it is NOT the door: the port's door-activation sites all match
+  the game (the drone's `NDrone2_OpenDoor` 0x14aa38 gate `door+0xF4 & 0x12` = CLOSED|CLOSING only,
+  a door already OPENING is never re-activated [M]; `DSTATE_OpenDoor` 0x1681f8 case 3 exits on
+  `NDrone2_DoorIsOpen` 0x14aaa0 state == 4; timer C case 0xc re-arms at +2). The stale assert
+  message hid the real failure: the escort never REACHED the door. The ailog repro (fix_mission):
+  ONE `LeadWait (path -9.1)` entry, then parked in 0x20 for the rest of the 5000 ticks — the
+  game's own bands are route-arc based (`ObjectMissionPathDistance` 0x153f50 → SM+0x20; enter
+  < −9.0 [M 0x15e698 case 3], resume > −7.0 [M 0x15eda8 case 3]) and the tests' Bond teleported
+  3.9 STRAIGHT-LINE behind, which on the folded courtyard route is 9.1 ARC — a lag the game's
+  real walking player never holds. escort_follow (walking Bond) and walkreal were green on the
+  same tree, which localizes it to the two teleport-Bond harnesses.
+- Fixed the two harnesses, no sim changes: Bond now rides the ROUTE polyline 3.9 arc-units behind
+  the lead (his nearest route node tracks the chain; parked at his node the 5.0 scan [M 0x153f50]
+  makes the lead's own node the nearest → path 0.0 → the game's own resume fires), plus a walk-
+  past arm for a lead stuck in the PlayerInWay stay band at the courtyard hairpin (the 3.9 arc is
+  ~2.5 straight-line across the fold — inside the π/3 × 3.5 stay cone [M 0x15ea28 case 3]; Bond
+  rides 4.2 AHEAD once the park holds, the game's player walking past his halted guide). npc_doors
+  also: guard clearing gated on the cower (LEAD_HIDE) — clearing at a PlayerInWay park burned
+  ~360k ticks on the unenabled WAIT_SWITCH pair — the cower-sway no longer resets the stall watch,
+  the recovery kills (resupply + retry, the escort_follow pattern), and the tick cap 60k→240k (the
+  recovery's kill loops run inside the budget check's blind spot). fix_mission also: the stale
+  `at_plate` 2.0-ball proxy dropped (the walking lead stops 3.6 from the touch centre while the
+  game's REAL condition — the AND plate touch, ch 0x10, both bodies — already fired);
+  `level_exit == Some(0x07000002)` was already asserted.
+- Probe evidence (fix_mission, pre-at_plate-fix): the escort enters 0x81 at t≈1348, the shoji
+  reaches 0x4 (OPEN, pos01 1.00) at t≈1378, auto-closes 0x10→0x2 at t≈1738 (= opened + 360
+  [M AUTO_CLOSE]), the escort leads the whole loop to the plate, ch 0x10 fires, level_exit breaks
+  the loop at t≈2900+. npc_doors: 0x81 at +173888 with hit_door bound, OPEN at +173895, crossed at
+  +173949 — all with NO use key.
+- Ran on the final tree: fix_mission_live 4/4, npc_doors_live 7/7, escort_follow_07000001_live
+  1/1, walkreal_07000001_live 2/2 — all green (nf-view only; no sim code changed).
