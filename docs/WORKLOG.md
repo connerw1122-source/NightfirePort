@@ -16712,3 +16712,19 @@ suite.
   Plan: read the uncited-audit entry (task 710) first, port msg 0x22 from the decompile [M],
   add a fail-first test on 07000005 plus a sister, run touched crates + the suite.
   Branch created from origin/master f09f3c6c.
+- civilian-mission-wait (task 735, 2026-10-16, branch s/civilian-mission-wait): ported the mission
+  civilian's wait — CivilianMission msg 0x22 → CivilianMissionWait 0x17 [M 0x15d860:130-136 →
+  SetState(0x17); the voice-0x13 carve-out], the Wait state itself [M 0x15dbb0 = StateFuncs[0x17]
+  [L 0x29b300]]: ENTER (vision flag, stand idle at alert < 0.66 else look-around 0x21, timer C armed
+  2 s [M :29], +0xCD8 = 0xff), UPDATE (no armed person → BondTalk + hold, the BondTalk call unported
+  like the siblings'; armed near → sighted + voice-0x10 team-1 Attack / CivilianScared [M :39-67]),
+  TIMER_C (Bond within 3.0 AND the 0.525 rad cone → re-arm 2 s, else resume 0x16 [M :87-111;
+  BondWithinAngle 0x154f98]) and msg 0x22 re-arm [M :136-141]; impact_args/on_punch get the Wait
+  resume (ATTACK, false) [M case 6/8 → HandleImpact(0x56, 0)], the shout-scare civilian list gained
+  0x17, and the pre-dispatch already gives the state's msg-0x21 the ATTACK resume [M :132-135].
+  Sender evidence: NO literal msg-0x22 send exists in ACTION.ELF — every Drone_SM_SendMsgSelf /
+  SendMsg / BroadcastMsg / Drone_Message call site disassembled (25 sites + the tail-call and
+  li-0x22 scans); the id is data-driven (07000005's placements carry wait channel 0x22 and trigger
+  305/mux 25 raise it [D docs/systems/triggers.md] — the same number the DSTATE switch sees).
+  Tests (nf-view/civilian_mission_wait_live.rs, 07000007's kind-8 guests, raw ids so they fail on
+  master): pause+freeze+resume through the real Drone::send path, and the Bond-hold/re-arm sister.
