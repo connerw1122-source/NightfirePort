@@ -13,6 +13,17 @@
 use nf_view::menu::{Action, CardMsg, FrontEnd, Outcome, Page, Stats};
 
 /// A scratch card dir per test.
+/// 619b unlock-popups (merged beside this task): with a NEW reward standing the results routing
+/// hops to the 007 Bonus page 0x40000038 first [M 0x208e78:48-53]; its own Confirm lands on the
+/// mission list [M 0x209670:50-53]. A first completion earns a medal, so the hop happens here.
+fn through_bonus(fe: &mut FrontEnd, progress: &nf_game::progress::Progress) {
+    if fe.page == Page::NfBonus {
+        assert!(fe.new_reward, "the hop only happens on a new reward [M 0x1ffa10:78]");
+        fe.bonus_enter(progress, fe.results_level, fe.new_reward);
+        assert!(fe.action(Action::Confirm), "the bonus page's Confirm [M 0x209670:50-53]");
+    }
+}
+
 fn card_dir(tag: &str) -> std::path::PathBuf {
     let d = std::env::temp_dir().join(format!("nf-card-{}-{}", tag, std::process::id()));
     let _ = std::fs::remove_dir_all(&d);
@@ -151,6 +162,7 @@ fn the_results_commit_writes_once_with_the_synced_contents() {
     fe.tick();
     assert_eq!(fe.card.ops_done, 2, "the trigger wrote once more");
     assert_eq!(fe.card_message(), None, "the box closed on completion [M 0x217bd8:62-71]");
+    through_bonus(&mut fe, &progress);
     assert_eq!(fe.page, Page::MissionSelect, "the results route on [M 0x208e78:203-211]");
     // The written file carries the profile's progress + the unlock mirror [M save_profile's
     // nightfire-status write; the game's own chain is the same six blocks + CRC].
@@ -181,6 +193,7 @@ fn the_results_no_answer_never_writes() {
     assert!(fe.results_box, "the prompt stands");
     assert!(fe.action(Action::Back), "Back is the box's NO [M the msg-0x50 arm]");
     assert_eq!(fe.card.ops_done, 1, "only the create wrote");
+    through_bonus(&mut fe, &progress);
     assert_eq!(fe.page, Page::MissionSelect, "the routing ran without a save [M :203-211]");
     assert!(fe.results_save_answer_no, "the No answer recorded [M the re-ask gate :196]");
 
@@ -267,6 +280,7 @@ fn the_enumeration_and_the_defaults_never_write() {
     assert!(fe.results_enter(&mut progress, 0x0700_0005, 6, 2, None));
     assert!(fe.action(Action::Confirm));
     assert!(!fe.results_box, "no prompt without a saved codename [M DAT_002e1ae0 > 1]");
+    through_bonus(&mut fe, &progress);
     assert_eq!(fe.page, Page::MissionSelect);
     assert_eq!(fe.card.ops_done, ops, "sister: the Default path never writes");
     let _ = std::fs::remove_dir_all(&dir);
