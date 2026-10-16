@@ -2562,6 +2562,18 @@ impl FrontEnd {
         }).collect()
     }
 
+    /// The load's own `MenuManager_Create` re-opens the queued page [M ResetMap_Load 0x1d6360:160-163
+    /// — `MenuManager_Create(GameState._32_4_, GameState._28_4_, …)` runs at the load's tail]: the
+    /// host calls this when a front-end-map load finishes (the quit arms' 0x4000001c lands on the
+    /// mission list, not the placeholder page it left up during the load). Returns whether the page
+    /// changed. pause-results-flows.
+    pub fn reopen_queued_page(&mut self) -> bool {
+        match Page::from_id(self.flow.page) {
+            Some(p) if self.page != p => { self.enter_page(p); self.cursor = 0; true }
+            _ => false,
+        }
+    }
+
     /// One menu tick: advance the flow machine, run the page's own timers [M the 0x4c/0x50 messages].
     pub fn tick(&mut self) {
         self.flow.main_tick();

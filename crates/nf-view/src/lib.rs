@@ -1747,8 +1747,9 @@ struct LevelLoad {
 /// 07000001 → 07000002 (PS2LSActive 2 → 0, measured in PCSX2 2026-10-15) — long enough to read
 /// the objective and the hint while the dots sweep (183.5 ms a step, the port's 11-vblank cadence
 /// exactly). The port builds a level in 1-2 s, so the screen flashed by (playtest 1015-2142); the
-/// user chose to hold it a few seconds [S — a PC-port choice, not the game's timing].
-const LOADING_HOLD: f64 = 5.0;
+/// user chose to hold it a few seconds [S — a PC-port choice, not the game's timing]. Pub for the
+/// flow tests (pause-results-flows): the headless suite pins the 5 s = 300-tick window.
+pub const LOADING_HOLD: f64 = 5.0;
 
 /// microcam-wheel-zoom: where a wheel notch goes. While the aim (right) button is held on a weapon
 /// that can zoom — the game's own scope flag +0x68 & 0x40 with a magnification above 1 [M
@@ -2099,6 +2100,10 @@ impl App {
                         if let Some(s) = self.sound.as_mut() { s.driver.set_primary(if hash == 0x38 { 1 } else { 0 }); }
                     }
                     self.fe_music_page = None; // the manager re-create re-runs the page's 0x4c [M 0x21b908:127]
+                    // The load's own MenuManager_Create re-opens the queued page [M 0x1d6360:160-163]:
+                    // the quit arms' 0x4000001c lands on the mission list, not the placeholder page
+                    // they left up during the load (pause-results-flows).
+                    if let Some(fe) = self.fe.as_mut() { fe.reopen_queued_page(); }
                 }
                 eprintln!("level: loaded {name} (loading screen {:.1} s)", load.job.elapsed_ticks() as f64 / 60.0);
             }
@@ -2909,6 +2914,11 @@ impl ApplicationHandler for App {
                                 // went through the mission list, so pick the row from the mission itself (row 0
                                 // is the driving Paris Prelude 0x09000001, which the old default reloaded).
                                 if let Some(i) = menu::CAMPAIGN.iter().position(|c| c.3 == base) { fe.mission = i; }
+                                // The GameState rides the runner state while a mission plays [M
+                                // GameFlow_Main 0x1c98c8 case 2 — the game's stack sits on 2 under
+                                // Mission_Update], so the pause arms' ResetMap_LevelToLoad accepts
+                                // (its state gate 0x1d3800:11-17 wants {2,7,8,0xd,0xe}).
+                                fe.flow.stack = vec![menu::ST_RUNNER];
                                 fe.open_pause();
                             }
                         } else { el.exit() }

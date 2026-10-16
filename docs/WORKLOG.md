@@ -14976,3 +14976,34 @@ menu-audio-state (2026-10-16)
   tests/menu_audio_flows.rs: 9 action-driven flows with the per-frame invariants (<=1 audible
   source, none during gameplay, never jingles + credits track). Report:
   docs/reports/menu-audio-state.md (live checks 1-6).
+## pause-results-flows (2026-10-16, branch s/pause-results-flows) — start
+- Task: queue 674 — the in-mission menus end to end (pause page: Esc open, all tabs, Continue/Restart/Quit
+  with YES/NO; fail menu on death; mission complete -> results -> NfBonus/MissionSelect), driven ONLY through
+  action()/mouse_*/tick and host glue on a live 07000005 scene (NF_ISO). Assert page+request at each step,
+  sim paused while a menu is up, Restart restores full health + entry checkpoint, Quit returns to a working
+  front end, repeated presses during transitions don't double-fire, and the 5 s LOADING_HOLD eats input during
+  loads. Branch from master ad761677; suite started in background.
+
+## pause-results-flows (2026-10-16, branch s/pause-results-flows) — close-out
+- Nine headless end-to-end tests on live scenes (pause_results_flows_live.rs): Esc pause open +
+  sim frozen + resume, the four tabs (Left/Right/Tab, live OBJECTIVES rows on 07000007 — 05's first
+  objective waits for its enable channel [M 0x1827d8:41-54]), Continue, Restart YES/NO → cold
+  BaseMap full-health reload [M 0x204408:134-141, 0x1910f8:128-138], Quit YES → the front end with
+  a working mission list [M 0x204408:142-149], the fail menu on a real death → warm entry-checkpoint
+  restart via fail_restart_save [M 0x216618:19-21, 0x1957a8] and the quit row, mission complete →
+  results → NfBonus/MissionSelect [M 0x182c60:85-122, 0x208e78, 0x209670], the 5 s LOADING_HOLD pin
+  + the take-once/double-press guards. All host glue mirrored with lib.rs line cites; no page/cursor
+  assignments anywhere.
+- Fixes: (1) the quit's queued page re-opens after the front-end load — FrontEnd::reopen_queued_page
+  called by the host swap branch [M 0x1d6360:160-163]; a model-path edge was tried and REVERTED (it
+  perturbed the boot flow, menus_e2e 0/5). (2) The Esc arm rides ST_RUNNER [M 0x1c98c8 case 2,
+  0x1d3800:11-17]. (3) LOADING_HOLD pub. A fail-rows guard was also reverted after
+  menus_flow's results test showed it refused the first row press (the arm's queued request stands
+  at page-open; the game's one-press rule rides the arm's page move [M 0x216618:26]).
+- Verified: pause_results_flows_live 9/9, menus_e2e 5/5, menus_flow 42/42, front_end_chain_live 2/2,
+  fix_restart_target_live 2/2. The background fast runner was reaped by the sandbox three times
+  (known here) — no full-suite total; the report lists the per-crate runs and a chunked-run plan.
+- Findings for later: the sim-side fail menu keeps the drones ticking where the game freezes the
+  pump [M 0x182c60:78 + 0x1c9790:30-35]; results stats are Stats::default (host gap); Esc during a
+  cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
+  (live checks 1-3).
