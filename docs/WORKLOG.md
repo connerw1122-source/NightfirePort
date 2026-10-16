@@ -16493,3 +16493,15 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
 - Plan: (1) trace dispatch + all entry sites [M]; (2) trace the heard-sound-below-alert-threshold path the game
   actually takes; (3) compare with nf-game master on 07000005; pin with tests (guard investigates origin + returns;
   sister hears nothing stays put).
+- Investigate audit done: DSTATE_Investigate 0x7E (0x168070) is reachable ONLY under the Blind Drones cheat —
+  the sole entry in all of ACTION.ELF is CombatOutOfRange 0x164690:30 storing 0x7e to +0x5a2, gated on
+  switch_BLIND_DRONES (written only by the cheat handler C_CHCHBLIND 0x215d60:9); no SetState(0x7e) literal
+  anywhere. The task-710 audit's "no +0x5A2 store" is wrong on that one point (corrected here); its conclusion
+  (dead in normal play) stands. The game's below-threshold sound path is the HeardNoise family 0xa2-0xa5, all
+  already ported on master (drone.rs:4003-4087).
+- Pinning test added: ai_live::two_sounds_send_the_idle_guard_to_investigate_and_back_to_his_post (Level05,
+  guard 9, seed 1): sound share 0.27 → HeardNoise→Aware f101 (no Attack — AlertSound 0x177800); louder sound
+  (0.48 > 0.1) while drawn → Suspect+AlertToPosition f109 [0x16af20:67-75, 0x16b0e0:28-40]; walks 12 units to
+  the origin, SearchArea f535 (span 265 >= the game's 180 [0x165bf0:25]); GoToGoal home f800; Idle back at his
+  post f889, alert 0.000. Sisters: guard 8 (62 units away) stays Idle at his exact post; WaitSwitch waiter 302
+  never moves. ai_live 36/36 green.
