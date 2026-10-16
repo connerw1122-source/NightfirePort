@@ -15428,3 +15428,46 @@ radius), the stunned fists-holding yard killed by a frag adds NO pickups; recove
 Ran: nf-game full 446/446 (50 bins), nf-view grenade suites 15/15, suite.py on the pre-fix tree
 1779 passed / 6 failed (3 disc_golden allowed + 3 pylon render = the main agent's GPU) / 72
 ignored; the fresh suite.py run on this final tree is suite_final.out.
+## head-track (2026-10-16, s/head-track)
+
+Task: guards' heads turn the wrong direction/angle (playtests 1013-1758, 1015-0046). Port and
+verify the head/neck tracking: target choice, yaw/pitch limits and rates, the bone(s) driven and
+the composition order with the body animation [M drone update / AnimProcess head-track code,
+limit constants]. Plan: reproduce through the real input path headless, assert the head bone's
+world yaw/pitch for 3 guard poses (Bond left/right/above) against values computed from the game's
+formula, check the limits clamp, report any convention flip. Work starts now; status: setup done,
+branch pushed.
+
+## head-track (2026-10-16, s/head-track) — the verification round
+
+Task: playtests 1013-1758/1015-0046 heads "turning the wrong direction, wrong angle". Setup done;
+branch pushed. Delivered `crates/nf-view/tests/head_track_trace_live.rs`: a frame-stepped headless
+trace (real `Sim::step_bond` path, 07000007) asserting EVERY tick's stored head yaw/pitch against
+the game's formula transcribed independently in the test: `Ang_RotateToBearing` 0x1e0f10 (wrap
+both to [0,2π), diff to [−π,π], step cur+clamped·rate, snap 1e-4), rates 0.07/0.14 (alert>0.66,
+`NDrone2_DoHeadTracking` 0x1472c8 disasm), the 3.0 range gate (SetHeadTracking 0x1c6748's
+0x40400000²=9.0; HeadTrack 0x1bf618:191 skips both blocks beyond → wants 0), the clamps (yaw
+±1.1, |yaw|>2.6→0, pitch [−1.0,+0.6] game-positive-down = port [−0.6,+1.0] positive-up). The
+measure sub-steps re-verified against the DISASSEMBLY this session: neck = Vec_UnitVector(out,
+bone2pos, headpos) = unit(head−bone2) [0x1bf728 jal 0x1e2d28, args 0x1bf6e8/0x1bf714/0x1bf72c],
+side = Vec_CrossNormalise(neck, head row2) = unit(neck×fwd) [0x1bf738 jal 0x1e3078 — helper body:
+cross(param1,param2)→param3], yaw sign via ScalarTriple(fwd,to,neck) [0x1bfa48], pitch via the
+side triple, the per-plane 0.25 gates + the pitch behind-skip + the one-plane coupling, the +0x96
+freeze (Rand(15)+6 frames at track start, SetHeadTracking arg5) — all match the port's
+head_track_want. Result: side-b 90/90 tracked ticks follow the formula (tol 4e-3 = the want
+measured one anim-tick earlier), yaw eases 0→1.099 (the ±1.1 clamp), fwd→bond 1.3→0.33 rad
+(TOWARD Bond — no direction flip), upright ≥0.988 (no roll); the ease-back beyond the gate → 0.
+No port code change needed. Findings: (1) the game's RotateToBearing returns [0,2π) while the
+port stores the signed equivalent (mod-2π equal — pose uses sin/cos; documented in the test);
+(2) the port lacks the game's +0x96 start freeze (Rand(15)+6 frames) AND its Rand(15) draw at
+every (re)target — an RNG-stream divergence vs the game, left untouched (any draw lands in the
+shared stream and re-pins seeds per the 0072 procedure); (3) the port's aim/stop branches ease at
+a fixed 0.07 where the game uses the alert-aware stored rate (0.14 alerted, +0x70 patched by
+DoHeadTracking's stop path) — minor, unported; (4) the composition (q_yaw⊗q_pitch premultiplied,
+rotation rows only) is 101c/fix-heads-07's, NOT independently re-derived — the inline VU multiply
+order in 0x1bf618 (16 ops, 0x1bfc1c..0x1bfc58 + the bone-quat group) resisted this session's
+decode; the game's formula the test pins covers measure+ease+gates+clamps. Suite (background,
+base tree): 1779 passed / 6 failed / 72 ignored — the 3 disc_golden documented; probe_pylon_render
++ 2 fix_0c_pylon_live fail on master's code (pre-existing, this task added no lib code). Report:
+docs/reports/head-track.md (live checks: the balcony above-pose PCSX2 compare, the VU multiply
+order watch, the pylon failures).
