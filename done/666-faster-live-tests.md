@@ -42,3 +42,7 @@ claimed-by: sandbox3 at 2026-10-16T05:23Z
 ## Report (done, 2026-10-16T06:20Z)
 
 Closed by the driver: the report is on `s/faster-live-tests` (docs/reports/faster-live-tests.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T06:45Z)
+
