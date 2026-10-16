@@ -14462,3 +14462,10 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+- flesh-hit-effects (s/flesh-hit-effects): started. Playtest 1015-1738: bullet hits on people show
+  "No red puffs". Plan: port the flesh-hit effect spawn — the material/effect lookup for a character
+  hit [M Effect_Create / Effect_Bullet on the flesh path, the EffectInfo row for flesh, its gas/
+  decal/debris entries] so a guard hit spawns the game's own blood puff into the existing gas/effect
+  pools (data only — the pools already draw). Test: shoot a guard on 07000005, assert the puff with
+  the right mesh/colour/life in the pool; sister: a world hit doesn't spawn it.
