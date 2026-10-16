@@ -15582,3 +15582,10 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+
+## oddjob-hat (2026-10-16, branch s/oddjob-hat) — start
+- Branch from origin/master. Task: Oddjob's hat — the hit damage (one-shot? the playtests say it
+  "acts like a grenade"), the wall-hit sound id ("weird sound"), and the projectile pool
+  cap/recycling ("throw enough and you stop seeing them fly"). Tests: a hat hit kills a guard in
+  one hit if the game says so; the wall hit plays the game's sound; 10 rapid throws keep the
+  game's count of live hats with the oldest recycled the game's way.
