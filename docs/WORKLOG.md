@@ -13858,3 +13858,12 @@ Work Log (async-level-load):
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+
+## frame-cost-guard (2026-10-16, branch s/frame-cost-guard)
+- Task: NF_ISO-gated release-only budget tests timing per-frame CPU work headless on the single-player level
+  archives (skin_palette, frame_state, colour_mults, posed_vertices if on a per-frame path, HUD/menu overlay
+  builders, cel_visibility if GPU-free), median-of-N after warm-up, generous asserted budgets, measured numbers
+  printed; plus an audit of loops over char_verts/vertices/attachments/groups on the RedrawRequested path whose
+  cost scales with pools rather than live objects; bit-identical palette/colour output proven on 3 levels;
+  sister assertion (a deliberately slow closure must fail the budget helper).
+- (start) branch created from origin/master 0f5f07f4; work started.
