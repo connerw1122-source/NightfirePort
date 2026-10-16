@@ -81,12 +81,17 @@ headroom on the worst level.
 ## How it was verified
 
 - The budget test end-to-end on the pre-fix tree (34/34 pass), then the fixes, then the same test on the
-  post-fix tree (34/34 pass), then the merge with origin/master 4bdf7678 and the same test on the merged tree
-  (hashes re-checked against the pre-fix baseline — still identical).
+  post-fix tree (34/34 pass), then the merge with origin/master 4bdf7678 and the same test re-run on the
+  merged tree (172 s, pass; the 68 hash lines diffed against the pre-fix baseline — still identical).
 - Targeted regression set on the merged tree: gpu_skin_live 3/3, cutscene_models_live 4/4, fix_portal_live 6/6,
   render3_live 3/3, portal_eyecel_live 1/1, door_portal_live 2/2, fix_portal3_live 4/4 (+2 ignored),
   character_lighting_live 4/4, fix_hud_live 6/6, menus_flow 37/37, nf-game lib 212/212.
 - Full suite: see the WORKLOG entry for the final merged-tree run's total line.
+- One failure in the suite runs is pre-existing and unrelated: `walkreal_07000001_live::
+  walk_from_the_spawn_to_the_exit_with_the_contact` ("the contact must walk his route to the
+  LoadPointActivator plate", walkreal_07000001_live.rs:218) failed identically on the pre-fix tree (before
+  the scene.rs fixes existed) and on the merged tree — an AI-nav assertion; this task touches only the render
+  palette path and adds a new test file.
 
 ## Left / candidates (documented, not fixed — each with the reason)
 
