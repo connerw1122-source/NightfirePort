@@ -14888,3 +14888,19 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   (07000012): "the scorpion launcher heat seeker mode doesn't work". Tests on 07000012 with a guard
   target: a heat-seeker fired off-axis curves into the guard; a dumb rocket flies straight; the HUD
   mode label value; sister: homing never locks onto Bond.
+- scorpion-modes-12 close-out: the AT-600 Scorpion's mode chain verified end-to-end on 07000012
+  through the real input path (Sim::step_bond only) — the disc record pins [L: 0x2E 'Heatseeker'
+  +0x6C = 0x32200 with the 0x20000 homing bit + the 0x200 quarter-speed, 0x2F 'Unguided' 0x1a200;
+  the twin +1/−1; BOTH records carry the same HUD name label 0x05000048 so the label the HUD reads
+  is stable across the swap; count 1 → ○ is the twin switch], the ○ swap 0x2F↔0x2E through
+  Input::mode_switch [M 0x1a24c8:246-260], the heat-seeker fired off-axis (auto-aim off) locks the
+  guard and curves in and HITS, the unguided twin flies straight and never locks, and the
+  never-locks-Bond sister (the owner is not a candidate [M 0x12f358's BU+0x30 skip]; no seekable
+  object → no lock ever). One fix: the homing LOS is the game's ONE bit-0x8 DROP trace
+  [M 0x12f358:92 Collide_LineOfSight(…,8)] — the port now uses world.segment_bullet (foliage
+  doesn't block the lock). Playtest 1012-1723 does not reproduce on the branch (the pre-fix
+  behaviour predates the fix-weapon-modes merge). Ran: the new test, nf-game --lib 237, the
+  weapon-mode regression binaries 5+5+6, the fast suite on the final tree (see the report).
+  Remaining: drone-fired homing (guards' own rockets), the copter/class-3/class-0x28 heatseekable
+  classes [M 0x12f248], the projectile-matrix realign (visual). Report:
+  docs/reports/scorpion-modes-12.md (3 live-check asks).
