@@ -119,8 +119,21 @@ The visual confirmation (no GPU here):
 
 ## Full-suite result on the final tree
 
-(to be filled from suite.out before the finish steps)
+The fast runner (`tools/test/suite.py`) on the final tree (this branch merged with origin/master 678c9195,
+348 test binaries): **build green in 326 s; the run was still in progress at push time (20:02 UTC) with
+~107/348 binaries done and zero FAILED/TIMEOUT/CRASH lines** — the sandbox's 2-hour window ends before the
+full run can print its total (the whole-ES decode tests and the 070000xx live missions dominate the tail).
+The runner keeps going in the background; the per-binary results stream into `suite.log` and the total will
+land in `suite.out` — the next session should read `tail -1 suite.out` before touching the movies code.
+Everything this task touched ran green in the targeted passes above (nf-formats `mpeg2_reference` 2/2 with
+`--features movies` on movie data; nf-view `menu_movies` 5/5 + `menu_backdrop_still` 7/7; both feature/no-
+feature builds of nf-formats' tests compile).
 
 ## ntfy failed
 
-(not reached yet)
+All three fallbacks failed with the ntfy.sh daily quota (the same 429 the 110p session hit earlier today):
+
+1. `curl -sS -H "Title: NightfirePort" -d "mpeg2-interlaced-decode: done …" https://ntfy.sh/nightfire-yoda-8k3x`
+   → `{"code":42908,"http":429,"error":"limit reached: daily message quota reached; increase your limits with a paid plan, see https://ntfy.sh","link":"https://ntfy.sh/docs/publish/#limitations"}`
+2. python urllib → `urllib.error.HTTPError: HTTP Error 429: Too Many Requests`
+3. `wget -q -O- --post-data "…" https://ntfy.sh/nightfire-yoda-8k3x` → no output (429), exit status recorded as failure.

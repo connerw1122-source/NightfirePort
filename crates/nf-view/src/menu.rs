@@ -100,8 +100,34 @@ pub const PAGE_STATS: u32 = 0x4000_0037;
 /// image 0x10000176 (435,282,128×64) TEX 0x0300013d); P_DOSSIER 0x216de0's rows open it
 /// [M C_SBDOSSIER 0x216eb0:12-31 — index 0 → 0x4000003a]].
 pub const PAGE_RECORDS: u32 = 0x4000_003a;
+/// The Dossier's Rewards page [M C_RBDSREWARDS 0x20c248 opens from the wheel's row 1
+/// (C_SBDOSSIER 0x216eb0:12-31); the menu-def PAGE record 0x4000003b carries fh 0x80000002, aux
+/// 0x07350048 [D parsed 2026-10-15].]
+pub const PAGE_REWARDS: u32 = 0x4000_003b;
+/// The Dossier's Gadgets page [M C_SBDOSSIER's row 2 → 0x4000003c; PAGE record aux 0x07350048 [D].]
+pub const PAGE_GADGETS: u32 = 0x4000_003c;
+/// The Dossier's Weapons page [M C_SBDOSSIER's row 3 → 0x4000003d; PAGE record aux 0x07350048 [D].]
+pub const PAGE_WEAPONS: u32 = 0x4000_003d;
 /// The title layout the boot page leads to [M menu-def page 0x40000009: the art + Press START].
 pub const PAGE_TITLE_LAYOUT: u32 = 0x4000_0009;
+/// attract-mode: the attract page the no-input timeout opens [M menu-def page 0x40000035: aux 0;
+/// `P_START` 0x20a408 / `P_MAIN` 0x20a7b0 send 0x44 with this id at `Menu_GetNoInputCount() ==
+/// 0xa8c`; the handler is `P_ATTRACT_Handler` 0x20a1f0].
+pub const PAGE_ATTRACT: u32 = 0x4000_0035;
+/// attract-mode: the no-input timeout — 0xa8c = 2700 frames = 45 s at the fixed 60 Hz [M
+/// `P_START_Handler` 0x20a408 / `P_MAIN_Handler` 0x20a7b0's 0x50 branch:
+/// `Menu_GetNoInputCount() == 0xa8c`; the count is `frame_counter` 0x30d164 − `last_action`
+/// 0x30d168, incremented per menu tick by `Menu_AlphaUpdate` 0x1f3170].
+pub const ATTRACT_FRAMES: u32 = 0xa8c;
+/// attract-mode: the attract movie played when the opener is NOT the main menu (always, from the
+/// title) [M `P_ATTRACT_Handler` 0x20a1f0's 0x4c: `psiStartBackgroundMovie(0x73a0000|0x48, 0,
+/// SFXGetVolume())`; whitelisted by `UsingMovie` 0x107eb8 → 30_FPS/073A0048.PSS].
+pub const ATTRACT_MOVIE_A: u32 = 0x073a_0048;
+/// attract-mode: the attract movie the MAIN-menu timeouts alternate to [M 0x20a1f0's 0x4c else
+/// branch — the opener id 0x40000002 arrives as the 0x4c's param_6 [M `Manager_SendMessage`
+/// 0x21c858:345 passes the previous page's id] and the toggled `movie.291` 0x30d368 selects it;
+/// `UsingMovie` 0x107eb8 → 30_FPS/073B0048.PSS].
+pub const ATTRACT_MOVIE_B: u32 = 0x073b_0048;
 pub const PAGE_OPTIONS: u32 = 0x4000_0068;
 /// Codenames → "Edit Codename" [L 07000048 page 0x4000001b: header LBL 0x1f1, hint 0x20a; C_GOCODENAMES 0x216b38].
 pub const PAGE_CN_SELECT: u32 = 0x4000_001b;
@@ -177,6 +203,21 @@ pub const PAGE_MP_CONFIRM: u32 = 0x4000_0049;
 /// The post-match debriefing [M C_GCPAUSE 0x204408:146 — quitting a match (+0x180 != 0) sets
 /// GameState+0x28 = 0x40000033; P_MPDEBRIEFING 0x212198 / C_MPDBG 0x217860].
 pub const PAGE_MP_DEBRIEFING: u32 = 0x4000_0033;
+
+// ── net-online-lobby: the port-only online pages (docs/systems/net-online-lobby.md §2) ─────────
+// The PS2 game has no online mode — the menu-def (08000002 of 07000048.bin, parsed 2026-10-15)
+// has no network page, and the couch route joins through per-pad messages [D; M P_MPJOIN 0x20ca00
+// msg 0x6a] — so these ids are the port's own, in a spare 0x5000_0000 block that can never
+// collide with the game's 0x4000_00xx pages [S].
+/// The Multiplayer mode choice: Local / Host Online / Join Online [S — the game's Multiplayer
+/// row lands straight on 0x40000019; the port asks first].
+pub const PAGE_MP_MODE: u32 = 0x5000_0001;
+/// The host setup page: the port number + Start Listening [S §2.1].
+pub const PAGE_MP_HOST: u32 = 0x5000_0002;
+/// The join address page: the typed IP:PORT + Connect [S §2.2].
+pub const PAGE_MP_NETJOIN: u32 = 0x5000_0003;
+/// The client's lobby: the host's choices mirrored read-only until the match starts [S §2.2].
+pub const PAGE_MP_LOBBY: u32 = 0x5000_0004;
 
 /// The GameState stack machine's fields [M addresses in the doc comment].
 #[derive(Clone, Debug, Default)]
@@ -402,6 +443,71 @@ pub const CAMPAIGN: [(u32, u32, u32, u32); 12] = [
 /// `Menu_UpdateWheel` binds +0x08 when unlocked, +0x14 when not].
 pub const LOCKED_DESC: u32 = 0x0100_0009;
 
+/// The Weapons page's 27 rows [M `ds_weapons` 0x2dfec8, 27 × 0x18 B (symtab 648); row layout read by
+/// `Menu_UpdateWheel` 0x1f8388 (wheel rows bind +0x04, the preview control gets msg 0x24 with +0x00,
+/// the description control binds +0x08 when +0x10 ≠ 0 else +0x14) and `C_SBDSWPSCROLL` 0x20bab0
+/// (msg 0x40 cursor → +0x0c object id → the suffix)]. Values are the EE snapshot's boot state
+/// [L work/ee_start_05.bin 0x2dfec8]; row 0 is the overview `P_DSWEAPONS` 0x217038:11-33 rewrites
+/// (see `weapon_overview_row`) — its boot values ARE the level-0 rewrite [L].
+pub const WEAPONS_TABLE: [(u32, u32, u32, u32); 27] = [
+    // (preview texture, wheel label, description label, upgrade object)
+    (0x0300_00f3, 0x33d, 0x359, 0x00), (0x0300_00ed, 0x33f, 0x35b, 0x3f), (0x0300_00ee, 0x340, 0x35c, 0x3f),
+    (0x0300_00f0, 0x341, 0x35d, 0x3f), (0x0300_00e9, 0x342, 0x35e, 0x3f), (0x0300_00f8, 0x343, 0x35f, 0x3f),
+    (0x0300_00f6, 0x344, 0x360, 0x3f), (0x0300_00e8, 0x345, 0x361, 0x3f), (0x0300_00ec, 0x346, 0x362, 0x3f),
+    (0x0300_00fe, 0x347, 0x363, 0x09), (0x0300_00fa, 0x348, 0x364, 0x09), (0x0300_00f1, 0x349, 0x365, 0x3f),
+    (0x0300_00f5, 0x34a, 0x366, 0x3f), (0x0300_0191, 0x34b, 0x367, 0x3f), (0x0300_00ef, 0x34c, 0x368, 0x3f),
+    (0x0300_00eb, 0x34d, 0x369, 0x3f), (0x0300_00f7, 0x34e, 0x36a, 0x3f), (0x0300_00ea, 0x34f, 0x36b, 0x3f),
+    (0x0300_00f4, 0x350, 0x36c, 0x3f), (0x0300_0100, 0x351, 0x36d, 0x3f), (0x0300_00f9, 0x352, 0x36e, 0x3f),
+    (0x0300_0101, 0x353, 0x36f, 0x3f), (0x0300_0102, 0x354, 0x370, 0x3f), (0x0300_0103, 0x355, 0x371, 0x3f),
+    (0x0300_00ff, 0x356, 0x372, 0x3f), (0x0300_0193, 0x357, 0x373, 0x3f), (0x0300_0192, 0x358, 0x374, 0x3f),
+];
+/// The Gadgets page's 14 rows [M `ds_gadgets` 0x2e0150, 14 × 0x18 B (symtab 336); same layout; L
+/// work/ee_start_05.bin 0x2e0150]. Every row's +0x10 unlocked byte is 1 in the boot state; no
+/// runtime writer was found [S]. P_DSGADGETS 0x217190:11-15 overwrites the LAST row's +0x0c object
+/// slot with the texture hash 0x030000e5 (60 Hz) / 0x0300018f (50 Hz) — kept static here (0x3f, the
+/// same no-suffix effect through 0x2025f8's `param_1 < 0x3f` guard) with the store cited in
+/// docs/systems/dossier-pages-data.md.
+pub const GADGETS_TABLE: [(u32, u32, u32, u32); 14] = [
+    (0x0300_00e6, 0x323, 0x331, 0x12), (0x0300_00c4, 0x321, 0x32f, 0x15), (0x0300_00e2, 0x328, 0x336, 0x03),
+    (0x0300_00df, 0x329, 0x337, 0x06), (0x0300_00e1, 0x326, 0x334, 0x0f), (0x0300_00e4, 0x327, 0x335, 0x3f),
+    (0x0300_00e5, 0x32a, 0x338, 0x3f), (0x0300_00e7, 0x324, 0x332, 0x3f), (0x0300_00e0, 0x322, 0x330, 0x0c),
+    (0x0300_00e3, 0x325, 0x333, 0x3f), (0x0300_0104, 0x32b, 0x339, 0x3f), (0x0300_00fc, 0x32c, 0x33a, 0x3f),
+    (0x0300_0190, 0x32d, 0x33b, 0x3f), (0x0300_00fb, 0x32e, 0x33c, 0x3f),
+];
+/// The RewardsTable's per-row bonus captions and stamp textures [M `RewardsTable` 0x2bc920 entry
+/// +0x1c..+0x28 (labels) and +0x30..+0x3c (textures) — the loads `Menu_GetLevelBonuses` 0x1ffe98
+/// makes (disassembly-checked: `lw 28/32/36/40` = +0x1c..+0x28, `lw 48/52/56/60` = +0x30..+0x3c);
+/// the decompile's `_44_/_48_` prints are a Ghidra framing artifact]. Values [L work/ee_start_05.bin
+/// 0x2bc920] in SP_LEVEL_HASHES order. The DESCRIPTORS live in nf-game's REWARDS_TABLE (the same
+/// 64-byte entries' +0x04..+0x14).
+pub const REWARD_BONUS: [([(u32, u32); 4]); 12] = [
+    // [(label, texture); bronze..platinum]
+    [(0x2d6, 0x0300_012c), (0x2ec, 0x0300_0111), (0x0100_01f9, 0x0300_0102), (0x2f2, 0x0300_0118)], // 0x09000001
+    [(0x2d2, 0x0300_0134), (0x2e9, 0x0300_0116), (0x3a5, 0x0300_00f3), (0x2f1, 0x0300_0108)],       // 0x07000005
+    [(0x2d3, 0x0300_0131), (0x2de, 0x0300_00a1), (0x2df, 0x0300_00e2), (0x100_01fc, 0x0300_0196)],  // 0x09000005
+    [(0x2d4, 0x0300_0133), (0x2ea, 0x0300_011a), (0x3a6, 0x0300_00df), (0x2ee, 0x0300_0113)],       // 0x09000006
+    [(0x2d5, 0x0300_012f), (0x2e0, 0x0300_00a4), (0x3a7, 0x0300_00fa), (0x2ed, 0x0300_011d)],       // 0x07000001
+    [(0x2db, 0x0300_012e), (0x2e1, 0x0300_00a3), (0x3a5, 0x0300_00f3), (0x2f0, 0x0300_010b)],       // 0x07000009
+    [(0x2d7, 0x0300_0130), (0x3a3, 0x0300_011c), (0x3a8, 0x0300_00e0), (0x2e8, 0x0300_0110)],       // 0x0700000c
+    [(0x2d8, 0x0300_012a), (0x2e3, 0x0300_009d), (0x3a5, 0x0300_00f3), (0x3a2, 0x0300_0148)],       // 0x07000011
+    [(0x2d9, 0x0300_0198), (0x3a4, 0x0300_0114), (0x3a9, 0x0300_00e1), (0x2ef, 0x0300_010f)],       // 0x09000002
+    [(0x2da, 0x0300_0132), (0x2e5, 0x0300_009e), (0x3aa, 0x0300_00e6), (0x3a1, 0x0300_010a)],       // 0x09000003
+    [(0x2dc, 0x0300_012d), (0x2e6, 0x0300_00c4), (0x3ab, 0x0300_00c4), (0x2eb, 0x0300_0117)],       // 0x07000014
+    [(0x100_01ff, 0x0300_012b), (0x2e7, 0x0300_00a0), (0x3a7, 0x0300_00fa), (0x100_01fb, 0x0300_0194)], // 0x0700001b
+];
+/// The Gadgets page's upgrade caption per object id [M C_SBDSGTSCROLL 0x20bcc0:82-104's switch —
+/// the description becomes `sprintf("%s\n%s", desc, Txt_BindLabel(suffix))` (the format string
+/// 0x30d358 is "%s\n%s" [D ACTION.ELF .data]) when the object's upgrade level ≠ 0].
+pub fn gadget_suffix(object: u32) -> Option<u32> {
+    Some(match object { 0x03 => 0x3b3, 0x06 => 0x3b4, 0x0c => 0x3b5, 0x0f => 0x3b6, 0x12 => 0x3b7, 0x15 => 0x3b8, _ => return None })
+}
+/// The Weapons page's upgrade captions [M C_SBDSWPSCROLL 0x20bab0:80-89 — only the watch (object 9)
+/// gets one, level 1 → 0x3b1, level 2 → 0x3b2; level 3 adds NO suffix].
+pub fn weapon_suffix(object: u32, level: u32) -> Option<u32> {
+    if object != 9 { return None; }
+    match level { 1 => Some(0x3b1), 2 => Some(0x3b2), _ => None }
+}
+
 /// A front-end page's aux background-movie code [M the menu-def PAGE record's third dword, stored at
 /// M_PAGE+0xC4 by `MenuManager_Create` 0x21b908:169-183 and played as a LOOPING background movie on
 /// page change by `Manager_SendMessage` 0x21c858:338 (`Menu_PlayMovie(aux, 0, 1, 0, 0, 0)` — loop = 1;
@@ -423,6 +529,9 @@ pub fn aux_movie_for(page_id: u32) -> u32 {
         PAGE_MP_JOIN | PAGE_MP_SCENARIO | PAGE_MP_MAP | PAGE_MP_SETUP | PAGE_MP_OPTIONS | PAGE_MP_RULES
         | PAGE_MP_PLAYERMODS | PAGE_MP_ENVIROMODS | PAGE_MP_BOTS | PAGE_MP_BOTCHOOSE | PAGE_MP_BOTSETUP
         | PAGE_MP_CONFIRM | PAGE_MP_DEBRIEFING => 0x0735_0048,
+        // The port-only online pages (net-online-lobby) sit between Main and the MP Join page, so they
+        // take the same list backdrop as their MP neighbours [S: no game record exists for them].
+        PAGE_MP_MODE | PAGE_MP_HOST | PAGE_MP_NETJOIN => 0x0735_0048,
         _ => 0,
     }
 }
@@ -471,9 +580,11 @@ pub const INTRO_TICKS: u32 = 850;
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Options, Pause, Results, Stats, CnSelect, CnMenu, CnName, CnAdvanced, CnMp, CnAv, ScreenAdjust,
+pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Rewards, Gadgets, Weapons, Options, Pause, Results, Stats, CnSelect, CnMenu, CnName, CnAdvanced, CnMp, CnAv, ScreenAdjust,
     // mp-menu-flow: the multiplayer front end (page ids in the PAGE_MP_* constants below).
-    MpJoin, MpScenario, MpMap, MpSetup, MpOptions, MpRules, MpPlayerMods, MpEnviroMods, MpBots, MpBotChoose, MpBotSetup, MpConfirm, MpDebriefing, Credits }
+    MpJoin, MpScenario, MpMap, MpSetup, MpOptions, MpRules, MpPlayerMods, MpEnviroMods, MpBots, MpBotChoose, MpBotSetup, MpConfirm, MpDebriefing,
+    // net-online-lobby: the port-only online pages (ids in the PAGE_MP_* constants below).
+    MpMode, MpHost, MpNetJoin, MpLobby, Credits }
 
 impl Page {
     pub fn id(self) -> u32 {
@@ -481,6 +592,7 @@ impl Page {
             Page::Start => PAGE_START, Page::Main => PAGE_MAIN, Page::Codename => PAGE_CODENAME,
             Page::Difficulty => PAGE_DIFFICULTY, Page::MissionSelect => PAGE_MISSION_SELECT,
             Page::Dossier => PAGE_DOSSIER, Page::Records => PAGE_RECORDS,
+            Page::Rewards => PAGE_REWARDS, Page::Gadgets => PAGE_GADGETS, Page::Weapons => PAGE_WEAPONS,
             Page::Options => PAGE_OPTIONS, Page::Pause => PAGE_PAUSE, Page::Results => PAGE_RESULTS,
             Page::Stats => PAGE_STATS,
             Page::CnSelect => PAGE_CN_SELECT, Page::CnMenu => PAGE_CN_MENU, Page::CnName => PAGE_CN_NAME, Page::CnAdvanced => PAGE_CN_ADVANCED,
@@ -490,6 +602,8 @@ impl Page {
             Page::MpPlayerMods => PAGE_MP_PLAYERMODS, Page::MpEnviroMods => PAGE_MP_ENVIROMODS,
             Page::MpBots => PAGE_MP_BOTS, Page::MpBotChoose => PAGE_MP_BOTCHOOSE, Page::MpBotSetup => PAGE_MP_BOTSETUP,
             Page::MpConfirm => PAGE_MP_CONFIRM, Page::MpDebriefing => PAGE_MP_DEBRIEFING,
+            Page::MpMode => PAGE_MP_MODE, Page::MpHost => PAGE_MP_HOST,
+            Page::MpNetJoin => PAGE_MP_NETJOIN, Page::MpLobby => PAGE_MP_LOBBY,
             Page::Credits => crate::credits::PAGE_CREDITS,
         }
     }
@@ -498,6 +612,7 @@ impl Page {
             PAGE_START => Page::Start, PAGE_MAIN => Page::Main, PAGE_CODENAME => Page::Codename,
             PAGE_DIFFICULTY => Page::Difficulty, PAGE_MISSION_SELECT => Page::MissionSelect,
             PAGE_DOSSIER => Page::Dossier, PAGE_RECORDS => Page::Records,
+            PAGE_REWARDS => Page::Rewards, PAGE_GADGETS => Page::Gadgets, PAGE_WEAPONS => Page::Weapons,
             PAGE_OPTIONS => Page::Options, PAGE_PAUSE => Page::Pause, PAGE_RESULTS => Page::Results,
             PAGE_STATS => Page::Stats,
             PAGE_CN_SELECT => Page::CnSelect, PAGE_CN_MENU => Page::CnMenu, PAGE_CN_NAME => Page::CnName, PAGE_CN_ADVANCED => Page::CnAdvanced,
@@ -507,6 +622,8 @@ impl Page {
             PAGE_MP_PLAYERMODS => Page::MpPlayerMods, PAGE_MP_ENVIROMODS => Page::MpEnviroMods,
             PAGE_MP_BOTS => Page::MpBots, PAGE_MP_BOTCHOOSE => Page::MpBotChoose, PAGE_MP_BOTSETUP => Page::MpBotSetup,
             PAGE_MP_CONFIRM => Page::MpConfirm, PAGE_MP_DEBRIEFING => Page::MpDebriefing,
+            PAGE_MP_MODE => Page::MpMode, PAGE_MP_HOST => Page::MpHost,
+            PAGE_MP_NETJOIN => Page::MpNetJoin, PAGE_MP_LOBBY => Page::MpLobby,
             crate::credits::PAGE_CREDITS => Page::Credits,
             _ => return None,
         })
@@ -859,6 +976,13 @@ pub const MP_CHARACTER_SIDE_MI6: [bool; 29] = [
 /// The weapon-set names, indexed by MPSettings+0x1B4 0..10 [M P_MPPLAYERMODS 0x2104d0:26-49's
 /// label switch — the same list P_MPCONFIRM 0x20ec00's +0x1B4 switch binds].
 pub const MP_WEAPON_SETS: [u32; 11] = [0x1a0, 0x1a2, 0x1a4, 0x1a6, 0x1a8, 0x24f, 0x3db, 0x3dc, 0x3dd, 0x3de, 0x1b2];
+
+/// The Health Handicap list in the game's node order [M C_RBMPSETUP 0x20de58's state-3 confirm
+/// (msg 0x4b, state 3): msg-0x10 adds 8 nodes with these values; the labels are the handler's own
+/// .data strings 0x30d390..0x30d3c8 — [D] "-75","-50","-25","0","+25","+50","+75","+100"]. The
+/// fresh roster's +0x2c = 0 re-selects the "0" node [M bootup_bootup's roster loop].
+pub const MP_HANDICAPS: [(i32, &str); 8] =
+    [(-75, "-75"), (-50, "-50"), (-25, "-25"), (0, "0"), (25, "+25"), (50, "+50"), (75, "+75"), (100, "+100")];
 /// The P_MPSETUP per-agent prompt labels [M P_MPSETUP 0x20d7a8: state 2 (team) binds 0x37c, state
 /// 3 (character) binds 0x37d; USATxt "Choose Team"/"Choose Character"].
 pub const MP_SETUP_TEAM_PROMPT: u32 = 0x37c;
@@ -956,6 +1080,108 @@ pub struct MpJoinAgent {
 }
 impl Default for MpJoinAgent {
     fn default() -> Self { MpJoinAgent { state: 0, joined: false, ready: false, team: 0, skin: 0, codename_row: 0, codename: String::new() } }
+}
+
+// ── net-online-lobby: the online session surface (docs/systems/net-online-lobby.md §3) ─────────
+// The PS2 game has no online mode — the menu-def holds no network page and the couch route joins
+// through per-pad messages [D; M P_MPJOIN 0x20ca00 msg 0x6a] — so this surface is port-only [S].
+// The front end needs exactly this from the transport: 051's deterministic UDP lockstep session
+// (std::net::UdpSocket, no crate downloads) implements the trait; the tests run a fake.
+
+/// The link state the join flow reads off the session [S §3].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MpNetLink { Idle, Listening, Dialing, Connected, Refused, TimedOut, Lost }
+
+/// Why a listen / connect refused [S §3].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MpNetError { BadAddress, Busy, Denied }
+
+/// The join side's page state — what PAGE_MP_NETJOIN and PAGE_MP_LOBBY draw [S §2.2].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MpNetState { Idle, Dialing, Refused, TimedOut, InLobby }
+
+/// One lobby agent as the session reports it: slot 0 = this machine's agent, slots 1..3 = the
+/// remote panels 2-4 [S §3].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MpNetAgent {
+    /// The lobby slot (0 = this machine's agent).
+    pub slot: usize,
+    /// The agent's lobby codename.
+    pub codename: String,
+    /// The agent's ready flag (the mirror shows 0x39c "Player Ready" / 0x1e9 [M mpjoin+0x01]).
+    pub ready: bool,
+}
+
+/// The host's lobby choices as published — the words the mirror page shows [S §3]. The names
+/// ride the shared tables (MP_SCENARIO_ROWS / MP_MAP_ROWS / MP_WEAPON_SETS), so only the words
+/// cross the wire.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct MpNetChoices {
+    /// MPSettings+0x1A4 — the scenario word [M C_SBMPSCEN's confirm store].
+    pub scenario: u32,
+    /// MPSettings+0x1A8 — the arena's level code [M C_SBMPMAP's confirm store].
+    pub level: u32,
+    /// MPSettings+0x1B4 — the weapon set 0..10 [M P_MPPLAYERMODS 0x2104d0:13].
+    pub weapon_set: u32,
+    /// MPSettings+0x1C4 — radar [M P_MPPLAYERMODS 0x2104d0:16].
+    pub radar: u32,
+    /// MPSettings+0x198 — friendly fire [M P_MPPLAYERMODS 0x2104d0:12].
+    pub friendly_fire: u32,
+    /// MPSettings+0x19C — the frag/points/lives limit [M P_MPRULES 0x20f790:13].
+    pub frag_limit: i32,
+    /// MPSettings+0x1A0 — the time limit in minutes, -1 = Unlimited [M P_MPRULES 0x20f790:12].
+    pub time_limit: i32,
+    /// The Player-Mods toggles (+0x1BC, +0x1C8) [M P_MPPLAYERMODS 0x2104d0:14-15].
+    pub player_mods: [u32; 2],
+    /// The Enviro-Mods rows (+0x1C0, +0x1B8, +0x1D4, +0x1D0, +0x1CC) [M P_MPENVIROMODS 0x210030].
+    pub envmods: [u32; 5],
+}
+
+/// The online session the online front end drives. The front end holds any `Box<dyn MpSession>`
+/// in [`FrontEnd::mp_session`] and never touches a socket; the real transport (051's
+/// deterministic lockstep over `std::net::UdpSocket`) implements this [S §3].
+pub trait MpSession {
+    /// Drive the transport once per menu tick (sockets, handshakes, keepalives).
+    fn poll(&mut self);
+    /// The link state the join flow reads.
+    fn link(&self) -> MpNetLink;
+    /// Host: bind the UDP port. `Err(Busy)` = the port could not be taken.
+    fn listen(&mut self, port: u16) -> Result<(), MpNetError>;
+    /// Client: begin the handshake to "host:port" — the poll turns it into
+    /// Connected / Refused / TimedOut.
+    fn connect(&mut self, addr: &str) -> Result<(), MpNetError>;
+    /// The lobby's agents: slot 0 = this machine's agent, slots 1..3 = the remote panels.
+    /// Owned — the lobby is at most four entries (the fake's RefCell cannot hand out a slice).
+    fn agents(&self) -> Vec<MpNetAgent>;
+    /// The host's last published choices (None until one arrives).
+    fn host_choices(&self) -> Option<MpNetChoices>;
+    /// Host: push the current choices (the mirror reads them through [`MpSession::host_choices`]).
+    fn publish_choices(&mut self, c: &MpNetChoices);
+    /// Host: start the match with these settings (clients see it through
+    /// [`MpSession::match_started`]).
+    fn start_match(&mut self, s: &nf_game::mp::MpSettings);
+    /// The match-start settings once the host started (both roles read this).
+    fn match_started(&self) -> Option<nf_game::mp::MpSettings>;
+    /// Tell the session this machine's lobby codename.
+    fn set_codename(&mut self, name: &str);
+    /// Close cleanly (Back / cancel / the match handover's end).
+    fn close(&mut self);
+}
+
+/// The join timeout: 600 menu ticks = 10 s at the fixed 60 Hz [S §2.2].
+pub const MP_NET_TIMEOUT_TICKS: u32 = 600;
+
+/// The address gate: "host:port" with host = 1-4 dot-separated digit parts each ≤ 255 and port =
+/// 1..65535 [S §2.2 — the typed set is digits, dots, colon (the task's own list); no hostnames].
+pub fn mp_net_addr_ok(addr: &str) -> bool {
+    let Some((host, port)) = addr.split_once(':') else { return false; };
+    if host.is_empty() || port.is_empty() { return false; }
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() > 4 { return false; }
+    parts.iter().all(|p| !p.is_empty() && p.len() <= 3 && p.chars().all(|c| c.is_ascii_digit())
+        && p.parse::<u16>().map_or(false, |v| v <= 255))
+        && port.chars().all(|c| c.is_ascii_digit())
+        && port.parse::<u32>().map_or(false, |v| (1..=65535).contains(&v))
 }
 
 /// One bot's 0x12-byte config record — `mpbots` 0x2deea8's records at +2+slot·0x12 (= 0x2DEEAA in
@@ -1090,8 +1316,9 @@ pub struct FrontEnd {
     pub mission: usize,
     pub difficulty: usize,
     /// The attract timer: the game counts input-less frames and switches to attract at 0xa8c = 2700
-    /// [M 0x20a408/0x20a7b0 `Menu_GetNoInputCount() == 0xa8c`]. The port records it; switching to the
-    /// attract demo needs demo playback (not ported — reported).
+    /// [M 0x20a408/0x20a7b0 `Menu_GetNoInputCount() == 0xa8c`]. attract-mode: the timeout now fires
+    /// — see [`Self::attract_open`] / [`Self::attract_movie_finished`] and
+    /// docs/systems/attract-mode.md.
     pub no_input_frames: u32,
     pub press_start_on: bool,
     pub outcome: Outcome,
@@ -1273,11 +1500,14 @@ pub struct FrontEnd {
     /// init writes DAT_002deeba=6, 0x2deecc=7, 0x2deede=8, 0x2deef0=9] and enabled = 0.
     pub mp_bots: [MpBot; 4],
     /// P_MPSETUP's per-agent state for agent 1: 2 = Choose Team (team games), 3 = Choose
-    /// Character (FFA), 4 = chosen [M P_MPSETUP 0x20d7a8 sets mp_stuff+0x360 to 2/3 from the
-    /// scenario's 0x20000000 bit; C_RBMPSETUP 0x20de58:4b steps 2 → 3 and 3 → 4].
+    /// Character (FFA), 4 = Health Handicap, 5 = chosen [M P_MPSETUP 0x20d7a8 sets
+    /// mp_stuff+0x360 to 2/3 from the scenario's 0x20000000 bit; C_RBMPSETUP 0x20de58's 0x4b
+    /// steps 2 → 3 → 4 → 5 — state 4 builds the handicap list (−75..+100), stores the pick in
+    /// MPSettings+slot·0x30+0x2c, sets mpjoin+1 and the state 5].
     pub mp_setup_state: u32,
-    /// The setup page's agent-1 list selection: the team (0 Phoenix / 1 MI6) or the character id
-    /// [M C_RBMPSETUP 0x20de58's msg-0x35 reads; the team list's items are Phoenix(0x1c7)/MI6(0x1c8)].
+    /// The setup page's agent-1 list selection: the team (0 Phoenix / 1 MI6), the character id or
+    /// the MP_HANDICAPS index [M C_RBMPSETUP 0x20de58's msg-0x35 reads; the team list's items are
+    /// Phoenix(0x1c7)/MI6(0x1c8), the handicap nodes are −75..+100 [D 0x30d390..0x30d3c8]].
     pub mp_setup_sel: usize,
     /// MPSettings+0x1A0 — the time limit in minutes, −1 = Unlimited [M P_MPRULES 0x20f790:12; the
     /// game's confirm multiplies by 60 before handing the match over].
@@ -1296,6 +1526,15 @@ pub struct FrontEnd {
     /// The Enviro-Mods rows in page order (+0x1C0 view distance, +0x1B8, +0x1D4, +0x1D0, +0x1CC)
     /// [M P_MPENVIROMODS 0x210030:12-16, 20-27, 35-61].
     pub mp_envmods: [u32; 5],
+    /// mp-setup: agent 1's Health Handicap — MPSettings+slot·0x30+0x2c [M bootup_bootup 0x1c7e78
+    /// zeroes the roster (fresh +0x2c = 0); C_RBMPSETUP 0x20de58's state-4 confirm stores the
+    /// picked list value (−75..+100)].
+    pub mp_handicap: i32,
+    /// The OR of the profile's four bonus words (bonus[0..3] @0x2e1b88, u64 each) [M
+    /// Menu_UnlockMPSettings 0x1ff698's mask]. A fresh profile holds 0 — no reward bits set.
+    /// Nothing sets bits yet; the field exists so the Explosive-Scenery gate is a function of the
+    /// state, not a constant (see mp_explosive_unlocked).
+    pub mp_bonus_mask: u64,
     /// The start checks' error-box label id, 0 = none [M C_SBMPOPTIONS 0x20e818:84-114 — 0x1000311
     /// (FFA with more than one "good" side), 0x389 (an empty team), 0x39e (one player total)].
     pub mp_error: u32,
@@ -1313,6 +1552,10 @@ pub struct FrontEnd {
     /// credits-data: the page the credits were opened from, as a Page when it is a ported one
     /// (AV Options; the win page 0x40000053 is not ported and stays None) [M page_from_523].
     pub credits_from: Option<Page>,
+    /// net-match-host: the online session's message box (a desync, a lost peer, a refused join) —
+    /// the game's Menu_CreateOptionBox error box with a port-only string (no label id exists for
+    /// it [S]); the page under it returns to the MP lobby (MpJoin). None = no notice.
+    pub net_notice: Option<String>,
 
     // menu-sfx (each new field on its own line [WORKLOG lesson 4]).
     /// The sounds this frame's input/page changes started — the host drains (`drain_sfx`) and
@@ -1325,6 +1568,53 @@ pub struct FrontEnd {
     /// The handlers' `menu_movie` static: set once the page-open pair has played, cleared by the
     /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
     pub menu_movie: bool,
+
+    // ── net-online-lobby: the online Host / Join flow (each field on its own line [WORKLOG
+    // lesson 4]; docs/systems/net-online-lobby.md) ──
+    /// The host page's UDP port — the default is the plan's 27420 [S §2.1; ◀ ▶ steps it on
+    /// PAGE_MP_HOST, clamped 1024..65535].
+    pub mp_net_port: u32,
+    /// Host mode is armed: Start Listening ran and the game's Join Game page doubles as the host
+    /// lobby (the host's own panel 0 joined, remote agents in panels 2-4) [S §2.1].
+    pub mp_hosting: bool,
+    /// The join page's typed address [S §2.2 — digits, dots, colon; the 22-char cap fits
+    /// "255.255.255.255:65535"].
+    pub mp_net_addr: String,
+    /// The address page's own clipboard — Ctrl+C copies, Ctrl+V pastes [S §2.2; the system
+    /// clipboard needs a crate, see the report].
+    pub mp_net_clip: String,
+    /// The join side's page state [S §2.2].
+    pub mp_net_state: MpNetState,
+    /// The last listen/connect error the status line reports (None = nothing to say) [S].
+    pub mp_net_error: Option<MpNetError>,
+    /// The Dialing countdown in menu ticks; 0 → TimedOut [S §2.2 — MP_NET_TIMEOUT_TICKS = 10 s].
+    pub mp_net_timeout: u32,
+    /// The online session behind the flow — None = offline (the host wires 051's real session,
+    /// the tests a fake) [S §3].
+    pub mp_session: Option<Box<dyn MpSession>>,
+    /// The client's mirror of the host's published choices (None until the first publish) [S §2.2].
+    pub mp_lobby_choices: Option<MpNetChoices>,
+    /// The host's last published choices — the publish diff rides on it [S §2.1].
+    pub mp_host_published: Option<MpNetChoices>,
+
+    // ── attract-mode (each new field on its own line [WORKLOG lesson 4]) ──
+    /// The attract sequence is up — the game's attract page 0x40000035 opened over the opener
+    /// [M the timeout's `Manager_SendMessage(…, 0x44, 0x40000035, 0)` 0x20a408/0x20a7b0]. While
+    /// it stands the draw code shows `attract_movie` fullscreen (the page has no controls) and
+    /// the input gate in [`FrontEnd::action`] swallows everything but the skip.
+    pub attract_playing: bool,
+    /// The background movie code this run plays — [`ATTRACT_MOVIE_A`] or [`ATTRACT_MOVIE_B`]
+    /// [M `P_ATTRACT_Handler` 0x20a1f0's 0x4c]. 0 while the attract is down.
+    pub attract_movie: u32,
+    /// The game's `movie.291` 0x30d368 — toggled on every attract open [M 0x20a1f0's 0x4c], it
+    /// alternates the main-menu timeouts between the two codes (the title's always take A:
+    /// the opener id != 0x40000002 short-circuits the pick).
+    pub attract_toggle: bool,
+    /// The page the attract opened over — the game's stacked page, which msg 0x5f re-opens on
+    /// the movie's end [M `Manager_SendMessage` 0x21c858 case 0x44 pushes the opener; case 0x5f
+    /// re-opens it]. Only the title and the main menu time out [M the only `Menu_GetNoInputCount`
+    /// callers], so this is always `Page::Start` or `Page::Main`.
+    pub attract_opener: Page,
 }
 
 impl FrontEnd {
@@ -1398,13 +1688,21 @@ impl FrontEnd {
             mp_bots: std::array::from_fn(|slot| MpBot::fresh(slot)),
             mp_setup_state: 2,
             mp_setup_sel: 0,
+            // mp-setup (each new field on its own line [WORKLOG lesson 4]): the handicap starts 0
+            // [M bootup_bootup's roster +0x2c = 0] and the profile bonus mask is empty [L the EE
+            // snapshots read bonus words 0 / mp_stuff[0x370] = 0].
+            mp_handicap: 0,
+            mp_bonus_mask: 0,
             mp_time_limit: 10,
             mp_frag_limit: 10,
             mp_friendly_fire: 0,
             mp_weapon_set: 0,
             mp_radar: 1,
-            mp_player_mods: [0, 0],
-            mp_envmods: [1, 0, 0, 0, 0],
+            // mp-defaults: the boot values [M bootup_bootup 0x1c7e78 — +0x1BC=0 @0x1c7ffc,
+            // +0x1C8=1 @0x1c7ff8 (Location Damage On); +0x1C0=2 @0x1c7fac (row 1 = Random), the
+            // other enviro rows 0; the EE snapshots read the same [L]]
+            mp_player_mods: [0, 1],
+            mp_envmods: [2, 0, 0, 0, 0],
             mp_error: 0,
             mp_match_settings: None,
             mp_debriefing: None,
@@ -1422,7 +1720,24 @@ impl FrontEnd {
             enabled_sound_flags: 0x0b,
             /// The handlers' `menu_movie` static: set once the open pair has played, reset by the
             /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
-            menu_movie: false };
+            net_notice: None,
+            menu_movie: false,
+            // net-online-lobby (each new field on its own line [WORKLOG lesson 4]).
+            mp_net_port: 27420,
+            mp_hosting: false,
+            mp_net_addr: String::new(),
+            mp_net_clip: String::new(),
+            mp_net_state: MpNetState::Idle,
+            mp_net_error: None,
+            mp_net_timeout: 0,
+            mp_session: None,
+            mp_lobby_choices: None,
+            mp_host_published: None,
+            // attract-mode (each new field on its own line [WORKLOG lesson 4]).
+            attract_playing: false,
+            attract_movie: 0,
+            attract_toggle: false,
+            attract_opener: Page::Start };
         // The boot opens P_START: the pair plays with `menu_movie` clear [M P_START 0x20a408:12-22;
         // the game's boot path P_INTRO → P_START replays it the same way — the intro movie end
         // clears the static [M 0x209e88:44,58]].
@@ -1514,11 +1829,18 @@ impl FrontEnd {
             Page::Difficulty => DIFFICULTIES.len(),
             Page::MissionSelect => CAMPAIGN.len(),
             Page::Records => CAMPAIGN.len(),        // the Records list walks the campaign [M 0x217248:11-13]
+            // The Rewards list is the same 12 sp_level records [M P_DSREWARDS 0x2172c8:11-13
+            // Menu_AddItemsToControl(…, 0xc, …)]. The wheels' ranges are their own init messages
+            // [M C_SBDSGTSCROLL 0x20bcc0:64-67 msg 0x27 (0, 0xd); C_SBDSWPSCROLL 0x20bab0:64-68
+            // msg 0x27 (0, 0x1a)] = the tables' row counts.
             // fix-menus-real: the dossier wheel's four rows from the game's own table 0x2dfcd0
             // [L ACTION.ELF .data dump: {0x300019b, 0x280 Records}, {0x300019c, 0x281 Rewards},
             // {0x30000c4, 0x282 Gadgets}, {0x30000ee, 0x19c Weapons}; C_SBDOSSIER 0x216eb0:48-49
             // walks it].
             Page::Dossier => 4,
+            Page::Rewards => CAMPAIGN.len(),
+            Page::Gadgets => GADGETS_TABLE.len(),
+            Page::Weapons => WEAPONS_TABLE.len(),
             Page::Options => 3,                    // the options page stubs three rows [S]
             Page::CnSelect => 2 + self.profiles.len(),
             Page::CnMenu => CN_MENU.len(),
@@ -1546,6 +1868,13 @@ impl FrontEnd {
             // The four Join panels — the cursor walks the agents; agents 2-4 stay unjoined (no
             // pads in the port; the game joins them through their own controllers [M msg 0x6a]).
             Page::MpJoin => 4,
+            // net-online-lobby: the mode choice's three rows; the host page's Port + Start
+            // Listening; the join page's one address row; the lobby mirror has no wheel rows
+            // (the lines draw through mp_lobby_lines) [S §2].
+            Page::MpMode => 3,
+            Page::MpHost => 2,
+            Page::MpNetJoin => 1,
+            Page::MpLobby => 1,
             Page::MpScenario => MP_SCENARIO_ROWS.len(),
             Page::MpMap => MP_MAP_ROWS.len(),
             // The setup page drives agent 1's single pick row (the game's per-agent lists live on
@@ -1583,6 +1912,11 @@ impl FrontEnd {
             Page::Difficulty => bind(DIFFICULTIES[row.min(2)]),
             Page::MissionSelect => bind(CAMPAIGN.get(row).map_or(0, |c| c.1)),   // +0x04 name [M 0x1f8388]
             Page::Records => bind(CAMPAIGN.get(row).map_or(0, |c| c.1)),          // the list is sp_level's names [M 0x217248:11-13]
+            // The Rewards list is sp_level's names [M 0x2172c8:11-13]; the wheels' five visible rows
+            // bind the table's +0x04 labels [M Menu_UpdateWheel 0x1f8388:174-203].
+            Page::Rewards => bind(CAMPAIGN.get(row).map_or(0, |c| c.1)),
+            Page::Gadgets => bind(GADGETS_TABLE.get(row).map_or(0, |g| g.1)),
+            Page::Weapons => bind(WEAPONS_TABLE.get(row).map_or(0, |w| w.1)),
             // The dossier wheel's own name labels [L table 0x2dfcd0; C_SBDOSSIER 0x216eb0:48-49].
             Page::Dossier => bind([0x280, 0x281, 0x282, 0x19c][row.min(3)]),
             Page::Options => ["Screen adjust", "Controls", "Back"][row.min(2)].into(),
@@ -1626,18 +1960,26 @@ impl FrontEnd {
                 5 => if self.mp_join[row.min(3)].ready { bind(0x39c) } else { bind(0x1e9) },
                 _ => bind(0x1e8),
             },
+            // net-online-lobby: the port-only pages' own literals [S §2 — the game has no labels
+            // for pages it never had; the draw code composes them with the status line].
+            Page::MpMode => ["Local", "Host Online", "Join Online"][row.min(2)].into(),
+            Page::MpHost => ["Port", "Start Listening"][row.min(1)].into(),
+            Page::MpNetJoin => String::new(),   // the address row draws its own text (mp_net_addr)
+            Page::MpLobby => String::new(),     // the mirror draws through mp_lobby_lines
             Page::MpScenario => {
                 let r = row.min(MP_SCENARIO_ROWS.len() - 1);
                 if self.mp_scenario_locked(r) { bind(MP_LOCKED_SCENARIO_DESC) } else { bind(MP_SCENARIO_ROWS[r].1) }
             }
             Page::MpMap => bind(MP_MAP_ROWS.get(row).map_or(0, |r| r.1)),
             // The setup page's one row is agent 1's pick: the team (the game's list items are
-            // Phoenix 0x1c7 / MI6 0x1c8 [M P_MPSETUP 0x20d7a8]) or the character name.
+            // Phoenix 0x1c7 / MI6 0x1c8 [M P_MPSETUP 0x20d7a8]), the character name, or the
+            // handicap's own .data string [D 0x30d390..0x30d3c8 — C_RBMPSETUP adds them as raw
+            // strings, not Txt labels].
             Page::MpSetup => {
-                if self.mp_setup_state == 2 {
-                    bind([0x1c7, 0x1c8][self.mp_setup_sel.min(1)])
-                } else {
-                    bind(MP_CHARACTERS[self.mp_setup_sel.min(MP_CHARACTERS.len() - 1)].1)
+                match self.mp_setup_state {
+                    2 => bind([0x1c7, 0x1c8][self.mp_setup_sel.min(1)]),
+                    4 => MP_HANDICAPS[self.mp_setup_sel.min(MP_HANDICAPS.len() - 1)].1.into(),
+                    _ => bind(MP_CHARACTERS[self.mp_setup_sel.min(MP_CHARACTERS.len() - 1)].1),
                 }
             }
             Page::MpOptions => bind(MP_OPTIONS_ROWS.get(row).map_or(0, |r| r.1)),
@@ -1698,6 +2040,12 @@ impl FrontEnd {
             Page::MpPlayerMods => vec![143.0, 175.0, 207.0, 239.0, 271.0],
             Page::MpEnviroMods => vec![143.0, 177.0, 209.0, 241.0, 273.0],
             Page::MpBotSetup => (0..8).map(|i| 85.0 + 32.0 * i as f32).collect(),
+            // net-online-lobby: the port-only pages' hit rows (the draw contract's y's, 640
+            // space) [S §4 — the y's live here AND in the doc, so the draw code and the mouse
+            // cannot drift apart].
+            Page::MpMode => vec![143.0, 175.0, 207.0],
+            Page::MpHost => vec![143.0, 175.0],
+            Page::MpNetJoin => vec![160.0],
             _ => return None,
         })
     }
@@ -1769,8 +2117,15 @@ impl FrontEnd {
         // Value rows: the ◀ / ▶ columns step the value; the rest of an action row confirms.
         if let Some(ys) = self.list_rows_y() {
             if !ys.iter().any(|&y0| y >= y0 - 6.0 && y < y0 + 22.0) { return false; }
-            let is_action = matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv)
-                && self.opt_rows().get(self.cursor).is_some_and(|r| r.kind == OptKind::Action);
+            let is_action = match self.page {
+                Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().get(self.cursor).is_some_and(|r| r.kind == OptKind::Action),
+                // net-online-lobby: the mode page's rows, the host Start row and the join address
+                // row are actions (a click confirms); the host's port row keeps the value columns
+                // [S §4].
+                Page::MpMode | Page::MpNetJoin => true,
+                Page::MpHost => self.cursor == 1,
+                _ => false,
+            };
             if is_action { return self.action(Action::Confirm); }
             if (340.0..400.0).contains(&x) { return self.action(Action::Left); }
             if (400.0..600.0).contains(&x) { return self.action(Action::Right); }
@@ -1913,6 +2268,10 @@ impl FrontEnd {
             self.intro_playing = false;
             self.menu_movie = false; // the intro movie end clears menu_movie [M P_INTRO 0x209e88:44,58]
             self.intro_index = 0;
+            // attract-mode: the main menu's 0x4c resets the count here [M P_MAIN 0x20a7b0:37
+            // `Menu_ResetNoInputCount`] — the game's 45 s clock starts at the main menu's open,
+            // not at the START press.
+            self.no_input_frames = 0;
         }
         // credits-data: the credits page's 0x50 tick; the delayed 0x44/0x5f exit routes the page
         // [M P_CREDITS_Handler 0x2152b0:103-195 — ToMain = msg 0x44/0x40000002 after the win path,
@@ -1920,10 +2279,17 @@ impl FrontEnd {
         if self.page == Page::Credits {
             if let Some(exit) = self.credits.tick() {
                 match exit {
-                    crate::credits::CreditsExit::ToMain => { self.enter_page(Page::Main); self.cursor = 0; }
+                    crate::credits::CreditsExit::ToMain => {
+                        self.enter_page(Page::Main); self.cursor = 0;
+                        // attract-mode: the re-opened page's 0x4c resets the count [M the 0x44
+                        // open runs P_MAIN's 0x4c — 0x20a7b0:37 Menu_ResetNoInputCount].
+                        self.no_input_frames = 0;
+                    }
                     crate::credits::CreditsExit::PopBack(from) => {
                         self.page = Page::from_id(from).unwrap_or(Page::Main);
                         self.cursor = 0;
+                        // [M the 0x5f re-open rides 0x44 lparam 5 → the opener's 0x4c reset]
+                        self.no_input_frames = 0;
                     }
                 }
             }
@@ -1932,7 +2298,62 @@ impl FrontEnd {
         if matches!(self.page, Page::Start | Page::Main) {
             self.press_start_on = self.flow.ticks % 240 < 120;
         }
+        // net-online-lobby: drive the online session once per menu tick — the host publishes its
+        // choices when they change, the join side walks Connecting → lobby → match start [S
+        // docs/systems/net-online-lobby.md §2-3].
+        self.mp_net_poll();
+        // (the `!self.intro_playing` fire guard below: the port flips the page to Main before the
+        // intro plays, but the game's P_INTRO page is the up-page during the movies and never
+        // checks the count — the fire must wait for the real page's 0x4c, whose reset lands in
+        // the intro-cleanup block above.)
         self.no_input_frames = self.no_input_frames.saturating_add(1);
+        // attract-mode: the title's and main menu's no-input timeout fires on the tick the count
+        // reaches 0xa8c [M P_START 0x20a408 / P_MAIN 0x20a7b0 — `Menu_GetNoInputCount() == 0xa8c`
+        // sends 0x44/0x40000035; `Menu_AlphaUpdate` 0x1f3170 increments `frame_counter` before the
+        // pages' 0x50 run, so the fire tick reads exactly 0xa8c]. Only these two pages check
+        // [M the only `Menu_GetNoInputCount` callers], and the attract page itself never re-fires.
+        if !self.attract_playing
+            && !self.intro_playing
+            && matches!(self.page, Page::Start | Page::Main)
+            && self.no_input_frames == ATTRACT_FRAMES
+        {
+            self.attract_open();
+        }
+    }
+
+    /// attract-mode: the timeout's open — `Manager_SendMessage(own page, 0x44, 0x40000035, 0)`
+    /// [M P_START 0x20a408 / P_MAIN 0x20a7b0]. The manager pushes the opener [M 0x21c858 case
+    /// 0x44] and hands the attract page its 0x4c [M `P_ATTRACT_Handler` 0x20a1f0]: `movie.291`
+    /// 0x30d368 toggles, the movie code is picked (the opener id arrives as the 0x4c's param_6
+    /// [M 0x21c858:345]), the menu-music pair is removed and `psiStartBackgroundMovie(code, 0,
+    /// vol)` replaces the looping backdrop on the one BGFMV slot — the host does the movie and
+    /// the music through `movie::Player` / the sound layer, this only tracks the state.
+    fn attract_open(&mut self) {
+        self.attract_opener = self.page;
+        self.attract_toggle = !self.attract_toggle; // [M movie.291 0x30d368]
+        // [M 0x20a1f0's 0x4c pick: `(param_6 != 0x40000002) || movie_291` → A, else B]
+        self.attract_movie = if !matches!(self.attract_opener, Page::Main) || self.attract_toggle {
+            ATTRACT_MOVIE_A
+        } else {
+            ATTRACT_MOVIE_B
+        };
+        self.attract_playing = true;
+    }
+
+    /// attract-mode: the movie's end — `P_ATTRACT_Handler`'s 0x50 sees `psiMovieFinished` 0x1082e8
+    /// [M 0x20a1f0:39-54]: the menu-music pair restarts (`SFXStart(0x1d7,0)`/`SFXStart(0x470,0)`
+    /// — the host applies it when the menu music lands), the input block lifts (0x68/0), then
+    /// `Manager_SendMessage(own page, 0x5f, 0, 0)` re-opens the stacked opener [M 0x21c858 case
+    /// 0x5f], whose 0x4c resets the no-input count [M `Menu_ResetNoInputCount` at 0x20a408's
+    /// tail / 0x20a7b0:37]. The host calls this when its player finished; the skip funnels here
+    /// too (the game's StopMovie → the same 0x50 path on the next tick — the port collapses the
+    /// pair). A no-op when the attract is not up.
+    pub fn attract_movie_finished(&mut self) {
+        if !self.attract_playing { return; }
+        self.attract_playing = false;
+        self.attract_movie = 0;
+        self.page = self.attract_opener;
+        self.no_input_frames = 0; // [M the opener's 0x4c Menu_ResetNoInputCount]
     }
 
     /// The pause page opens over a running mission (the game's GS_PauseGame [M 0x17d178 pauses the
@@ -2204,6 +2625,68 @@ impl FrontEnd {
         Some(if k(2) && k(3) && k(4) { (0x307, 0x0300_013e) } else if k(2) && k(3) { (0x306, 0x0300_013f) } else if k(2) { (0x308, 0x0300_0140) } else { (0x309, 0x0300_013d) })
     }
 
+    /// One Dossier wheel row's page — the C_SBDOSSIER 0x216eb0:12-31 map the Confirm action walks.
+    pub fn dossier_row_page(row: usize) -> Page {
+        match row { 0 => Page::Records, 1 => Page::Rewards, 2 => Page::Gadgets, _ => Page::Weapons }
+    }
+
+    /// The Rewards page's four bonus rows for campaign row `row`: `(shown, caption label, stamp
+    /// texture)` [M C_RBDSREWARDS 0x20c248:21-74 — the caption/texture pair comes from
+    /// Menu_GetLevelBonuses 0x1ffe98's struct (RewardsTable entry +0x1c/+0x30, see
+    /// REWARD_BONUS), shown via msg 0x2b/2 with the texture msg 0x24; the gates are CUMULATIVE:
+    /// row k shows only when Medals 1..k are all earned (the handler's flag chain). No profile →
+    /// nothing is shown.]
+    pub fn reward_rows(&self, row: usize) -> [(bool, u32, u32); 4] {
+        let hash = nf_game::progress::SP_LEVEL_HASHES.get(row).copied().unwrap_or(0);
+        let medal = |k: u32| self.profile.as_ref().map_or(false, |p| p.progress.has_medal(hash, k, 0));
+        let mut all = true;
+        let mut out = [(false, 0u32, 0u32); 4];
+        for (k, slot) in (1u32..=4).zip(out.iter_mut()) {
+            all = all && medal(k);
+            let bonus = &REWARD_BONUS.get(row).copied().unwrap_or_default()[k as usize - 1];
+            *slot = (all, bonus.0, bonus.1);
+        }
+        out
+    }
+
+    /// One wheel row's bound data: `(preview texture, name label, description label, upgrade
+    /// caption, unlocked)` [M Menu_UpdateWheel 0x1f8388 — the preview control's msg 0x24 takes
+    /// +0x00, the five wheel rows bind +0x04, the description control binds +0x08 when +0x10 ≠ 0
+    /// (else +0x14, and the preview dims to 0x60606060); the upgrade caption is the selected
+    /// row's handler compose: C_SBDSGTSCROLL 0x20bcc0:75-111 / C_SBDSWPSCROLL 0x20bab0:76-89 —
+    /// `sprintf("%s\n%s", desc, Txt_BindLabel(cap))` (the format string 0x30d358 is "%s\n%s" [D])
+    /// when `Menu_GetObjectUpgradeLevel` 0x2025f8's level ≠ 0].
+    pub fn wheel_row(&self, row: usize, table: &[(u32, u32, u32, u32)]) -> (u32, u32, u32, Option<u32>, bool) {
+        let Some(&(preview, name, desc, object)) = table.get(row) else { return (0, 0, 0, None, false) };
+        let unlocked = true; // every boot-state row reads +0x10 = 1 [L]; no runtime writer found [S]
+        let level = self.profile.as_ref().map_or(0, |p| p.progress.object_upgrade_level(object as u32, 0));
+        let cap = if object == 0 && table.len() == WEAPONS_TABLE.len() { None } else if table.len() == GADGETS_TABLE.len() { gadget_suffix(object as u32).filter(|_| level != 0) } else { weapon_suffix(object as u32, level) };
+        (preview, name, desc, cap, unlocked)
+    }
+
+    /// The Gadgets wheel's row `row` [M ds_gadgets 0x2e0150; the suffix map 0x20bcc0:82-104].
+    pub fn gadget_row(&self, row: usize) -> (u32, u32, u32, Option<u32>, bool) { self.wheel_row(row, &GADGETS_TABLE) }
+
+    /// The Weapons wheel's row `row`, with row 0 = the overview P_DSWEAPONS rewrites [M
+    /// 0x217038:11-33 — ds_weapons[0] +0x00/+0x04/+0x08 per `Menu_GetObjectUpgradeLevel(0, 0)`,
+    /// the watch's 3-member gold group → levels 0..3].
+    pub fn weapon_row(&self, row: usize) -> (u32, u32, u32, Option<u32>, bool) {
+        if row != 0 { return self.wheel_row(row, &WEAPONS_TABLE); }
+        let (preview, name, desc) = self.weapon_overview_row();
+        (preview, name, desc, None, true)
+    }
+
+    /// The Weapons overview row [M P_DSWEAPONS 0x217038:11-33's level table].
+    pub fn weapon_overview_row(&self) -> (u32, u32, u32) {
+        let level = self.profile.as_ref().map_or(0, |p| p.progress.object_upgrade_level(0, 0)).min(3);
+        match level {
+            1 => (0x0300_014f, 0x3c5, 0x3c6),
+            2 => (0x0300_00f2, 0x33e, 0x35a),
+            3 => (0x0300_0150, 0x3c7, 0x3c8),
+            _ => (0x0300_00f3, 0x33d, 0x359),
+        }
+    }
+
     /// The intro movie the P_INTRO run currently shows [M 0x209e88's movie_283 counter].
     pub fn intro_movie_code(&self) -> u32 { INTRO_MOVIES[self.intro_index.min(INTRO_MOVIES.len() - 1)] }
 
@@ -2411,6 +2894,21 @@ impl FrontEnd {
 
     /// One menu action. Returns true when the action changed the state.
     pub fn action(&mut self, a: Action) -> bool {
+        // attract-mode: while the attract movie plays the game blocks the page input — msg 0x68
+        // cleared the queued actions and the 0x22 dispatcher is gated on the manager's block byte
+        // [M 0x21c858 case 0x68 `Input_ClearAllActions`; 0x21c3d8:70] — and polls the skip action
+        // 0x19 directly [M 0x21c3d8:40-43 → `Menu_StopMovie(0)` 0x215a50]. The port's Confirm is
+        // the 0x19 stand-in (the intro's mapping): stopping the movie makes the page's next 0x50
+        // see `psiMovieFinished` and send 0x5f — the port collapses the pair into
+        // [`Self::attract_movie_finished`]. Other actions are swallowed and do NOT reach the
+        // counter (the game's `Menu_InputAction` never runs for them here).
+        if self.attract_playing {
+            if a == Action::Confirm {
+                self.attract_movie_finished();
+                return true;
+            }
+            return false;
+        }
         self.no_input_frames = 0; // [M Menu_ResetNoInputCount on every handled input]
         // The intro movie is up: action 0x19 (X/Start — Enter here) skips it [M GameFlow_Main
         // 0x1c98c8 case 6 pops the movie state on `Input_Action(-1, 0x19)`]; other input does
@@ -2429,7 +2927,7 @@ impl FrontEnd {
         // grid cursor; elsewhere they keep the old Back / Confirm meaning. The MP wheels
         // (scenario/map/options/bots) keep the remap.
         let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv | Page::CnName
-            | Page::MpJoin | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup | Page::ScreenAdjust | Page::Pause)) {
+            | Page::MpJoin | Page::MpHost | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup | Page::ScreenAdjust | Page::Pause)) {
             (Action::Left, false) => Action::Back,
             (Action::Right, false) => Action::Confirm,
             (a, _) => a,
@@ -2670,10 +3168,11 @@ impl FrontEnd {
                 // page; the driver's observed order NightFire → Select Codename → Select Difficulty →
                 // Single Player].
                 (Action::Confirm, 0) => { self.enter_page(Page::Codename); self.cursor = 0; return true; }
-                // Multiplayer → the Join page [M C_GOMULTIPLAYER 0x216a78 sends the delayed
-                // msg 0x44 → 0x40000019 after 0x13 frames; the port flips at once like the other
-                // page changes].
-                (Action::Confirm, 1) => { self.enter_page(Page::MpJoin); self.cursor = 0; return true; }
+                // Multiplayer → the port's mode choice [S net-online-lobby — the game's own route
+                // C_GOMULTIPLAYER 0x216a78 sends the delayed msg 0x44 → 0x40000019 after 0x13
+                // frames; the port asks Local / Host Online / Join Online first and the Local row
+                // keeps the game's page].
+                (Action::Confirm, 1) => { self.enter_page(Page::MpMode); self.cursor = 0; return true; }
                 // Codenames → Edit Codename, on the Default row [M C_GOCODENAMES 0x216b38:37 → page 0x4000001b; L PCSX2 m29].
                 (Action::Confirm, 2) => { self.enter_page(Page::CnSelect); self.cursor = 1; return true; }
                 (Action::Back, _) => { self.enter_page(Page::Start); self.cursor = 0; return true; }
@@ -2774,9 +3273,14 @@ impl FrontEnd {
                 Action::Confirm => {
                     // The wheel's row opens its page [M C_SBDOSSIER 0x216eb0:12-31 — index 0 →
                     // 0x4000003a Records, 1 → 0x4000003b Rewards, 2 → 0x4000003c Gadgets,
-                    // 3 → 0x4000003d Weapons; the port draws Records, the rest are reported].
-                    if self.cursor == 0 { self.enter_page(Page::Records); self.cursor = self.mission.min(CAMPAIGN.len() - 1); return true; }
-                    return false;
+                    // 3 → 0x4000003d Weapons]. Every page's init resets its scroll to row 0
+                    // [M the wheel controls' own MSG 0x2e (0,0) [D page data] + P_DSGADGETS
+                    // 0x217190:10's explicit reset; P_DSREWARDS/P_DSRECORDS leave the list at
+                    // GameState+0x72's row — the port keeps the cursor at the mission].
+                    let to = Self::dossier_row_page(self.cursor);
+                    self.enter_page(to);
+                    self.cursor = if to == Page::Records { self.mission.min(CAMPAIGN.len() - 1) } else { 0 };
+                    return true;
                 }
                 Action::Back | Action::Side => { self.enter_page(Page::MissionSelect); return true; }
                 _ => {}
@@ -2789,6 +3293,40 @@ impl FrontEnd {
                 Action::Up => { self.cursor = (self.cursor + CAMPAIGN.len() - 1) % CAMPAIGN.len(); return self.focus_moved(); }
                 Action::Down => { self.cursor = (self.cursor + 1) % CAMPAIGN.len(); return self.focus_moved(); }
                 Action::Back | Action::Confirm | Action::Side => { self.enter_page(Page::Dossier); self.cursor = 0; return true; }
+                Action::Extra => {}
+            },
+            // The three pages the Dossier wheel's rows 1-3 open. Their scrolls are the game's own
+            // M_SCROLLs: Up/Down step ±1 and CLAMP (the wrap flag +0x144 is set only by msg 0x69,
+            // which no menu-def control carries [M Scroll_Update 0x2221b20:186-210,
+            // Scroll_SendMessage 0x222810:136-139]); every move notifies the owner (msg 0x49) which
+            // rebinds; Confirm does nothing (no handler arm [M C_RBDSREWARDS 0x20c248, the wheel
+            // handlers' 0x51 arm is the INIT]); Back/□ return to the Dossier (the Records page's
+            // mapping; no handler overrides the manager's default back [S]).
+            Page::Rewards => match a {
+                Action::Left | Action::Right => {}
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                Action::Down if self.cursor + 1 < CAMPAIGN.len() => { self.cursor += 1; return true; }
+                Action::Up | Action::Down => return false,   // clamped [M 0x2221b20:186-210]
+                Action::Back | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
+                Action::Confirm => return false,             // no select arm [M 0x20c248]
+                Action::Extra => {}
+            },
+            Page::Gadgets => match a {
+                Action::Left | Action::Right => {}
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                Action::Down if self.cursor + 1 < GADGETS_TABLE.len() => { self.cursor += 1; return true; }
+                Action::Up | Action::Down => return false,
+                Action::Back | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
+                Action::Confirm => return false,
+                Action::Extra => {}
+            },
+            Page::Weapons => match a {
+                Action::Left | Action::Right => {}
+                Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                Action::Down if self.cursor + 1 < WEAPONS_TABLE.len() => { self.cursor += 1; return true; }
+                Action::Up | Action::Down => return false,
+                Action::Back | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
+                Action::Confirm => return false,
                 Action::Extra => {}
             },
             Page::Options => match a {
@@ -3014,6 +3552,54 @@ impl FrontEnd {
                 Action::Extra => {}
             },
             // ── mp-menu-flow: the multiplayer front end ──
+            // net-online-lobby: the port's mode choice [S docs/systems/net-online-lobby.md §2 —
+            // the game's Multiplayer row lands straight on 0x40000019; the port asks Local /
+            // Host Online / Join Online first, and row 0 keeps the game's own page].
+            Page::MpMode => {
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < 3 => { self.cursor += 1; return true; }
+                    Action::Confirm => {
+                        match self.cursor.min(2) {
+                            // Local: the game's own couch flow, from the top [M the pre-port
+                            // route C_GOMULTIPLAYER 0x216a78 → 0x40000019].
+                            0 => { self.page = Page::MpJoin; self.cursor = 0; return true; }
+                            1 => { self.mp_net_state = MpNetState::Idle; self.mp_net_error = None; self.page = Page::MpHost; self.cursor = 0; return true; }
+                            _ => { self.mp_net_state = MpNetState::Idle; self.mp_net_error = None; self.page = Page::MpNetJoin; self.cursor = 0; return true; }
+                        }
+                    }
+                    Action::Back => { self.page = Page::Main; self.cursor = 1; return true; }
+                    _ => {}
+                }
+            }
+            // The host setup: the port number + Start Listening [S §2.1].
+            Page::MpHost => {
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < 2 => { self.cursor += 1; return true; }
+                    // ◀ ▶ step the port ±1, clamped to the legal UDP range [S — a free number,
+                    // not the game's list values].
+                    Action::Left if self.cursor == 0 => { self.mp_net_port = self.mp_net_port.saturating_sub(1).max(1024); return true; }
+                    Action::Right if self.cursor == 0 => { self.mp_net_port = (self.mp_net_port + 1).min(65535); return true; }
+                    Action::Confirm if self.cursor == 1 => { return self.mp_host_begin(); }
+                    Action::Confirm => {}   // the port row's ✕ does nothing
+                    Action::Back => { self.mp_net_cancel(); self.page = Page::MpMode; self.cursor = 1; return true; }
+                    _ => {}
+                }
+            }
+            // The join address page: the typing rides mp_net_type / mp_net_backspace /
+            // mp_net_paste (the keyboard layer routes around action()), ✕ = Connect [S §2.2].
+            Page::MpNetJoin => {
+                match a {
+                    Action::Confirm => { return self.mp_net_dial(); }
+                    Action::Back => { self.mp_net_cancel(); self.page = Page::MpMode; self.cursor = 2; return true; }
+                    _ => {}
+                }
+            }
+            // The client's lobby: read-only — the mirror updates in the tick, Back leaves [S §2.2].
+            Page::MpLobby => {
+                if a == Action::Back { self.mp_net_cancel(); self.page = Page::MpMode; self.cursor = 2; return true; }
+            }
             // Join Game [M P_MPJOIN 0x20ca00 + C_RBMPSTART 0x20d048 + C_RBMPCNAME 0x20d448].
             // Keyboard = agent 1 only: the game joins agents 2-4 through their own pads (msg 0x6a
             // with the controller id), which the port has none of. The panel cursor picks the
@@ -3057,13 +3643,34 @@ impl FrontEnd {
                             // mpjoin+1 = 1 and fades; P_MPJOIN's msg-0x50 arm checks
                             // Menu_MPAreWeReady → page 0x4000001a].
                             5 if !self.mp_join[0].ready => { self.mp_join[0].ready = true; self.enter_page(Page::MpScenario); self.cursor = 0; return true; }
+                            // net-online-lobby: while hosting, the host's own panel is ready by
+                            // definition (mp_host_begin set it) — ✕ walks to the scenario page
+                            // [S §2.1; the game's ready gate is the arm above].
+                            5 if self.mp_hosting => { self.enter_page(Page::MpScenario); self.cursor = 0; return true; }
                             _ => {}
                         }
+                    }
+                    // net-online-lobby: while hosting, △ leaves the host lobby and cancels the
+                    // session cleanly [S §2.1 — the local △ arm below is the couch un-join].
+                    Action::Back if self.mp_hosting => {
+                        self.mp_net_cancel();
+                        self.page = Page::MpMode;
+                        self.cursor = 1;
+                        return true;
                     }
                     // △ leaves [M C_RBMPSTART's 0x6b arm un-joins state-1 agents; C_RBMPCNAME's
                     // 0x6b un-chooses codenames].
                     Action::Back if can_join && self.mp_join[0].state != 0 => {
                         self.mp_join[0] = MpJoinAgent::default();
+                        return true;
+                    }
+                    // net-online-lobby: △ with nothing joined pops the page — the game's msg-0x6b
+                    // close sends the delayed Manager 0x5f pop, so the under-page shows [M
+                    // 0x20ca00's 0x6b arm → 0x5f(1); in the port's stack that under-page is the
+                    // mode choice (S — the game's own under-page is Main)].
+                    Action::Back if can_join => {
+                        self.page = Page::MpMode;
+                        self.cursor = 0;
                         return true;
                     }
                     _ => {}
@@ -3115,34 +3722,70 @@ impl FrontEnd {
                     _ => {}
                 }
             }
-            // The per-agent team/character page [M P_MPSETUP 0x20d7a8 + C_RBMPSETUP 0x20de58].
-            // Keyboard = agent 1: ◀ ▶ move the pick, ✕ confirms (state 3 → 4 team, 2 → 3 character
-            // — the game's C_RBMPSETUP:0x4b steps 2 → 3 and 3 → 4).
+            // The per-agent team/character/handicap page [M P_MPSETUP 0x20d7a8 + C_RBMPSETUP
+            // 0x20de58]. Keyboard = agent 1: ◀ ▶ move the pick, ✕ confirms (the game's
+            // C_RBMPSETUP:0x4b steps 2 → 3 → 4 → 5; state 4's list is the 8 handicap nodes).
             Page::MpSetup => {
-                let n = if self.mp_setup_state == 2 { 2usize } else { MP_CHARACTERS.len() };
+                let n = match self.mp_setup_state {
+                    2 => 2usize,
+                    4 => MP_HANDICAPS.len(),
+                    _ => MP_CHARACTERS.len(),
+                };
                 match a {
                     Action::Left if self.mp_setup_sel > 0 => { self.mp_setup_sel -= 1; return true; }
                     Action::Right if self.mp_setup_sel + 1 < n => { self.mp_setup_sel += 1; return true; }
                     Action::Confirm => {
-                        if self.mp_setup_state == 2 {
+                        match self.mp_setup_state {
                             // The team list: the selection IS the team [M P_MPSETUP's items
-                            // Phoenix(0x1c7) = 0 / MI6(0x1c8) = 1 → mpjoin+4].
-                            self.mp_join[0].team = self.mp_setup_sel as u32;
-                            self.mp_setup_state = 3;
-                            self.mp_setup_sel = 0;
-                            return true;
+                            // Phoenix(0x1c7) = 0 / MI6(0x1c8) = 1 → mpjoin+4]. State 3 re-selects
+                            // the agent's stored skin [M 0x4b's msg-0x1e of mpjoin+8].
+                            2 => {
+                                self.mp_join[0].team = self.mp_setup_sel as u32;
+                                self.mp_setup_state = 3;
+                                self.mp_setup_sel = self.mp_join[0].skin as usize;
+                                return true;
+                            }
+                            // The character list → mpjoin+8; state 4 builds the handicap list and
+                            // re-selects MPSettings+slot·0x30+0x2c [M 0x4b's state-3 arm].
+                            3 => {
+                                self.mp_join[0].skin = self.mp_setup_sel as u32;
+                                self.mp_setup_state = 4;
+                                self.mp_setup_sel = MP_HANDICAPS.iter().position(|h| h.0 == self.mp_handicap).unwrap_or(3);
+                                return true;
+                            }
+                            // The handicap pick lands in MPSettings+slot·0x30+0x2c, mpjoin+1 = 1
+                            // and state 5; when every joined agent is done the page changes to
+                            // 0x40000012 [M 0x4b's state-4 arm + Menu_MPAreWeReady 0x1f78d8 → the
+                            // 0x44/0x40000012 send]. The port's one keyboard agent is the only
+                            // joined human, so ready follows immediately.
+                            4 => {
+                                self.mp_handicap = MP_HANDICAPS[self.mp_setup_sel.min(MP_HANDICAPS.len() - 1)].0;
+                                self.mp_setup_state = 5;
+                                self.mp_join[0].ready = true;
+                                self.enter_page(Page::MpOptions);
+                                self.cursor = 0;
+                                self.mp_options_row = 0;
+                                return true;
+                            }
+                            _ => return false,
                         }
-                        // The character list [M C_RBMPSETUP's msg-0x35 → mp_characters_small row;
-                        // mpjoin+8 = the id]. All picked → the options hub (P_MPOPTIONS expects
-                        // 0x40000051 as its source [M 0x217678:12]).
-                        self.mp_join[0].skin = self.mp_setup_sel as u32;
-                        self.mp_setup_state = 4;
-                        self.enter_page(Page::MpOptions);
-                        self.cursor = 0;
-                        self.mp_options_row = 0;
+                    }
+                    // The game's back walks the prompts: 4 → 3 always, 3 → 2 only in team games
+                    // [M C_RBMPSETUP 0x20de58's 0x6b arm]; at 2 the page pops back to the map wheel.
+                    Action::Back => {
+                        match self.mp_setup_state {
+                            4 => {
+                                self.mp_setup_state = 3;
+                                self.mp_setup_sel = self.mp_join[0].skin as usize;
+                            }
+                            3 if self.mp_scenario & 0x2000_0000 != 0 => {
+                                self.mp_setup_state = 2;
+                                self.mp_setup_sel = self.mp_join[0].team as usize;
+                            }
+                            _ => { self.enter_page(Page::MpMap); }
+                        }
                         return true;
                     }
-                    Action::Back => { self.enter_page(Page::MpMap); return true; }
                     _ => {}
                 }
             }
@@ -3201,7 +3844,15 @@ impl FrontEnd {
                     Action::Down if self.cursor + 1 < 5 => { self.cursor += 1; return self.focus_moved(); }
                     Action::Left => { self.mp_envmods_step(-1); return true; }
                     Action::Right => { self.mp_envmods_step(1); return true; }
-                    Action::Confirm | Action::Back => { self.enter_page(Page::MpOptions); self.cursor = 0; return true; }
+                    // The game's msg-0x4b writes every row's current node value back on close [M
+                    // P_MPENVIROMODS 0x210030's stores 0x210424/0x210444/0x210464/0x21047c/0x210498]:
+                    // the locked row's only node is 0x10 ("Locked") so a visit leaves +0x1D4 = 0x10;
+                    // unlocked, a stale 0x10 falls to the first-added node (On, 1) [M
+                    // List_SendMessage 0x2196e8's msg-0x1e no-match keeps the first node current].
+                    Action::Confirm | Action::Back => {
+                        self.mp_envmods[2] = if self.mp_explosive_unlocked() { self.mp_envmods[2].min(1) } else { 0x10 };
+                        self.enter_page(Page::MpOptions); self.cursor = 0; return true;
+                    }
                     _ => {}
                 }
             }
@@ -3440,9 +4091,75 @@ impl FrontEnd {
         match self.cursor.min(4) {
             0 => { self.mp_envmods[0] = (self.mp_envmods[0] as i32 + dir).rem_euclid(3) as u32; }
             1 => { self.mp_envmods[1] = (self.mp_envmods[1] as i32 ^ 1) as u32; }
-            2 => { self.mp_envmods[2] = (self.mp_envmods[2] as i32 ^ 1) as u32; }
+            // Explosive Scenery: the locked row's list holds ONE node (0x10 "Locked"), so ◀ ▶
+            // cannot move it — a no-op [M P_MPENVIROMODS 0x210030's mp_stuff[0x370]==0 branch
+            // binds the single 0x10 node and the page has no 0x49 arm]. Unlocked the list is
+            // On(1)/Off(0) and a stale 0x10 falls to the first node (On) [M List_SendMessage
+            // 0x2196e8's msg-0x1e no-match keeps the first-added node current].
+            2 => {
+                if self.mp_explosive_unlocked() {
+                    self.mp_envmods[2] = if self.mp_envmods[2] > 1 { 1 } else { self.mp_envmods[2] ^ 1 };
+                }
+            }
             3 => { self.mp_envmods[3] = (self.mp_envmods[3] as i32 ^ 1) as u32; }
             _ => { self.mp_envmods[4] = (self.mp_envmods[4] as i32 + dir).rem_euclid(4) as u32; }
+        }
+    }
+
+    /// mp_stuff[0x370] @0x2df2d0, the Explosive-Scenery unlock byte [M Menu_UnlockMPSettings
+    /// 0x1ff698: cleared, then set iff some (level, counter) reward is type 3 id 0x3e; on the
+    /// shipped RewardsTable that is exactly level 0x07000014 counter 3 [D 0x2bc920 row 10 — the
+    /// only type-3 entry], unlocked = mask bit 0x3e]. P_MPSCENARIO 0x217348 recomputes it on every
+    /// page enter, so a pure read is equivalent. The unlock-everything cheat does NOT set it [M
+    /// menu_unlock_everything never touches the bonus words].
+    pub fn mp_explosive_unlocked(&self) -> bool { self.mp_bonus_mask >> 0x3e & 1 != 0 }
+
+    /// The Enviro-Mods rows' value labels — P_MPENVIROMODS 0x210030's msg-0x4c node lists [M the
+    /// msg-0x10 binds]: row 0 view distance 0x1b0/0x1b1/0x1b2 at 0/1/2, row 1 (+0x1B8) and row 4
+    /// (+0x1D0) On(0x1b7)/Off(0x1b6), row 3 (+0x1D4) the locked branch's single 0x1000076
+    /// "Locked" node (value 0x10) vs unlocked On/Off, vehicles (+0x1CC)
+    /// 0x1b6/0x10002d8/0x10002d9/0x1b2.
+    pub fn mp_enviro_value_label(&self, row: usize) -> u32 {
+        let v = |i: usize| self.mp_envmods[i.min(4)];
+        match row.min(4) {
+            0 => [0x1b0, 0x1b1, 0x1b2][v(0).min(2) as usize],
+            1 => if v(1) != 0 { 0x1b7 } else { 0x1b6 },
+            2 => if !self.mp_explosive_unlocked() { 0x0100_0076 }
+                 else if v(2) == 0 { 0x1b6 } else { 0x1b7 },
+            3 => if v(3) != 0 { 0x1b7 } else { 0x1b6 },
+            _ => [0x1b6, 0x0100_02d8, 0x0100_02d9, 0x1b2][v(4).min(3) as usize],
+        }
+    }
+
+    /// The setup prompt's label id — the msg-0x18 binds to 0x100001a2 [M P_MPSETUP 0x20d7a8 binds
+    /// 0x37c (team) / 0x37d (character) on enter; C_RBMPSETUP 0x20de58 rebinds them on its
+    /// transitions and 0x296 (Health Handicap — the same label P_CNMPOPTIONS 0x2144d8 uses for its
+    /// per-profile handicap row) entering state 4].
+    pub fn mp_setup_prompt_label(&self) -> u32 {
+        match self.mp_setup_state { 2 => MP_SETUP_TEAM_PROMPT, 4 => 0x296, _ => MP_SETUP_CHAR_PROMPT }
+    }
+
+    /// The prompt's image (the msg-0x24 id on 0x100001a0): team Phoenix 0x30001a3 / MI6 0x30001a2
+    /// [M C_RBMPSETUP's 0x49/0x54 arm — value 1 binds 0x30001a2, else 0x30001a3; the entry bind is
+    /// [S] — the page-def or the first scroll sets it], character = the character row's preview
+    /// [M Menu_GetItemFromHash(0x2df8f8, value, 0x1d) → item+0], handicap = 0x30001a1 (the green
+    /// cross) [M the state-4 arm's 0x24 bind].
+    pub fn mp_setup_image(&self) -> u32 {
+        match self.mp_setup_state {
+            2 => [0x0300_01a3, 0x0300_01a2][self.mp_setup_sel.min(1)],
+            4 => 0x0300_01a1,
+            _ => MP_CHARACTERS[self.mp_setup_sel.min(MP_CHARACTERS.len() - 1)].0,
+        }
+    }
+
+    /// The current list item's text: the team/character labels through Lang, the handicap's own
+    /// .data string [D 0x30d390..0x30d3c8 — raw strings, not Txt labels].
+    pub fn mp_setup_value_text<'a>(&self, lang: Option<&'a Lang>) -> String {
+        let bind = |id: u32| lang.and_then(|l| l.bind(id)).map(str::to_string).unwrap_or_else(|| format!("<{id:#x}>"));
+        match self.mp_setup_state {
+            2 => bind([0x1c7, 0x1c8][self.mp_setup_sel.min(1)]),
+            4 => MP_HANDICAPS[self.mp_setup_sel.min(MP_HANDICAPS.len() - 1)].1.into(),
+            _ => bind(MP_CHARACTERS[self.mp_setup_sel.min(MP_CHARACTERS.len() - 1)].1),
         }
     }
 
@@ -3514,11 +4231,12 @@ impl FrontEnd {
         self.mp_friendly_fire = 0;            // [M +0x198 = 0]
         self.mp_weapon_set = 0;               // [M +0x1B4 = 0]
         self.mp_radar = 1;                    // [M +0x1C4 = 1]
-        self.mp_player_mods = [0, 0];         // [M +0x1D4 = 0, +0x1CC = 0]
-        self.mp_envmods[0] = 1;               // [M +0x1D0 = 0, +0x1C0 = Far(1)? — the quick start writes 2 at +0x1CC; view distance keeps the Far default]
+        self.mp_player_mods = [0, 0];         // [M the quick start writes neither +0x1BC nor +0x1C8 — the boot values 0/1 persist]
+        self.mp_envmods[0] = 2;               // [M the quick start never writes +0x1C0 — the boot value 2 (Random) persists]
         self.mp_envmods[1] = 0;
+        self.mp_envmods[2] = 0;               // [M 0x20c748: +0x1D4 = 0]
         self.mp_envmods[3] = 0;
-        self.mp_envmods[4] = 0;
+        self.mp_envmods[4] = 2;               // [M 0x20c734: +0x1CC = 2 = Helicopters (Car_Create 0x1305b0:29-40 spawns choppers on 2)]
         // The map sample: `Rand_Random() % 7` over mp_level rows 0..6 — never Ravine [M
         // 0x20c76c-0x20c7b4]. Headless determinism: the shared RNG is not wired here, so the port
         // takes row 0 (Skyrail) and records the gap [S — the game's sample is random].
@@ -3578,6 +4296,9 @@ impl FrontEnd {
         s.bot_count = bots;
         s.weapon_set = self.mp_weapon_set;
         s.radar = self.mp_radar;
+        // [M P_MPCONFIRM 0x20ec00's msg-0x4b: 0x20f708 andi 1 → 0x20f710 sw — Explosive Scenery
+        // masks to 0/1 at match start, so the locked page's stale 0x10 can never arm it]
+        self.mp_envmods[2] &= 1;
         s.master = 1;                             // [M +0x180 = 1]
         s.total_players = humans as u32 + bots;   // [M MP_Start 0x183a50:164]
         s.team_game = (self.mp_scenario >> 29) & 1;   // [M MP_Init 0x183438:41 — the core re-derives]
@@ -3585,7 +4306,12 @@ impl FrontEnd {
             if !slot.joined { continue; }
             s.players[i] = nf_game::mp::MpPlayer { team: slot.team, skin: slot.skin, armor_bonus: 0, codename: slot.codename.clone() };
         }
-        self.mp_match_settings = Some(s);
+        self.mp_match_settings = Some(s.clone());
+        // net-online-lobby: while hosting, the settings ride the session — the clients' poll
+        // turns them into their own handover [S docs/systems/net-online-lobby.md §2.1].
+        if self.mp_hosting {
+            if let Some(sess) = self.mp_session.as_mut() { sess.start_match(&s.clone()); }
+        }
         // [M the match-start calls] — the level request + the fade push; MenuManager_Delete is
         // the host closing the overlay once the load leaves the front-end map.
         self.requested_level = Some(self.mp_level);
@@ -3716,6 +4442,290 @@ impl FrontEnd {
             Page::MpBotChoose => self.mp_character_locked(row),
             _ => false,
         }
+    }
+
+    // ── net-online-lobby: the online Host / Join flow (docs/systems/net-online-lobby.md) ──────
+
+    /// The lobby codename this machine shows in its own panel: the active profile's codename,
+    /// else the game's template "Player 1" [M C_RBMPCNAME 0x20d448's default row — Txt 0x1c3 +
+    /// sprintf "%s %d" @0x30d388 with slot+1].
+    fn mp_net_codename(&self) -> String {
+        self.active_profile.clone().unwrap_or_else(|| "Player 1".into())
+    }
+
+    /// Host: the Start Listening row [S §2.1]. Arms host mode: the session binds the port, the
+    /// host's own panel (slot 0) joins with the lobby codename (state 5, ready — the game's own
+    /// join is pad-side and the host needs no pick to run the flow), and the page becomes the
+    /// game's own Join Game page. Without a session the page stays and reports it (the status
+    /// line reads mp_net_error).
+    pub fn mp_host_begin(&mut self) -> bool {
+        self.mp_net_error = None;
+        let codename = self.mp_net_codename();
+        let Some(sess) = self.mp_session.as_mut() else {
+            self.mp_net_error = Some(MpNetError::Denied);
+            return false;
+        };
+        sess.set_codename(&codename);
+        match sess.listen(self.mp_net_port.min(65535) as u16) {
+            Ok(()) => {
+                self.mp_hosting = true;
+                self.mp_host_published = None;
+                self.mp_join[0] = MpJoinAgent {
+                    state: 5, joined: true, ready: true, team: 0, skin: 0,
+                    codename_row: 0, codename: codename.clone(),
+                };
+                self.page = Page::MpJoin;
+                self.cursor = 0;
+                true
+            }
+            Err(e) => { self.mp_net_error = Some(e); false }
+        }
+    }
+
+    /// Back / cancel on any online page: the session closes, host mode drops, the panels and
+    /// the mirror reset [S §2 — "Back cancels cleanly"]. The local flow never calls this.
+    pub fn mp_net_cancel(&mut self) {
+        if let Some(sess) = self.mp_session.as_mut() { sess.close(); }
+        self.mp_hosting = false;
+        self.mp_net_state = MpNetState::Idle;
+        self.mp_net_error = None;
+        self.mp_net_timeout = 0;
+        self.mp_lobby_choices = None;
+        self.mp_host_published = None;
+        self.mp_join = std::array::from_fn(|_| MpJoinAgent::default());
+    }
+
+    /// Join: the Connect action [S §2.2]. A usable address (mp_net_addr_ok) starts the
+    /// handshake and the page shows Connecting… (the tick's countdown makes it TimedOut at
+    /// MP_NET_TIMEOUT_TICKS); anything else keeps the page and reports it.
+    pub fn mp_net_dial(&mut self) -> bool {
+        self.mp_net_error = None;
+        let addr = self.mp_net_addr.trim().to_string();
+        if !mp_net_addr_ok(&addr) {
+            self.mp_net_error = Some(MpNetError::BadAddress);
+            return false;
+        }
+        let codename = self.mp_net_codename();
+        let Some(sess) = self.mp_session.as_mut() else {
+            self.mp_net_error = Some(MpNetError::Denied);
+            return false;
+        };
+        sess.set_codename(&codename);
+        match sess.connect(&addr) {
+            Ok(()) => {
+                self.mp_net_state = MpNetState::Dialing;
+                self.mp_net_timeout = MP_NET_TIMEOUT_TICKS;
+                true
+            }
+            Err(e) => { self.mp_net_error = Some(e); false }
+        }
+    }
+
+    /// The per-tick session drive [S §2-3]: the host keeps the transport fed and republishes
+    /// its choices when they changed; the join side walks Dialing → (Connected → the lobby) /
+    /// Refused / TimedOut, mirrors the lobby and hands the match over when the host starts it.
+    /// The fake (tests) and the real session (051) both ride this.
+    pub fn mp_net_poll(&mut self) {
+        if self.mp_session.is_none() { return; }
+        if self.mp_hosting {
+            self.mp_session.as_mut().unwrap().poll();
+            let c = self.mp_net_choices();
+            if self.mp_host_published.as_ref() != Some(&c) {
+                self.mp_session.as_mut().unwrap().publish_choices(&c);
+                self.mp_host_published = Some(c);
+            }
+            self.mp_net_mirror_agents();
+        }
+        match self.mp_net_state {
+            MpNetState::Dialing => {
+                self.mp_net_timeout = self.mp_net_timeout.saturating_sub(1);
+                self.mp_session.as_mut().unwrap().poll();
+                let link = self.mp_session.as_ref().unwrap().link();
+                match link {
+                    MpNetLink::Connected => {
+                        self.mp_net_state = MpNetState::InLobby;
+                        self.page = Page::MpLobby;
+                        self.cursor = 0;
+                        // The mirror is current the moment the lobby opens (the next tick
+                        // keeps it live in the InLobby arm below).
+                        self.mp_net_mirror_agents();
+                        self.mp_lobby_choices = self.mp_session.as_ref().unwrap().host_choices();
+                    }
+                    MpNetLink::Refused => {
+                        self.mp_net_state = MpNetState::Refused;
+                        self.mp_session.as_mut().unwrap().close();
+                    }
+                    MpNetLink::TimedOut => {
+                        self.mp_net_state = MpNetState::TimedOut;
+                        self.mp_session.as_mut().unwrap().close();
+                    }
+                    _ if self.mp_net_timeout == 0 => {
+                        self.mp_net_state = MpNetState::TimedOut;
+                        self.mp_session.as_mut().unwrap().close();
+                    }
+                    _ => {}
+                }
+            }
+            MpNetState::InLobby => {
+                self.mp_session.as_mut().unwrap().poll();
+                // The host went away: back to the address page cleanly [S §2.2].
+                if self.mp_session.as_ref().unwrap().link() == MpNetLink::Lost {
+                    self.mp_net_cancel();
+                    self.page = Page::MpNetJoin;
+                    return;
+                }
+                self.mp_net_mirror_agents();
+                self.mp_lobby_choices = self.mp_session.as_ref().unwrap().host_choices();
+                // The match start: the same handover the host's confirm page runs [M
+                // mp_confirm_start's tail — P_MPCONFIRM 0x20ec00:53-94].
+                if let Some(s) = self.mp_session.as_ref().unwrap().match_started() {
+                    self.mp_client_start(s.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The session's agents mirrored into the game's own mp_join panels [S §3 — the existing
+    /// panel getters, the start checks (C_SBMPOPTIONS 0x20e818:50-130) and the confirm lines all
+    /// read mp_join, so network agents need nothing new]. Slots 1..3 = panels 2-4; slot 0 is
+    /// this machine's agent (the host joined it at mp_host_begin; the client mirrors it).
+    fn mp_net_mirror_agents(&mut self) {
+        let agents: Vec<MpNetAgent> = self.mp_session.as_ref().unwrap().agents();
+        if !self.mp_hosting && self.mp_net_state != MpNetState::InLobby { return; }
+        if !self.mp_hosting {
+            if let Some(me) = agents.iter().find(|a| a.slot == 0) {
+                if !self.mp_join[0].joined {
+                    self.mp_join[0] = MpJoinAgent {
+                        state: 5, joined: true, ready: true, team: 0, skin: 0,
+                        codename_row: 0, codename: me.codename.clone(),
+                    };
+                }
+            }
+        }
+        // The remote agents land in panels 2-4, joined and ready on arrival [S §2.1]; an agent
+        // the session no longer reports un-joins its panel.
+        for slot in 1..4usize {
+            match agents.iter().find(|a| a.slot == slot) {
+                Some(ag) => {
+                    let j = &mut self.mp_join[slot];
+                    if !j.joined || j.codename != ag.codename {
+                        *j = MpJoinAgent {
+                            state: 5, joined: true, ready: ag.ready, team: 0, skin: 0,
+                            codename_row: 0, codename: ag.codename.clone(),
+                        };
+                    }
+                }
+                None => { if self.mp_join[slot].joined { self.mp_join[slot] = MpJoinAgent::default(); } }
+            }
+        }
+    }
+
+    /// The host's current lobby choices as the publishable struct [S §3 — the words the mirror
+    /// page shows; the names ride the shared tables on every machine].
+    pub fn mp_net_choices(&self) -> MpNetChoices {
+        MpNetChoices {
+            scenario: self.mp_scenario,
+            level: self.mp_level,
+            weapon_set: self.mp_weapon_set,
+            radar: self.mp_radar,
+            friendly_fire: self.mp_friendly_fire,
+            frag_limit: self.mp_frag_limit,
+            time_limit: self.mp_time_limit,
+            player_mods: self.mp_player_mods,
+            envmods: self.mp_envmods,
+        }
+    }
+
+    /// The client's match handover — the host's confirm-page tail [M mp_confirm_start's
+    /// handover] with the settings as the host published them [S §2.2].
+    fn mp_client_start(&mut self, s: nf_game::mp::MpSettings) {
+        self.mp_match_settings = Some(s.clone());
+        self.requested_level = Some(s.level_code);
+        self.flow.reset_map_level_to_load(s.level_code, false, false);
+        self.flow.push_state(ST_FADE_HOLD);
+        self.mp_net_state = MpNetState::Idle;
+        self.mp_hosting = false;
+    }
+
+    /// The lobby mirror's lines for the draw code — the confirm page's own pairs (Map 0x3d4,
+    /// Scenario 0x3d5, Weapon Set 0x24d, the limit line 0x3d8/0x3d7, Duration 0x3d6, Friendly
+    /// Fire 0x3da [M P_MPCONFIRM's enter builds the same pairs]) built from the host's last
+    /// published choices. Empty strings until the first publish arrives.
+    pub fn mp_lobby_lines(&self, lang: Option<&Lang>) -> [(u32, String); 6] {
+        let bind = |id: u32| lang.and_then(|l| l.bind(id)).map(str::to_string).unwrap_or_else(|| format!("<{id:#x}>"));
+        let c = self.mp_lobby_choices.clone().unwrap_or_default();
+        let map_row = MP_MAP_ROWS.iter().find(|r| r.3 == c.level);
+        let scen_row = MP_SCENARIO_ROWS.iter().find(|r| r.3 == c.scenario);
+        let limit = if c.scenario == 0x10 { 0x3d7 } else { 0x3d8 };
+        [
+            (0x3d4, map_row.map_or(String::new(), |r| bind(r.1))),
+            (0x3d5, scen_row.map_or(String::new(), |r| bind(r.1))),
+            (0x24d, bind(MP_WEAPON_SETS[c.weapon_set.min(10) as usize])),
+            (limit, if c.frag_limit >= 0 { c.frag_limit.to_string() } else { bind(0x3ca) }),
+            (0x3d6, if c.time_limit == -1 { bind(0x3ca) } else { c.time_limit.to_string() }),
+            (0x3da, bind(if c.friendly_fire != 0 { 0x1b7 } else { 0x1b6 })),
+        ]
+    }
+
+    /// The online pages' status line for the draw code, None = nothing to say [S §2 — port-only
+    /// pages, so the strings are the port's own literals].
+    pub fn mp_net_status(&self) -> Option<&'static str> {
+        let err = match self.mp_net_error {
+            Some(MpNetError::BadAddress) => Some("Enter an address as IP:PORT"),
+            Some(MpNetError::Busy) => Some("Port already in use"),
+            Some(MpNetError::Denied) => Some("No network session is wired"),
+            None => None,
+        };
+        match self.page {
+            Page::MpHost => err.or(if self.mp_hosting { Some("Listening") } else { None }),
+            Page::MpNetJoin => match self.mp_net_state {
+                MpNetState::Dialing => Some("Connecting..."),
+                MpNetState::Refused => Some("Connection refused"),
+                MpNetState::TimedOut => Some("Connection timed out"),
+                _ => err,
+            },
+            Page::MpLobby => if self.mp_lobby_choices.is_none() { Some("Waiting for the host...") } else { None },
+            _ => None,
+        }
+    }
+
+    /// The address page's typing: digits, dots, the colon, capped at 22 chars [S §2.2]. Returns
+    /// whether the character landed (the page is the join address page and the set fits).
+    pub fn mp_net_type(&mut self, c: char) -> bool {
+        if self.page != Page::MpNetJoin { return false; }
+        if !(c.is_ascii_digit() || c == '.' || c == ':') { return false; }
+        if self.mp_net_addr.chars().count() >= 22 { return false; }
+        self.mp_net_addr.push(c);
+        true
+    }
+
+    /// The address page's Backspace — the keyboard layer routes it BEFORE the menu's Back
+    /// (key_action maps the physical key to Back) [S §2.2].
+    pub fn mp_net_backspace(&mut self) -> bool {
+        if self.page != Page::MpNetJoin { return false; }
+        self.mp_net_addr.pop();
+        true
+    }
+
+    /// Ctrl+C: copy the typed address into the page's own clipboard [S §2.2 — the system
+    /// clipboard needs a crate; see the report].
+    pub fn mp_net_copy(&mut self) -> bool {
+        if self.page != Page::MpNetJoin { return false; }
+        self.mp_net_clip = self.mp_net_addr.clone();
+        true
+    }
+
+    /// Ctrl+V: paste a "simple" string — anything that is not a digit, dot or colon is dropped,
+    /// then the 22-char cap applies [S §2.2]. Returns whether anything landed.
+    pub fn mp_net_paste(&mut self, s: &str) -> bool {
+        if self.page != Page::MpNetJoin { return false; }
+        let room = 22usize.saturating_sub(self.mp_net_addr.chars().count());
+        if room == 0 { return false; }
+        let take: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '.' || *c == ':').take(room).collect();
+        if take.is_empty() { return false; }
+        self.mp_net_addr.push_str(&take);
+        true
     }
 }
 
@@ -3898,6 +4908,18 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             }
             hint_bar(&mut h, font, &hint(0x49b, "~A Confirm  ~V Change  ~B Back"), 50.0, 419.0, cream);
             quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+            // net-match-host: the session's message box (the game's Menu_CreateOptionBox error
+            // box [M mp-menus]; the port-only texts have no label ids, so the string draws raw
+            // [S]). The page under it is the lobby (MpJoin) — the failure path set it.
+            if let Some(t) = &fe.net_notice {
+                quad640(&mut h, 0x0300_0199, 120.0, 196.0, 400.0, 88.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+                let lines: Vec<String> = t.split('\n').flat_map(|p| wrap_px(p, font, mx(360.0))).collect();
+                let n = lines.len().min(3) as f32;
+                for (k, l) in lines.iter().take(3).enumerate() {
+                    let mid = 240.0 + (k as f32 - (n - 1.0) / 2.0) * 22.0;
+                    centred(&mut h, font, -2, l, mx(320.0), my(mid), cream, true, 1.0);
+                }
+            }
         }
         // The MP wheels with the codename wheel's layout [L pages 0x40000012 (header 0x2c4 Scenario Options),
         // 0x40000027 / 0x4000003f (header 0x294 Multiplayer Bot Setup); hint 0x218; PCSX2 m55, m56, m57, m61, m63].
@@ -4195,7 +5217,89 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             // Only the logo [L 0x10000001 (434,38,156×43) TEX 0x0300016d] — this page has no ring stamp.
             quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
         }
+        Page::Rewards => {
+            // The Dossier's Rewards table [M menu-def PAGE 0x4000003b (parsed 2026-10-15): header
+            // LBL 0x281 (50,40,376×17); hint LBL 0x49e; the spinner 0x1000017a (132,93,376×16)
+            // filled from sp_level [M P_DSREWARDS 0x2172c8:11-13]; the four stamp controls
+            // 0x100001d6..d9 (76,130/202/274/346, 51×51) + captions 0x100001d2..d5 (137,147/219/291/
+            // 363, 453×16) — runtime-filled by C_RBDSREWARDS 0x20c248 (texture msg 0x24 from
+            // RewardsTable+0x30..+0x3c, caption msg 0x18 from +0x1c..+0x28, hidden until their
+            // cumulative medal chain); the logo. The stamp UVs are the draw pass's to verify.]
+            page_header(&mut h, hfont, &bind(0x281));
+            let m = fe.cursor.min(CAMPAIGN.len() - 1);
+            label(&mut h, font, &bind(CAMPAIGN[m].1), 132.0, 93.0, 376.0, 16.0, bright, true, 1.0);
+            for (i, (shown, cap, tex)) in fe.reward_rows(m).into_iter().enumerate() {
+                if !shown { continue; }
+                quad640(&mut h, tex, 76.0, 130.0 + i as f32 * 72.0, 51.0, 51.0, [0.0, 0.0, 128.0, 128.0], gs(0x7f7f7f, 0xff));
+                label(&mut h, font, &bind(cap), 137.0, 147.0 + i as f32 * 72.0, 453.0, 16.0, bright, true, 1.0);
+            }
+            hint_bar(&mut h, font, &hint(0x49e, "~V Change  ~B Back"), 50.0, 419.0, cream);
+            quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+        }
+        Page::Gadgets => {
+            // The Dossier's Gadgets wheel [M menu-def PAGE 0x4000003c (parsed 2026-10-15): header
+            // LBL 0x282; hint 0x49f; panel TEX 0x030000b3 (50,53,590×295); the preview 0x1000016c
+            // (114,118,150×150) f1 0x1d UNDER the ring 0x1000016d f1 0x1c TEX 0x030000bf; the five
+            // wheel rows 0x1000016a; the description plate 0x1000016b (50,301,540×113). The rows,
+            // preview and description come from ds_gadgets 0x2e0150 [L ee_start_05.bin] via
+            // Menu_UpdateWheel 0x1f8388 + the upgrade caption compose of C_SBDSGTSCROLL 0x20bcc0.]
+            page_header(&mut h, hfont, &bind(0x282));
+            panel(&mut h);
+            let row = fe.cursor.min(GADGETS_TABLE.len() - 1);
+            let (preview, _name, desc, cap, unlocked) = fe.gadget_row(row);
+            emblem_col(&mut h, preview, 0x0300_00bf, if unlocked { cream } else { gs(0x7f7f7f, 0x60) }, cream); // [M 0x1f8388's locked 0x60606060]
+            wheel(&mut h, fe, font, lang, |_fe, r| bind(GADGETS_TABLE[r.min(GADGETS_TABLE.len() - 1)].1), cream);
+            let mut text = bind(desc);
+            if let Some(c) = cap { text.push('\n'); text.push_str(&bind(c)); }   // [M "%s\n%s" 0x30d358]
+            desc_block(&mut h, font, &text, bright);
+            hint_bar(&mut h, font, &hint(0x49f, "~V Scroll  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
+        Page::Weapons => {
+            // The Dossier's Weapons wheel [M menu-def PAGE 0x4000003d (parsed 2026-10-15): header
+            // LBL 0x19c; hint 0x49f; the ring 0x1000016e f1 0x1c TEX 0x030000bf with the preview
+            // 0x10000170 f1 0x1d UNDER it; the five wheel rows 0x10000171; the description plate
+            // 0x10000172 (50,301,540×113). Rows from ds_weapons 0x2dfec8 [L ee_start_05.bin]; row 0
+            // is the overview P_DSWEAPONS 0x217038 rewrites per the watch's upgrade level.]
+            page_header(&mut h, hfont, &bind(0x19c));
+            panel(&mut h);
+            let row = fe.cursor.min(WEAPONS_TABLE.len() - 1);
+            let (preview, _name, desc, cap, unlocked) = fe.weapon_row(row);
+            emblem_col(&mut h, preview, 0x0300_00bf, if unlocked { cream } else { gs(0x7f7f7f, 0x60) }, cream);
+            wheel(&mut h, fe, font, lang, |fe, r| bind(fe.weapon_row(r.min(WEAPONS_TABLE.len() - 1)).1), cream);
+            let mut text = bind(desc);
+            if let Some(c) = cap { text.push('\n'); text.push_str(&bind(c)); }
+            desc_block(&mut h, font, &text, bright);
+            hint_bar(&mut h, font, &hint(0x49f, "~V Scroll  ~B Back"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
         Page::Options => { page_rows(&mut h, fe, font, "OPTIONS", dim, bright); }
+        // net-online-lobby: the port-only online pages — the stand-in draw below is NOT the
+        // task's layout (no drawing in this task's scope): it lists the same getters the draw
+        // code replaces, so the pages are never blank [S docs/systems/net-online-lobby.md §2].
+        Page::MpMode => { page_rows(&mut h, fe, font, "MULTIPLAYER", dim, bright); }
+        Page::MpHost | Page::MpNetJoin | Page::MpLobby => {
+            page_rows(&mut h, fe, font, match fe.page { Page::MpHost => "HOST ONLINE", Page::MpNetJoin => "JOIN ONLINE", _ => "LOBBY" }, dim, bright);
+            let mut y = 250.0f32;
+            match fe.page {
+                Page::MpHost => label(&mut h, font, &format!("Port  {}", fe.mp_net_port), 200.0, y, 240.0, 18.0, bright, true, 1.0),
+                Page::MpNetJoin => {
+                    let shown = if fe.mp_net_addr.is_empty() { "IP:PORT" } else { &fe.mp_net_addr };
+                    label(&mut h, font, shown, 200.0, y, 240.0, 18.0, bright, true, 1.0);
+                }
+                _ => {
+                    for (i, a) in fe.mp_join.iter().enumerate() {
+                        if a.joined { label(&mut h, font, &format!("{}  {}", i + 1, a.codename), 200.0, y, 280.0, 16.0, bright, true, 1.0); y += 16.0; }
+                    }
+                    for (lbl, val) in fe.mp_lobby_lines(lang) {
+                        if val.is_empty() { continue; }
+                        label(&mut h, font, &format!("{}  {}", bind(lbl), val), 200.0, y, 300.0, 16.0, bright, true, 1.0); y += 16.0;
+                    }
+                }
+            }
+            if let Some(s) = fe.mp_net_status() { label(&mut h, font, s, 200.0, 388.0, 240.0, 16.0, dim, true, 1.0); }
+            hint_bar(&mut h, font, &hint(0x218, "~A Select  ~B Back"), 50.0, 419.0, cream);
+        }
         Page::CnSelect => {
             // Edit Codename [L page 0x4000001b: header LBL 0x1f1, the codename wheel 0x100000ec, the emblem
             // 0x100001cd (preview) under 0x10000108 (ring), hint 0x20a; PCSX2 m29].
@@ -4951,6 +6055,26 @@ pub const PC_CONTROLS: [(&str, u32, &str); 13] = [
     ("G", 0x100_019f, "Cycle Gadget"), ("1 2 3", 0, "Select Weapon"), ("Esc", 0x100_01aa, "Pause"),
 ];
 
+/// The driving missions' keyboard + mouse bindings, the driving counterpart of `PC_CONTROLS`:
+/// (key, the game's action label id from USATxt.dat, the fallback text). The driving labels are
+/// the game's own controls vocabulary block, bank 0, ids 0x30a-0x315 [M USATxt.dat parsed with
+/// Lang::parse; 0x30a Gas, 0x30b Brake, 0x30c Steer Left-Right, 0x30d Fire, 0x30e "Cycle Weapon ",
+/// 0x30f Previous Weapon, 0x310 Next Weapon, 0x311 Use Gadget, 0x312 Look back, 0x313 Camera View,
+/// 0x314 E-Brake, 0x315 Pause; bank 1: 0x100032a Brake/Reverse, 0x100032b Handbrake; no
+/// secondary-fire or reload label exists — those two rows use id 0 + fallback like the on-foot
+/// table's port-only rows]. The keys are the port's mapping onto the game's driving actions
+/// [S docs/systems/driving-pc-input.md §3; the code is nf-game's
+/// `input::driving::{KeyboardMouse, pc_driving_bindings, PcDrivingInput}` — steering rides the
+/// analog axis because the game's digital steer actions are unconsumed, and the vehicle layer's
+/// own ramp (move_toward, 0.25/tick after a ±0.2 dead zone) shapes the digital input].
+pub const PC_DRIVING_CONTROLS: [(&str, u32, &str); 13] = [
+    ("A D / ← →", 0x30c, "Steer Left-Right"), ("W", 0x30a, "Gas"), ("S", 0x100_032a, "Brake/Reverse"),
+    ("Space", 0x314, "E-Brake"), ("L Click", 0x30d, "Fire"), ("B", 0, "Alt. Fire"),
+    ("Wheel ↑ / Q", 0x310, "Next Weapon"), ("Wheel ↓", 0x30f, "Previous Weapon"),
+    ("R Click / E", 0x311, "Use Gadget"), ("C", 0x313, "Camera View"), ("Tab / M3", 0x312, "Look back"),
+    ("R", 0, "Reload"), ("Esc", 0x315, "Pause"),
+];
+
 /// The PC port's key for a menu hint token: the game's ~A/~B/... button glyphs are PlayStation pad buttons
 /// (`specialchar` 0x2dd8d8); on PC the hint bars name the keyboard key `key_action` maps to that action instead (the
 /// user, 2026-10-15: "the controller layout is for Playstation controllers. But this is a PC port"). The objective
@@ -5248,6 +6372,29 @@ pub fn key_action(key: winit::keyboard::KeyCode) -> Option<Action> {
         KeyCode::Tab | KeyCode::KeyE => Action::Side,
         // ~Y/Triangle: the debriefing's Replay (C_MPDBG msg 0x5d) [M 0x217860:12-16]; a PC stand-in [S].
         KeyCode::KeyQ => Action::Extra,
+        _ => return None,
+    })
+}
+
+/// net-online-lobby: the join address page's typing keys — the digits, the dot and the colon
+/// (a colon is Shift+Semicolon on the US layout, and the physical key is what arrives) [S §2.2;
+/// the task's typed set is digits, dots, colon]. Numpad digits and the numpad decimal point
+/// count too.
+pub fn net_char_key(key: winit::keyboard::KeyCode) -> Option<char> {
+    use winit::keyboard::KeyCode;
+    Some(match key {
+        KeyCode::Digit0 | KeyCode::Numpad0 => '0',
+        KeyCode::Digit1 | KeyCode::Numpad1 => '1',
+        KeyCode::Digit2 | KeyCode::Numpad2 => '2',
+        KeyCode::Digit3 | KeyCode::Numpad3 => '3',
+        KeyCode::Digit4 | KeyCode::Numpad4 => '4',
+        KeyCode::Digit5 | KeyCode::Numpad5 => '5',
+        KeyCode::Digit6 | KeyCode::Numpad6 => '6',
+        KeyCode::Digit7 | KeyCode::Numpad7 => '7',
+        KeyCode::Digit8 | KeyCode::Numpad8 => '8',
+        KeyCode::Digit9 | KeyCode::Numpad9 => '9',
+        KeyCode::Period | KeyCode::NumpadDecimal => '.',
+        KeyCode::Semicolon => ':',
         _ => return None,
     })
 }

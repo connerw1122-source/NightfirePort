@@ -680,8 +680,11 @@ pub struct OtherPlayer {
 /// Every field carries its game origin; the collision world stands in for `BoundsTest` LOS
 /// (the same *Deviation* `nav.rs` documents).
 pub struct BotCtx<'a> {
-    /// `MPGame+0x412` — elapsed seconds (the port accumulates 1/60 per tick; the game samples
-    /// `psiGetTimeIn100ths` — the same *Deviation* as `mp::MpMatch::update`).
+    /// Kept for API compatibility, **ignored by `BotBrain::step`**: the brain's canonical clock
+    /// is its own 60 Hz tick counter (`self.tick as f32 / 60.0` — the same clock
+    /// `next_bullet_at` is stored on). A driver whose wall-clock accumulation drifts by ulps
+    /// (or a lockstep peer that derives it differently) must not be able to move sim state —
+    /// that was net-lockstep finding F4 (docs/systems/net-lockstep.md).
     pub now: f32,
     /// `MPSettings+0x420` — the scenario word.
     pub scenario: u32,
@@ -940,7 +943,11 @@ impl BotBrain {
                     if clear {
                         self.vars.sighted |= 4; // Drone+0x228 bit 2 [M]
                         self.vars.unseen_ticks = 0; // Drone+0x274
-                        self.vars.sight_stamp = ctx.now; // Drone+0x238
+                        // the brain's canonical clock: its own tick counter (60 Hz), NOT the
+                        // driver-supplied ctx.now — a lockstep host's wall-clock accumulation
+                        // must not reach sim state (net-lockstep finding F4). next_bullet_at is
+                        // already tick-derived; this aligns every time read with it.
+                        self.vars.sight_stamp = self.tick as f32 / 60.0; // Drone+0x238
                     } else {
                         self.vars.unseen_ticks = self.vars.unseen_ticks.saturating_add(1);
                     }
@@ -972,6 +979,96 @@ impl BotBrain {
             self.vars.state_type = state_type(next as u32);
             self.enter_state(next, rng);
         }
+    }
+
+    /// The brain's lockstep hash — every **live** state field, f32 as bit patterns
+    /// (`mp::hash::Hasher`). The brains are sim state: a lockstep host hashes them with the
+    /// match every tick (`docs/systems/net-lockstep.md`). The derived logs (`shots`,
+    /// `visited_pickups`, `trace`) hash as lengths only — they are pure functions of the live
+    /// state + the shared RNG stream, so a content divergence implies a hashed divergence.
+    pub fn state_hash(&self) -> u64 {
+        use crate::mp::hash::Hasher;
+        let mut h = Hasher::new();
+        let v = &self.vars;
+        h.u8(v.aggression);
+        h.u8(v.aim);
+        h.u16(v.max_hp);
+        h.u8(v.speed);
+        h.u8(v.weapon_class);
+        h.u8(v.trait_id);
+        h.u8(v.flags);
+        for g in &v.goals {
+            h.f32_slice(&g.celpos);
+            h.f32(g.scratch);
+            h.f32(g.start);
+            h.f32(g.duration);
+            h.f32(g.weight_health);
+            h.f32(g.weight_ammo);
+            h.f32(g.weight_weapon);
+            h.f32(g.objective_weight);
+            h.usize(g.target);
+            h.u8(g.fire_state);
+            h.u8(g.complete);
+            h.u8(g.goal_type);
+            h.u8(g.pref_byte);
+            h.u8(g.dist_limit as u8);
+            h.u8(g.route_code);
+            h.u8(g.active);
+            h.u8(g.subtype);
+        }
+        h.u8(v.active_goal);
+        h.u32(v.requested_state);
+        h.u32(v.pending_scratch);
+        h.u32(v.flag_word);
+        h.u32(v.regen_deadline);
+        h.u16(v.nav_node);
+        h.u16(v.slot as u16);
+        h.u16(v.bot_index as u16);
+        h.u8(v.state_type);
+        h.u8(v.weapon_id);
+        h.u8(v.announced_weapon);
+        h.u8(v.grudge as u8);
+        h.u8(v.last_pickup as u8);
+        h.u8(v.guard_near_flag);
+        h.u8(v.scan_flag);
+        h.u8(v.attack_latch);
+        match v.opponent {
+            None => h.u8(0),
+            Some(o) => {
+                h.u8(1);
+                h.usize(o);
+            }
+        }
+        h.u32(v.sighted);
+        h.u32(v.unseen_ticks);
+        h.f32(v.sight_stamp);
+        h.f32_slice(&v.combat_range);
+        h.u8(v.fire_latch);
+        h.u8(v.burst_empty);
+        h.u16(v.clip_rounds as u16);
+        h.f32(v.next_bullet_at);
+        h.u32(v.burst_left);
+        h.u16(v.resume_state);
+        h.u8(self.state);
+        h.f32_slice(&self.pos);
+        h.f32(self.yaw);
+        h.u32(self.tick);
+        h.i16(self.weapon.interval);
+        h.u16(self.weapon.burst);
+        h.f32(self.weapon.aggression_mul);
+        h.usize(self.shots.len());
+        h.usize(self.visited_pickups.len());
+        h.usize(self.trace.len());
+        h.usize(self.last_visit_stamp.0);
+        h.f32(self.last_visit_stamp.1);
+        match self.pending {
+            None => h.u8(0),
+            Some(p) => {
+                h.u8(1);
+                h.u8(p);
+            }
+        }
+        h.finish()
     }
 
     // ------------------------------------------------------------------
@@ -1066,7 +1163,7 @@ impl BotBrain {
 
     /// `BOTSTATE_setPickupVisitTime` 0x129958: `now + 45.0` (+0.1 if that is 0) [M :10-15].
     pub fn set_pickup_visit_time(&mut self, ctx: &BotCtx, pickup: usize) {
-        let mut t = ctx.now + 45.0;
+        let mut t = self.tick as f32 / 60.0 + 45.0;
         if t == 0.0 {
             t += 0.1;
         }
@@ -1103,7 +1200,7 @@ impl BotBrain {
         }
         {
             let g = &mut self.vars.goals[slot];
-            g.start = ctx.now;
+            g.start = self.tick as f32 / 60.0;
             g.duration = (FRAME_RATE_INT * 5) as f32; // [M 0x1278a8:50,58]
             g.fire_state = fire_state;
         }
@@ -1188,10 +1285,10 @@ impl BotBrain {
                     }
                 } else if visit != 0.0 {
                     // the visit decay [M :407-415]
-                    let mul = if visit >= ctx.now {
+                    let mul = if visit >= self.tick as f32 / 60.0 {
                         4500.0
                     } else {
-                        ((ctx.now - visit).abs() * 50.0).max(1.0)
+                        ((self.tick as f32 / 60.0 - visit).abs() * 50.0).max(1.0)
                     };
                     dist *= mul;
                 }
@@ -1258,7 +1355,7 @@ impl BotBrain {
             return false;
         }
         // the deadline [M :70]
-        if ctx.now > g.start + g.duration {
+        if self.tick as f32 / 60.0 > g.start + g.duration {
             // expiry: fire the goal state if I'm walking a goal state [M :216-221]
             if matches!(self.state, 0xEB | 0xF8) {
                 self.set_state_change(g.fire_state);
@@ -1479,7 +1576,9 @@ impl BotBrain {
             self.vars.requested_state = 0;
         }
         // HP regen [M :209-233]: +5 clamp to max, the +0x738 deadline re-arm
-        if self.vars.flags & 0x10 != 0 && ctx.now * FRAME_RATE_INT as f32 >= self.vars.regen_deadline as f32 {
+        // regen_deadline is a TICK count — compare ticks exactly (the old now*60 f32 fold
+        // drifted above 2^24; the tick compare is the same predicate, exact).
+        if self.vars.flags & 0x10 != 0 && self.tick as f32 >= self.vars.regen_deadline as f32 {
             self.vars.regen_deadline += FRAME_RATE_INT;
         }
         let ty = self.vars.state_type;
@@ -1495,7 +1594,7 @@ impl BotBrain {
                 let changed = self.process_goals(ctx);
                 if !changed && self.vars.opponent.is_some() {
                     // the 5 s sight latch [M :504-509]
-                    if ctx.now - self.vars.sight_stamp < 5.0 {
+                    if self.tick as f32 / 60.0 - self.vars.sight_stamp < 5.0 {
                         self.vars.sighted |= 4;
                     }
                     if self.vars.sighted & 4 != 0 {
@@ -1588,7 +1687,10 @@ impl BotBrain {
         self.pos[0] += dx / d * step;
         self.pos[1] += dy / d * step;
         self.pos[2] += dz / d * step;
-        self.yaw = dz.atan2(dx); // face the target
+        // the game's own ATAN2_APPROX (0x1e4528), not std libm: std's atan2/sin/cos differ by
+        // ulps across libm versions/platforms, which would desync lockstep peers at the aim-cone
+        // gate (dot <= 0.9998). Same convention: tangent dz/dx, same quadrants.
+        self.yaw = crate::trig::atan2_approx(dz, dx); // face the target
         1
     }
 
@@ -1756,7 +1858,7 @@ impl BotBrain {
         if self.vars.fire_latch == 0 || self.vars.next_bullet_at <= 0.0 {
             return;
         }
-        if (ctx.now * FRAME_RATE_INT as f32) < self.vars.next_bullet_at * FRAME_RATE_INT as f32 {
+        if (self.tick as f32 / 60.0) < self.vars.next_bullet_at {
             return; // now < the deadline
         }
         // the gates [M 0x17a080: unseen < 16; 0x178c48: opponent alive, ammo, the aim cone]
@@ -1773,7 +1875,9 @@ impl BotBrain {
         let d = (dx * dx + dz * dz).sqrt();
         let dir = [dx / d, 0.0, dz / d];
         // the aim cone [M 0x178c48: dot > 0.9998]
-        let facing = [self.yaw.cos(), 0.0, self.yaw.sin()];
+        // the game's PS2Sinf/PS2Cosf (0x120700) — see the ATAN2_APPROX note above: std trig is
+        // libm-dependent; the game's own approximations are not.
+        let facing = [crate::trig::cosf(self.yaw), 0.0, crate::trig::sinf(self.yaw)];
         let dot = facing[0] * dir[0] + facing[2] * dir[2];
         if dot <= 0.9998 {
             return;

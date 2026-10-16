@@ -1,0 +1,8 @@
+[package]
+name = "nf-net"
+description = "UDP lockstep MP session: handshake, per-tick input exchange with acks/redundancy, state-hash desync detection (docs/systems/net-lockstep.md)"
+version.workspace = true
+edition.workspace = true
+publish.workspace = true
+
+[dependencies]

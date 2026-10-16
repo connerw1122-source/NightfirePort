@@ -262,18 +262,43 @@ pub static REWARDS_TABLE: [RewardEntry; 12] = [
 /// (difficulty 1 → [0], 2 → [1], anything else → [2] [M `PlrStat_GetScore` 0x1984b0:294-300]).
 pub static SCORING_DIF_MUL: [f32; 3] = [0.0, 1.0, 2.0];
 
-/// A kind-4 descriptor's group lookup ([M 0x199210's kind-4 arm]): the entries whose FIRST
-/// descriptor shares the packed {bit, kind} u32 word form the group; this entry's effective bit is
-/// `bit + rank` within the group order. Returns `(bit, group_len, rank)`.
-fn gold_group(entry_idx: usize) -> (u16, usize, usize) {
-    let word = REWARDS_TABLE[entry_idx].desc[0].bit as u32 | ((REWARDS_TABLE[entry_idx].desc[0].kind as u32) << 16);
+/// A kind-4 descriptor's group lookup ([M `PlrStarts_ProcessRewardCounter` 0x199210:39-62 — the
+/// kind-4 arm scans every entry's descriptors 1..4 (`0x2bc924 + entry·0x40 + 4..0x14`) for the
+/// target descriptor's own packed {bit, kind} u32 word; the effective bit is `bit + rank`, the
+/// ordinal of the match at the scan position, and the group's set-bit count is the reward's
+/// "level"). `counter` is the descriptor slot being read (1..=4; slot 0 is never scanned — the
+/// game's counters run 1..5 exclusive). Returns `(base bit, group_len, rank)`.
+fn gold_group(entry_idx: usize, counter: usize) -> (u16, usize, usize) {
+    let d = REWARDS_TABLE[entry_idx].desc[counter];
+    let word = d.bit as u32 | ((d.kind as u32) << 16);
     let mut rank = 0;
     let mut len = 0;
     for (i, e) in REWARDS_TABLE.iter().enumerate() {
-        let w = e.desc[0].bit as u32 | ((e.desc[0].kind as u32) << 16);
-        if w == word { len += 1; if i < entry_idx { rank += 1; } }
+        for k in 1..5 {
+            let d2 = e.desc[k];
+            let w = d2.bit as u32 | ((d2.kind as u32) << 16);
+            if w == word {
+                len += 1;
+                if i < entry_idx || (i == entry_idx && k < counter) { rank += 1; }
+            }
+        }
     }
-    (REWARDS_TABLE[entry_idx].desc[0].bit + rank as u16, len, rank)
+    (d.bit + rank as u16, len, rank)
+}
+
+/// The kind-4 group's widened bits in scan order (entry-major, counter 1..4 minor) — the bits the
+/// game tests for the group's set count [M 0x199210:53-55 `1 << (bit + iVar9)`].
+fn gold_group_bits(entry_idx: usize, counter: usize) -> Vec<u16> {
+    let d = REWARDS_TABLE[entry_idx].desc[counter];
+    let word = d.bit as u32 | ((d.kind as u32) << 16);
+    let mut out = Vec::new();
+    for e in REWARDS_TABLE.iter() {
+        for k in 1..5 {
+            let d2 = e.desc[k];
+            if d2.bit as u32 | ((d2.kind as u32) << 16) == word { out.push(d.bit + out.len() as u16); }
+        }
+    }
+    out
 }
 
 /// The game's ceil with the 1e-5 epsilon: `(int)x`, then +1 when the dropped fraction is at
@@ -638,7 +663,7 @@ impl Progress {
         let Some(idx) = REWARDS_TABLE.iter().position(|e| e.hash == hash) else { return false };
         if counter == 0 || counter > 5 { return false; }
         let d = REWARDS_TABLE[idx].desc[counter as usize];
-        let bit = if d.kind == 4 { gold_group(idx).0 } else { d.bit };
+        let bit = if d.kind == 4 { gold_group(idx, counter as usize).0 } else { d.bit };
         if bit >= 0x3F { return false; }
         let m = &mut self.bonus[slot];
         if set { *m |= 1u64 << bit; }
@@ -651,7 +676,7 @@ impl Progress {
         let Some(idx) = REWARDS_TABLE.iter().position(|e| e.hash == hash) else { return false };
         if kind > 5 { return false; }
         let d = REWARDS_TABLE[idx].desc[kind as usize];
-        let bit = if d.kind == 4 { gold_group(idx).0 } else { d.bit };
+        let bit = if d.kind == 4 { gold_group(idx, kind as usize).0 } else { d.bit };
         if bit >= 0x3F { return false; }
         self.bonus[slot] & (1u64 << bit) != 0
     }
@@ -680,6 +705,30 @@ impl Progress {
                 self.nightfire_status |= 1 << (i + 1);
             }
         }
+    }
+
+    /// `Menu_GetObjectUpgradeLevel` 0x2025f8: the upgrade level (0..) of reward object `object`
+    /// in `bonus[slot]`. The game walks the campaign's 12 levels in order, counters 1..4
+    /// [M :60-84 — `sp_level+0xc` entries, `PlrStarts_ProcessRewardCounter(&bonus+slot, level,
+    /// counter, 0, &info)`], and on the FIRST kind-4 descriptor whose bit equals `object` and
+    /// whose (widened) bit is set returns the group's set-bit count [M :76-78 — `info`'s kind 4,
+    /// `uStack_8c == param_1`, returns `uStack_88`]. `object` ≥ 0x3f returns 0 [M :57]. The
+    /// Dossier's Gadgets/Weapons pages read it per row (object 0 = the watch upgrade, whose
+    /// 3-member gold group spans bits 0..2 → levels 0..3 [M P_DSWEAPONS 0x217038:11-33]).
+    pub fn object_upgrade_level(&self, object: u32, slot: usize) -> u32 {
+        if object >= 0x3f { return 0; }
+        for (ei, entry) in REWARDS_TABLE.iter().enumerate() {
+            for counter in 1..5 {
+                let d = entry.desc[counter];
+                if d.kind != 4 || d.bit as u32 != object { continue; }
+                let (_, _, rank) = gold_group(ei, counter);
+                let bits = gold_group_bits(ei, counter);
+                let set = |b: u16| self.bonus[slot] & (1u64 << b) != 0;
+                if !set(d.bit + rank as u16) { continue; }
+                return bits.iter().filter(|&&b| set(b)).count() as u32;
+            }
+        }
+        0
     }
 
     /// `Menu_GetNightfireStatus` 0x202360's packing: bit i of the 12 `sp_level[i]+0x10` flags.

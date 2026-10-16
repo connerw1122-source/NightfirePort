@@ -13314,6 +13314,22 @@ Stage Summary:
   menu_live 12 + menu_backdrop_still 1 + menu_movies 2 + menu_woman_live 5 + dev_menu_flow 1 green.
   New tests: nf-game mission_stats_rows 7 (incl. the 07000005 PCSX2 golden numbers) + nf-view
   mission_stats_flow 3.
+## dossier-pages-data (2026-10-15, branch s/dossier-pages-data) — start
+- (18:58 UTC) Task started: port the Dossier's Rewards / Gadgets / Weapons pages' data, state, flow and getters
+  (P_DSREWARDS_Handler 0x2172c8 + C_RBDSREWARDS_Handler 0x20c248, P_DSGADGETS_Handler 0x217190 +
+  C_SBDSGTSCROLL_Handler 0x20bcc0, P_DSWEAPONS_Handler 0x217038 + C_SBDSWPSCROLL_Handler 0x20bab0). No drawing —
+  data + Page variants + actions + getters + tests. Sandbox reused: repo, work/, ISO and nf-queue all present; branch
+  cut from origin/master 0157588d.
+- (20:15) dossier-pages-data: the three pages implemented + tested. docs/systems/dossier-pages-data.md (all
+  addresses + tags); menu.rs: Page::Rewards/Gadgets/Weapons (+ids 0x4000003b/3c/3d), WEAPONS_TABLE 27 rows /
+  GADGETS_TABLE 14 rows / REWARD_BONUS 12×(label,tex)×4 [L ee_start_05.bin, disc-verified against ACTION.ELF
+  .data by dossier_pages::the_port_tables_match_the_discs_action_elf_data], getters reward_rows/wheel_row/
+  gadget_row/weapon_row/weapon_overview_row, the Dossier Confirm map (rows 1-3 open the pages, cursor reset),
+  clamp scroll actions [M Scroll_Update 0x2221b20], minimal draw arms + lib.rs --page rewards|gadgets|weapons.
+  FOUND+FIXED in nf-game/progress.rs: gold_group grouped kind-4 descs by desc[0]'s packed word (= 0 for every
+  entry → one 12-member group, rank = table index) — the game scans descs 1..4 of every entry for the target
+  desc's own word [M 0x199210:39-62]; real groups {1,5,7}→bits 0..2 and {4,11}→bits 9/10. Added
+  Progress::object_upgrade_level [M 0x2025f8]. nf-game lib 188/188; dossier_pages 7/7; menus_flow 36/36.
 ## drive-crp-format (2026-10-15, branch s/drive-crp-format) — started 17:00 UTC
 
 Task: driving phase 1 — decode the .crp container (chunks, tables, the track mesh, the car model and its parts) from the data and DRIVING.ELF's consumer (task 501's map names it, or find it from the BIGF read of the track entry), write docs/formats/crp.md, and add a parser with golden numbers for every .crp in the 23 archives (NF_DRIVING or the full retail image). Files: crates/nf-formats/src/crp.rs (new), crates/nf-formats/tests/driving_golden.rs. Merge s/drive-refpack if not on master (done: merged 5a0e53f9). Deadline: stop new work 18:32 UTC, sandbox expires ~18:52 UTC.
@@ -13526,6 +13542,15 @@ Work Log (credits-data):
 - Report docs/reports/screen-adjust-model.md with 5 live checks (step direction+cadence on 0x30c75c/
   0x30c760, the keep/cancel split, Restore Defaults on the real page, viewer+0x114 widescreen watch,
   the PAL base note).
+## drive-ai-traffic (2026-10-15, branch s/drive-ai-traffic) — started 20:55 UTC
+Task: the driving missions' AI cars (task 507). From DRIVING.ELF: path following on the track's AI
+splines (CRP/VIV data), speed control, attacks (chase/shooting), spawn/despawn per mission (MIS01.VIV
+scripts). Port the data (splines, per-mission spawn lists) and the AI step in nf_game::driving beside
+506's physics (not landed yet on master — coordinate through the data model). Tests: a headless AI car
+follows its spline at the game's speed numbers. No drawing.
+
+Work Log (drive-ai-traffic):
+- (20:55) Sandbox reused (repo + work/ + ISO present; no downloads needed). Branch s/drive-ai-traffic created from origin/master @ f59b47fb, pushed with this entry.
 
 ## drive-car-models (s/drive-car-models)
 
@@ -13609,6 +13634,41 @@ Work Log (async-level-load):
   objective_hints_flow 7/7, campaign_flow_live 5/5. Background suite on the pre-edit tree:
   3 expected disc_golden fails + walkreal_07000001 + fix_0c_pylon×2 (no GPU adapter in this
   sandbox) — pre-existing, see docs/reports/menu-sfx.md.
+Work Log (drive-ai-traffic):
+- (20:55-21:10) Research (two parallel Explore agents + own reads): the RNgp article reader FUN_00220c28
+  0x220c28 (RNhd = u16[5] counts rn/rs/ri/rr/rj; the five pointer tables DAT_0033a5fc..a60c), the
+  rn/rs/rr record layouts, the follow geometry (FUN_00222468 straight eval; FUN_00222d40→FUN_001a8380
+  4-point curve; FUN_00225c48 join; FUN_002247b0 next-segment), the AI step (FUN_0012e350 Update →
+  states 1..5; FUN_0012e808 target speed = the segment limit rs+0x4c; FUN_00133ab0 drive control:
+  arrival max(speed·0.5, 5.0), ramp min(|Δ|,7.5)/7.5 floor 0.05), the AIVehicle struct (0x2a0 B), the
+  AIEl database (FUN_0012b8b0) and the spawn pool (FUN_0013e688: 6 heap + 22 static vehicles + 16
+  helis). All [M]-tagged in docs/systems/driving-ai.md.
+- (21:13-21:45) The port: crates/nf-game/src/driving/{road,ai}.rs — RoadNet::parse_crp (the game's
+  RNgp walk incl. the count/instance rules and the rr occupancy zeroing), RoadNode/RoadSeg accessors,
+  seg_point (FUN_00222468), curve_point (control-polygon fallback, exact FUN_001a85d0 = live check
+  L-3), next_segment (the 0x2/0x200/0x400 + self-id + car-group filters), AiCar (states, the target
+  speed gates, drive_control = FUN_00133ab0's four vtbl calls as a pure DriveCommand, the 60 Hz step).
+  SimCar is the 506-physics seam (no throttle→accel model invented).
+- (21:45-21:55) Tests crates/nf-game/tests/driving_ai_follow.rs (9, all green): the fixture is a
+  hand-built format-exact .crp; follows-the-spline (25 units/s on a 100-unit segment, node crossing
+  onto the clean link, pos == seg_point exactly), arrival stop, the 00133ab0 ramp numbers (1.0, 5/7.5,
+  the 0.05 floor, the target 0.5 floor, the brake early-outs, the forced-stop handbrake), the 0012e808
+  gates, the 002247b0 filters, malformed-fixture rejection (sisters), the curved control-point eval,
+  and NF_DRIVING-gated real MIS01.VIV walk (skips without the folder — the slim ISO zeroes the
+  DRIVING archives' bytes; Nightfire-driving.7z exists on the host but 429 MB vs 545 MB free with the
+  suite compiling → not pulled this session).
+- (21:58-22:00) Merge origin/master mid-task (car-models + codename-entry + objective-hints landed):
+  WORKLOG both kept; no code overlap (lib.rs clean). Re-ran on the final tree: driving_ai_follow 9/9 +
+  objective_state 5/5, then the full nf-game suite 350 passed / 0 failed (39 binaries). nf-formats +
+  nf-audio: 89 passed / 3 failed = exactly the 3 disc_golden slim-ISO tests (allowed). nf-view two
+  foreground slices: 191 passed / 2 failed = the known no-GPU pylon set. The background suite.py
+  start died empty (this sandbox reaps detached processes — the screen-adjust-model note) → the
+  foreground slices above are the suite coverage; suite.out stayed empty.
+
+## drive-ai-traffic2 (2026-10-15, branch s/drive-ai-traffic2) — started 22:15 UTC
+
+Work Log (drive-ai-traffic2):
+- (22:15) Sandbox reused (repo + work/ + ISO + nf-queue present). Branch s/drive-ai-traffic2 created from origin/s/drive-ai-traffic @ 1fb6f042 (the HELD 507 branch: driving/{mod,ai,road}.rs). Next: merge origin/master (506's driving.rs single file) and restructure into one module layout, then wire the AI onto 506's physics.
 ## drive-physics (2026-10-15, branch s/drive-physics) — DONE 21:25 UTC
 - Added the real-file tests: the shipped vanquish.atr and Physics\Rigid\default.tun, extracted from
   MIS01.VIV through the repo's BIGF+RefPack readers (gated on /home/z/driving-refpack, override
@@ -13707,6 +13767,9 @@ Work Log (async-level-load):
   6 failed / 26 ignored — the 6 = the 3 permitted disc_golden + 3 wgpu adapter-NotFound GPU probes
   (probe_pylon_render, fix_0c_pylon_live ×2; environmental). Not run: the walk/walkreal tails + render/weapon
   probes (~96) — flagged for the next window.
+
+## net-online-lobby (2026-10-15, branch s/net-online-lobby)
+
 ## async-level-load (2026-10-15, branch s/async-level-load) — DONE 22:10 UTC
 - Research [M work/decomp/ACTION.ELF]: ResetMap_Load 0x1d6360 state 3 draws the screen
   (ResetMap_GenLoadScreen 0x1d5de0, skipped for 0x07000048), runs the whole blocking build on the
@@ -13745,6 +13808,16 @@ Work Log (async-level-load):
   transition, the cold + fail-Restart arms, the movie-wrapped load, the weapon-give hitch left
   synchronous, the failure path).
 
+## net-match-host (sandbox7, started 2026-10-15T23:15Z)
+
+Task 053: wire 051's UDP lockstep session into the running app (crates/nf-view/src/lib.rs, the MP match
+path from 611/402): online match start builds the same MP level with the host's settings + seed on every
+machine; the local agent's keyboard+mouse input goes to the session each frame; the sim advances one tick
+only when `ready_inputs(tick)` returns all agents' inputs; each machine renders its own agent's view, the
+others as remote characters; state hash every N ticks; desync/disconnect show the game's message box and
+return to the lobby. Tests: two app sims in one process over loopback, 1 000 ticks of scripted input end
+in the same state; a forced desync is detected. Branch s/net-match-host.
+
 ## fix-ingame-lag + pause-woman clock (2026-10-15, main agent, branch mine/pc-menus2)
 
 - User's playtest: "very laggy and also the pause background is going wayy too fast".
@@ -13764,6 +13837,416 @@ Work Log (async-level-load):
   accumulator (`menu_clock`), matching `Game_Run`'s once-per-60 Hz-frame `psiDecompressWoman`
   [M 0x1c9790:36-41].
 
+## drive-ai-traffic2 (2026-10-15, branch s/drive-ai-traffic2) — DONE 23:35 UTC
+
+Work Log (drive-ai-traffic2):
+- (22:13-22:25) Setup reused (repo/ISO/nf-queue present); branch created from origin/s/drive-ai-traffic
+  @ 1fb6f042, pushed with the start entry. Merged origin/master (506's driving.rs single file vs 507's
+  driving/ → the E0761 collision reproduced); WORKLOG conflict resolved "both kept".
+- (22:20-22:27) The layout: `git mv driving.rs driving/physics.rs` (the task's suggested layout) and
+  driving/mod.rs now declares `pub mod {ai, physics, road}` + one re-export line
+  `pub use physics::{Car, CarInput, CarParams, DT, FlatWorld, Friction, Rigid, SURFACES, Tuning};` —
+  every public path 506's tests/callers use survives (pinned by the layout test). No other file
+  touched; no internal `crate::driving` users existed.
+- (22:25-22:30) The wiring (the seam 507 left open): `ai::SimCar::of_car(&physics::Car)` (pos/vel/
+  the yaw's [sin,0,cos] forward row; alive = 1.0 [S — FUN_00195a30 is the actor layer]) and
+  `ai::AiDriver { brain: AiCar, car: Car, world, rigid }` — the FUN_00133ab0 command maps 1:1 onto
+  506's CarInput, Car::step integrates [M 0x1ff3d8's order], the PRE-integration sim speed drives the
+  progress (the AI reads |vel| before the vehicle sim integrates [M 0x133ab0:103-113];
+  `AiCar::advance_path` = the progress walk moved verbatim out of AiCar::step, rail behavior
+  unchanged), then the car lands back on the spline [M 0x222468] facing the travel direction. The
+  brake rest clamp [S] stops 506's brake integrating through zero into reverse (R is the gearbox's;
+  at rest the AI's own speed ≤ 0 early-out [M 0x133ab0:153] parks it). Known gap recorded:
+  Car::step does not read handbrake yet (506's own list) — the forced-stop test fails the day 506's
+  handbrake lands, on purpose.
+- (22:30-22:32) Tests crates/nf-game/tests/driving_ai_physics.rs (8, all green): the layout paths,
+  the sim view, the acceleration numbers with a bit-exact bare-Car replay (the driver adds no
+  physics of its own), the steering-angle falloff [M 0x18cef8:458-474], the arrival rest (no reverse
+  runaway), the forced-stop record, the clean-link crossing at the physics speed, standby.
+  Existing suites re-run: drive_physics 13/13 (506 on the moved file), driving_ai_follow 9/9 (507
+  after the advance_path refactor), objective_state 5/5.
+- (22:28-23:33) The suite on the final merged tree (origin/master @ the WORKLOG merge, no further
+  master movement fetched): the background suite.py died empty again (this sandbox reaps detached
+  processes — 507's note) → foreground slices. nf-game FULL: 41 binaries, 371 passed / 0 failed.
+  nf-formats + nf-audio FULL: 104 passed / 3 failed = exactly the 3 disc_golden slim-ISO tests
+  (allowed). nf-view (untouched by this task): 304 test binaries, ~81 executed serially before the
+  window closed — the only real failure is the known no-GPU fix_0c_pylon_live pair (2 tests, the
+  same environmental pair 507 recorded); campaign_flow_live (5/5) and fix_guard_weapons_live (3/3)
+  pass with 180 s budgets (my first 60 s cap was the timeout cause); the parallel-execution attempt
+  OOM-killed processes (rc 137) and is NOT counted — those binaries need a serial rerun next session.
+  A one-pass `cargo test -p nf-view` aborts at the first failing binary (cargo default) — use
+  --no-fail-fast.
+- (23:35) Report docs/reports/drive-ai-traffic2.md pushed; finish.sh; ntfy.
+
+Stage Summary:
+- One module layout: crates/nf-game/src/driving/{mod,physics,ai,road}.rs — physics.rs is 506's file
+  moved intact; mod.rs re-exports the 9 physics names; ai.rs gains SimCar::of_car + AiDriver +
+  advance_path (the refactor); road.rs untouched.
+- The AI now drives 506's physics model end to end, headless and deterministic; every 506/507 test
+  path kept green; 8 new tests pin the wiring.
+- Left for the next session: the nf-view serial sweep completion (~220 binaries), the real-data
+  NF_DRIVING golden (the 429 MB archive, disk-bound), the curve-eval live check L-3.
+## mp-defaults-and-setup (2026-10-15, branch s/mp-defaults-and-setup)
+- (21:05) Started: branch from origin/master f59b47fb. Task: make FrontEnd's MP defaults match the game's
+  MPSettings init (Location Damage On, Respawn Random, Explosive Scenery Locked via the reward gate), and add the
+  Health Handicap third step to mp_setup_state with per-step prompt label/texture/value getters for the main agent.
+
+## mp-defaults-and-setup (2026-10-15, branch s/mp-defaults-and-setup) — DONE 22:52 UTC
+- (21:05-21:45) Research: MPSettings 0x2a47a0 inits in bootup_bootup 0x1c7e78 (memset 0x1dc + field
+  stores: +0x1C0=2 @0x1c7fac, +0x1C8=1 @0x1c7ff8, +0x1BC=0, +0x19C/+0x1A0=10, +0x1A4/+0x1AC/+0x1C4=1,
+  rest 0; roster 8×0x30 +0x20=team i&1, +0x28=1, +0x2c=0); EE snapshots match [L]. The codename
+  profile saves +0x1BC/+0x1C0/+0x1C4 into record+0x2e/2f/30 (Menu_UpdateDefaultCodename 0x1f8218 /
+  Menu_MapDefaultCodename 0x1f7fa8) — evidence only, not ported (save-format decision needed).
+- Explosive Scenery gate: Menu_UnlockMPSettings 0x1ff698 ORs bonus[0..3] @0x2e1b88 and sets
+  mp_stuff[0x370] @0x2df2d0 iff a type-3 id-0x3e reward is unlocked — the shipped RewardsTable
+  0x2bc920's only type-3 entry is level 0x07000014 counter 3 [D]. P_MPENVIROMODS 0x210030 binds the
+  locked row's single node (0x10, label 0x1000076), Left/Right no-ops, page close stores 0x10
+  [M 0x210464]; P_MPCONFIRM masks &1 [M 0x20f708/0x20f710]. Ported as mp_bonus_mask +
+  mp_explosive_unlocked() + mp_enviro_value_label() + the step/close/mask behavior.
+- Health Handicap: P_MPSETUP 0x20d7a8 + C_RBMPSETUP 0x20de58 give states 2/3/4/5 — the 0x4b state-3
+  arm builds 8 nodes (−75..+100, .data strings 0x30d390..0x30d3c8 [D], the literals P_CNMPOPTIONS
+  0x2144d8 shares for label 0x296), stores the pick in MPSettings+slot·0x30+0x2c; state 4 → 5 sets
+  mpjoin+1, and Menu_MPAreWeReady 0x1f78d8 sends 0x44/0x40000012. Port: mp_setup_state 2/3/4/5,
+  mp_handicap, MP_HANDICAPS, the handler (Confirm 2→3→4→5, Back 4→3→2-team-only per 0x6b), getters
+  mp_setup_prompt_label/mp_setup_image/mp_setup_value_text (0x37c/0x37d/0x296; 0x30001a3/0x30001a2
+  team, character previews, 0x30001a1 green cross).
+- Quick-Game fix: C_SBMPSCEN stores +0x1CC=2 Helicopters @0x20c734 (docs/systems/mp-menus.md §5
+  corrected) and +0x1D4=0 @0x20c748; +0x1C0 is never written — mp_quick_start now matches.
+- Tests: new mp_defaults_setup 10/10 (defaults table, the gate locked/unlocked + the 0x10 close
+  write + the &1 match-start mask, enviro value labels, quick start, the 3-prompt flow with
+  per-step pins, re-select, back walk, FFA, node table); mp_menu_flow updated for the 3-step flow
+  (4 paths) 9/9; menus_flow 36/36, dev_menu_flow 5/5. Suite slice on the final merged tree
+  (origin/master 8ba16019 merged; foreground --only — background runs are killed here):
+  410 passed / 0 failed over 18 binaries (menu family + MP set + the 4 crates' unit binaries);
+  359 test binaries build clean. The no-GPU fix_0c_pylon_live pair stays the known pre-existing
+  failure outside the slice.
+- Report docs/reports/mp-defaults-and-setup.md with 5 live checks (Locked row + the 0x10 read-back,
+  the On/Random rows, the handicap prompt/image/values, the team image swap, the render spots).
+## subtitles-data (2026-10-15, branch s/subtitles-data)
+- Task started: port the Subtitles On/Off option's data path — where NIS/script cut-scene and FMV briefing subtitle
+  lines are stored, their timing (start/end ticks), label ids, and the drawing function/font/position/colour — as a
+  data model + per-tick `active_subtitle(t)` wired to the profile flag (control 0x10000136, P_CNAVOPTIONS_Handler
+  0x214818). No drawing; tests with numbers/ids only. Setup verified, branch cut from origin/master (2bda7b46).
+
+## subtitles-data (2026-10-15, branch s/subtitles-data)
+- Ported the Subtitles option's data path (no drawing — the main agent draws): `nf_game::subtitle::SubtitleTrack`
+  = `Text_AddMsg` 0x1b0c30's type-4/5 TXT_MSG queue as an absolute timeline (`SubtitleLine{label,start,end}`):
+  `push` (the DAT_002a37c8 gate [M 0x1b0c30 — type-4/id-0 adds pass only with the option on], the verbatim u16
+  duration [M disasm 0x1b1050: the 60-clamp skips types 4/5; one wrap part = the un-scaled time], the FIFO chain
+  start = max(push, prev end) [M Text_UpdateMsg 0x1b11d8 — only the head's timer runs]), `active_subtitle(t)` (the
+  per-tick query), `flush` (Text_FlushAllSubtitles 0x1b15c8 — head clamped, queued die), `from_script` (the briefing
+  walk: Wait(t) → release tick t+1 [M Script_Update 0x1da998's pre-increment clock]). `intro_script_for` = the
+  movie-code → script chain [M ResetMap_Load 0x1d6360:40-99]; `nf_view::movie::briefing_subtitles(iso, code, on)`
+  reads 07000500.bin (FILES.BIN) and walks the pack's script.
+- Wiring: `Drones::subtitle_track` (own line); `Request::Text` pushes at the script tick and gates `script_msgs`
+  (the HUD drain) on the flag — the fresh profile's default is Off [M profile.rs], so hosts must wire
+  `subtitle_track.enabled` from `Profile::gset.subtitles` / the AV row (0x10000136). `TextFlush` flushes the track.
+- Tests: 6 unit (chaining, verbatim duration, zero-time, Off, flush, from_script) + `subtitles_live.rs` 4 ISO-gated:
+  the disc-pinned 0x06000961 timeline (ticks 184/1340/2113/3570, labels 0x06000068-6b, times 1132/756/988/555 [D]),
+  no-row codes, the Off gate through the real Sim, the ON queue at the right tick. fix_script_commands_live's text
+  test now pins the ON behaviour explicitly. Ran: nf-game lib 212/212, nf-formats+nf-audio green (disc_golden 3 =
+  the slim-ISO set), the HUD-affected view binaries 34/34, suite runner over 104 more binaries across five chunks (menus_flow, level_live,
+  mp_arenas_live, codename_entry, the fields/fix_* sets…) — 0 failed; fix_0c_pylon_live's 2 = the sandbox's missing Vulkan ICD (adapter
+  request, pre-existing). The full 356-binary sweep didn't fit the window (background jobs die here; the runner
+  rebuilds cost 336 s). Doc: docs/systems/subtitles.md (the queue layout, both presenters, all three sources).
+- (20:42) dossier-pages-data: report docs/reports/dossier-pages-data.md pushed (merged tree f7d9fb6e).
+  Verification: foreground chunks (the bg suite.py is reaped by this sandbox): nf-game lib 197/197,
+  nf-view lib 9/9, nf-formats lib 76/76, nf-audio lib 9/9; menus_flow 36/36, dossier_pages 7/7 (incl. the
+  disc ACTION.ELF byte check), mp_menu_flow 9/9, dev_menu_flow 5/5; progress consumers progress_live 1/1,
+  fix_progress_live 5/5, fix_scores_handoff_live 3/3, fix_save_profile_live 4/4, campaign_flow_live 1/1.
+  Left: the main agent's draw pass for --page rewards|gadgets|weapons; Records' pre-existing % wrap noted.
+## objective-hints (2026-10-15, branch s/objective-hints) — close-out
+- Suite on the final tree (foreground runner chunks — this sandbox kills background jobs): all 353 binaries BUILD;
+  nf-formats+nf-audio 117 passed / 3 failed (the 3 allowed disc_golden environmental fails); nf-game full green;
+  nf-view menus_flow 36/36, objective_hints_flow 7/7, credits_data 11/11, mp_menu_flow 9/9,
+  fix_objective_messages_live 5/5. The 242 other nf-view _live binaries did not fit the window (disk + no
+  background) — flagged in the report for the next window.
+- Report: docs/reports/objective-hints.md (evidence: C_GCPAUSE 0x204408 case 1 = control 1's ✕ → the ok-only
+  option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
+  P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
+  outside 0x182630, no PlrStat hints counter).
+
+## net-determinism (2026-10-15, branch s/net-determinism) — lockstep audit, started
+- Task: prove the MP match sim (mp-core/mp-bots/match-rules/MpSettings) is a pure function of
+  (settings, seed, per-tick inputs): audit nondeterminism sources (wall clock, HashMap order,
+  uninit/order, threads, float paths), check RNG seeding (game's Rand_*), deliver state_hash(&MpWorld)
+  -> u64 (integers + f32 bit patterns), a recorded-input replay harness, and tests: two independent
+  sims, same inputs, 10 000 ticks (bots on, every scenario), identical hashes every tick; sister test
+  proving the hash catches a one-bit difference. Doc: docs/systems/net-lockstep.md. Networking itself
+  is NOT this task — determinism only.
+
+## net-determinism (2026-10-15, branch s/net-determinism) — the MP sim proven lockstep-safe
+- The audit: every nondeterminism source in the MP tick checked (wall clock, HashMap order, sorts,
+  uninit, threads, libm floats) — the sim core was already clean; two REAL finds, both fixed:
+  F1 bots aimed with std atan2/cos/sin (libm ulps across platforms flip the 0x178c48 aim-cone
+  gate) → now the game's ATAN2_APPROX 0x1e4528 / PS2Sinf 0x120700 [M trig.rs]; F4 the brains read
+  the driver-supplied ctx.now while next_bullet_at was tick-derived — the brain's canonical clock
+  is now its own 60 Hz tick, ctx.now kept but ignored (a host's wall-clock accumulation cannot
+  reach sim state). One `Rng::new(seed)` stream per match, the game's Rand_* — no other entropy in
+  nf-game (grep); pinned by one_extra_rng_draw_diverges + different_seed_diverges.
+- Deliverables: nf_game::mp::hash — state_hash(&MpMatch) -> u64, FNV-1a 64 over f32 BIT PATTERNS
+  (own hasher, not DefaultHasher; FNV vectors pinned) + BotBrain::state_hash (logs as lengths);
+  nf_game::mp::replay — MpRecord (seed+settings+level registrations+per-tick inputs; spawn indices
+  re-derived through the policy) + run_record + the single apply_event mapping; 6 tests in
+  tests/mp_lockstep.rs (needs --features mp-bots), incl. the 10 000-tick two-sim bots-on soak over
+  all 12 scenario words — identical combined hashes every tick — and the one-bit sisters.
+- Suite on the final tree (foreground chunks — background jobs die in this sandbox): nf-game 371
+  passed / 0 failed / 2 ignored (--test-threads=1); nf-audio 13/0; nf-formats 92/3 (the 3
+  permitted disc_golden); mp_lockstep 6/6 (--features mp-bots); nf-view targeted determinism set
+  28/0 (mp_core_live 5, mp_bots_live 2, mp_menu_flow 9, mp_menu_lists_live 5, replay_live 3,
+  fps_determinism_live 4). The full nf-view pass (wgpu GPU probes + walks) does not fit the
+  window — flagged, same as the last windows.
+- Doc: docs/systems/net-lockstep.md (the contract, the audit table F1-F9, the design, what the
+  future nf-net host owes, a live check if the main agent wants on-hardware trig samples).
+- Final tree: merged origin/master (24b1f4dd — stats/menu-sfx/async-load; WORKLOG union kept both)
+  and re-ran: nf-game 378/0/2, mp_lockstep 6/6 (--features mp-bots), nf-view mp set 28/0.
+  ntfy: all three fallbacks returned HTTP 429 (daily quota) — exact errors in the report.
+
+## net-lockstep-core (2026-10-15, branch s/net-lockstep-core) — UDP lockstep session, started
+- Task: build the MP session layer on 050's determinism (050 not landed yet: the session takes the
+  per-tick state hash as an opaque u64 from the caller, so 050's state_hash(&MpWorld) wires in
+  later). New crate crates/nf-net (no rendering, no game-sim deps): host on a UDP port + up to 3
+  clients joining by address, handshake (protocol version + build id + codename, host's MpSettings
+  + seed to clients), per-tick input packets with tunable input delay (2-4 ticks), redundancy
+  (each packet repeats the last N unacked inputs), acks, stall when an input is missing (never
+  guess), state-hash exchange every N ticks with a desync error, timeout/disconnect handling,
+  session API poll()/local_input()/ready_inputs(). std::net::UdpSocket only, no new crates.
+  Tests over loopback: host + 3 clients, 2 000 ticks with a loss/latency shim, in sync; version
+  mismatch refused; client timeout reported. Doc: docs/systems/net-lockstep.md.
+
+## net-online-lobby (2026-10-15, branch s/net-online-lobby) — DONE 23:55 UTC
+- The online Host / Join front end on top of 611's MP flow [S — the PS2 game has no online mode;
+  the menu-def holds no network page]: Main → Multiplayer now asks Local / Host Online / Join
+  Online on the port-only PAGE_MP_MODE 0x5000_0001 (spare 0x5000_0000 block); Local keeps the
+  game's 0x40000019 couch flow byte-for-byte. Host: PAGE_MP_HOST (port default 27420, ◀ ▶ step,
+  Start Listening) → the host's own panel joins and the game's Join page doubles as the host lobby
+  (remote agents mirror into mp_join slots 1-3 with their codenames, so the panel getters, the
+  start checks and the confirm lines all work unchanged); the usual Scenario → Map → Setup →
+  Options walk publishes every choice change on the tick diff; P_MPCONFIRM's confirm also calls
+  MpSession::start_match. Join: PAGE_MP_NETJOIN (typed digits/dots/colon, 22-char cap, Backspace,
+  Ctrl+C/V on the page's own clipboard, every other key swallowed in lib.rs) → Connecting… /
+  Connection refused / a 600-tick timeout → PAGE_MP_LOBBY mirrors the host's choices read-only
+  (mp_lobby_lines = P_MPCONFIRM's own label pairs) until match_started runs the host's confirm
+  handover on the client. Back cancels cleanly everywhere (the local Join page's previously-stuck
+  Back now pops to the mode page [M P_MPJOIN 0x20ca00's 0x6b → the delayed 0x5f pop]).
+- The session is the trait MpSession (menu.rs: MpNetLink/MpNetError/MpNetAgent/MpNetChoices +
+  poll/link/listen/connect/agents/host_choices/publish_choices/start_match/match_started/
+  set_codename/close); FrontEnd::mp_session holds any Box<dyn MpSession>. crates/nf-net was NOT
+  created and nf_game::net untouched: 051 (net-lockstep-core) owns the wire; the trait lives beside
+  its only consumer and 051's session implements (or adapts to) it. No socket anywhere; no session
+  wired in FrontEnd::new() (the pages report "No network session is wired").
+- Tests: crates/nf-view/tests/mp_net_lobby.rs, 9 headless tests over a deterministic FakeSession
+  (host flow incl. the full choices walk + start settings human_count 2 / master 1; port-busy +
+  host Back teardown; join typing/paste/gate/Connecting/lobby-mirror/handover; refused + retry;
+  the 599/600-tick timeout sisters; no-session reports; Local/Back routing; the mouse rows) — 9/9;
+  mp_menu_flow 9/9 re-verified through the mode page; menus_flow 37/37; mp_menu_lists_live 5/5;
+  mp_bots_live 2/2. Suite on the final tree (merged origin/master — async-level-load, lib.rs
+  auto-merged, WORKLOG both kept): detached background runs die between tool calls here, so
+  foreground --only chunks: chunk A (mp/menu family + the 4 lib tests) 15 binaries 415/0; chunk B
+  (rng/fields/trig/tuning/level/diff/spawner/pickup/progress/inputs + async-load + objective_state)
+  14 binaries 40/0; the two full-suite attempts added 43 binaries 0 FAILED/0 TIMEOUT before the
+  10-minute tool window killed them (the ~360-binary pass does not fit the sandbox window).
+- Deliverables: docs/systems/net-online-lobby.md (the design + evidence) and
+  docs/reports/net-online-lobby.md (the report: deviations, live checks for the main agent, and
+  the one crate ask — the system clipboard for Ctrl+V).
+
+### net-match-host progress (sandbox7, 2026-10-15T23:15Z–00:10Z)
+
+- nf_game::net: the UDP lockstep session (051's API), nf-view wiring: the settings handover
+  (mp_match_settings was never read; the menu path loaded mp=false), load_mp_carry + MpSettings.seed
+  (0 keeps the local Rng constant), all-human slot-order spawn + Sim::mp_bonds +
+  swap_local_slot, the ready_inputs tick gate (no capture on a stall), step_net_remotes,
+  net_state_hash every 15 ticks, the message-box + return-to-lobby failure path, --net-host /
+  --net-join. Tests: net_session 5/0 (headless loopback), net_match_live 3/0 (two real sims,
+  1000 ticks same state; forced desync; disconnect). Suite on the merged tree: see the report.
+
+## attract-mode (2026-10-15, branch s/attract-mode)
+Task 625-attract-mode: port the title screen's no-input attract sequence — `P_ATTRACT_Handler`
+0x20a1f0 and the no-input counter (`Menu_ResetNoInputCount`; `FrontEnd::no_input_frames` already
+counts): the timeout value, what plays (movie codes / demo data), how input interrupts it, and
+the return to the title. Flow + state on `FrontEnd` in crates/nf-view/src/menu.rs (no drawing —
+the main agent renders), the host starts the movie through the existing movie player. Tests: the
+timeout fires at the game's frame count; any input returns to the title. Docs first:
+docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
+
+## attract-mode (2026-10-15, branch s/attract-mode) — DONE 23:55 UTC
+- docs/systems/attract-mode.md first: the counter (frame_counter 0x30d164 +1 per menu tick
+  [M Menu_AlphaUpdate 0x1f3170] − last_action 0x30d168 [M Menu_InputAction 0x1f1f40's 12 stores,
+  machine-verified sw gp,-29960(gp)]), the timeout (`P_START` 0x20a408 / `P_MAIN` 0x20a7b0 0x50:
+  `Menu_GetNoInputCount() == 0xa8c` → 0x44/0x40000035), `P_ATTRACT_Handler` 0x20a1f0 (the
+  movie.291 0x30d368 toggle, the 0x073a0048/0x073b0048 pick — the opener id arrives as the 0x4c's
+  param_6 [M 0x21c858:345], so the title always plays A and the main menu alternates A,B,A —
+  the menu_movie 0x2e1c48 flag block, SFXRemove 0x1d7/0x470, psiStartBackgroundMovie non-looping,
+  0x68/1 input block), the interrupt (`MenuManager_Update` 0x21c3d8:40-43: action 0x19 while the
+  movie plays → Menu_StopMovie(0) 0x215a50 — the ONLY input that reaches anything; the 0x22
+  dispatcher is gated on manager+0x1d4; bSkipAttract 0x30d2a6 is read but never written — dead,
+  machine-verified 0 stores) and the return (0x50 finish → music back + 0x68/0 → 0x5f pop → the
+  opener's 0x4c resets the count).
+- Port: state + flow + getters on FrontEnd (attract_playing/attract_movie/attract_toggle/
+  attract_opener; ATTRACT_FRAMES/ATTRACT_MOVIE_A/B/PAGE_ATTRACT constants), no drawing (the
+  attract page has no controls — the draw side gets attract_playing+attract_movie for the
+  fullscreen movie plane). Host glue in lib.rs::movie_tick (Player::start on the one BGFMV slot,
+  the psiMovieFinished poll, declined-start closes at once) + the redraw's attract_up fullscreen
+  suppress. Count resets at every re-open stand-in: intro end (P_MAIN 0x4c), the credits' two
+  exits, the opener's return.
+- An independent audit (subagent) machine-verified every [M] claim against the decompile + raw
+  ELF scan and found 3 edge defects, all fixed: the missing !intro_playing fire guard (a long
+  intro would fire the attract mid-movies), the Player::start-Err hang (a missing PSS file left
+  the attract up forever with input blocked — now closes at once, the game's BGFMVPlaying==0),
+  and the missing count reset on the credits exits.
+- Tests: menus_flow.rs +5 (timeout at exactly 0xa8c + sister; the A/B/A alternation with the
+  intro-end reset pinned at 1; skip vs swallowed input; movie-end return + no-op sister; the
+  intro guard) — 42/42 green. Ran: nf-view menus_flow + movie_playback_flow + menu_movies +
+  menu_live + menu_backdrop_still + mp_menu_flow + dev_menu_flow + lib (51 tests, 0 failed);
+  nf-game + nf-formats + nf-audio 105 passed / 3 failed = the slim ISO's 3 disc_golden (allowed).
+  Full suite: tools/test/suite.py in the background — see the report for what completed in the
+  sandbox window.
+- Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
+  (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
+  attract page draws the movie fullscreen over black, no controls, no plate.
+## fix-gas-rng4 (2026-10-15, branch s/fix-gas-rng4) — started 23:59 UTC
+
+Task: land 111d3's (s/fix-gas-rng3, tip fbf62779) deferred impact draws on top of master's
+G-041 HITDATA walk in Bullet_CollisionHandler. Both are about RNG draw ORDER: master walks the
+trace's HITDATA list inline (penetration roll Rand_Rand(0x3f) [M 0x12cfd0..0x12cfe4] per
+front-face hit, full effect stack, pierce retraces past the surface); 111d3 defers the shared-RNG
+impact draws to a flush after the guard control loop (Collide_Update 0x1ea398 [M
+control_movement_object_handler 0x1336f8:238]) via pending_world_impacts. A mechanical merge is
+wrong; porting the deferral onto the HITDATA walk, deciding from the disassembly where the
+penetration roll falls relative to the effect draws and whether a pierce's exit-side hits defer
+too, keeping the flush's per-hit order. Every G-041 test and every 111d3 test green; re-run the
+cover/fire-rate AI tests the first gas-rng hold broke.
+
+## fix-gas-rng4 (2026-10-15/16, branch s/fix-gas-rng4) — DONE 01:20 UTC
+
+- Ported 111d3's (s/fix-gas-rng3) deferred impact draws onto master's G-041 HITDATA walk; one
+  file: crates/nf-game/src/drone.rs (effect.rs/gas.rs untouched — the held merge's conflicts
+  there existed only for a mechanical merge of the 10-arg bullet_impact tests and init_effect_puff).
+- From the decompile (Bullet_CollisionHandler 0x12ce80): per HITDATA the penetration roll
+  (Rand_Rand(0x3f) [0x12cfd0..0x12cfe4]) precedes Effect_Create's draws [0x12d060]; the explode
+  arms [0x12d068..0x12d188] gate on non-pierce; the ricochet roll draws with mask 0 on a pierce;
+  the loop tail [0x12d81c] advances on pierce — so a pierce's EXIT-side hit takes its own roll +
+  effects in the same collide pass. Collide_Update 0x1ea398 runs at 0x1336f8:238, after the whole
+  update walk — every handler draw lands after every guard's update-pass roll.
+- The port: pending_world_impacts records (bullet index, segment start, flight ray) per world-hit
+  bullet; flush_world_impacts (called in tick after the guard bullets' retain — 111d3's slot)
+  replays the walk per record in order, bit-identical geometry (RNG-free re-query, end = start +
+  ray, the revive reuses the raw ray); the reflection reads the LIVE dir (the game's collide pass
+  sees Bullet_homing's update-pass steer — this also restores the game's homing-then-collide order
+  master's inline shape inverted); the dead-bullet retain moved to the flush (a deferred
+  ricochet/pierce revives in place; no mid-tick reader of player_bullets exists — checked).
+- Verified (release, --test-threads=1): nf-game lib 206/0; nf-game integration 375/0 (ai_live
+  35/35 incl. guard_takes_cover_like_the_game, grenade 2/2, cover_selection 2/2); nf-view direct:
+  fix_guard_weapons 3/0 (the fire-rate hold's test), models_misc 10/0, fire_modes3 5/0,
+  fix_weapon_effects 6/0, impact_remainder 3/0, fix_samurai_fire 3/0, weapon_fx_levels 2/0,
+  fix_handcannon 3/0; nf-view slices 506/0; nf-formats 110/3 (the 3 allowed slim-ISO disc_golden);
+  nf-audio 13/0. Total 1245/3/1 ignored (pre-existing). NO re-seeds needed anywhere.
+- Background jobs die between tool calls in this sandbox (the 23:59 suite.py start died, suite.out
+  empty) — the runner's per-binary/--test-threads=1 discipline ran as foreground slices instead;
+  the walkreal_* walkers (35 binaries, multi-minute live walks) window-cut as every session.
+- Out of scope (documented in the report): 111d2's item 2 — the muzzle latch + init_muzzle_smoke
+  (fix_gas_rng_live.rs); master keeps those sites at the counter hash until their re-base.
+- Report: docs/reports/fix-gas-rng4.md (the draw-order table site → draws → pass, before/after
+  tallies, one confirmatory live check for the main agent).
+## drive-keyboard-input (2026-10-16, branch s/drive-keyboard-input) — start
+- Task: PC keyboard/mouse mapping for the driving missions, onto the game's own driving actions
+  (steer with the game's ramp on a digital input, throttle W, brake/reverse S, handbrake Space,
+  fire LMB, cycle weapon wheel/Q, gadget RMB/E, camera C, look back Tab/mouse3 — every driving
+  action, holding the game's holds-vs-presses and repeat semantics). Data + state + getters for the
+  main agent's draw pass (no drawing), a PC_CONTROLS-style table next to the on-foot one in
+  crates/nf-view/src/menu.rs. Docs first, tests headless numbers-only. No pad work.
+- Branch created from origin/master (0f5f07f4), pushed. work/ + ISO + nf-queue from prior sessions
+  verified present. Next: docs/systems/driving-input.md re-read, decomp study of the pad->driving
+  ramp path, then the mapping.
+
+## drive-keyboard-input (2026-10-16, branch s/drive-keyboard-input) — close-out
+- The PC keyboard+mouse mapping for the driving missions, designed onto the game's own driving
+  actions and ported through the game's real path. Branch from origin/master 0f5f07f4, merged
+  origin/master 7ac86f13 (the drive-ai-traffic2 batch) — dc244da2, clean.
+- The ramp question settled: no input-layer ramp [M-negative driving-input.md §8] and NO d-pad
+  steer at all — STEERLEFT/RIGHT + all *DIGITAL (4/5/8/9/0xa/0xb) have no consumer in DRIVING.ELF
+  [M-negative; all seven queue drains enumerated]. Steering is only GAMEACTION_STEER (1) with a
+  signed float; the vehicle layer ramps it: the car's drain FUN_0018add8 0x18add8 tail chops the
+  raw steer at ±PAD_DEAD_ZONE 0.2 (DAT_00331988, the .tun key) write-back, then
+  `move_toward(+0x240, target, 0.25)` (FUN_002104a8) — digital full lock in 4 ticks (66.7 ms at
+  60 Hz), L↔R sweep 8. GAS carries a ×2-gain clamp min(2v,1) each tick; BRAKE raw (reverse is the
+  engine's ≈30-tick brake-at-standstill state, FUN_0018cef8 :184-208); the gas/brake totals
+  exclude each other (smaller zeroed, ties zero gas) and the handbrake (+0x259) zeroes both
+  pedals. All [M 0x18add8 :119-270, disasm-checked].
+- Consumer semantics pinned for every mapped action [M]: fire primary/secondary/gadget +
+  handbrake + look back (0x1d-0x25, 0x1b/0x1c, 0x29/0x2a) are HOLD pairs; weapon cycle
+  (0x21/0x22 next, 0x23 prev, WeaponMan 0x20c078) + CHANGECAMERA (0x26, MissionMan one-shot
+  request flag) + POVRELOAD (0x3f) are edges; CAMZOOMBUTTON (0x2b) is dead in DRIVING.ELF.
+- The mapping (docs/systems/driving-pc-input.md §3, all [S] — the shipped Master.def bindings are
+  unextractable): A/D + ←/→ → LX 0/255 → STEER ±1 (the ramp shapes the digital input exactly like
+  a stick); W → △ pressure → GAS; S → ✕ pressure → BRAKE (pedals as pressures so each is its own
+  value — a shared axis would send one action the other's sign); Space → ✕ bit → HANDBRAKE pair;
+  LMB → R1 bit → FIREPRIMARY pair; B → R2 bit → FIRESECONDARY pair (the port's on-foot Alt. Fire
+  key); RMB → ○ bit and E → L1 bit → FIREGADGET pair; Q → Select bit → TOGGLESECONDARY; wheel
+  up/down → L3/R3 bits → UP/DOWN; C → Start bit → CHANGECAMERA; Tab/MMB hold → □ bit → CAMLOOKBACK
+  pair; R → d-pad Up bit → POVRELOAD.
+- Port: `input::driving::{move_toward, CarInputStage (the drain's input block + tail as a
+  per-tick struct, car offsets in the field docs), KeyboardMouse + to_raw_pad, pc_key_pad,
+  pc_driving_bindings, PcDrivingInput::tick}` — the whole chain per 60 Hz step: keys → raw pad →
+  poll_device → the game's evaluator → messages → the stage. `PC_DRIVING_CONTROLS` (13 rows) in
+  nf-view/src/menu.rs next to PC_CONTROLS, labelled with the game's USATxt driving block (bank 0
+  0x30a-0x315 + 0x100032a; no secondary-fire/reload label exists — id-0 fallback rows).
+  No drawing delivered (the main agent draws). Also fixed a pre-existing master-side test-module
+  syntax error in input/driving.rs (`vec!sg(0)` → `vec![msg(0)…`, broken since G-004).
+- Tests (all headless, numbers-only, sisters throughout): nf-game lib 221/221 (ramp goldens 4/8
+  ticks, ±0.2 write-back, strict 0.9 full lock, gas ×2 clamp, tie exclusion, handbrake zeroing,
+  HUD gate, per-key action ids, hold-never-repeats, release ids, full chain W+D 5 ticks + release);
+  nf-game integration 407/0; driving_physics/ai_follow/ai_physics/input_ramp/input_styles 34/0;
+  nf-formats 79/0; nf-audio 9/0; nf-view lib 15/0; menus_flow 37/0; mp/dev menu flows + dossier +
+  campaign + fix_progress 29/0; driving_controls_live 1/1 (binds every PC_DRIVING_CONTROLS id
+  from the disc's USATxt.dat, sister negatives included). Foreground runs — the background
+  suite.py is reaped by this sandbox (died twice, empty suite.out); a third attempt runs while
+  this entry is written.
+## drive-hud-data (2026-10-16, branch s/drive-hud-data)
+- Branch created from origin/master (0f5f07f4). Task: port the driving-mission HUD's data model from DRIVING.ELF
+  as a per-frame snapshot (values + label/texture ids + positions as the game sets them), wired to 506's physics /
+  107's state where they exist; the main agent draws it. Tests: the snapshot follows the sim (numbers only).
+- Plan: read docs/atlas/driving-elf.md + the DRIVING.ELF decomp for the HUD writers (speed/gear, vehicle health,
+  weapon+ammo, minimap/radar, objective markers, timers); check how s/mp-hud-data wired its snapshot; implement
+  the snapshot in nf-game + numbers-only tests; run the crates my tests touch, then the full suite before push.
+- drive-hud-data close-out: the driving HUD's data model as a per-frame snapshot —
+  `crates/nf-game/src/driving_hud.rs` (`DriveHud` + `CarReadout`/`MissionTimer`/`Objective`/
+  `Beacon`/`WeaponReadout`), wired to 506's `Car` (speed |vel| 0x18aa88:26-29, gear +0x2d8,
+  rpm :62, pos/yaw) via `observe`; the mission groups at their proven E-command level
+  (dispatch table 0x36fda0: timer 507/509·381/383·357/359·309/311·315/317, objectives
+  225/226/227/228 with the {vt 0x370e70, p1..p4} record [M 00151510], beacon 321/323,
+  ESetVisualDamage's {vt 0x370558, p1..p5} [M 00159638]); the HUD render object RRenderHUDView
+  at manager+0x28 read per frame by 001c1ec0:80-81 → 001c1b18:118-144 (0xa8 element block,
+  label table DAT_0037d790); positions/sheet ids + the mission-state structs left open with
+  5 live-check asks (docs/reports/drive-hud-data.md). Tests: nf-game lib 213/213 (final tree),
+  drive_hud 6/6, drive_physics 13/13; fast-runner suite on the branch-point tree: 1577 passed,
+  7 failed (3 allowed disc_golden + the documented pylon Vulkan-ICD pair + the pre-existing
+  walkreal LEAD_HIDE flake), 66 ignored, 62 min.
+## drive-mission-scripts (2026-10-16, branch s/drive-mission-scripts) — start
+- Branch created from origin/master (0f5f07f4). Plan: decode driving-mission script data from the MIS*.VIV
+  archives (500 refpack), port the mission state machine (objectives/completion, fail states, timers, PTP
+  end status) into nf_game::driving, headless scripted-event tests.
+
+## drive-mission-scripts (2026-10-16, branch s/drive-mission-scripts) — close-out
+- The driving missions' script data decoded and the mission state machine ported headless.
+  Data: the `Map ` pool record's `Rule`/`MSet`/`Trgr` chunks in each track `.crp` [M 0x22faf8:108-129];
+  MIS01 = 114×0x20 Rule entries / 760 B MSet ("helicopter") / 754×0x40 Trgr records [D].
+  Rule entry = {type u32, flags bits 0-2, group i32, hash u32, payload 16 B} [M 0x205220+0x209318];
+  15 rule classes from RTTI [D 0x397c28..] with ctor sizes [M 0x209390]; MIS01 histogram
+  {Always 2, Damage 4, Death 14, Health 4, Prog 41, Speed 28, Timer 14, Collision 5, ProgCounter 2}.
+  Objectives: MSet enabled byte +0x2c+i, target +0x4c+i*4 (0x2711 gate), params +0xcc/+0x14c
+  [M 0x205498]; channels stride 0x54 [M 0x20d378]; active = first enabled non-zero [M 0x20d488];
+  MIS01 channels {2 target 30, 26 target 24} [D]. Damage/health thresholds + difficulty percents
+  [M 0x206ec0]. End: PTP mapping [M ptp.rs, 0x174bf0:315-323 + 0x1c8560].
+- Port: nf-game/src/driving/mission.rs (MissionSet/RuleEntry/RuleKind/Trigger/Mission with
+  step(dt, SimSnapshot), fire, fail, drive_return) + crp.rs pool_find/record_window (additive).
+  Per-type firing semantics are [S] — the descriptor fns FUN_0020b120..0020b3f8 are not
+  decomposed; all [S] boundaries in docs/systems/drive-mission-scripts.md §5.
+- Tests: nf-game lib driving::mission 9/9; driving_mission_live (NF_DRIVING-gated) 5/5 (MIS01
+  numbers pinned, all 8 archives parse, scripted complete/fail over the real rules, trigger
+  stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
+  the touched crates' tests ran instead; flagged in the report.
+- Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
 ## mp-debriefing-data2 (2026-10-16, branch s/mp-debriefing-data2) — STARTED
 
 - Task: land 621's (s/mp-debriefing-data, HELD) debriefing on top of master's 402 (s/mp-match-rules)

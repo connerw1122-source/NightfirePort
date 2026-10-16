@@ -10,14 +10,20 @@
 
 use nf_view::menu::{Action, FrontEnd, Page, MP_MAP_ROWS, MP_OPTIONS_ROWS, MP_SCENARIO_ROWS};
 
-/// Main menu → Multiplayer → Join (the main menu's row 1 confirm).
+/// Main menu → Multiplayer → Local → Join (the main menu's row 1 confirm; net-online-lobby put
+/// the port's Local / Host Online / Join Online choice between them, and row 0 Local keeps the
+/// game's page [S docs/systems/net-online-lobby.md §2]).
 fn enter_mp(fe: &mut FrontEnd) {
     fe.tick(); // boot → the runner state [M 0x1c98c8 case 1] — the flow machine must be live for
                // the confirm's ResetMap_LevelToLoad push to be accepted
     fe.page = Page::Main;
     fe.cursor = 1; // Multiplayer [M MAIN_ITEMS 0x149; C_GOMULTIPLAYER fires on row 1]
     assert!(fe.action(Action::Confirm), "Multiplayer confirm must navigate");
-    assert_eq!(fe.page, Page::MpJoin, "C_GOMULTIPLAYER's delayed msg 0x44 lands on 0x40000019");
+    assert_eq!(fe.page, Page::MpMode, "the port's mode choice is up [S net-online-lobby]");
+    assert_eq!(fe.page.id(), 0x5000_0001);
+    fe.cursor = 0; // Local [S — the game's own flow]
+    assert!(fe.action(Action::Confirm), "Local confirm must navigate");
+    assert_eq!(fe.page, Page::MpJoin, "Local lands on C_GOMULTIPLAYER's 0x40000019");
     assert_eq!(fe.page.id(), 0x4000_0019);
 }
 
@@ -81,8 +87,11 @@ fn setup_ffa_then_options_then_rules_back_out() {
     fe.mp_map_row = 0;
     fe.action(Action::Confirm);
     assert_eq!(fe.mp_setup_state, 3, "FFA asks Choose Character [M P_MPSETUP's mp_stuff state 3]");
-    // FFA: the character list confirm lands on the options hub.
+    // FFA: the character confirm asks the Health Handicap, whose confirm lands on the hub [M
+    // C_RBMPSETUP 0x20de58's 0x4b: 3 → 4 → 5 + Menu_MPAreWeReady → 0x40000012].
     fe.mp_setup_sel = 0; // Bond
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.mp_setup_state, 4, "then the Health Handicap [M the state-4 list −75..+100]");
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.page, Page::MpOptions, "the picks flow to P_MPOPTIONS [M → 0x40000012]");
     assert_eq!(fe.mp_join[0].skin, 0);
@@ -130,8 +139,8 @@ fn locked_scenario_and_ravine_bots_gate() {
     fe.mp_map_row = 7;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.mp_level, 0x0700_004b);
-    fe.mp_setup_state = 3;
-    fe.action(Action::Confirm); // character pick → options
+    fe.mp_setup_state = 4;
+    fe.action(Action::Confirm); // the handicap pick → options
     assert_eq!(fe.page, Page::MpOptions);
     assert!(!fe.mp_options_ai_bots_open(), "Ravine clears the AI Bots row [M 0x217678:20-25]");
     fe.mp_options_row = 1;
@@ -148,7 +157,8 @@ fn bots_flow_picks_and_counts() {
     fe.action(Action::Confirm);
     fe.mp_map_row = 1; // Fort Knox — bots allowed
     fe.action(Action::Confirm);
-    fe.action(Action::Confirm); // FFA character pick → options
+    fe.action(Action::Confirm); // FFA character pick → the handicap
+    fe.action(Action::Confirm); // the handicap pick → options [M 0x4b's 3 → 4 → 5]
     assert_eq!(fe.page, Page::MpOptions);
     // → AI Bots → Setup Bot 1 → the wheel opens on the record's character [M 6 = Snow Guard].
     fe.mp_options_row = 1;
@@ -190,7 +200,8 @@ fn start_checks_refuse_single_player() {
     fe.action(Action::Confirm);
     fe.mp_map_row = 1;
     fe.action(Action::Confirm);
-    fe.action(Action::Confirm);
+    fe.action(Action::Confirm); // character → handicap
+    fe.action(Action::Confirm); // handicap → options
     fe.mp_options_row = 0;
     assert!(!fe.action(Action::Confirm), "one player alone cannot start [M the 0x39e box]");
     assert_eq!(fe.mp_error, 0x39e, "the error label id lands in mp_error");
@@ -255,6 +266,8 @@ fn team_scenario_asks_team_then_character() {
     assert_eq!(fe.mp_join[0].team, 1, "the selection IS the team [M mpjoin+4]");
     assert_eq!(fe.mp_setup_state, 3, "then the character list [M C_RBMPSETUP's 2 → 3]");
     fe.mp_setup_sel = 4; // Alura — MI6 side
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.mp_setup_state, 4, "then the Health Handicap [M C_RBMPSETUP's 3 → 4]");
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.page, Page::MpOptions);
     // Sister: a lone MI6 human in a team game fails the both-sides check.

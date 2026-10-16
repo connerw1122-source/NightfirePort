@@ -246,6 +246,8 @@ pub struct DroneContext {
     pub tables: DroneAnimData,
     pub scripts: HashMap<u32, Script>,
     pub level_id: u32,
+    /// net-match-host: the online match's lockstep seed (0 = the pre-net constant, local play).
+    pub mp_seed: u32,
     pub weapons: Option<nf_formats::weapon::WeaponData>,
     pub props: Option<nf_formats::drone::PropertyTables>,
     /// The level's tuning (`ReadTuningVars` applied), hit boxes and sound hearing data.
@@ -316,6 +318,11 @@ pub struct Sim {
     pub gun: nf_game::gun::Gun,
     /// Bond on foot (docs/systems/player.md).
     pub bond: nf_game::player::Bond,
+    /// net-match-host: the other human agents' bonds in an online match, by slot (the local
+    /// slot's entry stays `None` — its bond IS `bond`). [S] port-only: the game's four join
+    /// panels are four `Player_Init` objects; the port keeps one full local machine (the
+    /// weapons/view path) and ticks the remotes' movement through the same `Bond::tick_ctx`.
+    pub mp_bonds: [Option<nf_game::player::Bond>; 4],
     /// Aim mode's cursor (`BL+0x118 / +0x11C`) and its smoothed copy (`+0x120 / +0x124`), −1…1 across half the screen.
     pub cursor: [f32; 2],
     pub cross: [f32; 2],
@@ -5786,7 +5793,9 @@ impl Scene {
                 .flat_map(|m| m.objects.iter())
                 .map(|o| (o.hashcode, (o.min, o.max))).collect();
             let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref(), difficulty: 1 };
-            let mut rng = nf_game::drone::Rng::new(0x1234_5678);
+            // net-match-host: an online match builds from the host's seed (equal on every machine — the
+            // settings blob carries it); local play keeps the pre-net constant.
+            let mut rng = nf_game::drone::Rng::new(if d.mp_seed == 0 { 0x1234_5678 } else { d.mp_seed });
             // The drones' creates (and the interleaved type-0x4E light creates) draw from the shared
             // generator here; the map parse's ambient radiators went in first, inside `level_drones`.
             let mut lights = nf_game::light::LightList::default();
@@ -5918,6 +5927,7 @@ impl Scene {
             // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
             drones.difficulty = 1;
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
+            mp_bonds: [None, None, None, None],
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, laser_charge: 100.0, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,
                 view_alert: false,
@@ -6951,6 +6961,96 @@ impl Scene {
                 })).collect::<Vec<_>>().join("; ")
             }
         }
+    }
+}
+
+
+// ── net-match-host: the online match's shared sim surface ─────────────────────────────────────
+// [S] port-only (the PS2 game has no online mode): every machine runs the same MP level from the
+// host's settings + seed and exchanges only each agent's per-tick input (deterministic lockstep,
+// `nf_game::net`). The shared state every machine must agree on is the bonds' poses, the MP match
+// state and the shared RNG stream — `net_state_hash` folds exactly that in a fixed slot order.
+impl Sim {
+    /// The load builds every human slot's bond in slot order (deterministic on every machine);
+    /// slot 0's lands in `bond`. After the load, each machine moves ITS slot's bond into `bond`
+    /// (the camera and the full local path tick it) and parks the old local one back at slot 0.
+    pub fn swap_local_slot(&mut self, slot: usize) {
+        if slot == 0 || slot >= 4 { return; }
+        if let Some(mut mine) = self.mp_bonds[slot].take() {
+            mine = std::mem::replace(&mut self.bond, mine);
+            self.mp_bonds[0] = Some(mine);
+        }
+    }
+
+    /// Tick the remote agents' movement with their session inputs (one fixed 60 Hz tick). The
+    /// remote path is `Bond::tick_ctx` — the same movement core the local path runs (the local
+    /// machine's full weapon/view pipeline stays local-only in this first cut; see
+    /// docs/systems/net-match-host.md's *Deviations*). `water` is `None` for the remotes (no swim
+    /// state machine on a remote body yet) — the same `None` on every machine, so the lockstep
+    /// holds.
+    pub fn step_net_remotes(&mut self, inputs: &[nf_game::player::Input; 4], local: usize) {
+        for slot in 0..4 {
+            if slot == local || slot >= 4 { continue; }
+            let Some(b) = self.mp_bonds[slot].as_mut() else { continue };
+            let input = inputs[slot];
+            let ctx = nf_game::player::LadderCtx {
+                ladders: &self.ladders, wires: &self.wires, wire_anims: Some(&self.wire_anims),
+                water: None, sink: input.crouch, creepwalls: &self.creepwalls, level_bump_5fb: false,
+            };
+            b.tick_ctx(&self.world, &ctx, &input);
+        }
+    }
+
+    /// The per-tick state hash sent every N ticks (the app calls it; `nf_game::net` compares).
+    /// Fixed fold order: frame, RNG stream, then each slot's bond pose (slot order — the local
+    /// slot reads `bond`, the others `mp_bonds`), then the MP match state. An empty slot folds a
+    /// sentinel so the shape is total and equal on every machine.
+    pub fn net_state_hash(&self, local: usize) -> u64 {
+        let mut h = nf_game::net::Hasher::new();
+        h.u32(self.drones.frame);
+        h.u32(self.drones.rng.x);
+        h.u32(self.drones.rng.y);
+        h.u64(self.drones.rng.draws);
+        for slot in 0..4 {
+            let bond = if slot == local { Some(&self.bond) } else { self.mp_bonds[slot].as_ref() };
+            match bond {
+                Some(b) => {
+                    h.u32(slot as u32);
+                    for k in 0..3 { h.f32(b.pos[k]); }
+                    h.f32(b.yaw);
+                    h.f32(b.pitch);
+                    h.u32(b.substate as u32);
+                    h.bool(b.crouched);
+                }
+                None => h.u32(0xffff_ffff),
+            }
+        }
+        if let Some(m) = &self.mp {
+            h.u32(m.game.state);
+            h.f32(m.game.clock);
+            h.f32(m.game.limit);
+            for s in &m.game.slots {
+                match s.pos {
+                    Some(p) => { for k in 0..3 { h.f32(p[k]); } }
+                    None => h.u32(0xffff_ffff),
+                }
+                h.u32(s.timers[0] as u32);
+                h.u32(s.timers[1] as u32);
+                h.f32(s.score);
+                h.i32(s.kills);
+                h.i32(s.deaths);
+                h.bool(s.dead);
+            }
+            h.u32(m.settings.level_code);
+            h.u32(m.settings.scenario);
+            h.i32(m.settings.frag_limit);
+            h.i32(m.settings.time_limit);
+            h.u32(m.settings.seed);
+            h.u32(m.settings.human_count);
+        } else {
+            h.u32(0xffff_fffe);
+        }
+        h.finish()
     }
 }
 
