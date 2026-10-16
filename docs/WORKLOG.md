@@ -15518,3 +15518,26 @@ must be faded/off those actors when it plays.
 - Plan: read the port's crosshair state (scene.rs cross_state) + the decomp's crosshair target
   class check and the trigger gate (Player_WeaponFiring 0x1a5460 area), write the failing test
   through the real fire path, port the gate, sister tests, run touched crates + the suite.
+
+## civilian-no-shoot (2026-10-16, branch s/civilian-no-shoot) — the premise was wrong; the real rule is ported
+- The task's premise ("the game refuses to fire under the red no-shoot crosshair") is contradicted
+  by the disc: the repo's own PCSX2 trace of this exact play (tests/traces/02-civilian.trace
+  [L], 2026-10-11) shows the P2K clip falling on EVERY trigger pull under the red mark, and the
+  decomp agrees — BLData+0x133's only reader is the HUD draw [M HUD_UpdateCrossHair 0x19e6d0:69];
+  the fire pipeline (Player_Update 0x193600 → Player_Weapon 0x1a24c8 → Player_WeaponFiring
+  0x1a5460 → Player_RoundToFire 0x1a18e0 → Player_WeaponInitBullet 0x1a4bf0 → Bullet_init
+  0x12c5a0) reads none of the mark's outputs (BLData+0x880 is read only by the gadget types
+  0x56-0x58 [M 0x1a5460:531-581]); the damage path has no team gate [M NDrone2_DealWithObjHit
+  0x13fff0 case 5 — a class-3 owner hits any team, verified in the disassembly 0x1402fc-31].
+- What the game actually gates, and the port state: (a) the ICON is keyed on the held weapon id
+  [M 0x1a7810:152-183: ids {1, 0x35, 0x36, 0x43, 0x44} — fists + the throw family — keep the
+  NORMAL crosshair; levels 0x7000005..0x7000008 never mark] — NOT ported before; ported now in
+  scene.rs's crosshair block; (b) the auto-aim lock skips non-enemies [M Check_AutoAim
+  0x1a73f8:83-87] — already ported (drone.rs auto_aim's team gate), now pinned on 07000002's
+  data; (c) killing the protected civilian fails the mission [M 0x13e560 → Mission_SetFailLabel
+  0x4000034] — already ported (fix_actors), pinned on 07000002 (fail_label 0x0400_0034).
+- Tests crates/nf-view/tests/civilian_no_shoot_live.rs (3, green): the icon keys on the weapon
+  (gun → 3, fists → 2, aim-off → 2); the trigger fires under the mark, ammo is spent, the
+  civilian takes the hit and dies → "Killed Civilians" (the game's traced behavior); the sister:
+  a guard beside the civilian is shot (normal crosshair, damage) and the auto-aim locks the
+  guard, never the civilian. Blast radius: fix_player2_live 5/5, fix_player3_live 6/6.
