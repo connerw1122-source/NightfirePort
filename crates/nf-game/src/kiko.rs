@@ -84,6 +84,12 @@ pub const KIKO_MISSION: u8 = 0x19;
 pub const KIKO_MISSION_RUN: u8 = 0x1a;
 pub const STAND_BLIND: u8 = 0x18;
 pub const RUN_TO_ALARM: u8 = 0x89;
+/// The alarm chain's second/third states (`docs/fields/dronetype-tables.md` rows 8A/8B) and the two
+/// DonePressAlarm destinations (100 HostageGoToGoalPosition 0x165a68; 0xb6 JustStand 0x173fc0).
+pub const PRESS_ALARM: u8 = 0x8a;
+pub const DONE_PRESS_ALARM: u8 = 0x8b;
+pub const HOSTAGE_GO_TO_GOAL: u8 = 0x64;
+pub const JUST_STAND: u8 = 0xb6;
 pub const NINJA_ATTACK: u8 = 0xa7;
 pub const NINJA_LONG_RANGE: u8 = 0xa8;
 pub const NINJA_MID_RANGE: u8 = 0xa9;

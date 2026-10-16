@@ -348,6 +348,24 @@ pub struct Data<'a> {
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Hit { pub part: i16, pub ray: V3, pub point: V3, pub damage: f32, pub weapon: u16 }
 
+/// One AI point (`Drone_AIPoint` 0x137550's record; the game's array is 0xa0 bytes/point with the
+/// emitter/path/cost tail this port derives from the nav network on demand).
+pub struct AiPoint {
+    /// `AIPoint+6` (u16): the placement's param 0 — 8 = the alarm panel [D: 12 on 07000009 map39,
+    /// 9 on 0700000a map37, 0 elsewhere].
+    pub kind: u16,
+    /// `AIPoint+0x20` = the placement translation (the `sq` 16-byte store [M-dis 0x137658]).
+    pub pos: V3,
+    /// `AIPoint+0x44` = the placement rotation y — the panel facing `PressAlarm` turns to
+    /// (`Drone+0x734` [M-dis 0x1530c8-30], `Drone+0x694 = +0x734` [M 0x168ea8:33]).
+    pub yaw: f32,
+    /// `AIPoint+0x14` = the int→float of placement param 1 [M-dis 0x1375d4-e8].
+    pub radius: f32,
+    /// `AIPoint+0xC` = placement param 2 — `ClosestAIPoint` prefers a point whose param equals
+    /// `Drone+0x144` (the cel) [M 0x151b18:153-157].
+    pub param: u32,
+}
+
 /// Bond as the drones see him.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Player {
@@ -512,6 +530,30 @@ pub struct Drone {
     pub timer_c: Option<u32>,
     /// Timer D (`Drone+0xCD0`): the sniper cover's 6-s return-to-cover timer.
     pub timer_d: Option<u32>,
+    /// `Drone+0x734`: the assigned alarm point's facing yaw — `FindAlarmPoint` 0x153008:26-30 stores
+    /// the AIPoint+0x44 float; `PressAlarm` ENTER copies it to the desired yaw +0x694 [M 0x168ea8:33].
+    pub alarm_yaw: f32,
+    /// `Drone+0x16`: the alarm-run flag — `RunToAlarm` sets it 1, `SeenAndAttacking` gates its music
+    /// post on it, `PressAlarm`'s press arm clears it [M 0x1736f8:19, 0x145150:13, 0x168ea8:72].
+    pub alarm_run: bool,
+    /// `Drone+0xCC8`: timer C's payload word, sent as the msg-0xC argument (`PreDroneControl`
+    /// 0x148db0:106-108) — `PressAlarm` arms 0 then 1 [M 0x168ea8:31, 62]. The shared scratch word's
+    /// other readers (Death_Anim/Disabled/UnderCoverIdle/CombatNoRoute) never overlap this state.
+    pub timer_c_payload: u32,
+    /// `Drone+0x45` = the placement's param-23 word low byte (`DefaultInit` 0x14b300:266) — the
+    /// `DonePressAlarm` return-to-patrol gate (< 2) [M 0x1737d0:40]. 0 on every 07000009/0a guard
+    /// (param 23 = 0x20000000 [D]).
+    pub alarm_patrol: u8,
+    /// `Drone+0xA70`: the assigned AI point (`AssignAIPath` 0x154190 / `FindAlarmPoint` 0x153008's
+    /// reuse arm) — the port keeps the point's (yaw, position).
+    pub alarm_point: Option<(f32, V3)>,
+    /// The level's AI points, stamped by `attach_level` (`Drone_AIPoint` 0x137550): (kind = param 0,
+    /// position = the placement translation, yaw = the placement rotation y). Kind 8 = the alarm
+    /// panels [D: 12 on 07000009 map39, 9 on 0700000a map37, 0 elsewhere].
+    pub ai_points: Vec<(u16, V3, f32)>,
+    /// The level's 0x29 switches (position, param-0 channel) for `Switch_GetNearest` — the game's
+    /// SwitchList holds every map's switches [M 0x1b0398].
+    pub alarm_switches: Vec<(V3, u8)>,
     /// `Drone+0x330`: an explosive's position (set by `DroneFunc_ConsiderExplosive` on msg 0x21), and the run
     /// distance `+0x350` [M 0x1431c0:71-81]: 4.0 grenade-thrower weapons 0x2A/0x2C-0x2F (deadline 2 s), 10.0
     /// flashbang 0x37 (return to the caller state), 14.0 the 0x34/0x3B-0x40/0x6C explosives (deadline 10 s),
@@ -1047,6 +1089,8 @@ impl Drone {
             los: false, seen: false, ever_seen: false, visibility: 0.0, seen_ticks: 0, unseen_ticks: 0, vision_on: false,
             dist: 0.0, yaw_to_opp: 0.0,
             state: state::GLOBAL, prev_state: 0, next_state: None, entered: 0, timer_c: None, timer_d: None,
+            alarm_yaw: 0.0, alarm_run: false, timer_c_payload: 0, alarm_patrol: param(23) as u8, alarm_point: None,
+            ai_points: Vec::new(), alarm_switches: Vec::new(),
             explosive_pos: pos, explosive_run_dist: 0.0,
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
@@ -3039,6 +3083,74 @@ impl Drone {
         self.find_cover(d, need_los)
     }
 
+    /// `NDrone2_ClosestAIPoint` (0x151b18): the nearest enabled AI point of `kind` that is routable —
+    /// the game scans the `AIPoints` array for enabled (+4), type match (+6), the point's path equal to
+    /// the drone's (+0x80 == +0x954) and the emitter's per-node cost at the drone's nearest node
+    /// != 0xff (+0x88), nearest cost wins with the cel-match param (+0xC == +0x144) preferred; the port
+    /// stands the reachability test in with a route probe (`Route::to_position`) and the 2-D distance
+    /// for the order [S — the cost arrays are not decoded]. The points are the level's 0xE9 placements
+    /// (`Drone_AIPoint` 0x137550; type = param 0), scanned per call.
+    fn closest_ai_point(&self, kind: u16) -> Option<(f32, V3)> {
+        let feet = self.feet();
+        let mut best: Option<(f32, (f32, V3))> = None;
+        for &(k, pos, yaw) in &self.ai_points {
+            if k != kind { continue; }
+            let dist = crate::nav::dist2d(self.pos, pos);
+            // Same band as `assign_path`'s height filter: a point on another floor is not "near".
+            if (pos[1] - feet[1]).abs() > 2.0 { continue; }
+            if best.is_some_and(|(b, _)| dist >= b) { continue; }
+            best = Some((dist, (yaw, pos)));
+        }
+        best.map(|(_, hit)| hit)
+    }
+
+    /// `NDrone2_FindAlarmPoint` (0x153008): reuse the assigned type-8 point, else the closest one;
+    /// set `+0x734` = its yaw and move to it. Returns found. The game returns the `MoveToGoalPosition`
+    /// code band 0..3 on the fresh path and always 1 on the reuse path [M-dis jump tables 0x2f6390 /
+    /// 0x2f63d0]; the port keeps the boolean the callers use.
+    fn find_alarm_point(&mut self, d: &Data) -> bool {
+        if let Some((yaw, pos)) = self.alarm_point {
+            self.alarm_yaw = yaw;
+            self.goal = Some(pos);
+            self.move_to_goal(d);
+            return true;
+        }
+        let Some((yaw, pos)) = self.closest_ai_point(8) else { return false };
+        self.goal = Some(pos);
+        // The game's fresh path returns the `MoveToGoalPosition` code band 0..3 [M-dis 0x2f63d0].
+        if !matches!(self.move_to_goal(d), 0..=3) { return false; }
+        self.alarm_yaw = yaw; // `Drone+0x734` [M-dis 0x1530c8-30]
+        self.alarm_point = Some((yaw, pos));
+        true
+    }
+
+    /// `NDrone2_FindRunToPoint` (0x153168): the point kind by behaviour — prop 0x56 → 8 (the alarm
+    /// panels), prop 0x4e → 1, else by team (1 → 0, 2 → 9, 3 → 2 with a type-1 fallback) [M :14-33];
+    /// found iff the move code lands 0..3 [M-dis jump table 0x2f6450].
+    fn find_run_to_point(&mut self, d: &Data) -> bool {
+        let kind = if self.prop(d, 0x56) { 8 } else if self.prop(d, 0x4e) { 1 }
+            else { match self.team { 1 => 0, 2 => 9, 3 => 2, _ => return false } };
+        let Some((_, pos)) = self.closest_ai_point(kind) else {
+            if kind != 2 { return false; }
+            let Some((_, pos)) = self.closest_ai_point(1) else { return false };
+            self.goal = Some(pos);
+            return matches!(self.move_to_goal(d), 0..=3);
+        };
+        self.goal = Some(pos);
+        matches!(self.move_to_goal(d), 0..=3)
+    }
+
+    /// `Switch_GetNearest` (0x1b0398) + `Switch_GetSwitchChannel` (0x1b0430): the nearest switch's
+    /// channel by squared 3-D distance over the level's switches (`alarm_switches`); 0 when none.
+    fn nearest_switch_channel(&self) -> u8 {
+        let mut best: Option<(f32, u8)> = None;
+        for &(pos, ch) in &self.alarm_switches {
+            let sq = (pos[0] - self.pos[0]).powi(2) + (pos[1] - self.pos[1]).powi(2) + (pos[2] - self.pos[2]).powi(2);
+            if best.is_none_or(|(b, _)| sq < b) { best = Some((sq, ch)); }
+        }
+        best.map_or(0, |(_, ch)| ch)
+    }
+
     /// `NDrone2_MoveToGoalPosition(goal)` (0x1517d8): a route to the goal point (target nodes searched with r = 0),
     /// kept until invalidated; 3 within 2.0 of the route's end, else follow (0xC blocked, else 0).
     fn move_to_goal(&mut self, d: &Data) -> u8 {
@@ -4874,13 +4986,104 @@ impl Drone {
             }
             // StandBlind 0x18 (0x172870): the stand anim only.
             (crate::kiko::STAND_BLIND, msg::ENTER) => { self.call_anim(d, anim_state::STAND_IDLE, 0, 0); true }
-            // RunToAlarm 0x89 (0x1736f8): no alarm point reachable on the ported paths → Idle (the
-            // none-found arm; the port has no alarm-point registry [S]).
-            (crate::kiko::RUN_TO_ALARM, msg::ENTER) => { self.vision_on = true; self.set_state(IDLE); true }
-            // EnemyRunToPoint 0x85 (0x168910): the return state 0x56, on 11/12/13/41 with the player
-            // not yet seen → 4/5; FindRunToPoint's none-found arm (no AI-point registry in the port,
-            // the sweep levels' mode-7 drones provably stand [M 0x168910:32-36]).
+            // RunToAlarm 0x89 (`NDrone2_DSTATE_RunToAlarm` 0x1736f8): vision on, alert status 1 (the
+            // port does not model +0x51C), `FindAlarmPoint` 0x153008 → found: `+0x16 = 1`, the return
+            // state `+0x5A2 = 0x8A PressAlarm`, `+0x5A0 = 0x56`, GoToGoalPosition (99) [M :13-23];
+            // none → Idle (4) [M :25]. UPDATE is `SeenAndAttacking` (the tick's gate list).
+            (crate::kiko::RUN_TO_ALARM, msg::ENTER) => {
+                self.vision_on = true;
+                if self.find_alarm_point(d) {
+                    self.alarm_run = true;
+                    self.return_state = crate::kiko::PRESS_ALARM;
+                    self.resume_state = ATTACK;
+                    self.set_state(GO_TO_GOAL);
+                } else {
+                    self.set_state(IDLE);
+                }
+                true
+            }
+            // PressAlarm 0x8A (`NDrone2_DSTATE_PressAlarm` 0x168ea8): ENTER — vision flag, face the
+            // panel (`+0x694 = +0x734` [M :33]), the 3-s timer C with payload 0 (`+0xCC4 = frame +
+            // 3·FRAME_RATE_INT`, `+0xCC8 = 0` [M :30-31]) and the stand anim — 0x21 on 07000009/0a,
+            // 0x22 elsewhere [M :24-29]. Timer C payload 0 (the wait done): the press anim 0x3c with
+            // the follow-on state 0x8B and the 0.5-s timer C with payload 1 [M :56-63]. Timer C
+            // payload 1 (the press lands): `SetMissionFailReason(drone, 0x10)` — the nearest switch's
+            // channel rises at this tick (ch 0x61 takes the fail label; `Switch_GetNearest`
+            // 0x1b0398 / `Switch_GetSwitchChannel` 0x1b0430), the non-civilian speech timers
+            // (+0x594/+0x584, unmodelled), `+0x16 = 0` [M :65-73].
+            (crate::kiko::PRESS_ALARM, msg::ENTER) => {
+                self.vision_on = true;
+                self.desired_yaw = self.alarm_yaw;
+                self.timer_c = Some(frame + 180);
+                self.timer_c_payload = 0;
+                let anim = if matches!(d.level, 0x0700_0009 | 0x0700_000a) { anim_state::ALERT_IDLE } else { anim_state::ALERT_LOOK };
+                self.call_anim(d, anim, 0, 0);
+                true
+            }
+            (crate::kiko::PRESS_ALARM, msg::TIMER_C) => {
+                if self.timer_c_payload == 0 {
+                    self.timer_c_payload = 1;
+                    self.timer_c = Some(frame + 30); // FRAME_RATE_DIV · 30 [M 0x168ea8:60]
+                    self.call_anim(d, 0x3c, crate::kiko::DONE_PRESS_ALARM, 0);
+                } else {
+                    self.timer_c = None;
+                    // `DroneFunc_SetMissionFailReason` 0x13e560 case 0x10: `Switch_GetNearest`
+                    // 0x1b0398 walks the game's SwitchList (every created 0x29 switch, all maps) for
+                    // the nearest by squared distance, `Switch_GetSwitchChannel` 0x1b0430 reads its
+                    // channel — the port scans the level's 0x29 placements directly.
+                    let ch = self.nearest_switch_channel();
+                    if ch != 0 {
+                        self.fail_reason = Some(crate::ally::FailReason {
+                            label: if ch == 0x61 { crate::ally::FAIL_ALARM } else { 0 },
+                            channel: ch,
+                        });
+                    }
+                    self.alarm_run = false;
+                }
+                true
+            }
+            // DonePressAlarm 0x8B (`NDrone2_DSTATE_DonePressAlarm` 0x1737d0): ENTER — voice set 0x13 →
+            // JustStand (0xb6) [M :20-25]; else weapon < 2 (anim+0x62) and `+0x45 < 2`: clear the
+            // alarm-raiser property 0x56, `FindRunToPoint` → found: `+0x5A2 = 0x12` + state 100
+            // (HostageGoToGoalPosition); none: state 0x12 (CivilianScared) [M :27-51]; otherwise
+            // Attack (0x56) [M :57].
+            (crate::kiko::DONE_PRESS_ALARM, msg::ENTER) => {
+                if self.voice_type == 0x13 {
+                    self.set_state(crate::kiko::JUST_STAND);
+                } else if self.weapon < 2 && self.alarm_patrol < 2 {
+                    d.props.set(0x56, &mut self.props, 0);
+                    if self.find_run_to_point(d) {
+                        self.return_state = CIVILIAN_SCARED; // `+0x5A2 = 0x12` [M :44]
+                        self.set_state(crate::kiko::HOSTAGE_GO_TO_GOAL);
+                    } else {
+                        self.set_state(CIVILIAN_SCARED);
+                    }
+                } else {
+                    self.set_state(ATTACK);
+                }
+                true
+            }
+            // JustStand 0xb6 (`NDrone2_DSTATE_JustStand` 0x173fc0): the sway-in-place stand; the port
+            // keeps the stand anim only (the sine sway's +0x38 write has no reader in the port).
+            (crate::kiko::JUST_STAND, msg::ENTER) => { self.call_anim(d, anim_state::STAND_IDLE, 0, 0); true }
+            // HostageGoToGoalPosition 0x64 (`NDrone2_DSTATE_HostageGoToGoalPosition` 0x165a68): UPDATE
+            // runs the route — moving → run anim, arrived (3) → the return state `+0x5A2`, blocked
+            // (9/0xC) → the stand anim [M case 3]; msg 0x1b → the return state (unmodelled message).
+            (crate::kiko::HOSTAGE_GO_TO_GOAL, msg::UPDATE) => {
+                match self.move_to_goal(d) {
+                    0..=2 => self.call_anim(d, anim_state::RUN, 0, 0),
+                    3 => { let r = self.return_state; self.set_state(r); }
+                    9 | 0xc => self.call_anim(d, anim_state::ALERT_IDLE, 0, 0),
+                    _ => {}
+                }
+                true
+            }
+            // EnemyRunToPoint 0x85 (`NDrone2_DSTATE_EnemyRunToPoint` 0x168910): the alarm-raiser gate
+            // first — prop 0x56 set → RunToAlarm 0x89 [M :17-27]; then the return state 0x56, on
+            // 11/12/13/41 with the player not yet seen → 4/5; FindRunToPoint's none-found arm (the
+            // sweep levels' mode-7 drones provably stand [M 0x168910:32-36]).
             (crate::kiko::ENEMY_RUN_TO_POINT, msg::ENTER) => {
+                if self.prop(d, 0x56) { self.vision_on = true; self.set_state(crate::kiko::RUN_TO_ALARM); return true; }
                 self.vision_on = true;
                 let mut ret = ATTACK;
                 if matches!(d.level, 0x0700_0011 | 0x0700_0012 | 0x0700_0013 | 0x0700_0041) && !self.ever_seen {
@@ -6095,6 +6298,10 @@ pub struct Drones {
     /// `InverterTrigger_Create` 0x1b3040, `Shooter_Create` 0x17d030, `DynamicObject_Create` 0x18dbf8,
     /// `ThirdCam_Create` 0x1bc510), created in `attach_level`.
     pub worldobjs: crate::worldobj::WorldObjects,
+    /// The AI points (`Drone_AIPoint` 0x137550 from the 0xE9 placements; the game's `AIPoints` array
+    /// 0x28ee10, 0xa0-byte records): type (placement param 0 — 8 = the alarm panels), position, the
+    /// facing yaw (placement rotation y → AIPoint+0x44 [M-dis]), enabled. Created in `attach_level`.
+    pub ai_points: Vec<AiPoint>,
     /// The world presentation FX (0x21 ripples, 0xe3 flicker, 0xd4 cloud drift, 0x4a apocalypse,
     /// 0xf2 emitters — crates/nf-game/src/world_fx.rs, fix-world-fx).
     pub fx: crate::world_fx::WorldFx,
@@ -6198,7 +6405,7 @@ impl Drones {
         let mut drones = Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), player_pos: [0.0; 3], bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), shake: 0.0, health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, mission_end: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, hold_npcs: false, hold_active: false,
             npc_system_disabled: false,
-            spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
+            spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), ai_points: Vec::new(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
             // fix-06-alarm (fields on their own lines — merge lesson 4).
             sound_triggers: Default::default(),
             node_doors: None,
@@ -6271,6 +6478,31 @@ impl Drones {
     /// main map's drone placements), which orders the per-frame object updates.
     pub fn attach_level(&mut self, level: &nf_formats::level::Level) {
         self.triggers = crate::triggers::build(level);
+        // The AI points (`Drone_AIPoint` 0x137550; `parsemap_create_dynamic_objects` case 0xE9): type =
+        // placement parameter 0 (the same word `Switch_Create` reads as the channel), position = the
+        // placement translation, yaw = rotation y (AIPoint+0x44, the panel facing [M-dis 0x1530c8]),
+        // radius = placement param 1's raw word as int→float (AIPoint+0x14 [M-dis 0x1375d4-88]), param =
+        // placement param 2 (AIPoint+0xC, the cel-match word in `ClosestAIPoint` 0x151b18:153).
+        self.ai_points = level.maps.iter().flat_map(|map| map.placements.iter())
+            .filter(|p| p.flags & 0xff == 0xe9)
+            .map(|p| AiPoint {
+                kind: p.params.iter().find(|(j, _)| *j == 0).map_or(0, |&(_, v)| v as u16),
+                pos: p.translation,
+                yaw: p.rotation[1],
+                radius: p.params.iter().find(|(j, _)| *j == 1).map_or(0.0, |&(_, v)| v as f32),
+                param: p.params.iter().find(|(j, _)| *j == 2).map_or(0, |&(_, v)| v),
+            }).collect();
+        // Stamp the AI points and the switch list onto every drone (the states read them off `self`;
+        // the game reads the global `AIPoints` array 0x28ee10 and walks the SwitchList 0x2bf0f8).
+        let points: Vec<(u16, V3, f32)> = self.ai_points.iter().map(|p| (p.kind, p.pos, p.yaw)).collect();
+        let switches: Vec<(V3, u8)> = level.maps.iter().flat_map(|map| map.placements.iter())
+            .filter(|p| p.flags & 0xff == 0x29)
+            .map(|p| (p.translation, p.params.iter().find(|(j, _)| *j == 0).map_or(0, |&(_, v)| v) as u8))
+            .collect();
+        for dr in &mut self.list {
+            dr.ai_points = points.clone();
+            dr.alarm_switches = switches.clone();
+        }
         // The photograph targets (0xFD) and breakable doors (0xE1) [M CamSubject_Create 0x1bc5d8,
         // Destroy_Create 0x12c318 — the game creates them in placement order in
         // parsemap_create_dynamic_objects 0x1d04f0].
@@ -9474,6 +9706,8 @@ mod tests {
             accuracy: 0, aggression: 0, reaction: 0, los: false, seen: false, ever_seen: false, visibility: 0.0,
             seen_ticks: 0, unseen_ticks: 0, vision_on: false, dist: 0.0, yaw_to_opp: 0.0,
             state: 0, prev_state: 0, next_state: None, entered: 0, timer_c: None, timer_d: None,
+            alarm_yaw: 0.0, alarm_run: false, timer_c_payload: 0, alarm_patrol: 0, alarm_point: None,
+            ai_points: Vec::new(), alarm_switches: Vec::new(),
             explosive_pos: pos, explosive_run_dist: 0.0,
             anim: Animator { danim: 0, script: None, time: 0, state: 0, class: 0, call: None, reached: false, call_from: 0, blend_wait: 0, ftime: 0.0, speed: 1.0, variant: 0, once: false, held: false, follow_on: 0, outgoing: Vec::new(), started: false, early_end: false, len_cap: None },
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip: 0, clip_max: 0,
