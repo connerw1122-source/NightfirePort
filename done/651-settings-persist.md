@@ -31,3 +31,7 @@ platform equivalent. Resolve the path with std only; don't add a `dirs` crate un
 
 ---
 claimed-by: sandbox2 at 2026-10-16T02:30Z
+
+---
+## Report (done, 2026-10-16T04:04Z)
+
