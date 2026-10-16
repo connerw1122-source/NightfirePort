@@ -16498,3 +16498,13 @@ HUD_UpdateNightSightPane 0x19d218, Player_MuzzleFlash 0x1a4298, Player_WeaponFir
 0x1a5460, Sub_Create 0x1ad6c0, AnimProcessScriptCmds 0x1c1b38, Searchlight_Create,
 parsemap_create_dynamic_objects, Script_LightStart. Explosions are priority (08 rocket
 corridor ~2.5x brighter on PS2).
+
+Work done (same session): full census of all 14 `jal Light_Create` sites (ABI pinned from the
+callee: a0 pos / a1-3 rgb / f12 radius / a4 channel / a5 life / a6 kind / f13 intensity /
+a7 period / stack+0 seed / +8 mask / +16 sound). Driver's list corrected: the site near
+Searchlight_Create is inside Light_SetAmbientRadiators; Searchlight_Create uses psiLight_Create
+directly. Fix: the 0x4E placement light's radius is `(float)(uint)` [M 0x1d0b8c-0x1d0bd0], not
+float bits — the old from_bits made every 0x4E light contribute nothing. Live test
+light_create_census_live.rs (1 passed); nf-game lib 241 passed. Report:
+docs/reports/light-create-census.md (incl. live checks for the radiator-radius discrepancy and
+site 5's rgb table).
