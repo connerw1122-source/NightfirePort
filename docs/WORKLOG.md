@@ -14890,3 +14890,17 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   a locked grate stays shut.
 - Start: Fri Oct 16 09:03 UTC 2026. Sandbox survived from the previous task (ISO, work/, queue
   worktree, cargo cache all present); branch cut from origin/master ad761677.
+
+## grates-02 (continued)
+
+- DONE: the four grates on 07000002 are SS props (272/308/440 E-usable, 309 locked by design —
+  mask 0x1, ch 1 has no writer on the disc); the port's channel-seek SS tick never moved the
+  ch-0 grates. Ported SS_Update 0x1a9948's true state machine (disasm-verified: states 1/8/0x40,
+  landing at ext+0x08=param5, wrap `(int)last<(int)t` → t=0, state = p1?0:0x40, states 0/0x40
+  never re-pose → the open pose HOLDS; the channel is an output, never a driver). E now opens
+  sg_grill_large #272, bath_hatch #308 and grill1 #440 (the bunker-bed grate) and they stay open;
+  bath_hatch1 #309 stays shut. Tests: fix_ss_grate_live 4/4, fix_0c_hatch_live 2+2ign,
+  fix_0c_vent2_live 3 (winch test re-pointed: ch word 0 is no channel [M 0x1a9df8:47-48]).
+  Suite: 1728 passed / 7 failed (3 allowed disc_golden + 3 render probes + 1 driving RNG, none
+  SS-related) / 72 ignored. Report: docs/reports/grates-02.md (live checks: SS collision ray
+  probe, the quaternion render gap, one-shot semantics).
