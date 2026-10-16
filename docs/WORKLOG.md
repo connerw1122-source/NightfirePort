@@ -16713,3 +16713,29 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+
+## hatch-02-intro (2026-10-16, branch s/hatch-02-intro) — close-out
+- Task 715: "the hatch still doesn't open" (playtest 1014-1725 [intro02]). Outcome: **master
+  already behaves like the game** — the playtest predates grates-02's merge. Pinned with
+  crates/nf-view/tests/hatch02_intro_live.rs (2 tests), fail-first proven by reverting ss.rs to
+  the pre-grates-02 tick (366f5d49): the bed-grate E-open test fails there exactly as the
+  playtest describes (closed transform, state stuck 1, t 0.00).
+- The audit trail (all [D], measured through the real loaders): the 02 intro 0x06000084
+  animates NO hatch — camera + 2 anim actors (0x0500004f Mayhew, 0x05000009) + the pearl entity
+  0x020005db (1500 keys, tracks its path to within 0.03 of the last key in the port); its only
+  write is event 0xD [0x47,1] at tick 1539 = the objective announce gate (params are hex — an
+  early probe misread them as decimal 47; levellog pins channel 0x47 = 1 at frame 1540). The
+  four hatches are the SS grates (grates-02's table re-verified); bath_hatch1 #309 has no ch-1
+  writer anywhere (re-scanned all 52 maps). The second cut-scene 0x0600007f (the polySurface2
+  hatch panel, skin 0x05000034) is dormant on the disc: its chain needs ch 0x3b from
+  MultiplexIn #397's AND of ch 0x29/0x2a/0x88/0x49 — zero writers on the disc → ch 53 never
+  rises → SP #399 never plays. Trigger_Tag param map decoded from Trigger_Create 0x1b1720 (out
+  = param 0, ins = params 1..7 u16s, gate = param 9, flag = param 10) — in the report.
+- Tests on the final merged tree (origin/master 170bcf01): batch 1 grate/cutscene set 23 passed
+  (2 ign), batch 2 lib tests nf-formats 79 / nf-view 17 / nf-game 241, batch 3 the
+  cutscene/level slice 43 — 403 passed / 0 failed total. Full suite NOT run: the background
+  runner is reaped between tool calls in this sandbox (empty suite.out) and a foreground full
+  run does not fit the tool windows; the batches cover the affected surface (the merge touched
+  nf-formats/hud, nf-game/drone, nf-view/gpu+hud — all lib tests green). Render asks for the
+  main agent (bed-grate E-open, pavillion grill, the intro's pearl) in the report.
+- Report: docs/reports/hatch-02-intro.md.
