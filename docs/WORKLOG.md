@@ -16706,3 +16706,16 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+
+## script-negative-delay (2026-10-16, branch s/script-negative-delay) — start 21:45 UTC
+
+Task 732 (GAPS G-047): on 0700001b all 16 solar panels shatter at t=5 and the girder frames are
+empty (side-by-side vs PCSX2 2026-10-16). Cause: script 0x06000832 stream 11 Event 3 p0=0 sets
+SCRIPTINFO+0x9C (delay) to −1; a NEGATIVE delay HOLDS the script [M Script_Update 0x1da9c4/0x1da9d0:
+only a positive delay counts down] until SP_UnPause 0x1dca58 clears it — for the panels, when
+SP_Update's damage path (0x1dc1c0-0x1dc330) accumulates SP_GetHitDamage 0x1dc5f8 to 20. The port's
+Script::update (crates/nf-game/src/nis.rs) runs a negative delay as 0 — wrong. Plan: (1) negative
+delay holds; (2) port SP_GetHitDamage + SP_Update damage path; (3) held entity takes its first
+key's position (entity_start currently makes identity matrix, only interp positions); (4) re-check
+EVERY script with Event 3 p0=0 (0x0600006f, MP set 0x0600003c..45, lift 0x06000571) and the other
+unpause callers (Switch_Update, NDrone2_KickObject); keep fix_finale_live + 4a lift green.
