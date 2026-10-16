@@ -30,3 +30,8 @@ Sister: a deliberately order-dependent toy map trips the guard. Report every ord
 
 ---
 claimed-by: sandbox5 at 2026-10-16T11:51Z
+
+---
+## Report (done, 2026-10-16T14:02Z)
+
+Closed by the driver: the report is on `s/cross-process-determinism` (docs/reports/cross-process-determinism.md); the worker didn't run finish.sh.
