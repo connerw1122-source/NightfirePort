@@ -235,6 +235,67 @@ fn sub(a: V3, b: V3) -> V3 { [a[0] - b[0], a[1] - b[1], a[2] - b[2]] }
 fn dot(a: V3, b: V3) -> f32 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
 fn cross(a: V3, b: V3) -> V3 { [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]] }
 
+/// One capsule-vs-triangle contact — the per-triangle body shared by `capsule_push`,
+/// `capsule_push_scoped` and the pick-contact queries (`Intersect_CylGeom` 0x109da0's per-triangle
+/// loop: the crossing point of the spine with the face plane, the closest triangle point to it,
+/// and when that lies on an edge the spine point nearest it; closer than `r` → pushed out along
+/// the separation, each push applied before the next triangle). Returns false when the triangle is
+/// skipped (AABB, water material, the head-on cull, or no contact within `r`); else applies the
+/// push to `a`/`b`, adds it to `total`, and sets the surface flags:
+/// - `walkable`: the port's pre-existing "a walkable face (|ny| > 0.7) touched below the bottom
+///   end" (the `floor_ny = 1.0` fallback's signal);
+/// - `pick`: the game's pick-contact bit (`Intersect_CylGeom` 0x10a72c-0x10a734 sets
+///   `HITTEST+0x9c |= 1`, ORed per real contact into the real `+0x9c` by `Collide_Intersect`
+///   0x1ebaa8 tail 0x1ec138-0x1ec150, which `Player_FeetOnPoint` 0x194188:176-185 grounds on when
+///   nonzero): the bit block's `dot2 < 0` test — `R = copy+0x50 − (bottom + push)` where the
+///   `copy+0x50` vector tracks the live bottom endpoint through the pick's DeltaP adds
+///   [M `Collide_Intersect` 0x1ebaa8:353-373 — REAL+0x50 += DeltaP per real hit, and the per-hit
+///   stack copy takes it fresh], so `R = −push_this_contact` and `dot2 < 0` reads
+///   `push·axis > 0` (the axis = normalize(+0x20 top − +0x30 bottom) [M `Player_Collision`
+///   0x194df0 case 0/6/3], world-up for an upright capsule). A wall contact's push is horizontal
+///   (`push·axis = 0`, not > 0) and a head-bump's is downward, so neither grounds — falling past a
+///   wall stays airborne, which the reverted `push != 0` arm got wrong (680's 6 merge failures).
+///   The bit block's outer `0.7 < dot1` gate is NOT ported as a hard gate: read as `normal·axis`
+///   it would refuse the 0700000c pier ramp (a ~58° face, `normal·axis ≈ 0.53`) that the game's
+///   own ride grounds on (the ray tolerance is exceeded at the skin-rest equilibrium on that
+///   steep a face, so the pick arm must fire — hatch-crouch-0c report); see the report's live
+///   checks for the confirm-the-gate probe.
+fn capsule_tri_contact(t: &[V3; 3], mat: u8, a: &mut V3, b: &mut V3, r: f32, grow: f32, total: &mut V3, walkable: &mut bool, pick: &mut bool) -> bool {
+    let tl = [0, 1, 2].map(|k| t[0][k].min(t[1][k]).min(t[2][k]));
+    let th = [0, 1, 2].map(|k| t[0][k].max(t[1][k]).max(t[2][k]));
+    let (sl, sh) = ([0, 1, 2].map(|k| a[k].min(b[k]) - grow), [0, 1, 2].map(|k| a[k].max(b[k]) + grow));
+    if (0..3).any(|k| th[k] < sl[k] || tl[k] > sh[k]) { return false; }
+    // Water surfaces never collide the player (the cel scoping — see capsule_push).
+    if mat & 0x3f == 0xE { return false; }
+    let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
+    let nl = dot(n, n).sqrt();
+    if nl < 1e-12 { return false; }
+    let n = [n[0] / nl, n[1] / nl, n[2] / nl];
+    // The one-sided rule for near-horizontal faces: the capsule's top end must be on the
+    // front (+n) side, else the face is skipped (the game's head-on cull [M 0x109da0:321-322]).
+    if n[1].abs() > 0.7 && dot(n, sub(*a, t[0])) < 0.0 { return false; }
+    let ab = sub(*b, *a);
+    let denom = dot(n, ab);
+    let mut p = if denom.abs() > 0.0002 {
+        let tt = (-(dot(n, sub(*a, t[0]))) / denom).clamp(0.0, 1.0);
+        [a[0] + ab[0] * tt, a[1] + ab[1] * tt, a[2] + ab[2] * tt]
+    } else {
+        let c = [0, 1, 2].map(|k| (t[0][k] + t[1][k] + t[2][k]) / 3.0);
+        closest_on_segment(*a, *b, c)
+    };
+    let (q, on_edge) = closest_on_triangle(p, t);
+    if on_edge { p = closest_on_segment(*a, *b, q); }
+    let v = sub(p, q);
+    let dist = dot(v, v).sqrt();
+    if dist >= r { return false; }
+    let dir = if dist > 1e-6 { [v[0] / dist, v[1] / dist, v[2] / dist] } else if dot(n, sub(*a, q)) >= 0.0 { n } else { [-n[0], -n[1], -n[2]] };
+    let push = [dir[0] * (r - dist), dir[1] * (r - dist), dir[2] * (r - dist)];
+    for k in 0..3 { a[k] += push[k]; b[k] += push[k]; total[k] += push[k]; }
+    if n[1].abs() > 0.7 && q[1] < b[1] { *walkable = true; }
+    if push[1] > 0.0 { *pick = true; }
+    true
+}
+
 /// The segment's AABB.
 fn box_of(from: V3, to: V3) -> (V3, V3) {
     ([from[0].min(to[0]), from[1].min(to[1]), from[2].min(to[2])], [from[0].max(to[0]), from[1].max(to[1]), from[2].max(to[2])])
@@ -586,56 +647,75 @@ impl CollisionWorld {
         let (mut a, mut b) = (a, b);
         let mut total = [0f32; 3];
         let mut walkable = false;
+        let mut pick = false;
         let grow = r + 0.1;
         let mut lo = [0f32; 3];
         let mut hi = [0f32; 3];
         for k in 0..3 { lo[k] = a[k].min(b[k]) - grow; hi[k] = a[k].max(b[k]) + grow; }
         let stat = &self.stat;
-        let mut test = |t: &[V3; 3], mat: u8, a: &mut V3, b: &mut V3, total: &mut V3, walkable: &mut bool| {
-                let tl = [0, 1, 2].map(|k| t[0][k].min(t[1][k]).min(t[2][k]));
-                let th = [0, 1, 2].map(|k| t[0][k].max(t[1][k]).max(t[2][k]));
-                let (sl, sh) = ([0, 1, 2].map(|k| a[k].min(b[k]) - grow), [0, 1, 2].map(|k| a[k].max(b[k]) + grow));
-                if (0..3).any(|k| th[k] < sl[k] || tl[k] > sh[k]) { return; }
-                // Water surfaces never collide the player (the cel scoping — see capsule_push).
-                if mat & 0x3f == 0xE { return; }
-                let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
-                let nl = dot(n, n).sqrt();
-                if nl < 1e-12 { return; }
-                let n = [n[0] / nl, n[1] / nl, n[2] / nl];
-                // The one-sided rule for near-horizontal faces: the capsule's top end must be on the
-                // front (+n) side, else the face is skipped (the game's head-on cull [M 0x109da0:321-322]).
-                if n[1].abs() > 0.7 && dot(n, sub(*a, t[0])) < 0.0 { return; }
-                let ab = sub(*b, *a);
-                let denom = dot(n, ab);
-                let mut p = if denom.abs() > 0.0002 {
-                    let tt = (-(dot(n, sub(*a, t[0]))) / denom).clamp(0.0, 1.0);
-                    [a[0] + ab[0] * tt, a[1] + ab[1] * tt, a[2] + ab[2] * tt]
-                } else {
-                    let c = [0, 1, 2].map(|k| (t[0][k] + t[1][k] + t[2][k]) / 3.0);
-                    closest_on_segment(*a, *b, c)
-                };
-                let (q, on_edge) = closest_on_triangle(p, t);
-                if on_edge { p = closest_on_segment(*a, *b, q); }
-                let v = sub(p, q);
-                let dist = dot(v, v).sqrt();
-                if dist >= r { return; }
-                let dir = if dist > 1e-6 { [v[0] / dist, v[1] / dist, v[2] / dist] } else if dot(n, sub(*a, q)) >= 0.0 { n } else { [-n[0], -n[1], -n[2]] };
-                let push = [dir[0] * (r - dist), dir[1] * (r - dist), dir[2] * (r - dist)];
-                for k in 0..3 { a[k] += push[k]; b[k] += push[k]; total[k] += push[k]; }
-                if n[1].abs() > 0.7 && q[1] < b[1] { *walkable = true; }
+        let mut test = |t: &[V3; 3], mat: u8, a: &mut V3, b: &mut V3, total: &mut V3, walkable: &mut bool, pick: &mut bool| {
+                capsule_tri_contact(t, mat, a, b, r, grow, total, walkable, pick);
         };
         for r in runs {
             let o = &stat.objects[r as usize];
             if !(0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) {
-                for k in o.tris.clone() { test(&stat.tris[k], stat.mats[k], &mut a, &mut b, &mut total, &mut walkable); }
+                for k in o.tris.clone() { test(&stat.tris[k], stat.mats[k], &mut a, &mut b, &mut total, &mut walkable, &mut pick); }
             }
         }
         for g in [&dynamic.geo] {
             for o in overlapping(g, lo, hi) {
-                for k in o.tris.clone() { test(&g.tris[k], g.mats[k], &mut a, &mut b, &mut total, &mut walkable); }
+                for k in o.tris.clone() { test(&g.tris[k], g.mats[k], &mut a, &mut b, &mut total, &mut walkable, &mut pick); }
             }
         }
         (total, walkable)
+    }
+
+    /// The game's pick-contact grounded signal for the actor capsule: whether any contact this
+    /// query resolves sets the pick bit the game grounds on (`Player_FeetOnPoint` 0x194188:176-185
+    /// sets `obj+0x60 |= 8` when `HITTEST+0x9c != 0`; the bit is ORed in per real contact by
+    /// `Collide_Intersect` 0x1ebaa8 tail 0x1ec138-0x1ec150 and set by `Intersect_CylGeom`
+    /// 0x10a72c-0x10a734). Scoped like `capsule_push_scoped`; falls back to the flat world.
+    pub fn capsule_pick_contact_scoped(&self, cell: Option<usize>, a: V3, b: V3, r: f32) -> bool {
+        let Some(cell) = cell else { return self.capsule_pick_contact(a, b, r) };
+        let Some(runs) = self.scoped_runs(cell, &mut Self::capsule_portal_hit(a, b, r)) else { return self.capsule_pick_contact(a, b, r) };
+        let dynamic = self.dynamic.read().unwrap();
+        let (mut a, mut b) = (a, b);
+        let mut total = [0f32; 3];
+        let mut walkable = false;
+        let mut pick = false;
+        let grow = r + 0.1;
+        let mut lo = [0f32; 3];
+        let mut hi = [0f32; 3];
+        for k in 0..3 { lo[k] = a[k].min(b[k]) - grow; hi[k] = a[k].max(b[k]) + grow; }
+        let stat = &self.stat;
+        for run in runs {
+            let o = &stat.objects[run as usize];
+            if !(0..3).any(|k| o.hi[k] < lo[k] || o.lo[k] > hi[k]) {
+                for k in o.tris.clone() { capsule_tri_contact(&stat.tris[k], stat.mats[k], &mut a, &mut b, r, grow, &mut total, &mut walkable, &mut pick); }
+            }
+        }
+        for g in [&dynamic.geo] {
+            for o in overlapping(g, lo, hi) {
+                for k in o.tris.clone() { capsule_tri_contact(&g.tris[k], g.mats[k], &mut a, &mut b, r, grow, &mut total, &mut walkable, &mut pick); }
+            }
+        }
+        pick
+    }
+
+    /// The flat-world `capsule_pick_contact_scoped` (no cel scope).
+    pub fn capsule_pick_contact(&self, a: V3, b: V3, r: f32) -> bool {
+        let (mut a, mut b) = (a, b);
+        let mut total = [0f32; 3];
+        let mut walkable = false;
+        let mut pick = false;
+        let grow = r + 0.1;
+        let mut lo = [0f32; 3];
+        let mut hi = [0f32; 3];
+        for k in 0..3 { lo[k] = a[k].min(b[k]) - grow; hi[k] = a[k].max(b[k]) + grow; }
+        self.near_actor(lo, hi, |t, mat| {
+            capsule_tri_contact(t, mat, &mut a, &mut b, r, grow, &mut total, &mut walkable, &mut pick);
+        });
+        pick
     }
 
     /// The floor ray against the straddle cells' static geometry (the walk's `segment_hit`).
@@ -1181,50 +1261,13 @@ impl CollisionWorld {
         let (mut a, mut b) = (a, b);
         let mut total = [0f32; 3];
         let mut walkable = false;
+        let mut pick = false;
         let grow = r + 0.1;
         let mut lo = [0f32; 3];
         let mut hi = [0f32; 3];
         for k in 0..3 { lo[k] = a[k].min(b[k]) - grow; hi[k] = a[k].max(b[k]) + grow; }
         self.near_actor(lo, hi, |t, mat| {
-                let tl = [0, 1, 2].map(|k| t[0][k].min(t[1][k]).min(t[2][k]));
-                let th = [0, 1, 2].map(|k| t[0][k].max(t[1][k]).max(t[2][k]));
-                let (sl, sh) = ([0, 1, 2].map(|k| a[k].min(b[k]) - grow), [0, 1, 2].map(|k| a[k].max(b[k]) + grow));
-                if (0..3).any(|k| th[k] < sl[k] || tl[k] > sh[k]) { return; }
-                // Water surfaces never collide the player [M the cel scoping: the player's collision
-                // queries test only his current cel — Player_FeetOnPoint 0x194188 passes obj+0x20 and
-                // Collide_SphereIntersect 0x1ec940 takes the cel; the water surface/bed planes (surface
-                // material 0xE [D probe_vent_swim: every underwater hit on 07000002 is mat 14]) live in
-                // the water cels, which the walking player's origin never occupies (his root stands
-                // 1.03 above the bed, above the water volume's bbox top cel+0x90) — so the game's Bond
-                // falls through every water bed into the swim. The port approximates the cel scoping by
-                // dropping mat-&0x3f==0xE triangles from the player's capsule.
-                if mat & 0x3f == 0xE { return; }
-                let n = cross(sub(t[1], t[0]), sub(t[2], t[0]));
-                let nl = dot(n, n).sqrt();
-                if nl < 1e-12 { return; }
-                let n = [n[0] / nl, n[1] / nl, n[2] / nl];
-                // The one-sided rule for near-horizontal faces: the capsule's top end must be on the
-                // front (+n) side, else the face is skipped (the game's head-on cull [M 0x109da0:321-322]).
-                if n[1].abs() > 0.7 && dot(n, sub(a, t[0])) < 0.0 { return; }
-                let ab = sub(b, a);
-                let denom = dot(n, ab);
-                let mut p = if denom.abs() > 0.0002 {
-                    let tt = (-(dot(n, sub(a, t[0]))) / denom).clamp(0.0, 1.0);
-                    [a[0] + ab[0] * tt, a[1] + ab[1] * tt, a[2] + ab[2] * tt]
-                } else {
-                    let c = [0, 1, 2].map(|k| (t[0][k] + t[1][k] + t[2][k]) / 3.0);
-                    closest_on_segment(a, b, c)
-                };
-                let (q, on_edge) = closest_on_triangle(p, t);
-                if on_edge { p = closest_on_segment(a, b, q); }
-                let v = sub(p, q);
-                let dist = dot(v, v).sqrt();
-                if dist >= r { return; }
-                // The side the capsule is on: along the separation, or (crossing the face) the normal toward the top.
-                let dir = if dist > 1e-6 { [v[0] / dist, v[1] / dist, v[2] / dist] } else if dot(n, sub(a, q)) >= 0.0 { n } else { [-n[0], -n[1], -n[2]] };
-                let push = [dir[0] * (r - dist), dir[1] * (r - dist), dir[2] * (r - dist)];
-                for k in 0..3 { a[k] += push[k]; b[k] += push[k]; total[k] += push[k]; }
-                if n[1].abs() > 0.7 && q[1] < b[1] { walkable = true; }
+                capsule_tri_contact(t, mat, &mut a, &mut b, r, grow, &mut total, &mut walkable, &mut pick);
         });
         (total, walkable)
     }

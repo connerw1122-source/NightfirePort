@@ -593,13 +593,19 @@ impl Bond {
         // is that relink (obj+0x20; the Sim refreshes it off the position each tick, the
         // `build_LinkToRoom` 0x1c9680 order); `None` falls back to the flat world.
         let (push, walkable) = world.capsule_push_scoped(self.cel, a, b, RADIUS);
+        // The game's pick-contact arm: `Player_FeetOnPoint` 0x194188:176-185 grounds on
+        // `HITTEST+0x9c != 0` — the pick's contact bit (`Intersect_CylGeom` 0x10a72c) — alongside
+        // the floor-ray tolerance. The port's walkable alone missed the up-push contacts (the
+        // 0700000c pier ramp ride); the bit is the push-has-upward-component signal
+        // (`capsule_tri_contact`'s `pick`, the decompile's dot2 arm).
+        let pick = world.capsule_pick_contact_scoped(self.cel, a, b, RADIUS);
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }
         let ray = self.cc + 0.6;
         // The floor test reads the same HITTEST (`Player_CollisionHandler` 0x1949a8 →
         // `Player_FeetOnPoint(param_1, BLData+0x740, …)`), so it shares the per-cel scope.
         let floor = world.segment_hit_scoped(self.cel, self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
-        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
+        self.grounded = walkable || pick || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
     }
 
@@ -1124,13 +1130,21 @@ impl Bond {
         // scoped pass always finds the room's own floor, so the redo never fires there: across
         // the fix-08-collision slab band the floor stays in the room's bucket while the exterior
         // wall stays out of it.
+        let mut pick = world.capsule_pick_contact_scoped(self.cel, a, b, RADIUS);
         if floor.is_none() {
             let (fp, fw) = world.capsule_push(a, b, RADIUS);
             push = fp;
             walkable = fw;
+            pick = world.capsule_pick_contact(a, b, RADIUS);
             floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
         }
-        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
+        // The game's pick-contact arm: `Player_FeetOnPoint` 0x194188:176-185 grounds on
+        // `HITTEST+0x9c != 0` — the pick's contact bit (`Intersect_CylGeom` 0x10a72c-0x10a734:
+        // the contact's push has an upward component, the decompile's dot2 arm) — alongside the
+        // floor-ray tolerance. The port's walkable alone missed the up-push contacts (the
+        // 0700000c pier ramp ride bounced ungrounded — hatch-crouch-0c); the reverted
+        // `push != 0` arm over-grounded (any wall touch grounded — 6 master movement failures).
+        self.grounded = walkable || pick || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }
