@@ -16503,3 +16503,69 @@ Two 0700001b gaps against a PCSX2 gameplay-start capture.
   shatter at t5. A local experiment (negative delay holds) brought a grating back but showed one
   panel, not 16 (held entities keep IDENT; likely all at the origin [S]) — the fix also needs SP hit
   damage unpause and a cross-level re-check of every Event-3-p0-0 script (the 0700004a lift).
+options-persist-roundtrip (started 17:44 UTC): task 708 — prove 651 (settings-persist) end to end
+through the real input path. Plan: (1) branch s/options-persist-roundtrip from origin/master
+(e05a8370); (2) map the config file code from 651 and the FrontEnd options pages (Advanced /
+Multiplayer / AV): the Left/Right row change path, Confirm, and Back (throw away); (3) tests: a
+full roundtrip — change every Advanced / Multiplayer / AV row through Left/Right + Confirm, drop
+the FrontEnd, a fresh FrontEnd on the same NF_CONFIG_DIR temp dir shows the same values; the AV
+volume rows reach the sound layer's volumes at boot; Back discards edits (file unchanged); unknown
+keys and out-of-range values tolerated (clamped); (4) fix whatever the roundtrip exposes, each fix
+citing the game address; (5) run the crates the tests touch, then the full fast suite (background
+start per the task message), report.
+
+## settings-persist (2026-10-16, branch s/settings-persist) — in progress 03:10 UTC
+- The option pages' values survive launches: `crates/nf-view/src/settings.rs` —
+  `settings.toml` in the user's config dir (NF_CONFIG_DIR override → %APPDATA%\NightfirePort /
+  XDG+~/.config + NightfirePort; std only, no dirs crate). Keys are the rows' game LABEL ids
+  per page section ([adv]/[mp]/[av]) — the game reads the rows back by label (msg 0x35 [M
+  P_CNOPTIONS 0x213f08:24-71]), so a reorder can't scramble anything; the ADV/MP Auto Aim
+  label 0x197 collision is split by section (ctrls 0x1000_011b / 0x1000_0129). Unknown
+  keys AND unknown sections (a newer port's) are ignored, not corrupt; out-of-range values
+  snap to the nearest legal item (sliders 0..=100 like opt_step's clamp); missing/corrupt
+  file → default_opts() + a stderr warning.
+- Model/host split as the repo's own pattern: `FrontEnd::settings_save_pending` raised by
+  CnAdvanced/CnMp/CnAv Confirm and Back (Back saves the RESTORED values), the host drains it
+  in `menu_after` → `settings::save_opts`; the three windowed fe boots (title, Esc-pause,
+  net_fail) apply the file over the defaults; the headless --fe render path deliberately
+  does NOT load (renders stay independent of the user's config, WORKLOG lesson 6).
+- Progress/settings split recorded in docs/systems/settings-persist.md: game progress stays
+  in the 635-memcard-save-flow Profile model; this file is settings only (the game's own
+  split: the global-settings blob [M LS_MakeGlobalSettings 0x1cd9d0] vs the save-game
+  records [M Menu_EnumSaves 0x1f7b78]).
+- Window settings: the port has NO size/fullscreen state (winit default attributes) —
+  nothing to persist; the [window] section name is reserved (unknown sections already
+  parse-skip, so a future port's file won't reset an older port's settings).
+- Tests: crates/nf-view/tests/settings_persist.rs — 11 green (real-input-path round trip,
+  missing, corrupt ×3 shapes, unknown keys/sections, reordered rows, the changed-value
+  sister, clamping, back-out, the 0x197 split, mkdir, NF_CONFIG_DIR); menus_flow 42 +
+  mp_menu_flow 9 + codename_entry 14 + screen_adjust 9 + mission_stats_flow 3 +
+  front_end_chain_live 2 — 0 failed. Full suite: tools/test/suite.py running on the final
+  tree — see docs/reports/settings-persist.md for the total.
+- Live checks for the main agent: none needed — this task has no visual surface (the file
+  format, the boot load and the page-exit save are all headless-verified; the pages render
+  exactly as before, the only delta is which values they show).
+- settings-persist ADDENDUM 04:08 UTC: the suite finished in foreground chunks (the sandbox
+  kills background jobs between tool calls — verified with a canary sleep). Final tree:
+  180/372 binaries (all nf-game/nf-formats/nf-audio + 125 nf-view incl. every menu/save/flow
+  binary) — 1087 passed, 6 failed, 38 ignored; the 6 = the 3 allowed disc_golden + the 3
+  known no-GPU pylon environmental failures (same trio prior tasks recorded). Audit found
+  and I fixed: a net_notice line my edit had dropped, an i64 overflow edge in the clamp,
+  and a missing settings load on the F8/F9 demo-results fe. See docs/reports/settings-persist.md.
+
+OPTIONS-PERSIST-ROUNDTRIP CLOSE-OUT (19:15 UTC): 651 was NOT on master — merged
+origin/s/settings-persist (601733f0, both sides kept in lib.rs's three conflicts), then proved
+the file end to end by the real input path: actions+ticks only from the boot through the card
+flow into the Edit wheel, every ADV/MP/AV value row changed through Left (+ the page Confirm;
+sliders twice so the music edit can't land on the driver's boot 70), host drain via the
+menu_after replica, drop → fresh FrontEnd on the same NF_CONFIG_DIR shows the same values, Back
+restores the snapshot and re-saves the RESTORED values (edits gone from map AND file), unknown
+keys/out-of-range values tolerated and clamped. The MISSING half — the AV volume rows reaching
+the sound layer — landed as nf_view::apply_av_volumes (driver.music_master/master + the
+menu-music model) called at the --fe boot and the CLI-mission boot [M LS_LoadGlobalSettings
+0x1cdbc8:69-70; Boot_LoadPTPData 0x1c8560:81-82; ES_CombineVolumes 0x1300 scales by the
+statics]. Tests: 3 new in options_persist_roundtrip.rs (env-serialized) + 651's 13. Touched
+crates before pushing: 12 nf-view menu-cluster binaries 143/0. Final-tree suite (merged
+origin/master c10b530f, six foreground chunks): 1908 passed, 7 failed, 72 ignored over 436/437
+binaries — the 7 exactly the known environmental set (3 disc_golden, driving_ai_follow, 3
+no-GPU pylon probes); no TIMEOUT/CRASH. Report: docs/reports/options-persist-roundtrip.md
