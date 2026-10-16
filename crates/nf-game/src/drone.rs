@@ -131,6 +131,12 @@ pub mod state {
     pub const CIVILIAN_HIDING: u8 = 0x13;
     pub const CIVILIAN_PATROL: u8 = 0x14;
     pub const CIVILIAN_MISSION: u8 = 0x16;
+    /// `NDrone2_DSTATE_CivilianMissionWait` (0x15dbb0) — `NDrone2_StateFuncs[0x17]` [L 0x29b300:
+    /// entry 0x17 → 0x15dbb0]: the mission civilian's pause state. Entered from CivilianMission on
+    /// the wait message (msg 0x22 [M 0x15d860 case 0x22]); stands idle (alert < 0.66) or plays the
+    /// look-around 0x21, holds 2 s of timer C, extends while Bond stands near in the view cone and
+    /// resumes 0x16 when he does not [M 0x15dbb0].
+    pub const CIVILIAN_MISSION_WAIT: u8 = 0x17;
     /// The real `NDrone2_DSTATE_HostageIdle` (0x15ce60) — `NDrone2_StateFuncs[0x0d]` [L 0x29b300].
     pub const HOSTAGE_IDLE: u8 = 0x0d;
     /// `NDrone2_DSTATE_AllyLeadInit` (0x15e4f0) — `NDrone2_StateFuncs[0x1c]` [L 0x29b300] and
@@ -245,6 +251,14 @@ pub mod msg {
     /// The stun-grenade broadcast (`Bullet_DoTrails` 0x12d890's `+0x70 & 0x2000` flash arm →
     /// `Drone_MessageObjVicinity(20.0, 0x18, …)` 0x12e0c0 [M]; `DroneFunc_HandleImpact` case 0x18).
     pub const FLASH: u8 = 0x18;
+    /// The mission-civilian wait request [M 0x15d860 case 0x22 → `SetState(0x17)`; 0x15dbb0 case
+    /// 0x22 re-arms the wait]. The decompile holds NO literal sender: every `Drone_SM_SendMsgSelf`
+    /// / `Drone_SM_SendMsg` / `Drone_SM_BroadcastMsg` / `Drone_Message` call site in ACTION.ELF was
+    /// disassembled (2026-10-16) and none passes 0x22 — the id arrives data-driven (level side:
+    /// 07000005's drone placements carry wait channel 0x22 and trigger 305 / mux 25 raise that
+    /// channel [D docs/systems/triggers.md], the same number the DSTATE switch sees). The port's
+    /// wait test drives this through `Drone::send` — the state machine is the real input path.
+    pub const WAIT_PAUSE: u8 = 0x22;
 }
 
 /// Anim states (`DroneAnimStates` index).
@@ -1995,7 +2009,9 @@ impl Drone {
             // CivilianDoorGuard 0x160648 case 8 → (0x56, 0); TruckDriverInit 0x160bd0 case 8 → (0x33, 0);
             // TruckDriverIdle 0x160ed0 case 8 → (0x12, 0).
             PARTY_GIRL | CIVILIAN | CIVILIAN_HIDING | TRUCK_DRIVER_IDLE => (CIVILIAN_SCARED, false),
-            CIVILIAN_MISSION | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD => (ATTACK, false),
+            // CivilianMissionWait 0x15dbb0 case 8 → HandleImpact(0x56, 0) — the same resume its
+            // siblings carry [M; case 6 identical].
+            CIVILIAN_MISSION | CIVILIAN_MISSION_WAIT | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD => (ATTACK, false),
             TRUCK_DRIVER_INIT => (TRUCK_DRIVER_INIT_ALERT, false),
             CIVILIAN_SCARED => (0, false),
             _ => return None,
@@ -2034,7 +2050,7 @@ impl Drone {
             TRUCK_DRIVER_INIT => (TRUCK_DRIVER_INIT_ALERT, false), // 0x160bd0 case 6: HandleImpact(0x33, 0)
             TRUCK_DRIVER_INIT_ALERT => (0, false),
             TRUCK_DRIVER_IDLE | PARTY_GIRL | CIVILIAN | CIVILIAN_SCARED | CIVILIAN_HIDING => (CIVILIAN_SCARED, false),
-            CIVILIAN_MISSION | CIVILIAN_GUARD | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD => (ATTACK, false), // 0x15d860 case 6 tail: HandleImpact(0x56, 0)
+            CIVILIAN_MISSION | CIVILIAN_MISSION_WAIT | CIVILIAN_GUARD | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD => (ATTACK, false), // 0x15d860 case 6 tail: HandleImpact(0x56, 0); 0x15dbb0 case 6 the same
             HOSTAGE_IDLE => (0, false),
             _ => return self.on_impact(d, rng, frame, s, true),
         };
@@ -3768,7 +3784,7 @@ impl Drone {
             if matches!(s, state::TASER | state::STUNNED | state::STUNNED_RECOVER) { return true; }
             let hear = if m == msg::SCREAM { self.prop(d, 0x27) } else { self.prop(d, 0x28) };
             if !hear { return true; }
-            let civilian = matches!(s, PARTY_GIRL | CIVILIAN | CIVILIAN_MISSION | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD | TRUCK_DRIVER_IDLE | CIVILIAN_SCARED | CIVILIAN_HIDING);
+            let civilian = matches!(s, PARTY_GIRL | CIVILIAN | CIVILIAN_MISSION | CIVILIAN_MISSION_WAIT | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD | TRUCK_DRIVER_IDLE | CIVILIAN_SCARED | CIVILIAN_HIDING);
             if civilian {
                 if !matches!(s, CIVILIAN_SCARED | CIVILIAN_HIDING) { self.set_state(CIVILIAN_SCARED); }
             } else if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); }
@@ -4545,9 +4561,56 @@ impl Drone {
                 }
                 true
             }
+            // CivilianMission 0x15d860 case 0x22: the wait request parks the walker in
+            // CivilianMissionWait 0x17 — except the voice-0x13 skins (KikoMission, which the same
+            // carve-out guards on ENTER) stay [M 0x15d860:130-136].
+            (CIVILIAN_MISSION, msg::WAIT_PAUSE) => {
+                if self.voice_type == 0x13 { true } else { self.set_state(CIVILIAN_MISSION_WAIT); true }
+            }
             (CIVILIAN_MISSION, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
             (CIVILIAN_MISSION, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
             (CIVILIAN_MISSION, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
+            // CivilianMissionWait (0x15dbb0, `NDrone2_StateFuncs[0x17]` [L 0x29b300]). ENTER: the ready
+            // flags, stand idle at alert < 0.66 else the look-around 0x21, timer C armed 2 s
+            // (+0xCC4 = GameState + FRAME_RATE_INT·2), the +0xCD8 wait latch cleared to 0xff [M
+            // 0x15dbb0:20-35; the +0x4F8 0x2000 "may notice" bit has no port model, matching the
+            // sibling ENTERs].
+            (CIVILIAN_MISSION_WAIT, msg::ENTER) => {
+                self.vision_on = true;
+                if self.alert < 0.66 { self.set_stand_idle(d, rng, frame, true); }
+                else { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); }
+                self.timer_c = Some(frame + 120); // FRAME_RATE_INT · 2 [M 0x15dbb0:29]
+                self.wait_channel = 0xff; // +0xCD8 = 0xff (no wait channel) [M 0x15dbb0:33]
+                true
+            }
+            // UPDATE (case 3): no armed person near → BondTalk and hold the wait (the game's BondTalk
+            // 0x1446b0 is unported like the other civilian talk — fix-drone4's note); an armed person
+            // → the own-sighting flag, then the voice-0x10 team switch + Attack 0x56 (with +0x44 = 1)
+            // or CivilianScared 0x12. The prop-0x33 armed-intruder alert chain (0x15dbb0:45-62) is
+            // unmodelled, matching the sibling CivilianMission UPDATE [M 0x1787c8 dead arg].
+            (CIVILIAN_MISSION_WAIT, msg::UPDATE) => {
+                if !self.near_armed_person(d) { return true; } // [M 0x15dbb0:39-44 — BondTalk + stay]
+                self.sighted = true; // +0x4F8 |= 0x8000000 [M 0x15dbb0:45]
+                if self.voice_type == 0x10 { self.team = 1; self.set_state(ATTACK); } // +0x44 = 1 [M 0x15dbb0:63-67]
+                else { self.set_state(CIVILIAN_SCARED); }
+                true
+            }
+            // TIMER_C (case 0xc — PreDroneControl 0x148db0:97-111 sends it when the armed +0xCC0/+0xCC4
+            // wait clock expires): Bond inside the 0.525 rad view cone AND within 3.0 (2D) re-arms the
+            // 2 s wait; anything else resumes CivilianMission 0x16 [M 0x15dbb0:87-111; BondWithinAngle
+            // 0x154f98 — the same |yaw diff| ≤ cone ∧ dist2D < radius conjunction the port's bond_band
+            // models for the escort].
+            (CIVILIAN_MISSION_WAIT, msg::TIMER_C) => {
+                if self.bond_band(3.0, 0.525) { self.timer_c = Some(frame + 120); true }
+                else { self.set_state(CIVILIAN_MISSION); true }
+            }
+            // A second wait request while waiting re-arms the 2 s clock (+0xCC4, +0xCC8 = 0, +0xCC0 = 1)
+            // [M 0x15dbb0:136-141]. The explosive msg 0x21 never reaches the switch: the port's
+            // pre-dispatch handles it with the ATTACK resume the state's case 0x21 asks for
+            // [M 0x15dbb0:132-135 → ConsiderExplosive(…, 0x56)].
+            (CIVILIAN_MISSION_WAIT, msg::WAIT_PAUSE) => { self.timer_c = Some(frame + 120); true }
+            (CIVILIAN_MISSION_WAIT, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
+            (CIVILIAN_MISSION_WAIT, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
             // CivilianPatrol (0x15d610): walk the patrol path (`CallAnim(0x37)`); armed person within 6 (0x40c00000)
             // → CivilianScared (the voice-0x10 team switch and the female scream 0x48 are not ported).
             (CIVILIAN_PATROL, msg::ENTER) => {
