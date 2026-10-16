@@ -69,10 +69,17 @@ fn two_sims_1000_ticks_same_state() {
     for t in 0..1000u32 {
         host.local_input(t, scripted_input(t, 0));
         client.local_input(t, scripted_input(t, 1));
-        let _ = host.poll();
-        let _ = client.poll();
-        let hi = host.ready_inputs(t).expect("host ready");
-        let ci = client.ready_inputs(t).expect("client ready");
+        // A missing input is a stall, never a guess: pump until both sides hold tick `t` (bounded
+        // at 1 s). Demanding the loopback packet by the very next poll made this flaky (4 in 5
+        // runs under load) — the same fix as net_session's.
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let (hi, ci) = loop {
+            let _ = host.poll();
+            let _ = client.poll();
+            if let (Some(h), Some(c)) = (host.ready_inputs(t), client.ready_inputs(t)) { break (h, c); }
+            assert!(std::time::Instant::now() < deadline, "tick {t}: both inputs arrive within 1 s");
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        };
         host_sim.step_net_remotes(&hi, 0);
         client_sim.step_net_remotes(&ci, 1);
         // The local agents tick through the app's per-agent core (the full local path is
@@ -135,10 +142,15 @@ fn forced_desync_is_detected() {
     for t in 0..60u32 {
         host.local_input(t, scripted_input(t, 0));
         client.local_input(t, scripted_input(t, 1));
-        let _ = host.poll();
-        let _ = client.poll();
-        let hi = host.ready_inputs(t).expect("ready");
-        let ci = client.ready_inputs(t).expect("ready");
+        // Pump until both sides hold tick `t` (a missing input is a stall; see the 1000-tick test).
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(1);
+        let (hi, ci) = loop {
+            let _ = host.poll();
+            let _ = client.poll();
+            if let (Some(h), Some(c)) = (host.ready_inputs(t), client.ready_inputs(t)) { break (h, c); }
+            assert!(std::time::Instant::now() < deadline, "tick {t}: both inputs arrive within 1 s");
+            std::thread::sleep(std::time::Duration::from_micros(200));
+        };
         host_sim.step_net_remotes(&hi, 0);
         client_sim.step_net_remotes(&ci, 1);
         let ladder = nf_game::player::LadderCtx::default();
