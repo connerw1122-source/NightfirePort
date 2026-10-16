@@ -169,7 +169,12 @@ fn host_flow_listen_agents_choices_and_start() {
     assert_eq!(fe.page, Page::MpMap);
     assert!(fe.action(Action::Confirm), "the map confirm navigates");
     assert_eq!(fe.page, Page::MpSetup);
-    assert!(fe.action(Action::Confirm), "the pick navigates to the options hub");
+    // 611b (mp-defaults-and-setup) made the setup page the game's prompt chain: team (team games
+    // only) → character → handicap, then the options hub [M C_RBMPSETUP 0x20de58's 0x4b states 2-4].
+    // Arena is FFA, so two picks: the character, then the handicap.
+    assert!(fe.action(Action::Confirm), "the character pick moves to the handicap prompt");
+    assert_eq!(fe.page, Page::MpSetup, "the handicap prompt is still the setup page");
+    assert!(fe.action(Action::Confirm), "the handicap pick navigates to the options hub");
     assert_eq!(fe.page, Page::MpOptions);
     assert!(fe.action(Action::Confirm), "Continue runs the start checks");
     assert_eq!(fe.page, Page::MpConfirm, "2 humans pass the start checks [M C_SBMPOPTIONS 0x20e818]");
