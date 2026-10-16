@@ -2670,7 +2670,7 @@ impl ApplicationHandler for App {
         // weapon-cycle mapping: wheel up = next).
         if let DeviceEvent::MouseWheel { delta: MouseScrollDelta::LineDelta(_x, y) } = event {
             if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) {
-                if y > 0.0 { self.menu_input(menu::Action::Up); } else if y < 0.0 { self.menu_input(menu::Action::Down); }
+                if let Some(a) = menu::wheel_scroll_action(y) { self.menu_input(a); }   // up = previous row
             } else if self.dev.as_deref().is_some_and(|d| d.menu) {
                 if let Some(d) = self.dev.as_deref_mut() {
                     let n = dev::menu_items(d, Some(&self.scene)).len();
@@ -2735,7 +2735,7 @@ impl ApplicationHandler for App {
                 }
             }
             WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } if self.fe.is_some() && self.async_load.is_none() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
-                self.menu_input(menu::Action::Back);
+                self.menu_input(menu::MOUSE_RIGHT_ACTION);   // menu-mouse-parity: right press = △ = Back
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 if self.dev.as_deref().is_some_and(|d| d.menu) {
