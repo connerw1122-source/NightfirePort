@@ -16706,3 +16706,9 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+- civilian-mission-wait (2026-10-16, branch s/civilian-mission-wait): mission civilians must
+  pause at wait-channel route nodes (CivilianMission msg 0x22 [M 0x15d860 case 0x22];
+  CivilianMissionWait 0x15dbb0). The port has no msg 0x22, so they walk straight through.
+  Plan: read the uncited-audit entry (task 710) first, port msg 0x22 from the decompile [M],
+  add a fail-first test on 07000005 plus a sister, run touched crates + the suite.
+  Branch created from origin/master f09f3c6c.
