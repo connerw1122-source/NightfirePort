@@ -3785,7 +3785,21 @@ impl Sim {
                     let vol = nf_game::bullet::PlayerVolume { feet: [dr.pos[0], dr.pos[1] - 1.0, dr.pos[2]], height: 1.8, radius: 0.4 };
                     nf_game::bullet::segment_cylinder(camera, far, &vol).filter(|&t| t < wall).map(|t| (i, t))
                 }).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i);
-            self.cross_state = match hit { Some(i) if self.drones.list[i].team != 1 => 3, _ => 2 };
+            self.cross_state = match hit {
+                Some(i) if self.drones.list[i].team != 1 => {
+                    // civilian-no-shoot [M 0x1a7810:152-183]: the no-shoot mark is ALSO keyed on the
+                    // held weapon id (animData+0x62) and the level. Weapon ids {1, 0x35, 0x36, 0x43,
+                    // 0x44} — the fists and the throw family (grenades 0x35/0x36; 0x43/0x44 the other
+                    // throwables) — keep the NORMAL crosshair over the same civilian (you may punch or
+                    // blast him; the damage path has no team gate either), and levels 0x7000005..0x7000008
+                    // (`0x7000008 < level || level < 0x7000005` guards the mark) never mark at all.
+                    // Everything else marks +0x132 = 1, +0x133 = 3.
+                    let w = self.gun.weapon;
+                    let level_exempt = (0x0700_0005..=0x0700_0008).contains(&self.level);
+                    if level_exempt || matches!(w, 1 | 0x35 | 0x36 | 0x43 | 0x44) { 2 } else { 3 }
+                }
+                _ => 2,
+            };
         }
         // The object handler (`control_movement_object_handler`) runs whenever `GS_IsPaused(-1) == 0` — ScriptCam
         // plays NO role [M Game_Run 0x1c9790:30-35]: `ScriptCam` only picks `Text_Update2Line` vs `Text_Update`
