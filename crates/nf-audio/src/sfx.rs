@@ -741,10 +741,12 @@ impl Driver {
     /// Live items (tests).
     pub fn items(&self) -> usize { self.items.len() }
 
-    /// Probe (read-only, tests): every item's (id, delete, fade_kill, started_when_nis) — the
-    /// skip's dialogue kill is asserted through these.
-    pub fn items_probe(&self) -> Vec<(u32, bool, bool, bool)> {
-        self.items.iter().map(|it| (it.id, it.delete, it.fade_kill, it.started_when_nis)).collect()
+    /// Probe (read-only, tests): every item's (id, delete, fade_kill, started_when_nis, looping) —
+    /// the skip's dialogue kill is asserted through these; `looping` (any live voice's loop bit)
+    /// tells the NIS score (which never ends on its own) from the one-shot lines.
+    pub fn items_probe(&self) -> Vec<(u32, bool, bool, bool, bool)> {
+        self.items.iter().map(|it| (it.id, it.delete, it.fade_kill, it.started_when_nis,
+            it.vh.iter().flatten().any(|v| self.voices[*v].as_ref().is_some_and(|vo| vo.looping)))).collect()
     }
 
     /// The pitch-0 pause of one item's live voices (front + rear): the NIS pause's edge and the
