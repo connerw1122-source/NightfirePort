@@ -13763,3 +13763,10 @@ Work Log (async-level-load):
   several times too fast on a fast display. She now ticks off her own 60 Hz wall-clock
   accumulator (`menu_clock`), matching `Game_Run`'s once-per-60 Hz-frame `psiDecompressWoman`
   [M 0x1c9790:36-41].
+
+## mp-debriefing-data2 (2026-10-16, branch s/mp-debriefing-data2) — STARTED
+
+- Task: land 621's (s/mp-debriefing-data, HELD) debriefing on top of master's 402 (s/mp-match-rules)
+  match rules: keep 402's single MP_Update/MP_CheckForEndCondition state machine, port only what 621
+  adds on top (mp/debrief.rs board, end status + handover/debriefing/restart requests, Top Agent
+  elimination input, Action::Extra arms). Reconcile disagreements from the disassembly.
