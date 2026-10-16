@@ -103,4 +103,7 @@ windowed port, open Multiplayer Options, set Health Handicap to +50, Confirm, qu
 
 ## ntfy
 
-(ntfy result recorded here after the send — see the finish step below.)
+Sent 04:04 UTC via the first fallback (curl): HTTP 200, message id `Br7GJYTUI4hm` on
+`nightfire-yoda-8k3x` — "settings-persist: done — settings.toml load/save by row label key,
+13 tests + suite 1087 passed/6 accounted failures; report docs/reports/settings-persist.md
+(4155cfc5)".
