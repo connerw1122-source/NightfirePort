@@ -3384,6 +3384,23 @@ impl FrontEnd {
 
     /// boot-flow: the boot P_INTRO run — the EA and MGM logos, then the title [M P_INTRO_Handler 0x209e88].
     /// The window host calls this once when the boot front end opens; the page stays the title.
+    /// The host saw the playing intro movie finish [M psiMovieFinished 0x1082e8 polled by P_INTRO
+    /// 0x209e88 / P_ESTHERO 0x20a060]: advance the list. After the LAST movie the pair restarts while it
+    /// is down and the movie state pops. Between two movies the game restarts the pair and removes it
+    /// again in the SAME handler call (movie_283 1 → 2: the finished arm's SFXStart pair, then the
+    /// movie-2 arm's SFXRemove pair + psiStartBackgroundMovie) — nothing is heard, so the port leaves
+    /// the music alone (restarting it played the menu music between EA and MGM, playtest 1016), and
+    /// holds the state over the gap while the host opens the next movie.
+    pub fn intro_movie_finished(&mut self) {
+        self.intro_index += 1;
+        if self.intro_index >= self.intro_list.len() {
+            self.music.movie_finished();
+            self.flow.movie_frames = self.flow.movie_frames.min(1);
+        } else {
+            self.flow.movie_frames = self.flow.movie_frames.max(60);
+        }
+    }
+
     pub fn start_boot_intro(&mut self) {
         self.flow.play_movie(INTRO_TICKS);
         self.intro_playing = true;
@@ -3933,6 +3950,9 @@ impl FrontEnd {
         if self.intro_playing && self.flow.get_state() == ST_MOVIE {
             // boot-flow: P_ESTHERO's 3 s grace — Menu_StopMovie ignores the skip until it runs out [M 0x215a50].
             if a == Action::Confirm && self.intro_end == Page::Main && self.intro_ticks < ESTHERO_GRACE { return true; }
+            // The boot logos (EA, MGM) are unskippable: P_INTRO clears DAT_002e1c49 before each movie
+            // [M P_INTRO_Handler 0x209e88], and Menu_StopMovie stops nothing while it is 0 [M 0x215a50].
+            if a == Action::Confirm && self.intro_end == Page::Start { return true; }
             if a == Action::Confirm {
                 self.flow.pop_state();
                 self.intro_playing = false;

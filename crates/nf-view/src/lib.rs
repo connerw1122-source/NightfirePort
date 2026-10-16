@@ -2430,11 +2430,9 @@ impl App {
                 fe.flow.movie_frames = fe.flow.movie_frames.max(2);
             }
             if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {
-                // frontend-music: each finished intro movie restarts the pair while it is down
-                // [M 0x209e88:23-28 — the psiMovieFinished arm].
-                fe.music.movie_finished();
-                fe.intro_index += 1;
-                if fe.intro_index >= fe.intro_list.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
+                // The list advances; the pair restarts only after the LAST movie [M 0x209e88 — see
+                // FrontEnd::intro_movie_finished].
+                fe.intro_movie_finished();
             }
         } else if fe.attract_playing {
             // attract-mode: P_ATTRACT's 0x4c starts the attract movie on the ONE BGFMV slot

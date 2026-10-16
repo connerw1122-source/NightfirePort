@@ -155,12 +155,9 @@ impl Host {
                         if p.frames == 0 { finished = true; } else { p.frames -= 1; p.shown += 1; }
                     }
                 }
-                // [M the psiMovieFinished poll 0x1082e8: fe.music.movie_finished() restarts the
-                // pair while it is down; the pair advances]
+                // [M the psiMovieFinished poll 0x1082e8] — the host's own call (lib.rs movie_tick).
                 if finished {
-                    fe.music.movie_finished();
-                    fe.intro_index += 1;
-                    if fe.intro_index >= INTRO_MOVIES.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
+                    fe.intro_movie_finished();
                     player = None;
                 }
                 fe.flow.movie_playing = player.as_ref().is_some_and(|p| p.code == code && p.frames > 0);
@@ -445,15 +442,15 @@ fn boot_with_the_full_intro_hands_the_music_to_the_main_menu() {
     assert_eq!(h.jingles(), 1, "the boot jingle is up at frame 1");
     assert_eq!(h.drv.jingles, vec![0x1d7], "bank 0xc's jingle, exactly one instance");
     assert_eq!(h.drv.starts_of(0x470, 0), 0, "SB_0 misses the second jingle [D SB_0.SFX]");
-    // The title's Enter starts the intro: the pair goes silent under the movies [M 0x209e88:37-47]
-    // — watch the FIRST movie (act would run the whole intro).
+    // The title's Enter starts P_ESTHERO's 0x073B0048: the pair goes silent under the movie
+    // [M P_ESTHERO 0x20a060] (the boot logos are covered by boot_logos_live.rs).
     assert!(h.input(Action::Confirm));
     for _ in 0..90 { h.frame(); }
-    assert_eq!(h.jingles(), 0, "no menu music under the EA logo");
-    // Movie 1 ends: the pair restarts between the movies [M 0x209e88:23-28]…
+    assert_eq!(h.jingles(), 0, "no menu music under the intro movie");
+    // The movie ends: the pair restarts [M the psiMovieFinished arm]…
     for _ in 0..(MOVIE_FRAMES + 60) { h.frame(); if h.jingles() == 1 { break; } }
-    assert_eq!(h.jingles(), 1, "the between-movies restart");
-    // …movie 2 silences it again, and its end brings it back for Main [M 0x209e88:42-44,23-28].
+    assert_eq!(h.jingles(), 1, "the restart at the movie's end");
+    // …and Main opens with it up.
     for _ in 0..(MOVIE_FRAMES * 2 + 120) { h.frame(); if h.fe.as_ref().is_some_and(|fe| fe.page == Page::Main && !fe.intro_playing && h.jingles() == 1) { break; } }
     assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Main));
     assert_eq!(h.jingles(), 1, "the main menu has its music after the full intro");
