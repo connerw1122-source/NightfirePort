@@ -2478,70 +2478,7 @@ impl App {
                 fe.music.movie_finished();
                 fe.attract_movie_finished();
             }
-        } else if fe.flow.get_state() == menu::ST_MOVIE {
-            // psiStartBackgroundMovie replaces whatever the one BGFMV slot holds [M 0x1081a8] —
-            // a looping page backdrop standing in the slot must yield to the state-6 movie
-            // (menu-audio-leaks: the playtest's menu music under the EA logo).
-            if self.movie.as_ref().is_some_and(|p| p.is_looping()) {
-                if let Some(p) = self.movie.take() { let c = p.code(); p.stop(); eprintln!("movie: stopped {c:08x} (state 6 replaces the backdrop)"); }
-            }
-            match &mut self.movie {
-                Some(p) => {
-                    // BGFMVPlaying follows the player: 1 while it decodes, 0 at the end of file —
-                    // state 6 pops through the psiMovieFinished arm on the next main_tick
-                    // [M 0x1082e8 + 0x1c98c8 case 6].
-                    fe.flow.movie_playing = !p.finished();
-                }
-                None => {
-                    let code = fe.flow.movie_code;
-                    if code != 0 {
-                        match movie::Player::start(&movie_iso, code) {
-                            Ok(p) => {
-                                eprintln!("movie: playing {code:08x} (state 6)");
-                                fe.flow.movie_playing = true; // BGFMVPlaying = 1 [M 0x1081a8]
-                                self.movie = Some(p);
-                            }
-                            Err(e) => {
-                                eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in");
-                                fe.flow.movie_playing = false; // an un-started movie: BGFMVPlaying == 0 [M 0x1082e8]
-                            }
-                        }
-                    } else {
-                        fe.flow.movie_playing = false;
-                    }
-                }
-            }
-        } else if fe.flow.movie_pending {
-            // A movie-wrapped load is on its way: the looping page backdrop yields the single
-            // player slot to it [M psiStartBackgroundMovie replaces the playing movie].
-            if let Some(p) = self.movie.as_ref() {
-                if p.is_looping() {
-                    let code = p.code();
-                    if let Some(p) = self.movie.take() { p.stop(); }
-                    eprintln!("movie: stopped {code:08x} (a briefing is pending)");
-                }
-            }
-            if self.movie.is_none() && fe.flow.get_state() == menu::ST_MAPLOAD {
-                // Early start: the decoder works through the fade and the rest of the menu so
-                // state 6 opens on the first frame instead of a black screen (the game's IPU
-                // starts streaming instantly [M 0x1081a8]).
-                let code = fe.flow.level_to_load;
-                if matches!((code >> 20) & 0xff, 0x71 | 0x73) {
-                    match movie::Player::start(&movie_iso, code) {
-                        Ok(p) => {
-                            self.movie = Some(p);
-                            // BGFMVPlaying = 1 from the start [M psiStartBackgroundMovie 0x1081a8]: state 6
-                            // (pushed by ResetMap_Load phase 0 with no frame budget of its own) must see
-                            // the movie as playing on its first tick, or the countdown pops it at once
-                            // and the briefing never shows (playtest 1016 "went straight to the
-                            // loading screen"; it only worked while the boot intro left a budget behind).
-                            fe.flow.movie_playing = true;
-                            eprintln!("movie: decoding {code:08x} ahead of state 6");
-                        }
-                        Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
-                    }
-                }
-            }
+        } else if mission_movie_glue(fe, &mut self.movie, &movie_iso) {
         } else {
             // The page's aux loop [M 0x21c858:338]: stop when the page has no aux, (re)start when
             // the playing code differs from the page's.
@@ -4149,4 +4086,80 @@ fn pause_objective_rows(sim: &scene::Sim) -> Vec<menu::PauseObjective> {
     (0..m.num_vis_objectives()).filter_map(|i| m.objective_state(i))
         .map(|o| menu::PauseObjective { text: o.text, hint: o.hint, done: o.state == 4 })
         .collect()
+}
+
+/// The mission-flow movie glue (the GameFlow state-6 briefing/outro and its decode-ahead), one call
+/// per redraw from `App::movie_tick` — a free function so the live tests drive the SAME code the
+/// window runs (playtest 1016: the briefing never showed, and no test ran this path). Returns false
+/// when no mission movie is due (the caller runs the page's aux loop instead).
+pub fn mission_movie_glue(fe: &mut menu::FrontEnd, slot: &mut Option<movie::Player>, iso: &str) -> bool {
+    if fe.flow.get_state() == menu::ST_MOVIE {
+        // psiStartBackgroundMovie replaces whatever the one BGFMV slot holds [M 0x1081a8] —
+        // a looping page backdrop standing in the slot must yield to the state-6 movie
+        // (menu-audio-leaks: the playtest's menu music under the EA logo).
+        if slot.as_ref().is_some_and(|p| p.is_looping()) {
+            if let Some(p) = slot.take() { let c = p.code(); p.stop(); eprintln!("movie: stopped {c:08x} (state 6 replaces the backdrop)"); }
+        }
+        match slot {
+            Some(p) => {
+                // BGFMVPlaying follows the player: 1 while it decodes, 0 at the end of file —
+                // state 6 pops through the psiMovieFinished arm on the next main_tick
+                // [M 0x1082e8 + 0x1c98c8 case 6].
+                fe.flow.movie_playing = !p.finished();
+            }
+            None => {
+                let code = fe.flow.movie_code;
+                if code != 0 {
+                    match movie::Player::start(iso, code) {
+                        Ok(p) => {
+                            eprintln!("movie: playing {code:08x} (state 6)");
+                            fe.flow.movie_playing = true; // BGFMVPlaying = 1 [M 0x1081a8]
+                            *slot = Some(p);
+                        }
+                        Err(e) => {
+                            eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in");
+                            fe.flow.movie_playing = false; // an un-started movie: BGFMVPlaying == 0 [M 0x1082e8]
+                        }
+                    }
+                } else {
+                    fe.flow.movie_playing = false;
+                }
+            }
+        }
+        return true;
+    }
+    if fe.flow.movie_pending {
+        // A movie-wrapped load is on its way: the looping page backdrop yields the single
+        // player slot to it [M psiStartBackgroundMovie replaces the playing movie].
+        if let Some(p) = slot.as_ref() {
+            if p.is_looping() {
+                let code = p.code();
+                if let Some(p) = slot.take() { p.stop(); }
+                eprintln!("movie: stopped {code:08x} (a briefing is pending)");
+            }
+        }
+        if slot.is_none() && fe.flow.get_state() == menu::ST_MAPLOAD {
+            // Early start: the decoder works through the fade and the rest of the menu so
+            // state 6 opens on the first frame instead of a black screen (the game's IPU
+            // starts streaming instantly [M 0x1081a8]).
+            let code = fe.flow.level_to_load;
+            if matches!((code >> 20) & 0xff, 0x71 | 0x73) {
+                match movie::Player::start(iso, code) {
+                    Ok(p) => {
+                        *slot = Some(p);
+                        // BGFMVPlaying = 1 from the start [M psiStartBackgroundMovie 0x1081a8]: state 6
+                        // (pushed by ResetMap_Load phase 0 with no frame budget of its own) must see
+                        // the movie as playing on its first tick, or the countdown pops it at once
+                        // and the briefing never shows (playtest 1016 "went straight to the
+                        // loading screen"; it only worked while the boot intro left a budget behind).
+                        fe.flow.movie_playing = true;
+                        eprintln!("movie: decoding {code:08x} ahead of state 6");
+                    }
+                    Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
+                }
+            }
+        }
+        return true;
+    }
+    false
 }
