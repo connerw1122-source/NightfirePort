@@ -16227,3 +16227,12 @@ fix_cutscenes_live 4/4, fix_cutscenes2_live 5/5, fix_kimiko_handback_live 1/1,
 models_characters_live 6/6, fix_party_mission_live 9/9, scenario_live 6/6. The pre-change
 full-suite run `1864 passed, 6 failed, 72 ignored (50 min)` (the 3 allowed disc_golden + the 3
 pre-existing pylon render probes); the final-tree fast-runner suite started 16:41 UTC.
+## guided-rocket-sound-stop (2026-10-16, branch s/guided-rocket-sound-stop) — started 18:05 UTC
+Playtest 1015-1738 (07000005, the Sentinel's guided rocket): "when the rocket finishes, I can still
+hear a sound being played from where I was standing". The launch whoosh 0x10e (looped, handle
+BU+0xF0, moved with the rocket per tick, stopped at Bullet_Delete 0x12e660) is already fixed on
+master by s/rocket-sound-leak with the live test fix_rocket_sound_leak_live.rs. This task: sweep
+EVERY sound the guided launch starts — launch sound, flight loop, camera-ride sounds — against the
+game's stops/ownership ([M] the guided rocket's bullet update + the sound calls with handle
+storage), verify master already behaves like the game, pin with tests that fail on the old
+behaviour, and report.
