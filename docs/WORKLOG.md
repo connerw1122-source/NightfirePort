@@ -16227,3 +16227,20 @@ fix_cutscenes_live 4/4, fix_cutscenes2_live 5/5, fix_kimiko_handback_live 1/1,
 models_characters_live 6/6, fix_party_mission_live 9/9, scenario_live 6/6. The pre-change
 full-suite run `1864 passed, 6 failed, 72 ignored (50 min)` (the 3 allowed disc_golden + the 3
 pre-existing pylon render probes); the final-tree fast-runner suite started 16:41 UTC.
+
+## drone-press-alarm (2026-10-16, branch s/drone-press-alarm) — start 19:30 UTC
+
+Task 717: port NDrone2's PressAlarm chain (RunToAlarm 0x89 / PressAlarm 0x8A / DonePressAlarm 0x8B,
+`NDrone2_FindAlarmPoint` 0x153008) — how a guard picks an alarm panel, the walk + press anims, the
+channel it raises (`DroneFunc_SetMissionFailReason` 0x13e560 reason 0x10 → the nearest Switch obj's
+channel; every disc alarm switch writes 0x61 [S]) and when the attempt is abandoned (impacts →
+`DroneFunc_HandleImpact`, death/stun via the GLOBAL fallback), plus which levels' guards can reach it
+[MsD]. Decompile read so far: the DSTATE trio, `FindAlarmPoint` (AIPoint registry: type 8 = alarm,
+`ClosestAIPoint` 0x151b18 picks enabled+reachable+same-path nearest; +0x44 yaw → Drone+0x734 [M-dis]),
+`Drone_AIPoint` 0x137550 (placement 0xE9: +0x20 pos, +0x40 rot, +0x6 type, +0x14 radius, +0xC param
+[M-dis, the decomp's vec2 offsets are wrong]), `EnemyRunToPoint` 0x168910 (prop 0x56 set → 0x89),
+`DroneTypeSettings` row 14 = start/alt 0x89 (mode 14 = `DroneModeSettings` row 18 AlarmRaiser, init
+0x14df98 sets props 0x23+0x56), `DoModeSettingsNEW` sets props 0x1a+0x56 on 07000009/0A (already
+ported), timer-C payload plumbing in `PreDroneControl` 0x148db0:93-108 (msg 0xC carries +0xCC8).
+Plan: AI-point registry from 0xE9 placements in `attach_level`, real RunToAlarm/PressAlarm/
+DonePressAlarm arms, the EnemyRunToPoint prop-0x56 arm, disc census test, then the suite.
