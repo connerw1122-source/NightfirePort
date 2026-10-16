@@ -369,18 +369,27 @@ mod tests {
     /// interleaved i16 LE pairs in file order (a sine sweep survives the round trip; RC2's 0x10 still parses).
     #[test]
     fn pcm_audio_kind_1() {
-        let pcm: Vec<i16> = (0..256i32).map(|i| ((i * 137) % 6553) as i16 - 3276).collect();
+        // Block-interleaved stereo: `interleave` bytes of L, then the same of R, per block [L the disc's
+        // movies — tests/movie_audio_layout_live.rs; the sample-interleaved reading played static at
+        // the wrong pitch, playtest 1016]. Two blocks of 256 samples per channel.
+        let l: Vec<i16> = (0..512i32).map(|i| ((i * 137) % 6553) as i16 - 3276).collect();
+        let r: Vec<i16> = (0..512i32).map(|i| -(((i * 59) % 4099) as i16)).collect();
         let mut body = Vec::new();
-        for v in &pcm { body.extend_from_slice(&v.to_le_bytes()); }
+        for blk in 0..2 {
+            for v in &l[blk * 256..blk * 256 + 256] { body.extend_from_slice(&v.to_le_bytes()); }
+            for v in &r[blk * 256..blk * 256 + 256] { body.extend_from_slice(&v.to_le_bytes()); }
+        }
         let bytes = [audio_header_kind(AUDIO_TYPE_PCM, 48000, 2, 512, body.len() as u32), body].concat();
         // The RC2-era parser rejected this outright: kind 1 is PCM, not SPU ADPCM.
         assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), AUDIO_TYPE_PCM);
         let a = Audio::parse(&bytes).unwrap();
         assert_eq!((a.header.kind, a.header.rate, a.header.channels, a.header.interleave), (1, 48000, 2, 512));
-        assert_eq!(a.samples(), 128);
+        assert_eq!(a.samples(), 512);
         let out = a.decode();
-        assert_eq!(out.len(), 128);
-        assert!(out.iter().zip(pcm.chunks_exact(2)).all(|(o, l)| o[0] == l[0] && o[1] == l[1]));
+        assert_eq!(out.len(), 512);
+        assert!(out.iter().enumerate().all(|(i, o)| o[0] == l[i] && o[1] == r[i]), "L and R come back from their blocks");
+        // Sister: the old sample-interleaved reading would pair L[0] with L[1].
+        assert_ne!(out[0], [l[0], l[1]]);
         // ADPCM kind 0x10 still parses (the RC2 path is unchanged).
         let adpcm = [audio_header(48000, 2, 0x20, 64), vec![0x11u8; 64]].concat();
         let a = Audio::parse(&adpcm).unwrap();
