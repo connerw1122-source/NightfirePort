@@ -16706,3 +16706,12 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+## pickups-g029 (2026-10-16, branch s/pickups-g029) — start 20:29 UTC
+
+Task 724 (GAPS G-029 open half): pickups — auto-switch to a better weapon on pickup (the game's
+rule and its option gate), level-placed vs script-spawned pickup differences, respawning pickups
+(multiplayer and any single-player cases) [M Pickup_Create 0x18dda0, Pickup_Update 0x18e148 and
+the take path]. Tests for each rule on a real level. Update GAPS.md with what is closed.
+Plan: read the decompile take path + auto-switch logic, find the port's pickup code, compare rule
+by rule, pin each rule with a test on a real level, fix divergences. Branch created from
+origin/master 170bcf01.
