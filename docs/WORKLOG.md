@@ -15918,3 +15918,19 @@ label), its projectile mesh and its class; (3) fix mislabelled/misgrouped entrie
 give use the same path the level pickups use; (4) tests: for every panel entry, the given weapon
 id's record name, class and projectile mesh match the table; the frag gives 0x34 with the frag
 mesh, the stun 0x35; (5) run the crates the tests touch, then the full fast suite, report.
+
+DEV-PANEL-SPAWNS CLOSE-OUT (17:36 UTC): the audit + give-path parity landed on s/dev-panel-spawns
+(merge of master de6110cc included). The catalog = the game's own two cycles (Player_WeaponChange
+0x1a6f80: weapons 0x01..0x46, gadgets 0x4A..0x5E) — the AI/drop records 0x5F..0x71 that borrow other
+weapons' name labels (0x69 Smoke, 0x6A/0x6E Q-Claw, 0x6D Scorpion, 0x6F MGL [L 0x2bf150 +0x38]) are
+no longer rows; the gadget flag is the cycle's own bounds; entries carry the raw +0x06 class; the
+give runs the pickups' Inventory::take (Pickup_Handler 0x18e650 — remap 6→2/10→0xC said out loud)
+with the twin fill + the 3-clip carry as documented affordances; the frag throws the frag mesh
+0x020002af and the stun 0x02000726 through the real input path (the frag leg on 07000015 — its
+throw anims live only there). Tests: 4 new (per-entry table match, F2 page cycles, give==take,
+frag/stun mesh) + the fix_dev_panel give test made remap-aware. Stale "0x36 = stun" labels fixed to
+the bank's smoke. Suite on the final tree: 419/425 binaries — 1846 passed, 13 failed, 48 ignored
+(the 3 disc_golden + driving_ai_follow + 3 no-GPU pylon probes environmental; fix_reload_hang ×2
+was a REAL regression from the first give cut — fixed; remote_mine/weapon_anims flaky under the
+OOM-collided parallel chunks, green solo); 5 binaries OOM-killed mid-run need a clean re-run
+(weapon_matrix_live first — listed in the report). Report: docs/reports/dev-panel-spawns.md
