@@ -1862,6 +1862,13 @@ pub struct FrontEnd {
     pub results_improved: bool,
     /// The save prompt's answer was No — the game re-asks only when it wasn't [M 0x208e78:196].
     pub results_save_answer_no: bool,
+    /// death-loop-07: the results page's REPLAY row carries the `Player_RamLoad(Bond, 1)` half
+    /// [M P_ENDMISSION_Handler 0x216618:19-21 — row 0 = `ResetMap_LevelToLoad(GameState._12_4_,
+    /// 1, 1)` AND `Player_RamLoad`]: the host must serve the ENTRY checkpoint (the restart arm,
+    /// whose channels predate the fail), not the dying sim's live capture — the carried fail
+    /// channel re-failed the mission the tick it came back, the 07000007 replay loop (playtest
+    /// 1012-1723). The host consumes it with the level request.
+    pub requested_restart: bool,
 }
 
 impl FrontEnd {
@@ -2002,7 +2009,9 @@ impl FrontEnd {
             attract_playing: false,
             attract_movie: 0,
             attract_toggle: false,
-            attract_opener: Page::Start };
+            attract_opener: Page::Start,
+            // death-loop-07 (each new field on its own line [WORKLOG lesson 4]).
+            requested_restart: false };
         // The boot opens P_START: the pair plays with `menu_movie` clear [M P_START 0x20a408:12-22;
         // the game's boot path P_INTRO → P_START replays it the same way — the intro movie end
         // clears the static [M 0x209e88:44,58]].
@@ -2876,6 +2885,9 @@ impl FrontEnd {
         self.ended_level = Some(self.flow.current_level);
         self.outcome = outcome;
         self.stats = stats;
+        // death-loop-07: the end's own front-end load is not a REPLAY pick — the marker only
+        // rides the results page's REPLAY row (the player's answer).
+        self.requested_restart = false;
         self.flow.page = PAGE_RESULTS;
         // Mission_Update 0x182c60 case 6 sets `LevelToEndTo` from the finished level: the outro
         // code 0x073000xx for the levels with an outro (compiled lui/ori switch at 0x182e60-0x182eb4
@@ -3766,6 +3778,9 @@ impl FrontEnd {
     pub fn action(&mut self, a: Action) -> bool {
         // menu-mouse-parity: any action moves the wheel under the pointer — the hover is stale.
         self.wheel_hover = None;
+        // death-loop-07: a fresh input decides the restart marker anew — only the results page's
+        // REPLAY row sets it (the end-mission menu's row 0 [M 0x216618:19-21]).
+        self.requested_restart = false;
         // The MP start checks' refusal is the game's option box too (Menu_CreateOptionBox with the
         // error label [M C_SBMPOPTIONS 0x20e818:50-130]); it was never drawn, so Continue just did
         // nothing (playtest 1015-2231 "cant get into a match").
@@ -4489,6 +4504,10 @@ impl FrontEnd {
                         0 => {
                             let level = self.ended_level.unwrap_or(self.flow.current_level);
                             self.requested_level = Some(level);
+                            // death-loop-07: the row's `Player_RamLoad(Bond, 1)` half [M
+                            // 0x216618:21] — the host serves the ENTRY checkpoint, not the
+                            // dying live capture (the carried fail channel was the loop).
+                            self.requested_restart = true;
                             self.flow.reset_map_level_to_load(level, true, true);
                             self.enter_page(Page::Main);
                             return true;
