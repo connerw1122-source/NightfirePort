@@ -15342,3 +15342,17 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+
+## cutscene-faces (2026-10-16, branch s/cutscene-faces)
+- Task: playtest 1015-1738 "mouths aren't moving in these cutscenes". fix-cutscenes2 ported the
+  22-channel face track (script_pose_together) but no face moves. Find why: the face track's
+  window start (opcode-0 windows, the face-track hash per actor); whether its channels reach the
+  face bones in the skin (the bone mapping); whether the game also uses morph targets (108c
+  gpu-facial-morphs was HELD — read s/fix-gpu-facial-morphs and docs/merge-log.md). Deliver the
+  sim/data side: per actor, per tick, the face bones' pose (+ morph weights if used) and a getter
+  the renderer reads. Tests on 07000002's intro and 07000007's Kimiko scene showing jaw/lip
+  channels change over the dialogue; sister: an actor with no face track keeps a neutral face.
+  The main agent wires the draw.
+- Plan: read s/fix-cutscenes2's face-track port + docs/fields/, find the per-actor face-track
+  binding and the window logic, trace channels → skin bones, port the missing pieces, tests on
+  the two scenes, run touched crates, then the full suite.
