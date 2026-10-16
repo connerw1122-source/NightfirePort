@@ -49,6 +49,22 @@ pub mod state {
     pub const DEAD: u8 = 0x47;
     pub const FADE: u8 = 0x48;
     pub const FADE_FAST: u8 = 0x49;
+    /// The zero-G astronaut guards (`NDrone2_StateFuncs[0xBD..=0xC1]` @0x29B5F4 [L table read;
+    /// docs/fields/dronetype-tables.md:372-377]). DefaultInit skin kind 0x18 forces mode 0x1D and
+    /// start state 0xBD [M 0x14b300:722-727]; DroneTypeSettings row 29 start = 0xBD [D :111].
+    pub const ASTRONAUT_LAUNCH: u8 = 0xbd;
+    /// `NDrone2_DSTATE_AstronautHit` (0x174690): the CombatMove flinch — knockback, no anim, a
+    /// 0.5 s timer back to AstronautCombat [M 0x174690:14-23, 37-39].
+    pub const ASTRONAUT_HIT: u8 = 0xbe;
+    /// `NDrone2_DSTATE_AstronautDeath` (0x1747b8): the zero-G death — anim 0x6F ± Rand(2), drift
+    /// with the damping cleared, 10 s → Fade [M 0x1747b8:15-34].
+    pub const ASTRONAUT_DEATH: u8 = 0xbf;
+    /// `NDrone2_DSTATE_AstronautCombat` (0x174458): the stationary hold (speed 0, thrust off,
+    /// anim 0x70) — the strafe pick lives in DroneMove_AstronautCombat [M 0x174458:12-31].
+    pub const ASTRONAUT_COMBAT: u8 = 0xc0;
+    /// `NDrone2_DSTATE_AstronautCombatMove` (0x174550): the strafe (speed 2.0, 5 s timer → Combat,
+    /// bullets flinch into 0xBE) [M 0x174550:15-45].
+    pub const ASTRONAUT_COMBAT_MOVE: u8 = 0xc1;
     /// `NDrone2_DSTATE_KnockedOut_Anim` (0x172a30): the non-lethal knock-out. ENTER plays anim 0x50
     /// (the fall) with follow-on 0x47, drops the weapon, zeroes health and raises the KO flag
     /// (+0x4F8 & 0x1000000); EXIT raises the death channel on every level except {0x07000009,
@@ -304,6 +320,16 @@ pub mod anim_state {
     /// the stored fall anim +0xCD8 is 0x32, else 0x2f [M 0x162eb0 case 1]).
     pub const STUNNED_TWITCH_A: u16 = 0x2f;
     pub const STUNNED_TWITCH_B: u16 = 0x30;
+    /// The astronaut float family (ids used raw by the game; names suggested). Death 0x6F ±
+    /// Rand(2) [M 0x1747b8:19-20], hover 0x70 [M 0x174458:18], launch/forward 0x72 [M
+    /// 0x16dd28:24], back 0x71 and turn-left/right 0x73/0x74 by the angle to the move target
+    /// (π/4 · 3π/4 thresholds [M 0x155ea0:24-29]).
+    pub const ASTRONAUT_DEATH: u16 = 0x6f;
+    pub const ASTRONAUT_HOVER: u16 = 0x70;
+    pub const ASTRONAUT_BACK: u16 = 0x71;
+    pub const ASTRONAUT_FORWARD: u16 = 0x72;
+    pub const ASTRONAUT_LEFT: u16 = 0x73;
+    pub const ASTRONAUT_RIGHT: u16 = 0x74;
 }
 
 /// Read-only game data the AI consults.
@@ -905,6 +931,18 @@ pub struct Drone {
     /// `Drone+0x480`: per-tick velocity; gravity accumulates here and `pos += velocity · REC_FRAME_RATE` (`Drone_CollisionHandler`
     /// 0x140968, WORKLOG 0078). Zero on the ground; the down-ray (`Drone_FeetOnPoint`) sets the on-surface flag.
     pub velocity: V3,
+    // astronaut zero-G (fields on their own lines — merge lesson 4):
+    /// Flying thrust (+0x24): NDrone2_Move's flying branch thrusts toward `goal` while set
+    /// [M 0x14eff8:52-68]; Combat/Hit/Death clear it, the strafe pick and Launch set it.
+    pub thrust: bool,
+    /// Fly speed (+0x50): launch 6.9, strafe 2.0, combat 0, default 0.075 [M 0x16dd28:23;
+    /// 0x174550:16; 0x174458:12; 0x14b300:772-774].
+    pub fly_speed: f32,
+    /// +0x4F8 & 0x40: the flying velocity damping ×0.98/tick [M 0x140968:139-141];
+    /// DroneMove_AstronautDeathMove clears it so the corpse drifts [M 0x156008:45].
+    pub velocity_damping: bool,
+    /// The Combat strafe re-pick deadline (+0xCD8+0CDC folded to one frame) [M 0x154618:79-104].
+    pub strafe_at: u32,
     /// The port's "off the ground" flag — its own model: the down-ray (`Drone_FeetOnPoint`) missed a walkable
     /// surface within 0.2 below the feet. NOT the game's `Drone+0x4F8 & 0x4000`: the decompile has no setter for that
     /// bit — only the per-tick clear at the top of `Drone_CollisionHandler` 0x140968:70 and the `0x4200` tests in the
@@ -1083,6 +1121,11 @@ impl Drone {
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, screamed: false, scare_shouted: false, pending_shout: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
+            // astronaut zero-G (fields on their own lines — merge lesson 4):
+            thrust: false,
+            fly_speed: 0.075,
+            velocity_damping: true,
+            strafe_at: 0,
             door_open_at: 0,
             hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
             // fix-nav-remainder: the kick-node outbox + the ScriptPlayer binding (fields on
@@ -1105,6 +1148,17 @@ impl Drone {
         dr.init_properties(d, &param);
         dr.type_setup(d);
         dr.captain_setup(d);
+        // DefaultInit kind 0x18: health = DroneInit_TakeXHits(dmg, 0x33) — the weapon_data[0x33]
+        // record's +0xc float × (1.0 easy / 2.0 higher difficulty) [M 0x14b300:728-739 +
+        // 0x14d928:6-8], ×3 for the Drake model 0x50000ba [M 0x14c270 via 0x14b300:736-739].
+        if dr.kind == 0x18 {
+            let dmg = if d.difficulty == 1 { 1.0 } else { 2.0 };
+            let per = d.weapons.records.get(0x33)
+                .map(|r| f32::from_le_bytes(r[0xc..0x10].try_into().unwrap()))
+                .unwrap_or(10.0);
+            dr.max_health = per * dmg * if (dr.skin & 0xffff) == 0xba { 3.0 } else { 1.0 };
+            dr.health = dr.max_health;
+        }
         dr.set_danim(d, start_danim, 0);
         dr
     }
@@ -1173,9 +1227,15 @@ impl Drone {
     fn type_setup(&mut self, d: &Data) {
         if self.mode_normal == self.mode_alert || self.second_tag == 0x65 { self.second_tag = 0; }
         self.mode = self.dtype_of(d, self.dtype, self.mode_normal);
+        // DefaultInit skin kind 0x18: dtype = 0x1D regardless of the placement dtype, no saved
+        // dtype and no restore state [M 0x14b300:722-727] — start_state then reads DroneTypeSettings
+        // row 29 (start 0xBD) [D docs/fields/dronetype-tables.md:111].
+        if self.kind == 0x18 { self.mode = 0x1D; }
         self.alt_mode = if self.second_tag == 0 || self.second_tag == 0x65 { 0 }
             else if self.second_channel == 0 && self.alert_floor >= 1.0 { 0 }
             else { self.dtype_of(d, self.dtype, self.mode_alert) };
+        // The astronaut has no alternate mode (+0xC6 = 0, +0x5A4 = 0 [M 0x14b300:725-727]).
+        if self.kind == 0x18 { self.alt_mode = 0; }
         // `NDrone2_IsCivilian` (0x14aae0) in team form: team 3 = the civilian dtypes.
         self.team = match self.dtype { 10 | 11 | 0xd | 0xe => 3, 0xc => 2, _ => 1 };
         let row = |m: u8| d.props.types.get(m as usize);
@@ -1998,6 +2058,11 @@ impl Drone {
             CIVILIAN_MISSION | CIVILIAN_PATROL | CIVILIAN_DOOR_GUARD => (ATTACK, false),
             TRUCK_DRIVER_INIT => (TRUCK_DRIVER_INIT_ALERT, false),
             CIVILIAN_SCARED => (0, false),
+            // Astronaut: Launch/Combat/Hit/Death pass resume 0 — surviving a bullet changes no
+            // state [M 0x16dd28:49-52; 0x174458:33-36; 0x174690:32-36]; CombatMove passes 0xBE —
+            // the flinch [M 0x174550:38-42 → 0x1461c8:127].
+            ASTRONAUT_LAUNCH | ASTRONAUT_COMBAT | ASTRONAUT_HIT | ASTRONAUT_DEATH => (0, false),
+            ASTRONAUT_COMBAT_MOVE => (ASTRONAUT_HIT, true),
             _ => return None,
         })
     }
@@ -2087,7 +2152,11 @@ impl Drone {
         if valid(u10) { p3 = u10; }
         if !self.bullet_impact(d, rng, frame, p3, allow) {
             if valid(u10) { self.impact_resume = u10; }
-            self.set_state(state::BULLET_IMPACT);
+            // `CallFullyComplete` (DroneAnim_CallAnim 0x13ab58): when the flinch call completed at
+            // once — an anim set without the 0x4C datum, like the astronaut's float set — the AI
+            // state is already queued and the game routes it NOW instead of standing in
+            // BulletImpact 0x55. A pending transition here can only be that queued resume.
+            if self.next_state.is_none() { self.set_state(state::BULLET_IMPACT); }
         }
         true
     }
@@ -2221,7 +2290,12 @@ impl Drone {
         let u8_ = if p3 != 0 { p3 } else { self.state };
         let p3 = if p3 == self.state { 0 } else { p3 };
         self.do_hit_effects(d);
-        if self.health <= 0.0 { self.set_state(state::DEATH_ANIM); return true; }
+        if self.health <= 0.0 {
+            // The death selector: mode 0x1D dies into AstronautDeath 0xBF, the other dtypes into
+            // Death_Anim 0x44 [M NDrone2_BulletImpact 0x1461c8:47-50].
+            self.set_state(if self.mode == 0x1D { state::ASTRONAUT_DEATH } else { state::DEATH_ANIM });
+            return true;
+        }
         if allow {
             self.big_hit = self.last_damage > self.max_health * 0.25 && self.health > self.max_health * 0.333;
             // The game's frame counter runs from boot (108153 at a 07000005 start [L]), so unset stamps are long past.
@@ -3171,6 +3245,22 @@ impl Drone {
     /// hip+0.6 ray, 0.2 on-surface, probe 0.4 (0x140e90; 0.55 when +0xd8 == 0xc and 0.3 when +0x2f — unmodelled,
     /// the gate's band only shifts, the sit/stand split does not change), 0.125 settle rate.
     pub fn collision_handler(&mut self, world: &CollisionWorld) {
+        // The flying path (astronaut mode 0x1D, +0x23): no DoGravity and no floor snap — the
+        // velocity integrates and damps ×0.98 while +0x4F8 & 0x40; the ceiling-hit's dtype-0x1d
+        // skip zeroes nothing [M Drone_CollisionHandler 0x140968:75-151, damping :139-141,
+        // ceiling :146-150]. Runs for corpses too: the death drift rides it [M 0x156008].
+        if self.mode == 0x1D {
+            let r = 1.0 / 60.0;
+            self.pos[0] += self.velocity[0] * r;
+            self.pos[1] += self.velocity[1] * r;
+            self.pos[2] += self.velocity[2] * r;
+            if self.velocity_damping {
+                self.velocity[0] *= 0.98;
+                self.velocity[1] *= 0.98;
+                self.velocity[2] *= 0.98;
+            }
+            return;
+        }
         if self.free_root || self.corpse || !self.bounded { return; }
         // `+0x4F8 & 0x4000` cleared at the top.
         self.in_air = false;
@@ -3731,6 +3821,194 @@ impl Drone {
         }
     }
 
+    // ---- the zero-G astronaut guards (docs/systems/uncited-audit.md §7) ------------------------------
+
+    /// The five `DSTATE_Astronaut*` states [M 0x16dd28 / 0x174458 / 0x174550 / 0x174690 / 0x1747b8].
+    /// The BULLET/PUNCH/TASE/FLASH impacts never reach a state arm (`handle` intercepts them and
+    /// `impact_args` carries the game's per-state resume), so the msg 8/9 arms are the resume table.
+    fn handle_astronaut(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        if !matches!(s, ASTRONAUT_LAUNCH | ASTRONAUT_HIT | ASTRONAUT_DEATH | ASTRONAUT_COMBAT | ASTRONAUT_COMBAT_MOVE) { return None; }
+        Some(match (s, m) {
+            // Launch ENTER [M 0x16dd28:17-30]: attacking + alerted, flying (+0x23, the port keys on
+            // mode 0x1D), launch speed 6.9, the float anim 0x72, the trigger primed and released,
+            // the strafe timer cleared. The port has no flying AI-path routes: the guards spawn at
+            // their posts (the game's AssignAIPath nodes sit within 0.3 [M 00154190:68-96]), so the
+            // hold position stands in for the completed route.
+            (ASTRONAUT_LAUNCH, msg::ENTER) => {
+                self.thrust = true;
+                self.velocity_damping = true;
+                self.fly_speed = 6.9; // 0x40dccccd [M 0x16dd28:23]
+                self.call_anim(d, anim_state::ASTRONAUT_FORWARD, 0, 0); // [M 0x16dd28:24]
+                self.strafe_at = 0; // [M 0x16dd28:27-28]
+                true
+            }
+            // Launch tick [M 0x16dd28:37-54]: aim at the opponent; the route report 3 (complete) →
+            // CombatMove 0xC1 — with the spawn-point hold the port is always "arrived".
+            (ASTRONAUT_LAUNCH, msg::UPDATE) => {
+                self.desired_yaw = self.yaw_to_opp; // SetAngleToObj [M 0x16dd28:38-39]
+                self.set_state(ASTRONAUT_COMBAT_MOVE); // [M 0x16dd28:54]
+                true
+            }
+            // Combat ENTER [M 0x174458:12-18]: speed 0, thrust off, the hover anim 0x70.
+            (ASTRONAUT_COMBAT, msg::ENTER) => {
+                self.fly_speed = 0.0;
+                self.thrust = false;
+                self.call_anim(d, anim_state::ASTRONAUT_HOVER, 0, 0); // [M 0x174458:18]
+                true
+            }
+            // Combat tick [M 0x174458:26-31]: the strafe pick while an opponent stands.
+            (ASTRONAUT_COMBAT, msg::UPDATE) => {
+                self.astronaut_move_pick(d, rng, frame);
+                true
+            }
+            // CombatMove ENTER [M 0x174550:15-23]: strafe speed 2.0, the 5 s fallback timer.
+            (ASTRONAUT_COMBAT_MOVE, msg::ENTER) => {
+                self.fly_speed = 2.0; // 0x40000000
+                self.timer_c = Some(frame + 150); // FRAME_RATE_INT · 5 [M 0x174550:20]
+                true
+            }
+            // CombatMove tick [M 0x174550:28-34]: lost target → stationary Combat; else pick + anim.
+            (ASTRONAUT_COMBAT_MOVE, msg::UPDATE) => {
+                if self.opp_target == [0.0; 3] { self.set_state(ASTRONAUT_COMBAT); return Some(true); }
+                self.astronaut_move_pick(d, rng, frame);
+                self.astronaut_move_anim(d); // DroneMove_AstronautAnim [M 0x155ea0]
+                true
+            }
+            // CombatMove's 5 s timer → stationary Combat [M 0x174550:43-45].
+            (ASTRONAUT_COMBAT_MOVE, msg::TIMER_C) => { self.set_state(ASTRONAUT_COMBAT); true }
+            // Hit ENTER [M 0x174690:14-23]: the 0.5 s timer, the knockback impulse, cease fire; no
+            // CallAnim — the flinch anim came from the impact path.
+            (ASTRONAUT_HIT, msg::ENTER) => {
+                self.timer_c = Some(frame + 15); // FRAME_RATE_DIV · 30 [M 0x174690:16]
+                self.astronaut_hit_move(); // DroneMove_AstronautHitMove [M 0x155f78]
+                self.firing = false; // [M 0x174690:22]
+                true
+            }
+            // Hit tick: only SeenAndAttacking [M 0x174690:27-31]; the drift decays via the damping.
+            (ASTRONAUT_HIT, msg::UPDATE) => true,
+            // The hit timer returns to stationary Combat [M 0x174690:37-39].
+            (ASTRONAUT_HIT, msg::TIMER_C) => { self.set_state(ASTRONAUT_COMBAT); true }
+            // Death ENTER [M 0x1747b8:15-24]: the death channel, cease fire, anim 0x6F ± Rand(2)
+            // (the state's one RNG draw), the drift impulse, damping cleared, the 10 s corpse timer.
+            (ASTRONAUT_DEATH, msg::ENTER) => {
+                self.set_death_channel();
+                self.firing = false; // [M 0x1747b8:18]
+                let v = rng.rand(2); // [M 0x1747b8:19]
+                self.call_anim_variant(d, anim_state::ASTRONAUT_DEATH, v as u16, 0, 0); // [M 0x1747b8:20]
+                self.astronaut_death_move(); // DroneMove_AstronautDeathMove [M 0x156008]
+                self.timer_c = Some(frame + 300); // DAT_00298f58 = FRAME_RATE_INT · 10 [M 0x1747b8:22]
+                true
+            }
+            // Death tick: the corpse-cull accelerator [M 0x1747b8:27-29 → 0x14a298] — the port's
+            // `cull` flag (the DroneFunc_DeadDrone census at the tick) rides the same shape as DEAD.
+            (ASTRONAUT_DEATH, msg::UPDATE) => { if self.cull { self.set_state(FADE_FAST); } true }
+            // The 10 s timer → Fade 0x48 [M 0x1747b8:31-34] (the corpse fades and is removed).
+            (ASTRONAUT_DEATH, msg::TIMER_C) => { self.set_state(FADE); true }
+            _ => false,
+        })
+    }
+
+    /// `DroneMove_AstronautCombat` (0x154618): the fire gate, the strafe-point pick around the
+    /// opponent and the arrival → Combat. RNG draws in the game's order: 3× `Rand_FRand(2.0)` − 1
+    /// per axis, normalised, scaled `Rand_FRand(10.0) + 10.0` → radius 10..20 [M :80-89]; the
+    /// re-arm `Rand_Rand(FRAME_RATE_INT · 5)` [M :101-104]. The candidate must sit in a type-3 AI
+    /// volume (`Drone_PointInAnyAIBox(pos, 3)` [M :94; 0x13a290:23-38]) — the game re-rolls every
+    /// tick while it isn't; a hit anim's variant draws ride other states only.
+    fn astronaut_move_pick(&mut self, d: &Data, rng: &mut Rng, frame: u32) {
+        self.firing = self.los; // +0x3b = (+0x228 >> 2) & 1 [M 0x154618:78]
+        self.desired_yaw = self.yaw_to_opp; // the aim update [M 0x154618:61-68]
+        if frame >= self.strafe_at {
+            let mut off = [rng.frand(2.0) - 1.0, rng.frand(2.0) - 1.0, rng.frand(2.0) - 1.0];
+            let len = (off[0] * off[0] + off[1] * off[1] + off[2] * off[2]).sqrt();
+            if len > 1e-4 { off = [off[0] / len, off[1] / len, off[2] / len]; }
+            let scale = rng.frand(10.0) + 10.0;
+            let c = [self.target.pos[0] + off[0] * scale, self.target.pos[1] + off[1] * scale, self.target.pos[2] + off[2] * scale];
+            if d.volumes.iter().any(|v| v.kind == 3 && v.contains(c)) {
+                self.thrust = true; // [M 0x154618:96]
+                self.goal = Some(c); // [M 0x154618:98-100]
+                self.strafe_at = frame + 60 + rng.rand(150) as u32; // 2..7 s [M 0x154618:101-104]
+                self.set_state(state::ASTRONAUT_COMBAT_MOVE); // [M 0x154618:105]
+            }
+        } else if let Some(g) = self.goal {
+            let dx = self.pos[0] - g[0];
+            let dy = self.pos[1] - g[1];
+            let dz = self.pos[2] - g[2];
+            if (dx * dx + dy * dy + dz * dz).sqrt() < 3.0 { self.set_state(state::ASTRONAUT_COMBAT); } // [M 0x154618:108-113]
+        }
+    }
+
+    /// `DroneMove_AstronautAnim` (0x155ea0): the drift anim by the angle between the facing and
+    /// the move target — within π/4 → 0x72, beyond 3π/4 → 0x71, else 0x73 (left) / 0x74 (right).
+    fn astronaut_move_anim(&mut self, d: &Data) {
+        let Some(g) = self.goal else { return };
+        let to_yaw = atan2_approx(g[0] - self.pos[0], g[2] - self.pos[2]);
+        let diff = angle_difference(self.yaw, to_yaw);
+        let id = if diff.abs() <= 0.7853982 { anim_state::ASTRONAUT_FORWARD }
+            else if diff.abs() >= 2.3561945 { anim_state::ASTRONAUT_BACK }
+            else if diff > 0.0 { anim_state::ASTRONAUT_LEFT }
+            else { anim_state::ASTRONAUT_RIGHT };
+        self.call_anim(d, id, 0, 0); // [M 0x155ea0:29]
+    }
+
+    /// `DroneMove_AstronautHitMove` (0x155f78): one impulse on Hit entry — a bullet hit knocks the
+    /// drone away from the opponent (`normalize(+0x1B0) · −5.0` [M :27-39]); thrust off [M :55].
+    /// The bump-source branch (+0x470 ≠ 0 → `normalize(source.pos) · +5.0`, the game's
+    /// position-as-direction quirk [M :40-52]) has no port field for the per-tick impact source
+    /// and is not modelled.
+    fn astronaut_hit_move(&mut self) {
+        let dx = self.opp_target[0] - self.pos[0];
+        let dy = self.opp_target[1] - self.pos[1];
+        let dz = self.opp_target[2] - self.pos[2];
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        if len > 1e-4 {
+            let k = -5.0 / len; // 0xc0a00000
+            self.velocity[0] += dx * k;
+            self.velocity[1] += dy * k;
+            self.velocity[2] += dz * k;
+        }
+        self.thrust = false; // [M 0x155f78:55]
+    }
+
+    /// `DroneMove_AstronautDeathMove` (0x156008): one impulse away from the killer
+    /// (`normalize(+0x1B0) · −5.0` [M :29-44]), the damping bit cleared so the corpse drifts
+    /// [M :45], thrust off [M :46].
+    fn astronaut_death_move(&mut self) {
+        let dx = self.opp_target[0] - self.pos[0];
+        let dy = self.opp_target[1] - self.pos[1];
+        let dz = self.opp_target[2] - self.pos[2];
+        let len = (dx * dx + dy * dy + dz * dz).sqrt();
+        if len > 1e-4 {
+            let k = -5.0 / len; // 0xc0a00000
+            self.velocity[0] += dx * k;
+            self.velocity[1] += dy * k;
+            self.velocity[2] += dz * k;
+        }
+        self.velocity_damping = false; // [M 0x156008:45]
+        self.thrust = false; // [M 0x156008:46]
+    }
+
+    /// `NDrone2_Move` (0x14eff8) flying branch (+0x23/+0x24): thrust toward the move target at
+    /// `fly_speed` — `vel += normalize(+0x670 − pos) · (REC_FRAME_RATE · +0x50)` [M :52-68] — and
+    /// the facing turn toward `desired_yaw` at `0.1 / FRAME_RATE_DIV` per tick [M :69-70].
+    fn move_flying(&mut self) {
+        if self.thrust {
+            if let Some(g) = self.goal {
+                let dx = g[0] - self.pos[0];
+                let dy = g[1] - self.pos[1];
+                let dz = g[2] - self.pos[2];
+                let len = (dx * dx + dy * dy + dz * dz).sqrt();
+                if len > 1e-4 {
+                    let k = (1.0 / 60.0) * self.fly_speed / len;
+                    self.velocity[0] += dx * k;
+                    self.velocity[1] += dy * k;
+                    self.velocity[2] += dz * k;
+                }
+            }
+        }
+        self.yaw += angle_difference(self.yaw, self.desired_yaw) * 0.2;
+    }
+
     fn handle(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> bool {
         use state::*;
         if m == msg::BULLET { return self.on_bullet(d, rng, frame, s); }
@@ -3795,6 +4073,7 @@ impl Drone {
         if let Some(r) = self.handle_cover(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_grenade_throw(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_stun(d, rng, frame, s, m) { return r; }
+        if let Some(r) = self.handle_astronaut(d, rng, frame, s, m) { return r; }
         match (s, m) {
             // `NDrone2_DSTATE_Global` enter: a drone with a switch channel that is still off waits (WaitSwitch); else its
             // start state `+0x5A2` (InitPatrol with props 0x24/0x25, else Idle). Modes 0x1E and start scripts
@@ -6617,7 +6896,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // The owner's grenade: usize::MAX = the player's throw [M +0x2B4 = the thrower; fix-actors].
                 if owner == usize::MAX { dr.hit_by_player = true; }
                 dr.health -= ddmg * dr.damage_taken;
-                if dr.health <= 0.0 { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
+                if dr.health <= 0.0 {
+                    dr.health = 0.0;
+                    // The death selector: mode 0x1D → AstronautDeath 0xBF [M 0x146480:103-104].
+                    dr.set_state(if dr.mode == 0x1D { state::ASTRONAUT_DEATH } else { state::DEATH_ANIM });
+                }
                 else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
             }
         }
@@ -7784,7 +8067,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let mut corpses = 0;
         let mut oldest: Option<(u32, usize)> = None;
         for (i, dr) in self.list.iter().enumerate().filter(|(_, x)| x.present) {
-            let key = match dr.state { 0x0f | state::DEAD | 0xbf => dr.entered, state::FADE => dr.entered + 300, _ => continue };
+            let key = match dr.state { 0x0f | state::DEAD | state::ASTRONAUT_DEATH => dr.entered, state::FADE => dr.entered + 300, _ => continue };
             corpses += 1;
             if key < oldest.map_or(frame, |o| o.0) { oldest = Some((key, i)); }
         }
@@ -8495,6 +8778,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             if dr.alert < dr.alert_floor { dr.alert = dr.alert_floor; }
             drop(_pc);
             { let _p = crate::prof::scope("drone: UPDATE msg (AI)"); dr.send(d, rng, frame, msg::UPDATE); }
+            // NDrone2_Move's flying branch (0x14eff8): the astronaut's thrust toward the move
+            // target + the facing turn, before the collision pass (the game calls Move inside
+            // ControlSTANDARD and Collision after it).
+            if dr.mode == 0x1D { dr.move_flying(); }
             // The route's door node dispatched inside the state machine: resolve the node → door
             // binding now (`Drones` owns the doors; the state machine cannot) — `ReachedDestNode`
             // stood the door in +0xBA8 before `DSTATE_OpenDoor`'s ENTER ran [M 0x153358].
@@ -9545,6 +9832,11 @@ mod tests {
             tase_fall_anim: 0,
             stationary: false, alpha: 255.0, raise: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
+            // astronaut zero-G (fields on their own lines — merge lesson 4):
+            thrust: false,
+            fly_speed: 0.075,
+            velocity_damping: true,
+            strafe_at: 0,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
             voice_type: 0, female: false, attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(),
             free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, screamed: false, scare_shouted: false, pending_shout: None, alert_block: 0.0,
