@@ -16485,3 +16485,16 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
 - Report: docs/reports/uncited-gameplay-audit.md. Left: the 10 queued tasks (none started,
   audit-only by design) + the live checks; gap ④/⑤ should rebase onto task 704's
   s/mp-bots-in-match branch.
+
+## light-create-census — census of Light_Create call sites, port missing SIM-side lights
+
+Branch: s/light-create-census (cut from origin/master c8186aa1).
+Task: full census of Light_Create 0x1cc3d8 call sites in ACTION.ELF (arguments, condition,
+ported-or-not with file:line); port every missing light on the SIM side (LightList entries,
+with the game's RNG draw); tests for each newly ported site (light appears with game
+arguments on trigger tick). Known sites listed by the driver: Bullet_DoTrails 0x12d890,
+Bullet_update 0x12e7b0 (ported), GunImp_Update 0x1320d8, DroneWeap_FireWeapon 0x178f68,
+HUD_UpdateNightSightPane 0x19d218, Player_MuzzleFlash 0x1a4298, Player_WeaponFiring
+0x1a5460, Sub_Create 0x1ad6c0, AnimProcessScriptCmds 0x1c1b38, Searchlight_Create,
+parsemap_create_dynamic_objects, Script_LightStart. Explosions are priority (08 rocket
+corridor ~2.5x brighter on PS2).
