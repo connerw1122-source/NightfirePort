@@ -14104,3 +14104,11 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
 - Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
   (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
   attract page draws the movie fullscreen over black, no controls, no plate.
+
+---
+level-load-time
+- Started: measure and cut nf_view::load build time. Probe test times every SP level cold+warm
+  by phase (archive read/decompress, mesh/material decode, characters/attachments, effect pools,
+  cel/portal graph, Sim create); then cut top costs scene-preserving; prove equality on >=4 levels.
+- Setup: sandbox had repo+work/+ISO+queue worktree from the prior task; created
+  s/level-load-time from origin/master (4bdf7678). Progress pushed as checkpoints below.
