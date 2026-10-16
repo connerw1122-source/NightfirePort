@@ -16485,3 +16485,21 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
 - Report: docs/reports/uncited-gameplay-audit.md. Left: the 10 queued tasks (none started,
   audit-only by design) + the live checks; gap ④/⑤ should rebase onto task 704's
   s/mp-bots-in-match branch.
+
+## fix-space-pane (2026-10-16, branch mine/space-panels)
+
+Two 0700001b gaps against a PCSX2 gameplay-start capture.
+- **The white "T" (top right) — fixed.** It is pane 20, `SpacePane` 0x2be598 → `HUD_UpdateSpacePane`
+  0x19d3b8 over `SpaceSprInfo` 0x2be3b0 (11 sprites: T 0x03000179 at (342,48), 8 missile lamps
+  0x03000178, 2 boxes 0x0300017B) [M/L]; the pane self-enables only on level 0x0700001b. It is the
+  missile-status indicator (lamps by `MissileDeploy[k]` + channel k; T flashes on ch 9, boxes on
+  ch 0x18/0x1C), not a stabiliser HUD. The port had no pane 20. Added `HudTables::space`,
+  `nf_view::hud::space_pane` + its draw, the five textures in `hud::TEXTURES`. `MissileDeploy`
+  (written by SpaceMissile_Update's undecompiled jump-table states) is not modelled — 0 [S].
+  Test: `fix_space_pane_live` (the draw test fails with the level gate forced off).
+- **The purple solar-panel gratings — not fixed, GAPS G-047.** The 16 ScriptPlayer_SolarPanel SPs'
+  script 0x06000832 pauses on Event 3 p0 0 at t0 with the whole panel shown; the port's
+  `Script::update` treats a negative delay as 0 (contradicting 0x1da9c4-0x1da9d0), so the panels
+  shatter at t5. A local experiment (negative delay holds) brought a grating back but showed one
+  panel, not 16 (held entities keep IDENT; likely all at the origin [S]) — the fix also needs SP hit
+  damage unpause and a cross-level re-check of every Event-3-p0-0 script (the 0700004a lift).

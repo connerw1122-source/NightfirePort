@@ -99,6 +99,9 @@ pub struct HudTables {
     /// The guided-missile camera's pane 9 (`HUD_CreateRedeemer` 0x19dec0 / `HUD_UpdateRedeemerPane` 0x19e178,
     /// `RedeemerSprInfo` 0x2bda30, 11 sprites).
     pub redeemer: Vec<SpriteInfo>,
+    /// The 0700001b missile-status pane 20 (`SpacePane` 0x2be598 → `HUD_UpdateSpacePane` 0x19d3b8,
+    /// `SpaceSprInfo` 0x2be3b0, 11 sprites): the "T" body, the 8 missile lamps, the 2 top boxes.
+    pub space: Vec<SpriteInfo>,
     /// Per ammo type: u, v, width, pixels per round.
     pub bullets: Vec<[f32; 4]>,
     /// Font 2 (`FONTSerpLight`, the HUD's).
@@ -159,7 +162,8 @@ impl HudTables {
         let font_header = parse_font("FONTNFont2")?;
         let air = sprites("AirSprInfo")?;
         let redeemer = sprites("RedeemerSprInfo")?;
-        Ok(HudTables { health: sprites("HealthSprInfo")?, ammo: sprites("AmmoSprInfo")?, air, redeemer, bullets, font, font_header })
+        let space = sprites("SpaceSprInfo")?;
+        Ok(HudTables { health: sprites("HealthSprInfo")?, ammo: sprites("AmmoSprInfo")?, air, redeemer, space, bullets, font, font_header })
     }
 }
 
