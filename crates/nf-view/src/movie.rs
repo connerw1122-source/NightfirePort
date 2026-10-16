@@ -230,7 +230,16 @@ impl Player {
     pub fn present(&mut self) -> Option<(u32, u32, &[u8])> {
         let now = std::time::Instant::now();
         let start = *self.started.get_or_insert(now);
-        let due = ((now - start).as_secs_f64() * 30.0) as u32 + 1;
+        let mut due = ((now - start).as_secs_f64() * 30.0) as u32 + 1;
+        // Never faster than real time: when the decoder falls behind (its warm-up on the first
+        // frames, a slow GOP) the clock slips instead of the picture racing to catch up — the old
+        // catch-up showed one movie frame per RENDER frame, so the intro's opening (the 007 white
+        // dots) flashed by at 100+ fps (playtest 1015-2142). The audio rides the frames, so it
+        // stays with the picture.
+        if due > self.tick.wrapping_add(2) && self.last.is_some() {
+            self.started = Some(now - std::time::Duration::from_secs_f64(self.tick as f64 / 30.0));
+            due = self.tick.wrapping_add(1);
+        }
         #[cfg(feature = "movies")]
         if self.tick < due || self.last.is_none() {
             if let Some(s) = self.stream.as_mut() {
