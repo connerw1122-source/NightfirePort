@@ -15918,3 +15918,19 @@ script actor of the 08 scene has a live pose during its window. Branch `s/safe-c
 cut from origin/master de6110cc. Sandbox note: background processes are killed between tool calls
 here, so the fast runner is executed as foreground chunks of the same per-crate command
 (suite.py's build step is incremental cargo, resumed across calls); reported as such.
+
+## safe-cutscene-actors-08 — the verdict (17:40 UTC)
+The 07000008 station intro 0x06000077 (3880 ticks, started by TouchOnce #237 out 0x49 → SP #294
+[D docs/levels/07000008.md]) has NINE Script_AnimStart actors (streams 1-9: skins 05000014/13/1b/
+0d/16/3b/12/26/18 on anim scripts 0600020a-3af [D 07800008.bin decode]); all nine pre-build with
+skins from the level's own archive. Playtest 1013-1758's "only Kiko shows" = fix-cutscenes2
+d907aba1 (Oct 13 09:07, first-writer-wins per bone: the intro's face windows collapsed every
+script actor's root to the origin — 07 AND 08, docs/reports/fix-cutscene-draw.md); the fix
+7f5414aa (Oct 14) postdates the playtest build; the cutscene-faces merge (de6110cc) does not
+re-break it. The port TODAY: all nine live, bound (live anim script == the pack decode), posed
+(root at the body track's library mark, never the origin), render-drawn (palette real, none
+FAR/collapsed) through the REAL plate start at ticks 119-1049 — pinned by
+crates/nf-view/tests/cutscene_08_actors_live.rs (2 tests, NF_ISO). Suite on the final tree:
+1877 passed / 6 pre-existing failed / 72 ignored (the 3 slim-ISO disc_golden + the 3 pylon
+probes), driven as six foreground suite.py --only chunks (this sandbox kills background
+processes between tool calls; the runner's own per-binary --test-threads=1 + 600 s limits).
