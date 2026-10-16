@@ -54,7 +54,7 @@ intent (the burn opens the vent):
 
 - `cargo test --offline --release -p nf-view --test fix_level_0c_live --test fix_ss_grate_live
   --test fix_0c_hatch_live --test fix_0c_vent2_live` — fix_level_0c_live 4/4 (was 2 failing),
-  fix_ss_grate_live 4/4 (the 02 grates), fix_0c_hatch_live 2/2 (+2 ISO-skipped),
+  fix_ss_grate_live 4/4 (the 02 grates), fix_0c_hatch_live 2/2 (+2 pre-existing `#[ignore]` legs with their own filed live checks),
   fix_0c_vent2_live 3/3.
 - Full suite via `tools/test/suite.py` on the final tree: **(total below, filled at finish)**.
 
