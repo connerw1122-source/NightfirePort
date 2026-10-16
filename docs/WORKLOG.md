@@ -16706,3 +16706,11 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+## spu-gaussian-reverb (2026-10-16, branch s/spu-gaussian-reverb) — start 20:55 UTC
+
+Task 725 (GAPS G-032): port in nf-audio the SPU2's 4-tap Gaussian interpolation with the real
+512-entry table (sourced + cross-checked against an independent emulator, source recorded), and
+the room/level reverb: the SPU2 reverb registers the game writes [M SFX.IRX reverb setup calls +
+the level's room reverb data]. Golden tests (numbers only): the resampler on a synthetic VAG
+block matches the table's expected output; each level's reverb preset decodes to the register set
+the game writes. Tests silent (NF_SILENT). Branch created from origin/master 170bcf01.
