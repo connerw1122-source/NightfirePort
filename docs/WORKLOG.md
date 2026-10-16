@@ -15919,3 +15919,33 @@ and other merged tasks' new tests. The 2 new live tests are green in the totals.
   column flips sign while the direction moves smoothly); sister: a synthetic straight-down beam
   uses the game's fallback.
 - Branch cut from origin/master; escort-01b (690b) closed on its branch + report + ntfy.
+
+## searchlight-flip-06 (2026-10-16, work entry)
+- `Mat_Align2Dir` 0x1df2a8 to the game's exact math [M disasm, tools/crosscheck/mipsdis.py]:
+  (a) the degenerate cross ZEROES the row — the == 0 arms store 0.0 to all three components
+  (0x1df2d8-0x1df310 / 0x1df3a8-0x1df3e0: `sqrt.s` then `c.2.s` against 0, the taken arm
+  `swc1 f3(=0.0)` to the vector's slots) — the port's [1,0,0]/[0,1,0] stand-ins asserted world
+  axes where the game's own math keeps the (exact-FP) cross direction sound — the only
+  port-vs-game divergence in the basis; (b) the fallback threshold is 0x3f7fbe77 (0.998993 —
+  `lui at,3f7f; ori at,at,be77` at 0x1df320-0x1df32c), not 0.999; (c) normalization multiplies
+  by the reciprocal (`div.s f0,1.0,len` at 0x1df2f4/0x1df3c4 then the VMUL), it does not divide.
+  The zero-dir shuffle arm also lands on zeros (the sum of squares is 0 only when every component
+  is 0). The beam call's arguments were verified at the instruction level: up = fallback =
+  Bond − head [M Searchlight_Update 0x1cb900 disasm 0x1cc020 `daddu a3,a2,zero`] — the port
+  already matched.
+- Tests (nf-view, real path `nf_view::load("07000006.bin")` + `Sim::step_bond`):
+  every_06_beam_basis_stays_continuous_over_the_sweep — Bond parked inside head #2's sweep for
+  1800 ticks (the boot NIS lights the heads, the sweep passes over him, the spot arms the tracker,
+  the tracking leg included); beam_basis_stays_continuous_while_bond_walks_the_courtyard — the
+  walking-Bond arm/track/lose cycle; a_straight_down_beam_uses_the_games_fallback — the sister:
+  a real fallback gives the straight-down beam the cross(fallback, row2) basis [[1,0,0],[0,0,1]],
+  the beam's own parallel-up arguments zero the rows, and a near-parallel cross normalizes to its
+  own sound direction (never a world axis). The tick-to-tick assert compares only same-state
+  active tick pairs (active_run ≥ 3): the light-up tick builds the beam from the stale state-3
+  angles and the next tick's first sweep jumps — the game's own case-3 fall-through does exactly
+  that [M 0x1cb900], so it is not a sweep flip (the first repro pairs were create→first-update
+  and turn-on→first-sweep).
+- The nf-view flip file 3/3; nf-game --lib 240/240 (the align2dir_matches_the_live_beam [L] pin
+  still holds with the game's math); fix_searchlight_alarm_live 3/3,
+  fix_searchlight_remainder_live 2/2, models_world_live 2/2. The full suite runs on the final
+  tree (tools/test/suite.py, restarted after the context break killed the first one).
