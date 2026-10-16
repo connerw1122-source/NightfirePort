@@ -13894,3 +13894,15 @@ Work Log (async-level-load):
 - Final tree: merged origin/master (24b1f4dd — stats/menu-sfx/async-load; WORKLOG union kept both)
   and re-ran: nf-game 378/0/2, mp_lockstep 6/6 (--features mp-bots), nf-view mp set 28/0.
   ntfy: all three fallbacks returned HTTP 429 (daily quota) — exact errors in the report.
+
+## net-lockstep-core (2026-10-15, branch s/net-lockstep-core) — UDP lockstep session, started
+- Task: build the MP session layer on 050's determinism (050 not landed yet: the session takes the
+  per-tick state hash as an opaque u64 from the caller, so 050's state_hash(&MpWorld) wires in
+  later). New crate crates/nf-net (no rendering, no game-sim deps): host on a UDP port + up to 3
+  clients joining by address, handshake (protocol version + build id + codename, host's MpSettings
+  + seed to clients), per-tick input packets with tunable input delay (2-4 ticks), redundancy
+  (each packet repeats the last N unacked inputs), acks, stall when an input is missing (never
+  guess), state-hash exchange every N ticks with a desync error, timeout/disconnect handling,
+  session API poll()/local_input()/ready_inputs(). std::net::UdpSocket only, no new crates.
+  Tests over loopback: host + 3 clients, 2 000 ticks with a loss/latency shim, in sync; version
+  mismatch refused; client timeout reported. Doc: docs/systems/net-lockstep.md.
