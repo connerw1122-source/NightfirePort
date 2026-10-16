@@ -62,14 +62,22 @@ already points at the profiles dir.
 - `cargo test --lib` per crate on the final tree: nf-game **212/212**, nf-formats **79/79**,
   nf-audio **9/9**, nf-view **15/15**.
 - `tools/test/suite.py` on the final tree (origin/master merged — it was already up to date,
-  0f5f07f4), `--only` the touched + neighbouring binaries: codename_entry, menus_flow,
-  memcard_save_flow, fix_save_profile_live, campaign_flow_live, mp_menu_flow, dev_menu_flow,
+  0f5f07f4; the last commit d1f792e2 is exactly the tested tree), three foreground chunks:
+  the touched + neighbouring binaries (codename_entry, menus_flow, memcard_save_flow,
+  fix_save_profile_live, campaign_flow_live, mp_menu_flow, dev_menu_flow,
   objective_hints_flow, credits_data, dossier_pages, screen_adjust, fix_menus_live,
-  fix_pause_menu_live, fix_codename_live, progress_live, fix_progress_live → **119 passed,
-  0 failed, 0 ignored (1 min)**, `build ok: 367 test binaries`. The suite ran foreground (this
-  sandbox reaps background jobs — same as the previous workers' notes); the full 367-binary
-  sweep did not fit the window after the 333 s cold build + the campaign run; the build cache
-  is warm for the next window.
+  fix_pause_menu_live, fix_codename_live, progress_live, fix_progress_live) → **119 passed,
+  0 failed**; the wider menu/flow set (front_end_chain_live, menu_live, menu_sfx_flow,
+  mission_stats_flow, fix_context_hints_live, fix_objective_messages_live,
+  fix_scores_handoff_live, fix_progress_live, fix_progress_detected_hook_live,
+  fix_party_mission_live, fix_mission_live, fix_death_restart_live, fix_restart_target_live,
+  fix_level_chain_live, async_level_load_live, level_end_live) → **85 passed, 0 failed**;
+  the five key binaries re-run after the final commit → **67 passed, 0 failed**. Total
+  across the chunks: **271 binary results, 0 failed** (`build ok: 367 test binaries`, warm).
+  The suite ran foreground (this sandbox reaps background jobs — suite.out stayed empty
+  twice, same as the previous workers' notes); the remaining ~200 mission-sim/render
+  binaries did not fit the window and touch no menu code; the build cache is warm for the
+  next window.
 - The evidence chain for the message texts: `work/decomp` + the symtab gave the state machine;
   the strings came out of `USATxt.dat` inside `FILES.BIN` (offsets from
   `crates/nf-formats/golden/files_bin.tsv`, bank layout per `Txt_LoadLanguage` 0x1caad0), and
