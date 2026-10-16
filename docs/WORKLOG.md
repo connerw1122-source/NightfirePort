@@ -14247,3 +14247,13 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+## satchel-stick2 (2026-10-16, branch s/satchel-stick2)
+- Task: the playtest's satchel charge (0x3b, 07000005, thrown at the low wall by the start, --bond
+  105.97,24.87,110.12,-4.369,-0.166) never sticks — "even standing directly at a wall and throwing it at it, it
+  still bounced", and the countdown digits are wrong. The 109z worker could not bounce it headless, so the
+  headless setup differs from play: replay the exact window input path (the throw from the view model at the
+  real release frame, at a wall 1-2 m away, while walking), find the bounce, fix from the stick arm
+  [M Bullet_CollisionHandler 0x12ce80:256-266]. Digits: check the sim side feeding phase.digits and the satchel
+  list frame_state reads (kinds 4/5); drawing is the main agent's, the data must be there.
+- (start) branch created from origin/master 32647326; work started.
