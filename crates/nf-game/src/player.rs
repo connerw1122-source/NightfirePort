@@ -1643,16 +1643,33 @@ pub struct Hint {
     pub on_channel: u32,
     /// Param 4: the off-channel (when non-zero and ON the hint never fires).
     pub off_channel: u32,
+    /// Param 2: the difficulty stage gate (`Hint_Create` 0x1b3248:12-25): 0 = always; 1..=4 =
+    /// a difficulty CEILING (the hint is refused when `stage < difficulty`, so stage 1 shows
+    /// on Operative only and stage 3 everywhere); 5/6/7 = exactly Operative/Agent/00 Agent [M].
+    pub stage: u32,
+}
+
+/// `Hint_Create`'s stage gate, verbatim [M 0x1b3248:12-25]: `stage != 0 && stage < difficulty`
+/// refuses, then 5/6/7 refuse unless the difficulty is exactly 1/2/3 (the DAT_002a37cc master
+/// gate is a bootup-set 1 — always on in the shipped game, not difficulty-dependent).
+pub fn hint_stage_gates(stage: u32, difficulty: u32) -> bool {
+    if stage != 0 && stage < difficulty { return false; }
+    if stage == 5 && difficulty != 1 { return false; }
+    if stage == 6 && difficulty != 2 { return false; }
+    if stage == 7 && difficulty != 3 { return false; }
+    true
 }
 
 /// Every hint marker of a level (placement kind 0x33, `parsemap_create_dynamic_objects` 0x1d04f0
 /// case 0x33 → `Hint_Create`), in placement order, resolved against its map object exactly like
 /// `wire::icons` (an unresolved placement never creates an object, so it is skipped).
-pub fn hints(level: &nf_formats::level::Level) -> Vec<Hint> {
+pub fn hints(level: &nf_formats::level::Level, difficulty: u32) -> Vec<Hint> {
     let mut out = Vec::new();
     for (mi, m) in level.maps.iter().enumerate() {
         for p in &m.placements {
             if p.flags & 0xff != 0x33 { continue; }
+            let stage = p.params.iter().find(|(j, _)| *j == 2).map_or(0, |&(_, v)| v);
+            if !hint_stage_gates(stage, difficulty) { continue; }
             let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
                 else if (p.index as usize) < m.objects.len() { Some((mi, p.index as usize)) } else { None };
             let obj = obj.and_then(|(om, oi)| level.maps.get(om).and_then(|map| map.objects.get(oi)));
@@ -1674,6 +1691,7 @@ pub fn hints(level: &nf_formats::level::Level) -> Vec<Hint> {
                 sound: param_of(p, 1),
                 on_channel: param_of(p, 3),
                 off_channel: param_of(p, 4),
+                stage,
             });
         }
     }
