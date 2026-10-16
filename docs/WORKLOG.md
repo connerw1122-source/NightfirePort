@@ -15342,3 +15342,10 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+
+## grates-02b (2026-10-16, branch s/grates-02b) — start
+- Task: queue 677b — land s/grates-02 (677) without breaking the 0c vent latches: with the grates
+  branch merged, fix_level_0c_live::burning_the_four_hinges_opens_the_display_vent and
+  ::the_warehouse_vent_latch_opens_its_hatch fail; the shared ss.rs (SimpleScript) arm must be made
+  specific to what the game's evidence says differs (the grate's object class or flags vs the
+  hatch's) [M]. Branch from master, merge s/grates-02, reproduce, fix, full suite on the final tree.
