@@ -16013,6 +16013,12 @@ INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 pa
 07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
 and other merged tasks' new tests. The 2 new live tests are green in the totals.
 
+SAVE-PROGRESS-ROUNDTRIP (started 17:14 UTC): goal — progress survives a restart, by the real path:
+create a codename, complete two missions (results commit + save prompt Yes, 635's card flow), drop the
+FrontEnd entirely, build a fresh FrontEnd on the same profile dir and load the codename; assert unlocked
+rows (incl. driving pass-through), medals/best scores, dossier rewards, MP rewards (Explosive Scenery
+gate); "Play without saving" leaves no file; corrupted file reports Load failed and loads nothing. Temp
+profile dir only. Branch s/save-progress-roundtrip from origin/master (3bb7be9a).
 ## escort-01b (2026-10-16, branch s/escort-01b) — start
 - Task: the held s/escort-01 (690) fails at merge with escort-01 alone on master:
   fix_mission_live::the_07000001_exit_works_end_to_end — the courtyard shoji never reaches OPEN
@@ -16412,3 +16418,30 @@ socket — NetCore::rebind_host/rebind_client now swap a fresh Session in place 
 (codename carry preserved). nf-net's loopback_e2e slot-1 underflow guard fixed (slot - 1 evaluated
 before slot > 0). Runs before push: cargo test -p nf-net (25/25), the 2 new e2e tests (green),
 the full fast-runner suite on the final tree (total in the report).
+SAVE-PROGRESS-ROUNDTRIP FINDING + FIX (17:45 UTC): the roundtrip exposed a dead gate — the port
+NEVER recomputed `mp_bonus_mask` (FrontEnd field, the mp_stuff[0x370] Explosive-Scenery byte
+[M Menu_UnlockMPSettings 0x1ff698:53-104 — cleared, then set iff a (level, counter) reward read
+through PlrStarts_ProcessRewardCounter 0x199210's get arm lands a kind-2 id 0x38..0x3d or the
+kind-3 id 0x3e descriptor; on the shipped RewardsTable the only kind-3 is row 10's 0x07000014
+desc[2] = bit 62 kind 3 [D 0x2bc920]); the field booted 0 and only tests set it by hand, so a
+restart could never reopen the gate a saved profile had earned. Fix: `FrontEnd::unlock_mp_settings`
+walks the 12 SP_LEVEL_HASHES x counters 1..4 against the OR of the active profile's bonus words
+(the game's `bonus | DAT_002e1b90 | DAT_002e1b98 | DAT_002e1ba0` @0x2e1b88..0x2e1ba8), and
+`enter_page(Page::MpScenario)` calls it — the same trigger the game uses [M P_MPSCENARIO_Handler
+0x217348:23 runs Menu_UnlockMPSettings on the page's 0x4c open]. Kinds 0/1/4 set nothing, so the
+mask keeps exactly the kind-2/3 ids found set. `mp_scenario_locked`'s reward rows stay the [S]
+stopgap (separate gates, mp_scenario[0x100/0x70/0x130/0xa0/0xb8/0xe8]) — noted as remaining.
+Tests: crates/nf-view/tests/save_progress_roundtrip.rs — the full real-path roundtrip (create
+"RNDTRIP1" through the keyboard flow; complete 0x07000005 and 0x07000001 through the results
+commit + the save prompt Yes card flow with ASK_OVERWRITE; drop the FrontEnd; a fresh
+FrontEnd boots, walks Main → Codename → Down Down → Confirm and lands Difficulty with the SAME
+unlocked word 0b110111 (the driving rows 2/3 open through the port's pass-through, no game bits),
+the same records/medals/reward rows per row, and — after walking back out into the MP scenario
+page — the Explosive-Scenery gate OPEN (mask bit 0x3e from the loaded BNUS bonus word); verified
+load-bearing by disabling the enter_page hook, the gate assert fails then). Sisters: "Play without
+saving" (no codename in play, two completions, no prompt, the card dir stays empty, a fresh
+program boots 0x3) and the corrupted file (Load failed! msg 7 Txt 0x273 Retry+Cancel, nothing
+loads, the boot word stands; fixing the file behind the dialog → Retry loads). Codenames truncate
+at 8 chars (the game's name buffer 0x2e1ae8). Menu-adjacent binaries all green on the merged tree
+(mp_defaults 10, menus_e2e_mp 5, memcard 7, fix_save_profile 4, mission_unlock 4, menus_flow 42,
+menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_parity 17).
