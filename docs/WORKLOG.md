@@ -15342,3 +15342,14 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+
+## escort-01 (2026-10-16)
+
+- Task: Mayhew's escort on 07000001 (queue 690). Playtest 1012-1723: "mahew doesnt really follow
+  properly ... level transition door should be able to open without him walking all the way to it".
+- Scope: the follow distance and the catch-up; the waiting at doors; the exit door's condition
+  (present vs within-a-radius) — [M] the escort drone's state/script, the exit trigger's channel
+  conditions. Headless walk from the meet-up to the exit at Bond walking speed: Mayhew keeps within
+  the game's distance, the exit opens under the game's condition. `walkreal_07000001_live` stays green.
+- Branch s/escort-01 cut from origin/master (e416e5f0). Work starting: research nf_game escort /
+  drone / LinkCreep (prior: s/fix-escort-01 ported the SqDist2D<1.0 creep rules for the 663 doors task).
