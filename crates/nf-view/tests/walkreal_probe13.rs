@@ -13,7 +13,9 @@ fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 #[test]
 fn probe_13_entrance_warm() {
     let iso = iso();
-    let mut w = Walker::new(nf_view::load_with_carry(&iso, "07000012.bin", false, None).unwrap());
+    // 00 Agent throughout: the 07000012 keypad locks auto-unlock at difficulty 1 [M 0x1ae1f8 tail,
+    // param 6 = 1], and the roster the route was calibrated on is the 00-Agent one [M 0x136be0:49].
+    let mut w = Walker::new(nf_view::load_with_carry_difficulty(&iso, "07000012.bin", false, None, 3).unwrap());
     tower2::walk_12(&mut w);
     tower2::walk_12_exit(&mut w);
     let save = {
@@ -21,7 +23,7 @@ fn probe_13_entrance_warm() {
         nf_game::player::RamSave::capture(&sim.drones.health, sim.gun.switch_request,
             &sim.drones.inventory, &sim.drones.channels).with_mission(&sim.drones.mission)
     };
-    let mut w = Walker::new(nf_view::load_with_carry(&iso, "0700004a.bin", false, Some(&save)).unwrap());
+    let mut w = Walker::new(nf_view::load_with_carry_difficulty(&iso, "0700004a.bin", false, Some(&save), 3).unwrap());
     w.wait_enabled(3000, "the 4A intro");
     for _ in 0..600 { w.tick(nf_game::player::Input::default(), false); }
     let save = {
@@ -29,7 +31,7 @@ fn probe_13_entrance_warm() {
         nf_game::player::RamSave::capture(&sim.drones.health, sim.gun.switch_request,
             &sim.drones.inventory, &sim.drones.channels).with_mission(&sim.drones.mission)
     };
-    let mut w = Walker::new(nf_view::load_with_carry(&iso, "07000013.bin", false, Some(&save)).unwrap());
+    let mut w = Walker::new(nf_view::load_with_carry_difficulty(&iso, "07000013.bin", false, Some(&save), 3).unwrap());
     w.wait_enabled(3000, "the 13 intro");
     w.wait(120);
     w.walk_to(Wp::new(5.0, -368.4, 26.5).r(1.5), "13: the lobby east lane");

@@ -23,7 +23,7 @@ tally outboxes.
 | `RewardsTable` (12 × 64 B) | 0x2bc920 | `REWARDS_TABLE` ([L] snapshot) |
 | `bonus` u64[21] | 0x2e1b88 | `Progress.bonus[21]` (slots 0..3 used [M 0x1ff698]) |
 | `sp_level` (12 × 24 B) | 0x2df2e0 | `SP_LEVEL_HASHES` + `Progress.nightfire_status` (the +0x10 flags packed [M 0x202360]) |
-| `GameState+0x40` (difficulty) | 0x2a37a8 | `Drones.difficulty` (boot default 2 [M bootup 0x1c7e78:25]; `set_difficulty` = the page's write [M C_SBNFDFCTY 0x216ca8:10-17]) |
+| `GameState+40` DECIMAL = +0x28 hex (difficulty) | 0x2a3790 | `Drones.difficulty` (boot default 2 [M bootup 0x1c7e78:25]; `set_difficulty` = the page's write [M C_SBNFDFCTY 0x216ca8:10-17]) |
 | `GameState[0x52]` game complete | 0x2a37ba | `Progress.game_complete` |
 
 ## The tally (the `PlrStat_Log*` family, all SP slot 0)
@@ -114,7 +114,7 @@ SpaceStationD share 9..10 [L]), then stamp `sp_level +0x10` for the level and th
 0x0700001B instead sets game complete. `Progress::has_medal` = `Menu_HasMedal` (gold =
 kind 3 [M `PlrStats_HasGoldMedal` 0x199a40]).
 
-## Difficulty (GameState+0x40, 0x2a37a8)
+## Difficulty (GameState+40 decimal = +0x28 hex, 0x2a3790 — 0x2a37a8 is the one-frame skip-Game_Draw byte, GameFlow_PushState 0x1c9f38)
 
 The readers, per the decompile (all wired to `Drones::difficulty` / `Data::difficulty`):
 

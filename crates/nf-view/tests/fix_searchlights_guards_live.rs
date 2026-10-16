@@ -97,7 +97,8 @@ fn the_walked_beam_entry_raises_the_alarm_channel() {
 #[test]
 fn a_guard_shot_mid_approach_holds_his_first_shot_for_the_impact_danim() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let mut scene = nf_view::load(&iso, "07000006.bin", false).expect("load 07000006");
+    // the 00-Agent load: the scenario was calibrated on the full roster, which Drone_Create's min-difficulty gate [M 0x136be0:49] makes the 00-Agent roster (the game holds back the param2>=2 placements at 1/2); the creates' RNG draw stream then matches the pre-gate calibration bit-for-bit.
+    let mut scene = nf_view::load_with_carry_difficulty(&iso, "07000006.bin", false, None, 3).expect("load 07000006");
     let sim = scene.sim.as_mut().unwrap();
     for _ in 0..300 { sim.step_bond(Default::default(), false, false, false); if !sim.disabled { break; } }
     sim.drones.channels.set(12, 1, 0);

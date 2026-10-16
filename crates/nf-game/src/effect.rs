@@ -115,8 +115,17 @@ pub fn orthonormal_basis_sum(n: V3) -> V3 {
 /// The material's 0x40/0x80 bits are per-triangle bytes in the level collision blob
 /// (`Intersect_RayGeom` 0x10a8c8:326 copies the whole byte to `HITDATA+0x50`).
 pub fn penetration_roll(rng: &mut Rng, material: u8, weapon_id: u16) -> bool {
+    penetration_roll_node(rng, material, weapon_id, false)
+}
+
+/// The roll with the hit's node pass flag (`HITDATA+0x51` bit 1's glist-flags source —
+/// `Collide_Intersect` 0x1ebaa8:143-145): a node-flagged hit passes WITHOUT a draw (the game's
+/// walk sets the pass from the flag and the 0x40 byte before any roll), and the surface byte's
+/// 0x80 roll is drawn exactly when the byte carries the bit — even on a node-flagged hit, whose
+/// result is then OR'd in (`Collide_Update` 0x1ea398:216-220). fix-foliage-bullets.
+pub fn penetration_roll_node(rng: &mut Rng, material: u8, weapon_id: u16, node_pass: bool) -> bool {
     if weapon_id == 0x50 || weapon_id == 0x51 { return false; }
-    let mut pierce = material & 0x40 != 0;
+    let mut pierce = node_pass || material & 0x40 != 0;
     if material & 0x80 != 0 {
         pierce |= rng.rand(0x3f) & 1 != 0;
         if std::env::var_os("NF_RNGLOG").is_some() {

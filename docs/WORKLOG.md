@@ -14652,3 +14652,188 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   frame_budgets_hold_through_the_07000006_dressing_cutscene (the scene phases + the sim-tick
   median, budget 1.5 ms — the pre-fix tick would fail it). pickup_live/rng_live/
   walk_07000006_live/14 pickup unit tests green on the fix.
+## satchel-stick2 (2026-10-16, branch s/satchel-stick2)
+- Task: the playtest's satchel charge (0x3b, 07000005, thrown at the low wall by the start, --bond
+  105.97,24.87,110.12,-4.369,-0.166) never sticks — "even standing directly at a wall and throwing it at it, it
+  still bounced", and the countdown digits are wrong. The 109z worker could not bounce it headless, so the
+  headless setup differs from play: replay the exact window input path (the throw from the view model at the
+  real release frame, at a wall 1-2 m away, while walking), find the bounce, fix from the stick arm
+  [M Bullet_CollisionHandler 0x12ce80:256-266]. Digits: check the sim side feeding phase.digits and the satchel
+  list frame_state reads (kinds 4/5); drawing is the main agent's, the data must be there.
+- (start) branch created from origin/master 32647326; work started.
+
+## satchel-stick2 (2026-10-16, branch s/satchel-stick2) — close-out
+- The play-vs-headless difference (the 109z report's open question): `Bullet_update`'s world hittest has TWO
+  forms [M 0x12e7b0:425-465] — radius max(0.25, obj+0x8C), slow moves (move < radius·0.5) test a ONE-SIDED
+  sphere at the pre-move position (0x101: Collide_SphereIntersect 0x1ec940 → Intersect_PointGeom 0x1e92d8 →
+  Dist2Tri 0x1dfca8, closest point wins, behind-faces skipped [best gate init 0.0, :103-109; the flag word
+  only ever gets 0x20, :391]), fast moves a `max(1.0, move)` ray (0x201). The satchel (0.0667 u/tick [L
+  ee_start_05.bin weapon_data 0x3b +0x20]) spends its whole approach in the sphere form — the game parks it
+  the moment a face is within 0.25 u; the port's 0.067 u ray needed a centre crossing, so grazes/throws at
+  the wall flew on (the playtest's "it still bounced") while the dead-centre headless tests always crossed.
+- Fixes: `world.rs sphere_surface` (the 0x101 transcript) + `grenade.rs` picks the game's two forms for the
+  sticky family (0x37/0x3a/0x3b; hat 0x45 untouched; the bouncing family keeps the old ray [S backlog]);
+  scene.rs kinds-4/5 drops the `stuck` gate (DoTrails spawns the digit objects every tick in every state < 2
+  [M 0x12d890:418-553] — the numbers ride the satchel from the throw); the stick arm carries
+  last_qs/digits into the new phase (the countdown latch lives in BU; the old reset blanked the digits for a
+  tick at the stick).
+- Tests: two failing-first unit sisters (run against the reverted fix: both FAILED; with it: PASS — the 0.2 u
+  wall graze sticks on the first update, the 0.2 u floor graze parks 0.04 up); live 9/9 (the 109z five +
+  the pitch fan −0.02..−0.28 all stick on the wall top, the walk-up throw parks on the near side, digits
+  present in flight incl. the frame_state kinds-4/5 matrices); fix_satchel_tripbomb_live 5/5,
+  fix_grenade_release_live 4/4, fix_grenade_throw_live 4/4, fix_grenade_types_live 3/3+1 ign,
+  fix_remote_mine_play 3/3, nf-game lib 236/236 — all on the merged tree (origin/master 6bab6409).
+- Report: docs/reports/satchel-stick2.md (live checks: the rebuilt-binary replay of the user's repro, the
+  gdbwatch fallback, the obj+0x8C read; left: the frag family's 1 u look-ahead, the pierce roll, L-583).
+- flesh-hit-effects (s/flesh-hit-effects): started. Playtest 1015-1738: bullet hits on people show
+  "No red puffs". Plan: port the flesh-hit effect spawn — the material/effect lookup for a character
+  hit [M Effect_Create / Effect_Bullet on the flesh path, the EffectInfo row for flesh, its gas/
+  decal/debris entries] so a guard hit spawns the game's own blood puff into the existing gas/effect
+  pools (data only — the pools already draw). Test: shoot a guard on 07000005, assert the puff with
+  the right mesh/colour/life in the pool; sister: a world hit doesn't spawn it.
+
+- Task: flesh-hit-effects — "No red puffs" on bullet hits to people (playtest 1015-1738). Evidence
+  chain: a character hit carries HITDATA+0x50 = 0 [M Collide_Jointy 0x1ec180:125/173], so
+  Effect_Create 0x1ce688:63's material gate early-outs — there is NO EffectInfo row for flesh
+  (the 23-row table [L ACTION.ELF EffectInfo @0x3037c0] has no red row; Drone_CollisionHandler
+  0x140968 calls no effect) — the blood puff is the VICTIM's own: NDrone2_DealWithObjHit
+  0x13fff0's default arm Gas_Init(3.0, 6.0, obj+0x20, HITDATA+0x40, 0, 0, 0x20008bc, 5, 0xffffffff,
+  0xffffff00, life 0x3c) + the gas obj's +0xf0 |= 8 [M disasm 0x14047c site; the 0x32/0x33 bolt arm
+  0x140414 = 0x200026e at 1.0/16.0]. fix-flesh-impacts already spawns it into the pool (victim_puff
+  — pool data verified correct against the disasm). The actual gap was RENDER-side: the gas
+  draw-slot list (scene.rs) only knew the EffectInfo rows' gas meshes + SMOKE_QUAD — the blood mesh
+  0x0200_08bc had no slot, the puff sat in the pool invisible. Fix: gas::POOL_MESHES (the pool's own
+  spawn meshes: SMOKE_QUAD, the trail smoke 0x0200_001f [M Bullet_trail_effect_smoke 0x12cba8
+  disasm], the blood 0x0200_08bc, the bolt puff 0x0200_026e) extends the renderer's slot meshes.
+  Tests: fix_flesh_hit_effects_live — a real shot at a guard on 07000005 (load → settle → guard
+  moved ahead → aim at the live torso box → fire) asserts the puff's exact game data (mesh/kind 5/
+  scale 3.0/life 60/white rgba) near the guard + the guard takes damage + the scene has gas slots
+  for the three hardcoded-site meshes (a slot exists only when level.by_hash resolves the hash —
+  the draw proof); sister: a world hit never spawns the blood mesh. RED pre-fix at the slot
+  assertion, GREEN post-fix. Ran: the new test 2/2 green; nf-game + nf-view check clean; the full
+  suite on the final tree — see the report.
+## foliage-bullets (2026-10-16, branch s/foliage-bullets) — start
+- Branch created from origin/master (4108d7b2). Task 658: the playtest's "those trees are
+  bulletproof, like the leaves" (07000005, the small trees near the start) — make the port's
+  bullet trace treat foliage exactly as the game's does.
+- Evidence so far ([M] decompile + disassembly, [D] level data via the port's parser):
+  Collide_Intersect 0x1ebaa8 sets the per-hit pass flag (HITDATA+0x51 bit 1) from the glist
+  node's flags bit 0x40 (cel+0x94 — the placement's flags word [M 0x1d1998:103]); bullet-family
+  queries carry HITTEST+0x98 bit 0x8, which DROPS pass-flagged hits outright (1e8 fraction,
+  disasm 0x1ebf40-0x1ec010); the aim trace is 0x20a/0x208 (Player_WeaponInitBullet 0x1a4bf0:154),
+  Bullet_homing's LOS is 8 (0x12f358:92). 07000005's tree objects (map 50 obj 96/98) carry glist
+  flags 0x41 — the whole tree is bullet-pass; leaf cards carry the 0x40 surface byte.
+
+## foliage-bullets (2026-10-16, branch s/foliage-bullets) — close-out
+- The foliage pass machinery mapped [M]: Collide_Intersect 0x1ebaa8 sets HITDATA+0x51 bit 1 from
+  the glist node's flags bit 0x40 (cel+0x94 = the placement's celglist+0x44 [0x1d1998:103]) or the
+  surface byte's bit 0x40 (disasm 0x1ebf78-80); bit 0x80 sets it only under HITTEST+0x98 bit 0x1;
+  the bit-0x8 queries (aim trace 0x20a/0x208 [0x1a4bf0:154], Bullet_homing LOS 8 [0x12f358:92],
+  the laser 0xa0a) drop pass-flagged hits outright (disasm 0x1ebff0-0x1ec010); Collide_Update
+  0x1ea398:216-229 walks past pass hits; Bullet_CollisionHandler 0x12ce80 re-derives per hit
+  (state 1 past, state 2 at the stop, Effect_Create per hit, ricochet mask 0).
+- [D] 07000005: the small trees = obj 96 (0x13/0x03, ×5) + obj 98 (0x13/0x04, ×2), glist flags
+  0x41 (node-pass); leaf cards obj 21/109/117/144, flags 0x10, byte 0x40 (material-pass); a wood
+  core obj 97 (30 tris, 0x04, flags 0) — unflagged — the aim trace's first stop behind the canopy.
+- [L] The flight does NOT pass: the bullets' HITTEST stays inactive (0x12c668 `sh $zero, 0xe4`),
+  Collide_Update never walks them, and the live-pinned guard cover trace (ai_live
+  guard_takes_cover_like_the_game, UnderCoverAim 37) fails with both the bit-0x8 drop and the
+  keep-walk flight models (90 each) and passes only with the original first-hit flight. Reverted
+  the flight paths; the playtest's "bulletproof" = the class-19 stop's record has no decal/gas —
+  debris chips only ([D] the parsed EffectInfo).
+- Port: CollisionWorld carries the node pass per triangle + segment_bullet/segment_surface_bullet
+  (the bit-0x8 family) + segment_surface_flags + effect::penetration_roll_node; the flight paths
+  unchanged. Tests: nf-game lib 235/235 (the new bullet_queries_drop_the_pass_flagged_hits),
+  ai_live 35/35 (the cover pin back green), grenade/spawner/nav_kick/level live green, nf-view
+  fix_foliage_bullets_live 3/3 on 07000005.
+- Not run: the full fast-runner suite (this sandbox reaps background jobs between tool calls; the
+  ~62 min foreground run does not fit the window) — flagged in the report.
+- Report: docs/reports/foliage-bullets.md; 4 live checks listed there.
+## delta-repeater (2026-10-16, branch s/delta-repeater) — started
+- Playtest 1015-1738: the Delta Repeater (crossbow) model is missing the loaded arrows, and the
+  bolt's world hit plays a grenade-like bounce sound / bounces when the game's bolt should
+  stick or die [playtest].
+- Plan: port the bolt's world-hit behavior from Bullet_CollisionHandler + weapon_data +0x6C/+0x70
+  flags [M]; find the sub-meshes/datums/attachments that carry the loaded bolts on the view model
+  and why they are absent. Deliver data/attachments; the main agent checks the look against PCSX2.
+- Status: setup in progress; branch pushed from origin/master.
+
+## delta-repeater (2026-10-16, branch s/delta-repeater) — close-out
+- Playtest 1015-1738's Delta Repeater (crossbow 0x11) pair fixed.
+- The bolt's wall hit: the port's shot dispatch routed every `+0x6C & 8` (gravity) weapon into
+  the GRENADE path — the bolt bounced off walls with the grenade bounce sounds. Gravity and the
+  grenade family are independent in the game: gravity is `Bullet_update` 0x12e7b0 case 1's arm
+  for ANY bullet [M], the bounce block/stick arm/ricochet/contact-explode gate on
+  `weapon_data+0x70` 0x80/0x100/0x10/0x4 in `Bullet_CollisionHandler` 0x12ce80 [M]. The record
+  reads +0x6C = 0x808, +0x70 = 0x00000002 [L ee_start_05.bin @ 0x2bf150 + 0x11·0x10C] — the bolt
+  arcs and DIES at the wall with the standard 0x61 impact effect, no bounce/stick/ricochet.
+  Fix: the dispatch gate is gravity AND a family flag (0x4/0x80/0x100) — the 115-record sweep
+  moves exactly 0x11; PlayerBullet grew `gravity: bool` running the game's case-1 integration
+  (WldGravity (0,−9.8,0)·(1/60)², shared consts with grenade.rs). flush_world_impacts' existing
+  walk then gives the correct hit (impact sound via +0x70 & 2, no revive).
+- The missing arrows: `Player_WeaponFiring` 0x1a5460:331-381 attaches the bolt mesh (+0x5C =
+  0x0200816, the flying projectile's own mesh) to the FP view model's datums 4/5/6 every tick —
+  datum 4 when count > 0 (not in fire state 9), 5 when > 1, 6 when ≥ 3; count = clip[0x11],
+  +1 in state 9, min(carried[0x0F], clip_size 3) in reload state 6 past frame 80 [M]. The
+  datums live on the FP skin 0x05000083 (+0xDC), bone 40, the three magazine slots [D]. The port
+  had NO crossbow branch (fix-fire-modes3's left-over). Implemented as the AIMS-lights pattern:
+  build-time attachments + a per-frame count arm off the new `Attachment.quiver_bolt`.
+- Tests: new delta_repeater_live 3/3 (bolt flight + death + no grenade; the MGL sister; the
+  quiver counts); fire_modes3_live's crossbow test updated off the old "grenade-path projectile"
+  pin. Ran: nf-game 440/0, nf-view touched-path tests 44/0. suite.py cannot survive this
+  sandbox's background reaping (the drive-mission-scripts precedent) — the touched-crates runs
+  stand in, flagged in the report.
+- Report: docs/reports/delta-repeater.md; render checks + 2 optional live checks listed there.
+
+## weapon-model-coverage (2026-10-16, branch s/weapon-model-coverage)
+- Branch created from origin/master (f42de6ff). Task: every weapon id 1..0x73 gets its first-person
+  view-model on every single-player level; load logs still print "27 weapon-model hashes still missing".
+- Plan: (1) census — each weapon's view-model skin hash, which archive holds it, and whether the port
+  resolves it per SP level; (2) fix the misses (unmerged archives, hash aliases, per-class archive
+  rules); (3) headless test on 3 levels that every dev-panel weapon resolves a view model, plus a
+  bogus-hash-must-report-missing sister; (4) census table before/after in the report.
+- weapon-model-coverage close-out: the disc index tabulates map objects (DiscIndex.objects, cache
+  V2 — every kind-0/1/2/11 ENTITY_PARAMS hashcode -> first holding archive); merge_weapon_assets
+  tops up the still-missing weapon-model meshes from the archive the index names (surgical for
+  --give, whole-table for --dev). Census [D: weapon_data/ammo_data/FileList from the EE snapshot,
+  all 99 archives scanned]: every fp-armed weapon's +0xDC skin exists (41 skins / 96 ids, mostly
+  on the MP packs 07000029/4B/46/43 — the per-class archive shape), the silenced twins / variants
+  share skins (benign aliases), the session merge's "27 still missing" on 07000005 was a mid-load
+  stage count, and the one real miss was weapon 0x63's tp mesh 02000312 (on 07000004/16 only —
+  unreachable on 07000001-03). Residue = the casing meshes 02000446/02000443 on NO archive (the
+  shipped game's own gap, now logged honestly). Tests: weapon_model_census_live 3/3 (dev-panel
+  view models on 07000005/0c/14; the 20-level table through the real merges; the bogus-hash
+  sister), weapon_assets_live 5/5. Report: docs/reports/weapon-model-coverage.md.
+## difficulty-effects2 (2026-10-16, branch s/difficulty-effects2) — start
+- Task: land HELD 629 (s/difficulty-effects). Master now has 4108d7b2. Plan: merge origin/s/difficulty-effects,
+  apply the 053 net-match-host load_impl resolution (mp: bool, mp_settings: Option<MpSettings>, difficulty: u32;
+  load_mp_carry passing Some(settings), 1; async load choosing load_mp_carry -> dev -> load_with_carry_difficulty),
+  fix the E0308 in menu.rs (FrontEnd::difficulty is usize, requested_difficulty Option<u32>), then fix the
+  create-time roster gate in drone.rs so the front-end pick reaches the creates (Scene::build hard-codes
+  difficulty: 1 into its Data and set_difficulty runs after the creates), and get the 10 listed failures green
+  with game evidence (decide from the game which difficulty direct-load tests represent; boot default 2 [M 0x1c7e78:25],
+  wrappers keep 1 for replay parity). Full suite on the final tree before push.
+
+## difficulty-effects2 (2026-10-16, branch s/difficulty-effects2) — close-out
+- Landed HELD 629: re-applied by reverting master's revert dc841e30 (the main agent's own merge
+  1e96af8a already carried the 053 net-match-host resolution verbatim: load_impl(.., mp: bool,
+  mp_settings: Option<MpSettings>, difficulty: u32), load_mp_carry passing Some(settings), 1, the
+  async front-end load choosing load_mp_carry -> dev -> load_with_carry_difficulty). The E0308 was
+  already resolved in that content (menu.rs `Some(self.difficulty as u32 + 1)`).
+- THE fix: Scene::build's create-time drone::Data carried a hard-coded `difficulty: 1`, so
+  Drone_Create's gate read 1 on every load and set_difficulty ran after the creates. The game
+  holds the pick in GameState+0x28 before the load's creates [M 0x216ca8:15, 0x136be0:49] — the
+  Data now carries the load's difficulty; difficulty_wiring_live green (00 Agent roster 37).
+- Direct loads keep difficulty 1 (the documented replay parity: the recorded sessions ran at d1).
+  With the gate live that makes the pre-gate calibration roster the 00-Agent one [M 0x136be0:49]:
+  the 07000011 stairwell spawner tests, the searchlights first-shot deferral (the staged danim's
+  remaining script length is draw-stream dependent) and the tower2/13/4a walkthroughs load at 00
+  Agent; the 07000012 keypad locks carry param 6 = 1 — Lock_Create auto-unlocks them at d1
+  [M 0x1ae1f8 tail], so the Q-Decryptor burn is the Agent+ behavior. 07000006's idle gate guard
+  (placement 487) shifts list[15]->list[13] at d1 (six param2=2 creates held back). No assertion
+  weakened; per-test evidence in docs/reports/difficulty-effects2.md.
+- Verified: the 10 held failures + their binaries (29 tests) green; difficulty_gates 3,
+  difficulty_spawn_gate_live 1; suite on the final tree (merged origin/master 6bab6409) ran as
+  foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
+  76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
+  display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
