@@ -19,3 +19,8 @@ The uncited-gameplay audit (task 710, merged) has this gap's description, caller
 
 ---
 claimed-by: sandbox2 at 2026-10-16T21:14Z
+
+---
+## Report (done, 2026-10-16T22:16Z)
+
+Closed by the driver: the report is on `s/astronaut-guards-1b` (docs/reports/astronaut-guards-1b.md); the worker didn't run finish.sh.
