@@ -212,3 +212,21 @@ fn probe_last_riser() {
         z -= 0.05;
     }
 }
+
+/// Crouch-walk south along the balcony's EAST side (x 11, past the wedge).
+#[test]
+fn probe_east_walk() {
+    let Some(_) = iso() else { eprintln!("NF_ISO not set"); return };
+    let mut scene = load_at([11.0, 15.7, -116.0], std::f32::consts::PI);
+    let sim = scene.sim.as_mut().unwrap();
+    sim.step_bond(Input { crouch: true, ..Default::default() }, false, false, false);
+    for tick in 1..=400u32 {
+        sim.step_bond(Input { forward: 1.0, ..Default::default() }, false, false, false);
+        if tick % 40 == 0 {
+            let p = sim.bond.pos;
+            eprintln!("tick {:3}: pos ({:.3}, {:.3}, {:.3}) grounded {}", tick, p[0], p[1], p[2], sim.bond.grounded);
+        }
+        let p = sim.bond.pos;
+        if p[2] < -126.0 { eprintln!("reached the far walkway at tick {tick}"); break; }
+    }
+}
