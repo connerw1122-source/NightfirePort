@@ -14116,3 +14116,16 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
   625's attract code; (3) sweep for every other survival path (intro pair vs backdrop, level music vs
   front-end map); (4) reproduce the intro-end "old menu" headless and fix from the game's flow [M].
   Headless flow tests per case, NF_SILENT.
+- menu-audio-leaks close-out: the 0x1d7/0x470 menu-music pair's SFXRemove side ported at every
+  decomp site — the twelve handlers' 0x4c removes before it restarts (menu_movie gate kept,
+  removes ride a new `sfx_remove_out` channel the host applies before the same frame's starts),
+  P_INTRO's frame-1 removes under the EA logo + the movie-2 end restarts, P_ATTRACT's
+  0x4c/0x50, MenuManager_Create zeroes the static on the pause open (P_PAUSE starts no pair),
+  and the front-end close removes the pair through the driver (close_front_end — the game's
+  fade+bank-load death, KillSFX-all [M IRX 0x1f88/0x1ea4]); movie_tick stops the looping
+  backdrop with no fe and state 6 replaces a looping BGFMV occupant [M 0x1081a8]. Evidence:
+  SFXRemove = KillSFX over every (handle,id) match [M]; the pair looped by design, silent
+  under the intro in the real game [M 0x209e88:37-47]. Tests: nf-audio lib 11/11 (+2),
+  menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
+  the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
+  docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
