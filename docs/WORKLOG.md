@@ -14462,3 +14462,15 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+## foliage-bullets (2026-10-16, branch s/foliage-bullets) — start
+- Branch created from origin/master (4108d7b2). Task 658: the playtest's "those trees are
+  bulletproof, like the leaves" (07000005, the small trees near the start) — make the port's
+  bullet trace treat foliage exactly as the game's does.
+- Evidence so far ([M] decompile + disassembly, [D] level data via the port's parser):
+  Collide_Intersect 0x1ebaa8 sets the per-hit pass flag (HITDATA+0x51 bit 1) from the glist
+  node's flags bit 0x40 (cel+0x94 — the placement's flags word [M 0x1d1998:103]); bullet-family
+  queries carry HITTEST+0x98 bit 0x8, which DROPS pass-flagged hits outright (1e8 fraction,
+  disasm 0x1ebf40-0x1ec010); the aim trace is 0x20a/0x208 (Player_WeaponInitBullet 0x1a4bf0:154),
+  Bullet_homing's LOS is 8 (0x12f358:92). 07000005's tree objects (map 50 obj 96/98) carry glist
+  flags 0x41 — the whole tree is bullet-pass; leaf cards carry the 0x40 surface byte.
