@@ -1,7 +1,7 @@
 //! Playtest 1016: "cutscene didnt play when I started the exchange, it went straight to the loading
 //! screen then to game". ResetMap_Load phase 0 pushes GameFlow state 6 with no frame budget of its own
 //! [M 0x1d6360:101] and starts the movie in the same phase [M 0x1d6360:111 psiStartBackgroundMovie], so
-//! [M 0x1081a8]), so case 6 holds until psiMovieFinished [M 0x1c98c8 case 6, 0x1082e8]. The port's
+//! BGFMVPlaying = 1 [M 0x1081a8] and case 6 holds until psiMovieFinished [M 0x1c98c8 case 6, 0x1082e8]. The port's
 //! countdown popped state 6 on its first tick because the host had not reported the decode-ahead
 //! player as playing.
 //!
