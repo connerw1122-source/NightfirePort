@@ -46,17 +46,20 @@ into `nf_game::driving`, headless, with scripted-event tests.
 
 ## What ran (before the last push)
 
-- `cargo test --offline --release -p nf-game --lib driving::mission` → 9/9 passed.
+- `cargo test --offline --release -p nf-formats --lib -- --test-threads=1` → **79/79 passed**
+  (the 3 crp unit tests included).
+- `NF_ISO=… cargo test --offline --release -p nf-game --lib -- --test-threads=1` → **221/221
+  passed** (the 9 new `driving::mission` tests included; nothing pre-existing broken).
+- `NF_DRIVING=… cargo test --offline --release -p nf-formats --test driving_golden` → **9/9
+  passed** (the crp pool/record additions against the byte-exact goldens of all 89 `.crp`s).
 - `NF_DRIVING=… cargo test --offline --release -p nf-game --test driving_mission_live
-  -- --test-threads=1` → 5/5 passed.
+  -- --test-threads=1` → **5/5 passed**.
 - The full-suite fast runner (`tools/test/suite.py`) could **not** run: this sandbox reaps
   background jobs between tool calls (started once, dead on the next call), and the
-  foreground window went to the research + implementation. The touched crates' tests were run
-  instead: nf-game lib (the 9 new + the suite's lib set was not re-run this window — see
-  Left), nf-formats compiles via the live test's dependency chain. The 3 slim-ISO
-  `disc_golden` allowance does not apply here (nothing ISO-dependent changed).
-- Touched crates: **nf-formats** (crp.rs additions), **nf-game** (driving/mission.rs + the
-  live test). Nothing in nf-view/nf-audio was touched.
+  foreground window went to the research + implementation + the per-crate runs above. The
+  3 slim-ISO `disc_golden` allowance does not apply here (nothing ISO-dependent changed).
+- Touched crates: **nf-formats** (crp.rs additions — lib + goldens green), **nf-game**
+  (driving/mission.rs + the live test — lib green). Nothing in nf-view/nf-audio was touched.
 
 ## What's left
 

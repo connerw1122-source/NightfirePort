@@ -57,9 +57,11 @@ The type names are the GCC typeinfo strings at 0x397c28.. [D]; sizes + ctors fro
 | 14 | SRuleProgCounter | 0x20 | 2 | |
 
 The type descriptors (obj+0x10) carry three function pointers each at +0xc/+0x14/+0x1c [D
-0x397b40..0x397c08: e.g. SRuleAlways → FUN_0020b1a0/FUN_00209d98/FUN_00209df0; base →
-FUN_0020b120/FUN_00209360]. **These per-type evaluation functions are not decomposed yet** —
-the port's per-type semantics (§5) are [S] outside the names/sizes.
+0x397b40..0x397c08]. Reading them: the +0xc slot is a **typeinfo accessor** (base →
+FUN_0020b120 = `FUN_0024e7c8(0x3c8358, 0x397c28 "12SMissionRule")`; SRuleAlways →
+FUN_0020b1a0 = the 0x397c38 "11SRuleAlways" typeinfo) [M] — the descriptors are C++ RTTI
+objects, not vtables, so the per-frame rule evaluation is dispatched elsewhere (the manager
+walk / live check L-1) and stays undisassembled.
 
 ## 3. The `MSet` chunk — the mission set and the objective table
 
