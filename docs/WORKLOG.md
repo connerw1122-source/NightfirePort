@@ -15349,3 +15349,24 @@ remote-mine-detonate (2026-10-16)
   ::the_warehouse_vent_latch_opens_its_hatch fail; the shared ss.rs (SimpleScript) arm must be made
   specific to what the game's evidence says differs (the grate's object class or flags vs the
   hatch's) [M]. Branch from master, merge s/grates-02, reproduce, fix, full suite on the final tree.
+
+## grates-02b (2026-10-16, branch s/grates-02b) — the shared-arm hypothesis dissolved; the stale test re-pointed — DONE 12:15 UTC
+- Reproduced by un-reverting the held merge (master's 366f5d49 revert; `git revert` of the revert on
+  s/grates-02b): fix_level_0c_live's two vent tests fail exactly as reported; fix_ss_grate_live and
+  the re-pointed 0c files pass.
+- [M] the brief's premise tested and rejected: SS_Update 0x1a9948 / SS_Operate 0x1a9df8 / SS_Create
+  0x1a9c58 have NO per-class or per-flags grate-vs-hatch arm (the only class reads are SS_Operate's
+  presence bits vs the CONTACT chain's classes 2/3/5). The objects differ only in disc data [D probe
+  over FILES.BIN: display pair state 0x40 p1=1 mask 1 ch 18; warehouse pair state 0x40 p1=0 mask 1
+  ch 84; 02 grates state 0x40 mask 0x4/0x1 ch 0/1/2] — all mapped faithfully by the merged ss.rs
+  (the hatches channel-driven via the fallback, the ch-0 grates not, exactly as the game's == 0
+  short-circuit says).
+- The real break: fix_level_0c_live asserted the OLD channel-seek model's parked playhead
+  (t == last key). The game wraps the playhead to 0 past the last key [M 0x1a9948:119-128] — p1=1
+  disarms (hold the end pose), p1=0 re-arms (the sweep re-runs while ch 84 stays latched [M
+  0x1ae3d8:194]). The 677 merge re-pointed its own 0c files but missed this older one.
+- Fix (test-only): the two tests now assert the reached-last-key tick, the wrap (t rests 0 + the
+  held end pose for the display pair; the playhead back below last for the warehouse pair), the
+  ray-through-the-opening and the mux asserts unchanged. 4/4 fix_level_0c_live, 4/4 fix_ss_grate_live,
+  fix_0c_hatch_live + fix_0c_vent2_live green.
+- Report: docs/reports/grates-02b.md (live check: the warehouse pair's re-sweep in PCSX2).
