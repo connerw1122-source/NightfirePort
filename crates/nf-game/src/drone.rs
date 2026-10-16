@@ -3608,6 +3608,20 @@ impl Drone {
                 // multiplies 30.0f; the old +1800 read FRAME_RATE_DIV as 60, stretching the fall
                 // to 30 s against the game's 0.5 s].
                 self.timer_c = Some(frame + 30);
+                // The tase scream (tase-scream-broadcast): the case-1 tail [M 0x162b98:58-72, disasm
+                // 0x162d0c-0x162d40] — prop 0x32 set (`behaviour_util_getProperty(0x32, +0x4d8)`), the
+                // once-per-life bit CLEAR (+0x4F8 & 8 — the same bit the hurt scream sets,
+                // DroneFunc_SendHurtMessage 0x145e28:11-13/32, the port's `screamed`), and the active
+                // type id not 2 (`lbu 197($a0)` = +0xC5, the port's `dtype`); then +0x4FC |= 2 and the
+                // msg-0x12 broadcast `NDrone2_DroneAlertToPosition(0,0,0,obj,0x12,obj+0x30,obj+0x20)`
+                // from the victim's position — the same SCREAM queue `send_hurt_scream` uses (the
+                // shared pass drains it to every present, enabled drone within 20 u [M
+                // Drone_SM_BroadcastMsg 0x14a498 tail]; the alert record's cel word obj+0x20 is the
+                // port's [S] local-scream shape, as for the hurt path).
+                if self.prop(d, 0x32) && !self.screamed && self.dtype != 2 {
+                    self.screamed = true;
+                    self.pending_shout = Some((msg::SCREAM, self.pos));
+                }
                 true
             }
             (TASER, msg::TASE) => {
@@ -3657,6 +3671,7 @@ impl Drone {
                 // case 0xc: `DroneFunc_AnyoneNear(2.0)` re-arms FRAME_RATE_INT·5 = 300; clear falls
                 // through to Stunned_Recover 0x4c [M 0x162eb0 case 0xc] — the same live-pos query the
                 // stun-grenade loop uses (`stun_kept_down`).
+                if std::env::var("TASE_DBG").is_ok() { eprintln!("[dbg] STUNNED TIMER_C kept_down {}", self.stun_kept_down()); }
                 if self.stun_kept_down() { self.timer_c = Some(frame + 300); } else { self.set_state(STUNNED_RECOVER); }
                 true
             }
@@ -8487,7 +8502,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // else the door's obj+0xF4 == 4.
             dr.hit_door_open = dr.hit_door.map_or(true, |i| self.doors.list[i].state == crate::door::OPEN);
             if !dr.started { dr.started = true; dr.send(d, rng, frame, msg::ENTER); dr.entered = frame; dr.log.push((frame, dr.state)); }
-            if let Some(t) = dr.timer_c { if frame >= t { dr.timer_c = None; dr.send(d, rng, frame, msg::TIMER_C); } }
+            if let Some(t) = dr.timer_c { if frame >= t { if std::env::var("TASE_DBG").is_ok() { eprintln!("[dbg] timer_c fires frame {} drone {} state {}", frame, index, dr.state); } dr.timer_c = None; dr.send(d, rng, frame, msg::TIMER_C); } }
             if let Some(t) = dr.timer_d { if frame >= t { dr.timer_d = None; dr.send(d, rng, frame, msg::TIMER_D); } }
             if let Some(t) = dr.idle_timeout { if frame >= t { dr.idle_timeout = None; dr.send(d, rng, frame, msg::IDLE_TIMEOUT); } }
             if let Some((t, m)) = dr.delayed { if frame >= t { dr.delayed = None; dr.send(d, rng, frame, m); } }
