@@ -22,6 +22,16 @@ Main agent findings so far (master 0f5f07f4):
 Tests: headless flow tests for each case (movie player state, driver items, pages) with sister assertions. No
 drawing changes. Tests must stay silent (NF_SILENT).
 
+UPDATE (main agent, later the same day): 625 attract-mode's report identifies 0x1d7/0x470 as **the front-end menu
+MUSIC pair**, not blips. The game removes it with `SFXRemove(0,0x1d7)` / `SFXRemove(0,0x470)`: on every
+page-open before restarting it [M the twelve handlers' msg-0x4c], on the attract open [M P_ATTRACT_Handler
+0x20a1f0], and wherever the front end ends. The port's `open_pair_sfx` only ever STARTS it; nothing removes it
+when the front end closes (into a level, after the intro, under the pause). That matches the user's "music
+continues after I leave the menu" and the never-ending driver items in finding 2. Port every SFXRemove/stop site
+for the pair (front-end exit to a level, the intro/EA movies, attract, and whatever the game does on the pause
+page), and make the host carry it out through the driver (a remove event beside `drain_sfx`). Check how 625's
+attract code on master handles the pair and build on it rather than duplicating it.
+
 **Run the crates your tests touch before pushing**, and report what you ran.
 
 **Branch:** `s/menu-audio-leaks`.
