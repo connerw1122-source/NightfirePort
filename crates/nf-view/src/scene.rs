@@ -6793,8 +6793,18 @@ impl Scene {
             }
         };
         let script = s.scripts.get(&script_h)?;
+        // cutscene-faces: the face window is the game's own classifier — the SEQUENCE's flags bit
+        // 0x8 [M AnimProcessScriptCmds 0x1c1b38: `*(int *)(lVar6 + 0xc) >> 3 & 1` on the raw
+        // sequence record; a facial window plays in the script's +0x54 slot via AnimSeqSet
+        // 0x1c7460's param_7 slot pick], the same rule `script_pose_together` poses bones by. The
+        // old `channels.len() == count` probe was fix-facial2's stand-in; the two agree on EVERY
+        // sequence on the disc — the census: 18,244 kind-4 sequences, flags {0x00 × 17363,
+        // 0x01 × 10, 0x08 × 871} and every flags-0x08 one has exactly 22 channels (a body window
+        // is 3·bones + 3·popcount(mask) — always ≡ 0 mod 3, so 22 can never be one). The game
+        // reads the slot buffer as `skin.facial` floats whatever the track carries
+        // [M AnimFacialBlend 0x1be648's uVar9 loop], and `facial_weights` keeps that count guard.
         let win = script.sequences().filter(|(a, _, _)| (*a as f32) <= frame)
-            .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.channels.len() == count).map(|sq| (a, q)))
+            .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.flags & 0x8 != 0).map(|sq| (a, q)))
             .last()?;
         let seq = s.seqs.get(&win.1)?;
         let mut out = nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)?;
