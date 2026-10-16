@@ -61,10 +61,29 @@ stall (steps do not abort on sight, [M 0x1676a0 case 3]).
   timelines the 110f hold had broken (the current master already carries that repair; re-read before touching: the
   hold had stretched a sight-pause the game does not have, and the pipeline port supersedes it).
 - `walkreal_07000001` (nf-view): green in the fast-suite run (see below).
-- Fast suite `python3 tools/test/suite.py` (docs/tools/test-suite.md), full four-crate run on the branch tree:
-  build ok: 384 test binaries; the 3 `disc_golden` failures are the slim-ISO allowance; `driving_ai_follow::real_mis01_track_rngp_walks_when_nf_driving_is_set`
-  failed on the pre-merge tree — re-run on the final merged tree: [total line repeated below].
-- Final tree (merged with origin/master) suite total: see the "Suite (final tree)" line appended at the bottom.
+- Fast suite `python3 tools/test/suite.py` (docs/tools/test-suite.md), full four-crate run on the branch tree
+  (pre-merge): build ok: 384 test binaries; reached binary 179 of 384 in this sandbox's window with exactly the
+  failures below — none in guard AI:
+  - the 3 `disc_golden` tests — the documented slim-ISO allowance;
+  - `driving_ai_follow::real_mis01_track_rngp_walks_when_nf_driving_is_set` — the slim ISO's mis01 road net has
+    360/811 positive speed limits; the test's data assertion (>8/9 positive) is disc-data, not code (the sister
+    8 driving tests, including the rNgp parse and the spline walk, are green, and nothing in this task touches
+    the road-net path). Reproduced identically on the merged tree.
+  - `fix_guard_weapons_live::the_3x3_hit_rate_and_damage_matrix_matches_the_game` — a tolerance-edge flake, see
+    the finding below. Green on 3 of 4 standalone runs (125/200 vs 153/200 in the failing vs passing cell,
+    model 0.750, tolerance 0.12 — the failing run landed 0.125).
+- On the final merged tree (origin/master, 36a7f3b9): `ai_live` 35/35, `walkreal_07000001_live` 2/2 (260.8 s),
+  `searchlight_live` 3/3, and `guard_reaction_live` reproduces the identical table (161/114/382 — master's
+  drone.rs batch did not shift the streams). The full merged-tree suite was re-started and is still running at
+  report time (this sandbox's window closes first); its failures so far are the same slim-ISO set.
+
+**Finding for the next task (pre-existing, not this branch):** `fix_guard_weapons_live`'s measured streams vary
+between PROCESSES of the same binary — the same cell measured 125/200 (suite run) vs 153/200 (standalone) with
+identical env, and the candidate flow itself varies ("guard 3: no level parking spot" appears in some processes,
+not others). The parking outcome is decided before any firing, so this is not the CombatNoRoute change; it points
+at per-process state leaking into the sim (Rust's per-process `RandomState` HashMap order consumed somewhere in
+scene build would do exactly this). Worth a determinism audit: `cargo test` pins the shared RNG, but a
+HashMap-ordered draw at build time would still shift every stream per process.
 
 ## What's left
 
