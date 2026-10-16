@@ -15613,3 +15613,8 @@ inverter or 0xE1 Destroy placement writes on this level [D the census dumps — 
 are 72/0/130]; the game's remaining writer is the script event command 0xd [M Script_EventHandler
 0x1d94c0:166] — legitimately dormant, live check listed. Tests: the 2 new live tests (green) +
 the census run that fed the report tables.
+
+INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 passed, 6 failed,
+72 ignored (46 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes (the
+07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
+and other merged tasks' new tests. The 2 new live tests are green in the totals.
