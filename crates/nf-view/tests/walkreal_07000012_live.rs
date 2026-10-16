@@ -25,7 +25,11 @@ fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 #[test]
 fn walk_spawn_to_the_shaft_exit() {
     let iso = iso();
-    let mut w = Walker::new(nf_view::load_with_carry(&iso, "07000012.bin", false, None).unwrap());
+    // The keypad locks (placements 656/694) carry param 6 = 1: Lock_Create auto-unlocks them at
+    // difficulty 1 [M 0x1ae1f8 tail: level_tag+0x44 != 0 && GameState+0x28 == 1 -> Lock_Unlock],
+    // so the Q-Decryptor keypad burn this route walks is the Agent+ behavior; the load is 00 Agent
+    // where the full (pre-gate calibration) roster exists [M 0x136be0:49].
+    let mut w = Walker::new(nf_view::load_with_carry_difficulty(&iso, "07000012.bin", false, None, 3).unwrap());
     {
         let sim = w.scene.sim.as_ref().unwrap();
         let p = sim.bond.pos;

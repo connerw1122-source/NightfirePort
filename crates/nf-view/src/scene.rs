@@ -5792,7 +5792,13 @@ impl Scene {
             let glist_bounds: HashMap<u32, ([f32; 3], [f32; 3])> = level.maps.iter()
                 .flat_map(|m| m.objects.iter())
                 .map(|o| (o.hashcode, (o.min, o.max))).collect();
-            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref(), difficulty: 1 };
+            // difficulty-effects2: the create-time Data carries the load's difficulty — the game's
+            // GameState+0x28 (0x2a3790) already holds the pick when the load's creates run
+            // [M C_SBNFDFCTY 0x216ca8:15 writes it at confirm; Drone_Create 0x136be0:49 reads it],
+            // so `load_with_carry_difficulty(3)` must create the full roster here (the hard-coded 1
+            // starved the 00-Agent load to the Operative roster). The direct loads keep 1 — the
+            // documented replay parity (the recorded sessions ran at difficulty 1).
+            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref(), difficulty };
             // net-match-host: an online match builds from the host's seed (equal on every machine — the
             // settings blob carries it); local play keeps the pre-net constant.
             let mut rng = nf_game::drone::Rng::new(if d.mp_seed == 0 { 0x1234_5678 } else { d.mp_seed });

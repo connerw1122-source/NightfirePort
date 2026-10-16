@@ -24,16 +24,19 @@ fn yaw_to(from: [f32; 3], at: [f32; 3]) -> f32 {
 #[test]
 fn fail1_a_guard_spotting_bond_increments_detected() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    // The direct load's difficulty 1 gate [M 0x136be0:49] holds back 07000006's param2=2
+    // placements, so the idle gate guard (placement 487, the pre-gate list[15]) is list[13].
     let mut scene = nf_view::load(&iso, "07000006.bin", false).expect("load 07000006");
+    let d15_idx = 13;
     let sim = scene.sim.as_mut().unwrap();
     tick_idle(sim, 3000);
     sim.bond = nf_game::player::Bond::stand_at(&sim.world, [33.5, 39.0, 22.5], 0.0);
     let mut saw = false;
     for _ in 0..600 {
         sim.step_bond(Input::default(), false, false, false);
-        if sim.drones.list[15].los { saw = true; }
+        if sim.drones.list[d15_idx].los { saw = true; }
     }
-    assert!(saw, "precondition: d15 saw Bond");
+    assert!(saw, "precondition: the idle gate guard saw Bond");
     for _ in 0..90 { sim.step_bond(Input::default(), false, false, false); }
     assert!(sim.drones.progress.stats[0].detected >= 1,
         "a guard spotting Bond increments detected [M 0x1780a8:36 → 0x199960]");
