@@ -84,6 +84,15 @@ pub fn interlude_drive_index(interlude: u32) -> u8 {
     }
 }
 
+/// `Menu_IsDrivingLevel` 0x202750: true for exactly the driving hashes {0x09000001, 0x09000002,
+/// 0x09000003, 0x09000005, 0x09000006} [M the band `> 0x9000000 && (< 0x9000004 || (0x9000004 < &&
+/// < 0x9000007))` — 0x09000004 and 0x0900007+ are NOT driving levels]. `ResetMap_LevelToLoad`
+/// 0x1d3800 branches on this: a driving hash pushes GameFlow state 9 (the DRIVING.ELF handover)
+/// instead of the on-foot loader.
+pub fn is_driving_level(hash: u32) -> bool {
+    hash > 0x0900_0000 && (hash < 0x0900_0004 || (hash > 0x0900_0004 && hash < 0x0900_0007))
+}
+
 /// The drive index `PTP+0x974` carries: `GameState._8_4_ - 0x9000000` at the state-9 handover
 /// [M 0x1c8198:62 `DAT_0031ca04 = GameState._8_4_ + -0x9000000`], where `GameState._8_4_` is a
 /// `0x900000X` driving id (`Menu_IsDrivingLevel` 0x202750 accepts 0x9000001/2/3/5/6; the state-9

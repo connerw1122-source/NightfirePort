@@ -744,10 +744,32 @@ fn front_end_chain_01_to_05() {
         // nightfire_status the save carries [M Menu_GetNightfireStatus 0x202360].
         assert_eq!(progress.nightfire_status() & (1 << rowi), 1 << rowi, "the completed row stamps");
         assert!(fe.unlocked_row((rowi + 1).min(11)), "the next campaign row unlocks");
-        // Confirm → the mission list [M 0x208e78:43; the new-reward hop lands there too, 0x209670
-        // :50-53]; it opens on the highest unlocked row [M P_NFMAP 0x20b608 case 0x4c scans
-        // sp_level+0x10 from row 11 down].
+        // Confirm opens the save prompt (the commit improved + CHAIN01 is a saved codename [M
+        // P_NFRESULTS 0x208e78:24-32]); Yes → the card flow's overwrite question (the file
+        // exists [M MemCard_SAVE_DATA 0x10fa08 sub-7]) → Yes → "Saving data…" runs and the
+        // completion routes on [M the terminal branch 0x217bd8:62-71 + 0x208e78:203-211].
         assert!(fe.action(Action::Confirm));
+        assert!(fe.results_box, "the save prompt stands [M 0x1000206]");
+        assert!(fe.action(Action::Confirm), "Yes requests the save");
+        assert!(fe.card_answer(menu::BTN_YES), "the overwrite question's Yes [M ASK_OVERWRITE]");
+        fe.tick();
+        assert_eq!(fe.card_message(), None, "the flow closed");
+        // The routing then follows case 0x4b [M 0x208e78:39-52]: with a new reward standing it
+        // hops to the 007 Bonus page 0x40000038 first [M 0x208e78:48-53]. Every one of these legs
+        // earns its medal on a fresh profile (01's run scores 24150000 → medal 4, the platinum
+        // row), and Menu_SetLevelBonus's tier loop 4..1 sets DAT_002e1c2c on the first tier that
+        // was not yet standing [M 0x1ffa10:71-82] — so the hop happens on each leg here. The
+        // bonus page's own Confirm lands on the mission list [M 0x209670:50-53, the
+        // !just_completed arm], which opens on the highest unlocked row [M P_NFMAP 0x20b608 case
+        // 0x4c scans sp_level+0x10 from row 11 down].
+        if fe.page == menu::Page::NfBonus {
+            assert!(fe.new_reward, "the hop only happens on a new reward [M 0x1ffa10:78]");
+            // The host builds the page's fields on the 0x4c enter [M 0x209670:16-43] — the port
+            // splits it out of the action handler (no Progress there).
+            fe.bonus_enter(&progress, fe.results_level, fe.new_reward);
+            assert!(fe.bonus.is_some(), "the bonus fields built on the page enter");
+            assert!(fe.action(Action::Confirm), "the bonus page's Confirm [M 0x209670:50-53]");
+        }
         assert_eq!(fe.page, menu::Page::MissionSelect);
         assert_eq!(fe.flow.page, menu::PAGE_MISSION_SELECT);
         let want_cursor = (0..CAMPAIGN.len()).rev().find(|&i| fe.unlocked_row(i)).unwrap();

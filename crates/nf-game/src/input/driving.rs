@@ -335,70 +335,378 @@ pub mod action {
     pub const FIREPRIMARYRELEASE: u8 = 0x1e;
     pub const FIRESECONDARY: u8 = 0x1f;
     pub const FIRESECONDARYRELEASE: u8 = 0x20;
+    pub const TOGGLESECONDARY: u8 = 0x21;
+    pub const TOGGLESECONDARYUP: u8 = 0x22;
+    pub const TOGGLESECONDARYDOWN: u8 = 0x23;
     pub const FIREGADGET: u8 = 0x24;
+    pub const FIREGADGETRELEASE: u8 = 0x25;
     pub const CHANGECAMERA: u8 = 0x26;
     pub const CAMLOOKBACK: u8 = 0x29;
+    pub const CAMLOOKBACKRELEASE: u8 = 0x2a;
+    pub const POVRELOAD: u8 = 0x3f;
     pub const RESUMEAUTODRIVE: u8 = 0x40;
     /// The SendGameMessage bound [M 0x165850: `0 < id < 0x41`].
     pub const MAX: u32 = 0x40;
 }
 
-/// The port's keyboard+mouse → raw pad bytes mapping [S — the shipped bindings live in
-/// data\Control\FrontEnd.def, not extractable here; see docs/systems/driving-input.md §11].
+/// The PC keyboard+mouse → raw pad bytes mapping for the driving missions
+/// [S — the shipped bindings live in data\Control\Master.def/FrontEnd.def, not extractable here;
+/// the design and its per-row evidence is docs/systems/driving-pc-input.md §3].
 ///
-/// Sign conventions come from PollDevice itself: LY byte 0 (up) → ALY +1 (gas), LY 255 → −1
-/// (brake); LX 255 (right) → ALX +1 [M 0x169218 + the negations at 0x169288]. Nothing here
-/// wires the driving levels — a driving level would call `poll_device` on its slot each tick
-/// where the engine runs `FUN_00168280` [S].
+/// Sign conventions come from PollDevice itself [M 0x169218 + the LY negation at 0x169288]:
+/// LX byte 255 (right) → ALX +1, byte 0 → −1; the analog-button pressures are min(1, b/192)
+/// [M 0x169248]. Steering rides the analog LX axis because the digital steer actions (4/5/8/9/
+/// 0xa/0xb) have no consumer in DRIVING.ELF [M-negative, driving-pc-input.md §1] — the vehicle
+/// ramp (`CarInputStage`) shapes the digital 0/1 exactly like a full stick deflection. Gas and
+/// brake ride the analog-button **pressures** (not the LY axis) so each pedal is its own value;
+/// a single shared axis would send one action the other's sign (GASBRAKE exists for the pad's
+/// shared axis, splitting at ±0.2 with negative = gas [M 0x18add8 :119-135]). Nothing here wires
+/// the driving levels — a level calls [`PcDrivingInput::tick`] each 60 Hz step [S].
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct KeyboardMouse {
-    pub throttle_up: bool,    // W → LY 0
-    pub throttle_down: bool,  // S → LY 255
-    pub steer_left: bool,     // A → LX 0
-    pub steer_right: bool,    // D → LX 255
-    pub handbrake: bool,      // Space → Cross bit (0x0040) [S]
-    pub fire_primary: bool,   // mouse left → △ (0x0010) [S]
-    pub fire_secondary: bool, // mouse right → ○ (0x0020) [S]
-    pub cam_up: bool,         // ↑ → d-pad Up bit (0x1000) [S]
-    pub cam_down: bool,       // ↓ → d-pad Down bit (0x4000) [S]
-    pub cam_left: bool,       // ← → d-pad Left bit (0x8000) [S]
-    pub cam_right: bool,      // → → d-pad Right bit (0x2000) [S]
-    pub look_back: bool,      // R → Square (0x0080) [S]
+    pub throttle_up: bool,       // W → △ pressure 255 → GAS 0x16
+    pub throttle_down: bool,     // S → ✕ pressure 255 → BRAKE 0x1a (reverse is the engine's
+                                 //     ≈30-tick brake-at-standstill state [M 0x18cef8 :184-208])
+    pub steer_left: bool,        // A / ← → LX 0 → STEER 1, value −1.0
+    pub steer_right: bool,       // D / → → LX 255 → STEER 1, value +1.0
+    pub handbrake: bool,         // Space → ✕ bit 0x0040 → HANDBRAKE 0x1b / RELEASE 0x1c
+    pub fire_primary: bool,      // left mouse → R1 bit 0x0008 → FIREPRIMARY 0x1d / 0x1e
+    pub fire_secondary: bool,    // B → R2 bit 0x0002 → FIRESECONDARY 0x1f / 0x20
+    pub gadget: bool,            // right mouse → ○ bit 0x0020 → FIREGADGET 0x24 / 0x25
+    pub gadget_alt: bool,        // E → L1 bit 0x0004 → FIREGADGET 0x24 / 0x25
+    pub cycle_weapon: bool,      // Q → Select bit 0x0100 → TOGGLESECONDARY 0x21 (edge)
+    pub cycle_weapon_up: bool,   // wheel up → L3 bit 0x0200 → TOGGLESECONDARYUP 0x22 (edge)
+    pub cycle_weapon_down: bool, // wheel down → R3 bit 0x0400 → TOGGLESECONDARYDOWN 0x23 (edge)
+    pub camera_view: bool,       // C → Start bit 0x0800 → CHANGECAMERA 0x26 (edge)
+    pub look_back: bool,         // Tab / middle mouse (hold) → □ bit 0x0080 → CAMLOOKBACK 0x29 / 0x2a
+    pub reload: bool,            // R → d-pad Up bit 0x1000 → POVRELOAD 0x3f (edge)
+}
+
+/// The pad buttons/pressures the mapping synthesizes [M the bit layout and the pressure order
+/// of PollDevice — buttons bit i → value 16+i; pressures Right,Left,Up,Down,△,○,✕,□,L1,R1,L2,R2
+/// → values 4..15].
+pub mod pc_key_pad {
+    pub const DPAD_UP_BIT: u16 = 0x1000;
+    pub const R2_BIT: u16 = 0x0002;
+    pub const L1_BIT: u16 = 0x0004;
+    pub const R1_BIT: u16 = 0x0008;
+    pub const CIRCLE_BIT: u16 = 0x0020;
+    pub const CROSS_BIT: u16 = 0x0040;
+    pub const SQUARE_BIT: u16 = 0x0080;
+    pub const SELECT_BIT: u16 = 0x0100;
+    pub const LSTICK_BIT: u16 = 0x0200;
+    pub const RSTICK_BIT: u16 = 0x0400;
+    pub const START_BIT: u16 = 0x0800;
+    /// Pressure slot indexes into `RawPadSlot.pressures` [M the libpad order].
+    pub const PRESS_TRIANGLE: usize = 4;
+    pub const PRESS_CROSS: usize = 6;
+    /// Analog-button message indexes (value::ABUTTON_FIRST + slot − 4 offset already applied
+    /// here: pressures[4] = △ → message value 8) [M the 4..15 order].
+    pub const VAL_TRIANGLE: usize = 8;
+    pub const VAL_CROSS: usize = 10;
+    /// DButton message indexes (16 + bit position) [M the 16..31 order].
+    pub const VAL_R2: usize = 17;
+    pub const VAL_L1: usize = 18;
+    pub const VAL_R1: usize = 19;
+    pub const VAL_CIRCLE: usize = 21;
+    pub const VAL_DBN_CROSS: usize = 22;
+    pub const VAL_SQUARE: usize = 23;
+    pub const VAL_SELECT: usize = 24;
+    pub const VAL_LSTICK: usize = 25;
+    pub const VAL_RSTICK: usize = 26;
+    pub const VAL_START: usize = 27;
+    pub const VAL_DPAD_UP: usize = 28;
 }
 
 impl KeyboardMouse {
-    /// Full-deflection digital bytes: pressed = 0/255, released = 127 (centre) [S — any value
-    /// past the ±0.3 chop edge (byte ≥ 166 / ≤ 88) reads the same after PollDevice; 0/255 is
-    /// the honest digital extreme].
+    /// Digital extremes: pressed axis bytes 0/255, released 127 (centre — reads 0.0 after the
+    /// input-side ±0.3 chop [M 0x167c48]); buttons are bits; pedals are full pressures [S].
     pub fn to_raw_pad(&self) -> RawPadSlot {
-        let ly = match (self.throttle_up, self.throttle_down) {
-            (true, false) => 0u8,
-            (false, true) => 255u8,
-            _ => 127u8,
-        };
         let lx = match (self.steer_left, self.steer_right) {
             (true, false) => 0u8,
             (false, true) => 255u8,
             _ => 127u8,
         };
         let mut buttons = 0u16;
-        if self.handbrake { buttons |= 0x0040; }
-        if self.fire_primary { buttons |= 0x0010; }
-        if self.fire_secondary { buttons |= 0x0020; }
-        if self.cam_up { buttons |= 0x1000; }
-        if self.cam_down { buttons |= 0x4000; }
-        if self.cam_left { buttons |= 0x8000; }
-        if self.cam_right { buttons |= 0x2000; }
-        if self.look_back { buttons |= 0x0080; }
+        if self.handbrake { buttons |= pc_key_pad::CROSS_BIT; }
+        if self.fire_primary { buttons |= pc_key_pad::R1_BIT; }
+        if self.fire_secondary { buttons |= pc_key_pad::R2_BIT; }
+        if self.gadget { buttons |= pc_key_pad::CIRCLE_BIT; }
+        if self.gadget_alt { buttons |= pc_key_pad::L1_BIT; }
+        if self.cycle_weapon { buttons |= pc_key_pad::SELECT_BIT; }
+        if self.cycle_weapon_up { buttons |= pc_key_pad::LSTICK_BIT; }
+        if self.cycle_weapon_down { buttons |= pc_key_pad::RSTICK_BIT; }
+        if self.camera_view { buttons |= pc_key_pad::START_BIT; }
+        if self.look_back { buttons |= pc_key_pad::SQUARE_BIT; }
+        if self.reload { buttons |= pc_key_pad::DPAD_UP_BIT; }
+        let mut pressures = [0u8; 12];
+        if self.throttle_up { pressures[pc_key_pad::PRESS_TRIANGLE] = 255; }
+        if self.throttle_down { pressures[pc_key_pad::PRESS_CROSS] = 255; }
         RawPadSlot {
+            // Analog mode: the pressure path must run (mode 4 would remap the DButton bits over
+            // the AButton slots and lose the pedals) [M 0x169400 area].
             mode: 0,
             buttons,
             rx: 127,
             ry: 127,
             lx,
-            ly,
-            pressures: [0; 12],
+            ly: 127,
+            pressures,
         }
+    }
+}
+
+/// `FUN_002104a8` 0x2104a8 — the vehicle layer's move-toward, bit-exact [M the decompile]:
+/// step toward `target` from `cur`, clamping at the target; the else-branch's re-add is the
+/// decompile's own shape and is float-identical.
+pub fn move_toward(cur: f32, target: f32, step: f32) -> f32 {
+    if target < cur {
+        let r = cur - step;
+        if r < target { target } else { r }
+    } else {
+        let r = cur + step;
+        if target < r { target } else { r }
+    }
+}
+
+/// `DAT_00331988` — PAD_DEAD_ZONE, the **vehicle-layer** steer dead zone [M .data word 0.2;
+/// the shipped `Physics\Physical\default.tun` key `PAD_DEAD_ZONE=0.2`; note it is narrower than
+/// the input-side ±0.3 chop and applies again on top of it].
+pub const VEHICLE_DEAD_ZONE: f32 = 0.2;
+/// The steer ramp step — a code immediate `0x3e800000` at the ramp call [M 0x18add8 tail;
+/// no tuning key exists, M-negative]. Digital full lock takes 4 ticks (66.7 ms at 60 Hz).
+pub const STEER_RAMP_STEP: f32 = 0.25;
+
+/// The vehicle-layer input stage — the car's GAMEACTION drain `FUN_0018add8` 0x18add8, input
+/// block only (cases 1, 0x16, 0x17, 0x1a, 0x1b/0x1c, 0x1d–0x21) plus the per-tick tail
+/// [M 0x18b1f0–0x18b318]. Field comments carry the car offsets. The wheelspin state machine
+/// (+0x29b/+0x299) and the handbrake direction bit +0x29f (a velocity · camera-forward dot
+/// computed at the drain's head) are level context, not input, and stay out.
+#[derive(Clone, Debug, PartialEq)]
+pub struct CarInputStage {
+    /// +0x2c4 — the last STEER message value (raw, pre-chop; the chop writes back here).
+    pub raw_steer: f32,
+    /// +0x278 — the last GAS value; every tick `min(2·v, 1.0)` [M :179-181].
+    pub gas: f32,
+    /// +0x280 — GASBRAKE's gas side (negative axis, negated) [M :124-127].
+    pub gasbrake_gas: f32,
+    /// +0x284 — GASBRAKE's brake side (positive axis) [M :128-131].
+    pub gasbrake_brake: f32,
+    /// +0x27c — the last BRAKE value (raw, no gain) [M :137-142].
+    pub brake: f32,
+    /// +0x259 — the handbrake latch (0x1b sets, 0x1c clears) [M :144-152].
+    pub handbrake: bool,
+    /// +0x25a — the primary-fire flag (car side) [M :153-158].
+    pub fire_primary: bool,
+    /// +0x25b — the secondary-fire flag (car side) [M :159-173].
+    pub fire_secondary: bool,
+    /// The HUD singleton gate `FUN_0023c618()->+0x2a0 != 0` blocks the 0x1d/0x1f **set** (the
+    /// release always clears) [M :153-158]; a level supplies it. Default false.
+    pub hud_blocks_fire: bool,
+    /// The car descriptor's `+0xbc != 0` lets a latched handbrake keep throttle/brake [M :231-238].
+    /// Default false (the game's default: handbrake zeroes both pedals).
+    pub handbrake_keeps_drive: bool,
+    /// +0x438 — the script/AI steer override target; 0 = follow the raw steer [M :245-254; its
+    /// only writer is the input-clear FUN_001872d8, so shipped flow never overrides].
+    pub steer_override: f32,
+    // --- outputs (the tail's writes) ---
+    /// +0x240 — the ramped steer the engine consumes (`FUN_0018cef8` :458-474).
+    pub steer: f32,
+    /// +0x260 — last tick's ramped steer (written pre-ramp each tick) [M :250-251].
+    pub steer_prev: f32,
+    /// +0x250 — throttle after the totals and the exclusion.
+    pub throttle: f32,
+    /// +0x254 — brake after the totals and the exclusion.
+    pub brake_pedal: f32,
+    /// +0x2bc — throttle total `max(gas, gasbrake_gas)` [M :182-184].
+    pub throttle_total: f32,
+    /// +0x2c0 — brake total `max(brake, gasbrake_brake)` [M :185-188].
+    pub brake_total: f32,
+    /// +0x2d4 — full-lock flag, `|raw_steer| > 0.9` strictly, computed pre-chop [M :189-194].
+    pub full_lock: bool,
+}
+
+impl Default for CarInputStage {
+    fn default() -> Self {
+        CarInputStage {
+            raw_steer: 0.0,
+            gas: 0.0,
+            gasbrake_gas: 0.0,
+            gasbrake_brake: 0.0,
+            brake: 0.0,
+            handbrake: false,
+            fire_primary: false,
+            fire_secondary: false,
+            hud_blocks_fire: false,
+            handbrake_keeps_drive: false,
+            steer_override: 0.0,
+            steer: 0.0,
+            steer_prev: 0.0,
+            throttle: 0.0,
+            brake_pedal: 0.0,
+            throttle_total: 0.0,
+            brake_total: 0.0,
+            full_lock: false,
+        }
+    }
+}
+
+impl CarInputStage {
+    /// The drain's message switch, input cases only [M 0x18add8 :74-176]. Messages for actions
+    /// this stage does not model (camera, weapon, HUD) are ignored here — the levels' other
+    /// queues consume those.
+    pub fn action(&mut self, m: &ActionMsg) {
+        match m.action {
+            action::STEER => self.raw_steer = m.value,
+            action::GAS => self.gas = m.value,
+            action::GASBRAKE => {
+                // Single-axis split at ±VEHICLE_DEAD_ZONE; negative = gas [M :119-135].
+                if m.value < -VEHICLE_DEAD_ZONE {
+                    self.gasbrake_brake = 0.0;
+                    self.gasbrake_gas = -m.value;
+                } else if VEHICLE_DEAD_ZONE < m.value {
+                    self.gasbrake_gas = 0.0;
+                    self.gasbrake_brake = m.value;
+                } else {
+                    self.gasbrake_gas = 0.0;
+                    self.gasbrake_brake = 0.0;
+                }
+            }
+            action::BRAKE => self.brake = m.value,
+            action::HANDBRAKE => self.handbrake = true,
+            action::HANDBRAKERELEASE => self.handbrake = false,
+            action::FIREPRIMARY => {
+                if !self.hud_blocks_fire {
+                    self.fire_primary = true;
+                }
+            }
+            action::FIREPRIMARYRELEASE => self.fire_primary = false,
+            action::FIRESECONDARY => {
+                if !self.hud_blocks_fire {
+                    self.fire_secondary = true;
+                }
+            }
+            action::FIRESECONDARYRELEASE => self.fire_secondary = false,
+            _ => {}
+        }
+    }
+
+    /// The drain's per-tick tail [M 0x18add8 :179-270] — run once per 60 Hz step after the
+    /// messages. Order is the game's: gas clamp, totals, full lock, exclusion, handbrake
+    /// zeroing, the steer chop + override + ramp (the vertical twin +0x244 has no physics
+    /// consumer and is not modelled).
+    pub fn tick(&mut self) {
+        // gas ×2 gain + clamp [M :179-181]: `+0x278 = (1.0 < 2v) ? 1.0 : 2v`.
+        let doubled = self.gas + self.gas;
+        self.gas = if 1.0 < doubled { 1.0 } else { doubled };
+        // Totals [M :182-188].
+        self.throttle_total = if self.gas < self.gasbrake_gas { self.gasbrake_gas } else { self.gas };
+        self.brake_total = if self.brake < self.gasbrake_brake { self.gasbrake_brake } else { self.brake };
+        // Full lock, strict, pre-chop [M :189-194].
+        self.full_lock = 0.9 < self.raw_steer.abs();
+        // Pedals + the exclusion: the smaller is zeroed, ties zero the gas [M :223-230:
+        // `if (+0x2c0 < +0x2bc) brake=0 else gas=0`].
+        self.throttle = self.throttle_total;
+        self.brake_pedal = self.brake_total;
+        if self.brake_total < self.throttle_total {
+            self.brake_pedal = 0.0;
+        } else {
+            self.throttle = 0.0;
+        }
+        // Handbrake zeroes both pedals unless the descriptor allows the drive [M :231-238].
+        if self.handbrake && !self.handbrake_keeps_drive {
+            self.brake_pedal = 0.0;
+            self.throttle = 0.0;
+        }
+        // Steer: chop (write-back), override, then the 0.25 ramp [M :239-256].
+        if -VEHICLE_DEAD_ZONE < self.raw_steer && self.raw_steer < VEHICLE_DEAD_ZONE {
+            self.raw_steer = 0.0;
+        }
+        let target = if self.steer_override != 0.0 { self.steer_override } else { self.raw_steer };
+        self.steer_prev = self.steer;
+        self.steer = move_toward(self.steer, target, STEER_RAMP_STEP);
+    }
+}
+
+/// The PC driving binding table [S — the design of docs/systems/driving-pc-input.md §3]: one
+/// `ValueBindings` per message value, the game's own evaluator runs it unchanged. Holds are
+/// Always (the car keeps the last value) or Pressed/Released pairs; the one-shots are Pressed
+/// edges; nothing needs auto-repeat [M the consumers in §2 of the doc].
+pub fn pc_driving_bindings() -> Vec<ValueBindings> {
+    use pc_key_pad as kp;
+    let mut v: Vec<ValueBindings> = (0..value::COUNT)
+        .map(|_| ValueBindings { kind: Kind::DButton, bindings: Vec::new(), repeat: RepeatState::default() })
+        .collect();
+    let mut set = |i: usize, kind: Kind, bs: Vec<Binding>| {
+        v[i].kind = kind;
+        v[i].bindings = bs;
+    };
+    let edge = |press: u8, release: u8| vec![
+        Binding { kind: BindingKind::Pressed, arg: 0.0, action: press },
+        Binding { kind: BindingKind::Released, arg: 0.0, action: release },
+    ];
+    set(value::ALX, Kind::Axis, vec![Binding { kind: BindingKind::Always, arg: 0.0, action: action::STEER }]);
+    set(kp::VAL_TRIANGLE, Kind::AButton, vec![Binding { kind: BindingKind::Always, arg: 0.0, action: action::GAS }]);
+    set(kp::VAL_CROSS, Kind::AButton, vec![Binding { kind: BindingKind::Always, arg: 0.0, action: action::BRAKE }]);
+    set(kp::VAL_R2, Kind::DButton, edge(action::FIRESECONDARY, action::FIRESECONDARYRELEASE));
+    set(kp::VAL_L1, Kind::DButton, edge(action::FIREGADGET, action::FIREGADGETRELEASE));
+    set(kp::VAL_R1, Kind::DButton, edge(action::FIREPRIMARY, action::FIREPRIMARYRELEASE));
+    set(kp::VAL_CIRCLE, Kind::DButton, edge(action::FIREGADGET, action::FIREGADGETRELEASE));
+    set(kp::VAL_DBN_CROSS, Kind::DButton, edge(action::HANDBRAKE, action::HANDBRAKERELEASE));
+    set(kp::VAL_SQUARE, Kind::DButton, edge(action::CAMLOOKBACK, action::CAMLOOKBACKRELEASE));
+    set(kp::VAL_SELECT, Kind::DButton, vec![Binding { kind: BindingKind::Pressed, arg: 0.0, action: action::TOGGLESECONDARY }]);
+    set(kp::VAL_LSTICK, Kind::DButton, vec![Binding { kind: BindingKind::Pressed, arg: 0.0, action: action::TOGGLESECONDARYUP }]);
+    set(kp::VAL_RSTICK, Kind::DButton, vec![Binding { kind: BindingKind::Pressed, arg: 0.0, action: action::TOGGLESECONDARYDOWN }]);
+    set(kp::VAL_START, Kind::DButton, vec![Binding { kind: BindingKind::Pressed, arg: 0.0, action: action::CHANGECAMERA }]);
+    set(kp::VAL_DPAD_UP, Kind::DButton, vec![Binding { kind: BindingKind::Pressed, arg: 0.0, action: action::POVRELOAD }]);
+    v
+}
+
+/// One 60 Hz step of the whole PC driving chain: keyboard/mouse → raw pad slot →
+/// `poll_device` → the game's binding evaluator → the action messages (returned) → the car's
+/// vehicle-layer input stage. This is the flow a driving level runs per tick where the engine
+/// polls (`FUN_00168280`) and drains (`FUN_0018add8`) [S — the levels stay unwired].
+pub struct PcDrivingInput {
+    /// The keyboard/mouse state for this tick (the caller fills it from its device events).
+    pub km: KeyboardMouse,
+    /// The car-side stage; after `tick`, its getters are the level's car inputs.
+    pub stage: CarInputStage,
+    bindings: Vec<ValueBindings>,
+    prev: [f32; value::COUNT],
+    cur: [f32; value::COUNT],
+}
+
+impl Default for PcDrivingInput {
+    fn default() -> Self {
+        PcDrivingInput {
+            km: KeyboardMouse::default(),
+            stage: CarInputStage::default(),
+            bindings: pc_driving_bindings(),
+            prev: [0.0; value::COUNT],
+            cur: [0.0; value::COUNT],
+        }
+    }
+}
+
+impl PcDrivingInput {
+    /// Poll, evaluate, deliver. `now` is the frame counter (container+0x28 [M 0x168060]; the PC
+    /// table binds no auto-repeat, so it only pins the repeat stamps). Returns this tick's
+    /// `{action, device, value}` messages — the same list the car's queue would hold.
+    pub fn tick(&mut self, now: i32) -> Vec<ActionMsg> {
+        self.cur = poll_device(&self.km.to_raw_pad());
+        let delays = RepeatDelays { first: 0, rest: 0 };
+        let mut out = Vec::new();
+        for (i, vb) in self.bindings.iter_mut().enumerate() {
+            let (cur, prev) = (self.cur[i], self.prev[i]);
+            let changed = cur != prev;
+            evaluate_value(vb, cur, prev, changed, false, now, &delays, false, 0, &mut out);
+        }
+        self.prev = self.cur;
+        for m in &out {
+            self.stage.action(m);
+        }
+        self.stage.tick();
+        out
     }
 }
 
@@ -623,28 +931,335 @@ mod tests {
         evaluate_value(&mut vb, 1.0, 0.0, true, false, 0, &delays, false, 0, &mut out);
         assert_eq!(out, vec![ActionMsg { action: action::RESUMEAUTODRIVE, device: 0, value: 1.0 }]);
     }
-
     #[test]
     fn keyboard_mouse_maps_onto_the_pad_conventions() {
-        // [S bindings] — the sisters pin the sign conventions that come from the game: gas is
-        // LY=0 (the negation at 0x169288 makes up = +1), steer right is LX=255.
-        let km = KeyboardMouse {
-            throttle_up: true,
-            steer_right: true,
-            handbrake: true,
-            ..Default::default()
-        };
+        // [S bindings, docs/systems/driving-pc-input.md §3] — the sisters pin the game-side sign
+        // conventions: LX 255 = ALX +1 (right), the pedals are the △/✕ pressures (independent
+        // values, so GAS never sees BRAKE's sign), the buttons are the DButton bits.
+        let km = KeyboardMouse { throttle_up: true, steer_right: true, handbrake: true, ..Default::default() };
         let v = poll_device(&km.to_raw_pad());
-        assert_eq!(v[value::ALY], 1.0, "W = gas = ALY +1");
         assert_eq!(v[value::ALX], 1.0, "D = steer right = ALX +1");
-        assert_eq!(v[16 + 6], 1.0, "Space = Cross (bit 6) held");
-        let km = KeyboardMouse { throttle_down: true, steer_left: true, ..Default::default() };
+        assert_eq!(v[value::ALY], 0.0, "W/S no longer ride LY — the pedals are pressures");
+        assert_eq!(v[pc_key_pad::VAL_TRIANGLE], 1.0, "W = △ pressure 255 → 1.0");
+        assert_eq!(v[pc_key_pad::VAL_CROSS], 0.0, "S released → ✕ pressure 0");
+        assert_eq!(v[pc_key_pad::VAL_CROSS], v[10]);
+        assert_eq!(v[16 + 6], 1.0, "Space = ✕ bit held (DButton index 22)");
+        let km = KeyboardMouse { throttle_down: true, steer_left: true, gadget_alt: true, ..Default::default() };
         let v = poll_device(&km.to_raw_pad());
-        assert_eq!(v[value::ALY], -1.0, "S = brake = ALY −1");
         assert_eq!(v[value::ALX], -1.0, "A = steer left = ALX −1");
+        assert_eq!(v[pc_key_pad::VAL_CROSS], 1.0, "S = ✕ pressure 255");
+        assert_eq!(v[pc_key_pad::VAL_TRIANGLE], 0.0, "W released");
+        assert_eq!(v[pc_key_pad::VAL_L1], 1.0, "E = L1 bit (DButton 18)");
         // Released keys sit at byte 127 → inside the chop → 0.
         let v = poll_device(&KeyboardMouse::default().to_raw_pad());
         assert_eq!(v[value::ALX], 0.0);
-        assert_eq!(v[value::ALY], 0.0);
+        assert_eq!(v[pc_key_pad::VAL_TRIANGLE], 0.0);
+        assert_eq!(v[pc_key_pad::VAL_CROSS], 0.0);
+        // Analog mode (0) so the pressure path runs [M 0x169400: mode 4 would remap the bits
+        // over the pedal values].
+        assert_eq!(KeyboardMouse::default().to_raw_pad().mode, 0);
+    }
+
+    #[test]
+    fn move_toward_matches_the_decompile() {
+        // [M 0x2104a8] — step up clamped at the target, step down clamped, exact comparisons.
+        assert_eq!(move_toward(0.0, 1.0, 0.25), 0.25);
+        assert_eq!(move_toward(0.9, 1.0, 0.25), 1.0, "0.9+0.25 > 1.0 clamps");
+        assert_eq!(move_toward(1.0, 0.0, 0.25), 0.75);
+        assert_eq!(move_toward(-0.9, -1.0, 0.25), -1.0);
+        assert_eq!(move_toward(0.5, 0.5, 0.25), 0.5, "already at target");
+        // Sister: a step that would pass the target lands ON the target (never overshoots).
+        assert_eq!(move_toward(0.2, 0.3, 0.25), 0.3);
+    }
+
+    #[test]
+    fn steer_ramp_golden_60hz() {
+        // [M 0x18add8 tail: chop ±0.2 write-back, then move_toward step 0.25] — a digital
+        // full-lock steer takes exactly 4 ticks (66.7 ms at the fixed 60 Hz).
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::STEER, device: 0, value: 1.0 });
+        s.tick();
+        assert_eq!(s.steer, 0.25);
+        s.tick();
+        assert_eq!(s.steer, 0.5);
+        s.tick();
+        assert_eq!(s.steer, 0.75);
+        assert_ne!(s.steer, 1.0, "sister: tick 3 is not full lock yet");
+        s.tick();
+        assert_eq!(s.steer, 1.0, "tick 4 = full lock");
+        assert_eq!(s.steer_prev, 0.75, "steer_prev (+0x260) is last tick's value");
+        // Held full lock stays.
+        s.tick();
+        assert_eq!(s.steer, 1.0);
+        // Release: the STEER 0.0 message, then 4 ticks back.
+        s.action(&ActionMsg { action: action::STEER, device: 0, value: 0.0 });
+        for expected in [0.75f32, 0.5, 0.25, 0.0] {
+            s.tick();
+            assert_eq!(s.steer, expected);
+        }
+        // Full-left mirror.
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::STEER, device: 0, value: -1.0 });
+        for _ in 0..3 {
+            s.tick();
+        }
+        assert_eq!(s.steer, -0.75);
+        s.tick();
+        assert_eq!(s.steer, -1.0);
+        // Full-left → full-right sweep = 8 ticks: 4 back through centre, 4 out to +1.
+        s.action(&ActionMsg { action: action::STEER, device: 0, value: 1.0 });
+        for k in 1..=8u32 {
+            s.tick();
+            let expect = match k {
+                1..=3 => -1.0 + 0.25 * k as f32,
+                4 => 0.0,
+                _ => 0.25 * (k - 4) as f32,
+            };
+            assert_eq!(s.steer, expect, "sweep tick {k}");
+        }
+    }
+
+    #[test]
+    fn vehicle_dead_zone_writeback_and_full_lock_edge() {
+        // [M :189-194 full lock strict on the RAW value pre-chop; :241-244 the chop writes 0
+        // back into +0x2c4 when inside ±0.2, no rescale].
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::STEER, device: 0, value: 0.15 });
+        s.tick();
+        assert_eq!(s.raw_steer, 0.0, "inside ±0.2 → written back to 0");
+        assert_eq!(s.steer, 0.0);
+        // The chop edge itself survives (strict comparisons).
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::STEER, device: 0, value: 0.2 });
+        s.tick();
+        assert_eq!(s.raw_steer, 0.2);
+        assert_eq!(s.steer, 0.2, "one tick to 0.2 (within one step)");
+        // Full lock: 0.9 is NOT > 0.9; anything past is.
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::STEER, device: 0, value: 0.9 });
+        s.tick();
+        assert!(!s.full_lock, "0.9 is not full lock (strict >)");
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::STEER, device: 0, value: -0.900_000_1 });
+        s.tick();
+        assert!(s.full_lock, "just past −0.9 is");
+        // The override (+0x438) wins when non-zero [M :245-254].
+        let mut s = CarInputStage::default();
+        s.steer_override = 0.5;
+        s.action(&ActionMsg { action: action::STEER, device: 0, value: -1.0 });
+        s.tick();
+        assert_eq!(s.steer, 0.25, "ramps toward the override, not the raw steer");
+    }
+
+    #[test]
+    fn gas_doubles_then_clamps() {
+        // [M :179-181: `+0x278 = min(2v, 1.0)` each tick] — a held analog 0.3 compounds to
+        // 1.0; the PC's digital 1.0 is full from the first tick.
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::GAS, device: 0, value: 0.3 });
+        s.tick();
+        assert_eq!(s.gas, 0.6);
+        s.tick();
+        assert_eq!(s.gas, 1.0, "0.6 → 1.2 clamps to 1.0");
+        s.tick();
+        assert_eq!(s.gas, 1.0, "held stays clamped");
+        assert_eq!(s.throttle, 1.0, "throttle total (+0x2bc) = max(gas, gasbrake_gas)");
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::GAS, device: 0, value: 1.0 });
+        s.tick();
+        assert_eq!(s.gas, 1.0);
+        assert_eq!(s.throttle, 1.0);
+        // Release: value 0.0 → min(0,1) = 0.
+        s.action(&ActionMsg { action: action::GAS, device: 0, value: 0.0 });
+        s.tick();
+        assert_eq!(s.gas, 0.0);
+        assert_eq!(s.throttle, 0.0);
+        // GASBRAKE's split: negative axis = gas side, positive = brake side [M :119-135].
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::GASBRAKE, device: 0, value: -1.0 });
+        s.tick();
+        assert_eq!(s.throttle_total, 1.0, "−1 → gas side +1");
+        assert_eq!(s.brake_total, 0.0);
+        s.action(&ActionMsg { action: action::GASBRAKE, device: 0, value: 0.5 });
+        s.tick();
+        assert_eq!(s.throttle_total, 0.0, "the old gas side cleared");
+        assert_eq!(s.brake_total, 0.5);
+    }
+
+    #[test]
+    fn gas_brake_exclusion_and_handbrake() {
+        // [M :223-230: the smaller of the gas/brake totals is zeroed, ties zero the gas;
+        // :231-238 the handbrake zeroes both unless the descriptor keeps the drive].
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::GAS, device: 0, value: 1.0 });
+        s.action(&ActionMsg { action: action::BRAKE, device: 0, value: 1.0 });
+        s.tick();
+        assert_eq!(s.throttle_total, 1.0);
+        assert_eq!(s.brake_total, 1.0);
+        assert_eq!(s.throttle, 0.0, "tie zeroes the gas");
+        assert_eq!(s.brake_pedal, 1.0);
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::GAS, device: 0, value: 1.0 });
+        s.action(&ActionMsg { action: action::BRAKE, device: 0, value: 0.5 });
+        s.tick();
+        assert_eq!(s.brake_pedal, 0.0, "smaller brake zeroed");
+        assert_eq!(s.throttle, 1.0);
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::GAS, device: 0, value: 0.4 });
+        s.action(&ActionMsg { action: action::BRAKE, device: 0, value: 1.0 });
+        s.tick();
+        assert_eq!(s.throttle, 0.0, "smaller gas zeroed");
+        assert_eq!(s.brake_pedal, 1.0);
+        // Handbrake: both pedals zero.
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::GAS, device: 0, value: 1.0 });
+        s.action(&ActionMsg { action: action::HANDBRAKE, device: 0, value: 1.0 });
+        s.tick();
+        assert!(s.handbrake);
+        assert_eq!(s.throttle, 0.0);
+        assert_eq!(s.brake_pedal, 0.0);
+        // ...unless the descriptor keeps the drive [M :231-235].
+        let mut s = CarInputStage::default();
+        s.handbrake_keeps_drive = true;
+        s.action(&ActionMsg { action: action::GAS, device: 0, value: 1.0 });
+        s.action(&ActionMsg { action: action::HANDBRAKE, device: 0, value: 1.0 });
+        s.tick();
+        assert_eq!(s.throttle, 1.0);
+        // Release restores the pedals.
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::GAS, device: 0, value: 1.0 });
+        s.action(&ActionMsg { action: action::HANDBRAKE, device: 0, value: 1.0 });
+        s.tick();
+        s.action(&ActionMsg { action: action::HANDBRAKERELEASE, device: 0, value: 0.0 });
+        s.tick();
+        assert!(!s.handbrake);
+        assert_eq!(s.throttle, 1.0);
+    }
+
+    #[test]
+    fn fire_flags_and_the_hud_gate() {
+        // [M :153-173: 0x1d/0x1f set +0x25a/+0x25b gated by the HUD singleton word, the
+        // releases always clear].
+        let mut s = CarInputStage::default();
+        s.action(&ActionMsg { action: action::FIREPRIMARY, device: 0, value: 1.0 });
+        assert!(s.fire_primary);
+        s.action(&ActionMsg { action: action::FIREPRIMARYRELEASE, device: 0, value: 0.0 });
+        assert!(!s.fire_primary);
+        s.hud_blocks_fire = true;
+        s.action(&ActionMsg { action: action::FIREPRIMARY, device: 0, value: 1.0 });
+        assert!(!s.fire_primary, "the HUD gate blocks the set");
+        s.fire_primary = true;
+        s.action(&ActionMsg { action: action::FIREPRIMARYRELEASE, device: 0, value: 0.0 });
+        assert!(!s.fire_primary, "the release clears through the gate");
+        s.action(&ActionMsg { action: action::FIRESECONDARY, device: 0, value: 1.0 });
+        assert!(!s.fire_secondary, "same gate on the secondary");
+    }
+
+    /// One tick with exactly one key state; returns the messages and the stage.
+    fn one_key(km: KeyboardMouse, now: i32) -> (Vec<ActionMsg>, CarInputStage) {
+        let mut pc = PcDrivingInput::default();
+        pc.km = km;
+        let msgs = pc.tick(now);
+        (msgs, pc.stage)
+    }
+
+    #[test]
+    fn every_key_reaches_its_driving_action() {
+        // docs/systems/driving-pc-input.md §3 — each key's first tick produces exactly its
+        // action (the press edge or the axis value), with the value PollDevice normalized.
+        use action::*;
+        let cases: [(KeyboardMouse, u8, f32); 15] = [
+            (KeyboardMouse { steer_left: true, ..Default::default() }, STEER, -1.0),
+            (KeyboardMouse { steer_right: true, ..Default::default() }, STEER, 1.0),
+            (KeyboardMouse { throttle_up: true, ..Default::default() }, GAS, 1.0),
+            (KeyboardMouse { throttle_down: true, ..Default::default() }, BRAKE, 1.0),
+            (KeyboardMouse { handbrake: true, ..Default::default() }, HANDBRAKE, 1.0),
+            (KeyboardMouse { fire_primary: true, ..Default::default() }, FIREPRIMARY, 1.0),
+            (KeyboardMouse { fire_secondary: true, ..Default::default() }, FIRESECONDARY, 1.0),
+            (KeyboardMouse { gadget: true, ..Default::default() }, FIREGADGET, 1.0),
+            (KeyboardMouse { gadget_alt: true, ..Default::default() }, FIREGADGET, 1.0),
+            (KeyboardMouse { cycle_weapon: true, ..Default::default() }, TOGGLESECONDARY, 1.0),
+            (KeyboardMouse { cycle_weapon_up: true, ..Default::default() }, TOGGLESECONDARYUP, 1.0),
+            (KeyboardMouse { cycle_weapon_down: true, ..Default::default() }, TOGGLESECONDARYDOWN, 1.0),
+            (KeyboardMouse { camera_view: true, ..Default::default() }, CHANGECAMERA, 1.0),
+            (KeyboardMouse { look_back: true, ..Default::default() }, CAMLOOKBACK, 1.0),
+            (KeyboardMouse { reload: true, ..Default::default() }, POVRELOAD, 1.0),
+        ];
+        for (km, act, val) in cases {
+            let (msgs, _s) = one_key(km, 0);
+            assert_eq!(msgs.len(), 1, "one action per key: {act}");
+            assert_eq!(msgs[0].action, act, "key → action");
+            assert_eq!(msgs[0].value, val, "key → value");
+        }
+        // Sister: no key, no message.
+        let (msgs, _) = one_key(KeyboardMouse::default(), 0);
+        assert!(msgs.is_empty());
+    }
+
+    #[test]
+    fn hold_keys_do_not_repeat_and_releases_fire_the_release_action() {
+        // The game's semantics [M §2 of the doc]: the hold pairs set/clear flags (no
+        // auto-repeat exists on any driving binding), the value-holds send on change only.
+        use action::*;
+        let mut pc = PcDrivingInput::default();
+        pc.km = KeyboardMouse { fire_primary: true, handbrake: true, throttle_up: true, ..Default::default() };
+        let first = pc.tick(0);
+        assert_eq!(first.len(), 3, "FIREPRIMARY + HANDBRAKE + GAS on the press tick");
+        for now in 1..10i32 {
+            let msgs = pc.tick(now);
+            assert!(msgs.is_empty(), "held keys never repeat (tick {now})");
+        }
+        // The stage held: gas stays 1.0 through the ×2 clamp, flags stay set.
+        assert_eq!(pc.stage.gas, 1.0);
+        assert!(pc.stage.fire_primary && pc.stage.handbrake);
+        assert_eq!(pc.stage.throttle, 0.0, "the handbrake zeroes the pedals [M :231-238]");
+        // Release everything: exactly the RELEASE ids + the value drops.
+        pc.km = KeyboardMouse::default();
+        let last = pc.tick(10);
+        let mut acts: Vec<u8> = last.iter().map(|m| m.action).collect();
+        acts.sort_unstable();
+        assert_eq!(acts, vec![GAS, HANDBRAKERELEASE, FIREPRIMARYRELEASE], "sorted ids 0x16, 0x1c, 0x1e");
+        assert_eq!(pc.stage.fire_primary, false);
+        assert_eq!(pc.stage.gas, 0.0);
+        // The edge one-shots fire once per press too (Q = TOGGLESECONDARY).
+        let mut pc = PcDrivingInput::default();
+        pc.km = KeyboardMouse { cycle_weapon: true, ..Default::default() };
+        assert_eq!(pc.tick(0).len(), 1);
+        for now in 1..5i32 {
+            assert!(pc.tick(now).is_empty());
+        }
+        pc.km = KeyboardMouse::default();
+        assert!(pc.tick(5).is_empty(), "the release of a press-only binding sends nothing");
+    }
+
+    #[test]
+    fn full_chain_keyboard_to_car_60hz() {
+        // W + D held through 5 ticks, then released: the game's ramp numbers end to end.
+        let mut pc = PcDrivingInput::default();
+        pc.km = KeyboardMouse { throttle_up: true, steer_right: true, ..Default::default() };
+        for (tick, expect_steer) in [(0, 0.25), (1, 0.5), (2, 0.75), (3, 1.0)] {
+            let msgs = pc.tick(tick);
+            if tick == 0 {
+                assert_eq!(msgs.len(), 2, "STEER + GAS on the first tick");
+            } else {
+                assert!(msgs.is_empty(), "held: no new messages");
+            }
+            assert_eq!(pc.stage.steer, expect_steer, "tick {tick}");
+            assert_eq!(pc.stage.throttle, 1.0);
+        }
+        // Full lock reached: the engine's steer input +0x240 is 1.0.
+        assert_eq!(pc.stage.steer, 1.0);
+        assert!(pc.stage.full_lock);
+        // Release both: the ramp walks back 4 ticks, gas drops to 0 immediately.
+        pc.km = KeyboardMouse::default();
+        let msgs = pc.tick(4);
+        assert_eq!(msgs.len(), 2, "STEER 0.0 + GAS 0.0");
+        assert_eq!(pc.stage.steer, 0.75);
+        assert_eq!(pc.stage.throttle, 0.0);
+        for (tick, expect) in [(5, 0.5), (6, 0.25), (7, 0.0)] {
+            pc.tick(tick);
+            assert_eq!(pc.stage.steer, expect, "release tick {tick}");
+        }
+        assert!(!pc.stage.full_lock);
     }
 }

@@ -45,6 +45,7 @@ pub mod replay;
 /// objective update (CTF flags, Uplink terminals, KOTH hill, Demolition/Protection sites,
 /// GoldenEye items, the blueprint) — see `docs/systems/mp-match-rules.md`.
 pub mod rules;
+pub mod hud;
 
 pub use rules::{MpObjState, MpObjectsRt, Winner};
 
@@ -76,6 +77,12 @@ pub struct MpPlayer {
     pub skin: u32,
     /// +0x2c: the armour bonus.
     pub armor_bonus: u32,
+    /// +0x28 (u32): THIS player's radar toggle — 0 = the radar returns nothing for them and
+    /// their ring sprite hides [M MP_GetRadarObjects 0x189840:22-24 (0 → an empty list),
+    /// HUD_RadarUpdate 0x19f6e8:102-105 (the ring's layer 0xff)]. New field on its own line
+    /// [WORKLOG lesson 4]; the game's record is 0x30 wide, the port's compact struct skipped
+    /// +0x28 (its armor_bonus is +0x2c).
+    pub radar_on: u32,
 }
 
 /// `MPSettings` @0x2a47a0 — the match config. Only the fields the phase reads/writes are carried;
@@ -143,7 +150,7 @@ impl MpSettings {
     /// and the derivations are the game's.
     pub fn deathmatch(level_code: u32) -> MpSettings {
         MpSettings {
-            players: std::array::from_fn(|_| MpPlayer { team: 0, skin: 0, armor_bonus: 0 }),
+            players: std::array::from_fn(|_| MpPlayer { team: 0, skin: 0, armor_bonus: 0, radar_on: 1 }),
             started: false,
             gametype_mask: 0,
             player_count: 1,

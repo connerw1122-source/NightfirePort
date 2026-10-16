@@ -63,7 +63,16 @@ summarizes and points there).
 
 Fast runner on the merged tree (24b1f4dd), slim on-foot ISO, `--test-threads=1`:
 
-    (the total line — filled in below when the run finished)
+    (the run was still executing at this window's end — the total line below is from its state at
+    00:55 UTC; the next message can re-run it on the tree)
+
+    Observed before the window closed: `FAILED walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact`
+    and `FAILED probe_pylon_render::probe_render_pylon_only`, no TIMEOUT/CRASH lines. Neither path is
+    touched by this diff: walkreal_07000001 is a campaign walk (`mp = false` — the settings path and
+    the seed change do not run; `mp_seed = 0` keeps the pre-net Rng constant), probe_pylon_render is
+    a render probe (no drawing changed). walkreal_07000001's minutes-long walk was already window-
+    sensitive in a previous sandbox (the async-level-load WORKLOG cut it the same way); both deserve
+    a re-run on the next window before treating them as regressions.
 
 The 3 `disc_golden` failures allowed on the slim ISO are the only expected red.
 
