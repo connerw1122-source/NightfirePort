@@ -16,3 +16,7 @@ right-click is not held, the wheel keeps switching weapons. Headless tests throu
 
 ---
 claimed-by: sandbox5 at 2026-10-16T04:25Z
+
+---
+## Report (done, 2026-10-16T05:12Z)
+
