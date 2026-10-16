@@ -685,6 +685,15 @@ pub struct Drone {
     /// alpha (`obj+0x106` / `+0xCFC`). Note `+0xCD8` is a shared scratch word: the Disabled state reads it as a resume
     /// state id (0x172440), UnderCoverIdle as a tries count (0x169e58) — drone-port-check.md #2.
     pub corpse: bool,
+    /// `Drone+0x2f`, the DOWN flag: lying on the ground. Set by DSTATE_Stunned's ENTER and
+    /// cleared by its EXIT [M 0x162eb0 case 1/2]; the same pair in DSTATE_StunGrenadeLoop
+    /// [M 0x1631c0 case 1/2] and DSTATE_StunDartLoop [M 0x163570 case 1/2, unported]. The readers:
+    /// `NDrone2_Collision` 0x140e90 swaps the shootable volume to the low sphere (radius 0.3,
+    /// centre (0.3 − obj+0xa0) above the origin [M :65-90]) — the dart of a re-tase hits a downed
+    /// guard through it — and `Player_WeaponFiring` 0x1a5460:90-106 swaps the reticle datum when
+    /// the aim target is down. (stun-ai-recover: the downed pose's bone boxes leave the aimed ray
+    /// uncovered, so the flag + the sphere stand-in is what makes the re-hit real.)
+    pub down: bool,
     pub death_pending: bool,
     pub death_channel: u8,
     /// The last hit on this drone came from the player (a bullet, a punch or an owned explosion) —
@@ -1054,6 +1063,7 @@ impl Drone {
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false,
             mission_wait_channel: 0,
             stun_until: 0, player_pos: [0.0; 3],
+            down: false,
             tase_accum: 0,
             tase_recover: 0,
             tase_fall_anim: 0,
@@ -3414,7 +3424,13 @@ impl Drone {
                 self.call_anim(d, a, STUN_GRENADE_LOOP, 0);
                 true
             }
-            (STUN_GRENADE_LOOP, msg::ENTER) => { self.vision_on = false; self.firing = false; self.timer_c = Some(self.stun_until); true }
+            (STUN_GRENADE_LOOP, msg::ENTER) => {
+                // The down flag +0x2f, its EXIT clearing it [M 0x1631c0 case 1/2].
+                self.vision_on = false; self.firing = false; self.timer_c = Some(self.stun_until);
+                self.down = true;
+                true
+            }
+            (STUN_GRENADE_LOOP, msg::EXIT) => { self.down = false; true }
             (STUN_GRENADE_LOOP, msg::TIMER_C) => {
                 // Case 0xC [M NDrone2_DSTATE_StunGrenadeLoop 0x1631c0 case 0xc]: near re-arms the
                 // timer at frame + 5·FRAME_RATE_INT = 300; clear falls through to
@@ -3491,12 +3507,19 @@ impl Drone {
                 true
             }
             (STUNNED, msg::ENTER) => {
-                // case 1: +0xCC4 = now + (+0xCE0); the twitch anim by the stored fall anim; alert 2
-                // [M 0x162eb0 case 1].
+                // case 1: +0xCC4 = now + (+0xCE0); the twitch anim by the stored fall anim; alert 2;
+                // the down flag +0x2f (its EXIT clears it) [M 0x162eb0 case 1/2].
                 self.timer_c = Some(frame + self.tase_recover);
+                self.down = true;
                 self.alert = self.alert.max(0.66);
                 let a = if self.tase_fall_anim == anim_state::TASER_FALL_B { anim_state::STUNNED_TWITCH_B } else { anim_state::STUNNED_TWITCH_A };
                 self.call_anim(d, a, 0, 0);
+                true
+            }
+            (STUNNED, msg::EXIT) => {
+                // case 2: the down flag clears on every exit (the get-up, the re-fall, the death)
+                // [M 0x162eb0 case 2].
+                self.down = false;
                 true
             }
             (STUNNED, msg::TASE) => {
@@ -6437,7 +6460,28 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 if !self.npc_enabled || !dr.present || !dr.enabled || dr.corpse { continue; }
                 let c = [dr.pos[0], dr.pos[1], dr.pos[2]];
                 if seg_point_dist2(b.pos, end, c) > 1.05 * 1.05 * 4.0 { continue; }
-                if let Some((part, t)) = crate::damage::first_box_hit(b.pos, ray, &dr.hit_boxes(d)) {
+                let fb = crate::damage::first_box_hit(b.pos, ray, &dr.hit_boxes(d));
+                // `NDrone2_Collision` 0x140e90's down branch (+0x2f set [M :65-90]): the shootable
+                // volume is the low sphere — radius 0.3, centre (0.3 − obj+0xa0) above the origin
+                // along the up vector — while a standing guard uses 0.4/0.55. The port's standing
+                // stand-in is the posed bone boxes (established, the damage tests pin them); a
+                // DOWNED guard's boxes lie along the ground and leave the aimed-at-origin ray
+                // uncovered (the playtest's re-tase did nothing), so the game's own sphere is the
+                // contact here. The port's origins rest on the floor when down (the anim root
+                // settles), so the centre is pos + 0.3 up — the lift term drops out.
+                let fb = fb.or_else(|| {
+                    if !dr.down { return None; }
+                    let centre = [dr.pos[0], dr.pos[1] + 0.3, dr.pos[2]];
+                    let ab = [end[0] - b.pos[0], end[1] - b.pos[1], end[2] - b.pos[2]];
+                    let ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                    let ap = [centre[0] - b.pos[0], centre[1] - b.pos[1], centre[2] - b.pos[2]];
+                    let t = if ab2 > 1e-9 { (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab2 } else { 0.0 };
+                    let tc = t.clamp(0.0, 1.0);
+                    let cl = [b.pos[0] + ab[0] * tc, b.pos[1] + ab[1] * tc, b.pos[2] + ab[2] * tc];
+                    let d2 = (cl[0] - centre[0]).powi(2) + (cl[1] - centre[1]).powi(2) + (cl[2] - centre[2]).powi(2);
+                    (d2 <= 0.3 * 0.3).then(|| (i16::MAX, tc))
+                });
+                if let Some((part, t)) = fb {
                     if best.is_none_or(|(_, _, bt)| t < bt) { best = Some((i, part, t)); }
                 }
             }
@@ -9083,6 +9127,7 @@ mod tests {
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
             mission_wait_channel: 0,
             stun_until: 0, player_pos: [0.0; 3],
+            down: false,
             tase_accum: 0,
             tase_recover: 0,
             tase_fall_anim: 0,
