@@ -16706,3 +16706,13 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+## droute-nearest-pullback (2026-10-16, branch s/droute-nearest-pullback) — start 23:00 UTC
+
+Task 734 (audit runner-up): port `AINetwork_AlterDestFor_DROUTE_Nearest` 0x156088 — when the
+chase route's A* ends at the FALLBACK node (CalcRoute 1 [M DoAStarPath 0x1571b0:222; the port's
+astar result 1]), the game's CalcRouteToPosition 0x15afe0:32 / CalcRouteToObject 0x15aee8 call
+the alter: cast the final leg from the route's LAST node (MoveTestFromNode), and when blocked
+pull the dest back to one unit before the hit (dest = hit − normalize(hit − node.pos) [M
+0x156088:33-56]), re-cel it, flag 0x40. Symptom: drones chasing a target behind cover stick or
+fail instead of closing to the nearest reachable point. Plan: the pull-back inside
+`Route::to_position` (both port chase callers ride it), a nav-level fail-first test + sisters.
