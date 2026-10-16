@@ -14462,3 +14462,13 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+## difficulty-effects2 (2026-10-16, branch s/difficulty-effects2) — start
+- Task: land HELD 629 (s/difficulty-effects). Master now has 4108d7b2. Plan: merge origin/s/difficulty-effects,
+  apply the 053 net-match-host load_impl resolution (mp: bool, mp_settings: Option<MpSettings>, difficulty: u32;
+  load_mp_carry passing Some(settings), 1; async load choosing load_mp_carry -> dev -> load_with_carry_difficulty),
+  fix the E0308 in menu.rs (FrontEnd::difficulty is usize, requested_difficulty Option<u32>), then fix the
+  create-time roster gate in drone.rs so the front-end pick reaches the creates (Scene::build hard-codes
+  difficulty: 1 into its Data and set_difficulty runs after the creates), and get the 10 listed failures green
+  with game evidence (decide from the game which difficulty direct-load tests represent; boot default 2 [M 0x1c7e78:25],
+  wrappers keep 1 for replay parity). Full suite on the final tree before push.
