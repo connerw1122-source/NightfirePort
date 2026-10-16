@@ -15342,3 +15342,11 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+
+## cutscene-walk-stutter (2026-10-16, branch s/cutscene-walk-stutter) — start
+Task 686: the 07000007 Kimiko cut-scene's walking guest (the red dress) stutters on her walk
+toward the other two (playtest 1015-1738). Plan: headless run of that scene, tracing the walking
+actor's root position + pose frame per tick; find the discontinuity (Script_GetInterp 0x1da158 key
+step, a frame repeat/skip in the anim playback, or a root-motion double application); fix the sim
+side to the game's evidence; assert a monotone root with bounded per-tick deltas over the whole
+walk; sister = a deliberately doubled frame trips the check.
