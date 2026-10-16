@@ -4647,8 +4647,9 @@ impl FrontEnd {
                     Action::Confirm => {
                         match self.cursor.min(2) {
                             // Local: the game's own couch flow, from the top [M the pre-port
-                            // route C_GOMULTIPLAYER 0x216a78 → 0x40000019].
-                            0 => { self.page = Page::MpJoin; self.cursor = 0; return true; }
+                            // route C_GOMULTIPLAYER 0x216a78 → 0x40000019]. The page enter is
+                            // P_MPJOIN's 0x4c: fresh records every time.
+                            0 => { self.enter_mp_join(); return true; }
                             1 => { self.mp_net_state = MpNetState::Idle; self.mp_net_error = None; self.page = Page::MpHost; self.cursor = 0; return true; }
                             _ => { self.mp_net_state = MpNetState::Idle; self.mp_net_error = None; self.page = Page::MpNetJoin; self.cursor = 0; return true; }
                         }
@@ -5456,6 +5457,27 @@ impl FrontEnd {
         self.cursor = 0;
     }
 
+    /// The Join Game page's enter [M P_MPJOIN 0x20ca00's 0x4c — `memset(&mpjoin, 0, 0x40)`
+    /// runs on EVERY 0x4c (the gate reads DAT_002e1b09, just set to 2), then the per-agent
+    /// states at mp_stuff+0x360 zero and the defaults re-seat: the skins 0/1/2/3
+    /// (DAT_002dee70/80/90/a0) and the teams MI6/Phoenix/MI6/Phoenix (DAT_002dee6c/7c/8c/9c)].
+    /// A re-entered join page is always a FRESH join — the stale ready panel a back-out left
+    /// must not survive it (playtest 1015-2231's walk: back out of a half-done setup to Main,
+    /// forward again).
+    fn enter_mp_join(&mut self) {
+        self.mp_join = std::array::from_fn(|slot| MpJoinAgent {
+            state: 0,
+            joined: false,
+            ready: false,
+            team: if slot % 2 == 0 { 1 } else { 0 },
+            skin: slot as u32,
+            codename_row: 0,
+            codename: String::new(),
+        });
+        self.enter_page(Page::MpJoin);
+        self.cursor = 0;
+    }
+
     /// The confirm page's Confirm — P_MPCONFIRM 0x20ec00:53-94: `Menu_StoreMPSettings` (the port
     /// has no MP card — the backup/restore pair is the debriefing's own [S]); the joined players'
     /// records compact; `+0x1A0 != -1 → ×60` (minutes → seconds); `+0x1D4 &= 1`; `+0x180 = 1`;
@@ -5472,6 +5494,12 @@ impl FrontEnd {
         // the port keeps the pick in mp_setup_sel, so the row cursor is 0]. Without the reset
         // the map wheel's cursor rode in and the walk's cursor<rows() check tripped.
         self.cursor = 0;
+        // The enter clears EVERY agent's ready byte [M P_MPSETUP 0x20d7a8's 0x4c loop —
+        // `pcVar5[1] = '\0'` per slot over the 4 records]: a back-out (the hub's △ re-runs this
+        // enter) un-readies everyone and the picks must be walked again.
+        for slot in self.mp_join.iter_mut() {
+            slot.ready = false;
+        }
         if self.mp_scenario & 0x2000_0000 != 0 {
             self.mp_setup_state = 2;
             self.mp_setup_sel = self.mp_join[0].team as usize;
