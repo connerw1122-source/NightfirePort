@@ -13858,3 +13858,8 @@ Work Log (async-level-load):
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+
+## drive-mission-scripts (2026-10-16, branch s/drive-mission-scripts) — start
+- Branch created from origin/master (0f5f07f4). Plan: decode driving-mission script data from the MIS*.VIV
+  archives (500 refpack), port the mission state machine (objectives/completion, fail states, timers, PTP
+  end status) into nf_game::driving, headless scripted-event tests.
