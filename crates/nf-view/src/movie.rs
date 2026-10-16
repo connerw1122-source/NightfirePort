@@ -294,29 +294,42 @@ fn open_pcm_out(pcm: &[i16], rate: f64) -> (std::sync::Arc<std::sync::Mutex<std:
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
-    let ring: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(pcm.iter().take(24_000).copied().collect()));
+    // movie-audio: the ring starts EMPTY — `present` pushes each picture's slice from sample 0 (the old
+    // pre-fill of the first 24,000 samples played the opening quarter-second twice).
+    let _ = pcm;
+    let ring: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::with_capacity(48_000)));
     if nf_audio::silent() { return (ring, None); }
     let Some(device) = cpal::default_host().default_output_device() else { eprintln!("movie: no output device; running silent"); return (ring, None) };
     let Ok(cfg) = device.default_output_config() else { eprintln!("movie: no output config; running silent"); return (ring, None) };
     let dr = ring.clone();
     let dev_rate = cfg.sample_rate() as f64;
     let ch = cfg.channels() as usize;
-    let pos = Arc::new(Mutex::new(0.0f64));
-    let pos_cb = pos.clone();
+    // movie-audio: a FIFO drain. Each device frame takes the current source stereo pair; the source
+    // advances rate/dev_rate pairs per device frame (48 kHz → the device rate), popping consumed pairs.
+    // An empty ring (the picture fell behind) outputs silence instead of repeating old samples. The old
+    // callback indexed the ring by an ever-growing position modulo its length (a scramble) and the
+    // stream was never `play()`ed — WASAPI streams stay paused until then, so movies were silent.
+    let mut frac = 0.0f64;
+    let step = rate / dev_rate;
     let err = |e: cpal::Error| eprintln!("movie audio: {e}");
     let stream = match cfg.sample_format() {
         cpal::SampleFormat::F32 => device.build_output_stream(cpal::StreamConfig::from(cfg.config()), move |d: &mut [f32], _| {
-            let mut p = pos_cb.lock().unwrap();
-            for out in d.iter_mut() {
-                let step = dev_rate / rate / ch.max(1) as f64;
-                let src = (*p * rate as f64) as usize / 2 * 2; // stay on a stereo pair
-                let s = if let Ok(q) = dr.lock() { q.get(src % q.len().max(1)).copied().unwrap_or(0) } else { 0 };
-                *out = s as f32 / 32768.0;
-                *p += step;
+            let Ok(mut q) = dr.lock() else { d.fill(0.0); return };
+            for frame in d.chunks_mut(ch.max(1)) {
+                let (l, r) = if q.len() >= 2 { (q[0], q[1]) } else { (0, 0) };
+                for (k, out) in frame.iter_mut().enumerate() {
+                    *out = if k % 2 == 0 { l } else { r } as f32 / 32768.0;
+                }
+                frac += step;
+                while frac >= 1.0 {
+                    frac -= 1.0;
+                    if q.len() >= 2 { q.pop_front(); q.pop_front(); }
+                }
             }
         }, err, None).ok(),
         _ => { eprintln!("movie audio: unsupported sample format; running silent"); None }
     };
+    if let Some(s) = &stream { if let Err(e) = s.play() { eprintln!("movie audio: {e}"); } }
     (ring.clone(), stream.map(move |s| PcmOut { _stream: s, ring }))
 }
 
