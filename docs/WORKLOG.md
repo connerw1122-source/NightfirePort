@@ -14571,3 +14571,14 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
   the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
   docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
+
+## drake-cutscene-06 (2026-10-16, branch s/drake-cutscene-06)
+- Branch created from origin/master (f42de6ff). Task: playtest 1015-2142 — "drake cutscene on o6 has
+  some lag and glitchiness with objects" (07000006 Drake cut-scene, the script camera's NIS).
+- Plan: (1) headless profile of the cut-scene's per-frame CPU cost (sim tick, script players,
+  frame_state / skin_palette, script entities), extend 649's frame-cost-guard budget tests to it,
+  fix spikes with results unchanged, before/after numbers; (2) list every script entity/character
+  the cut-scene drives with per-frame matrices, flag discontinuities (jump/pop/teleport), compare
+  against the game's script interp [M Script_GetInterp 0x1da158, entity create/delete ops], fix
+  sim-side causes (wrong key interp, missed delete, drawn-before-create), report draw-only problems;
+  (3) tests: cut-scene runs to completion headless, flagged entities' matrices continuous.
