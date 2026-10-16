@@ -79,6 +79,30 @@ pub enum Layer {
     Effect,
 }
 
+impl Layer {
+    /// The renderer's per-draw frustum-cull rule (gpu.rs's `cull` closure), spelled out where the
+    /// layer semantics live so the live tests can pin it without a GPU.
+    ///
+    /// The static World bulk always culls (its bounding spheres are exact — fix-render2/fix-render-artifacts).
+    /// The EFFECT pools never cull, `NF_CULL` or not: the game culls these objects per frame at their
+    /// LIVE matrix (`View_AddObjects` 0x1e62d8 passes obj+0x8c sphere AND obj+0x80 bbox to
+    /// `Vision_InView` 0x1e89e0`), but the port's Effect groups are merged pools posed per frame
+    /// through attachment matrices — their build-time sphere is the IDENTITY-matrix centre, for the
+    /// gas pool the `BodyHit` mesh's obj.centre ≈ the world origin with radius 0.032
+    /// [D 07000005 map 10 obj 41]. Culling on that sphere drops every puff the moment the origin
+    /// leaves the frustum, no matter where the puffs are posed — the blood-puff-render task's
+    /// "the gas matrix branch runs, nothing draws". (A-11's vanish bug was the same unsoundness
+    /// with the truck.) Character keeps its build-time placement centre (real positions) so the
+    /// NF_CULL bisect override still exercises it.
+    pub fn frustum_cullable(self, test_cull: bool) -> bool {
+        match self {
+            Layer::World => true,
+            Layer::Effect => false,
+            _ => test_cull,
+        }
+    }
+}
+
 /// How a material is drawn (docs/systems/render.md): the pass (0 sky before the world, fogged; 1 world list 0;
 /// 2 characters; 3 world list 1 — glist flag 0x1, alpha list, faded; 4 sky after the fog pass; 5 effects), the GS
 /// blend from ALPHA_1 (0 normal (Cs − Cd)·As + Cd, 1 additive Cs·As + Cd, 2 subtractive Cd − Cs·As, 3 keep-destination
@@ -7191,6 +7215,24 @@ impl Scene {
             for (ci, m) in mults.iter().enumerate() { cols[ci] = rgb(*m); }
             for (a, m) in &attach_mult { if let Some(c) = cols.get_mut((l.col_att + a) as usize) { *c = rgb(*m); } }
             for (pk, m) in &pickup_mult { if let Some(c) = cols.get_mut((l.col_pick + *pk as u32) as usize) { *c = rgb(*m); } }
+        }
+        // blood-puff-render: the gas puffs' draw colour IS the pool's live rgba — the game's
+        // `View_SetupRenderModes_Tweak` 0x1e5888:46-49 feeds the gas object's obj+0x103..0x106 bytes
+        // into `psiSetTweakARGB` (0x124770), whose TAmbient/DAT_002650d4.. floats (= byte × 1/255)
+        // multiply the drawn colour AND the alpha; `gases_smoke` 0x1ab2d0's tail rewrites those bytes
+        // from the gas datum's colour every tick (the 255→0 fade, `Gas_Init` 0x1aacc8:56-59 seeds
+        // them from the colour arg). The GPU palette carried only the ambient dim here, so the GPU
+        // render — the one that draws — never faded the puff (the CPU `posed_vertices`' gas_rgba
+        // did). The shader multiplies c0.rgb/α by cols.rgb/α, which is exactly the game's tweak.
+        // Free slots keep the ambient value: their matrix is FAR, nothing draws.
+        if let Some(s) = self.sim.as_ref() {
+            for (a, att) in self.attachments.iter().enumerate() {
+                let Some((gi, gm)) = att.gas else { continue };
+                let Some(c) = cols.get_mut((l.col_att + a as u32) as usize) else { continue };
+                if let Some(g) = s.drones.gas.puffs.get(gi as usize).filter(|g| g.mesh == gm) {
+                    *c = [g.rgba[0] / 255.0, g.rgba[1] / 255.0, g.rgba[2] / 255.0, g.rgba[3] / 255.0];
+                }
+            }
         }
         // frame-cost-guard: the per-attachment fallback this comment used to describe ("attachments
         // without an entry fall back to their owner's multiplier") was dead code. `colour_mults`

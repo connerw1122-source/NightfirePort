@@ -776,7 +776,10 @@ impl Renderer {
             // the static World layer keeps every moving thing drawn while still skipping the bulk —
             // 07000006's start view submits ~4k draws unculled (render2_live counts them).
             let test_cull = std::env::var_os("NF_CULL").is_some();
-            let cull = |dc: &DrawCall| test_cull || dc.layer == Layer::World;
+            // blood-puff-render: the rule moved to `Layer::frustum_cullable` (the Effect pools'
+            // build-time sphere is the identity-matrix origin — culling it dropped every puff the
+            // moment the origin left the frustum, wherever they were posed).
+            let cull = |dc: &DrawCall| dc.layer.frustum_cullable(test_cull);
             // Counters for the worklog (env-gated; no per-frame cost otherwise).
             let trace = std::env::var_os("NF_DRAWS").is_some();
             let (mut submitted, mut culled) = (0usize, 0usize);
