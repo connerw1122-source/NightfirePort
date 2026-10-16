@@ -21,3 +21,8 @@ fire and all three explode. Sister: firing while no mine is out does nothing.
 
 ---
 claimed-by: sandbox4 at 2026-10-16T08:31Z
+
+---
+## Report (done, 2026-10-16T10:20Z)
+
+Closed by the driver: the report is on `s/remote-mine-detonate` (docs/reports/remote-mine-detonate.md); the worker didn't run finish.sh.
