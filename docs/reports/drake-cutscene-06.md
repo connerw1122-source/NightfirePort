@@ -117,9 +117,22 @@ and the docs' known F3 hand-back note (the third-person tux skin 0x0500000d appl
 
 ## Suite
 
-Run on the final tree (master f42de6ff + the frame-cost-guard merge + this task) with
-`tools/test/suite.py`, NF_SILENT, per-binary 600 s caps: **see the totals line below** (filled in
-from the final run before the push).
+`tools/test/suite.py` (NF_SILENT, per-binary 600 s caps) on this branch before the
+origin/master 9bcdde39 merge: 104 of the 388 test binaries had run when the sandbox's process
+reaper killed the background run (twice) — the only FAILED lines in that segment were the
+documented no-GPU pair `fix_0c_pylon_live` (the environmental set, 2/2). The merged final tree
+(origin/master 9bcdde39 — the gameplay batch, drone.rs +44/−2, no overlap with this task's
+files) is build-verified, and the targeted set around this task is green ON THE MERGE:
+`cutscene_06_live` (1/1), `walk_07000006_live` (1/1), the 14 pickup unit tests, `pickup_live`
+(1/1), `rng_live` (1/1), `frame_budgets_hold_through_the_07000006_dressing_cutscene` (1/1).
+
+The full merged-tree suite was re-launched in two parallel halves at 07:38 UTC
+(`--only` over the 291 not-yet-run binaries) but was still in its serialized build phase at the
+07:45 stop-work line — the totals could not be read before this push. The runs are detached
+(setsid) and keep going in this sandbox: the next message can read the two totals lines from
+`suite_a.out` / `suite_b.out` at the repo root (scratch, uncommitted). The per-binary FAILED
+lines known so far, from every run in this sandbox, are only the documented no-GPU
+`fix_0c_pylon_live` pair.
 
 ## Left
 
