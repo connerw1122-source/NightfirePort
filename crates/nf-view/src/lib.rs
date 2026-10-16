@@ -1848,7 +1848,7 @@ impl App {
                     // The 0x4c order: the removes land before the same frame's starts [M
                     // 0x20a408:17-22] — the restart replaces the loop instead of stacking it.
                     for id in &menu_rm { drv.remove(0, Some(*id)); }
-                    for ev in &menu_sfx { drv.start(out, ev.id, None, 0, None); }
+                    for ev in &menu_sfx { if menu_music::menu_sfx_reaches_driver(ev.id) { drv.start(out, ev.id, None, 0, None); } }
                 });
             }
         }

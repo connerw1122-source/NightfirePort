@@ -231,3 +231,13 @@ pub fn fe_music_step(fe: &mut crate::menu::FrontEnd, music_page: &mut Option<Pag
 impl Default for MenuMusic {
     fn default() -> Self { Self::new() }
 }
+
+/// menu-music-stack: whether a drained menu sfx event goes to the driver. The page-open pair (0x1d7 /
+/// 0x470) does NOT: the music channel (`MusicCmd::StartJingle`) is its single owner and starts only the
+/// loaded front-end bank's one jingle [M Sound_Ready 0x1dceb8:91-96 — bank 0xc carries 0x1d7, bank 0x38
+/// 0x470; the game never has both resident]. The port's driver searches EVERY resident slot (spares
+/// included), so sending the pair through as well stacked the same song twice plus the other one — the
+/// user's "the menu music is playing multiple songs" (playtests 1015, 1016).
+pub fn menu_sfx_reaches_driver(id: u32) -> bool {
+    !matches!(id, crate::menu::SFX_MENU_OPEN_MOVE | crate::menu::SFX_MENU_OPEN_SELECT)
+}
