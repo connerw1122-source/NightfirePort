@@ -8583,7 +8583,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             let bounds = d.models.get(&sp.hash).copied().unwrap_or(crate::pickup::Model { centre: [0.0; 3], radius: 0.3 });
             self.pickups.push(crate::pickup::Pickup {
-                kind: sp.kind, weapon: sp.id, rounds: sp.rounds, model: sp.hash,
+                // `Pickup_Create`'s level-conditional rounds override sits INSIDE the create [M
+                // 0x18dda0:116-118: `GameState+0x12 == 0x7000008 && id == 0x2c → rounds = 4`], so the
+                // script-entity arm's creates get it too — 07000008's SafePickUps rocket (the script
+                // word says 5 [D 0x060009E2 s1]) must hold 4 like every other create path.
+                rounds: crate::pickup::Pickup::create_rounds_override(d.level, sp.id, sp.rounds),
+                kind: sp.kind, weapon: sp.id, model: sp.hash,
                 bounds,
                 m: sp.matrix, start: [sp.matrix[3][0], sp.matrix[3][1], sp.matrix[3][2]],
                 vel: [0.0; 3], state: 1, lifetime: 0, switch_channel: sp.switch_ch,
