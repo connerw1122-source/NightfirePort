@@ -15908,3 +15908,13 @@ INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 pa
 72 ignored (46 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes (the
 07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
 and other merged tasks' new tests. The 2 new live tests are green in the totals.
+
+## safe-cutscene-actors-08 — started (16:14 UTC)
+Task 702: 07000008's intro cut-scene renders only Kiko besides Bond (playtest 1013-1758: "I can't
+see any other models. Any character models."). Plan: list the scene's script actors (creates,
+skins, attach), check each is created/skin-bound/posed (`script_anim` returns a pose) in the port,
+bisect the regression over master history if it's a merge since the user last saw them; tests: every
+script actor of the 08 scene has a live pose during its window. Branch `s/safe-cutscene-actors-08`
+cut from origin/master de6110cc. Sandbox note: background processes are killed between tool calls
+here, so the fast runner is executed as foreground chunks of the same per-crate command
+(suite.py's build step is incremental cargo, resumed across calls); reported as such.
