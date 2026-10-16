@@ -285,3 +285,15 @@ fn open_pause_clears_menu_movie_and_starts_no_pair() {
     assert!(fe.drain_sfx_removes().collect::<Vec<u32>>().is_empty(),
         "and removes none");
 }
+
+/// menu-music-stack: the page-open pair never reaches the driver through the sfx channel — the music
+/// channel alone starts the loaded bank's one jingle (the user's "multiple songs" playtests).
+#[test]
+fn the_jingle_pair_is_not_started_twice() {
+    use nf_view::menu::{SFX_MENU_OPEN_MOVE, SFX_MENU_OPEN_SELECT};
+    use nf_view::menu_music::menu_sfx_reaches_driver;
+    assert!(!menu_sfx_reaches_driver(SFX_MENU_OPEN_MOVE));
+    assert!(!menu_sfx_reaches_driver(SFX_MENU_OPEN_SELECT));
+    // Sister: the ordinary menu blips still play.
+    assert!(menu_sfx_reaches_driver(0x1d8));
+}

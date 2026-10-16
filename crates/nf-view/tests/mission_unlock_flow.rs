@@ -24,6 +24,7 @@ fn card_dir(tag: &str) -> std::path::PathBuf {
 fn to_mission_select(fe: &mut FrontEnd) {
     assert!(fe.action(Action::Confirm), "Start → the intro + Main");
     if fe.intro_playing {
+        for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18, Menu_StopMovie 0x215a50]
         assert!(fe.action(Action::Confirm), "the skip action ends the intro movie");
     }
     assert_eq!(fe.page, Page::Main);

@@ -58,10 +58,16 @@ port maps ×512/640, ×448/480 onto the game's 512 × 448 screen.
 The wheel rows: five visible slots, the selected row centred (y=182, x=304) at full colour, ±1 rows at
 alpha 0x80, ±2 at 0x40 [M the rows' msg-0x1b colours].
 
-## The flow [L PCSX2 2026-10-13 + the decompile]
+## The flow [M the page handlers + L PCSX2 fresh boot 2026-10-16]
 
-Title (0x40000034→0x40000009's layout) → START → the intro movie (`P_INTRO` 0x209e88 background-FMVs
-0x07370048/0x07380048; GameFlow_Main case 6 pops on the skip action) → Main 0x40000002 → NightFire →
+Boot: P_LANGUAGE 0x40000034 → P_PS2MEMCARDINIT (→ 0x40000032 [M 0x218538:18]) → **P_INTRO 0x40000032**
+plays 0x07370048 (EA Games) then 0x07380048 (MGM Interactive) and opens the title 0x40000009 [M
+P_INTRO_Handler 0x209e88]. Title (P_START 0x40000009; 45 s idle → attract 0x40000035 [M 0x20a408]) → START →
+P_PARISENUM 0x4000004a (the "Checking memory card" box [M 0x20a648]) → **P_ESTHERO 0x40000043** plays
+0x073B0048 (the rings/Earth intro; 3 s unskippable grace, `DAT_002e1c4c = 0xb4`) → Main 0x40000002 [M
+P_ESTHERO_Handler 0x20a060]. **Corrected 2026-10-16:** this section used to say START → P_INTRO's logos →
+Main (an observation from a save-state resume, not a fresh boot); the port and its tests followed it and
+showed the logos after START with no real intro. Main → NightFire →
 Select Codename 0x40000025 → "Play without saving" → the confirm box (Txt 0x10000bb) → ✕ → Select
 Difficulty 0x40000023 → ✕ → Single Player 0x4000001c → ✕ on an unlocked row →
 `ResetMap_LevelToLoad(sp_level[i]+0xc, 0, 0)` + a fade [M C_SBNFMAP 0x20b8d8:18-41]. Locked rows:
