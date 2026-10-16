@@ -286,6 +286,14 @@ fn push_pcm(ring: &std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<i1
     }
 }
 
+/// movie-volume: the game's movie gain. `psiStartBackgroundMovie` stores `MovieVolume = SFXGetVolume()`
+/// (= `SfxMasterVolume`, 100 at boot [L 0x30c95c]) and `audioDecStart` 0x107360:9 calls
+/// `changeInputVolume(MovieVolume * 100)` → `sceSdSetParam` on both cores' input volume (0xf80 / 0x1080) [M
+/// 0x1078c8]: 10000 of the SPU2's 0x7fff full-scale volume register [S: the 15-bit register range, the
+/// SPU2 spec]. The port played the PCM at full scale — about 3x too loud (playtest 1016). The options'
+/// SFX volume is not plumbed into the player yet; this is the boot default.
+pub const MOVIE_GAIN: f32 = (100.0 * 100.0) / 32767.0;
+
 #[cfg(feature = "movies")]
 fn open_pcm_out(pcm: &[i16], rate: f64, looping: bool) -> (std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<i16>>>, Option<PcmOut>) {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -315,7 +323,7 @@ fn open_pcm_out(pcm: &[i16], rate: f64, looping: bool) -> (std::sync::Arc<std::s
                 }
                 let i = pos as usize;
                 let t = (pos - i as f64) as f32;
-                let at = |k: usize, c: usize| src[2 * k + c] as f32 / 32768.0;
+                let at = |k: usize, c: usize| src[2 * k + c] as f32 / 32768.0 * MOVIE_GAIN;
                 let l = at(i, 0) * (1.0 - t) + at(i + 1, 0) * t;
                 let r = at(i, 1) * (1.0 - t) + at(i + 1, 1) * t;
                 for (k, out) in frame.iter_mut().enumerate() { *out = if k % 2 == 0 { l } else { r }; }
