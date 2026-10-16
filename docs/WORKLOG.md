@@ -13858,3 +13858,11 @@ Work Log (async-level-load):
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+
+## mp-hud-data (sandbox7, started 2026-10-16T00:55Z)
+
+Task 632: the MP HUD's data model — what the in-match HUD reads (per-agent score/frags, the match
+timer, the scenario's objective status — flags held, uplink progress, the Top Agent target, the
+radar's blips) as a per-frame snapshot struct with getters (scores sorted the game's way, timer
+mm:ss, objective markers in world space, radar blips relative to the viewer). No drawing — the
+main agent draws it. Tests: a headless match's snapshot matches the sim state. Branch s/mp-hud-data.
