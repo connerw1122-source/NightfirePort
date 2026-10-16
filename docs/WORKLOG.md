@@ -15235,3 +15235,25 @@ menu-audio-state (2026-10-16)
   Suite: 1728 passed / 7 failed (3 allowed disc_golden + 3 render probes + 1 driving RNG, none
   SS-related) / 72 ignored. Report: docs/reports/grates-02.md (live checks: SS collision ray
   probe, the quaternion render gap, one-shot semantics).
+---
+
+remote-mine-detonate (2026-10-16)
+- Task: the Remote Mine's detonator (alt-fire/mode action while the mine weapon is held vs a
+  separate detonator item [M Player_Weapon / the mine record +0x6C/+0x70, the detonate arm in
+  Bullet_update]) and the throw cadence (the throw -> release frame, the re-throw interval [M
+  the fire script, Player_WeaponFiring 0x1a5460]). Playtests: the detonator was set to the
+  watch, and a heavy delay between throws.
+- Plan: measure the frames from the fire script + the weapon record, port them, headless tests:
+  throw 3 mines at the game's cadence then detonate with the alt fire (all three explode);
+  sister: firing while no mine is out does nothing.
+- Branch s/remote-mine-detonate from origin/master (27e5d48a). Report will be at
+  docs/reports/remote-mine-detonate.md.
+- remote-mine-detonate: the cadence measured and tabled (press→shot 0, shot→spawn 17 = the +0x44
+  26-frame release at the script clock, spawn→spawn 90 = the 0xb/0xc chain — the mine's +0x6C
+  0x400 bit routes it through the +0xB4 fire-last whose stop refills the clip BEFORE the draw
+  [M 0x1a2e38 case 0xc :521-523]). THE FIX: the port's 0xb/0xc arm skipped that refill — the
+  clip sat 0 through the draw and the next press did nothing (the playtest's heavy delay);
+  Gun::reload_one + the arm now refill first. The detonator halves verified on master (the twin
+  switch, the +0x20000 walk, the hand return). OPEN: the 3-mine detonation yields 0 blasts
+  (the single-mine path passes) — tests/remote_mine_detonate.rs's third test reproduces it.
+  Live checks L-1/L-2/L-3 in docs/reports/remote-mine-detonate.md.

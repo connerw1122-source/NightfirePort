@@ -3197,6 +3197,15 @@ impl Sim {
                         // at 1.25 (state 4) to ~+107, then idle with the clip refilled — the next throw ~+125
                         // with repeated taps. The port went straight to idle and threw again at +84.
                         self.gun.end_fire_state();
+                        // remote-mine-detonate [M 0x1a2e38 case 0xc :521-523]: at the +0xB4 script's
+                        // stop the game runs `Player_ReloadAmmoType(player, 1)` — the refill lands
+                        // HERE, before the draw — then queues the draw (state 3). Without it the clip
+                        // sat 0 until the next idle tick's auto-reload branch, and the press that
+                        // came during the draw hit an empty clip and did nothing (the playtest's
+                        // "heavy delay between me being able to throw multiple"). The dry arm
+                        // (Player_HandleHasNoAmmo :524-543) stays with the auto-reload path below.
+                        let p = nf_game::gun::GunParams::from_record(w, self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0) as usize, |h| scripts.get(&h).map(|s| s.length as u32));
+                        self.gun.reload_one(p);
                         let draw = self.weapons.draw_script(self.gun.weapon as usize);
                         if draw != 0 {
                             self.view_script = draw;
