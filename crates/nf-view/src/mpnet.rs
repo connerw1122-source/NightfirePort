@@ -137,6 +137,8 @@ pub fn to_player_input(i: &nf_net::Input) -> player::Input {
         weapon_cycle: i.weapon_cycle,
         gadget_cycle: i.gadget_cycle,
         switch_to: i.switch_to,
+        // microcam-wheel-zoom: the wheel's zoom steps are local view input, never on the wire.
+        zoom_cycle: 0,
     }
 }
 
