@@ -1273,3 +1273,121 @@ fn the_mouse_drives_the_menus() {
     assert!(p.mouse_move(320.0, 242.0));
     assert_eq!(p.cursor, 1, "hovering RESTART selects it");
 }
+
+// --- attract-mode (task 625): the no-input attract sequence [docs/systems/attract-mode.md] ---
+
+#[test]
+fn the_attract_timeout_fires_at_the_games_frame_count() {
+    let mut fe = FrontEnd::new();
+    // Sister: 0xa8c − 1 idle ticks do not open it [M the exact `== 0xa8c` compare 0x20a408].
+    for _ in 0..(menu::ATTRACT_FRAMES - 1) { fe.tick(); }
+    assert!(!fe.attract_playing);
+    assert_eq!(fe.no_input_frames, menu::ATTRACT_FRAMES - 1);
+    fe.tick();
+    assert!(fe.attract_playing, "the 0xa8c-th idle tick opens the attract [M P_START 0x20a408 sends 0x44/0x40000035]");
+    assert_eq!(fe.no_input_frames, menu::ATTRACT_FRAMES, "the game does not reset the count when the attract opens");
+    assert_eq!(fe.attract_movie, menu::ATTRACT_MOVIE_A,
+        "the title's timeout always plays 073A0048 [M P_ATTRACT 0x20a1f0's 0x4c — the opener id != 0x40000002 short-circuits the pick]");
+    assert_eq!(fe.attract_opener, Page::Start, "the title is the stacked opener [M 0x21c858 case 0x44 push]");
+    // The attract page never re-fires [M P_ATTRACT_Handler has no Menu_GetNoInputCount call], and
+    // a SECOND title timeout still picks A even though movie.291 flipped [M the same short-circuit].
+    fe.attract_movie_finished();
+    for _ in 0..menu::ATTRACT_FRAMES { fe.tick(); }
+    assert!(fe.attract_playing);
+    assert_eq!(fe.attract_movie, menu::ATTRACT_MOVIE_A, "the title's second timeout is A again [M]");
+    assert_eq!(fe.attract_toggle, false, "movie.291 flipped twice across the two opens [M 0x30d368]");
+}
+
+#[test]
+fn the_main_menu_attract_alternates_the_two_movie_codes() {
+    let mut fe = FrontEnd::new();
+    tick_to_title(&mut fe);
+    assert!(fe.action(Action::Confirm), "START → the intro run");
+    // Burn the intro down; its end is the main menu's 0x4c [M P_MAIN 0x20a7b0:37 resets the count].
+    while fe.flow.get_state() == ST_MOVIE { fe.tick(); }
+    assert!(!fe.intro_playing);
+    assert_eq!(fe.page, Page::Main);
+    assert_eq!(fe.no_input_frames, 1, "the intro's end tick reset then re-counted [M the 0x4c reset]");
+    // Timeout 1 from the MAIN menu: movie.291 false→true → A [M `(param_6 != 0x40000002) || movie_291`].
+    for _ in 0..menu::ATTRACT_FRAMES { fe.tick(); }
+    assert!(fe.attract_playing && fe.attract_opener == Page::Main);
+    assert_eq!(fe.attract_movie, menu::ATTRACT_MOVIE_A);
+    fe.attract_movie_finished();
+    // Timeout 2: the toggle is now false and the opener IS 0x40000002 → B [M the else branch].
+    for _ in 0..menu::ATTRACT_FRAMES { fe.tick(); }
+    assert!(fe.attract_playing);
+    assert_eq!(fe.attract_movie, menu::ATTRACT_MOVIE_B, "the main menu's second timeout alternates to 073B0048 [M 0x20a1f0]");
+    fe.attract_movie_finished();
+    // Timeout 3: A again [M the toggle flips every open].
+    for _ in 0..menu::ATTRACT_FRAMES { fe.tick(); }
+    assert_eq!(fe.attract_movie, menu::ATTRACT_MOVIE_A);
+}
+
+#[test]
+fn the_skip_returns_to_the_title_and_other_input_is_swallowed() {
+    let mut fe = FrontEnd::new();
+    for _ in 0..menu::ATTRACT_FRAMES { fe.tick(); }
+    assert!(fe.attract_playing);
+    // The game blocks the page input while the movie plays [M 0x21c858 case 0x68 clears the
+    // actions; 0x21c3d8:70 gates the 0x22 dispatch on the block byte] — non-skip actions reach
+    // nothing and do not reset the count (Menu_InputAction never runs for them).
+    assert!(!fe.action(Action::Up), "sister: Up is swallowed");
+    assert!(!fe.action(Action::Back), "sister: Back is swallowed");
+    assert!(fe.attract_playing, "the attract survives the swallowed input");
+    assert_eq!(fe.no_input_frames, menu::ATTRACT_FRAMES, "the count was not reset by the swallowed input");
+    // The skip action 0x19 — the port's Confirm — stops the movie and the page closes back to the
+    // opener [M 0x21c3d8:40-43 → Menu_StopMovie(0) 0x215a50; the 0x50 finish sends 0x5f].
+    assert!(fe.action(Action::Confirm));
+    assert!(!fe.attract_playing);
+    assert_eq!(fe.page, Page::Start, "back to the title [M the 0x5f re-open]");
+    assert_eq!(fe.no_input_frames, 0, "the opener's 0x4c reset [M Menu_ResetNoInputCount 0x20a408 tail]");
+    // The 45 s clock restarts: another full idle re-opens the attract.
+    for _ in 0..menu::ATTRACT_FRAMES { fe.tick(); }
+    assert!(fe.attract_playing);
+}
+
+#[test]
+fn the_movies_end_returns_to_the_opener() {
+    let mut fe = FrontEnd::new();
+    tick_to_title(&mut fe);
+    assert!(fe.action(Action::Confirm));
+    while fe.flow.get_state() == ST_MOVIE { fe.tick(); }
+    // Idle into the timeout on the main menu.
+    for _ in 0..menu::ATTRACT_FRAMES { fe.tick(); }
+    assert!(fe.attract_playing && fe.attract_opener == Page::Main);
+    // psiMovieFinished → the 0x50 finish → 0x5f back to the opener, count reset [M 0x20a1f0:39-65].
+    fe.attract_movie_finished();
+    assert!(!fe.attract_playing);
+    assert_eq!(fe.page, Page::Main, "the main menu comes back [M 0x21c858 case 0x5f]");
+    assert_eq!(fe.attract_movie, 0);
+    assert_eq!(fe.no_input_frames, 0, "the opener's 0x4c reset [M 0x20a7b0:37]");
+    // Sister: a no-op when the attract is not up — the state stands.
+    for _ in 0..5 { fe.tick(); }
+    assert_eq!(fe.no_input_frames, 5);
+    fe.attract_movie_finished();
+    assert_eq!(fe.no_input_frames, 5, "no attract, no reset");
+    assert_eq!(fe.page, Page::Main);
+}
+
+#[test]
+fn the_timeout_does_not_fire_mid_intro_even_past_2700_ticks() {
+    let mut fe = FrontEnd::new();
+    tick_to_title(&mut fe);
+    assert!(fe.action(Action::Confirm), "START → the intro run (the page flips to Main at once)");
+    // A long intro (the real FMVs run 850 ticks; stretch the countdown to model a slow disc):
+    // the game's P_INTRO page is the up-page during the movies and never checks the count
+    // [M 0x209e88 has no Menu_GetNoInputCount call] — the fire must wait for the main menu's 0x4c.
+    fe.flow.movie_frames = 100_000;
+    for _ in 0..(menu::ATTRACT_FRAMES + 500) { fe.tick(); }
+    assert!(!fe.attract_playing, "sister: no attract while the intro is up, even past 0xa8c idle ticks");
+    assert_eq!(fe.page, Page::Main);
+    // The intro pops → the main menu's 0x4c reset lands [M 0x20a7b0:37] → the 45 s clock restarts.
+    fe.flow.movie_frames = 1;
+    fe.tick();
+    assert!(!fe.intro_playing);
+    assert!(!fe.attract_playing, "the count was reset at the main menu's open — no fire");
+    for _ in 0..(menu::ATTRACT_FRAMES - 2) { fe.tick(); }
+    assert!(!fe.attract_playing, "sister: one tick short (the pop tick already counted 1)");
+    fe.tick();
+    assert!(fe.attract_playing, "the timeout fires 0xa8c ticks after the main menu's open");
+}

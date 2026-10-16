@@ -1025,6 +1025,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "nf-net"
+version = "0.0.1"
+
+[[package]]
 name = "nf-view"
 version = "0.0.1"
 dependencies = [
