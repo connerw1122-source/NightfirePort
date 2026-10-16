@@ -435,10 +435,9 @@ impl GameFlow {
         if self.get_state() == ST_MOVIE { self.pop_state(); true } else { false }
     }
 
-    /// The title→main-menu intro movie. The game plays it as background FMVs (`P_INTRO` 0x209e88
-    /// psiStartBackgroundMovie 0x07370048 then 0x07380048 [M 0x209e88:38-62]); the trimmed ISO's
-    /// /MOVIES/30_FPS PSS files are zeroed, so the port models the state machine only: a fixed frame
-    /// countdown, skippable [M GameFlow_Main case 6 pops on the skip action].
+    /// A front-end movie run (the boot P_INTRO logos, or P_ESTHERO's intro after START — see
+    /// `ESTHERO_MOVIE`): the state machine with a frame countdown that stands in when no real player
+    /// runs (the trimmed ISO's zeroed PSS files); with a player the run ends on psiMovieFinished.
     pub fn play_movie(&mut self, frames: u32) {
         self.push_state(ST_MOVIE);
         self.movie_frames = frames;
