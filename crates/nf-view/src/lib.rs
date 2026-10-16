@@ -25,6 +25,7 @@ pub mod devwin;
 pub mod hud;
 pub mod credits;
 pub mod menu;
+pub mod settings;
 pub mod movie;
 pub mod scene;
 pub mod replay;
@@ -1699,6 +1700,15 @@ impl App {
     /// After a menu action (key, click or hover): the page's sounds, the level it requested and its close.
     fn menu_after(&mut self) {
         let Some(fe) = self.fe.as_mut() else { return };
+        // settings-persist: the option pages' Confirm/Back raised the flag — write the option
+        // file (crates/nf-view/src/settings.rs). The headless render path never runs this, so
+        // a render can't touch the user's settings.
+        if fe.settings_save_pending {
+            fe.settings_save_pending = false;
+            if let Some(p) = settings::default_path() {
+                if let Err(e) = settings::save_opts(&p, &fe.opts) { eprintln!("[settings] {e}"); }
+            }
+        }
         // menu-sfx: the front end's sound events play straight through the driver's 2-D start —
         // `Menu_PlaySound`'s `Sound_Play(100.0f, id, 0, 0)` tail [M 0x1f3278] batched like the EE's
         // `SFXStart`. The loaded bank(s) decide audibility exactly as the game's lookup does (a
@@ -1761,7 +1771,11 @@ impl App {
         self.net = None;
         self.net_armed = None;
         let fe = self.fe.get_or_insert_with(menu::FrontEnd::new);
-        fe.net_notice = Some(msg.to_string());
+        // settings-persist: a freshly minted front end (fe was None) boots the option file's
+        // values, not the bare defaults — the pause page's options tabs show what the user set.
+        let (opts, warn) = settings::load_default();
+        if let Some(w) = warn { eprintln!("[settings] {w}"); }
+        fe.opts = opts;
         fe.page = menu::Page::MpJoin;
         fe.cursor = 0;
         fe.closed = false;
@@ -2531,7 +2545,14 @@ impl ApplicationHandler for App {
                             // Esc in a mission opens the pause page [S: the game pauses on Start].
                             if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL {
                                 let base = self.scene.sim.as_ref().map(|s| s.drones.mission.base_map).filter(|&b| b != 0 && b != u32::MAX).unwrap_or(self.level_code);
-                                let fe = self.fe.get_or_insert_with(menu::FrontEnd::new);
+                                let fe = self.fe.get_or_insert_with(|| {
+                                    let mut fe = menu::FrontEnd::new();
+                                    // settings-persist: same boot as the title's front end.
+                                    let (opts, warn) = settings::load_default();
+                                    if let Some(w) = warn { eprintln!("[settings] {w}"); }
+                                    fe.opts = opts;
+                                    fe
+                                });
                                 fe.flow.current_level = self.level_code;
                                 // RESTART reloads the running mission's base map [M 0x204408:138-141
                                 // Mission_BaseMapHCode()]: a level started straight from the command line never
@@ -3395,6 +3416,13 @@ pub fn run() -> Result<()> {
     app.level_code = u32::from_str_radix(level.trim_end_matches(".bin"), 16).unwrap_or(0);
     if front_end {
         app.fe = Some(menu::FrontEnd::new());
+        // settings-persist: the front end boots with the option file's values (missing or
+        // corrupt → the defaults, the warning on stderr). Window settings aren't persisted:
+        // the port has no size/fullscreen state yet (the window is winit's default, lib.rs
+        // resumed).
+        let (opts, warn) = settings::load_default();
+        if let Some(w) = warn { eprintln!("[settings] {w}"); }
+        app.fe.as_mut().unwrap().opts = opts;
         // The front end needs the game's strings even when the front-end map carries no Sim
         // (`Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` = USATxt.dat [M lib.rs load_impl]).
         match read_files_bin(&app.iso, "USATxt.dat") {

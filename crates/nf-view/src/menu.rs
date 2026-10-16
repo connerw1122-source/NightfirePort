@@ -1343,6 +1343,10 @@ pub struct FrontEnd {
     /// The values on entering an option page: Back restores them, Confirm keeps the edits (the hint's ~A Confirm /
     /// ~B Back) [S].
     pub opts_saved: Option<std::collections::HashMap<u32, i32>>,
+    /// settings-persist: an option page (CnAdvanced / CnMp / CnAv) was left through Confirm or Back —
+    /// the host must write the option file (crates/nf-view/src/settings.rs). The model stays pure;
+    /// the host drains the flag in `menu_after` (the same split as `secret.pending_submit`).
+    pub settings_save_pending: bool,
     /// The codename the "Edit <name>" wheel edits ("Default" for the default profile) [L PCSX2 m30 "Edit Default"].
     pub cn_name: String,
     /// The results page's fields, built by `results_enter` (P_NFRESULTS case 0x4c). None until
@@ -1584,6 +1588,7 @@ impl FrontEnd {
             profile: None,
             opts: default_opts(),
             opts_saved: None,
+            settings_save_pending: false,
             cn_name: String::new(),
             // front-end-chain (each new field on its own line [WORKLOG lesson 4]).
             results: None,
@@ -3038,6 +3043,8 @@ impl FrontEnd {
                     // then the page closes back to the wheel (Manager 0x5f(0,0)).
                     Action::Confirm => {
                         self.opts_saved = None;
+                        // settings-persist: the edits stand — the host writes the option file.
+                        self.settings_save_pending = true;
                         if self.page == Page::CnAv { self.av_screen_snapshot(); }
                         self.enter_page(Page::CnMenu); self.cursor = back_row; return true;
                     }
@@ -3047,6 +3054,9 @@ impl FrontEnd {
                         // when no subscreen was opened; a subscreen trip re-snapshots on re-enter,
                         // so the stored baseline is always the right one [M 0x214818:79-85].
                         if self.page == Page::CnAv { self.av_screen_restore(); }
+                        // settings-persist: backed out — the file re-saves the RESTORED values
+                        // (idempotent when it already holds them; repairs a missing/corrupt file).
+                        self.settings_save_pending = true;
                         self.enter_page(Page::CnMenu); self.cursor = back_row; return true;
                     }
                     _ => return false,
