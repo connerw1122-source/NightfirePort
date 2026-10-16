@@ -201,7 +201,7 @@ impl Player {
             // (0x107100).
             let pcm: Vec<i16> = m.audio().map(|a| a.decode().into_iter().flat_map(|[l, r]| [l, r]).collect()).unwrap_or_default();
             let rate = m.audio().map(|a| a.header.rate).unwrap_or(48000) as f64;
-            let (ring, out) = open_pcm_out(&pcm, rate);
+            let (ring, out) = open_pcm_out(&pcm, rate, looping);
             // The ONE decoder path: MovieStream's closed-GOP worker (fix-menu-movies'), now under
             // the mission-flow codes too.
             let stream = match MovieStream::start(&m, looping) {
@@ -252,12 +252,9 @@ impl Player {
                         // The frame's audio slice goes out with its picture (the game feeds the IOP
                         // ring from the same callback that produces the frame [M 0x107100]); a
                         // looping movie restarts the walk with the video [M 0x00108060].
-                        if !self.pcm.is_empty() {
-                            let per_frame = self.pcm.len().div_ceil(s.pictures.max(1));
-                            let end = (self.pcm_at + per_frame).min(self.pcm.len());
-                            if let Some(ring) = &self.ring { push_pcm(ring, &self.pcm[self.pcm_at..end]); }
-                            self.pcm_at = if end >= self.pcm.len() && self.looping { 0 } else { end };
-                        }
+                        // movie-audio: the audio is the device's own stream (`open_pcm_out` plays the
+                        // whole track at its rate); per-picture pushes starved and dropped it.
+                        let _ = (&self.pcm, &mut self.pcm_at, &self.ring);
                         let rgba = nf_formats::mpeg2::yuv420_to_rgb8(&f);
                         self.last = Some((f.width as u32, f.height as u32, rgba));
                     }
@@ -290,41 +287,39 @@ fn push_pcm(ring: &std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<i1
 }
 
 #[cfg(feature = "movies")]
-fn open_pcm_out(pcm: &[i16], rate: f64) -> (std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<i16>>>, Option<PcmOut>) {
+fn open_pcm_out(pcm: &[i16], rate: f64, looping: bool) -> (std::sync::Arc<std::sync::Mutex<std::collections::VecDeque<i16>>>, Option<PcmOut>) {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
-    // movie-audio: the ring starts EMPTY — `present` pushes each picture's slice from sample 0 (the old
-    // pre-fill of the first 24,000 samples played the opening quarter-second twice).
-    let _ = pcm;
-    let ring: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::with_capacity(48_000)));
-    if nf_audio::silent() { return (ring, None); }
+    let ring: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::new()));
+    if nf_audio::silent() || pcm.len() < 2 { return (ring, None); }
     let Some(device) = cpal::default_host().default_output_device() else { eprintln!("movie: no output device; running silent"); return (ring, None) };
     let Ok(cfg) = device.default_output_config() else { eprintln!("movie: no output config; running silent"); return (ring, None) };
-    let dr = ring.clone();
     let dev_rate = cfg.sample_rate() as f64;
     let ch = cfg.channels() as usize;
-    // movie-audio: a FIFO drain. Each device frame takes the current source stereo pair; the source
-    // advances rate/dev_rate pairs per device frame (48 kHz → the device rate), popping consumed pairs.
-    // An empty ring (the picture fell behind) outputs silence instead of repeating old samples. The old
-    // callback indexed the ring by an ever-growing position modulo its length (a scramble) and the
-    // stream was never `play()`ed — WASAPI streams stay paused until then, so movies were silent.
-    let mut frac = 0.0f64;
+    // movie-audio: the WHOLE track plays from memory at the device's own clock — the way a PS2
+    // movie's audio is the master the IOP streams continuously [M audioDecSendToIOP 0x107100 keeps
+    // the SPU2 ring full]. Feeding it one 33 ms slice per decoded picture (the old ring) starved it
+    // whenever the picture slipped (gaps = static) and dropped samples when it caught up (pitch
+    // jumps). Linear interpolation from the track's 48 kHz to the device rate.
+    let src: Arc<Vec<i16>> = Arc::new(pcm.to_vec());
+    let frames = src.len() / 2;
     let step = rate / dev_rate;
+    let mut pos = 0.0f64;
     let err = |e: cpal::Error| eprintln!("movie audio: {e}");
     let stream = match cfg.sample_format() {
         cpal::SampleFormat::F32 => device.build_output_stream(cpal::StreamConfig::from(cfg.config()), move |d: &mut [f32], _| {
-            let Ok(mut q) = dr.lock() else { d.fill(0.0); return };
             for frame in d.chunks_mut(ch.max(1)) {
-                let (l, r) = if q.len() >= 2 { (q[0], q[1]) } else { (0, 0) };
-                for (k, out) in frame.iter_mut().enumerate() {
-                    *out = if k % 2 == 0 { l } else { r } as f32 / 32768.0;
+                if pos >= frames as f64 - 1.0 {
+                    if looping { pos = 0.0; } else { frame.fill(0.0); continue; }
                 }
-                frac += step;
-                while frac >= 1.0 {
-                    frac -= 1.0;
-                    if q.len() >= 2 { q.pop_front(); q.pop_front(); }
-                }
+                let i = pos as usize;
+                let t = (pos - i as f64) as f32;
+                let at = |k: usize, c: usize| src[2 * k + c] as f32 / 32768.0;
+                let l = at(i, 0) * (1.0 - t) + at(i + 1, 0) * t;
+                let r = at(i, 1) * (1.0 - t) + at(i + 1, 1) * t;
+                for (k, out) in frame.iter_mut().enumerate() { *out = if k % 2 == 0 { l } else { r }; }
+                pos += step;
             }
         }, err, None).ok(),
         _ => { eprintln!("movie audio: unsupported sample format; running silent"); None }
