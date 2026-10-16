@@ -16714,3 +16714,16 @@ the room/level reverb: the SPU2 reverb registers the game writes [M SFX.IRX reve
 the level's room reverb data]. Golden tests (numbers only): the resampler on a synthetic VAG
 block matches the table's expected output; each level's reverb preset decodes to the register set
 the game writes. Tests silent (NF_SILENT). Branch created from origin/master 170bcf01.
+- 2026-10-16 s/spu-gaussian-reverb (task 725, GAPS G-032): the Gaussian table was already on master
+  (nocash, golden-pinned) — cross-checked it instead of churning: identical entry-for-entry to
+  duckstation's `gauss` (single-shift variant differs ±1–2 LSB; divergence recorded, nocash kept).
+  Ported the room reverb register-exact in nf-audio/src/reverb.rs: the 10 Sony per-mode preset
+  tables (ps2sdk libsd effect.c, cross-checked against PCSX2 V_Reverb/DoReverb/RegTable), the game's
+  mode-4 STUDIO_3 setup (EEA 0x1FFFFF/0x1DFFFF, effects bit 7; the attr's delay 30/feedback 200 are
+  libsd-ignored for non-ECHO modes), psiSetReverb's EVOL chain, SFXSetEnvironment/Update/Reset with
+  the −26472 underwater magic and +16/−4, ±4 ramps, and the VMIXEL/VMIXER (0x1900/0x1b00) per-voice
+  wet-mix enables; Output's single-comb stand-in now runs the SPU2 equations (IIR + 4 combs + 2 APFs
+  over the effect area, L/R alternating at half rate, delay regs ×4). 6 numbers-only golden tests;
+  nf-audio lib 17/0. Suite: 1809 passed / 145 failed / 72 ignored — all 145 are NF_ISO-missing
+  environmental panics (no disc fits in 337 MB); nothing touched fails. Per-room depth VALUES remain
+  G-016. Report: docs/reports/spu-gaussian-reverb.md.
