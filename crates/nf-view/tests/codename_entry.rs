@@ -144,8 +144,9 @@ fn reserved_name_refused_with_box_6_label_2c0() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The accept: the normalized name creates the profile through the save code, and the flow
-/// routes to the wheel 0x4000001d [M C_KEYBOARD 0x213a98:53-65; strupr write-back 0x1f9930:77].
+/// The accept: the normalized name creates the profile through the card flow ("Saving data…"
+/// runs, then the completion routes to the wheel 0x4000001d) [M C_KEYBOARD 0x213a98:53-65;
+/// strupr write-back 0x1f9930:77; the pre-wheel write under msg 9 = PS2_DoCardFlow's 0x26c].
 #[test]
 fn valid_name_creates_saves_and_routes_to_the_wheel() {
     let dir = card_dir("create");
@@ -156,11 +157,19 @@ fn valid_name_creates_saves_and_routes_to_the_wheel() {
     assert!(!path.exists(), "sister: the file must not exist before the accept");
     type_name(&mut fe, "testing"); // lower-case on purpose — the game uppercases [M 0x1f9930:62]
     assert!(fe.cn_press(FrontEnd::CN_KEY_CONFIRM));
+    // The write runs in the flow's tick [M HandlePS2CardState 0x110b98]; the message is the
+    // game's "Saving data…" (msg 9, Txt 0x26c, no buttons) [M 0x10fa08 sub-8..].
+    assert_eq!(fe.card_message(), Some((9, 0x26c)), "the saving message is up");
+    assert_eq!(fe.card.buttons, 0, "progress messages carry no buttons [M 0x217bd8]");
+    assert_eq!(fe.page, Page::CnName, "the wheel waits for the flow");
+    fe.tick();
     assert!(path.exists(), "the chain is on the card [M LS_Save 0x1f7de8:21-29]");
     assert_eq!(fe.cn_typed_name(), "TESTING", "the buffer holds the normalized name [M 0x1f9930:77]");
     assert!(fe.profiles.iter().any(|p| p == "TESTING"), "the list re-enumerates");
     assert_eq!(fe.active_profile.as_deref(), Some("TESTING"));
     assert_eq!(fe.cn_exit, Some(0x4000_001d), "DAT_002e1ad8's continuation [M 0x213a98:58]");
+    assert_eq!(fe.card.ops_done, 1, "the trigger wrote once");
+    assert_eq!(fe.card_message(), None, "the box closed on completion [M 0x217bd8:62-71]");
     assert_eq!(fe.page, Page::CnMenu);
     // The stored name round-trips through the game's own encode/decode.
     let back = nf_game::profile::Profile::load_file(&path).unwrap();
@@ -168,8 +177,9 @@ fn valid_name_creates_saves_and_routes_to_the_wheel() {
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// An existing codename opens the overwrite box (box 4) and refuses [M P_CNNAME 0x50:62-76 —
-/// the port keeps create_codename's MemCard_ASK_OVERWRITE refusal].
+/// An existing codename opens the card flow's overwrite question (box 4, msg 4, Txt 0x27d,
+/// Yes+Cancel) [M P_CNNAME 0x50:62-76 + ASK_OVERWRITE 0x10ee38]: YES overwrites the file,
+/// Cancel keeps it.
 #[test]
 fn an_existing_codename_asks_the_overwrite_box() {
     let dir = card_dir("exists");
@@ -178,15 +188,38 @@ fn an_existing_codename_asks_the_overwrite_box() {
     fe.cn_open(0x4000_0025);
     type_name(&mut fe, "TWICE");
     assert!(fe.cn_press(FrontEnd::CN_KEY_CONFIRM));
-    assert!(!fe.cn_press(FrontEnd::CN_KEY_CONFIRM), "the second accept is refused — the file exists");
+    fe.tick();
+    let original = nf_game::profile::Profile::load_file(&nf_game::profile::Profile::path_in(&dir, "TWICE")).unwrap();
+    fe.unlocked[3] = true; // an edit the overwrite must capture
+    assert!(fe.cn_press(FrontEnd::CN_KEY_CONFIRM), "the second accept arms the question");
     assert_eq!(fe.cn_box, Some((4, 0)), "the overwrite question [M P_CNNAME 0x50:62-76]");
+    assert_eq!(fe.card_message(), Some((4, 0x27d)), "msg 4 binds Txt 0x27d [M 0x217bd8 case 4]");
+    assert_eq!(fe.card.buttons, 0x6, "Yes+Cancel [M ASK_OVERWRITE 0x10ee38 PS2CardFlow = 6]");
+    assert!(fe.card.awaiting, "the answer is expected [M DAT_002462d9]");
+    // Cancel keeps the original file [M 0x10ee38's PSIOP_State = 4 abort].
     fe.cn_dismiss_box();
     assert_eq!(fe.cn_box, None, "sister: dismissing clears the box");
+    assert!(fe.card.failed && fe.card.ops_done == 1, "the abort is the terminal failure [M Save_State 8]");
+    assert_eq!(nf_game::profile::Profile::load_file(&nf_game::profile::Profile::path_in(&dir, "TWICE")).unwrap().progress.nightfire_status(),
+        original.progress.nightfire_status(), "the abort left the file alone");
+    // YES replaces it [M the Yes arm pops back into the write]. The overwritten file is the
+    // fresh template again — the game maps Menu_MapDefaultCodename's template onto the slot
+    // before the save [M 0x1f7fa8], so the create path never carries the front end's edits.
+    assert!(fe.cn_press(FrontEnd::CN_KEY_CONFIRM));
+    assert!(fe.card_answer(nf_view::menu::BTN_YES), "Yes continues the save [M 0x10ee38's == 2 arm]");
+    fe.tick();
+    assert_eq!(fe.card.ops_done, 2, "the overwrite wrote once");
+    assert_eq!(fe.page, Page::CnMenu, "the wheel takes over after the write");
+    let replaced = nf_game::profile::Profile::load_file(&nf_game::profile::Profile::path_in(&dir, "TWICE")).unwrap();
+    assert_eq!(replaced.progress.nightfire_status(),
+        nf_game::profile::Profile::default_codename("TWICE").progress.nightfire_status(),
+        "the overwrite wrote the fresh template [M Menu_MapDefaultCodename 0x1f7fa8]");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
-/// The Edit list's ~X delete: request → YES removes the file, Back keeps it [M C_SBCNSELECT
-/// 0x212f58 case 0x5e → box mode 3 psiDeleteData 0x1f7de8:38-57].
+/// The Edit list's ~X delete: the ASK_DELETE question (msg 0xd, Txt 0x3e5, Delete+Cancel),
+/// YES removes under "Deleting data…", Back keeps it [M C_SBCNSELECT 0x212f58 case 0x5e →
+/// box mode 3 → ASK_DELETE 0x10ec98 / DELETE_DATA 0x110320].
 #[test]
 fn the_edit_list_delete_removes_the_file() {
     let dir = card_dir("delete");
@@ -195,6 +228,7 @@ fn the_edit_list_delete_removes_the_file() {
     fe.cn_open(0x4000_0025);
     type_name(&mut fe, "DROPPER");
     assert!(fe.cn_press(FrontEnd::CN_KEY_CONFIRM)); // created + active
+    fe.tick();
     fe.page = Page::CnSelect;
     fe.reload_profiles();
     fe.cursor = 2; // the first saved row [M Menu_EnumSaves 0x1f7b78: the card's rows follow the defaults]
@@ -202,17 +236,24 @@ fn the_edit_list_delete_removes_the_file() {
     assert!(path.exists(), "sister: the file must exist before the delete");
     assert!(fe.action(Action::Side), "the ~X arms the confirm");
     assert_eq!(fe.cn_delete_row, Some(2));
-    assert!(fe.action(Action::Back), "NO keeps the file [M the card-flow cancel]");
+    assert_eq!(fe.card_message(), Some((0xd, 0x3e5)), "the delete question [M 0x217bd8 case 0xd]");
+    assert_eq!(fe.card.buttons, 0x24, "Delete+Cancel [M ASK_DELETE 0x10ec98 PS2CardFlow = 0x24]");
+    assert!(fe.action(Action::Back), "NO keeps the file [M the ASK_DELETE cancel]");
     assert!(path.exists());
     assert!(fe.action(Action::Side));
-    assert!(fe.action(Action::Confirm), "YES deletes [M psiDeleteData 0x1f7de8:38-57]");
+    assert!(fe.action(Action::Confirm), "YES runs the walk [M 0x10ec98's == 0x20 arm]");
+    assert_eq!(fe.card_message(), Some((0xc, 0x3e6)), "\"Deleting data…\" while the walk runs [M 0x110320 sub-5]");
+    fe.tick();
     assert!(!path.exists());
     assert!(fe.profiles.is_empty(), "the list re-enumerates [M P_CNSELECT 0x6e]");
+    assert_eq!(fe.card.ops_done, 2, "create + delete each wrote once");
     let _ = std::fs::remove_dir_all(&dir);
 }
 
 /// The wheel's LAST row is Save Codename [M C_SBCNOPTIONS 0x213528 case 6 — a saved codename
-/// runs box mode 1 = LS_Save(0x2e1ae8)]: the port writes the loaded profile in place.
+/// runs box mode 1 = LS_Save(0x2e1ae8)]: the flow writes the loaded profile in place (with the
+/// overwrite question — the file exists [M 0x10fa08 sub-7]), then the completion leaves to the
+/// list (the queued page message [M 0x217bd8:62-64]).
 #[test]
 fn the_wheel_s_last_row_saves_the_codename() {
     let dir = card_dir("save");
@@ -220,14 +261,19 @@ fn the_wheel_s_last_row_saves_the_codename() {
     fe.set_profile_dir(dir.clone());
     fe.cn_open(0x4000_0025);
     type_name(&mut fe, "SAVEME");
-    assert!(fe.cn_press(FrontEnd::CN_KEY_CONFIRM)); // create + land on the wheel, cursor 1
+    assert!(fe.cn_press(FrontEnd::CN_KEY_CONFIRM)); // create rides the flow
+    fe.tick();
     assert_eq!(fe.page, Page::CnMenu);
     let before = nf_game::profile::Profile::load_file(&nf_game::profile::Profile::path_in(&dir, "SAVEME")).unwrap();
     assert_eq!(before.progress.nightfire_status() & (1 << 5), 0, "sister: the bit must be unset first");
     fe.unlocked[5] = true; // the edit the save must capture
-    fe.cursor = 6; // the wheel's last row [L CN_MENU[6] label 0x1f4]
+    fe.cursor = 6; // the wheel's last row [L CN_MENU[6] label 0x1f4 = "Save Codename" [D USATxt]]
     assert!(fe.action(Action::Confirm), "Save Codename consumes the press");
-    assert_eq!(fe.page, Page::CnSelect, "the wheel leaves to the list [M case 6's iris]");
+    assert_eq!(fe.card_message(), Some((4, 0x27d)), "the existing file asks the overwrite question");
+    assert!(fe.card_answer(nf_view::menu::BTN_YES), "YES confirms [M 0x10ee38]");
+    assert_eq!(fe.page, Page::CnMenu, "the wheel leaves only after the write");
+    fe.tick();
+    assert_eq!(fe.page, Page::CnSelect, "the queued page message fired [M 0x217bd8:62-64]");
     let after = nf_game::profile::Profile::load_file(&nf_game::profile::Profile::path_in(&dir, "SAVEME")).unwrap();
     assert_ne!(after.progress.nightfire_status() & (1 << 5), 0, "the save wrote the edit");
     // A default codename ("Default" is not a card file) re-maps and leaves without a save [M case 6's
