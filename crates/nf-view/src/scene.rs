@@ -5368,7 +5368,13 @@ impl Scene {
                 let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
                 for (meshes, slots, kind) in [
                     (&decal_meshes, DECAL_SLOTS, 0u8),
-                    (&casing_meshes, nf_game::casing::POOL, 1u8),
+                    // casings-persist: the pool sizes to KEEP_MAX, not POOL — the PC-port "Keep
+                    // shell casings: N" option grows the sim's pool past the game's 32 [S
+                    // Casings::set_keep] and every kept casing needs a draw slot. The per-frame
+                    // pose draws `sim.drones.casings.list.get(slot)` only while that slot carries
+                    // this mesh and is flying (state 0), so at the game's default (keep = 0,
+                    // 32 slots) slots 32..127 pose `far` — no visual change.
+                    (&casing_meshes, nf_game::casing::KEEP_MAX, 1u8),
                     (&debris_meshes, DEBRIS_SLOTS, 2u8),
                 ] {
                     for &mesh in meshes {
