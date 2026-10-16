@@ -399,3 +399,71 @@ fn driving_crp_structure_matches_the_consumer_split() {
     // Sister: the track split is load-bearing.
     assert_ne!(tracks, 7);
 }
+
+// ---------------------------------------------------------------------------
+// drive-track-mesh: the article/mesh layer over the track containers
+// (crates/nf-formats/src/crp_mesh.rs, golden/crp_mesh_golden.tsv).
+
+/// The canonical per-track mesh digest row: counts over the article pool + the relocated module
+/// image (numbers only; same form `nf-extract crp-mesh-digest` prints, golden/crp_mesh_golden.tsv).
+fn mesh_canonical(viv: &str, idx: usize, entry: &str, dec: &[u8]) -> String {
+    use nf_formats::crp::Crp;
+    use nf_formats::crp_mesh::TrackModule;
+    let c = Crp::parse(dec).unwrap_or_else(|e| panic!("{viv}#{idx} {entry}: {e}"));
+    let track = c.track_name().unwrap().unwrap_or("-").to_owned();
+    let articles = c.track_articles().unwrap_or_else(|e| panic!("{entry}: {e}"));
+    let module = TrackModule::load(&c).unwrap_or_else(|e| panic!("{entry}: {e}"));
+    let coll = c.collision_census().unwrap();
+    let model_symbols = module.symbols.iter().filter(|s| s.name.starts_with("__Model:::")).count();
+    let geoprims = module.geoprim_names().len();
+    let parts: usize = articles.iter().map(|a| a.parts.len()).sum();
+    let sha1: String = sha1_hex(&module.image);
+    format!(
+        "{viv}#{idx}\t{entry}\t{track}\t{}\t{parts}\t{model_symbols}\t{geoprims}\t{}\t{}\t{}\t{sha1}",
+        articles.len(),
+        module.relocations,
+        coll.ci_total_items,
+        coll.cn_records,
+    )
+}
+
+#[test]
+fn driving_track_mesh_layer_matches_the_golden() {
+    let Some(dir) = driving_dir() else { return };
+    let golden_path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("golden/crp_mesh_golden.tsv");
+    let golden = std::fs::read_to_string(&golden_path).expect("golden/crp_mesh_golden.tsv");
+    let mut expected: Vec<String> = golden.lines().skip(1).map(str::to_owned).collect();
+    expected.sort();
+    let mut got: Vec<String> = Vec::new();
+    for name in MISSION_VIVS {
+        let (g, blobs) = load_viv(&dir, name);
+        let (idx, e) = g.entries.iter().enumerate()
+            .find(|(_, x)| x.name.to_ascii_lowercase().starts_with("data\\track\\") && x.name.to_ascii_lowercase().ends_with(".crp"))
+            .unwrap_or_else(|| panic!("{name}: no data\\track\\*.crp entry"));
+        let blob = &blobs[idx];
+        let dec = if nf_formats::refpack::is_refpack(blob) {
+            nf_formats::refpack::decompress(blob).unwrap_or_else(|err| panic!("{}: {err}", e.name))
+        } else {
+            blob.clone()
+        };
+        got.push(mesh_canonical(name, idx, &e.name, &dec));
+    }
+    got.sort();
+    assert_eq!(got.len(), expected.len(), "golden row count");
+    for (g, e) in got.iter().zip(expected.iter()) {
+        assert_eq!(g.as_str(), e.as_str(), "\n got: {g}\nwant: {e}");
+    }
+    // Sister: a tampered article name must change the digest (the layer is load-bearing, not a
+    // pass-through). Flip a byte inside the first article's Name payload region of paris and
+    // expect the module sha1 row to differ somewhere other than the identity.
+    let (g, blobs) = load_viv(&dir, "MIS01.VIV");
+    let (idx, e) = g.entries.iter().enumerate()
+        .find(|(_, x)| x.name.to_ascii_lowercase().starts_with("data\\track\\")).unwrap();
+    let mut dec = nf_formats::refpack::decompress(&blobs[idx]).unwrap();
+    let mid = dec.len() / 2;
+    dec[mid] ^= 0xff;
+    let tampered = mesh_canonical("MIS01.VIV", idx, &e.name, &dec);
+    let clean = got.iter().find(|r| r.starts_with("MIS01")).unwrap();
+    assert_ne!(tampered.as_str(), clean.as_str(),
+        "a flipped decompressed byte must change the digest");
+}

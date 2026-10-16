@@ -13275,6 +13275,45 @@ Stage Summary:
   the 3 slim-ISO disc_golden allows. Full background sweep impossible in this sandbox (jobs
   killed between tool calls). Report docs/reports/drive-elf-map.md pushed; finish.sh acked
   (OK done 501-drive-elf-map); ntfy 429 on all three fallbacks (recorded in the report).
+
+## nfstats-model (2026-10-15, branch s/nfstats-model) — start
+- (18:53 UTC) Branch s/nfstats-model cut from origin/master 0157588d (has tools/test/suite.py).
+  Task: Mission Stats page model — P_NFSTATS_Handler 0x209938: rows (Bond Moves, Opponents
+  Dispatched/Subdued/Surrendered, Stealth, Accuracy, Health, Time, 007 Bonus), Current from
+  PlrMissionStats/progress.rs, Target from the level table, TOTAL scoring formulas + difficulty
+  bonus, formatting (SeparateNumber, mm:ss, ----, %), stats_rows() getter (strings + ids),
+  headless mission-end test + 07000005 PCSX2 golden numbers. Docs first, no drawing.
+
+## nfstats-model (2026-10-15, branch s/nfstats-model)
+- (18:53-19:15) Research: P_NFSTATS_Handler 0x209938 (the page id is 0x40000037 via
+  Handler_HandleMessage 0x2029e0:448), PlrStat_GetScore 0x1984b0 (the scorer), SeparateNumber
+  0x1dec78, Timer_Seconds2String 0x1deaa8, Menu_AddRow 0x201c10 / Menu_AddRowPercentage 0x201df0,
+  the results page's case 0x5e/0x5d key arms (0x208e78:216-229), Button_Update 0x1ef948 (msg map:
+  0x4b confirm / 0x5d back / 0x5e side). The page: header 0x1000204/0x10001e1/0x10001e2/0x163, the
+  label-only Opponents row 0x15a + the blank spacer 0x30d2d8, the stealth trio gated on the entry's
+  +0x38 flag.
+- (19:15-19:30) docs/systems/mission-stats.md + crates/nf-game/src/stats.rs (separate_number,
+  timer_string, StatsRow, stats_rows — the handler's exact order/formats) + the flow: Page::Stats
+  (0x40000037), FrontEnd::stats_enter/mission_stats, results Side → stats, results Back → dossier
+  [M 0x208e78 case 0x5d], stats Back → results [S the script target unparsed].
+- (19:30-19:45) THREE scorer misports found and fixed in get_score (each caught by a test, the
+  golden capture is the disproof): (1) the time row under-par capped at max — the game computes
+  ceil(max × par / max(elapsed_s, 1)) in BOTH branches [M 0x1984b0:118-170; 01:19/09:00 → 170,887];
+  (2) row 4 stealth within par scored 0 via the proportional fall-through — the game awards the
+  FULL max [M :225-233]; (3) the accuracy value started at 0 with no shots — the game copies the
+  par (100) [M :74-78]. Plus the missing ceil₁ₑ₋₅ on the generic/stealth raws [M :181-185/:213-218]
+  and the ratio from raw/max on row 7 [M :234-253].
+- (19:45-19:55) Test updates where the old misports were locked in: progress.rs lib tests ×4,
+  progress_remainder_live (the driving row-7 ratio → the 2-decimal grid), fix_scores_handoff_live
+  (row 4 within-par full, row 7 ceil, expect_generic ceil).
+- (19:55) Suite (the sandbox reaps background jobs — the nohup suite.py died in <60 s, canary
+  checked; foreground chunks): nf-game 188 lib + 35/4/1/2/2 integration green; nf-formats 9+1+2+1+73
+  green with exactly the 3 allowed disc_golden fails; nf-audio green; nf-view lib 9 + menus_flow 36
+  + mission_stats_flow 3 + front_end_chain 1 + fix_progress_live 3 + fix_progress_detected_hook 2 +
+  fix_scores_handoff_live 1 + progress_remainder_live 4 + progress_remainder_failfirst 3 +
+  menu_live 12 + menu_backdrop_still 1 + menu_movies 2 + menu_woman_live 5 + dev_menu_flow 1 green.
+  New tests: nf-game mission_stats_rows 7 (incl. the 07000005 PCSX2 golden numbers) + nf-view
+  mission_stats_flow 3.
 ## drive-crp-format (2026-10-15, branch s/drive-crp-format) — started 17:00 UTC
 
 Task: driving phase 1 — decode the .crp container (chunks, tables, the track mesh, the car model and its parts) from the data and DRIVING.ELF's consumer (task 501's map names it, or find it from the BIGF read of the track entry), write docs/formats/crp.md, and add a parser with golden numbers for every .crp in the 23 archives (NF_DRIVING or the full retail image). Files: crates/nf-formats/src/crp.rs (new), crates/nf-formats/tests/driving_golden.rs. Merge s/drive-refpack if not on master (done: merged 5a0e53f9). Deadline: stop new work 18:32 UTC, sandbox expires ~18:52 UTC.
@@ -13513,6 +13552,21 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   per-crate command above is the substitute. Crates touched: nf-formats, nf-extract.
 - Left: triangle connectivity (EAGL GeoPrim consumer 0x262000–0x2a7000), DMA head words,
   mission-car goldens, the main agent's render/parity pass.
+## async-level-load (2026-10-15, branch s/async-level-load) — started 21:16 UTC
+Task: load levels off the render thread so the loading screen animates. The port draws the loading
+screen (ResetMap_GenLoadScreen 0x1d5de0) once, then loads synchronously in the window thread
+(App level switch in crates/nf-view/src/lib.rs, load_with_carry), so the six LOADING dots can't
+animate (the game animates them from the vblank interrupt every 11 vblanks, ping-pong 0→6→0 —
+loading::dots_lit). Do: move the level build (load_with_carry / Scene construction — everything
+but GPU upload) to a worker thread; the window keeps redrawing the loading screen with
+dots_lit(ticks) until the scene is ready, then swaps it in (renderer rebuild on the main thread).
+Keep every existing behaviour (warm/cold saves, the restart checkpoint, movie-wrapped loads,
+pending_weapon_assets). Tests: the load path still produces the same scene; a test that the frame
+loop keeps ticking during a load (headless fake slow load, the dot count advances).
+
+Work Log (async-level-load):
+- (21:16) Sandbox reused (repo + work/ + ISO present). Branch s/async-level-load created from
+  origin/master @ bfdc7e25, pushed with this entry.
 - Merge with origin/master (f59b47fb): master's Page::CnName (the secret-codes worker's cheat grid) kept as the one page id 0x40000020; my profile-name mode rides the same variant behind cn_profile_mode (cn_open arms it; the wheel's row 0 = cn_open(PAGE_CN_MENU) leaves Secret Unlocks untouched); the CnMenu row 6 = Save Codename semantics restored on top of master's row-0/snapshot arm. Merged tree: cargo check clean, codename_entry 14/14 + secret 8/8 + menus_flow 36/36. Suite runner: build ok (348 binaries), --only codename_entry,nf-game,menus_flow = 50 passed / 0 failed / 0 ignored; the full run doesn't fit the window (build alone 338 s; detached processes get killed here). finish.sh closed 616-codename-entry in done/; ntfy 429 daily quota on curl+urllib (wget exit 0, ambiguous) — exact outputs in the report.
 
 ## objective-hints (2026-10-15, branch s/objective-hints)
@@ -13529,6 +13583,32 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   7 (last-row selection, per-row hints, the 0x31d fallback, modal, Back-vs-unpause, clamps, NF_ISO binds 0x202/0x31d/
   0x266 from USATxt.dat), each with a sister assertion; menus_flow.rs updated to the new row struct. All green on the
   merged tree (ce62cd7e). Doc: docs/systems/objective-hints.md; mission.md's "hint never drawn" + gap lines corrected.
+
+## menu-sfx (2026-10-15, branch s/menu-sfx)
+- Task started: port the front end's and pause page's sounds. Plan: (1) research which SFX ids/banks
+  Menu_InputAction 0x1f1f40 / Manager_SendMessage 0x21c858 / the wheel/list/spinner handlers /
+  C_GCPAUSE_Handler 0x204408 play and when (docs first), (2) emit sound events from FrontEnd::action()
+  for the host to play through nf-audio, (3) tests: each action on each page emits the game's sound id,
+  NF_SILENT, numbers only. No drawing.
+- menu-sfx (2026-10-15, branch s/menu-sfx): ported the front end's and pause page's sounds as a
+  host-played event list (no drawing, no audio calls from the FrontEnd — tests stay silent).
+  Docs first: docs/systems/menu-sfx.md — Menu_PlaySound 0x1f3278's MENU_SOUND→bank-id map
+  (0/1/2→0x1da gated flags&1/2/4, 3/5→0x1d8, 4/6→0x1d9, 7→0x1da, 8→0x1d9 gated &8, 9→silent
+  [M 0x1f3278]), the per-widget call sites (Button/Label/Checkbox/Combo/Memo/Scroll Updates),
+  the same-page focus tick [M Page_Update 0x21edc8:38-53], the △ buzz+pop [M MenuManager_Update
+  0x21c3d8:78-105 → msg 0x5f], the twelve handlers' menu_movie-gated open pair SFXStart
+  (0x1d7)+(0x470) on msg 0x4c, and the banks: 07000048 loads hash 0xC/0x38 alternately
+  [M Sound_Ready 0x1dceb8:91-96], SB_0.SFX={0x1d7,0x1d8,0x1d9,0x1da,0x1db} vs
+  SB_1.SFX={0x1d8,0x1d9,0x1da,0x1db,0x470} [D the disc's effect tables] — one half of the pair
+  sounds per visit; mission banks duplicate 0x1d8/0x1d9/0x1da [D SB_4/SB_5], which is why the
+  pause blips play over a mission. Port: MenuSfx{sound,id} + FrontEnd.sfx_out/drain_sfx(),
+  enabled_sound_flags=0x0b [L 0x30d184], menu_movie, sfx()/focus_moved()/enter_page()/open_pair_sfx()
+  emissions in action()/opt_step/cn_move (68 move sites, 65 page transitions funnelled). Tests:
+  nf-view tests/menu_sfx_flow.rs 9/9 (numbers only, no disc reads, each with a sister that can
+  fail) + no regressions: menus_flow 36/36, codename_entry 14/14, mp_menu_flow 9/9,
+  objective_hints_flow 7/7, campaign_flow_live 5/5. Background suite on the pre-edit tree:
+  3 expected disc_golden fails + walkreal_07000001 + fix_0c_pylon×2 (no GPU adapter in this
+  sandbox) — pre-existing, see docs/reports/menu-sfx.md.
 ## drive-physics (2026-10-15, branch s/drive-physics) — DONE 21:25 UTC
 - Added the real-file tests: the shipped vanquish.atr and Physics\Rigid\default.tun, extracted from
   MIS01.VIV through the repo's BIGF+RefPack readers (gated on /home/z/driving-refpack, override
@@ -13590,3 +13670,146 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   final tree, the PTP-persisted DAT restore nuance ([S] noted in the doc), the main agent's
   audible/visual pass (menus must SOUND — no render checks apply; live checks listed in the
   report if wanted).
+## drive-track-mesh (2026-10-15, branch s/drive-track-mesh)
+- Started: decode CRP track geometry into meshes (verts/indices/UVs/texture refs per section, collision/road surface if separable). Plan: read docs/formats/crp.md + the 503 parser, map the track-mesh chunks, add nf-formats mesh decode + `crp-mesh` OBJ export in nf-extract, goldens of per-section counts + SHA-1s of decoded buffers. In progress.
+
+## drive-track-mesh (2026-10-15, branch s/drive-track-mesh) — DONE (phase 1 of the mesh decode)
+- Decoded the CARP track article layer + the embedded module loader path: crp_mesh.rs (ArticleMeta
+  bbox from Base +0x10/+0x20, as#N→sr#N→EAGL symbol names, TrackModule = ELFd+ELFr combined image
+  with the game's 0x29ea00 sh_addr/e_shoff resolve rule + all R_MIPS_32 relocations applied, model
+  segment + GeoPrim name indexes, CDat CGrd/ci/cn census). nf-extract crp-mesh + crp-mesh-digest.
+- Golden: golden/crp_mesh_golden.tsv, all 8 mission tracks (articles/parts/model_symbols/geoprims/
+  relocations/ci_items/cn_records + relocated-image SHA-1s; paris 494/1899/1890/1736/54613/994/
+  2111/2f0000bc…); driving_track_mesh_layer_matches_the_golden + tamper sister + hand-built unit
+  test. nf-formats 77 lib + 9 driving_golden green; 4 crates compile; nf-game/nf-audio green;
+  nf-view green except the pre-documented wgpu-no-GPU binaries; the 3 slim-ISO disc_golden
+  failures are the allowed ones. suite.py background runner dies between tool calls here (twice).
+- NOT decoded yet (next phase): the render-vertex VIF chains (the EAGL engine builds them at load
+  from the model objects; the list walk starts at paris 0x33c020 → GeoPrim objects 0x180530), the
+  CDat ci/cn + RNgp layouts, and the world placement (the "Map in#0 = 2552 instances" community
+  claim did NOT verify; placement must live in the Map group's aq#N arrays 451×32 B ×3).
+- Shared-file touches: lib.rs +1 line (pub mod crp_mesh), crp.rs Record::parse made pub.
+- Report: docs/reports/drive-track-mesh.md (live checks for the main agent listed there).
+## mp-match-rules (2026-10-15, branch s/mp-match-rules)
+- Started: the multiplayer scenarios' rules in the sim — scoring, win conditions, flag/uplink/
+  objective logic, respawn rules, environment/player modifiers per scenario (Arena, Team Arena,
+  CTF, Uplink, Top Agent, Demolition, ...), from the game's mp code via the scenario ids in
+  docs/systems/mp-menus.md. Deliverable: nf-game mp rules + headless per-scenario win-condition
+  tests (numbers only), docs/systems/<name>.md, report docs/reports/mp-match-rules.md.
+
+## mp-match-rules (2026-10-15, branch s/mp-match-rules)
+- The per-scenario MP rules are ported into nf-game's mp code: `rules.rs` (new) carries kill
+  scoring (MP_PlayerKilled 0x188f70 — deaths always, the 0x10 lives copy, self-kill −1/kill +1/bot
+  golden-gun +2, the bit30==0 ∧ {0x1, 0x20000002, 0x40000800, 0x60001000} personal gate — so
+  Deathmatch/Team Arena only, never 0x10/0x400/CTF/Uplink), the TDM team-score effects (enemy kill
+  +|Δ| to the opposing team, team-kill/self-kill −|Δ| to the victim's team), the assassin block
+  (+5 target kill / +3 revenge / MP_assassinReset 0x18aa70 with the killer inheriting the role),
+  the friendly-fire gate (MP_RegisterBulletHit 0x1857c0 — MPSettings+0x198 hex = the FF word), the
+  respawn rules (MP_ReSpawn 0x185368 — the lives/state gates, streak/last-shooter/status resets,
+  health = armor_bonus + 100), the who-won decision (MP_SortOutWhoWon 0x1848d0 — 0x10's unique
+  fewest-deaths winner, FFA's single qualifier, team games never compare), the round restart
+  (MP_RestartScenario 0x183fc0 — clock 0, random site re-pick, per-slot word resets, scores kept),
+  and every objective update: CTF pickup/capture (√2 of the enemy base +1 y → team +1 carrier +1)
+  / drop / 30 s return [MP_FlagUpdate 0x1861a8], Uplink's 0.2/s owned drip + Σ-personals team
+  score + instant flip [0x186d98], KOTH's 0.2/s on-hill drip + Σ recompute [0x186ae0], Demolition/
+  Protection's HP-2000 site (destroy → attacking team +1 with the own-goal correction, timeout →
+  defenders +1, state 6) [0x1870a0], GoldenEye's both-items strike (+1 per carrier, the random
+  opposing target, complete → the opposite team +1) [0x187568] and the blueprint delivery
+  (team +1 carrier +1, 30 s reset) [0x1882d8/0x188970].
+- The core (mod.rs) gained the full end-condition (0x184268: the 0x10 out-count against
+  total_players/player_count, the time-up + frag-limit latches against the new MPGame high-score
+  tracker at hex +0x18C, demo/prot state 6) and the full MP_Update state machine (0x184bd0: state
+  1 → SortOutWhoWon, the 0x10 state-2 fall-through, the 5 s debrief/restart timers, state 4 → 5
+  without the loader — *Deviation*). MpSettings gained friendly_fire (+0x198 hex); MpSlot gained
+  kills/deaths/streak/status_bits/dead (its "+0x20 status" doc corrected to the last-shooter word).
+  The Ghidra-decimal offset convention is now documented in both the module doc and the systems
+  doc (Ghidra `._412_4_` = hex +0x19C).
+- Tests: mp_match_rules.rs, 14 headless per-scenario tests (one per scenario + FF/respawn), each
+  with a sister assertion — 14/14 green. The suite build needed disk freed (the sandbox hit 100%;
+  target/debug + caches deleted); the suite run is still going at report time — see the report.
+- Deliverable doc: docs/systems/mp-match-rules.md (every rule tagged, the deviations listed).
+- Suite on the final tree: background runs are killed between tool calls in this sandbox, so the
+  350-binary pass cannot complete here; foreground `--only` chunks on the final tree ran 94 tests
+  over 14 binaries (the mp set mp_match_rules/mp_core_live/mp_menu_flow/mp_arenas_live = 29/29,
+  plus rng_live/ai_live/drone_portcheck_live/fields_live/pickup_live/trig_live/tuning_live/
+  level_live/diff_calls/spawner_kill = 65/65), 0 failed; the first full-suite pass failed only the
+  2 no-GPU fix_0c_pylon_live render tests (wgpu request_adapter panic — lesson 6, unrelated).
+## nfstats-model2 (2026-10-15, branch s/nfstats-model2)
+- Started: land held 614 (s/nfstats-model dd301c6) — branch created from origin/s/nfstats-model, origin/master
+  merged (menu.rs union: Stats + CnName/ScreenAdjust/MP pages/Credits all kept; WORKLOG union). Target: the held
+  suite failure `nf-view/tests/fix_scores_handoff_live.rs:104` "row 5: the no-kill run's stat" (left 100, right 0)
+  — 614's test edit vs master's 111e PlrMissionStats handoff (progress.rs). Next: reproduce, decide from
+  P_NFSTATS_Handler 0x209938 / the results rows what row 5 shows for a no-kill run, fix code or test, verify.
+
+## nfstats-model2 (2026-10-15, branch s/nfstats-model2) — the held failure fixed
+- The verdict: the held "row 5: the no-kill run's stat (left 100, right 0)" is a TEST bug, not a code bug — the
+  game's accuracy row copies the par (count 100) into the value FIRST and only rescales when shots were fired
+  [M PlrStat_GetScore 0x1984b0 — the store rows+0x6c ← rows+0x64, the DAT_002bcc24 (PlrMissionStats+0x04 fired)
+  != 0 guard]; P_NFSTATS 0x209938:57-66 displays that value verbatim; the capture reads "Accuracy 100% / 100% /
+  50,000" [L docs/reports/nfstats-model.md:54]. 614's `else { rows[5].count }` scorer IS the game; master's
+  `else { 0 }` was the misport; 614's edit of fix_scores_handoff_live.rs missed the row-5 loop entry.
+- The fix (test-only): row 5 out of the zero-loop; assert value 100 + raw = the generic formula (the full target)
+  + raw 50,000 (the capture). Before: the merged tree failed at line 104 (left 100, right 0). After: 1/1 green
+  through the real truck-ride walk.
+- The merge (c0f48e99): menu.rs union (Stats + CnName/ScreenAdjust/MP/Credits), WORKLOG union. nf-game full green,
+  mission_stats_rows 7/7, mission_stats_flow 3/3, menus_flow 36/36.
+- Suite on the final tree (foreground runner chunks — background jobs die here): ~252/348 binaries, 1030 passed /
+  6 failed / 26 ignored — the 6 = the 3 permitted disc_golden + 3 wgpu adapter-NotFound GPU probes
+  (probe_pylon_render, fix_0c_pylon_live ×2; environmental). Not run: the walk/walkreal tails + render/weapon
+  probes (~96) — flagged for the next window.
+## async-level-load (2026-10-15, branch s/async-level-load) — DONE 22:10 UTC
+- Research [M work/decomp/ACTION.ELF]: ResetMap_Load 0x1d6360 state 3 draws the screen
+  (ResetMap_GenLoadScreen 0x1d5de0, skipped for 0x07000048), runs the whole blocking build on the
+  calling thread, then psiEndLoadingScreen 0x10ba28 (just PS2LSActive = 0); the dots animate from
+  VBlankInt 0x124088 while PS2LSActive == 2 (1 = psiStartLoadingScreen 0x10b9f8, 2 =
+  psiAllocateLoadingBlobs 0x11f270): BlobTime 10 → underflow → step BlobToDraw ±BlobDir every
+  11 vblanks, ping-pong 0↔6 — loading::dots_lit already had the arithmetic.
+- The port: crates/nf-view/src/async_load.rs — Job<T> (named level-load worker thread, mpsc
+  Option<T> channel: worker panic → None → Some(None), never an infinite pending state;
+  Disconnected-without-value and spawn failure land there too; elapsed_ticks() = wall-clock in
+  60 Hz vblank units; compile-time Send assert — Scene is plain data, no Send surgery needed).
+  lib.rs: App::async_load: Option<LevelLoad{job,next,ptp_return}> (new field on its own line);
+  start_async_load = the transition's first half verbatim (cold / fail-Restart ENTRY-checkpoint /
+  warm RamSave arms from the old sim, which stays in self.scene until the swap) + the screen's
+  first frame + the spawn; poll_async_load = one frame of the running load (pending → the
+  animated screen at dots_lit(elapsed_ticks()) + request_redraw and the frame ENDS — no movie
+  glue, no sim ticks, no input, mirroring the game's blocked main loop); swap_in_scene =
+  build_sound → audio_paused reset → camera → scene → anim_time=0 → drive-ptp return → the
+  renderer GPU rebuild (stays on the window thread) → entry_checkpoint_save, the sync order;
+  prev_lock_ch resets on Ok/Err/panic alike. Kept: movie-wrapped holds (re-issue through
+  movie_tick before any spawn), pending_weapon_assets (deliberately still synchronous), the
+  pre-window startup load, the dt cap across the load.
+- Tests (each with a sister assertion): async_load lib 3 (delivery+tick advance, panic→Some(None)
+  + drain, inline seam); async_load_frame_loop 2 headless (the 16 ms redraw loop over a 1 s fake
+  load: ≥20 pending frames, the dot count passes several states of 0→6→0 — the old model showed
+  one; fast load arrives + drains); async_level_load_live 3 NF_ISO (worker scene == sync scene on
+  07000002 cold AND warm — level/bond pos/cels/vertices/characters/colliders/sequences/stats;
+  missing archive → Err(String) through the channel).
+- Merge origin/master mid-task (codename-entry + objective-hints landed): WORKLOG both kept,
+  lib.rs auto-merged. Suite (fast runner, foreground slices — detached processes die here; all
+  357 test binaries built clean, 324 s): family slice 16/17 binaries = 128/0 (walkreal_07000001_live
+  cut by the window — its walk alone runs minutes, pre-existing), nf-view lib 15/0, nf-game lib
+  206/0, objective_state 5/0, codename_entry 14/0, objective_hints_flow 7/0 → 375 passed /
+  0 failed / 0 TIMEOUT observed; my 8 tests all green on the final merged tree (8ce6bf7a).
+- Report docs/reports/async-level-load.md with 6 live checks (the dots' cadence on a warm
+  transition, the cold + fail-Restart arms, the movie-wrapped load, the weapon-give hitch left
+  synchronous, the failure path).
+
+## fix-ingame-lag + pause-woman clock (2026-10-15, main agent, branch mine/pc-menus2)
+
+- User's playtest: "very laggy and also the pause background is going wayy too fast".
+- Lag [L NF_DEBUG_FPS probe, 07000005 gameplay, since removed]: frames averaged 52 ms (~19 fps).
+  Render+submit took 2.9 ms, the sim ticks 6.7 ms, surface acquire 0.1 ms, and `skin_palette` 44 ms.
+  Inside the palette, `colour_mults` took 34.5 ms; frame_state, the character loop and the
+  door/pickup loops were each under 1 ms.
+  - Cause: `colour_mults` walked EVERY character vertex (`char_verts`) to collect the distinct
+    pickup/attachment keys. The effect pools (decal/casing/debris/gas/projectile slots — 8561
+    attachments for 73 characters on 07000005) put a mesh's vertices behind every slot.
+  - Fix: compute the multiplier once per pickup and once per attachment index. Keys no vertex
+    carries are never read: the palette's colour slot and `posed_vertices`' lookup are per vertex.
+    Headless timing on 07000005: palette 35 ms → 1.4 ms, colour_mults 0.4 ms.
+- Pause backdrop: the burning woman ticked `frame_ticks` times per RENDER frame. `frame_ticks` is
+  the game's tick count, which freezes at its last value while a menu is up, so the figure ran
+  several times too fast on a fast display. She now ticks off her own 60 Hz wall-clock
+  accumulator (`menu_clock`), matching `Game_Run`'s once-per-60 Hz-frame `psiDecompressWoman`
+  [M 0x1c9790:36-41].

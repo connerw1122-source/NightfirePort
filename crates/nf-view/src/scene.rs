@@ -1822,7 +1822,9 @@ impl Sim {
         // the port's fixed tick stands in for the game's wall-clock delta (the module doc's
         // *Deviation*). Arena loads only — `None` on every campaign level.
         if let Some(m) = self.mp.as_mut() {
-            m.update(1.0 / 60.0, false);
+            // the shared bit-exact generator — the game's MP_Update draws the global RNG only on
+            // the state-6 restart's site re-pick (MP_RestartScenario 0x183fc0)
+            m.update(1.0 / 60.0, false, &mut self.drones.rng);
         }
         // `Game_Run` 0x1c9790:33 runs `Light_Update` before the object movement each tick (fix-lighting):
         // lifetimes (the muzzle light of the previous tick dies here), the script-channel gate and the
@@ -6813,9 +6815,15 @@ impl Scene {
         let tintable = |p: &nf_game::pickup::Pickup| p.kind != nf_game::pickup::kind::ARMOUR && p.kind != nf_game::pickup::kind::BOND_BONUS;
         let mut pickup_mult: std::collections::HashMap<u16, [f32; 3]> = std::collections::HashMap::new();
         let mut attach_mult: std::collections::HashMap<u32, [f32; 3]> = std::collections::HashMap::new();
+        // The lag fix (the user's "very laggy" playtest): the keys were collected by walking EVERY character
+        // vertex — the effect pools (decal/casing/debris/gas/projectile slots, 8561 attachments on 07000005)
+        // made that 34 ms of a 52 ms frame. The multiplier depends only on the key, so it is computed once per
+        // pickup and per attachment; keys no vertex carries are never read (the palette's colour slot and
+        // `posed_vertices`' lookup are both per-vertex), so the results the vertices see are unchanged.
         if let Some(s) = self.sim.as_ref() {
-            for cv in &self.char_verts {
-                if let Some(pk) = cv.pickup {
+            for pk in 0..s.drones.pickups.len().min(u16::MAX as usize + 1) as u32 {
+                let pk = pk as u16;
+                {
                     pickup_mult.entry(pk).or_insert_with(|| {
                         match s.drones.pickups.get(pk as usize) {
                             Some(p) if tintable(p) => amb_at(s, &p.m),
@@ -6837,7 +6845,9 @@ impl Scene {
                         }
                     });
                 }
-                if let Some(ai) = cv.attachment {
+            }
+            for ai in 0..self.attachments.len() as u32 {
+                {
                     attach_mult.entry(ai).or_insert_with(|| {
                         let Some(a) = self.attachments.get(ai as usize) else { return one() };
                         if a.flash.is_some() || a.tracer.is_some() { return one(); }

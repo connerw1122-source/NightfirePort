@@ -33,6 +33,7 @@ pub mod panel;
 pub mod weapon_assets;
 pub mod woman;
 pub mod loading;
+pub mod async_load;
 /// The weapon matrix (task 100d): every on-foot level × every weapon, measured headless.
 pub mod matrix;
 
@@ -1574,6 +1575,8 @@ struct App {
     ticked: bool,
     /// This frame's 60 Hz tick count (the burning woman advances once per tick while a paused page shows her).
     frame_ticks: u32,
+    /// The paused menus' 60 Hz accumulator (seconds) for the animations that run while the game is paused.
+    menu_clock: f32,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -1615,13 +1618,99 @@ struct App {
     audio_paused: bool,
     /// The loading screens' pictures (07000500.bin, crate::loading), read on the first level change.
     loading_art: Option<std::collections::HashMap<u32, (u32, u32, Vec<u8>)>>,
+    /// The pointer in the menu's 640×480 space (PC mouse support).
+    menu_pointer: Option<(f32, f32)>,
+    /// async-level-load: the level load running on a worker thread — `Some` from the frame the
+    /// transition spawns it until the scene is swapped in. While it runs, the window thread
+    /// redraws the loading screen with the dot animation each frame (`poll_async_load`); the
+    /// game does the same on one thread: the load blocks the main thread while `VBlankInt`
+    /// 0x124088 steps the dots every 11 vblanks.
+    async_load: Option<LevelLoad>,
+}
+
+/// A running level load plus what its swap needs (async-level-load).
+struct LevelLoad {
+    job: async_load::Job<Result<scene::Scene, String>>,
+    /// The level code the load serves (`pending_level`'s value at spawn): the loading screen's
+    /// picture and the failure log read it.
+    next: u32,
+    /// drive-ptp: the DRIVING return (`Boot_LoadPTPData` 0x1c8560), taken from the OLD sim at
+    /// spawn and applied to the NEW one at the swap (see `swap_in_scene`).
+    ptp_return: Option<nf_game::ptp::DriveReturn>,
 }
 
 impl App {
-    /// Draws the level's loading screen and presents it before the (blocking) load [M ResetMap_Load 0x1d6360 state 3 →
-    /// ResetMap_GenLoadScreen 0x1d5de0, skipped for the front end 0x07000048]. The load blocks this thread, so the
-    /// dots show their first state; the game's vblank animation is not reproduced.
-    fn draw_loading_screen(&mut self, level: u32) {
+    /// One menu action from the keyboard or the mouse (PC mouse support, 2026-10-15): the movie skip, the pause page's
+    /// Back = resume, the page's own handling, then the level request / close the page asked for.
+    fn menu_input(&mut self, a: menu::Action) {
+        if self.fe.is_none() { return; }
+        use menu::Action as MA;
+        let fe = self.fe.as_mut().unwrap();
+        // State 6: only the skip action matters [M GameFlow_Main 0x1c98c8 case 6
+        // reads Input_Action(-1, 0x19, 1) and nothing else — the menu pages are not
+        // up during a movie]. The port's Confirm keys (Enter/Space) stand in for
+        // the pad's X/Start [S docs/systems/input.md §3].
+        if fe.flow.get_state() == menu::ST_MOVIE {
+            if a == MA::Confirm { fe.flow.skip_movie(); }
+            return;
+        }
+        if fe.page == menu::Page::Pause && a == MA::Back {
+            self.fe = None; // resume [S: the game's resume is its own row; Back resumes too]
+            if self.scene.sim.is_some() { self.grab(true); }
+            return;
+        }
+        fe.action(a);
+        self.menu_after();
+    }
+
+    /// After a menu action (key, click or hover): the page's sounds, the level it requested and its close.
+    fn menu_after(&mut self) {
+        let Some(fe) = self.fe.as_mut() else { return };
+        // menu-sfx: the front end's sound events play straight through the driver's 2-D start —
+        // `Menu_PlaySound`'s `Sound_Play(100.0f, id, 0, 0)` tail [M 0x1f3278] batched like the EE's
+        // `SFXStart`. The loaded bank(s) decide audibility exactly as the game's lookup does (a
+        // miss returns without starting): the front-end map boots bank 0xC, a paused mission keeps
+        // its own bank, which carries the pause blips [D SB_4/SB_5; docs/systems/menu-sfx.md §2-3].
+        let menu_sfx: Vec<_> = fe.drain_sfx().collect();
+        if !menu_sfx.is_empty() {
+            if let Some(snd) = self.sound.as_mut() {
+                snd.batch(|drv, out| {
+                    for ev in &menu_sfx { drv.start(out, ev.id, None, 0, None); }
+                });
+            }
+        }
+        let Some(fe) = self.fe.as_mut() else { return };
+        let closed = fe.closed;
+        if let Some(code) = fe.requested_level.take() {
+            // The menu picked a level: through the same reload path a LOAD_LEVEL uses. A cold pick
+            // (the pause page's RESTART [M 0x204408:139]) loads fresh, not with the current state.
+            if !fe.flow.warm_reset { if let Some(sim) = self.scene.sim.as_mut() { sim.drones.level_exit_cold = true; } }
+            self.pending_level = Some(code);
+        }
+        // The pause page's Resume row (cursor 0) closes the menu [M C_GCPAUSE_Handler
+        // 0x204408 — the game's resume is its own row]: the host consumes the flag and
+        // leaves the menu (the sound hold lifts through the diff below).
+        if closed {
+            self.fe = None;
+            if self.scene.sim.is_some() { self.grab(true); }
+        }
+    }
+
+    /// The menu's 640×480 space for a window pixel: the menus draw as a centred 4:3 picture (Anchor::Centre).
+    fn menu_space(&self, px: f64, py: f64) -> Option<(f32, f32)> {
+        let g = self.gfx.as_ref()?;
+        let (w, h) = (g.config.width as f32, g.config.height.max(1) as f32);
+        let (bw, bh) = if w / h >= 4.0 / 3.0 { (h * 4.0 / 3.0, h) } else { (w, w * 3.0 / 4.0) };
+        let (bx, by) = ((w - bw) / 2.0, (h - bh) / 2.0);
+        Some(((px as f32 - bx) / bw * 640.0, (py as f32 - by) / bh * 480.0))
+    }
+
+    /// Draws the level's loading screen and presents it [M ResetMap_Load 0x1d6360 state 3 →
+    /// ResetMap_GenLoadScreen 0x1d5de0, skipped for the front end 0x07000048]. async-level-load:
+    /// called once with 0 dots before the worker spawns, then once per frame by
+    /// `poll_async_load` with `loading::dots_lit` over the load's elapsed vblanks — the game's
+    /// `VBlankInt` 0x124088 animates the same six dots while the main thread is inside the load.
+    fn draw_loading_screen(&mut self, level: u32, dots: u32) {
         if level & 0xff00_ffff == 0x0700_0048 { return; }
         if self.loading_art.is_none() {
             self.loading_art = Some(read_files_bin(&self.iso, loading::ARCHIVE).map(|b| loading::art(&b)).unwrap_or_default());
@@ -1635,7 +1724,7 @@ impl App {
         let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(1) | 1;
         let hint = loading::hint_for(level, || { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; seed >> 8 });
         let hud = match self.scene.hud.as_ref() {
-            Some(t) => menu::loading_overlay(&t.font, lang, &self.scene.hud_textures, aspect, level, hint, 0),
+            Some(t) => menu::loading_overlay(&t.font, lang, &self.scene.hud_textures, aspect, level, hint, dots),
             None => gpu::HudFrame::default(),
         };
         let frame = match g.surface.get_current_texture() {
@@ -1650,6 +1739,143 @@ impl App {
         let enc = g.renderer.render(&g.device, &g.queue, &view, &g.depth, id, id, [0.0; 3], 0, &[], &hud, movie, None);
         g.queue.submit([enc.finish()]);
         g.queue.present(frame);
+    }
+
+    /// The level transition's first half (async-level-load): capture the carry-over exactly as
+    /// the synchronous path did, draw the screen's first frame and hand the build to a worker.
+    fn start_async_load(&mut self, next: u32) {
+        // `Trigger_Activate`'s exit order: the success/fallback channel write (already applied in
+        // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
+        // the scene swap drops it (fix-level2 F2). The old sim stays in `self.scene` until the
+        // swap, so the worker's `save` snapshot and the loading screen's font/picture reads see
+        // the same state the synchronous path saw.
+        // fix-restart-target: the fail/death menu's Restart (`P_ENDMISSION_Handler`
+        // 0x216618:19-21, menu 0x40000042's row 0) is a WARM reload of the CURRENT level on
+        // the ENTRY checkpoint: `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` +
+        // `Player_RamLoad(Bond, 1)`. The game does NOT capture the dying state — it re-serves
+        // the RamSave buffer as of level entry (re-saved with the post-load state by
+        // `Player_InitWeapon` [M 0x1a7ef8:325]), whose ch 99/100 predate the fail, so the
+        // reload cannot re-fail (the 07000007 replay loop). The boost arg 1 floors the health
+        // at the difficulty's `ContinueHealthBoost*` — 50.0 on all three [L ELF 0x30cc34-3c].
+        // The PAUSE menu's Restart stays the COLD arm to BaseMap (`C_GCPAUSE_Handler`
+        // 0x204408:139 — `level_exit_cold`, save = None).
+        let cold = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_cold);
+        let restart = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_restart);
+        let save = if cold { None } else if restart {
+            // The ENTRY checkpoint (+ the health floor) — `fail_restart_save` carries the
+            // evidence (`P_ENDMISSION_Handler` 0x216618:19-21 + `Player_RamLoad`'s floored
+            // buffer). fix-restart-health: the entry save is the POST-load capture the
+            // load arm makes (`Player_InitWeapon`'s unconditional `Player_RamSave`
+            // [M 0x1a7ef8:325]) — after a cold load it holds health 100, the user's "I
+            // should be at full health" (the old zero-buffer fallback served 50.0).
+            Some(fail_restart_save(self.entry_save.as_ref(), self.scene.sim.as_ref().unwrap()))
+        } else {
+            self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
+                &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
+                .with_mission(&sim.drones.mission))
+        };
+        let name = level_archive_name(next);
+        eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
+        // drive-ptp: the DRIVING return (`Boot_LoadPTPData` 0x1c8560) rides the reload —
+        // taken from the OLD sim (the handover hook stashed it, scene.rs) and applied to
+        // the NEW one at the swap: the mission status (`Mission_SetStatus` 6/3/2 from PTP
+        // +0x978) and the 12 `PlrStats` driving slots (`PlrStats_SetDrivingData`
+        // 0x1c8560's call). The resume level itself is the return's 0x07000048 [M tail].
+        let ptp_return = self.scene.sim.as_ref().and_then(|s| s.drones.driving_return);
+        self.draw_loading_screen(next, 0);
+        let iso = self.iso.clone();
+        let all = self.all;
+        let dev = self.dev.is_some();
+        let job = async_load::Job::spawn(move || {
+            if dev { load_with_carry_dev(&iso, &name, all, save.as_ref()) } else { load_with_carry(&iso, &name, all, save.as_ref()) }
+                .map_err(|e| e.to_string())
+        });
+        self.async_load = Some(LevelLoad { job, next, ptp_return });
+    }
+
+    /// One frame of the running load (async-level-load): `false` = the worker still runs — the
+    /// loading screen was redrawn with the dots advanced (`loading::dots_lit` over the elapsed
+    /// 60 Hz vblanks, the window's redraws standing in for `VBlankInt` 0x124088's), the caller
+    /// ends the frame and asks for the next; `true` = nothing running or the result arrived and
+    /// the swap is done, the caller falls through to normal play.
+    fn poll_async_load(&mut self) -> bool {
+        let Some(load) = self.async_load.as_mut() else { return true; };
+        let Some(res) = load.job.poll() else {
+            let (level, dots) = (load.next, loading::dots_lit(load.job.elapsed_ticks()));
+            self.draw_loading_screen(level, dots);
+            if let Some(g) = &self.gfx { g.window.request_redraw(); }
+            return false;
+        };
+        // The job is over whatever the result: take it and let the frame finish normally.
+        let load = self.async_load.take().unwrap();
+        match res {
+            Some(Ok(scene)) => {
+                let name = level_archive_name(load.next);
+                self.swap_in_scene(scene, load.ptp_return);
+                // frontend-music: `Sound_Ready`'s front-end case [M 0x1dceb8 case 0x7000048] — the
+                // load alternates bank 0xc (SBI slot 0 = SB_0, jingle 0x1d7) and 0x38 (slot 1 =
+                // SB_1, jingle 0x470) through DAT_002e1b11, then `MenuManager_Create` resets
+                // `menu_movie` [M 0x21b908:127] so the first page enter restarts the pair. The
+                // port keeps every bank resident, so the flip re-points the driver's primary slot.
+                if load.next == menu::FRONTEND_LEVEL {
+                    if let Some(fe) = self.fe.as_mut() {
+                        let hash = fe.music.front_end_sound_ready();
+                        fe.music.jingles_up = false;
+                        if let Some(s) = self.sound.as_mut() { s.driver.set_primary(if hash == 0x38 { 1 } else { 0 }); }
+                    }
+                    self.fe_music_page = None; // the manager re-create re-runs the page's 0x4c [M 0x21b908:127]
+                }
+                eprintln!("level: loaded {name}");
+            }
+            Some(Err(e)) => eprintln!("level: failed to load {}: {e}", level_archive_name(load.next)),
+            None => eprintln!("level: load of {} panicked (worker thread died)", level_archive_name(load.next)),
+        }
+        // The lock channel's edge memory starts clean on the new level (the game's `_prev`
+        // comes back from the RamSave; 0x48 has no writer before the party). The sync path
+        // ran this on both the Ok and Err arms — every terminal branch here does too.
+        self.prev_lock_ch = false;
+        true
+    }
+
+    /// The load's main-thread half (async-level-load): the sound stack, the camera, the PTP
+    /// return, the renderer rebuild — GPU upload, this thread owns the device — and the entry
+    /// checkpoint, in the exact order the synchronous path ran.
+    fn swap_in_scene(&mut self, mut scene: scene::Scene, ptp_return: Option<nf_game::ptp::DriveReturn>) {
+        self.sound = build_sound(&mut scene);
+        // The fresh sound stack is unpaused: reset the mirror so the per-frame diff
+        // re-applies the current hold (a menu can still be up over the reload).
+        self.audio_paused = false;
+        if let Some(start) = scene.start { self.cam = Camera { pos: Vec3::new(start.0[0], start.0[1] + 1.6, start.0[2]), yaw: start.1, pitch: 0.0, fov: GAME_FOV }; }
+        self.scene = scene;
+        self.anim_time = 0.0;
+        // drive-ptp: `Boot_LoadPTPData` 0x1c8560's mirror runs on the returned
+        // session — the mission status + the 12 slots, after the hub's own
+        // `Mission_Init` (the game's `Mission_Init` skips 0x7000048 entirely
+        // [M 0x182270:20-22], so the Boot-set status stands).
+        if let Some(ret) = ptp_return {
+            if let Some(sim) = self.scene.sim.as_mut() {
+                ret.apply(&mut sim.drones.mission, &mut sim.drones.driving_stats);
+                eprintln!("[ptp] return applied: MissionState {} (status byte {}), 12 slots carried", sim.drones.mission.status(), ret.status_byte);
+            }
+        }
+        // The renderer holds the old scene's GPU resources (textures, buffers): rebuild it
+        // IN PLACE — the window and surface must survive the level change (the game's window
+        // does not close). Dropping `Gfx` here closed the window and nothing recreated it
+        // (winit's `resumed` only runs at startup), so the process sat on a headless event
+        // loop with the audio still playing (the user's report).
+        if let Some(g) = &mut self.gfx {
+            g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
+        }
+        // fix-restart-health: the loaded level's checkpoint is what a later
+        // fail-Restart restores — the game re-saves the buffer with the POST-load
+        // state on EVERY load (`Player_InitWeapon`'s unconditional `Player_RamSave`
+        // [M 0x1a7ef8:325]), cold loads included (the `Player_RamLoad` body is
+        // gated on `IsWarmReset` [M 0x1957a8:9], so `Player_Init`'s health 100 /
+        // armour 0 [M 0x1910f8:128-138] stand and the arm's loadout/armour are
+        // captured). The old model kept the save the level was LOADED with —
+        // `None` after a cold load — and the restart then served the zeroed
+        // buffer: health 50.0, the playtest's "half health".
+        self.entry_save = Some(entry_checkpoint_save(self.scene.sim.as_ref().unwrap()));
     }
 
     /// F8/F9: show the mission-complete / mission-failed results page for the loaded mission [S demo
@@ -2112,7 +2338,9 @@ impl ApplicationHandler for App {
         // switching (next/prev). Up = previous row / next weapon (−1 direction, matching the old
         // weapon-cycle mapping: wheel up = next).
         if let DeviceEvent::MouseWheel { delta: MouseScrollDelta::LineDelta(_x, y) } = event {
-            if self.dev.as_deref().is_some_and(|d| d.menu) {
+            if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) {
+                if y > 0.0 { self.menu_input(menu::Action::Up); } else if y < 0.0 { self.menu_input(menu::Action::Down); }
+            } else if self.dev.as_deref().is_some_and(|d| d.menu) {
                 if let Some(d) = self.dev.as_deref_mut() {
                     let n = dev::menu_items(d, Some(&self.scene)).len();
                     if n > 0 {
@@ -2155,6 +2383,17 @@ impl ApplicationHandler for App {
             }
             // Left button: grab the mouse, then fire (action 9) while held. With the dev menu open (F2), a left click
             // selects a menu item instead (WORKLOG 0081).
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+                if state == ElementState::Pressed {
+                    if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) {
+                        if fe.flow.get_state() == menu::ST_MOVIE { self.menu_input(menu::Action::Confirm); }
+                        else if fe.mouse_click(x, y) { self.menu_after(); }
+                    }
+                }
+            }
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+                self.menu_input(menu::Action::Back);
+            }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
                 if self.dev.as_deref().is_some_and(|d| d.menu) {
                     if state == ElementState::Pressed { self.dev_menu_click(); }
@@ -2165,6 +2404,12 @@ impl ApplicationHandler for App {
                 if self.grabbed { self.zoom = state == ElementState::Pressed; }
             }
             // Cursor moves: track the NDC position for the dev menu's click hit-test (when the menu is open).
+            WindowEvent::CursorMoved { position, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+                self.menu_pointer = self.menu_space(position.x, position.y);
+                if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) {
+                    if fe.mouse_move(x, y) { self.menu_after(); }   // the hover's focus-move sound
+                }
+            }
             WindowEvent::CursorMoved { position, .. } => if let (Some(g), Some(d)) = (&self.gfx, self.dev.as_deref_mut()) {
                 if d.menu {
                     let (w, h) = (g.config.width as f32, g.config.height as f32);
@@ -2196,38 +2441,7 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if event.state == ElementState::Pressed && self.fe.is_some() {
-                    if let Some(a) = menu::key_action(k) {
-                        use menu::Action as MA;
-                        let fe = self.fe.as_mut().unwrap();
-                        // State 6: only the skip action matters [M GameFlow_Main 0x1c98c8 case 6
-                        // reads Input_Action(-1, 0x19, 1) and nothing else — the menu pages are not
-                        // up during a movie]. The port's Confirm keys (Enter/Space) stand in for
-                        // the pad's X/Start [S docs/systems/input.md §3].
-                        if fe.flow.get_state() == menu::ST_MOVIE {
-                            if a == MA::Confirm { fe.flow.skip_movie(); }
-                            return;
-                        }
-                        if fe.page == menu::Page::Pause && a == MA::Back {
-                            self.fe = None; // resume [S: the game's resume is its own row; Back resumes too]
-                            if self.scene.sim.is_some() { self.grab(true); }
-                            return;
-                        }
-                        fe.action(a);
-                        let closed = fe.closed;
-                        if let Some(code) = fe.requested_level.take() {
-                            // The menu picked a level: through the same reload path a LOAD_LEVEL uses. A cold pick
-                            // (the pause page's RESTART [M 0x204408:139]) loads fresh, not with the current state.
-                            if !fe.flow.warm_reset { if let Some(sim) = self.scene.sim.as_mut() { sim.drones.level_exit_cold = true; } }
-                            self.pending_level = Some(code);
-                        }
-                        // The pause page's Resume row (cursor 0) closes the menu [M C_GCPAUSE_Handler
-                        // 0x204408 — the game's resume is its own row]: the host consumes the flag and
-                        // leaves the menu (the sound hold lifts through the diff below).
-                        if closed {
-                            self.fe = None;
-                            if self.scene.sim.is_some() { self.grab(true); }
-                        }
-                    }
+                    if let Some(a) = menu::key_action(k) { self.menu_input(a); }
                     return;
                 }
                 // fix-ingame-dev-menu: while the dev menu is open, the keys drive the menu and never the game
@@ -2385,105 +2599,19 @@ impl ApplicationHandler for App {
                     if self.fe.as_ref().is_some_and(|fe| fe.flow.movie_pending) {
                         self.pending_level = Some(next);
                     } else {
-                    // `Trigger_Activate`'s exit order: the success/fallback channel write (already applied in
-                    // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
-                    // the scene swap drops it (fix-level2 F2).
-                    // fix-restart-target: the fail/death menu's Restart (`P_ENDMISSION_Handler`
-                    // 0x216618:19-21, menu 0x40000042's row 0) is a WARM reload of the CURRENT level on
-                    // the ENTRY checkpoint: `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` +
-                    // `Player_RamLoad(Bond, 1)`. The game does NOT capture the dying state — it re-serves
-                    // the RamSave buffer as of level entry (re-saved with the post-load state by
-                    // `Player_InitWeapon` [M 0x1a7ef8:325]), whose ch 99/100 predate the fail, so the
-                    // reload cannot re-fail (the 07000007 replay loop). The boost arg 1 floors the health
-                    // at the difficulty's `ContinueHealthBoost*` — 50.0 on all three [L ELF 0x30cc34-3c].
-                    // The PAUSE menu's Restart stays the COLD arm to BaseMap (`C_GCPAUSE_Handler`
-                    // 0x204408:139 — `level_exit_cold`, save = None).
-                    let cold = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_cold);
-                    let restart = self.scene.sim.as_ref().is_some_and(|sim| sim.drones.level_exit_restart);
-                    let save = if cold { None } else if restart {
-                        // The ENTRY checkpoint (+ the health floor) — `fail_restart_save` carries the
-                        // evidence (`P_ENDMISSION_Handler` 0x216618:19-21 + `Player_RamLoad`'s floored
-                        // buffer). fix-restart-health: the entry save is the POST-load capture the
-                        // load arm below makes (`Player_InitWeapon`'s unconditional `Player_RamSave`
-                        // [M 0x1a7ef8:325]) — after a cold load it holds health 100, the user's "I
-                        // should be at full health" (the old zero-buffer fallback served 50.0).
-                        Some(fail_restart_save(self.entry_save.as_ref(), self.scene.sim.as_ref().unwrap()))
-                    } else {
-                        self.scene.sim.as_ref().map(|sim| nf_game::player::RamSave::capture(
-                            &sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
-                            .with_mission(&sim.drones.mission))
-                    };
-                    let name = level_archive_name(next);
-                    eprintln!("level: loading {name} ({})", if save.is_some() { "warm" } else { "cold" });
-                    // drive-ptp: the DRIVING return (`Boot_LoadPTPData` 0x1c8560) rides the reload —
-                    // taken from the OLD sim (the handover hook stashed it, scene.rs) and applied to
-                    // the NEW one below: the mission status (`Mission_SetStatus` 6/3/2 from PTP
-                    // +0x978) and the 12 `PlrStats` driving slots (`PlrStats_SetDrivingData`
-                    // 0x1c8560's call). The resume level itself is the return's 0x07000048 [M tail].
-                    let ptp_return = self.scene.sim.as_ref().and_then(|s| s.drones.driving_return);
-                    self.draw_loading_screen(next);
-                    let load = if self.dev.is_some() { load_with_carry_dev } else { load_with_carry };
-                    match load(&self.iso, &name, self.all, save.as_ref()) {
-                        Ok(mut scene) => {
-                            self.sound = build_sound(&mut scene);
-                            // frontend-music: `Sound_Ready`'s front-end case [M 0x1dceb8 case
-                            // 0x7000048] — the load alternates bank 0xc (SBI slot 0 = SB_0, jingle
-                            // 0x1d7) and 0x38 (slot 1 = SB_1, jingle 0x470) through DAT_002e1b11,
-                            // then `MenuManager_Create` resets `menu_movie` [M 0x21b908:127] so the
-                            // first page enter restarts the pair. The port keeps every bank
-                            // resident, so the flip re-points the driver's primary slot.
-                            let loaded = u32::from_str_radix(name.trim_end_matches(".bin"), 16).unwrap_or(0);
-                            if loaded == menu::FRONTEND_LEVEL {
-                                if let Some(fe) = self.fe.as_mut() {
-                                    let hash = fe.music.front_end_sound_ready();
-                                    fe.music.jingles_up = false;
-                                    if let Some(s) = self.sound.as_mut() { s.driver.set_primary(if hash == 0x38 { 1 } else { 0 }); }
-                                }
-                                self.fe_music_page = None; // the manager re-create re-runs the page's 0x4c [M 0x21b908:127]
-                            }
-                            // The fresh sound stack is unpaused: reset the mirror so the per-frame diff
-                            // re-applies the current hold (a menu can still be up over the reload).
-                            self.audio_paused = false;
-                            if let Some(start) = scene.start { self.cam = Camera { pos: Vec3::new(start.0[0], start.0[1] + 1.6, start.0[2]), yaw: start.1, pitch: 0.0, fov: GAME_FOV }; }
-                            self.scene = scene;
-                            self.anim_time = 0.0;
-                            // drive-ptp: `Boot_LoadPTPData` 0x1c8560's mirror runs on the returned
-                            // session — the mission status + the 12 slots, after the hub's own
-                            // `Mission_Init` (the game's `Mission_Init` skips 0x7000048 entirely
-                            // [M 0x182270:20-22], so the Boot-set status stands).
-                            if let Some(ret) = ptp_return {
-                                if let Some(sim) = self.scene.sim.as_mut() {
-                                    ret.apply(&mut sim.drones.mission, &mut sim.drones.driving_stats);
-                                    eprintln!("[ptp] return applied: MissionState {} (status byte {}), 12 slots carried", sim.drones.mission.status(), ret.status_byte);
-                                }
-                            }
-                            // The renderer holds the old scene's GPU resources (textures, buffers): rebuild it
-                            // IN PLACE — the window and surface must survive the level change (the game's window
-                            // does not close). Dropping `Gfx` here closed the window and nothing recreated it
-                            // (winit's `resumed` only runs at startup), so the process sat on a headless event
-                            // loop with the audio still playing (the user's report).
-                            if let Some(g) = &mut self.gfx {
-                                g.renderer = gpu::Renderer::new(&g.device, &g.queue, g.config.format, &self.scene, self.notex, self.nofog);
-                            }
-                            // fix-restart-health: the loaded level's checkpoint is what a later
-                            // fail-Restart restores — the game re-saves the buffer with the POST-load
-                            // state on EVERY load (`Player_InitWeapon`'s unconditional `Player_RamSave`
-                            // [M 0x1a7ef8:325]), cold loads included (the `Player_RamLoad` body is
-                            // gated on `IsWarmReset` [M 0x1957a8:9], so `Player_Init`'s health 100 /
-                            // armour 0 [M 0x1910f8:128-138] stand and the arm's loadout/armour are
-                            // captured). The old model kept the save the level was LOADED with —
-                            // `None` after a cold load — and the restart then served the zeroed
-                            // buffer: health 50.0, the playtest's "half health".
-                            self.entry_save = Some(entry_checkpoint_save(self.scene.sim.as_ref().unwrap()));
-                            eprintln!("level: loaded {name}");
-                        }
-                        Err(e) => eprintln!("level: failed to load {name}: {e}"),
-                    }
-                    // The lock channel's edge memory starts clean on the new level (the game's `_prev`
-                    // comes back from the RamSave; 0x48 has no writer before the party).
-                    self.prev_lock_ch = false;
+                        // async-level-load: the build runs on a worker; the frames below redraw
+                        // the loading screen with the dots until the scene is ready.
+                        self.start_async_load(next);
                     }
                 }
+                // async-level-load: while a worker builds the next scene, this thread is the
+                // game's main thread inside `ResetMap_Load` 0x1d6360 state 3 — nothing else of
+                // the frame runs (the game's vblank interrupt alone animates the dots,
+                // `VBlankInt` 0x124088). Each frame redraws the screen with `dots_lit` advanced
+                // and ends; the frame the result arrives, `poll_async_load` swaps the scene in
+                // (the renderer's GPU rebuild stays on this thread) and the frame falls through
+                // to normal play.
+                if self.async_load.is_some() && !self.poll_async_load() { return; }
                 let dt = self.last.elapsed().as_secs_f32().min(0.1);
                 self.last = std::time::Instant::now();
                 // The Toggles page's fps display (wall-clock; a dev readout, never in the Sim).
@@ -2794,7 +2922,13 @@ impl ApplicationHandler for App {
                         if shows_woman {
                             if let Some(w) = self.scene.woman.as_mut() {
                                 let mut changed = false;
-                                for _ in 0..self.frame_ticks { changed |= w.tick(); }
+                                // The paused frames' own 60 Hz clock: `frame_ticks` is the GAME's tick count and stays frozen
+                                // at its last value while a menu is up, so ticking by it ran the figure once per render frame
+                                // × that stale count (several times too fast on a fast display — the user's playtest).
+                                self.menu_clock += dt;
+                                let n = (self.menu_clock * 60.0) as u32;
+                                self.menu_clock -= n as f32 / 60.0;
+                                for _ in 0..n.min(8) { changed |= w.tick(); }
                                 if changed { g.renderer.update_woman(&g.queue, &w.rgba()); }
                             }
                         }
@@ -3102,9 +3236,10 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
-        audio_paused: false, loading_art: None, };
+        audio_paused: false, loading_art: None, menu_pointer: None,
+        async_load: None, };
     if dev {
         // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
         // menu carries ALL of its functions now (through the same `panel::apply` command layer).
