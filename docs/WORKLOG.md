@@ -13858,3 +13858,14 @@ Work Log (async-level-load):
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+
+## drive-keyboard-input (2026-10-16, branch s/drive-keyboard-input) — start
+- Task: PC keyboard/mouse mapping for the driving missions, onto the game's own driving actions
+  (steer with the game's ramp on a digital input, throttle W, brake/reverse S, handbrake Space,
+  fire LMB, cycle weapon wheel/Q, gadget RMB/E, camera C, look back Tab/mouse3 — every driving
+  action, holding the game's holds-vs-presses and repeat semantics). Data + state + getters for the
+  main agent's draw pass (no drawing), a PC_CONTROLS-style table next to the on-foot one in
+  crates/nf-view/src/menu.rs. Docs first, tests headless numbers-only. No pad work.
+- Branch created from origin/master (0f5f07f4), pushed. work/ + ISO + nf-queue from prior sessions
+  verified present. Next: docs/systems/driving-input.md re-read, decomp study of the pad->driving
+  ramp path, then the mapping.
