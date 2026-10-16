@@ -673,6 +673,8 @@ impl Renderer {
                 // The game zeroes the light slots for the sky and sprite passes [M 0x1e5ad0:89].
                 continue;
             }
+            // The view model takes no point lights (the list-2 pass after the zeroing; `VIEW_MODEL_NODE`).
+            if dc.node == crate::scene::VIEW_MODEL_NODE && dc.layer != crate::scene::Layer::World { continue; }
             let (lp, lc) = self.lights.pick2([dc.centre[0], dc.centre[1], dc.centre[2], dc.radius], dc.lflags as u32);
             for (i, v) in lp.iter().chain(lc.iter()).enumerate() { s[24 + i * 4..28 + i * 4].copy_from_slice(v); }
         }
@@ -774,7 +776,10 @@ impl Renderer {
             // the static World layer keeps every moving thing drawn while still skipping the bulk —
             // 07000006's start view submits ~4k draws unculled (render2_live counts them).
             let test_cull = std::env::var_os("NF_CULL").is_some();
-            let cull = |dc: &DrawCall| test_cull || dc.layer == Layer::World;
+            // blood-puff-render: the rule moved to `Layer::frustum_cullable` (the Effect pools'
+            // build-time sphere is the identity-matrix origin — culling it dropped every puff the
+            // moment the origin left the frustum, wherever they were posed).
+            let cull = |dc: &DrawCall| dc.layer.frustum_cullable(test_cull);
             // Counters for the worklog (env-gated; no per-frame cost otherwise).
             let trace = std::env::var_os("NF_DRAWS").is_some();
             let (mut submitted, mut culled) = (0usize, 0usize);

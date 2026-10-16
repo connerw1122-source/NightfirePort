@@ -26,6 +26,7 @@ pub mod hud;
 pub mod credits;
 pub mod menu;
 pub mod menu_music;
+pub mod settings;
 pub mod movie;
 pub mod mpnet;
 pub mod scene;
@@ -1682,8 +1683,14 @@ struct App {
     frame_ticks: u32,
     /// The paused menus' 60 Hz accumulator (seconds) for the animations that run while the game is paused.
     menu_clock: f32,
+    /// fe-60hz: the front end's own 60 Hz tick accumulator (seconds).
+    fe_clock: f32,
     /// The sim reported the mission's own end this frame (see `Drones::mission_end`).
     pending_mission_end: bool,
+    /// mp-match-end: the sim's MP machine reached the debriefing handover (`MP_Update` 0x184bd0
+    /// case 4 → `MpGame::request_debriefing`): the finished match's debriefing board and its
+    /// settings (`Sim::take_mp_debrief_request`), drained by `App::mp_results` after the tick.
+    pending_mp_debrief: Option<(nf_game::mp::debrief::MpDebriefing, nf_game::mp::MpSettings)>,
     /// Dev `--set-channel <ch>`: a switch channel raised 2 s into the level (channel 100 = mission
     /// success — what scratchpad complete.py writes in PCSX2), for end-of-mission checks.
     force_channel: Option<u8>,
@@ -1830,6 +1837,15 @@ impl App {
         if let Some(d) = fe.requested_difficulty.take() {
             self.selected_difficulty = d;
         }
+        // settings-persist: the option pages' Confirm/Back raised the flag — write the option
+        // file (crates/nf-view/src/settings.rs). The headless render path never runs this, so
+        // a render can't touch the user's settings.
+        if fe.settings_save_pending {
+            fe.settings_save_pending = false;
+            if let Some(p) = settings::default_path() {
+                if let Err(e) = settings::save_opts(&p, &fe.opts) { eprintln!("[settings] {e}"); }
+            }
+        }
         // menu-sfx: the front end's sound events play straight through the driver's 2-D start —
         // `Menu_PlaySound`'s `Sound_Play(100.0f, id, 0, 0)` tail [M 0x1f3278] batched like the EE's
         // `SFXStart`. The loaded bank(s) decide audibility exactly as the game's lookup does (a
@@ -1866,6 +1882,13 @@ impl App {
             // The menu picked a level: through the same reload path a LOAD_LEVEL uses. A cold pick
             // (the pause page's RESTART [M 0x204408:139]) loads fresh, not with the current state.
             if !fe.flow.warm_reset { if let Some(sim) = self.scene.sim.as_mut() { sim.drones.level_exit_cold = true; } }
+            // death-loop-07: the results page's REPLAY row carries the `Player_RamLoad(Bond, 1)`
+            // half [M P_ENDMISSION_Handler 0x216618:19-21] — mark the serve so the reload comes
+            // off the ENTRY checkpoint (the restart arm), not the dying sim's live capture: the
+            // carried fail channel re-failed the mission the tick it came back — the 07000007
+            // replay loop (playtest 1012-1723). Consumed with the request, one pick only.
+            let replay_pick = std::mem::take(&mut fe.requested_restart);
+            if replay_pick { if let Some(sim) = self.scene.sim.as_mut() { sim.drones.level_exit_restart = true; } }
             self.pending_level = Some(code);
             // net-match-host: the confirm page's settings ride with the level (`mp_confirm_start`
             // builds them [M mp-menu-flow]; before this they were set but never read — the match
@@ -1968,6 +1991,11 @@ impl App {
         self.net_lobby = None;
         self.net_armed = None;
         let fe = self.fe.get_or_insert_with(menu::FrontEnd::new);
+        // settings-persist: a freshly minted front end (fe was None) boots the option file's
+        // values, not the bare defaults — the pause page's options tabs show what the user set.
+        let (opts, warn) = settings::load_default();
+        if let Some(w) = warn { eprintln!("[settings] {w}"); }
+        fe.opts = opts;
         fe.net_notice = Some(msg.to_string());
         fe.page = menu::Page::MpJoin;
         fe.cursor = 0;
@@ -2216,6 +2244,43 @@ impl App {
     /// F8/F9: show the mission-complete / mission-failed results page for the loaded mission [S demo
     /// hook — the game reaches it from `Mission_Update` 0x182c60:74's event; the port's mission-event
     /// → results glue is listed in docs/reports/fix-menus.md as remaining host work].
+    /// mp-match-end: the local match's end handover — the `MP_Update` 0x184bd0 case-4 sequence
+    /// [M :62-78: `GameState+0x1C = 0x40000033` + `ResetMap_LevelToLoad(0x7000048)` + the fade +
+    /// the per-slot `Player_SetCamMode`/`GS_PausePlayer`] on the front end the SP end built
+    /// (`demo_results`'s shape): a fresh `FrontEnd` inheriting the music statics, the flow on the
+    /// runner state, the front-end map requested, the debriefing page up with the board, and the
+    /// MP menu state restored from the match's settings ([M `Menu_RestoreMPSettings` 0x202848 —
+    /// the game's backup restore; the port restores at the handover because the manager that
+    /// started the match was deleted). Confirm then returns to the scenario page (C_MPDBG
+    /// 0x217860:8-11) and a second match starts from it through the existing flow.
+    fn mp_results(&mut self, board: nf_game::mp::debrief::MpDebriefing, settings: nf_game::mp::MpSettings) {
+        let mut fe = menu::FrontEnd::new();
+        // The same music-statics inheritance `demo_results` runs (frontend-music): the match ran
+        // with no front end, so the statics come from the last stash.
+        if let Some(old) = self.fe.take() {
+            Self::inherit_music_statics(&mut fe, old.music.bank_flip, old.music.loaded_bank, old.music.music_master);
+        } else {
+            Self::inherit_music_statics(&mut fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
+        }
+        // The game's handover deletes the menu manager with the match-start request; the fresh
+        // manager boots into the runner state [M 0x1c98c8 case 1] — the flow must be live for the
+        // page's own `reset_map_level_to_load`-shaped pushes.
+        fe.flow.stack = vec![menu::ST_RUNNER];
+        fe.flow.current_level = menu::FRONTEND_LEVEL;
+        // The restore BEFORE the page open: C_MPDBG's Confirm must land on a scenario page that
+        // already holds the match's choices (the game's manager-side restore is the same data).
+        fe.restore_mp_match(&settings);
+        fe.show_mp_debriefing(board);
+        // The level request + the fade, the game's order [M 0x184bd0:64-78]: the front-end map
+        // load pushes first, the fade state lands on top. The sim (the arena) freezes: the tick
+        // loop runs only while `fe.is_none()` — the game's GS_PausePlayer per slot.
+        fe.requested_level = Some(menu::FRONTEND_LEVEL);
+        fe.flow.reset_map_level_to_load(menu::FRONTEND_LEVEL, false, false);
+        fe.flow.push_state(menu::ST_FADE_HOLD);
+        self.fe = Some(fe);
+        self.grab(false);
+    }
+
     fn demo_results(&mut self, complete: bool) {
         if self.level_code == 0 || self.level_code == menu::FRONTEND_LEVEL { return; }
         let mut fe = menu::FrontEnd::new();
@@ -2229,6 +2294,11 @@ impl App {
         } else {
             Self::inherit_music_statics(&mut fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
         }
+        // settings-persist: this fresh front end boots the option file's values too — its
+        // defaults would otherwise ride the results page's quit back into the front end.
+        let (opts, warn) = settings::load_default();
+        if let Some(w) = warn { eprintln!("[settings] {w}"); }
+        fe.opts = opts;
         // The demo hook stands in for Mission_Update 0x182c60, which fires in state 2 — the flow
         // must be in a state reset_map_level_to_load accepts (its gate [M 0x1d3800]) for the outro
         // request to wrap into the movie state.
@@ -2358,12 +2428,18 @@ impl App {
             // psiMovieFinished [M 0x1082e8 polled at 0x209e88]: the pair advances; after the
             // second movie the host shortens the headless countdown so the state pops at the real
             // end (the slim ISO's zeroed PSS files [L] leave the countdown alone to carry it).
+            // boot-flow: the run ends on psiMovieFinished, never on the headless budget while the real
+            // movie still plays [M P_INTRO 0x209e88 / P_ESTHERO 0x20a060 poll psiMovieFinished only] — the
+            // budget cut 0x073B0048 at the rockets. The budget stays the stand-in when no player runs.
+            if self.movie.as_ref().is_some_and(|p| p.code() == code && !p.finished()) {
+                fe.flow.movie_frames = fe.flow.movie_frames.max(2);
+            }
             if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {
                 // frontend-music: each finished intro movie restarts the pair while it is down
                 // [M 0x209e88:23-28 — the psiMovieFinished arm].
                 fe.music.movie_finished();
                 fe.intro_index += 1;
-                if fe.intro_index >= menu::INTRO_MOVIES.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
+                if fe.intro_index >= fe.intro_list.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
             }
         } else if fe.attract_playing {
             // attract-mode: P_ATTRACT's 0x4c starts the attract movie on the ONE BGFMV slot
@@ -2938,11 +3014,18 @@ impl ApplicationHandler for App {
                             // Esc in a mission opens the pause page [S: the game pauses on Start].
                             if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL {
                                 let base = self.scene.sim.as_ref().map(|s| s.drones.mission.base_map).filter(|&b| b != 0 && b != u32::MAX).unwrap_or(self.level_code);
-                                let fe = self.fe.get_or_insert_with(menu::FrontEnd::new);
-                                // frontend-music: the fresh manager still meets the game's
-                                // statics (menu-audio-state — the stash from the front-end close;
-                                // the quit-to-front-end load must flip to the OTHER bank).
-                                Self::inherit_music_statics(fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
+                                let fe = self.fe.get_or_insert_with(|| {
+                                    let mut fe = menu::FrontEnd::new();
+                                    // frontend-music: the fresh manager still meets the game's
+                                    // statics (menu-audio-state — the stash from the front-end close;
+                                    // the quit-to-front-end load must flip to the OTHER bank).
+                                    Self::inherit_music_statics(&mut fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
+                                    // settings-persist: same boot as the title's front end.
+                                    let (opts, warn) = settings::load_default();
+                                    if let Some(w) = warn { eprintln!("[settings] {w}"); }
+                                    fe.opts = opts;
+                                    fe
+                                });
                                 fe.flow.current_level = self.level_code;
                                 // RESTART reloads the running mission's base map [M 0x204408:138-141
                                 // Mission_BaseMapHCode()]: a level started straight from the command line never
@@ -3338,6 +3421,15 @@ impl ApplicationHandler for App {
                             eprintln!("level: mission over (LevelToEndTo {end_to:08x}) — the outro + results");
                             self.pending_mission_end = true;
                         }
+                        // mp-match-end: `MP_Update` 0x184bd0 case 4's handover — the debriefing
+                        // request carries the finished match's board + settings to the front end
+                        // (the drain runs after the tick block, beside `pending_mission_end`'s).
+                        if self.pending_mp_debrief.is_none() {
+                            if let Some((board, settings)) = sim.take_mp_debrief_request() {
+                                eprintln!("mp: match over — the debriefing handover ({} rows)", board.rows.len());
+                                self.pending_mp_debrief = Some((board, settings));
+                            }
+                        }
                         if let Some(next) = sim.drones.level_exit.take() {
                             let resolved = nf_game::triggers::resolve_exit_code(next);
                             if resolved != next { eprintln!("level: exit {next:08x} resolves to {resolved:08x} [M 0x1d3560]"); }
@@ -3395,6 +3487,8 @@ impl ApplicationHandler for App {
                         }
                     }
                     if std::mem::take(&mut self.pending_mission_end) { self.demo_results(true); }
+                    // mp-match-end: the debriefing handover, drained beside the mission end.
+                    if let Some((board, settings)) = self.pending_mp_debrief.take() { self.mp_results(board, settings); }
                 }
                 let Some(g) = &mut self.gfx else { return };
                 if g.minimized {
@@ -3500,7 +3594,15 @@ impl ApplicationHandler for App {
                 let movie_frame = if movie_up { self.movie.as_mut().and_then(|p| p.present()) } else { None };
                 let mut hud = if let Some(fe) = self.fe.as_mut() {
                     let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
-                    fe.tick();
+                    // fe-60hz: the front end is the game's 60 Hz menu tick (`MenuManager_Update` 0x21c3d8 runs once
+                    // per game frame, NTSC 60 Hz [M main 0x109080's vblank pacing]). Ticking it once per RENDERED
+                    // frame ran every menu timer — the 2700-tick attract countdown, the P_INTRO/P_ESTHERO movie
+                    // budgets, the Press START flash — 2.4× fast on the user's 144 Hz display (attract after
+                    // ~19 s instead of 45; the boot intro cut short). Its own clock, at most 8 ticks per frame.
+                    self.fe_clock += dt;
+                    let fe_n = (self.fe_clock * 60.0) as u32;
+                    self.fe_clock -= fe_n as f32 / 60.0;
+                    for _ in 0..fe_n.min(8) { fe.tick(); }
                     fe.backdrop_live = aux_up && movie_frame.is_some();
                     if flow_up || (intro_up && movie_frame.is_some()) || (attract_up && movie_frame.is_some()) {
                         // The movie plane replaces the overlay: the state-6 briefing blits over the
@@ -3580,6 +3682,25 @@ impl ApplicationHandler for App {
             }
             _ => {}
         }
+    }
+}
+
+/// The AV volume rows reach the sound layer's volumes — the game's own settings load applies
+/// the persisted volumes straight to the IOP statics at boot [M LS_LoadGlobalSettings
+/// 0x1cdbc8:69-70 `SFXMusicSetVolume/SFXSetVolume(loaded)`; Boot_LoadPTPData 0x1c8560:81-82].
+/// The driver's `music_master`/`master` are those statics: `ES_CombineVolumes` 0x1300 scales
+/// every jingle (0x1d7/0x470) by `music_master` and every other sample by `master` [M
+/// nf-audio/src/sfx.rs `combine`]. The menu-music model carries the same music volume so a
+/// mission-return fe rebuild inherits it (inherit_music_statics' stash seeds from the boot fe).
+/// The option map stores the volume scale the restore-defaults list writes [M 0x214818:97-110
+/// — slider 0xe → volume 70, sfx 0x14 → 100], so the rows map 1:1 onto the driver fields.
+pub fn apply_av_volumes(fe: &mut menu::FrontEnd, driver: Option<&mut nf_audio::sfx::Driver>) {
+    let music = fe.opt_value(0x1000_0135);
+    let sfx = fe.opt_value(0x1000_0134);
+    fe.music.music_master = music;
+    if let Some(d) = driver {
+        d.music_master = music;
+        d.master = sfx;
     }
 }
 
@@ -3840,7 +3961,7 @@ pub fn run() -> Result<()> {
     // `--hold-npcs` (dev): the window run holds every guard in place, still shootable.
     if dev && args.iter().any(|a| a == "--hold-npcs") { if let Some(sim) = scene.sim.as_mut() { sim.drones.hold_npcs = true; } }
     let force_channel = if dev { args.iter().position(|a| a == "--set-channel").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u8>().ok()) } else { None };
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, fe_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, pending_mp_debrief: None, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
         net: None, net_lobby: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,
@@ -3875,6 +3996,9 @@ pub fn run() -> Result<()> {
     app.level_code = u32::from_str_radix(level.trim_end_matches(".bin"), 16).unwrap_or(0);
     if front_end {
         app.fe = Some(menu::FrontEnd::new());
+        // boot-flow: the window boot runs P_INTRO's EA + MGM logos before the title [M 0x209e88];
+        // the headless --shot/--page paths build their own FrontEnd and stay on the page they ask for.
+        if let Some(fe) = app.fe.as_mut() { fe.start_boot_intro(); }
         // frontend-music: the boot front end's own `Sound_Ready` case 0x7000048 consumes the
         // flip [M 0x1dceb8:94-101 — DAT_002e1b11 (.bss) = 0 → bank 0xc resident, DAT → 1;
         // P_START's once arm pins it right after, 0x20a408:31]. The port consumes it here so
@@ -3884,6 +4008,18 @@ pub fn run() -> Result<()> {
             let hash = fe.music.front_end_sound_ready();
             if let Some(s) = app.sound.as_mut() { s.driver.set_primary(if hash == 0x38 { 1 } else { 0 }); }
         }
+        // settings-persist: the front end boots with the option file's values (missing or
+        // corrupt → the defaults, the warning on stderr). Window settings aren't persisted:
+        // the port has no size/fullscreen state yet (the window is winit's default, lib.rs
+        // resumed).
+        let (opts, warn) = settings::load_default();
+        if let Some(w) = warn { eprintln!("[settings] {w}"); }
+        app.fe.as_mut().unwrap().opts = opts;
+        // options-persist-roundtrip: the AV volume rows reach the sound layer at boot [M
+        // LS_LoadGlobalSettings 0x1cdbc8:69-70 — the loaded settings call
+        // SFXMusicSetVolume/SFXSetVolume].
+        let fe = app.fe.as_mut().unwrap();
+        apply_av_volumes(fe, app.sound.as_mut().map(|s| &mut s.driver));
         // The front end needs the game's strings even when the front-end map carries no Sim
         // (`Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` = USATxt.dat [M lib.rs load_impl]).
         match read_files_bin(&app.iso, "USATxt.dat") {
@@ -3894,6 +4030,16 @@ pub fn run() -> Result<()> {
             None => eprintln!("no USATxt.dat in FILES.BIN — menu labels show their label ids"),
         }
         eprintln!("[front end] title screen (P_START 0x40000034); Enter/click = start, arrows = move, Esc = back");
+    } else {
+        // options-persist-roundtrip: a mission started straight from the command line boots
+        // the persisted volumes too — the game's boot applies them before any menu exists
+        // [M Boot_LoadPTPData 0x1c8560:81-82 SFXSetVolume/SFXMusicSetVolume(DAT_0031c17c/78)].
+        // The headless --shot path returned above and never touches the user's config.
+        let (opts, warn) = settings::load_default();
+        if let Some(w) = warn { eprintln!("[settings] {w}"); }
+        let music = opts.get(&0x1000_0135).copied().unwrap_or(70);
+        let sfx = opts.get(&0x1000_0134).copied().unwrap_or(100);
+        if let Some(s) = app.sound.as_mut() { s.driver.music_master = music; s.driver.master = sfx; }
     }
     // `--bond x,y,z` in the window too (it only applied to the headless `--frame` path): Bond starts exactly there.
     if let Some(i) = args.iter().position(|a| a == "--bond") {

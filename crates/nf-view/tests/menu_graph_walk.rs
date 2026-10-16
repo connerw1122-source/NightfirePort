@@ -92,6 +92,8 @@ enum Edge {
     Act(Action),
     /// `BURST_TICKS` raw ticks (no input).
     Burst,
+    /// boot-flow: the START intro's skip grace, `ESTHERO_GRACE` ticks (no input) [M P_ESTHERO 0x20a060:18].
+    Grace,
     /// The no-input timeout to the attract movie (only the title and the main menu check the
     /// count [M the only `Menu_GetNoInputCount` callers]).
     Attract,
@@ -252,6 +254,9 @@ fn apply(fe: &mut FrontEnd, e: Edge, armed: &mut Option<u32>, problems: &mut Vec
             fe.action(a);
             settle(fe, problems);
         }
+        Edge::Grace => {
+            for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); }
+        }
         Edge::Burst => {
             for _ in 0..BURST_TICKS {
                 fe.tick();
@@ -360,6 +365,7 @@ fn apply_raw(fe: &mut FrontEnd, e: Edge) {
             fe.tick();
         }
         Edge::Burst | Edge::Attract => {}
+        Edge::Grace => { for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } }
         Edge::OpenPause => {
             fe.open_pause();
             fe.tick();
@@ -583,10 +589,12 @@ fn main_prologue() -> Vec<Edge> {
     }
     assert_eq!(fe.flow.get_state(), ST_RUNNER, "boot reaches the front-end map");
     assert!(fe.action(Action::Confirm), "the title's Start starts the intro");
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18, Menu_StopMovie 0x215a50]
     assert!(fe.action(Action::Confirm), "the skip action pops the intro [M 0x1c98c8 case 6]");
     fe.tick();
     assert_eq!(fe.page, Page::Main, "the prologue lands on the main menu by actions only");
-    vec![Edge::Boot, Edge::Act(Action::Confirm), Edge::Act(Action::Confirm)]
+    // boot-flow: the START intro's 3 s grace (180 ticks) swallows an early skip.
+    vec![Edge::Boot, Edge::Act(Action::Confirm), Edge::Grace, Edge::Act(Action::Confirm)]
 }
 
 /// Main → Codename → Play-without-saving → Difficulty → Single Player → confirm mission 1 (row 0

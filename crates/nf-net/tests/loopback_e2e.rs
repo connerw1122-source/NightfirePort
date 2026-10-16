@@ -200,7 +200,10 @@ fn run_600(corrupt_client: Option<usize>, corrupt_tick: u32, port: u16) -> (Peer
             while p.scheduled > p.executed {
                 match p.sess.ready_inputs(p.executed) {
                     Some(mut inputs) => {
-                        if corrupt_client == Some(slot - 1) && slot > 0 && p.executed == corrupt_tick {
+                        // net-e2e-loopback: the `slot > 0` guard MUST come first —
+                        // slot 0 is the host (the chain's head) and `slot - 1`
+                        // used to underflow before the guard was evaluated.
+                        if slot > 0 && corrupt_client == Some(slot - 1) && p.executed == corrupt_tick {
                             let ls = p.sess.local_slot() as usize;
                             inputs[ls].fire = !inputs[ls].fire;
                         }

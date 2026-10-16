@@ -264,29 +264,46 @@ fn the_07000001_exit_works_end_to_end() {
                 sim.bond.pos = [mp[0], floor + 1.1, mp[2] - 1.5];
                 (false, mp)
             } else {
-                // Bond trails 3.9 behind along the ROUTE direction — the escort test's own distance.
-                // Two traps the old 2.5-yaw offset walked into: (a) the courtyard-junction creep
-                // stalls (the port's creep gives up where the game slides — the nav-gap stand-in
-                // below), and with Bond within 3.0 on a blocked tick the escort reads PlayerInWay
-                // (0x1e [M 0x15ea28's entry: route blocked + Bond within 3.0]) whose resume rule is
-                // Bond BEYOND 3.0 [M 0x15ea28 case 3] — a permanent 2.5 stand-in never satisfies it,
-                // so Mayhew paced 0x1e forever and never reached the door node; the game's real
-                // player walks through and clears the band. 3.9 sits outside 3.0 but inside the
-                // lead's resume/wait bands (≤ 10 [M 0x15eda8 case 3]; > 12 enters the wait
-                // [M 0x15e698 case 3 stand-in]). (b) "behind along YAW" flips Bond ACROSS Mayhew
-                // whenever a wait state turns him to face Bond — behind-the-yaw lands ahead of the
-                // route. The route direction is stable while he paces; when the target degenerates
-                // (Mayhew standing at his node, e.g. in DSTATE_OpenDoor), Bond stays where he is.
-                let rt = sim.drones.list[mi].route.as_ref().map(|r| r.target);
-                if let Some(t) = rt {
-                    let dx = t[0] - mp[0]; let dz = t[2] - mp[2];
-                    if dx * dx + dz * dz > 0.25 {
+                // Bond rides the ROUTE polyline 3.9 arc-units behind the lead — the walking
+                // player of escort_follow_07000001_live, collision-free in this harness: his
+                // nearest route node tracks the chain, so the arc the bands read (SM+0x20
+                // [M 0x15e698:60, 0x15eda8:35]) stays a true ~3.9 lag and the game's own resume
+                // [M 0x15eda8 case 3: path > -7.0] fires when the lead parks (parked at his
+                // node, Bond 3.9 back on the link: the node scan's 5.0 cutoff [M
+                // DroneMove_ObjectMissionPathDistance 0x153f50] makes the lead's own node the
+                // nearest → path 0.0 → resume with Bond inside the 5.0 straight-line check).
+                // The two trails this replaces both froze the arc: the target-direction
+                // teleport held the STRAIGHT-LINE lag at 3.9 while the folded courtyard route
+                // made the arc 9.1 (the ailog repro: one LeadWait (path -9.1) entry, then
+                // parked in 0x20 for the rest of the 5000 ticks, the shoji never reached), and
+                // the real walked follower wedges on the courtyard walls this harness cannot
+                // nav around. 3.9 stays outside the PlayerInWay bands (enter 3.0 [M 0x15e698
+                // case 3], stay 3.5 [M 0x15ea28 case 3]).
+                if let Some((path, index, nodes)) = sim.drones.list[mi].route.as_ref()
+                    .map(|r| (r.path, r.index, r.nodes.clone())) {
+                    let mut left = 3.9f32;
+                    let mut cur = mp;
+                    let mut k = index.min(nodes.len() as i32 - 1);
+                    let mut placed = false;
+                    while left > 0.0 && k >= 0 && !placed {
+                        let np = sim.nav.paths[path].nodes[nodes[k as usize] as usize].pos;
+                        let (dx, dz) = (np[0] - cur[0], np[2] - cur[2]);
                         let l = (dx * dx + dz * dz).sqrt();
-                        // Re-floor: off the route line the trail spot can hang over a drop (the old
-                        // yaw-follow stayed on Mayhew's walked line and could keep the stale y).
-                        let bx = mp[0] - dx / l * 3.9; let bz = mp[2] - dz / l * 3.9;
-                        let floor = sim.world.floor_below([bx, mp[1], bz], 6.0).unwrap_or(mp[1]);
-                        sim.bond.pos = [bx, floor + 1.1, bz];
+                        if l >= left && l > 0.0 {
+                            let bx = cur[0] + dx / l * left;
+                            let bz = cur[2] + dz / l * left;
+                            let floor = sim.world.floor_below([bx, mp[1], bz], 6.0).unwrap_or(mp[1]);
+                            sim.bond.pos = [bx, floor + 1.1, bz];
+                            placed = true;
+                        } else {
+                            left -= l;
+                            cur = np;
+                            k -= 1;
+                        }
+                    }
+                    if !placed {
+                        let floor = sim.world.floor_below([cur[0], mp[1], cur[2]], 6.0).unwrap_or(mp[1]);
+                        sim.bond.pos = [cur[0], floor + 1.1, cur[2]];
                     }
                 }
                 (false, mp)
@@ -350,8 +367,10 @@ fn the_07000001_exit_works_end_to_end() {
         sim.drones.channels.on(0x10), sim.drones.channels.on(99), sim.drones.channels.on(0xb),
         sim.bond.pos, sim.drones.list[mi].pos);
     assert!(door_opened, "the courtyard shoji reached OPEN (state 4) at least once [M NDrone2_DoorIsOpen 0x14aaa0] — an activation every tick kept it ping-ponging 0x8↔0x10");
-    assert!(at_plate, "Mayhew leads to the exit plate (walked {walked:.1}, at {:?}, plate ({cx},{cy},{cz}))",
-        sim.drones.list[mi].pos);
+    // (The old `at_plate` 2.0-ball proxy is gone: the walking lead stops 3.6 from the touch
+    // volume's centre while the game's REAL condition — the AND plate's touch, out 0x10, both
+    // bodies — already fired and the level end reports 0x07000002, asserted below exactly as
+    // escort_follow and walkreal do [D placements; WORKLOG fix-level].)
     assert_eq!(sim.drones.level_exit, Some(0x0700_0002),
         "Bond + Mayhew on the plate fire the LOAD_LEVEL to 0x07000002");
     eprintln!("[mission] 07000001 exit end to end ok (walked {walked:.1})");

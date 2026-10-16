@@ -82,7 +82,7 @@ RadarSprInfo, **1·24**) · 17 OICW · 18 Ronin · 19 Laser; rest NULL.
 | OICWSprInfo | 0x2BE008 | 308 | 7 | pane 17 → 0x19cef8 | – |
 | RoninSprInfo | 0x2BE160 | 264 | 6 | pane 18 → 0x1a12d0 | – |
 | LaserSprInfo | 0x2BE288 | 264 | 6 | pane 19 → 0x1a12d0 | – |
-| SpaceSprInfo | 0x2BE3B0 | 484 | 11 | pane 20 → 0x19d3b8 | – |
+| SpaceSprInfo | 0x2BE3B0 | 484 | 11 | pane 20 → 0x19d3b8 | ✓ (fix-space-pane: `nf_view::hud::space_pane`; `MissileDeploy` not modelled) |
 | MPAmmoSprInfo | 0x2BE610 | 132 | 3 | MP pane 0 → 0x19a7f0 | – |
 | MPHealthSprInfo | 0x2BE6B8 | 352 | 8 | MP pane 1 → 0x19b630 | – |
 | MPInfoStatusSprInfo | 0x2BE838 | 44 | 1 | MP pane 4 → 0x19ca88 | – |

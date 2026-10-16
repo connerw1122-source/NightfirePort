@@ -19,6 +19,7 @@ fn tick_to_wheel(fe: &mut FrontEnd) {
         if fe.flow.get_state() == nf_view::menu::ST_RUNNER && fe.flow.current_level == nf_view::menu::FRONTEND_LEVEL { break; }
     }
     fe.action(Action::Confirm); // Start → the intro movie state, page Main (the port's contract)
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18, Menu_StopMovie 0x215a50]
     fe.action(Action::Confirm); // skips the movie [M GameFlow_Main case 6 pops on action 0x19]
     assert_eq!(fe.page, Page::Main);
     fe.cursor = 2;              // the Codenames row [M C_GOCODENAMES 0x216b38 → page 0x4000001b]

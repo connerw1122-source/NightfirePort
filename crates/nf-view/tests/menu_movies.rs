@@ -201,12 +201,15 @@ fn the_intro_plays_then_the_main_menu_and_skips_on_confirm() {
     assert!(fe.action(Action::Confirm), "Start arms the intro");
     assert!(fe.intro_playing, "the P_INTRO run is up [M 0x209e88]");
     assert_eq!(fe.flow.get_state(), ST_MOVIE);
-    assert_eq!(fe.flow.movie_frames, nf_view::menu::INTRO_TICKS, "the budget is the real movies' length");
+    // boot-flow: START plays P_ESTHERO's 0x073B0048 [M 0x20a060]; the boot P_INTRO logos run before the title.
+    assert_eq!(fe.flow.movie_frames, nf_view::menu::ESTHERO_TICKS, "the budget is the real movie's length");
+    assert_eq!(fe.intro_movie_code(), nf_view::menu::ESTHERO_MOVIE, "START plays the 0x073B intro, not the boot logos");
     assert_eq!(fe.page, Page::Main, "the page the movie lands on is already the main menu");
     // Other input does nothing while the movie owns the screen (the intro page has no controls).
     assert!(!fe.action(Action::Down), "the cursor does not move during the intro");
     assert_eq!(fe.cursor, 0);
-    // Confirm = action 0x19: the skip.
+    // Confirm = action 0x19: the skip, after the 3 s grace.
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18]
     assert!(fe.action(Action::Confirm));
     assert!(!fe.intro_playing);
     assert_eq!(fe.flow.get_state(), ST_RUNNER, "the movie state popped [M case 6]");
@@ -215,9 +218,9 @@ fn the_intro_plays_then_the_main_menu_and_skips_on_confirm() {
     let mut fe = FrontEnd::new();
     for _ in 0..8 { fe.tick(); }
     fe.action(Action::Confirm);
-    for _ in 0..nf_view::menu::INTRO_TICKS { fe.flow.main_tick(); }
+    for _ in 0..nf_view::menu::ESTHERO_TICKS { fe.flow.main_tick(); }
     fe.tick();
-    assert!(!fe.intro_playing, "the run ends when the movies end [M 0x209e88]");
+    assert!(!fe.intro_playing, "the run ends when the movie ends [M 0x20a060]");
     assert_eq!(fe.page, Page::Main);
 }
 

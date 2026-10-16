@@ -446,12 +446,64 @@ fn gop_chunks(es: &[u8]) -> (Vec<(usize, usize)>, usize) {
     (chunks, head_end)
 }
 
+/// boot-flow: the streaming worker's decode units — one per GOP, so the first picture arrives after
+/// one GOP's decode instead of a whole closed-GOP chunk (0x073B0048's first closed chunk held most of
+/// the movie: the P_ESTHERO intro sat black ~20 s, then joined mid-way). Each unit is (decode from,
+/// decode to, keep the last N frames): a closed GOP decodes alone (keep all); an OPEN GOP's leading
+/// B pictures reference the previous GOP's last anchor [ISO 13818-2 §6.3.8 closed_gop], so it decodes
+/// with the previous GOP in front and keeps only its own pictures (the last N of the output — robust
+/// whether the decoder emits or drops the prefix's own unreferenced B pictures).
+#[cfg(feature = "movies")]
+fn gop_units(es: &[u8]) -> (Vec<(Option<(usize, usize)>, usize, usize, usize)>, usize) {
+    let mut gops: Vec<(usize, bool)> = Vec::new();
+    let mut i = 0usize;
+    while i + 8 <= es.len() {
+        let Some(at) = es[i..].windows(4).position(|w| w == [0, 0, 1, 0xb8]) else { break };
+        let at = i + at;
+        if at + 8 > es.len() { break; }
+        gops.push((at, (es[at + 7] >> 6) & 1 == 1));
+        i = at + 4;
+    }
+    let head_end = gops.first().map(|(at, _)| *at).unwrap_or(es.len());
+    let pics = |a: usize, b: usize| es[a..b].windows(4).filter(|w| *w == [0, 0, 1, 0]).count();
+    let mut units = Vec::new();
+    for k in 0..gops.len() {
+        let (at, closed) = gops[k];
+        let end = gops.get(k + 1).map_or(es.len(), |g| g.0);
+        let n = pics(at, end);
+        if n == 0 { continue; }
+        let prefix = if closed || k == 0 { None } else { Some((gops[k - 1].0, at)) };
+        units.push((prefix, at, end, n));
+    }
+    (units, head_end)
+}
+
+/// boot-flow: a reference GOP without its own leading B pictures. An open GOP's leading Bs (coded right
+/// after its I, before the next anchor) reference the GOP before it; as a prefix they have nothing in
+/// front, and the decoder rejects them ("B-picture before two I/P anchors"). Their frames are dropped
+/// anyway — only the prefix's anchors matter as references for the unit.
+#[cfg(feature = "movies")]
+fn strip_leading_b(gop: &[u8]) -> Vec<u8> {
+    let starts: Vec<usize> = gop.windows(4).enumerate().filter(|(_, w)| *w == [0, 0, 1, 0]).map(|(i, _)| i).collect();
+    let mut out = Vec::with_capacity(gop.len());
+    out.extend_from_slice(&gop[..starts.first().copied().unwrap_or(gop.len())]);
+    let mut seen_anchor = 0;
+    for (k, &st) in starts.iter().enumerate() {
+        let en = starts.get(k + 1).copied().unwrap_or(gop.len());
+        let kind = gop.get(st + 5).map_or(0, |b| (b >> 3) & 7);
+        if kind == 3 && seen_anchor < 2 { continue; } // a leading B (before the second anchor)
+        if kind == 1 || kind == 2 { seen_anchor += 1; }
+        out.extend_from_slice(&gop[st..en]);
+    }
+    out
+}
+
 #[cfg(feature = "movies")]
 impl MovieStream {
-    /// Starts the worker: decode chunk by chunk ahead of playback. `looping` restarts from the
-    /// first chunk when the ES ends (the game's looping background movies).
+    /// Starts the worker: decode GOP by GOP ahead of playback (`gop_units`). `looping` restarts from the
+    /// first unit when the ES ends (the game's looping background movies).
     pub fn start(movie: &Movie, looping: bool) -> Result<MovieStream> {
-        let (chunks, head_end) = gop_chunks(&movie.demuxed.video);
+        let (chunks, head_end) = gop_units(&movie.demuxed.video);
         anyhow::ensure!(!chunks.is_empty(), "no decodable GOP chunks in {}", movie.name);
         let head = movie.demuxed.video[..head_end].to_vec();
         let es = movie.demuxed.video.clone();
@@ -462,14 +514,15 @@ impl MovieStream {
         let code = movie.code;
         let handle = std::thread::Builder::new().name(format!("movie-{code:08x}")).spawn(move || {
             'movie: loop {
-                for &(a, b) in &chunks {
+                for &(prefix, a, b, keep) in &chunks {
                     if stop2.load(std::sync::atomic::Ordering::Relaxed) { break 'movie; }
-                    // The chunk's own sequence header + its GOPs: a closed-GOP-aligned slice is
-                    // self-contained, so `decode_video` on it equals the whole-stream decode's
-                    // frames for the same pictures.
+                    // The unit's own sequence header + its GOP (an open GOP with its predecessor in
+                    // front as the reference); only the unit's own pictures go out.
                     let mut part = head.clone();
+                    if let Some((pa, pb)) = prefix { part.extend_from_slice(&strip_leading_b(&es[pa..pb])); }
                     part.extend_from_slice(&es[a..b]);
-                    let Ok(frames) = nf_formats::mpeg2::decode_video(&part) else { break 'movie };
+                    let Ok(mut frames) = nf_formats::mpeg2::decode_video(&part) else { break 'movie };
+                    if frames.len() > keep { frames.drain(..frames.len() - keep); }
                     for f in frames {
                         if stop2.load(std::sync::atomic::Ordering::Relaxed) { break 'movie; }
                         if tx.send(WorkerMsg::Frame(f)).is_err() { break 'movie; }

@@ -104,6 +104,8 @@ impl CoverNode {
             return false;
         }
         let h = if level == 0x0700_0011 { 1.15 } else { 1.5 };
+        // `DroneVision_CanSeePosition` (0x178438): the head→target ray; the game's per-cel part
+        // check is the one-cel deviation documented at nav.rs:3-4.
         if !world.line_of_sight(head, [self.pos[0], self.pos[1] + h, self.pos[2]]) { rt.bits = rt.bits & !0x70 | 0x400; }
         true
     }

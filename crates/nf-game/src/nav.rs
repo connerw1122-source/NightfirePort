@@ -137,6 +137,22 @@ impl Network {
         self.bounds_test(a, b, near, want_hit)
     }
 
+    /// `DroneMove_ObjectMissionPathDistance`'s node qualification (0x153f50:100-121): 3D distance
+    /// ≤ 30 (DAT_002c7954 = 900.0, `Drone_PostLoad_Init` 0x136938:62), |dy| ≤ 4.0 (DAT_002c794c),
+    /// the slope band (DAT_002c7948 < |dy| ⇒ |atan2(dy, horiz)| ≤ DAT_002c7944 — the
+    /// PostLoad_Init 1.5·/2.0 + 0.7854/0.8727 pair this Network carries), then the BOUNDARY test
+    /// ONLY (`AINetwork_BoundsTest`, gated on the boundary count DAT_002c8774 = `self.bounds`) —
+    /// the game's scan has NO collision-world line of sight (furniture must not disqualify a
+    /// route node).
+    pub fn node_scan_ok(&self, feet: V3, np: V3) -> bool {
+        let dy = np[1] - feet[1];
+        let h2 = (np[0] - feet[0]).powi(2) + (np[2] - feet[2]).powi(2);
+        if h2 + dy * dy > 900.0 || dy.abs() > 4.0 { return false; }
+        if dy.abs() > self.slope_dy && dy.abs().atan2(h2.sqrt()) > self.max_slope { return false; }
+        if !self.bounds { return true; }
+        self.bounds_test(feet, np, false, false).0 == 1
+    }
+
     /// `AINetwork_BoundsTest` over every wall (one cel).
     pub fn bounds_test(&self, a: V3, b: V3, near: bool, want_hit: bool) -> (i32, Option<V3>) {
         let mut best: Option<(f32, V3)> = None;
@@ -205,6 +221,9 @@ impl Network {
 
     /// `AINetwork_NodesForPosition` for one path (mode 0): the first candidate with `MoveTestFromNode(node → pos)`
     /// = 1 is found; the first failure is the fallback.
+    /// `AINetwork_NodesForPosition` + `AINetwork_BuildAITarget` (0x15ac78) — the drone-alert
+    /// target node set; also the port form of `NDrone2_NearestNode` (0x1558d8) / `NearestNodeDCV`
+    /// (0x155958)'s nearest-node ask.
     pub fn target_nodes(&self, world: &CollisionWorld, path: usize, pos: V3, r2: f32) -> TargetNodes {
         let mut t = TargetNodes::default();
         for i in self.candidates(path, pos, r2) {
@@ -294,6 +313,9 @@ impl Network {
     /// `AINetwork_EmitPath(limit 255)` (0x158cf8): path distances from `pos` to every node of `path` (a flood from the
     /// first reachable node, link cost len × (used + 1), the same list quirks as A*), stored as bytes:
     /// trunc(g × 255 / 256) capped at 254, 0xFF = not reached.
+    /// The `AIEmitter` scratch walk (`AINetwork_InitEmitter2` 0x15b2b8 / `AllocEmitter` 0x15b390 /
+    /// `FreeEmitter` 0x15b3d8) — the port allocates per-drone scratch instead of the game's shared
+    /// emitter pool at 0x29aa20 [S deviation, drone.rs links_used].
     pub fn emit(&self, world: &CollisionWorld, path: usize, pos: V3) -> Vec<u8> {
         let p = &self.paths[path];
         let n = p.nodes.len();
@@ -482,6 +504,10 @@ impl Route {
 
     /// A combat route to `dest` (`AINetwork_CalcRoute`): direct when `MoveTest(start, dest, near)` passes, else A* +
     /// `OptimiseRoute`. Err = the failure code (4/5/6/8).
+    /// `AINetwork_SetupRouteToObject` (0x158948) / `AINetwork_SetupRouteToPosition` (0x158b10) /
+    /// `AINetwork_CalcRouteToObject` (0x15aee8, via `NDrone2_MoveToObject` 0x151618) — the port's
+    /// single route build. The game's `AlterDestFor_DROUTE_Nearest` (0x156088) dest pull-back for
+    /// unreachable goals is not ported (gap, docs/systems/uncited-audit.md).
     pub fn to_position(net: &Network, world: &CollisionWorld, path: Option<usize>, start: V3, dest: V3, goal: &TargetNodes, used: &[u16]) -> Result<(u8, Route), u8> {
         if net.move_test(world, start, dest, true, false).0 == 1 {
             let mut r = Route::new(path.unwrap_or(0), RouteMode::OneWay, Vec::new(), Vec::new(), start, dest);
@@ -528,6 +554,7 @@ impl Route {
     }
 
     /// `AINetwork_SetupNextNode(±1)`.
+    /// `AINetwork_RouteNodeOffset` (0x15a820): flag&7 — 2 loops, 3 bounces (not ported), else clamp.
     fn next_node(&mut self, net: &Network, dir: i32) {
         let count = self.nodes.len() as i32;
         self.index += dir;
@@ -558,6 +585,7 @@ impl Route {
     }
 
     /// `GetRouteDistance`.
+    /// `AINetwork_GetRouteDistance` — the 3D variant `AINetwork_GetRouteDistance3D` (0x156540).
     pub fn distance(&self, net: &Network, feet: V3) -> f32 {
         let next = (self.index + 1).max(0) as usize;
         if next >= self.nodes.len() { return dist2d(feet, self.dest); }

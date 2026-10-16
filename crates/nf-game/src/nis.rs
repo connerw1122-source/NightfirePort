@@ -819,6 +819,10 @@ impl Script {
                     out.push(Request::WireRegister { player: self.player, obj, group: g(0) as u16 });
                 }
             }
+            // Event 9 (cam2mode) is unhandled here: the game routes it via `Player_Cam2Mode`
+            // 0x195fc8 → SetCamMode(2) = `Player_PositionCamera` 0x18f5d8 case 2 →
+            // `camera_track_XZ_pos_behind` 0x1bc260 + `camera_track_Y_pos` 0x1bc1f0 (the
+            // cut-scene behind-Bond orbit) [M Script_EventHandler 0x1d94c0 case 9] — gap.
             _ => out.push(Request::Event { kind, params: p }),
         }
     }

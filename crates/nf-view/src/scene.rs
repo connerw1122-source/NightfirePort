@@ -79,6 +79,30 @@ pub enum Layer {
     Effect,
 }
 
+impl Layer {
+    /// The renderer's per-draw frustum-cull rule (gpu.rs's `cull` closure), spelled out where the
+    /// layer semantics live so the live tests can pin it without a GPU.
+    ///
+    /// The static World bulk always culls (its bounding spheres are exact — fix-render2/fix-render-artifacts).
+    /// The EFFECT pools never cull, `NF_CULL` or not: the game culls these objects per frame at their
+    /// LIVE matrix (`View_AddObjects` 0x1e62d8 passes obj+0x8c sphere AND obj+0x80 bbox to
+    /// `Vision_InView` 0x1e89e0`), but the port's Effect groups are merged pools posed per frame
+    /// through attachment matrices — their build-time sphere is the IDENTITY-matrix centre, for the
+    /// gas pool the `BodyHit` mesh's obj.centre ≈ the world origin with radius 0.032
+    /// [D 07000005 map 10 obj 41]. Culling on that sphere drops every puff the moment the origin
+    /// leaves the frustum, no matter where the puffs are posed — the blood-puff-render task's
+    /// "the gas matrix branch runs, nothing draws". (A-11's vanish bug was the same unsoundness
+    /// with the truck.) Character keeps its build-time placement centre (real positions) so the
+    /// NF_CULL bisect override still exercises it.
+    pub fn frustum_cullable(self, test_cull: bool) -> bool {
+        match self {
+            Layer::World => true,
+            Layer::Effect => false,
+            _ => test_cull,
+        }
+    }
+}
+
 /// How a material is drawn (docs/systems/render.md): the pass (0 sky before the world, fogged; 1 world list 0;
 /// 2 characters; 3 world list 1 — glist flag 0x1, alpha list, faded; 4 sky after the fog pass; 5 effects), the GS
 /// blend from ALPHA_1 (0 normal (Cs − Cd)·As + Cd, 1 additive Cs·As + Cd, 2 subtractive Cd − Cs·As, 3 keep-destination
@@ -1844,6 +1868,18 @@ impl Sim {
         self.missile_cam.map(|c| (c.pos, c.dir))
     }
 
+    /// mp-match-end: the host's end-of-match poll — `MP_Update` 0x184bd0 case 4's handover
+    /// request (`MpGame::request_debriefing`, set at state 4→5 with the GameState+0x1C =
+    /// 0x40000033 navigation [M 0x184bd0:62-78]): taken once, it carries the finished match's
+    /// debriefing board (`MpMatch::debriefing`, P_MPDEBRIEFING 0x212198 msg 0x4c) and the
+    /// match's own settings (the game's pre-match MPSettings backup [M Menu_RestoreMPSettings
+    /// 0x202848] — the restore source, since the front end that started the match is gone).
+    pub fn take_mp_debrief_request(&mut self) -> Option<(nf_game::mp::debrief::MpDebriefing, nf_game::mp::MpSettings)> {
+        let m = self.mp.as_mut()?;
+        if !std::mem::take(&mut m.game.request_debriefing) { return None; }
+        Some((m.debriefing(), m.settings.clone()))
+    }
+
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
@@ -2375,7 +2411,20 @@ impl Sim {
             if self.drones.health.health > 0.0 {
                 self.bond.pos[1] += self.drones.health.hit_push;
             }
-            self.bond.tick_ctx(&self.world, &ctx, &input);
+            // death-animation-sp: the dead branch of `Player_Update` 0x193600 runs ONLY
+            // `AnimObjectUpdate` + `Player_HandleDeath` [M 0x193600:316-319, state obj+0xf4 2/3] —
+            // no substate arm, no `Player_MonitorAir`, no collision pass. Bond's eye (`obj+0x30`)
+            // freezes where he died: the death camera is cam mode 0 (`Player_SetCamMode(BL, 0)`
+            // [M `Player_CheckForDeath` 0x190810:64]) → `Player_PositionCamera` 0x18f5d8 case 0 →
+            // `Camera_SetToPlayer` 0x1bc048 → `Player_GetHeadPos` 0x195aa0 reads `obj+0x30/34/38 +
+            // BL+0x908 − BL+0x90c`, and the dead arm zeroes BL+0x90c [M 0x18f5d8:130-132]; nothing
+            // in the dead branch writes obj+0x30 (the anim system moves no object position —
+            // `AnimObjectUpdate` 0x1befd8 / `AnimSeqTick` 0x1c28d0 / `AnimFrameResolve` 0x1c35f8
+            // have no obj+0x30 writes). The pre-fix port kept ticking the walk physics, so a death
+            // in the air kept falling (the probe: −3.06 units over ~55 ticks).
+            if !self.drones.death.active {
+                self.bond.tick_ctx(&self.world, &ctx, &input);
+            }
             // audit-sound-calls: drain the jump launch / head-bump sounds into the Sim's sound
             // pool (`Player_HandleJump` 0x1916b0:184,195-198 via `Bond::sfx_out`).
             for (id, pos) in self.bond.sfx_out.drain(..) {
@@ -3627,7 +3676,13 @@ impl Sim {
                         && u32::from_le_bytes(w[0x48..0x4c].try_into().unwrap()) != 0;
                     if light_gate {
                         let radius = f32::from_le_bytes([w[0x58], w[0x59], w[0x5a], w[0x5b]]);
-                        let pos = [camera[0] + dir[0] * 0.5, camera[1] + dir[1] * 0.5, camera[2] + dir[2] * 0.5];
+                        // muzzle-light-datum [M Player_MuzzleFlash 0x1a4298:66-89]: the light sits at the view model's
+                        // DATUM 0 (the muzzle), or datum 4 for the +0x68 & 0x40000 dual records while BL+0x958 is
+                        // clear — the same alternation the casing eject reads. The old eye + aim·0.5 stand-in sat
+                        // above and behind the gun and lit its camera-facing side; at the muzzle the light is AHEAD of
+                        // the gun and the PS2 view model stays dark with a lit edge (render vs PCSX2, 07000008 launch).
+                        let dual = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40000 != 0 && self.gun.alt_fire_toggle == 0;
+                        let pos = self.view_datum(if dual { 4 } else { 0 }).unwrap_or([camera[0] + dir[0] * 0.5, camera[1] + dir[1] * 0.5, camera[2] + dir[2] * 0.5]);
                         self.drones.lights.create(radius, 2.0, pos, [w[0x56], w[0x55], w[0x54]], 0, 0, 1, 0, &mut self.drones.rng);
                         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
                         if flags68 & 0x2000 == 0 {
@@ -4285,7 +4340,6 @@ impl Sim {
             _ => None,
         })
     }
-
     /// The game data the simulation consults, borrowed from this Sim.
     pub fn data(&self) -> nf_game::drone::Data<'_> {
         nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models , surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref(), difficulty: self.drones.difficulty }
@@ -4709,7 +4763,7 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             gs_idx += 1;
         }
         let draw = Draw::from_gs(pass, fog, alpha, test, zbuf);
-        let lkey = if matches!(layer, Layer::World) { (li as u32) << 16 | bi as u32 } else { 0 };
+        let lkey = if matches!(layer, Layer::World) { (li as u32) << 16 | bi as u32 } else if node == VIEW_MODEL_NODE { 1 } else { 0 };
         let key = b.texture.filter(|&t| (t as usize) < level.maps[inst.map].textures.len()).map(|t| (inst.map, t));
         // fix-render3: the room cel for the static World layer (build_LinkToRoom 0x1c9680 →
         // build_FindCel 0x1c8cb0 on the object's world centre; View_AddCels 0x1e6ba0 frustum-tests
@@ -4863,6 +4917,13 @@ fn casing_matrix(c: &nf_game::casing::Casing) -> Mat4 {
     let eul = [pitch0 + c.spin[0] * c.age, yaw0 + c.spin[1] * c.age, c.spin[2] * c.age];
     nf_formats::placement::object_matrix(eul, c.pos)
 }
+
+/// view-model-unlit: the `node` the first-person view model's draws carry. The game draws the view model
+/// in `Game_Draw` 0x1e6f50's list-2 pass, after `psiLight_SetLights(0, …)` zeroed the light slots for
+/// `DrawDrops`, and an animated object's draw (`obj+0xFA & 8` → `AnimObjectDraw` 0x1c4490) never
+/// re-uploads lights [M View_DrawObjList 0x1e69a0:75-98] — so the gun takes NO point lights. The renderer
+/// zeroes them for these draws; `node` is otherwise read only for World cel culling.
+pub const VIEW_MODEL_NODE: u32 = u32::MAX - 1;
 
 /// Tracer slots (bullets drawn at once).
 const TRACER_SLOTS: usize = 32;
@@ -5250,11 +5311,11 @@ impl Scene {
                 let placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
                 let (map, object) = level.by_hash[&sleeve];
                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, VIEW_MODEL_NODE);
                 for &(bone, part) in &skin.extra {
                     let Some(&(pmap, pobject)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
                     let pinst = Instance { map: pmap, object: pobject, matrix: ident, placement: placement.clone() };
-                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, VIEW_MODEL_NODE);
                     attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                 }
                 // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
@@ -5262,7 +5323,7 @@ impl Scene {
                 let flash = u32::from_le_bytes(r[0x48..0x4c].try_into().unwrap());
                 if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                     let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
-                    add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                    add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, VIEW_MODEL_NODE);
                     attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                 }
                 // fix-gadgets-live: the AIMS-20's four side lights [M Player_WeaponFiring 0x1a5460:256-360 —
@@ -5283,7 +5344,7 @@ impl Scene {
                         for id in 8u8..=11 {
                             let Some(dt) = skin.datums.iter().find(|d| d.id == id as u32 && d.bone >= 0) else { continue };
                             let linst = Instance { map: lmap, object: lobject, matrix: ident, placement: placement.clone() };
-                            add_instance(level, &linst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                            add_instance(level, &linst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, VIEW_MODEL_NODE);
                             attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: Some(id), projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                         }
                     }
@@ -5306,7 +5367,7 @@ impl Scene {
                 if wflags & 0x800 != 0 && ventity != 0 {
                     if let (Some(&(emap, eobject)), Some(dt)) = (level.by_hash.get(&ventity), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                         let einst = Instance { map: emap, object: eobject, matrix: ident, placement: placement.clone() };
-                        add_instance(level, &einst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                        add_instance(level, &einst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, VIEW_MODEL_NODE);
                         attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: true, quiver_bolt: None });
                     }
                 }
@@ -6362,13 +6423,17 @@ impl Scene {
             Some((mats, world, m))
         }).collect();
         // Held back: spawner reinforcements and drones disabled while they wait for a switch channel (object flags
-        // 0x30, `NDrone2_Enable(0)`); R shows them.
-        let hidden = |c: &Character, ci: usize| match c.script {
-            Some(src) => self.sim.as_ref().and_then(|s| s.script_anim(src, c.skin.hashcode)).is_none(),
-            None => !opts.reinforcements && match drone_of(ci) {
-                Some((s, di)) => !s.drones.list[di].present || !s.drones.list[di].enabled,
-                None => matches!(c.role, drone::SpawnRole::Reinforcement { .. }),
-            },
+        // 0x30, `NDrone2_Enable(0)`); R shows them. The inspect path (`choice`) pins a drone-backed
+        // character visible; script actors keep their liveness gate either way.
+        let hidden = |c: &Character, ci: usize| {
+            if choice.is_some() {
+                match c.script {
+                    Some(src) => self.sim.as_ref().and_then(|s| s.script_anim(src, c.skin.hashcode)).is_none(),
+                    None => false,
+                }
+            } else {
+                self.char_hidden(ci, opts)
+            }
         };
         // A matrix that collapses a mesh to one point: its triangles become degenerate and draw nothing.
         let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
@@ -6837,6 +6902,28 @@ impl Scene {
     /// window (the started opcode-0 window whose sequence carries the skin's facial channel count,
     /// the same window `script_pose_together` poses bones from) sampled at the object's frame via
     /// `AnimFacialBlend`'s source arithmetic [M `facial_weights`, `AnimFacialBlend` 0x1be648].
+
+    /// The per-frame draw gate of character `ci` (`frame_state`'s `hidden`, hoisted here so the live
+    /// tests read the same gate the render walks). A script actor is hidden while its
+    /// `Script_AnimStart` object is not live (created at `Script_AnimStart` 0x1d8f40, deleted by
+    /// `Script_KillStream` — 0x06000072/73 set no keep-objects flag [D]); a drone-backed character is
+    /// hidden when its drone is absent or drawn-frozen: `enabled` is the port's `obj+0xF0` stand-in —
+    /// `NDrone2_Enable(0)` 0x149dd0:8-15 sets `obj+0xF0 |= 0x10`, the bit `View_AddObjects`
+    /// 0x1e62d8:33 excludes from the draw list, and `Drone_EnableAll(0)` [M 0x1383e8] applies it to
+    /// every present drone when a cut-scene fires event 5; a spawner-held-back reinforcement stays
+    /// hidden unless R asks for the reinforcements.
+    pub fn char_hidden(&self, ci: usize, opts: ViewOpts) -> bool {
+        let Some(s) = self.sim.as_ref() else { return false };
+        let c = &self.characters[ci];
+        match c.script {
+            Some(src) => s.script_anim(src, c.skin.hashcode).is_none(),
+            None => !opts.reinforcements && match s.char_drone.get(ci).copied().flatten() {
+                Some(di) => { let dr = &s.drones.list[di]; !dr.present || !dr.enabled }
+                None => matches!(c.role, drone::SpawnRole::Reinforcement { .. }),
+            },
+        }
+    }
+
     pub fn facial_weights_now(&self, c: &Character) -> Option<Vec<f32>> {
         self.facial_weights_at(self.characters.iter().position(|cc| std::ptr::eq(cc, c))?, c)
     }
@@ -7167,6 +7254,24 @@ impl Scene {
             for (ci, m) in mults.iter().enumerate() { cols[ci] = rgb(*m); }
             for (a, m) in &attach_mult { if let Some(c) = cols.get_mut((l.col_att + a) as usize) { *c = rgb(*m); } }
             for (pk, m) in &pickup_mult { if let Some(c) = cols.get_mut((l.col_pick + *pk as u32) as usize) { *c = rgb(*m); } }
+        }
+        // blood-puff-render: the gas puffs' draw colour IS the pool's live rgba — the game's
+        // `View_SetupRenderModes_Tweak` 0x1e5888:46-49 feeds the gas object's obj+0x103..0x106 bytes
+        // into `psiSetTweakARGB` (0x124770), whose TAmbient/DAT_002650d4.. floats (= byte × 1/255)
+        // multiply the drawn colour AND the alpha; `gases_smoke` 0x1ab2d0's tail rewrites those bytes
+        // from the gas datum's colour every tick (the 255→0 fade, `Gas_Init` 0x1aacc8:56-59 seeds
+        // them from the colour arg). The GPU palette carried only the ambient dim here, so the GPU
+        // render — the one that draws — never faded the puff (the CPU `posed_vertices`' gas_rgba
+        // did). The shader multiplies c0.rgb/α by cols.rgb/α, which is exactly the game's tweak.
+        // Free slots keep the ambient value: their matrix is FAR, nothing draws.
+        if let Some(s) = self.sim.as_ref() {
+            for (a, att) in self.attachments.iter().enumerate() {
+                let Some((gi, gm)) = att.gas else { continue };
+                let Some(c) = cols.get_mut((l.col_att + a as u32) as usize) else { continue };
+                if let Some(g) = s.drones.gas.puffs.get(gi as usize).filter(|g| g.mesh == gm) {
+                    *c = [g.rgba[0] / 255.0, g.rgba[1] / 255.0, g.rgba[2] / 255.0, g.rgba[3] / 255.0];
+                }
+            }
         }
         // frame-cost-guard: the per-attachment fallback this comment used to describe ("attachments
         // without an entry fall back to their owner's multiplier") was dead code. `colour_mults`

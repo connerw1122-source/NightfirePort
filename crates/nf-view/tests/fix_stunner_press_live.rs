@@ -139,17 +139,19 @@ fn the_tased_guard_falls_and_stays_down() {
         assert!(dr.alert >= 0.66, "AlertStatusSet(2) [M 0x162b98:42]");
     }
     // The held tase keeps him in the family; the game drops his weapon at the TASER enter
-    // [M 0x162b98:27-34 DropWeapon + ChangeWeapon(1)] — not modelled (the port's Drone::weapon is
-    // the held MODEL id, not the game's ChangeWeapon slot).
+    // [M 0x162b98:27-34 DropWeapon + ChangeWeapon(1)] — ported (stun-recovery): the held
+    // weapon byte goes to the fists id and the pickup spawns.
     for _ in 0..30 { steer_and_fire(&mut scene, gi, true); }
     {
         let sim = scene.sim.as_ref().unwrap();
         let dr = &sim.drones.list[gi];
         assert!(matches!(dr.state, nf_game::drone::state::TASER), "the held tase re-arms the fall timer [M 0x162b98 case 7]");
+        assert_eq!(dr.weapon, 1, "the tased guard dropped his gun [M 0x162b98:27-34]");
     }
-    // Release and let the SM run: the TASER timer (FRAME_RATE_DIV·30 = 1800) expires into
-    // STUNNED 0x4b [M 0x162b98 case 0xc → SetState(0x4b)]; Bond stands 2.5 u away — within the
-    // AnyoneNear(2.0→<4.0) band, so the STUNNED timer re-arms and he stays down.
+    // Release and let the SM run: the TASER fall wait (FRAME_RATE_DIV·30 = 30 ticks [L
+    // 0x30d0d4 = 1.0]) expires into STUNNED 0x4b [M 0x162b98 case 0xc → SetState(0x4b)]; Bond
+    // stands 2.5 u away — within the AnyoneNear(2.0→<4.0) band, so the STUNNED timer re-arms
+    // and he stays down.
     for _ in 0..2200 { steer_and_fire(&mut scene, gi, false); }
     {
         let sim = scene.sim.as_ref().unwrap();
