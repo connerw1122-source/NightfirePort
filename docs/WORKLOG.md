@@ -14889,3 +14889,18 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   Second Confirm while a request is pending must be refused. Back out from EVERY page at EVERY
   prompt and walk forward again (setup page re-enters on the right prompt for the scenario's team
   bit [M P_MPSETUP 0x20d7a8]). Locked rows/scenarios refuse. Debriefing returns to the scenario page.
+
+## menu-e2e-local-mp (2026-10-16, branch s/menu-e2e-local-mp) — close-out
+- menus_e2e_mp.rs: 5 action-driven tests covering all 13 scenario rows (locked refuse with the
+  0x010000ab desc [M C_SBMPSCEN:40-42], Quick Game's fixed config, team/FFA setup prompts per
+  P_MPSETUP 0x20d7a8's team bit), all 8 map rows to their requests (Ravine solo correctly refused
+  0x39e per C_SBMPOPTIONS's humans+bots > 1), every options sub-page with values riding into
+  mp_match_settings, back-out of every page at every prompt with correct re-entry, locked
+  characters refusing, and the debriefing returning to the scenario wheel via the new
+  mp_debrief_enter [M C_GCPAUSE 0x204408:146 / C_MPDBG 0x217860].
+- FIX: mp_confirm_start now maps friendly_fire into MpSettings (+0x198, read by
+  MP_RegisterBulletHit 0x1857c0:43-57) — the choice used to be dropped at handover.
+- Ran: menus_e2e_mp 5, menus_e2e 5, mp_menu_flow 9, mp_net_lobby 9, menu_music_flow 14,
+  menu_sfx_flow 14 — all green on the final tree. The fast suite built 394 binaries ok but its
+  run phase was cut by the sandbox (background jobs reaped between tool calls; the foreground run
+  hit the 9.5-min tool cap) — no total line; details in docs/reports/menu-e2e-local-mp.md.
