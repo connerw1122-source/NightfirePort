@@ -15,7 +15,7 @@ the driver's start path (`SFXSetup` budget / stealing / per-id limit, random / s
 `ES_CombineVolumes`, front + phase-inverted rear voices (the rear keyed 500 µs later, WORKLOG 0064), `SFXUpdate` (ends, sequences, loops via cue timers, kill pass,
 active list), `SFXRemove` / `SetPositionAndVelocity`; sources: the first-person gun's script sounds (op 1: shot, reload), Bond's footsteps by floor surface, bullet
 impacts by surface, guard body hits (0x413), guards' gunfire (`weapon_data+0x60`),
-animation-script sounds, pickups, script sounds (moving with their object). Music: docs/systems/music.md. Speech and streamed effects: docs/systems/speech.md. Not yet: casings, the 0x601 body-hit variant (`HITDATA+0x52` = 5), drone foley (`Drone_SfxInfo`, `NDrone2_PlaySFX`), the cel/room-driven `SFXSetEnvironment` value (G-016), the exact SPU2 Gaussian coefficient table (hardware; currently Catmull-Rom 4-tap), precache, pause in cut-scenes, the per-weapon op-1 id remaps (other weapons). **Now ported (WORKLOG 0075–0076):** the ducker, fades, reverb/environment, the SPU ADSR release and 4-tap interpolation (0075), and bullet fly-bys (0076: `Bullet_DoTrails`'s `+0x6C & 0x40000` check, the closest-point-to-viewer test, the `Rand_Rand(5)` 1-in-5 roll, sound 0x1dc — confirmed against the decompile at `0x12d890`).
+animation-script sounds, pickups, script sounds (moving with their object). Music: docs/systems/music.md. Speech and streamed effects: docs/systems/speech.md. Not yet: casings, the 0x601 body-hit variant (`HITDATA+0x52` = 5), drone foley (`Drone_SfxInfo`, `NDrone2_PlaySFX`), the cel/room-driven `SFXSetEnvironment` value (G-016), precache, pause in cut-scenes, the per-weapon op-1 id remaps (other weapons). **Now ported (WORKLOG 0075–0076):** the ducker, fades, reverb/environment, the SPU ADSR release and 4-tap interpolation (0075), and bullet fly-bys (0076: `Bullet_DoTrails`'s `+0x6C & 0x40000` check, the closest-point-to-viewer test, the `Rand_Rand(5)` 1-in-5 roll, sound 0x1dc — confirmed against the decompile at `0x12d890`).
 
 ---
 
@@ -751,7 +751,12 @@ Final SPU level is therefore `0x3FFF * pan% * ((v²)/100) / 10000` (integer step
 * **Environment**: SFXSetEnvironment(reverb, indoors): reverb == -0x6768 (-26472) → SFXUnderWater=1 and reverb target 0; otherwise UnderWater=0 and target=clamp(reverb,0,100).
   SFXNewIndoorsVolume = indoors ? 50 : 100. Per frame (SFXUpdateEnvironment@e60): SFXReverb moves toward the target by at most +16/-4, then
   psiSetReverb(SFXReverb): EVOL = (((r*80)/100)*0x3FFF)/100 written to EVOLL/EVOLR of both cores. SFXIndoorsVolume moves by at most ±4/frame.
-  PS2_SetupReverb: effect mode 4, delay 30, feedback 200 on both cores (from the sceSdEffectAttr fields in the decompile; slightly ambiguous). A voice is sent to reverb when ReverbSend!=0 (VMIXEL/VMIXER bits, 0x1900/0x1B00).
+  PS2_SetupReverb: effect mode 4 = SD_EFFECT_MODE_STUDIO_3 on both cores (the sceSdEffectAttr's delay 30 / feedback 200
+  are ignored by libsd for non-ECHO/DELAY modes), EEA 0x200000 (core 0) / 0x1E0000 (core 1), effects enable (core attr
+  bit 7). The exact 32-register STUDIO_3 preset (Sony libsd tables via ps2sdk effect.c, cross-checked against PCSX2's
+  `V_Reverb`/`DoReverb`) and the environment chain are ported in `nf-audio/src/reverb.rs` (G-032): the wet output runs
+  the SPU2 reverb equations (IIR + 4 combs + 2 APFs over the effect area) and EVOL scales the return. A voice is sent to
+  reverb when ReverbSend!=0 (VMIXEL/VMIXER bits, 0x1900/0x1B00). The per-room depth VALUE from cels/rooms is still G-016.
 
 ---------------------------------------------------------------------------------------------------
 ## 6. Per-frame SFXUpdate@4ee4 (RPC cmd 4, once per EE frame [S]) [M]

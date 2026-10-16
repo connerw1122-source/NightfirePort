@@ -224,7 +224,10 @@ pub const SPU_RATE: f64 = 48_000.0;
 /// The SPU's 4-point Gaussian interpolation coefficients (G-032d): 512 16-bit entries from the nocash PSX-SPX
 /// documentation, "SPU ADPCM Sample Decoding" → "4-Point Gaussian Interpolation" (problemkaputt.de/psx-spx.htm;
 /// the PS2 SPU2 uses the same table and formula — nocash documents the SPU2 pitch counter's bit 4–11 as the
-/// 8-bit interpolation index). The table is slightly bugged on hardware: each four taps
+/// 8-bit interpolation index). Cross-check: the 512 entries are identical to duckstation's
+/// `gauss` table (src/core/spu.cpp, `GenerateInterpolationCoefficients`) — independent reference;
+/// PCSX2's SPU2 gaussian is the same table (recorded in docs/reports/spu-gaussian-reverb.md). The
+/// table is slightly bugged on hardware: each four taps
 /// (gauss[i], gauss[0xFF−i], gauss[0x100+i], gauss[0x1FF−i]) should sum to 0x8000 but sum to 0x7F7F..0x7F81 —
 /// the `gauss_quads_sum_near_0x8000` test pins that property [M nocash psx-spx].
 pub const GAUSS: [i16; 512] = [
