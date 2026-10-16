@@ -1959,6 +1959,17 @@ impl App {
             Some(Ok(scene)) => {
                 let name = level_archive_name(load.next);
                 self.swap_in_scene(scene, load.ptp_return);
+                // A real level loaded from the front end: the menu manager is gone [M the MP
+                // confirm's / the SP pick's MenuManager_Delete — "the host closing the overlay once
+                // the load leaves the front-end map"]. The MP start loads its arena directly (no
+                // briefing hand-over), and the front end stayed open over it — the arena never
+                // showed, only the menu's backdrop (playtest 1015-2231 "cant get into a match").
+                if load.next != menu::FRONTEND_LEVEL
+                    && self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() != menu::ST_MOVIE)
+                {
+                    self.fe = None;
+                    if self.scene.sim.is_some() { self.grab(true); }
+                }
                 // frontend-music: `Sound_Ready`'s front-end case [M 0x1dceb8 case 0x7000048] — the
                 // load alternates bank 0xc (SBI slot 0 = SB_0, jingle 0x1d7) and 0x38 (slot 1 =
                 // SB_1, jingle 0x470) through DAT_002e1b11, then `MenuManager_Create` resets
