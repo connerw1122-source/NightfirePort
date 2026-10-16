@@ -309,11 +309,20 @@ impl Script {
             }
         }
         if self.play & 1 == 0 { return; }
-        // `Script_Update` 0x1da998:17-18,112-114: the streams run while the delay is 0; only a
-        // POSITIVE delay decrements and skips the tick — a negative one (event 3's `p0 − 1` with
-        // p0 = 0, the lift script's 0x06000571 t1611 [D]) runs like 0 in the game. The port
-        // blocked on it forever, so the lift never finished (fix-finale-blockers).
-        if self.delay > 0 { self.delay -= 1; return; }
+        // `Script_Update`'s delay gate [M disasm 0x1da9c4-0x1da9dc: `lw $v0,156($s0)` (SCRIPTINFO+0x9c);
+        // `beql $v0,$zero,0x1da9e0` → delay == 0 RUNS the streams; `blez $v0,0x1dac68` → delay < 0
+        // branches straight to the epilogue — a HOLD, no store, no decrement; the fall-through stores
+        // `$v0-1` — only a POSITIVE delay counts down and skips the tick]. A negative delay (event 3's
+        // `p0 − 1` with p0 = 0, the 0700001b panels' 0x06000832 stream 11 [D]) HOLDS the script until
+        // `SP_UnPause` 0x1dca58 zeroes it (the panels: SP_Update's damage path; the 0700004a lift
+        // 0x06000571: the state-2 mask&1/out-channel rule). The fix-finale-blockers version ran a
+        // negative delay like 0 — that made every solar panel shatter at t5 (GAPS G-047) and was the
+        // wrong reading of 0x1da9c4: the lift had never blocked on the delay itself but waits on its
+        // channel (see the state-2 unpause below).
+        if self.delay != 0 {
+            if self.delay > 0 { self.delay -= 1; }
+            return;
+        }
         if !self.playing() { return; }
         // The game's loop guard is only `Script_IsPlaying`; a looping script (play & 8) would spin forever, and
         // the data never skips one — bound the iterations (a guard, not a behaviour change: a non-looping script
@@ -999,6 +1008,20 @@ pub struct Player {
     /// owning player's, indexed by the parent stream's `sub` handle; `None` = freed
     /// (`Script_KillStream` case 7 [M 0x1d9860:115-123]).
     pub subs: Vec<Option<Script>>,
+    /// SP+0x14: the hit points — placement param 7 int→float [M SP_CreateScriptPlayer 0x1db9a8:
+    /// `puVar2[5] = (float)(int)*(uint *)(placement + 0x48)`]. A HELD script on a player with hit
+    /// points unpauses when the accumulated bullet damage reaches them (SP_Update's damage tail —
+    /// GAPS G-047: the 0700001b solar panels carry 20).
+    pub hit_points: f32,
+    /// SP+0x18: the accumulated hit damage. `SP_Update` adds `SP_GetHitDamage` while held; on the
+    /// threshold `SP_UnPause` fires and the threshold is SUBTRACTED, keeping the remainder
+    /// [M 0x1dc2f8-0x1dc318].
+    pub damage: f32,
+    /// The tick's bullet damage gathered on this player's current stream objects by the port's
+    /// bullet pass (the game's Collide pass fills the objects' +0xD0 HITDATA chains and
+    /// `SP_GetHitDamage` 0x1dc5f8 sums them). Cleared at the bullet pass's head (the game's
+    /// Collide_Update clears every hit list each frame), consumed by `update_player`.
+    pub tick_damage: f32,
 }
 
 impl Player {
@@ -1014,6 +1037,9 @@ impl Player {
             info: [None, None], deleted: false,
             live_matrix: matrix,
             subs: Vec::new(),
+            hit_points: g(7) as i32 as f32,
+            damage: 0.0,
+            tick_damage: 0.0,
         })
     }
 
@@ -1166,6 +1192,19 @@ impl Player {
                     self.activated = true;
                     if let Some(s) = self.info[self.cur].as_mut() { s.delay = 0; }
                 }
+                // script-negative-delay [S stand-in, docs/levels/0700004a.md §6]: the Tower-2 lift
+                // (SP #42: mask 1, out 0x22 [D placement]) resumes ONLY while ch 0x22 is on — the
+                // game's case-2 rule above — and its script HOLDS itself at t1611 (stream 4's
+                // event 3 p0 = 0 → the −1 delay [D 0x06000571]). The disc carries no ch-0x22
+                // writer the port's scans reach (the 11 scripts' 0xD/0x11 events, the placements,
+                // the 13 TouchOnce plates — the same "no writer found" shape as ch 0x4a below),
+                // so the port marks the play the doc's reading ("the ch-0x22 SP out marks the
+                // play"): the channel rises when the hold engages, and the mask&1 rule then
+                // releases the hold through `SP_UnPause` — the game's path, not a delay override.
+                if w.level() == 0x0700_004a && self.scripts[self.cur] == 0x0600_0571
+                    && self.info[self.cur].as_ref().is_some_and(|s| s.delay < 0) {
+                    ch.set(0x22, 1, frame);
+                }
                 // The skip [M 0x1dbda8:129-141]: `Input_Action(-1, 0x19, 1)` — any player pressing the skip
                 // action — fast-forwards the current script via `Script_FFwd(cur, 1)`, unless the script is one
                 // of the three death NISs (`Script_IsDeathNIS` reads slot A's hash, always +0x1C).
@@ -1221,6 +1260,30 @@ impl Player {
             _ => {}
         }
         if self.out != 0 && trig { ch.set(self.out as u32, value as u8, frame); }
+        // `SP_Update`'s damage tail [M 0x1dc1c0-0x1dc330, after the mode switch and the out-channel
+        // write]: a HELD current script (`SCRIPTINFO+0x9c != 0`) on a player with hit points
+        // (`SP+0x14 != 0`) adds the tick's bullet damage on its stream objects (`SP_GetHitDamage`
+        // 0x1dc5f8 — the port's bullet pass gathered it into `tick_damage`) into `SP+0x18`; when the
+        // sum reaches the hit points, `SP_UnPause` 0x1dca58 fires — the one-tick `+0x2c` flag (the
+        // port's `activated`, gathered as trigger bit 4 next tick) and `SCRIPTINFO+0x9c = 0` — and
+        // the threshold is SUBTRACTED, keeping the remainder [M 0x1dc2f8-0x1dc318]. GAPS G-047: the
+        // 0700001b solar panels (param 7 = 20) resume and their stream 1-10 debris plays.
+        if let Some(s) = self.info[self.cur].as_ref() {
+            if s.delay != 0 && self.hit_points != 0.0 {
+                let dmg = std::mem::take(&mut self.tick_damage);
+                if dmg != 0.0 {
+                    self.damage += dmg;
+                    // The game's scenery-shot stat (`PlrStat_LogShotHitScenery(0)` for scripts
+                    // 0x60007e2..0x60007ea but 0x60007e3 [M 0x1dc290-0x1dc2c8]) has no port-side
+                    // PlrStat to call [*deviation*].
+                    if self.hit_points <= self.damage {
+                        self.damage -= self.hit_points;
+                        self.activated = true;
+                        if let Some(s) = self.info[self.cur].as_mut() { s.delay = 0; }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1299,9 +1362,60 @@ impl Scripts {
                 // Merge drift (fix-searchlight-alarm × walkreal-b2's field): the identity, like the matrix.
                 live_matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
                 subs: Vec::new(),
+                hit_points: 0.0,
+                damage: 0.0,
+                tick_damage: 0.0,
             });
         }
         Scripts { lib, players, objects: Objects::default(), requests: Vec::new(), primed: false, skip_request: false }
+    }
+
+    /// `SP_GetHitDamage` 0x1dc5f8's read set: the current script's stream objects of every player
+    /// whose script is HELD (`SCRIPTINFO+0x9c != 0`) on a hit-point player [M SP_Update's damage
+    /// tail 0x1dc1c0-0x1dc330 gates the accumulation on exactly that; `Script_GetObj` 0x1db688
+    /// walks the records with kind 1/2]. Returns `(player index, world centre, radius)`; the
+    /// centre is the entity matrix through the glist sphere's local centre, the radius the
+    /// glist's — the game's `Control_BuildWorldSph` volume [M 0x133070:36-40, the same shape the
+    /// SP_Hit blast test sweeps]; an anim object keeps its stream matrix's translation with
+    /// radius 0 [S] (the port carries no anim volume).
+    pub fn held_hit_targets(&self, w: &dyn World) -> Vec<(usize, [f32; 3], f32)> {
+        let mut out = Vec::new();
+        for (pi, p) in self.players.iter().enumerate() {
+            if p.deleted || p.hit_points == 0.0 { continue; }
+            let Some(s) = p.info[p.cur].as_ref() else { continue };
+            if s.delay == 0 { continue; }
+            for i in 0..s.streams.len() {
+                if !matches!(s.streams[i].kind, 1 | 2) { continue; }
+                let Some(o) = s.streams[i].obj else { continue };
+                let Some(Some(obj)) = self.objects.list.get(o) else { continue };
+                match obj {
+                    Obj::Entity { hash, matrix, .. } => {
+                        let (c, r) = w.glist_sphere(*hash).unwrap_or(([0.0; 3], 0.0));
+                        let centre = [
+                            matrix[0][0] * c[0] + matrix[1][0] * c[1] + matrix[2][0] * c[2] + matrix[3][0],
+                            matrix[0][1] * c[0] + matrix[1][1] * c[1] + matrix[2][1] * c[2] + matrix[3][1],
+                            matrix[0][2] * c[0] + matrix[1][2] * c[1] + matrix[2][2] * c[2] + matrix[3][2]];
+                        out.push((pi, centre, r));
+                    }
+                    _ => {
+                        if let Some(m) = s.stream_matrix(i, &self.objects, w) {
+                            out.push((pi, [m[3][0], m[3][1], m[3][2]], 0.0));
+                        }
+                    }
+                }
+            }
+        }
+        out
+    }
+
+    /// One bullet contact's damage on a player's stream objects this tick (`Collide_Update`
+    /// 0x1ea398 fills the object's +0xD0 HITDATA chain; `SP_GetHitDamage` sums it — the port
+    /// gathers per contact in the bullet pass). All damage types count: `SP_Update` calls
+    /// `SP_GetHitDamage` with filter 0 (`Collide_FilterBullets` drops nothing at mask 0
+    /// [M 0x1ece30:24-31 — only a non-zero mask zeroes a hit's damage]) and
+    /// `Collide_GetDamageNObjects` sums every record [M 0x1ee220].
+    pub fn add_hit_damage(&mut self, player: usize, dmg: f32) {
+        if let Some(p) = self.players.get_mut(player) { p.tick_damage += dmg; }
     }
 
     /// A synthetic one-shot player (fix-objects2): mode 1 (plays once from spawn), no gate, no
@@ -1320,6 +1434,9 @@ impl Scripts {
             scale, matrix, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
             live_matrix: matrix,
             subs: Vec::new(),
+            hit_points: 0.0,
+            damage: 0.0,
+            tick_damage: 0.0,
         });
     }
 
@@ -1511,6 +1628,9 @@ mod tests {
         let mut p = Player { placement: 0, scripts: [0x0600_0421, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false,
             live_matrix: IDENT,
             subs: Vec::new(),
+            hit_points: 0.0,
+            damage: 0.0,
+            tick_damage: 0.0,
         };
         let mut lib = HashMap::new();
         lib.insert(0x0600_0421u32, nis);
@@ -1548,6 +1668,9 @@ mod tests {
         let mut p2 = Player { placement: 0, scripts: [0x0600_0952, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 0, activated: false, countdown: 0, info: [None, None], deleted: false,
             live_matrix: IDENT,
             subs: Vec::new(),
+            hit_points: 0.0,
+            damage: 0.0,
+            tick_damage: 0.0,
         };
         let mut objs2 = Objects::default();
         p2.load(&lib, &mut objs2, &mut ch, &world, 0, &mut out);
@@ -1557,5 +1680,92 @@ mod tests {
         let s2 = p2.info[0].as_ref().unwrap();
         assert_eq!(s2.fade_flags & 1, 0, "a death NIS never arms the skip");
         assert!(s2.play & 2 == 0 || s2.clock < 100.0, "the death NIS was not fast-forwarded (clock {} play {:#x})", s2.clock, s2.play);
+    }
+
+    /// The held-script rule (GAPS G-047, task 732): a NEGATIVE delay HOLDS — the streams stop,
+    /// the clock freezes, the delay does not count down — and a held entity sits at its FIRST
+    /// KEY's position [M Script_Update 0x1da9c4-0x1da9dc: `blez` → the epilogue, no store, no
+    /// decrement; Script_EntityStart 0x1d8d78 tails with `Script_Interp`, so the object is
+    /// placed at creation — the game's held panels never stack at an identity matrix]. Sister:
+    /// a positive delay still counts down one per tick and releases the script.
+    #[test]
+    fn negative_delay_holds_and_the_held_entity_takes_its_first_key() {
+        // Stream 0: op 7 creates glist 0x2000A42 at t0 (10-byte head: op, hash, has_parent,
+        // parent, spline, type, n... the port reads head[0..5] at pc+5 — head = cmds[pc+5..pc+10]).
+        let mut cmds = vec![7u8];
+        cmds.extend(0x0200_0A42u32.to_le_bytes());
+        cmds.extend([0u8, 0, 0, 2, 0]); // no parent, no spline, type 2, no params
+        cmds.push(0);
+        cmds.extend([0x04, 0xff, 0xff]); // stream end (held on it)
+        // Stream 1: event 3 with p0 = 0 → SCRIPTINFO+0x9c = −1 [M Script_EventHandler 0x1d94c0:100].
+        let mut ev = vec![0x12u8, 1, 3];
+        ev.extend(0u32.to_le_bytes());
+        ev.push(0);
+        // One key at t5, position (7, 8, 9), identity rotation [x,y,z,w].
+        let key = nf_formats::nis::Key { pos: [7.0, 8.0, 9.0, 1.0], quat: [0.0, 0.0, 0.0, 1.0], scale: 1.0, w24: [0; 4], w28: 0.0, time: 5.0 };
+        let mk = |hash: u32| Arc::new(Nis {
+            hashcode: hash, camera: false, loop_start: 0, length: 100,
+            streams: vec![NisStream { first_key: 0, last_key: 0, commands: cmds.clone() }, NisStream { first_key: 0, last_key: 0, commands: ev.clone() }],
+            keys: vec![key],
+        });
+        let mut lib = HashMap::new();
+        lib.insert(0x0600_0832u32, mk(0x0600_0832));
+        let mut objs = Objects::default();
+        let mut ch = Channels::default();
+        let world = TestWorld;
+        let mut out = Vec::new();
+        let mut p = Player { placement: 0, scripts: [0x0600_0832, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
+            live_matrix: IDENT, subs: Vec::new(), hit_points: 0.0, damage: 0.0, tick_damage: 0.0 };
+        p.load(&lib, &mut objs, &mut ch, &world, 0, &mut out);
+        {
+            let s = p.info[0].as_ref().unwrap();
+            assert_eq!(s.delay, -1, "event 3 with p0 = 0 sets the delay to −1 [M 0x1d94c0:100]");
+        }
+        // Ten ticks held: the clock must not move and the delay must not count down.
+        for frame in 0..10 { p.update(&lib, &mut objs, &mut ch, &world, frame, &mut out, false, crate::nis::SpStart::default()); }
+        {
+            let s = p.info[0].as_ref().unwrap();
+            assert_eq!(s.delay, -1, "a NEGATIVE delay holds without decrementing [M 0x1da9d0 blez → the epilogue]");
+            assert_eq!(s.clock, 1.0, "the held script's clock froze at the load beat (1.0), not {} — the streams do not run", s.clock);
+        }
+        // The held entity sits at its first key's position — created ONCE with Script_Interp's
+        // placement [M Script_EntityStart 0x1d8d78 tail], never the identity matrix.
+        let idx = objs.list.iter().position(|o| matches!(o.as_ref(), Some(Obj::Entity { hash: 0x0200_0A42, .. }))).expect("the held script's entity exists");
+        let Some(Some(Obj::Entity { matrix, .. })) = objs.list.get(idx) else { unreachable!() };
+        let t = (matrix[3][0], matrix[3][1], matrix[3][2]);
+        assert!((t.0 - 7.0).abs() < 0.01 && (t.1 - 8.0).abs() < 0.01 && (t.2 - 9.0).abs() < 0.01,
+            "the held entity takes its FIRST KEY's position (7, 8, 9), got {t:?} — not the identity/origin");
+
+        // Sister: a positive delay counts down. p0 = 5 → delay 4 → 3 → 2 → 1 → the streams run.
+        let mut ev5 = vec![0x12u8, 1, 3];
+        ev5.extend(5u32.to_le_bytes());
+        ev5.push(0);
+        lib.insert(0x0600_0833u32, Arc::new(Nis {
+            hashcode: 0x0600_0833, camera: false, loop_start: 0, length: 100,
+            streams: vec![NisStream { first_key: 0, last_key: 0, commands: cmds.clone() }, NisStream { first_key: 0, last_key: 0, commands: ev5.clone() }],
+            keys: vec![nf_formats::nis::Key { pos: [1.0, 2.0, 3.0, 1.0], quat: [0.0, 0.0, 0.0, 1.0], scale: 1.0, w24: [0; 4], w28: 0.0, time: 0.0 }],
+        }));
+        let mut objs2 = Objects::default();
+        let mut p2 = Player { placement: 0, scripts: [0x0600_0833, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
+            live_matrix: IDENT, subs: Vec::new(), hit_points: 0.0, damage: 0.0, tick_damage: 0.0 };
+        p2.load(&lib, &mut objs2, &mut ch, &world, 0, &mut out);
+        {
+            let s = p2.info[0].as_ref().unwrap();
+            assert_eq!(s.delay, 4, "event 3 with p0 = 5 sets the delay to p0 − 1 = 4 [M 0x1d94c0:100]");
+            assert_eq!(s.clock, 1.0, "the load beat ran once");
+        }
+        // The stream object's matrix at t0 IS placed (the first key, time 0) — then the delay
+        // counts down without the streams running.
+        for frame in 0..4 { p2.update(&lib, &mut objs2, &mut ch, &world, frame, &mut out, false, crate::nis::SpStart::default()); }
+        {
+            let s = p2.info[0].as_ref().unwrap();
+            assert_eq!(s.delay, 0, "the positive delay counted down 4 → 0 over four ticks [M 0x1da9d8 sw $v0,156($s0)]");
+            assert_eq!(s.clock, 1.0, "the skipped ticks never advanced the clock");
+        }
+        p2.update(&lib, &mut objs2, &mut ch, &world, 5, &mut out, false, crate::nis::SpStart::default());
+        {
+            let s = p2.info[0].as_ref().unwrap();
+            assert!(s.clock > 1.0, "a zero delay runs the streams again (clock {})", s.clock);
+        }
     }
 }

@@ -6444,6 +6444,9 @@ impl Drones {
                 deleted: false,
                 live_matrix: m,
                 subs: Vec::new(),
+                hit_points: 0.0,
+                damage: 0.0,
+                tick_damage: 0.0,
             });
         }
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {
@@ -6647,6 +6650,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // `Collide_Update` 0x1ea398's first loop clears every hit list at the head of the frame —
         // the fusebox wires' hit flags are per-tick only.
         for fb in &mut self.fuseboxes { fb.clear_hits(); }
+        // The script objects' hit chains clear with them (the same Collide head): the SP damage
+        // accumulation's per-tick gather (`tick_damage`, consumed by `Player::update`'s damage
+        // tail [M SP_Update 0x1dc1c0-0x1dc330]) starts empty each frame.
+        for p in &mut self.scripts.players { p.tick_damage = 0.0; }
+        // The held hit-point scripts' stream objects — `SP_GetHitDamage` 0x1dc5f8's read set
+        // (GAPS G-047: the 0700001b solar panels). Each bullet contact below adds its damage.
+        let held_targets = self.scripts.held_hit_targets(d);
         let frame = self.frame;
         let mut bullets = std::mem::take(&mut self.player_bullets);
         for (bi, b) in bullets.iter_mut().enumerate() {
@@ -6744,6 +6754,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     }
                 }
                 for (fi, g, k) in contacts { self.fuseboxes[fi].mark_hit(g, k); }
+            }
+            // The held hit-point scripts' stream objects take the bullet this tick: the game's
+            // Collide pass appends the contact to the object's +0xD0 HITDATA chain and
+            // `SP_GetHitDamage` 0x1dc5f8 sums the chain's damage (mask 0 filters nothing — the
+            // SP_Update call's filter word is 0 [M 0x1ece30:24-31]); `SP_Update`'s damage tail
+            // accumulates it until the player's hit points. Player bullets only [*deviation*:
+            // the game's Collide pass covers the drone rounds too; the port's drone-bullet pass
+            // is separate and stays out of the read set].
+            for (pi, c, r) in &held_targets {
+                if Self::segment_hits_sphere(b.pos, end, *c, *r) {
+                    self.scripts.add_hit_damage(*pi, b.damage);
+                }
             }
             // The lazer watch's beam burns the locks (`Lock_Update` 0x1ae3d8 case 0, record word 1):
             // the cell walk takes class-5 contacts whose BU+0x44 reads 0x4E/0x4F (the watch, −3/−10
