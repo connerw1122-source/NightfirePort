@@ -1156,6 +1156,21 @@ fn level_starts(level: &Level) -> Vec<nf_game::player::LevelStart> {
 /// then masks it back to 07000006.bin.
 pub fn level_archive_name(code: u32) -> String { format!("{:08x}.bin", code & 0xff0f_ffff) }
 
+/// `NF_FPSLOG` (the port's own measuring aid): accumulates whole-frame times and prints, once a
+/// second, the frame count, the average and the worst frame in ms.
+fn fps_log(frame: std::time::Duration) {
+    use std::sync::Mutex;
+    static ACC: Mutex<Option<(std::time::Instant, u32, f64, f64)>> = Mutex::new(None);
+    let Ok(mut acc) = ACC.lock() else { return };
+    let ms = frame.as_secs_f64() * 1000.0;
+    let a = acc.get_or_insert((std::time::Instant::now(), 0, 0.0, 0.0));
+    a.1 += 1; a.2 += ms; a.3 = a.3.max(ms);
+    if a.0.elapsed().as_secs_f64() >= 1.0 {
+        eprintln!("[fps] {} frames, avg {:.2} ms, worst {:.2} ms", a.1, a.2 / a.1 as f64, a.3);
+        *acc = None;
+    }
+}
+
 /// Reads one FILES.BIN entry by name (fix-menus: the front end's USATxt.dat when the map has no Sim).
 fn read_files_bin(iso_path: &str, name: &str) -> Option<Vec<u8>> {
     let iso = IsoImage::open(iso_path).ok()?;
@@ -3526,6 +3541,8 @@ impl ApplicationHandler for App {
                     let el = self.frame_start.elapsed();
                     if el < target { std::thread::sleep(target - el); }
                 }
+                // `NF_FPSLOG=1`: one stderr line per second — frames, average and worst frame time.
+                if std::env::var_os("NF_FPSLOG").is_some() { fps_log(self.frame_start.elapsed()); }
                 self.frame_start = std::time::Instant::now();
                 g.window.request_redraw();
             }

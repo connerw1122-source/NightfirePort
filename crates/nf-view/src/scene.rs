@@ -3654,7 +3654,32 @@ impl Sim {
                         // I can't really see them" (the user, 1015-0046).
                         let alt = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40000 != 0 && self.gun.alt_fire_toggle == 0;
                         self.drones.eject_gun = Some(self.view_datum_matrix(if alt { 5 } else { 1 }).unwrap_or_else(|| self.gun_matrix()));
-                        self.drones.fire_player(&d, camera, dir, self.gun.weapon, sound);
+                        // rocket-origin: the bullet's start is the head, moved to the MIDPOINT of the head and the
+                        // view model's datum 0 under the same gate the grenade launch uses (a first-person model,
+                        // +0x68 & 0x10000, not an excluded base, not a zoomed scope), and the direction is
+                        // re-aimed at the aiming point, head + aim·256 [M Player_WeaponInitBullet 0x1a4bf0:226-245
+                        // — `Vec_Normalise(aim − start)`; Player_GetAimingPoint 0x1a4a98 — the −256 scale on the
+                        // (x, y, −1) view ray]. The port fired every bullet from the eye: a rocket's own mesh
+                        // (0x2d's +0x5C projectile) spawned 0.6 units in front of the camera and filled the
+                        // screen on the launch frame (render vs PCSX2 07000008, where it leaves the launcher).
+                        let (shot_from, shot_dir) = {
+                            let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
+                            let fp_model = u32::from_le_bytes(w[0xdc..0xe0].try_into().unwrap()) != 0;
+                            let rbase = u16::from_le_bytes([w[2], w[3]]);
+                            let excluded = matches!(rbase, 1 | 0x52 | 0x54 | 0x58 | 0x59 | 0x5b);
+                            let zoomed_scope = self.aiming && flags68 & 0x40 != 0;
+                            match (fp_model && !excluded && !zoomed_scope && flags68 & 0x10000 != 0).then(|| self.view_datum(0)).flatten() {
+                                Some(d0) => {
+                                    let o = [(camera[0] + d0[0]) * 0.5, (camera[1] + d0[1]) * 0.5, (camera[2] + d0[2]) * 0.5];
+                                    let aim_pt = [camera[0] + dir[0] * 256.0, camera[1] + dir[1] * 256.0, camera[2] + dir[2] * 256.0];
+                                    let v = [aim_pt[0] - o[0], aim_pt[1] - o[1], aim_pt[2] - o[2]];
+                                    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt().max(1e-6);
+                                    (o, [v[0] / l, v[1] / l, v[2] / l])
+                                }
+                                None => (camera, dir),
+                            }
+                        };
+                        self.drones.fire_player(&d, shot_from, shot_dir, self.gun.weapon, sound);
                         // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:248-253]: a `+0x6C & 4` shot hands
                         // the view to the projectile — `Player_ChangeSubState(owner, 10)`, `BLData+0x878 =
                         // the bullet`, `Player_SetCamMode(BLData, 0xc)`, `BLData+0x944 = 0`.
