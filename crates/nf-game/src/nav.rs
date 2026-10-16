@@ -221,6 +221,9 @@ impl Network {
 
     /// `AINetwork_NodesForPosition` for one path (mode 0): the first candidate with `MoveTestFromNode(node → pos)`
     /// = 1 is found; the first failure is the fallback.
+    /// `AINetwork_NodesForPosition` + `AINetwork_BuildAITarget` (0x15ac78) — the drone-alert
+    /// target node set; also the port form of `NDrone2_NearestNode` (0x1558d8) / `NearestNodeDCV`
+    /// (0x155958)'s nearest-node ask.
     pub fn target_nodes(&self, world: &CollisionWorld, path: usize, pos: V3, r2: f32) -> TargetNodes {
         let mut t = TargetNodes::default();
         for i in self.candidates(path, pos, r2) {
@@ -310,6 +313,9 @@ impl Network {
     /// `AINetwork_EmitPath(limit 255)` (0x158cf8): path distances from `pos` to every node of `path` (a flood from the
     /// first reachable node, link cost len × (used + 1), the same list quirks as A*), stored as bytes:
     /// trunc(g × 255 / 256) capped at 254, 0xFF = not reached.
+    /// The `AIEmitter` scratch walk (`AINetwork_InitEmitter2` 0x15b2b8 / `AllocEmitter` 0x15b390 /
+    /// `FreeEmitter` 0x15b3d8) — the port allocates per-drone scratch instead of the game's shared
+    /// emitter pool at 0x29aa20 [S deviation, drone.rs links_used].
     pub fn emit(&self, world: &CollisionWorld, path: usize, pos: V3) -> Vec<u8> {
         let p = &self.paths[path];
         let n = p.nodes.len();
@@ -498,6 +504,10 @@ impl Route {
 
     /// A combat route to `dest` (`AINetwork_CalcRoute`): direct when `MoveTest(start, dest, near)` passes, else A* +
     /// `OptimiseRoute`. Err = the failure code (4/5/6/8).
+    /// `AINetwork_SetupRouteToObject` (0x158948) / `AINetwork_SetupRouteToPosition` (0x158b10) /
+    /// `AINetwork_CalcRouteToObject` (0x15aee8, via `NDrone2_MoveToObject` 0x151618) — the port's
+    /// single route build. The game's `AlterDestFor_DROUTE_Nearest` (0x156088) dest pull-back for
+    /// unreachable goals is not ported (gap, docs/systems/uncited-audit.md).
     pub fn to_position(net: &Network, world: &CollisionWorld, path: Option<usize>, start: V3, dest: V3, goal: &TargetNodes, used: &[u16]) -> Result<(u8, Route), u8> {
         if net.move_test(world, start, dest, true, false).0 == 1 {
             let mut r = Route::new(path.unwrap_or(0), RouteMode::OneWay, Vec::new(), Vec::new(), start, dest);
@@ -544,6 +554,7 @@ impl Route {
     }
 
     /// `AINetwork_SetupNextNode(±1)`.
+    /// `AINetwork_RouteNodeOffset` (0x15a820): flag&7 — 2 loops, 3 bounces (not ported), else clamp.
     fn next_node(&mut self, net: &Network, dir: i32) {
         let count = self.nodes.len() as i32;
         self.index += dir;
@@ -574,6 +585,7 @@ impl Route {
     }
 
     /// `GetRouteDistance`.
+    /// `AINetwork_GetRouteDistance` — the 3D variant `AINetwork_GetRouteDistance3D` (0x156540).
     pub fn distance(&self, net: &Network, feet: V3) -> f32 {
         let next = (self.index + 1).max(0) as usize;
         if next >= self.nodes.len() { return dist2d(feet, self.dest); }

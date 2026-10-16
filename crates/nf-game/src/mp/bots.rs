@@ -1076,6 +1076,8 @@ impl BotBrain {
     // ------------------------------------------------------------------
 
     /// `BOTSTATE_initGoal` 0x1294c0 [M :15-40].
+    /// The port form of `AINetwork_SetupGoalPositionToObj` (0x15add0); the goal machine is
+    /// `BOTSTATE_gotoGoal` (0x1278a8).
     pub fn init_goal(&mut self, slot: usize, goal_type: u8, celpos: [f32; 4], target: usize, subtype: u8) {
         if slot >= 2 {
             return;
@@ -1297,7 +1299,9 @@ impl BotBrain {
                     match p.mp_class {
                         0 => {
                             // weapons: skip the held weapon id (the !hasWeapon gate's port form [S];
-                            // the full isPreferredWeapon read is the report's remaining work)
+                            // the full isPreferredWeapon read is the report's remaining work).
+                            // Game forms: `BOTSTATE_hasWeapon` (0x129658) skips any held weapon
+                            // (`BOTWEAP_hasWeapon` 0x12af78); the port only has the current one.
                             if p.weapon_id != 0 && p.weapon_id as u8 == self.vars.weapon_id {
                                 continue;
                             }
@@ -1507,6 +1511,7 @@ impl BotBrain {
     /// `NDrone2_FindOpponent` 0x1424e0 (the port's minimal pick): accept the nearest live
     /// candidate the pass found (the gate [M 0x1424e0:164-167 — 0x600 clear, 0x100 set,
     /// health > 0]; the full score/history selection is not lifted — [S], see the report).
+    /// Team reads are `MP_getObjectTeam` (0x18b6c0).
     pub fn find_opponent(&mut self, ctx: &BotCtx) {
         if self.vars.opponent.is_some_and(|i| ctx.others.get(i).is_some_and(|o| o.alive)) {
             return; // keep the current opponent
@@ -1651,6 +1656,8 @@ impl BotBrain {
     /// The BotIdle protection/demolition site check [M 0x171b80:80-94]: `Intersect_SphereBox`
     /// (radius 3.0) of my pos against the site's box → the +0x771 latch. Deathmatch has no
     /// site → the latch clears (the caller only reaches here in those modes).
+        // `BOTSTATE_opponentIsMissile` (0x129a60): the demo/protection attacker may target the
+        // site object itself as "opponent" (team-gated, +0xF6 done check) — ported as a stub [S].
     fn guard_site_check(&mut self, _ctx: &BotCtx) -> u8 {
         0
     }
@@ -1867,6 +1874,8 @@ impl BotBrain {
         }
         let Some(o) = self.vars.opponent else { return };
         let Some(target) = ctx.others.get(o) else { return };
+        // `BOTWEAP_WeaponHasAmmo` (0x12adb0): the port gates on clip rounds only; the ammo-pool
+        // half (BotVars+0x698) is not modelled [S partial].
         if !target.alive || self.vars.clip_rounds < 1 {
             return;
         }

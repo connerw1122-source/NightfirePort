@@ -52,6 +52,12 @@ pub struct MpObjState {
 /// The scenario objects' live state — the port's `Flags`[2] @0x317210, `Bases`[2] @0x317330,
 /// `Uplinks`[8] @0x317450, `Hill` @0x318CE0, the demolition/protection site, `GoldenEye`[2]
 /// @0x317FF0/0x318080, `BluePrint` @0x318830 and `EsponageBase`[2] [M 0x185de8:133-178].
+/// The getter family over these records: `MP_getFlagObj` 0x18b978 / `MP_getBaseObj` 0x18b9a0 /
+/// `MP_getUplinkObj` 0x18b9c8 / `MP_getHillObj` 0x18bb50 / `MP_getDemolitionObj` 0x18bab8 /
+/// `MP_getProtectionObj` 0x18bac8 / `MP_getGoldenEyeObj` 0x18baf0 (gates on state ∈ {0, 2}) /
+/// `MP_getBlueprintObj` 0x18bad8 / `MP_getEsponageBaseObj` 0x18a338 / `MP_getObjExtFromMPOBJECT`
+/// 0x18a210. `MP_recalcObjExtPaths` 0x18b888's position-refresh half is the carrier updates
+/// below; its AI-emitter re-walk is not ported.
 #[derive(Clone, Debug, Default)]
 pub struct MpObjectsRt {
     /// The two CTF flags (index = owning team).
@@ -434,6 +440,9 @@ impl MpMatch {
     /// Flags/bases/uplinks/hill/espionage-bases link directly (the game creates them at
     /// registration); the demolition/protection site, the blueprint item and the two GoldenEye
     /// items pick a random registered place each (`Rand_Rand` — the game's start draws).
+    /// Post-load resolve: `MP_initObjExt` (0x18b7a0) + `MP_PostLoad_Init` (0x183718) — the game
+    /// re-resolves scripted site objects and re-emits AI paths for the mode objects here; the
+    /// port links placements once at start [S partial].
     pub fn create_mode_objects(&mut self, rng: &mut Rng) {
         let s = self.settings.scenario;
         // the direct links from `created` (config word 0 = the type, word 1 = the team)

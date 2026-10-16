@@ -820,6 +820,7 @@ impl CollisionWorld {
     /// hit distance wins (`if hit->0xc < fVar11`), and with no hit at all the FIRST candidate
     /// stands (0x1c8cb0's tail `return CelList_153`). One candidate returns directly [M
     /// `if (CelListCount_154 != 1)` guards the tie-break]; none returns NULL.
+    /// `NDrone2_FindCel` (0x149a80): the shared candidate search + tie-break this reimplements.
     pub fn find_cel(&self, p: V3) -> Option<usize> {
         let sc = self.scope.as_ref()?;
         let mut cands: Vec<usize> = Vec::new();
