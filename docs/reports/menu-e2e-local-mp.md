@@ -91,4 +91,4 @@ cited at the write). Verified by the new test: toggle On in Player Mods → sett
 
 ## ntfy
 
-(none yet — sent after this commit; see the worklog)
+Sent 2026-10-16 ~08:58 UTC via curl (first fallback, id Bn32IyMWzAet).
