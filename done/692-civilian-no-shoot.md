@@ -17,3 +17,8 @@ used; aim off — fires. Sister: a guard right next to the civilian can be shot.
 
 ---
 claimed-by: sandbox2 at 2026-10-16T13:19Z
+
+---
+## Report (done, 2026-10-16T14:40Z)
+
+Closed by the driver: the report is on `s/civilian-no-shoot` (docs/reports/civilian-no-shoot.md); the worker didn't run finish.sh.
