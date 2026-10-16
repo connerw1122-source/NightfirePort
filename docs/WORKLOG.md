@@ -16706,3 +16706,8 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+- 2026-10-16 s/door-guard-pairing (task 737): audit runner-up — NDrone2_DoorGuardHandler
+  0x1416d8 and SetDronePartner 0x141360; CivilianDoorGuard 0x31 (0x160648) is a const with no
+  arms (WORKLOG 3969). Plan: read the uncited-audit entry, port the pairing + the handler on the
+  levels that place door guards [D], tests fail-first with a sister. Branch created from
+  origin/master f09f3c6c.
