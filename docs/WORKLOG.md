@@ -15582,3 +15582,13 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+
+## inert-guards-02 (2026-10-16, branch s/inert-guards-02) — STARTED 14:19 UTC
+Task 694: the invincible, AI-less guards on 07000002 (playtests 1010-2055 / 1011-1128: "there are
+npcs that shouldnt be able to be shot and some of the enemies are invincible with no AI"; "one
+specific guard … standing next to a civilian that won't move, no AI, doesn't do anything"). Plan:
+list every 07000002 drone with class/state/health/enabled+present at start and after 600 ticks;
+find the present-but-never-updating ones (a missing state handler, a disabled AI waiting on a
+channel nothing sets, a script actor left in the world) [M create flags + the waking channel's
+writers]; fix them to the game; tests: each guard either runs AI or is legitimately dormant (cite
+the channel), none invincible unless the game makes it so.
