@@ -163,8 +163,9 @@ pin numbers:
   question (a file exists); 5 "Save failed!" on any write error; 0xd the delete question;
   0xc "Deleting data…"; 0xe "Delete failed!" on a remove error; 7 "Load failed!" when a
   profile file is missing/corrupt (the game shows it for a failed load [M LOADERROR's push
-  from LOAD_DATA's read/CRC failures 0x110870:29,49,76]); 0xb "Checking memory card…" during
-  the boot-up enumeration (the port's `reload_profiles`).
+  from LOAD_DATA's read/CRC failures 0x110870:29,49,76]). The boot-time "Checking memory
+  card…" (0xb) is NOT shown — the port's enumeration is a synchronous directory read with
+  nothing to wait for [S; the game shows it during GET_SAVE_GAMES 0x110188's async walk].
 - **Card-full is honest when the OS says so**: a write failing with
   `std::io::ErrorKind::StorageFull` shows message 3 (0x26a, the "NightFire requires %dKB"
   text) — the same meaning; any other error kind shows 5. [S] mapping choice, documented.

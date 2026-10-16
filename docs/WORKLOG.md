@@ -13864,3 +13864,33 @@ Work Log (async-level-load):
   0x218538, C_LBERROPTIONS_Handler 0x2185e8, Menu_UpdateMessageBox 0x1f7de8's cases), the messages it shows
   ("Saving…", card-full / no-card errors), autosave behaviour; map card states to the port's file save honestly
   (no fake card errors). State + messages on FrontEnd, host writes the file.
+
+---
+## memcard-save-flow (2026-10-16, branch s/memcard-save-flow) — close-out
+- Doc: docs/systems/memcard-save-flow.md — the triggers (results commit P_NFRESULTS 0x208e78 /
+  codename create C_KEYBOARD 0x213a98 + P_CNNAME 0x213790 / the wheel's Save Codename row
+  C_SBCNOPTIONS 0x213528 case 6 / the delete C_SBCNSELECT 0x212f58), the LS_*/psi numbers,
+  HandlePS2CardState 0x110b98's CardState table, PS2_DoCardFlow 0x217bd8's full message →
+  Txt-label → buttons table with the USATxt.dat strings [D FILES.BIN → USATxt.dat], the
+  MENU_LS 0x2e1ad0 layout, and the autosave finding (xbox_save_flag never set, Txt 0x26f
+  "Autosaving data…" unbound — the prompted results save IS the automatic one).
+- Code: CardFlow on FrontEnd (menu.rs) — CardMsg id/label/buttons tables, request_save/create/
+  delete, card_tick (the port's HandlePS2CardState pump inside tick()), card_answer (the
+  answer value = the button bit), card_message() for the draw code; every save to an existing
+  codename asks ASK_OVERWRITE [M 0x10fa08 sub-7]; a confirmed overwrite-create writes the
+  fresh template [M Menu_MapDefaultCodename 0x1f7fa8]; write failures surface "Save failed!"
+  (StorageFull → the honest card-full msg 3); corrupt/missing profile loads surface
+  "Load failed!" with a working Retry — fix-save-profile's leftover overwrite flow done.
+  Results save moved behind the game's 0x1000206 prompt (Confirm opens, Yes saves, No routes,
+  a failure re-asks [M 0x208e78:196-201]).
+- Tests: memcard_save_flow.rs 7/7 (tables numbers-only, USATxt strings ISO-gated incl. the
+  never-shown card set, results commit writes once w/ the synced contents, the No path, the
+  failure loop + re-ask, the corrupt-load retry, enums never write); codename_entry 14/14 and
+  campaign_flow_live 5/5 moved to the flow model. Ran on the final tree (master 0f5f07f4, a
+  no-op merge): nf-game lib 212/212, nf-formats 79/79, nf-audio 9/9, nf-view lib 15/15;
+  suite.py --only 16 touched/neighbour binaries → 119 passed / 0 failed (build ok: 367).
+  Foreground only — this sandbox reaps background jobs (suite.out stayed empty twice).
+- Left: the draw pass for the prompt + the card dialogs (the state is all on FrontEnd); the
+  ENOSPC→card-full arm is untested end-to-end; the MP-join mode-5 oddity documented; live
+  checks listed in docs/reports/memcard-save-flow.md (the every-save overwrite question and
+  the options-don't-save reading).
