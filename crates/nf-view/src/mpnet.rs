@@ -257,6 +257,41 @@ impl NetCore {
         })))
     }
 
+    /// The lobby's re-bind, host side: a fresh listening Session on the SAME
+    /// core, so every handle to this core (the app's `net`, the front end's
+    /// `MpSession`, a test's clone) keeps working (net-e2e-loopback — the old
+    /// replace-the-Rc shape left the other holders on the stale placeholder
+    /// socket). The lobby calls it only before anything flows.
+    pub fn rebind_host(&mut self, port: u16) -> Result<(), String> {
+        let tr = UdpTransport::bind(&format!("0.0.0.0:{port}")).map_err(|e| format!("bind {port}: {e}"))?;
+        self.sess = Session::new_host(session_cfg(), tr, MatchSettings::default(), 0);
+        self.is_host = true;
+        self.epoch = Instant::now();
+        self.match_start = None;
+        self.choices = None;
+        self.refused = false;
+        self.host_timed_out = false;
+        self.closed = false;
+        self.events.clear();
+        Ok(())
+    }
+
+    /// The lobby's re-bind, client side: dial `addr` on the SAME core (see
+    /// `rebind_host`).
+    pub fn rebind_client(&mut self, addr: std::net::SocketAddr) -> Result<(), String> {
+        let tr = UdpTransport::bind("0.0.0.0:0").map_err(|e| e.to_string())?;
+        self.sess = Session::new_client(session_cfg(), tr, addr);
+        self.is_host = false;
+        self.epoch = Instant::now();
+        self.match_start = None;
+        self.choices = None;
+        self.refused = false;
+        self.host_timed_out = false;
+        self.closed = false;
+        self.events.clear();
+        Ok(())
+    }
+
     /// Client: dial `addr` ("host:port").
     pub fn connect(addr: &str) -> Result<Rc<RefCell<NetCore>>, String> {
         let a: std::net::SocketAddr = addr.parse().map_err(|e| format!("resolve {addr}: {e}"))?;
@@ -415,19 +450,41 @@ impl NetCore {
     pub fn match_started(&self) -> Option<MpSettings> {
         self.match_start.clone()
     }
+
+    /// Test-only (net-e2e-loopback): deterministic loss + reordering on this
+    /// core's UDP sends. See `nf_net::Session::inject_link_fault`.
+    pub fn inject_link_fault(&mut self, seed: u64, drop_per_mille: u32, reorder_per_mille: u32) {
+        self.sess.inject_link_fault(seed, drop_per_mille, reorder_per_mille);
+    }
 }
 
 /// A cheap cloneable handle: the front end holds one as its `MpSession`
-/// trait object, the app drives the match through another.
+/// trait object, the app drives the match through another. The second field
+/// is the test-only link-fault recipe (`None` in production): the lobby's
+/// `listen`/`connect` replace the core, and the recipe rides along so a
+/// lossy proxy STAYS lossy across the re-bind (net-e2e-loopback).
 #[derive(Clone)]
-pub struct SessionProxy(pub Rc<RefCell<NetCore>>);
+pub struct SessionProxy(pub Rc<RefCell<NetCore>>, pub Option<(u64, u32, u32)>);
 
 impl SessionProxy {
     pub fn host(port: u16) -> Result<SessionProxy, String> {
-        NetCore::host(port).map(SessionProxy)
+        NetCore::host(port).map(|c| SessionProxy(c, None))
     }
     pub fn connect(addr: &str) -> Result<SessionProxy, String> {
-        NetCore::connect(addr).map(SessionProxy)
+        NetCore::connect(addr).map(|c| SessionProxy(c, None))
+    }
+    /// The lossy variant: every core this proxy builds (now and on the
+    /// lobby's re-bind) drops `drop_per_mille`‰ of its sends and transposes
+    /// `reorder_per_mille`‰ of them, from the seeded SplitMix64.
+    pub fn host_faulty(port: u16, fault: (u64, u32, u32)) -> Result<SessionProxy, String> {
+        let c = NetCore::host(port)?;
+        c.borrow_mut().inject_link_fault(fault.0, fault.1, fault.2);
+        Ok(SessionProxy(c, Some(fault)))
+    }
+    pub fn connect_faulty(addr: &str, fault: (u64, u32, u32)) -> Result<SessionProxy, String> {
+        let c = NetCore::connect(addr)?;
+        c.borrow_mut().inject_link_fault(fault.0, fault.1, fault.2);
+        Ok(SessionProxy(c, Some(fault)))
     }
     pub fn core_is_closed(&self) -> bool {
         self.0.borrow().closed
@@ -443,25 +500,38 @@ impl crate::menu::MpSession for SessionProxy {
     fn poll(&mut self) { self.0.borrow_mut().poll(); }
     fn link(&self) -> MpNetLink { self.0.borrow().link() }
     fn listen(&mut self, port: u16) -> Result<(), MpNetError> {
-        // The core binds at construction; the lobby's listen row re-binds by
-        // replacing the core (called only before anything flows, so a fresh
-        // core is behaviour-identical).
-        match NetCore::host(port) {
-            Ok(c) => {
-                let name = self.0.borrow().display_name();
-                c.borrow_mut().set_codename(&name);
-                self.0 = c;
+        // The core binds at construction; the lobby's listen row RE-BINDS the
+        // same core in place (net-e2e-loopback: the old replace-the-Rc shape
+        // left every other handle — the app's `net`, test clones — on the
+        // stale placeholder socket). Called only before anything flows, so a
+        // fresh session is behaviour-identical. The fault recipe (if any)
+        // re-applies — a lossy proxy stays lossy across the re-bind.
+        let name = self.0.borrow().display_name();
+        let r = self.0.borrow_mut().rebind_host(port);
+        match r {
+            Ok(()) => {
+                if let Some(f) = self.1 {
+                    self.0.borrow_mut().inject_link_fault(f.0, f.1, f.2);
+                }
+                if !name.is_empty() { self.0.borrow_mut().set_codename(&name); }
                 Ok(())
             }
             Err(_) => Err(MpNetError::Busy),
         }
     }
     fn connect(&mut self, addr: &str) -> Result<(), MpNetError> {
-        match NetCore::connect(addr) {
-            Ok(c) => {
-                let name = self.0.borrow().display_name();
-                c.borrow_mut().set_codename(&name);
-                self.0 = c;
+        let name = self.0.borrow().display_name();
+        let parsed = addr.parse::<std::net::SocketAddr>();
+        let r = match parsed {
+            Ok(a) => self.0.borrow_mut().rebind_client(a),
+            Err(_) => return Err(MpNetError::BadAddress),
+        };
+        match r {
+            Ok(()) => {
+                if let Some(f) = self.1 {
+                    self.0.borrow_mut().inject_link_fault(f.0, f.1, f.2);
+                }
+                if !name.is_empty() { self.0.borrow_mut().set_codename(&name); }
                 Ok(())
             }
             Err(_) => Err(MpNetError::BadAddress),

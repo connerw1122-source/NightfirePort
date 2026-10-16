@@ -491,7 +491,6 @@ impl<T: Transport> Session<T> {
     }
 
     // ---------- internals ----------
-
     fn send_to_peers(&mut self, pkt: &Packet) {
         let mut buf = Vec::new();
         proto::encode(pkt, &mut buf);
@@ -1237,5 +1236,15 @@ impl<T: Transport> Session<T> {
                 }
             }
         }
+    }
+}
+
+impl Session<crate::net::UdpTransport> {
+    /// Test-only fault injection on the real transport (net-e2e-loopback):
+    /// deterministic send-path loss + reordering. See
+    /// [`crate::net::UdpTransport::inject_fault`]. The shim transport has its
+    /// own `set_loss`/`set_latency`; this is the real-socket equivalent.
+    pub fn inject_link_fault(&mut self, seed: u64, drop_per_mille: u32, reorder_per_mille: u32) {
+        self.transport.inject_fault(seed, drop_per_mille, reorder_per_mille);
     }
 }

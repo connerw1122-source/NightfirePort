@@ -16377,3 +16377,38 @@ mp_match_end_live 2/2, mp_debriefing_flow 6/6, mp_menu_flow 9/9, mp_defaults_set
 menus_e2e_mp 5/5, mp_net_lobby 9/9, menu_audio_flows 9/9, mp_bots_live 2/2, mp_core_live 5/5,
 nf-game mp_debriefing 10/10 + mp_match_rules 14/14 + mp_hud_data 4/4 (85 green across the
 touched path). The fast-runner suite on the final tree started 17:34 UTC.
+## net-e2e-loopback (2026-10-16, branch s/net-e2e-loopback) — start 17:55 UTC
+
+Task 706: host and join an online match end to end over loopback — two FrontEnds plus two Sims in
+one test, over 127.0.0.1 through nf-net (661): host = Multiplayer → Host Online → port → Start
+Listening → the lobby; client = Join Online → types 127.0.0.1:port → Connect → the lobby; the host
+picks the scenario/map/options and starts; both load the arena via load_mp_carry with the same
+seed; 1200 lockstep ticks with scripted inputs on both; the per-tick state hashes match; a
+scripted kill updates both scores; the match end hands both to the debriefing. A variant injects
+5% packet loss + reordering. Every step goes through FrontEnd actions (no direct page writes).
+Plan: map the nf-net API and the FrontEnd multiplayer pages, write the failing e2e test, fix what
+breaks, run the touched crates, then the full suite on the final tree.
+
+## net-e2e-loopback (2026-10-16, branch s/net-e2e-loopback) — done
+
+Task 706: the full online match e2e over 127.0.0.1 — `crates/nf-view/tests/net_e2e_loopback_live.rs`
+(NF_ISO-gated, both green): host FE = Multiplayer → Host Online → the port typed through the real
+keyboard path → Start Listening → the host lobby; client FE = Join Online → 127.0.0.1:27950 →
+Connect → the lobby mirror; the host walks Arena (row 1 — row 0 is Quick Game) → Skyrail → the
+setup defaults → Game Rules (frag limit 10 → 2 through ◀) → the start checks → the confirm; both
+machines hand over (the client through the tunnelled match payload), load the arena via
+load_mp_carry with the same tunnelled seed, swap their slot's bond in, and lockstep 1200 ticks of
+scripted input — the per-tick state hash equal at every 15-tick exchange; the scripted kill
+(MP_PlayerKilled 0x188f70, both machines, the same tick) credits slot 0's kill/score and slot 1's
+death on both; the second kill reaches the frag limit and the MP end machine runs 1→3→4→5 with
+request_debriefing on both; both FEs open the debriefing with boards that agree on every number.
+Variant: the same match with 5% packet loss + 8% transposition injected (seeded
+UdpTransport::inject_fault — nf-net's send-path-only SplitMix64; Session::inject_link_fault;
+SessionProxy carries the recipe across the lobby's re-bind) — every assertion holds.
+
+THE FIX THE E2E FORCED: SessionProxy::listen/connect replaced the Rc<RefCell<NetCore>> with a
+fresh core, leaving every OTHER handle (the app's net, test clones) on the stale placeholder
+socket — NetCore::rebind_host/rebind_client now swap a fresh Session in place on the SAME core
+(codename carry preserved). nf-net's loopback_e2e slot-1 underflow guard fixed (slot - 1 evaluated
+before slot > 0). Runs before push: cargo test -p nf-net (25/25), the 2 new e2e tests (green),
+the full fast-runner suite on the final tree (total in the report).
