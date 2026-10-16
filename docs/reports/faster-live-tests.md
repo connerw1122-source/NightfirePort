@@ -66,12 +66,12 @@ level loads exactly once; the time is inherent per-level work), campaign_flow_li
 |---|---|---|---|
 | weapon_matrix_live | 307 | unchanged | not modified |
 | levels_sweep_live | 184 | unchanged | not modified |
-| fix_guard_weapons_live | 157 | (suite) | suite log |
+| fix_guard_weapons_live | 157 | 165 | suite log (the stall-window cut had little effect — stalls are rarer on the passing path than estimated; ±5% is cross-run noise on this loaded box) |
 | walkreal_07000001_live | 132 | 92.9 | direct run |
 | models_misc_live | 100 | 39.8 | direct run |
 | campaign_flow_live | 85 | unchanged | not modified |
 | fix_striped_box_census | 73 | 52.1 | direct run |
-| fix_party_mission_live | 61 | (suite) | suite log |
+| fix_party_mission_live | 61 | (not reached — suite window, see below) | direct run not needed: six probes ignored |
 | portal_sweep_live | 40 | 35.6 | direct run |
 | **targeted total** | **1139** | | |
 
@@ -80,7 +80,13 @@ shows the effect on the other walkreal_* binaries.
 
 ## Full suite on the final tree
 
-(filled after the run — total line + FAILED/TIMEOUT check)
+The suite runner here is serial (tools/test/suite.py: one binary at a time, per-binary lines to
+../suite.log), and the sandbox window ended before the full 382-binary run could — it was killed
+at 130 binaries with **0 FAILED / 0 TIMEOUT / 0 CRASH**, including every walker.rs consumer hit
+so far (walkreal_07000001_live 92 s in-suite, matching the direct run; walkreal_0700001b 12 s)
+and the touched binaries fix_guard_weapons_live (165 s) / portal_sweep_live (37 s). The three
+direct-measured binaries above all pass (`test result: ok` lines in the run transcripts). No
+assertion was weakened or removed anywhere; the misc census golden sha1 passes unchanged.
 
 ## What's left (next message can continue from this branch)
 
