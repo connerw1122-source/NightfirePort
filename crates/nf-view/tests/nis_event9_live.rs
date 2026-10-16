@@ -30,7 +30,7 @@ fn the_discs_event9_firing_hands_the_camera_back_through_the_real_script() {
 
     // The script's shape straight from the archive [D]: the single event-9 command, stream 4,
     // param 1 (the firing the script-census pin counts as kind 9 × 1).
-    let nis = sim.scripts.lib.get(&0x0600_005b).expect("0600005b ships in 01's archive")
+    let nis = sim.drones.scripts.lib.get(&0x0600_005b).expect("0600005b ships in 01's archive")
         .streams.iter().enumerate()
         .flat_map(|(si, s)| s.decode().into_iter().map(move |c| (si, c)))
         .filter_map(|(si, c)| match c {
@@ -42,7 +42,7 @@ fn the_discs_event9_firing_hands_the_camera_back_through_the_real_script() {
     // The orbit state, then the real script: the exit arm must clear it.
     sim.bond.cam_mode = 2;
     let ident = [[1.0f32, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
-    sim.scripts.spawn_once(sim.scripts.players.len(), 0x0600_005b, ident);
+    sim.drones.scripts.spawn_once(sim.drones.scripts.players.len(), 0x0600_005b, ident);
     for _ in 0..600 {
         sim.step_bond(Default::default(), false, false, false);
         if sim.bond.cam_mode == 0 { break; }
