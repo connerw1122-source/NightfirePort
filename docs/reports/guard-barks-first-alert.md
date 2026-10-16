@@ -106,20 +106,26 @@ entries), SeenPlayerTalk (spotting Bond), PatrolTalk. This task adds the rest of
     disqualified — the normal FirstAttack tail runs.
   - `mp_chatter_is_silent_in_single_player`: the four chatter sites draw **zero** RNG and queue
     no chatter line; a survived bullet never queues one.
-- `cargo check --offline -p nf-game` clean; the touched crate's other tests: the suite runner
-  (below).
+- `cargo check --offline -p nf-game` clean; the whole touched crate's tests: 470/0/2 (below).
 
 ## Test-suite runs (what I ran)
 
-- `NF_ISO=$NF_ISO cargo test --offline --release -p nf-game --test guard_barks_live --
-  --test-threads=1` → **4 passed** (the touched crate's new tests).
+- `NF_ISO=$NF_ISO cargo test --offline --release -j2 -p nf-game -- --test-threads=1` — the whole
+  touched crate on the final tree: **470 passed / 0 failed / 2 ignored** (55 test binaries; exit
+  0; log `nf-game-test.out`, not committed).
+- The new file itself: `guard_barks_live` 4/4 (included in the total above).
 - The fast runner `tools/test/suite.py` was started three times in the first minutes (21:41,
-  21:54, 23:08 UTC; the first died on a missing PATH, the second was killed by the sandbox
-  between tool calls despite nohup, the third relaunched detached via setsid at 23:08 with the
-  final tree). **Its line count could not be read before this report was filed** — the sandbox
-  expires at ~23:36 and the runner needs ~40+ minutes for the full build+run. The report to the
-  queue therefore carries the touched-crate run plus the runner's status at file time; the next
-  message on this branch should re-read `tail -1 suite.out` and the FAILED/TIMEOUT lines.
+  21:54, then detached via setsid) — **every background launch was killed by the sandbox between
+  tool calls** (suite.out empty, no process), so no suite.py line exists for this session.
+- The suite's other three crates were attempted in the foreground
+  (`cargo test --offline --release -j2 -p nf-formats -p nf-audio -p nf-view -- --test-threads=1`,
+  with the user-prefix ALSA at `PKG_CONFIG_PATH=/home/z/alsa-prefix/...` and
+  `RUSTFLAGS="-L .../alsa-prefix/usr/lib/x86_64-linux-gnu"`): they do not link in this sandbox —
+  the lld link of the wgpu-sized nf-view test binaries dies with `collect2: fatal error: ld
+  terminated with signal 7 [Bus error]` (the `-L` path IS on the linker line, so the library is
+  found; the crash is environmental). Those crates are **untouched by this diff** (drone.rs + one
+  new test file only); the next message on this branch should merge `origin/master`, re-run the
+  suite, and report the total line.
 
 ## What's left
 

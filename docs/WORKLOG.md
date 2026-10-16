@@ -16733,3 +16733,9 @@ criteria in docs/systems/uncited-audit.md gap ⑨.
   (spot bark once within the cooldown rules; first alert → 0x39 with the Rand(120) timing and both
   TIMER_C branches; suppress bits fall through to combat; the chatter sites draw nothing).
   Report: docs/reports/guard-barks-first-alert.md.
+- guard-barks-first-alert: the touched crate's full run on the final tree — nf-game 470 passed /
+  0 failed / 2 ignored (55 binaries, --test-threads=1, exit 0). The suite.py runner could not
+  survive the sandbox's between-calls process sweep (three launches killed; suite.out empty) and
+  the nf-formats/nf-audio/nf-view foreground attempt does not link here (lld Bus error on the
+  wgpu-sized nf-view test links; those crates are untouched by this diff) — the next message on
+  this branch should merge origin/master and re-run the suite for the total line.
