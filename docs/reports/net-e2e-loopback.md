@@ -59,11 +59,11 @@ two FrontEnds plus two Sims in one test, over 127.0.0.1 through nf-net.
 
 - `cargo test -p nf-net` (offline): **25 passed**.
 - The two new e2e tests (above): **both green** against the slim ISO.
-- Full suite on the final tree (fast runner `python3 tools/test/suite.py`): **(total below)**.
+- Full suite on the final tree (fast runner `python3 tools/test/suite.py`): **1896 passed, 6 failed, 72 ignored (47 min)** — the 6 are the 3 allowed `disc_golden` + the 3 pre-existing pylon render probes (the standing baseline); zero new failures. The build was 436 test binaries in 402 s.
 
 ## Suite total
 
-(filled in when the run completes)
+`1896 passed, 6 failed, 72 ignored (47 min)` on the final tree (origin/master @ c10b530f already merged — master did not move during the task; the branch was cut from it). FAILED lines: `disc_golden::bigf_header_fields_behave_as_documented`, `disc_golden::bigf_tables_match_the_golden_manifest`, `disc_golden::directory_tree_matches_the_golden_manifest`, `fix_0c_pylon_live::the_0c_pylon_fills_the_view_from_the_closeup_spot`, `fix_0c_pylon_live::the_0c_pylon_is_on_screen_at_the_user_spot`, `probe_pylon_render::probe_render_pylon_only` — all pre-existing, none from this task's changes. The 2 new e2e tests are green in the totals.
 
 ## What's left
 
