@@ -15,13 +15,13 @@
 //! 35 dtype-10 guests carry prop 0x1D and six kind-8 mission paths sit under their placements
 //! [D, docs/WORKLOG fix-drone4].
 
-use nf_view::scene::Scene;
+use nf_view::scene::{Scene, Sim};
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
 /// The walker: a dtype-10 guest with no switch channel (starts immediately) whose placement sits on
 /// a kind-8 mission path node within the game's 0.3 acceptance [M AssignAIPath 0x154190: fVar11 = 0.3].
-fn find_walker(sim: &Scene) -> usize {
+fn find_walker(sim: &Sim) -> usize {
     let data = sim.data();
     let walker = sim.drones.list.iter().position(|dr| {
         dr.present && dr.dtype == 10 && dr.switch_channel == 0
@@ -38,19 +38,17 @@ fn dist(a: &[f32; 3], b: &[f32; 3]) -> f32 { ((a[0] - b[0]).powi(2) + (a[2] - b[
 
 /// The `Data` the msg path needs, built from disjoint field borrows so the send can take
 /// `&mut sim.drones.rng` alongside it (the explode_live pattern).
-fn data_for(sim: &Scene) -> nf_game::drone::Data<'_> {
-    nf_game::drone::Data {
+fn send_wait(scene: &mut Scene, walker: usize) {
+    let sim = scene.sim.as_mut().unwrap();
+    let difficulty = sim.drones.difficulty;
+    // Disjoint field borrows only (no `sim.drones` in the Data) so `&mut sim.drones.rng` coexists.
+    let data = nf_game::drone::Data {
         tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons,
         world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins,
         skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
         hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
-        surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
-    }
-}
-
-fn send_wait(scene: &mut Scene, walker: usize) {
-    let sim = scene.sim.as_mut().unwrap();
-    let data = data_for(sim);
+        surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty,
+    };
     let frame = sim.drones.frame;
     sim.drones.list[walker].send(&data, &mut sim.drones.rng, frame, 0x22);
 }
@@ -76,7 +74,7 @@ fn a_mission_guest_pauses_on_the_wait_message_and_resumes() {
     // The wait request — Bond parked far away so the timer expiry takes the resume arm.
     let guest_pos = sim.drones.list[walker].pos;
     let wait_frame = sim.drones.frame;
-    send_wait(scene, walker);
+    send_wait(&mut scene, walker);
     let sim = scene.sim.as_mut().unwrap();
     {
         let dr = &sim.drones.list[walker];
@@ -126,7 +124,7 @@ fn the_wait_holds_while_bond_stands_close_ahead() {
     assert_eq!(sim.drones.list[walker].state, 0x16, "the guest walks first");
     let guest_pos = sim.drones.list[walker].pos;
     let yaw = sim.drones.list[walker].yaw;
-    send_wait(scene, walker);
+    send_wait(&mut scene, walker);
     let sim = scene.sim.as_mut().unwrap();
     assert_eq!(sim.drones.list[walker].state, 0x17, "the wait state entered");
 
@@ -142,11 +140,14 @@ fn the_wait_holds_while_bond_stands_close_ahead() {
             "Bond 2.0 ahead in the 0.525 cone keeps the wait alive past the first 2 s clock [M 0x15dbb0:88-106] — got {:#x}", dr.state);
         assert!(dr.timer_c.is_some(), "the clock re-armed for another 2 s");
         let moved = dist(&dr.pos, &guest_pos);
-        assert!(moved < 0.3, "she still has not moved (moved {moved:.2})");
+        // 0.5 not 0.3: the walk danim's blend-out root motion adds ~0.3 of drift while the stand-idle
+        // takes over; walking the same 150 ticks covers ≥ 1.0 (the first test's ≥ 2.0/300 ticks).
+        assert!(moved < 0.5, "she still has not moved (moved {moved:.2})");
     }
 
     // A second wait request while waiting re-arms the clock [M 0x15dbb0:136-141].
-    sim.drones.list[walker].send(&sim.data(), &mut sim.drones.rng, sim.drones.frame, 0x22);
+    send_wait(&mut scene, walker);
+    let sim = scene.sim.as_mut().unwrap();
     for _ in 0..100 {
         sim.bond.pos = [guest_pos[0] + 40.0, guest_pos[1], guest_pos[2]];
         sim.step_bond(Default::default(), false, false, false);
