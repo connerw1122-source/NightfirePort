@@ -16493,6 +16493,29 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
   HITTEST flags on the segment query, 08's surface material/flags); fix in
   sim/flow. Test: 08 start shot explodes ~24 units ±1; sister: plain wall still
   stops on its face. Branch created from origin/master c8186aa1.
+- ROOT CAUSE (rocket-glass-08, 21:45 UTC): the flight ray's first hit down the 08
+  start corridor is the far window's pane at 19.62 u from the spawn — surface byte
+  0x10 (glass), no 0x40/0x80, node pass clear [probe on the port's own loader = disc
+  data]; behind it the plain wall (0x0a) at 22.87 u. The port's HITDATA walk
+  (`flush_world_impacts` → `penetration_roll`) only knew the node/0x40/0x80 pass
+  bits, so the rocket stopped on the pane. The game's handler has a GLASS RULE the
+  port lacked [M Bullet_CollisionHandler 0x12ce80 disasm 0x12cf44..0x12cf64]:
+  `if (!(weapon_data+0x6c & 0x800) && (HITDATA+0x50 & 0x3f) == 0x10) pass = 1` —
+  material 0x10 lets any bullet through, no draw; the gate word is the WEAPON
+  record's +0x6c (the disasm's `*(s0+0x44)` object — +2 is the weapon type word
+  0x50/0x51 = the Q-Claw, +0x70 the explode/effects flags), so the Laser 0x4E
+  (+0x6c = 0x900 [L]) burns the pane while the unguided 0x2d (0x1a200 [L]) passes.
+  The pane-pass also precedes the Q-Claw type-word check in the game's order.
+  Fix: the rule added to `penetration_roll(_node)` (new `flags6c` param, callers
+  pass their weapon's +0x6c: drone.rs flush walk + the drone-bullet walk), no RNG
+  drawn, stream unchanged. Effect: the rocket pierces the pane the tick it crosses
+  it, flies on ~10 ticks and explodes on the wall face — the port's blast moved
+  19.62 → 22.9 u, matching the PS2's ~24 u / ~72 frames within the task's ±1.
+  Pinned rocket_glass08_live (3 tests: the unit glass rule incl. the laser gate +
+  no-draw; the 08 start shot explodes past the pane at z −100.0, 21.9–24.4 u; the
+  sister floor shot still stops on the aimed face — pre-fix tree explodes at the
+  pane per the probe, so the repro fails without the fix). Suite queued.
+  Branch continued on the merged origin/master 170bcf01 (WORKLOG conflict kept both).
 
 ## fix-space-pane (2026-10-16, branch mine/space-panels)
 

@@ -7013,9 +7013,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 let Some((t, n, m)) = d.world.segment_surface(cur, end, false) else { break };
                 let seg = [end[0] - cur[0], end[1] - cur[1], end[2] - cur[2]];
                 let hit = [cur[0] + seg[0] * t, cur[1] + seg[1] * t, cur[2] + seg[2] * t];
-                // THE PENETRATION ROLL [M 0x12cfd0..0x12cfe4] — the game draws it here, before
-                // any effect of this hit (the flags, `Effect_Create`, the explode arms).
-                let pierce = crate::effect::penetration_roll(&mut self.rng, m, weapon);
+                let flags6c_w = d.weapons.records.get(weapon as usize)
+                    .map_or(0u32, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()));
+                // THE PENETRATION ROLL [M 0x12cee0..0x12cfb8] — the game computes the pass here,
+                // before any effect of this hit (the flags, `Effect_Create`, the explode arms);
+                // `flags6c_w` gates the glass rule (material 0x10 passes unless +0x6c & 0x800,
+                // fix-rocket-glass-08).
+                let pierce = crate::effect::penetration_roll(&mut self.rng, m, weapon, flags6c_w);
                 if first_world {
                     self.player_impacts.push(PlayerImpact::World(hit));
                     // `PlrStat_LogShotHitScenery(0)` 0x198408 (SP_Update 0x1dbda8:261; Destroy_Smash
@@ -7031,9 +7035,6 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // on the Laser's +0x70 = 0x800 [L]) and NO ricochet (+0x70 & 0x10 clear). The old
                 // path played the wall-impact sound + decal every held tick — the user's "rapid
                 // fire of bullet impacts".
-                let flags6c_w = d.weapons.records.get(weapon as usize)
-                    .map_or(0u32, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()));
-                let laser_beam = flags6c_w & 0x100 != 0;
                 // fix-wallhug-prompt: the sound rides the SAME gate as the effects [M
                 // Bullet_CollisionHandler 0x12ce80:187-190 — effect flags |= 0x61 only with
                 // weapon_data+0x70 & 2, and `Effect_Bullet` 0x1ce8a8:86-90 plays the
@@ -7044,6 +7045,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // unconditional sound also voiced the stunner (0x800) and the gadgets.
                 let flags70 = d.weapons.records.get(weapon as usize)
                     .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                let laser_beam = flags6c_w & 0x100 != 0;
                 if !laser_beam && flags70 & 2 != 0 {
                     self.impact_sound(d, cur, end);
                 }
@@ -8902,6 +8904,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             // +0x70 = 0x40 [L] dies silent (site 1 has the same gate).
                             let flags70 = d.weapons.records.get(b.weapon as usize)
                                 .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                            let flags6c_d = d.weapons.records.get(b.weapon as usize)
+                                .map_or(0u32, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()));
                             if flags70 & 2 != 0 {
                                 if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m) { self.audio.play3d(id, p, None); }
                             }
@@ -8912,7 +8916,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             // bullet already flew the step) and the walk takes the next HITDATA's roll +
                             // effects the same tick [M 0x12d81c..0x12d82c]. The port walks the retraces
                             // here (ε 0.01 [S]); on a stop the bullet dies as before.
-                            let mut pierce = crate::effect::penetration_roll(&mut self.rng, m, b.weapon);
+                            let mut pierce = crate::effect::penetration_roll(&mut self.rng, m, b.weapon, flags6c_d);
                             let mut cur = p;
                             let mut hit_n = n;
                             let mut hit_m = m;
@@ -8929,7 +8933,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                                 let Some((t2, n2, m2)) = d.world.segment_surface(nxt, far, false) else { break };
                                 cur = [nxt[0] + dir[0] * t2, nxt[1] + dir[1] * t2, nxt[2] + dir[2] * t2];
                                 hit_n = n2; hit_m = m2;
-                                pierce = crate::effect::penetration_roll(&mut self.rng, m2, b.weapon);
+                                pierce = crate::effect::penetration_roll(&mut self.rng, m2, b.weapon, flags6c_d);
                                 if flags70 & 2 != 0 {
                                     if let Some(id) = nf_formats::sfx::SurfaceSounds::get(&s.impact, m2) { self.audio.play3d(id, cur, None); }
                                 }
