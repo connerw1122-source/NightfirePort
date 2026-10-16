@@ -14879,3 +14879,13 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## menu-e2e-local-mp (2026-10-16, branch s/menu-e2e-local-mp) — start
+- Task: drive the FrontEnd ONLY through action()/mouse_*/tick (never assign page/cursor/state) and
+  cover every local-MP path to a match request: Main -> Multiplayer -> Local -> join (codename,
+  ready); for EVERY scenario row (Quick Game too), EVERY map row, both team/FFA setups: setup
+  (team -> character -> handicap) -> options hub (Rules, Player Mods, Enviro Mods, Bots + bot setup)
+  -> Continue -> Confirm -> requested_level + mp_match_settings validated against the choices.
+  Second Confirm while a request is pending must be refused. Back out from EVERY page at EVERY
+  prompt and walk forward again (setup page re-enters on the right prompt for the scenario's team
+  bit [M P_MPSETUP 0x20d7a8]). Locked rows/scenarios refuse. Debriefing returns to the scenario page.
