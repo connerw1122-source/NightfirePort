@@ -4830,8 +4830,16 @@ impl Scene {
 
     /// `skeletons`: every skeleton on the disc by id; `sequences`: the level's animation archive, grouped by skeleton.
     pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>, difficulty: u32) -> Scene {
-        let by_hash: HashMap<u32, (u8, usize)> = sequences.iter()
-            .flat_map(|(&sk, v)| v.iter().enumerate().map(move |(i, s)| (s.hashcode, (sk, i)))).collect();
+        // cross-process-determinism: the buckets are walked in ASCENDING skeleton id, not HashMap
+        // order — a hashcode present under two buckets resolves to the highest-id bucket's entry
+        // in every process (a std HashMap's order is per-process random; last-wins over it is a
+        // latent cross-process divergence that reaches anim/root-motion resolution). Disc scan:
+        // no cross-bucket duplicate hashcode on any shipped archive today, so this only pins the
+        // resolution rule.
+        let mut sk_keys: Vec<u8> = sequences.keys().copied().collect();
+        sk_keys.sort_unstable();
+        let by_hash: HashMap<u32, (u8, usize)> = sk_keys.iter()
+            .flat_map(|&sk| sequences[&sk].iter().enumerate().map(move |(i, s)| (s.hashcode, (sk, i)))).collect();
         let (mut instances, missing) = level.scene_instances(cels_only);
         // Sky objects are drawn by the sky pass only (with --all they would also appear as dynamic entities).
         // Ladders (0x22) are dynamic objects too (`parsemap_create_dynamic_objects` 0x1d04f0 case 0x22):
@@ -5889,7 +5897,9 @@ impl Scene {
         let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum), {flashes} with a muzzle flash; {held_back} character meshes held back by spawners (R shows them); {script_objects} script objects", characters.len(), attachments.iter().filter(|a| a.script.is_none() && a.flash.is_none() && a.tracer.is_none()).count());
         // The guard AI: one drone per main-map drone placement present at level start; characters map to it by
         // placement translation.
-        let seqs: HashMap<u32, Sequence> = sequences.values().flatten().map(|s| (s.hashcode, s.clone())).collect();
+        // cross-process-determinism: same resolution rule as `by_hash` above — ascending skeleton
+        // id, so a duplicate hashcode resolves identically in every process.
+        let seqs: HashMap<u32, Sequence> = sk_keys.iter().flat_map(|&sk| sequences[&sk].iter().map(|s| (s.hashcode, s.clone()))).collect();
         let mut sim = drones.and_then(|d| Some((d, d.props.clone()?, d.weapons.clone()?))).and_then(|(d, props, weapons)| {
             let m = level.main_map()?;
             // Breakables (type 0x20) are drawn but not solid yet: their collision rules (glass that sight and bullets
@@ -6138,8 +6148,11 @@ impl Scene {
         // Populate the Sim's view_model_ids from the view_models map (D-003).
         if let Some(sim) = sim.as_mut() {
             sim.view_model_ids = view_models.keys().copied().collect();
-            // The view-model characters follow Bond's cel for their ambient ramp.
-            sim.view_model_chars = view_models.values().copied().collect();
+            // cross-process-determinism: collected in the build loop's ascending-wid order, not
+            // `view_models.values()`'s per-process random order — today the only consumer is
+            // `contains` (order-insensitive), but a hash-ordered Vec sitting in the Sim is one
+            // index-pairing away from a real divergence.
+            sim.view_model_chars = (1..=0x72u8).filter_map(|wid| view_models.get(&wid).copied()).collect();
         }
         let models_0x800: HashMap<u32, bool> = level.maps.iter()
             .flat_map(|m| m.objects.iter().map(|o| (o.hashcode, o.flags & 0x800 != 0))).collect();
