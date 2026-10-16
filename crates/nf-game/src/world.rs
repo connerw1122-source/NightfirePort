@@ -1010,6 +1010,47 @@ impl CollisionWorld {
         best
     }
 
+    /// The bullet-probe sphere against the world (`Bullet_update`'s slow-move hittest form,
+    /// version 0x101 [M 0x12e7b0:425-444 → `Collide_SphereIntersect` 0x1ec940 →
+    /// `Intersect_PointGeom` 0x1e92d8]): the closest surface within `radius` of `centre`, as
+    /// `(closest point on the triangle, stored plane normal, surface byte, distance)`.
+    ///
+    /// Per triangle (`Intersect_PointGeom` 0x1e92d8:183-249): the signed plane distance `sd` of
+    /// the centre; faces in front by more than the radius are skipped (`radius < sd` → next tri);
+    /// `Dist2Tri` 0x1dfca8 returns the closest point on the triangle and — for a centre BEHIND
+    /// the face — a negative result, which the best gate skips (`fVar24 < fVar25` with the best
+    /// initialised to 0.0 [M 0x1e92d8:103-109; the HITTEST flag word +0x9a bit 0x8 that would
+    /// re-allow behind-faces is never set by Bullet_update's build — it writes only 0x20 at
+    /// 0x12e7b0:391]) — so the probe is ONE-SIDED: it sees faces the centre is in front of or
+    /// touching, never a face it has passed. The minimum-distance face wins; the hit point is
+    /// Dist2Tri's closest point (HITDATA+0x40) and the normal the triangle's stored plane normal
+    /// (HITDATA+0x10) — the same normal `segment_surface` computes.
+    pub fn sphere_surface(&self, centre: V3, radius: f32, no_water: bool) -> Option<(V3, V3, u8, f32)> {
+        let mut best: Option<(V3, V3, u8, f32)> = None;
+        let mut lo = [0f32; 3];
+        let mut hi = [0f32; 3];
+        for k in 0..3 { lo[k] = centre[k] - radius; hi[k] = centre[k] + radius; }
+        self.near(lo, hi, |t, mat| {
+            if no_water && mat & 0x3f == 0xE { return; }
+            let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+            let n = cross(e1, e2);
+            let nl = dot(n, n).sqrt();
+            if nl < 1e-12 { return; }
+            let n = [n[0] / nl, n[1] / nl, n[2] / nl];
+            // Signed plane distance of the centre; one-sided like the game's best gate.
+            let sd = dot(n, sub(centre, t[0]));
+            if sd > radius || sd < 0.0 { return; }
+            let (q, _on_edge) = closest_on_triangle(centre, t);
+            let d = sub(centre, q);
+            let dist = dot(d, d).sqrt();
+            if dist > radius { return; }
+            if best.is_none_or(|b| dist < b.3) {
+                best = Some((q, n, mat, dist));
+            }
+        });
+        best
+    }
+
     /// The player's capsule against the static geometry (`Intersect_CylGeom` 0x109da0, docs/systems/player.md): the
     /// segment `a`–`b` with radius `r`, triangle by triangle, each push applied before the next triangle. Per triangle:
     /// the segment point where it meets the plane (clamped; the point nearest the centroid when parallel), the closest

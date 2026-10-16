@@ -6314,8 +6314,17 @@ impl Scene {
                     // axes [*suggested*: the game offsets by its own small rotation/translation pair
                     // 0x12d890:486-511 — the port's (±0.03, 0.032, 0.06) is cosmetic].
                     4 | 5 => {
+                        // satchel-stick2: NO `stuck` gate — `Bullet_DoTrails`' 0x3b tail spawns the
+                        // two digit objects EVERY tick in every state < 2 [M 0x12d890:418-553; the
+                        // sim writes `digits` in flight too — grenade.rs's tail runs before the
+                        // stuck early-out], so the numbers ride the satchel from the throw. The old
+                        // `g.stuck` filter matched the playtest's "the numbers aren't working": a
+                        // satchel that hadn't stuck yet drew nothing. In flight `phase.normal` is
+                        // the spawn's [0, 1, 0] placeholder (the stick overwrites it with the
+                        // surface normal), so the flight digits stand upright on the satchel [S —
+                        // the game aligns them to the bullet's own matrix; the main agent renders].
                         let satchels: Vec<&nf_game::grenade::Grenade> = s.drones.grenades.iter()
-                            .filter(|g| g.weapon_type == 0x3b && g.state < 2 && g.stuck && g.phase.is_some())
+                            .filter(|g| g.weapon_type == 0x3b && g.state < 2 && g.phase.is_some())
                             .collect();
                         let Some(g) = satchels.get(slot) else { return far };
                         let p = g.phase.as_ref().unwrap();
