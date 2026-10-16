@@ -15908,3 +15908,10 @@ INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 pa
 72 ignored (46 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes (the
 07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
 and other merged tasks' new tests. The 2 new live tests are green in the totals.
+
+SAVE-PROGRESS-ROUNDTRIP (started 17:14 UTC): goal — progress survives a restart, by the real path:
+create a codename, complete two missions (results commit + save prompt Yes, 635's card flow), drop the
+FrontEnd entirely, build a fresh FrontEnd on the same profile dir and load the codename; assert unlocked
+rows (incl. driving pass-through), medals/best scores, dossier rewards, MP rewards (Explosive Scenery
+gate); "Play without saving" leaves no file; corrupted file reports Load failed and loads nothing. Temp
+profile dir only. Branch s/save-progress-roundtrip from origin/master (3bb7be9a).
