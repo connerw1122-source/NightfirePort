@@ -30,3 +30,7 @@ broke. Report the draw-order table (site → draws → pass) and before/after ta
 
 ---
 claimed-by: sandbox1 at 2026-10-15T23:47Z
+
+---
+## Report (done, 2026-10-16T01:17Z)
+
