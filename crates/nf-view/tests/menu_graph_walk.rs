@@ -63,8 +63,15 @@ const PER_PAGE_CAP: usize = 400;
 const TOTAL_NODE_CAP: usize = 12000;
 /// Back-leaves-the-page probe: N presses (a modal box eats one).
 const BACK_STEPS: usize = 8;
-/// The reach-Main mini-BFS depth.
-const HOME_DEPTH: usize = 16;
+/// The reach-Main mini-BFS depth. The credits roll is the game's 0x242 = 578 lines × 14 frames
+/// + 18 lines' fade + the 0x13 exit delay [M Menu_SetupCredits 0x1f9a88 stores 0x242;
+/// 0x2152b0:169-184] ≈ 8360 frames ≈ 131 bursts — the win page's only route home is the host's
+/// movie-end call plus that roll, so the depth covers it. The credits chain is linear (the
+/// actions are no-ops there [M P_CREDITS_Handler 0x2152b0 has no input cases]) and the visited
+/// set plus the node cap keep every other page's search bounded.
+const HOME_DEPTH: usize = 150;
+/// The home probe's node cap (the option-value lattices could sprawl otherwise).
+const HOME_NODE_CAP: usize = 3000;
 /// Wall-clock guard per walk (harness time only — the Sim never sees it).
 const WALK_DEADLINE: std::time::Duration = std::time::Duration::from_secs(240);
 
@@ -549,8 +556,8 @@ impl Walk {
             }
             // Dead end: no action and no tick burst changed anything (Back included above) and
             // the attract timeout cannot fire here — the page traps the player. The win page is
-            // by design input-dead [M P_WINGAME 0x215100 has only the 0x4c/0x50 cases]; its route
-            // is the host's movie-end call.
+            // input-dead by the game's own design [M P_WINGAME 0x215100 has only the 0x4c/0x50
+            // cases] — its route is the host's movie-end call.
             if !any_change && !fe.win_movie {
                 self.dead_ends.push(format!(
                     "[{}] page {:?} is a dead end (path depth {})",
@@ -642,12 +649,13 @@ fn win_prologue() -> Vec<Edge> {
 // ── the per-page probes ───────────────────────────────────────────────────────────────────────
 
 /// Back leaves every non-root page within `BACK_STEPS` presses (a modal box eats one). The win
-/// page is by design input-dead [M P_WINGAME 0x215100 has only the 0x4c/0x50 cases] — its route
-/// is the host's movie-end call.
+/// page is by design input-dead [M P_WINGAME 0x215100 has only the 0x4c/0x50 cases] and the
+/// credits take no input at all (the roll cannot be skipped) [M P_CREDITS_Handler 0x2152b0 — no
+/// input cases] — their routes are the host's movie-end call and the roll's own end.
 fn probe_back(name: &str, prologue: &[Edge], path: &[Edge], findings: &mut Vec<String>) {
     let (mut fe, _, _) = drive_path(prologue, path);
     let start = fe.page;
-    if matches!(start, Page::Start | Page::WinGame) {
+    if matches!(start, Page::Start | Page::WinGame | Page::Credits) {
         return;
     }
     for _ in 0..BACK_STEPS {
@@ -680,7 +688,7 @@ fn probe_home(name: &str, prologue: &[Edge], path: &[Edge], host_edges: bool, fi
     let mut queue: VecDeque<(Vec<Edge>, usize)> = VecDeque::new();
     queue.push_back((path.to_vec(), 0));
     while let Some((p, d)) = queue.pop_front() {
-        if d >= HOME_DEPTH {
+        if d >= HOME_DEPTH || visited.len() >= HOME_NODE_CAP {
             continue;
         }
         let (fe, _, arm) = drive_path(prologue, &p);
@@ -691,11 +699,22 @@ fn probe_home(name: &str, prologue: &[Edge], path: &[Edge], host_edges: bool, fi
         if fe.closed || fe.mp_match_settings.is_some() {
             continue;
         }
-        for e in edges_for(&fe, host_edges) {
+        // The credits take no input (the roll cannot be skipped) [M P_CREDITS_Handler 0x2152b0
+        // has no input cases] — the only edge is the roll's own ticks. The settle's per-action
+        // tick would otherwise fork frame-variant states here (the roll is pure ticks).
+        let edges: Vec<Edge> = if fe.page == Page::Credits {
+            vec![Edge::Burst]
+        } else {
+            edges_for(&fe, host_edges)
+        };
+        for e in edges {
             let mut np = p.clone();
             np.push(e);
             let (fe2, _, _) = drive_path(prologue, &np);
             let k = state_key(&fe2);
+            if std::env::var("WALK_DEBUG").is_ok() && visited.len() < 12 {
+                println!("home-probe: d={d} edge={e:?} → page={:?} cursor={}", fe2.page, fe2.cursor);
+            }
             if !visited.contains(&k) {
                 visited.insert(k);
                 queue.push_back((np, d + 1));
@@ -703,7 +722,10 @@ fn probe_home(name: &str, prologue: &[Edge], path: &[Edge], host_edges: bool, fi
         }
     }
     findings.push(format!(
-        "[{name}] page {goal:?} cannot reach Main by actions within {HOME_DEPTH} steps"
+        "[{name}] page {goal:?} cannot reach Main by actions within {HOME_DEPTH} steps (visited \
+         {} nodes, max depth reached {})",
+        visited.len(),
+        queue.iter().map(|(_, d)| *d).max().unwrap_or(0)
     ));
 }
 
