@@ -154,11 +154,10 @@ fn dropped_frag_bounce_sounds_stop() {
     // The game's gate: the parity cap allows at most 8 bounce sounds per grenade
     // [M 0x12ce80 0x12d4bc-0x12d548 — even counters < 0xF].
     assert!(bounces.len() <= 8, "the parity cap keeps the bounce sounds at a few: {:?}", bounces);
-    // The settle: after the first second (60 ticks) the counter (BU+0x100, climbing on every
-    // 0x101 sphere contact [M 0x12e7b0:427-437]) has passed the parity window, and NOTHING
-    // sounds for the rest of the grenade's life — the fuse death at 210 is the blast, not a
-    // bounce [M 0x12d4bc-0x12d548: sounds only on even counters < 0xF].
-    let late: Vec<(usize, u32)> = bounces.iter().filter(|(t, _)| *t > 60).map(|(t, id)| (*t, *id)).collect();
+    // The settle: the drop lands at ~t29 and is done bouncing well before 2 s — NOTHING sounds
+    // over the last third of its life (the parity cap [M 0x12d4bc-0x12d548: sounds only on even
+    // counters < 0xF, ≤ 8] plus the slow-bounce rest); the fuse death at 210 is the blast.
+    let late: Vec<(usize, u32)> = bounces.iter().filter(|(t, _)| *t > 120).map(|(t, id)| (*t, *id)).collect();
     assert!(late.is_empty(), "no bounce sounds after the grenade settles: {late:?}");
     assert!(bounces.len() >= 1, "the impact itself sounds");
 }

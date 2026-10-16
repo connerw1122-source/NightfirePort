@@ -24,29 +24,31 @@ The game's bounce block was verified on the **disassembly** (the decomp drops th
   a contact the grenade is already separating from parks and counts but leaves the velocity and
   speed alone. The port reflected unconditionally, flipping separating contacts back INTO the
   surface — the per-tick re-collision the playtests describe.
-- **The hittest's TWO FORMS apply to EVERY bullet** [M Bullet_update 0x12e7b0:427-437]: the
-  family test there only ZEROES the probe radius (the MGL 0x2c..0x31/0x62/0x6d get 0.0 → always
-  the ray); the grenade family keeps the 0.25 floor [L 0x3e800000]. move < probe·0.5 → the 0x101
-  SPHERE at the current position (the closest point on the triangle); else the 0x201 ray of
-  `max(1.0, move)` [M :443-465]. The port scoped the forms to the sticky family and gave the
-  bouncing family a bare move-length ray — the "[S] backlog" comment claiming the family gate was
-  wrong. **The settled grenade sphere-re-contacts EVERY tick, the counter climbs, and the parity
-  cap silences it within ≤ 15 contacts** — the game's settle burst then silence; the micro-bounce
-  cycle rides ~0.04 above the floor until the fuse (the game never truly rests a frag on flat
-  ground — the speed-0 zero only bites on impacts < 0.02).
+- **The hittest's TWO FORMS are every bullet's in the game** [M Bullet_update 0x12e7b0:427-465]:
+  the family test there only ZEROES the probe radius (the MGL 0x2c..0x31/0x62/0x6d → always the
+  ray); the grenade family keeps the 0.25 floor; move < probe·0.5 → the 0x101 SPHERE at the
+  current position, else the 0x201 ray of `max(1.0, move)`. **NOT landed** — verified on the
+  disassembly, prototyped, and pulled back: with the look-ahead the frag parks at the contact up
+  to 1 u early and `fix_grenade_types_live`'s stun whiteout (pinned to the old landing at Bond's
+  xz, alpha 0.749) shifts to a 0.4-u-off blast (alpha 0.489). The re-pin needs the game's own
+  landing measured (live check below). The landed fix keeps the bouncing family's move-length ray;
+  with it the drop rests at ~t180, 2 bounce sounds, silent after.
 - The park `hit + normal·0.04` [M LAB_0012d478] now runs BEFORE the reflect (the game's order).
 
 ## How it was verified
 
 `crates/nf-game/tests/grenade_rattle_live.rs` (new, 07000005, the real sim — positions only):
 - `dropped_frag_bounce_sounds_stop`: the 1.2 u drop on flat ground — ≤ 8 bounce sounds (the
-  parity cap), NOTHING after t60 (the counter cap silenced the micro-bounce regime), the fuse
-  death at 210 is the blast, not a bounce.
+  parity cap), NOTHING over the last third of its life (the drop lands ~t29, rests ~t180, the
+  fuse at 210 is the blast, not a bounce).
 - `wall_hit_still_sounds` (the sister): the frag thrown at a wall still sounds on the impact
   (counter 0).
 - `thrown_frag_probe` / `skim_probe`: the guard's lob (pitch π/4) and the ground-level skim traced.
-- Ran: `cargo test --offline --release -p nf-game` for `grenade_rattle_live` (4/4), `grenade_live`
-  (2/2), `ai_live` (35/35 — the grenade-scare guards still see the bounced frag).
+- Ran: `cargo test --offline --release` for `grenade_rattle_live` (4/4), `grenade_live` (2/2),
+  `ai_live` (35/35 — the grenade-scare guards still see the bounced frag), `fix_grenade_types_live`
+  (3 passed, 1 ignored — the stun whiteout pin holds on the kept geometry), plus a partial fast
+  suite (chunk 1: 88+14 binaries, 439 passed, 1 failed = the stun pin above, now fixed on the
+  kept geometry; the rest of the chunks did not fit the sandbox window).
 
 **What I ran before pushing: nf-game only (the crate the change touches) — the three test binaries
 above.** The full four-crate fast suite did NOT run on the final tree: the sandbox deadline hit
@@ -56,11 +58,12 @@ and nf-view are untouched by the diff.
 
 ## What's left
 
-1. The full fast suite (`NF_ISO=… python3 tools/test/suite.py`) on the final tree, and the
-   `fix_grenade_throw_live`/`grenade-bounce-explode` scenarios re-watched in the windowed app —
-   the 1 u look-ahead ray can bounce a slow approach up to 1 unit early (the game's behavior
-   [M :443-465]; the pinned frag bounce points in older tests may shift — grenade_live 2/2 and
-   ai_live 35/35 passed here).
+1. The full fast suite (`NF_ISO=… python3 tools/test/suite.py`) on the final tree (the sandbox
+   window cut it after chunk 1 + the critical grenade binaries).
+2. Land the two-form hittest for the bouncing family (the disassembly evidence above is complete):
+   with it the settled grenade sphere-re-contacts every tick, the counter climbs per tick, and the
+   parity cap silences the settle within ≤ 15 contacts — the game's settle burst then silence.
+   It requires re-pinning the stun whiteout's blast geometry first (the next item).
 2. A live check (below) to confirm the settle burst's audible length in the real game.
 3. The BU+0x104 flag (the bounce sets it when the pre-reflect velocity's Y > 0 [M 0x12d5b0-0x12d5c0];
    Bullet_update skips the gravity/normalise block while it is set [M 0x12ec8c-0x12ec90]) is NOT

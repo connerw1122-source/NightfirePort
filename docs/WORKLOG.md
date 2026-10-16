@@ -15611,3 +15611,10 @@ must be faded/off those actors when it plays.
   ≤ 8 bounce sounds, silence after t60, the wall impact sounds. ai_live 35/35, grenade_live 2/2.
   Full fast suite NOT run (deadline): the touched crate's live tests green. Report:
   docs/reports/grenade-rattle.md.
+- grenade-rattle final: the two-form hittest for the bouncing family was prototyped and PULLED
+  BACK — with the 1 u look-ahead the frag parks at the contact up to 1 u early and
+  fix_grenade_types_live's stun whiteout (pinned to the old landing, alpha 0.749) shifts to 0.489.
+  The disassembly evidence stands [M 0x12e7b0:427-465]; the re-pin needs the game's landing
+  measured live. LANDED: the dot-gated reflect [M 0x12d5f0-0x12d600], the 20-bounce cap on the
+  reflect arm [M 0x12d578-0x12d57c], the park before the reflect. Tests green: grenade_rattle_live
+  4/4, grenade_live 2/2, ai_live 35/35, fix_grenade_types_live 3+1 ignored.

@@ -313,21 +313,25 @@ impl Grenade {
         // serves (0x37/0x3a/0x3b — the hat 0x45 keeps its verified path); the bouncing family
         // (0x34…) keeps the old move-length ray — the game gives it the same two forms [S backlog:
         // a 1.0 u look-ahead would shift every pinned frag bounce point].
-        // grenade-rattle: the two forms apply to EVERY bullet [M 0x12e7b0:427-437 — the family test
-        // there only ZEROES the probe radius (the MGL 0x2c..0x31 / 0x62 / 0x6d get 0.0 → always the
-        // ray), it does not gate the forms; the bouncing family's old move-length ray was [S] and
-        // wrong]. The grenade family keeps the 0.25 floor [L 0x3e800000 in the max at :430].
-        let probe: f32 = if matches!(self.weapon_type, 0x2c..=0x31 | 0x62 | 0x6d) { 0.0 } else { 0.25 };
-        let world_hit = {
+        // grenade-rattle: the two forms ARE every bullet's in the game [M 0x12e7b0:427-465 — the
+        // family test only zeroes the probe radius (the MGL 0x2c..0x31/0x62/0x6d → always the ray);
+        // the 0x201 ray's length is `max(1.0, move)` [M :443-465]]. NOT landed here: the look-ahead
+        // shifts the pinned blast geometry (fix_grenade_types_live's stun whiteout pins the old
+        // landing; the re-pin needs the game's own landing measured live — see the report's live
+        // checks). The bouncing family keeps the move-length ray for now; the settle-sound mechanics
+        // below (the dot gate, the cap, the park order) are the rattle's fix.
+        let sticky = matches!(self.weapon_type, 0x37 | 0x3a | 0x3b);
+        const PROBE_RADIUS: f32 = 0.25;
+        let world_hit = if !sticky {
+            world.segment_surface(self.pos, end, false)
+                .map(|(t, normal, mat)| (t, [self.pos[0] + (end[0] - self.pos[0]) * t, self.pos[1] + (end[1] - self.pos[1]) * t, self.pos[2] + (end[2] - self.pos[2]) * t], normal, mat))
+        } else {
             let speed = speed2.sqrt();
             let move_len = speed * dt;
-            if move_len < probe * 0.5 {
-                // 0x101: the sphere at the pre-move position; the hit point IS the closest point
-                // (the game's HITDATA+0x40 = `Dist2Tri`'s out).
-                world.sphere_surface(self.pos, probe, false)
+            if move_len < PROBE_RADIUS * 0.5 {
+                world.sphere_surface(self.pos, PROBE_RADIUS, false)
                     .map(|(q, normal, mat, _)| (0.0f32, q, normal, mat))
             } else {
-                // 0x201: the ray with the 1 u floor [M :443-465 — `uVar19 = max(1.0, fVar16)`].
                 let dir = [self.velocity[0] / speed, self.velocity[1] / speed, self.velocity[2] / speed];
                 let len = 1.0f32.max(move_len);
                 let far = [self.pos[0] + dir[0] * len, self.pos[1] + dir[1] * len, self.pos[2] + dir[2] * len];
