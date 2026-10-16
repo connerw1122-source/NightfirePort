@@ -14888,3 +14888,31 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   the game does, with headless tests on 07000008 (collect both from Bond positions taken from the
   placements; check the inventory and the HUD message; sister: out of range does nothing).
 - Started: branch created from origin/master (ad761677); fast suite running in the background.
+
+## pickups-08 (2026-10-16, branch s/pickups-08) — the 07000008 safe room's briefcase and rocket launcher
+- The take query decoded to the end (fix-safe08b's open item, all ACTION.ELF): `Pickup_Update`
+  0x18e148:213-214 → `Collide_LineOfSight` 0x1edf50(from = the player's world-sphere centre, to =
+  the pickup's, cel = the player's obj+0x20, exclude = the pickup obj, 0, 0x721); the wrapper's
+  disassembly (0x1edf50-0x1edf98) forwards `char = 0` — so `Collide_RayIntersect` 0x1ec690 tests
+  EVERY candidate node (dynamic-owned included) — query word `0x721|4 = 0x725` (HITTEST+0x98) and
+  mask 0x10 (HITTEST+0x9A), which arms the per-triangle `Collide_Filter` 0x1ed888 inside
+  `Intersect_RayGeom` 0x10a8c8 (same 0xd/0xe rule as `Collide_Intersect`'s tail). `Collide_PickObj`
+  0x1eae80 keeps a dynamic object unless obj+0xF0 & (0x20 | 0x1000) or its class byte (+0xff) is
+  0x02/0x03/0x05/0x11/0x12; the SS door's class is 0x25 [M SS_Create 0x1a9c58:52] and the safe's
+  shells carry glist flags 0 [D the level's records] — every blocker of the safe-room take rays is
+  tested by the game too. A surface-6 hit survives every filter: the doorway take at the
+  body-sphere facings that graze the safe's own shell refuses in the game exactly like the port
+  (the origin is the yaw-rotated body sphere [L M_CONTROL+0x80]); the player collects by walking
+  in. No take-path change needed — the port matches the query.
+- THE FIX (a real one): the script-entity drain's fresh-push arm skipped `Pickup_Create`'s
+  level-conditional rounds override [M 0x18dda0:116-118, applied inside the create so every arm
+  gets it] — 07000008's SafePickUps rocket (the script word says 5 [D 0x060009E2 s1]) held 5
+  rounds, so the take credited a phantom carried round (the clip is 4). Now
+  `create_rounds_override(d.level, sp.id, sp.rounds)` in `drone.rs`'s drain; the reserved-slot
+  path already applied it at reservation build (scene.rs `script_pickup_reservations`).
+- Tests `crates/nf-view/tests/pickups08_live.rs` (all through `nf_view::load` + `Sim::step_bond`):
+  the spawns sit at the script keys with the 4-round override; both items collect from the doorway
+  (inventory owned/clip/carried math, ch 0x4A, the HUD 0x200000D picked-up message, no auto-switch
+  [M 0x1a6eb0], the gadget-recharge slots excluded); the walk-through collects both; the
+  out-of-range sister does nothing; the glist-flags probe (NF_PICKUPS08_FLAGS=1) documents the
+  0x20/0x1000 evidence. 5/5 green after the fix.
