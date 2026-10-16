@@ -15582,3 +15582,14 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+
+## death-loop-07 (2026-10-16, branch s/death-loop-07) — start
+
+Task: playtest 1012-1723 (07000007): after dying, the mission goes into a replay loop — it keeps
+reloading the mission start over and over. Reproduce headless (die on 07: a guest-shot fail and a
+health-zero death), take the fail path (the port's auto-restart and the fail menu's REPLAY/RESTART),
+run 600 ticks after the reload, and find what re-fails at once (carried fail channel, guest-shot
+flag not reset, weapon-lock edge firing a guard reaction, `level_exit_restart` loops). Fix to the
+game's restart semantics [M Mission_Update's fail cases, the RamLoad restore, the 07 party script's
+init]. Test: two consecutive deaths and restarts each land in a playable 07 that stays alive 600
+ticks.
