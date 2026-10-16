@@ -4094,6 +4094,21 @@ impl Drone {
                 self.timer_c = Some(frame + 60);
                 self.croute = None;
                 self.fire(d, rng, frame, true);
+                // [M 0x164c08 case 1, last line] `DroneWeap_Fire(1)` is followed by `+0x3b = 0` on the
+                // enter: the burst schedule arms (NextBulletTime ran inside Fire), but the fire request
+                // is OFF — the guard cannot release a bullet on the entry tick; the seen UPDATE's
+                // request re-arms it from the next tick (guard-reaction-delay2, the 664 entry-tick
+                // block). The seen UPDATE keeps the pre-664 `Fire(1)`: the game's refresh arm
+                // (`+0x3b = (+0x1e == 0)` before the `+0x3c` split) makes its own `DroneWeap_Fire(1)`
+                // see the request already on, so IT never re-schedules — but the port's next-tick
+                // `Fire(1)` here runs while the request is still off (the enter cleared it), and
+                // dropping it moved every 07000001 cell of the measured fix_guard_weapons 3x3 matrix
+                // (d3/0x12 0.625 vs model 0.750, tol 0.12 — deterministic, 4/4-style). Held for the
+                // follow-up that also ports `Drone+0x3d` (the router's burst-finished latch,
+                // 0x171df8:160) and HandleFiring's request auto-clear (0x17a180:37-45): with the
+                // latch modelled the port's seen-window draw order matches the game's and the trio
+                // can be re-landed without the stream shift.
+                self.firing = false;
                 true
             }
             (COMBAT_NO_ROUTE, msg::UPDATE) => {

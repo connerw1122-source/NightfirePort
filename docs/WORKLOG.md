@@ -14479,6 +14479,39 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
 
+## guard-reaction-delay — guards don't fire the instant they see you (started 2026-10-16)
+Playtest: "guards shoot way too soon upon spotting you, at least give it half a second", "his gun's firing before it lowers at me" (07000006 wine cellar, searchlights, 07000005). Porting the game's sight-to-fire pipeline: noticed/alert latch timers, the aim-raise animation gate, the first-shot delay / reaction time (per difficulty if scaled), the searchlight-spot path. Branch s/guard-reaction-delay.
+
+### guard-reaction-delay progress (2026-10-16 ~07:50 UTC)
+
+- Verified the pending CombatNoRoute change against the decomp: [M 0x164c08:29-30] case 1 (ENTER) fires
+  `DroneWeap_Fire(1)` and then clears `+0x3b` on the same tick (the entry tick cannot release a bullet);
+  [M 0x164c08:41] case 3 not-seen clears `+0x3b` before ChooseCombatMove; [M 0x164c08:63] case 3 seen only
+  refreshes `+0x3b = (+0x1e == 0)` — no NextBulletTime (no writer of Drone+0x1e exists in the decompiles, so the
+  byte is 0 and the refresh is always 1). [M 0x17a8c0:9-14] DroneWeap_Fire gates NextBulletTime on `+0x3b` already
+  set in SP (`MPSettings._388_4_ == 0`) — the port's `fire()` guard matches.
+- New test crates/nf-game/tests/guard_reaction_live.rs measures the three sighting paths (07000005, the ai_live
+  notice spot, positions only):
+  - path1 fresh idle: sight ack 60 (live 61), ATTACK 60, first combat move 0x74 StepAimRight, first bullet 161.
+  - path2 alert-1.0 (alarm-raised): self-attacks during the warm-up (AlertSound 0x177800 forced-attack bits, no
+    sighting needed), sight ack tick 1 — the 59-tick floor is gone; first bullet 114 (a 100-frame step was in
+    flight when Bond appeared).
+  - path3 mid-combat re-sight: re-sight → COMBAT_NEW_SIGHTING → AimStandFire in 0-2 ticks (the entry fire
+    0x166328:59-61); at dist ≤ 4.0 CanBackoff routes AimBackoff first (0x166328:96-102), so no bullet until the
+    backoff ends.
+- KEY finding (anim call completion): a class-3 danim call (the step/strafe moves) never completes in the port —
+  guards sat in StepAimRight forever. The game's chain [M 0x13add0/0x13aee8]: when the transition danim of the
+  call's state starts, `+0x57b` (reached) is set and `ZeroAnimCall` clears the request record but the completion
+  action (+0x596 next AI state / +0x598 msg) SURVIVES; class 3 skips CallFullyComplete, so the call completes only
+  when the step's FOLLOW-ON danim (class 2) starts after the anim ends — reached is still set and the follow-on's
+  class 2 triggers `CallFullyComplete` → SetEndAIState(+0x596=0x68). The port's `call_handler` gate
+  `matches!(class, 2|9) || (class == 1 && !once)` blocks class 3 forever, and the step danim here is a 100-frame
+  one-shot (hash 100664390, anim set 5), so the guard steps the full 1.67 s, cannot fire during it
+  ([M 0x1676a0:16-18] the step enter clears `+0x3b`, no Fire in the step update, and steps do not abort on sight),
+  then AimStandFire releases. The port already mirrors this end-to-end (set_danim keeps the call + reached);
+  the 100-frame step play-out is game-exact behavior, not a stall — the earlier "stuck in 0x74" trace was the
+  test's 120-tick window, not a bug.
+
 ## stun-ai-recover (2026-10-16, branch s/stun-ai-recover) — the stunner's stunned drone state, started
 
 - Playtest 1015-1738: stunner guards "get stunned infinitely and don't complete the animation".
@@ -15179,6 +15212,32 @@ menu-audio-state (2026-10-16)
   cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
   (live checks 1-3).
 
+## guard-reaction-delay2 (2026-10-16, branch s/guard-reaction-delay2) — landed (664's entry-tick block; B/C held with findings)
+- Task 664b: land 664 (s/guard-reaction-delay, reverted as held) without breaking the measured
+  fix_guard_weapons_live 3x3 hit-rate/damage matrix. Plan: branch master + merge 664, reproduce the
+  4/4 standalone failures, bisect which part of 664 shifts the fire streams (first-shot delay vs
+  aim-raise gate vs RNG draw order), port it so the matrix stays green on origin/master + this branch.
+- Full 664 reproduced on the exact merged tree (origin/master e416e5f0 + 664): the 3x3 matrix fails
+  deterministically, same-process single-threaded. Bisected 664's three edits (A: the enter's
+  `+0x3b=0` after `DroneWeap_Fire(1)`; B: the not-seen UPDATE's `+0x3b=0`; C: the seen refresh
+  replacing `Fire(1)`), one variant per run on the same tree: pre-664 PASS (d3/0x12 127/200); A PASS
+  (141/200, 3 runs); B FAILS the damage pin (a <3.0 close pass the matrix model does not cover);
+  C alone byte-identical to pre-664; A+C FAILS byte-identical to full-664 (125/200) => B never fires
+  in the measured scenarios and the shift is the A×C seen-window draw order: with A clearing the
+  request on the enter, the port's next-tick seen `Fire(1)` re-schedules (NextBulletTime draws) where
+  the game's refresh arm sets `+0x3b` before its own Fire guard and never re-schedules
+  [M 0x164c08:63, 0x17a8c0:9-14].
+- LANDED: A only (drone.rs CombatNoRoute ENTER, `self.firing = false` after Fire(1) [M 0x164c08
+  case 1 last line]) — the user-visible entry-tick delay with the matrix green (d3/0x12 0.705 vs
+  model 0.750). B held pending the close pass being modelled/live-checked; C held pending the
+  `Drone+0x3d` burst-finished latch [M 0x171df8:160] + HandleFiring's request auto-clear
+  [M 0x17a180:37-45] so the seen-window draw order matches. No tolerance changes.
+- Verified: guard_reaction_live green (three sighting paths pinned); fast suite on the final tree
+  (HEAD contains origin/master e416e5f0): 408 binaries, 1804 passed, 7 failed, 72 ignored — the 7
+  all master-side/environmental (3 disc_golden slim-ISO allowance; fix_0c_pylon_live x2 +
+  probe_pylon_render no-GPU wgpu; driving_ai_follow mis01 rNgp on the slim ISO, master test merged
+  11:17 UTC today) — and both task binaries green (fix_guard_weapons_live 3/3, guard_reaction_live
+  1/1). Report: docs/reports/guard-reaction-delay2.md (3 live-check asks for the B/C follow-up).
 ## pickups-08 (2026-10-16, branch s/pickups-08) — start
 - Task: the briefcase and the rocket launcher in the 07000008 safe room refuse pickup in playtests
   1012-2337 / 1013-1758. Find why each refuses (placement types and pickup kinds [M Pickup_Create
