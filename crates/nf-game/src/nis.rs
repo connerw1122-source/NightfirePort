@@ -59,6 +59,13 @@ pub enum Request {
     Event { kind: u8, params: Vec<u32> },
     /// Event 4: `Player_Disable` — the player stops (the script runs a cut-scene).
     PlayerDisable,
+    /// Event 9: `Player_Cam2Mode(0, mode)` [M Script_EventHandler 0x1d94c0 case 9 — player 0, the
+    /// event's param 0]. Mode 3 → `Player_SetCamMode(BL, 2)` [M Player_Cam2Mode 0x195fc8:7-9] — the
+    /// cut-scene behind-Bond orbit (`Player_PositionCamera` 0x18f5d8 case 2); anything else → the
+    /// exit arm: `BL+0x8a8 = 0`, `SetCamMode(0)`, `Player_ChangeSubState(player, 0)` [M 0x195fc8:11-16].
+    /// Drained on the view side with the other player hand-offs (`player_events`): the orbit needs
+    /// the viewer's Bond, which lives in the view's Sim.
+    Cam2Mode { mode: u32 },
     /// `Script_Free` after event 6: `Player_Enable` at this matrix (`None`: where the player is), with `+0xAB6`.
     PlayerEnable { at: Option<Mat4>, mode: u8 },
     /// Event 0x12: `ResetMap_LevelToLoad(level, 1, 0)` — the script-driven level transition
@@ -819,10 +826,14 @@ impl Script {
                     out.push(Request::WireRegister { player: self.player, obj, group: g(0) as u16 });
                 }
             }
-            // Event 9 (cam2mode) is unhandled here: the game routes it via `Player_Cam2Mode`
-            // 0x195fc8 → SetCamMode(2) = `Player_PositionCamera` 0x18f5d8 case 2 →
+            // Event 9 (cam2mode) [M Script_EventHandler 0x1d94c0 case 9: `Player_Cam2Mode(0,
+            // iStack_c0)` — player 0, the event's param 0]: `Player_Cam2Mode` 0x195fc8 — mode 3
+            // → `Player_SetCamMode(BL, 2)` = `Player_PositionCamera` 0x18f5d8 case 2 →
             // `camera_track_XZ_pos_behind` 0x1bc260 + `camera_track_Y_pos` 0x1bc1f0 (the
-            // cut-scene behind-Bond orbit) [M Script_EventHandler 0x1d94c0 case 9] — gap.
+            // cut-scene behind-Bond orbit); anything else → `BL+0x8a8 = 0` + `SetCamMode(0)` +
+            // `Player_ChangeSubState(player, 0)` [M 0x195fc8:7-16]. Drained by the view's
+            // player_events loop (the orbit needs the viewer's Bond).
+            9 => out.push(Request::Cam2Mode { mode: g(0) }),
             _ => out.push(Request::Event { kind, params: p }),
         }
     }
@@ -1435,6 +1446,54 @@ mod tests {
         }
         let weapon = objs.list.iter().flatten().find_map(|o| match o { Obj::Anim { weapon, .. } => Some(*weapon), _ => None });
         assert_eq!(weapon, Some(6), "Event 0xB should set the Anim's weapon byte to 6 (Handgun)");
+    }
+
+    /// nis-event9-cnis: Event 9 is `Player_Cam2Mode(0, param0)` [M `Script_EventHandler` 0x1d94c0
+    /// case 9] — the request carries the event's param 0 verbatim (mode 3 = the behind-Bond orbit
+    /// enter, anything else = the exit arm [M `Player_Cam2Mode` 0x195fc8:7-16]). Fails on the old
+    /// tree, where kind 9 fell to the generic `Request::Event` arm and was consumed by nothing.
+    #[test]
+    fn event_9_requests_cam2mode_with_the_events_param() {
+        // Stream 0: Cmd::Event { kind: 9, params: [3] } (op 0x12: op, n, kind, param[0], pad).
+        let enter = {
+            let mut v = vec![0x12, 0x01, 0x09];
+            v.extend(3u32.to_le_bytes());
+            v.push(0);
+            v
+        };
+        // Same, params [0] — the exit arm.
+        let exit = {
+            let mut v = vec![0x12, 0x01, 0x09];
+            v.extend(0u32.to_le_bytes());
+            v.push(0);
+            v
+        };
+        let nis = Arc::new(Nis {
+            hashcode: 0x0600_0074,
+            camera: false,
+            loop_start: 0,
+            length: 100,
+            streams: vec![
+                NisStream { first_key: 0, last_key: 0, commands: enter },
+                NisStream { first_key: 0, last_key: 0, commands: exit },
+            ],
+            keys: Vec::new(),
+        });
+        let mut script = Script::load(nis, IDENT, 1.0);
+        script.start(false);
+        let mut objs = Objects::default();
+        let mut ch = Channels::default();
+        let mut out = Vec::new();
+        let world = TestWorld;
+        for frame in 0..3 {
+            let mut subs = Vec::new(); script.update(&mut subs, &Default::default(), &mut objs, &mut ch, &world, frame, &mut out);
+        }
+        let modes: Vec<u32> = out.iter().filter_map(|r| match r {
+            Request::Cam2Mode { mode } => Some(*mode),
+            Request::Event { kind: 9, .. } => panic!("event 9 fell to the unhandled Event arm"),
+            _ => None,
+        }).collect();
+        assert_eq!(modes, vec![3, 0], "event 9 → Player_Cam2Mode(0, param0) [M 0x1d94c0 case 9]");
     }
 
     /// The eight unhandled opcodes (0x13 fade, 0x14/0x15 sprite, 0x18/0x1A light, 0x1B/0x1D subscript,

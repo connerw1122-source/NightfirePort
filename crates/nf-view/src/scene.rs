@@ -2595,6 +2595,22 @@ impl Sim {
         for e in std::mem::take(&mut self.drones.player_events) {
             match e {
                 nf_game::nis::Request::PlayerDisable => self.disabled = true,
+                // nis-event9-cnis: `Player_Cam2Mode` 0x195fc8 [M — mode 3 → `Player_SetCamMode(BL, 2)`
+                // 0x195928 (the cut-scene behind-Bond orbit, `Player_PositionCamera` 0x18f5d8 case 2);
+                // anything else → `BL+0x8a8 = 0` + `SetCamMode(0)` + `Player_ChangeSubState(player, 0)`
+                // 0x195fc8:11-16 — the walk substate, the exit hand-off]. The game's SetCamMode(2) arm
+                // also runs `HUD_Reset(BL)` + `viewer[BL+0x94e]+0x236 = 0` [M 0x195928 default] — HUD
+                // state the port does not draw; `BL+0x8a8` has no port model (the game's GunImp writes
+                // it, `Player_Move` 0x191dd0:151 reads it in the aim re-heading) so the zero is a no-op
+                // here.
+                nf_game::nis::Request::Cam2Mode { mode } => {
+                    if mode == 3 {
+                        self.bond.cam_mode = 2;
+                    } else {
+                        self.bond.cam_mode = 0;
+                        self.bond.substate = nf_game::player::SS_WALK;
+                    }
+                }
                 nf_game::nis::Request::PlayerEnable { at, .. } => {
                     if let Some(m) = at {
                         self.bond = nf_game::player::Bond::stand_at(&self.world, [m[3][0], m[3][1], m[3][2]], m[2][0].atan2(m[2][2]));
@@ -2699,6 +2715,38 @@ impl Sim {
         let yaw = d[0].atan2(d[2]);
         let pitch = (d[1] / horiz.max(1e-4)).clamp(-1.0, 1.0).asin();
         Some((cam, yaw, pitch, 1.0))
+    }
+
+    /// nis-event9-cnis: NIS event 9's cut-scene camera (`Player_PositionCamera` 0x18f5d8 case 2),
+    /// Some while `BL+0x950 == 2` — the mode `Player_Cam2Mode` 0x195fc8's mode-3 arm set. The game,
+    /// per tick [M 0x18f5d8 case 2:145-156]:
+    /// 1. `camera_track_XZ_pos_behind(1.0, 10.0, obj+0x30, obj+0x50, viewer)` [M 0x1bc260] — the
+    ///    camera sits 10 units behind Bond on the XZ plane: `pos − 10·(sin(yaw), cos(yaw))`, the
+    ///    yaw read at `obj+0x54` (the second word of the spherical orientation at `obj+0x50` [M
+    ///    `Player_Enable` 0x195498:69 fills `obj+0x50..0x5b` from the matrix's direction]) plus the
+    ///    BSS debug global `debug_cam_ry`; the lerp factor is 1.0 (0x3f800000), so it snaps;
+    /// 2. `camera_track_Y_pos(1.0, 0.0, obj, viewer)` [M 0x1bc1f0] — `cam.y ← obj+0x34 + 0 +
+    ///    debug_cam_posy`, Bond's own Y anchor (the debug globals are BSS with no non-debug writer
+    ///    in ACTION.ELF's decompile — 0.0 in play);
+    /// 3. `Camera_PosYRot`/`Camera_PosXRot(1.0, obj+0x30, viewer)` [M 0x1bc0c0/0x1bc148] — the view
+    ///    snaps to look at Bond's position: yaw `atan2(dx, dz)`, pitch `−atan2(dy, √(dx²+dz²))`
+    ///    (both lerped by 1.0);
+    /// 4. `viewer+0x108 = 1.0` (the FOV factor — the unzoomed value; the zoomed modes 0/0xe feed
+    ///    `BL+0x8D0` there [M :129, :154]) and `viewer+4 = 0` [M :155 — the extra rotation the port
+    ///    does not model].
+    /// The game also draws Bond's body (`View_SetDrawInAllViews`) and hides the view model
+    /// (`View_SetDrawInNoViews(BL+0x7e8)`) [M :146-148] — no player body mesh in the port; the
+    /// view-model hide rides the cutscene flag in lib.rs.
+    pub fn cam2_camera(&self) -> Option<([f32; 3], f32, f32, f32)> {
+        if self.bond.cam_mode != 2 { return None; }
+        let pos = self.bond.pos;
+        let yaw = self.bond.yaw;
+        let cam = [pos[0] - 10.0 * yaw.sin(), pos[1], pos[2] - 10.0 * yaw.cos()];
+        let d = [pos[0] - cam[0], pos[1] - cam[1], pos[2] - cam[2]];
+        let horiz = (d[0] * d[0] + d[2] * d[2]).sqrt();
+        let look_yaw = d[0].atan2(d[2]);
+        let look_pitch = -(d[1]).atan2(horiz);
+        Some((cam, look_yaw, look_pitch, 1.0))
     }
 
     /// The clip slot the held weapon reads and writes: the BASE's when the record is a twin (+0x05

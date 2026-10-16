@@ -223,6 +223,9 @@ fn view_model_entries(scene: &scene::Scene, l: &scene::SkinLayout) -> Option<Vec
     // `Player_PositionCamera` 0x18f5d8 case 0xb: `View_SetDrawInNoViews(BLData+0x7e8)`; the entry
     // holsters the weapon, `Player_WeaponNone` 0x196758:114].
     if s.bond.substate == nf_game::player::SS_CREEP { return None; }
+    // nis-event9-cnis: the event-9 cut-scene orbit hides the view model with the same call [M
+    // `Player_PositionCamera` 0x18f5d8 case 2: `View_SetDrawInNoViews(BLData+0x7e8)`, :148].
+    if s.bond.cam_mode == 2 { return None; }
     let ci = *scene.view_models.get(&s.gun.weapon)?;
     let base = *l.char_base.get(ci)? as usize;
     let nb = scene.characters.get(ci)?.skeleton.bones as usize;
@@ -3423,6 +3426,13 @@ impl ApplicationHandler for App {
                             // 0x1ba5e0]: the wall shimmy's camera is the game's third-person tracking camera
                             // (the user's "when I entered a prompt it was in first person. should be 3rd person").
                             if let Some((p, yaw, pitch, fov)) = sim.creep_camera() {
+                                self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov: GAME_FOV / fov };
+                            }
+                            // nis-event9-cnis [M `Player_PositionCamera` 0x18f5d8 case 2]: NIS event
+                            // 9's behind-Bond cut-scene orbit (`Player_Cam2Mode` 0x195fc8 mode 3 →
+                            // `Player_SetCamMode(BL, 2)`) — 10 units behind on the XZ plane at Bond's
+                            // own Y, looking at him, unzoomed (`viewer+0x108 = 1.0` [M :154]).
+                            if let Some((p, yaw, pitch, fov)) = sim.cam2_camera() {
                                 self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov: GAME_FOV / fov };
                             }
                         }

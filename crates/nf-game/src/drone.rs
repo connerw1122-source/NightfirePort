@@ -7346,7 +7346,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
     fn drain_script_requests(&mut self, d: &Data) {
         for r in std::mem::take(&mut self.scripts.requests) {
             match r {
-                crate::nis::Request::PlayerDisable | crate::nis::Request::PlayerEnable { .. } => self.player_events.push(r.clone()),
+                crate::nis::Request::PlayerDisable | crate::nis::Request::PlayerEnable { .. }
+                // Event 9 rides with them: `Player_Cam2Mode` 0x195fc8 needs the viewer's Bond
+                // (nis-event9-cnis).
+                | crate::nis::Request::Cam2Mode { .. } => self.player_events.push(r.clone()),
                 // Events 5 / 7: the game's own drone gate (`Drone_EnableAll` → `NPCGlobals`) [M 0x1383e8].
                 // `Drone_EnableAll(0)` walks the whole llist calling `NDrone2_Enable(0)` per drone —
                 // `obj+0xF0 |= 0x10|0x20` (not drawn, not picked) and `+0x4F8 &= ~0x1801A0` (no anim/AI)
