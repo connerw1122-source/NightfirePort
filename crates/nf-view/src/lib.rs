@@ -3672,6 +3672,8 @@ pub fn run() -> Result<()> {
             let shot_input = nf_game::player::Input { aiming: zoom_hold, zoom: zoom_hold, strafe: if strafe_hold { 1.0 } else { 0.0 }, ..Default::default() };
             // `--channels`: every switch channel on first (as K).
             if args.iter().any(|a| a == "--channels") { for c in 1..=255 { sim.drones.set_channel(c) } }
+            // `--hold-npcs` (dev): guards freeze where they stand but stay shootable — aim render checks at them.
+            if args.iter().any(|a| a == "--hold-npcs") { sim.drones.hold_npcs = true; }
             // `--bond x,y,z`: Bond starts exactly there (in the air he falls), instead of the level start.
             if let Some(i) = args.iter().position(|a| a == "--bond") {
                 let v: Vec<f32> = args.get(i + 1).context("--bond needs x,y,z")?.split(',').map(|t| t.parse()).collect::<Result<_, _>>()?;
@@ -3786,6 +3788,8 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
+    // `--hold-npcs` (dev): the window run holds every guard in place, still shootable.
+    if dev && args.iter().any(|a| a == "--hold-npcs") { if let Some(sim) = scene.sim.as_mut() { sim.drones.hold_npcs = true; } }
     let force_channel = if dev { args.iter().position(|a| a == "--set-channel").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u8>().ok()) } else { None };
     let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
