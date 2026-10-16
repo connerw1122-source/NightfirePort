@@ -527,11 +527,17 @@ pub struct Msg {
     /// 0x1b15c8 deletes types 4/5 only, so the skip's flush drops these and nothing else
     /// (fix-ladder-water).
     pub script: bool,
+    /// The pane's case-3 open chime (PlayMe1st: 1532 new / 468 complete) has fired — the game
+    /// plays it one pane frame AFTER case 2's open and only while `ScriptCam == 0` [M
+    /// 0x19c310:219-229], so a cut-scene starting in the banner's flash window holds the chime
+    /// until the hand-back (objective-banner-timing).
+    pub sfx1: bool,
 }
 
 impl Msg {
     pub fn new(text: String, time: f32) -> Msg {
-        Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false, label: 0, script: false }
+        Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false, label: 0, script: false,
+            sfx1: false }
     }
 }
 
@@ -3931,7 +3937,8 @@ impl Sim {
                     // scales the life by the wrapped/orig length [M 0x1b0c30's +0x18 store]. The
                     // port wraps at draw time — the font lives in the scene's HudTables, which the
                     // Sim-side drain doesn't hold; the life scaling is not ported, see the report.)
-                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false, label: 0, script: false });
+                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false, label: 0, script: false,
+                        sfx1: false });
                 }
                 nf_game::mission::Event::FailLabel(l) => {
                     self.hud.fail_label = l;
@@ -4032,18 +4039,32 @@ impl Sim {
         }
         // The banner SFX, where the game plays them: the pane update. Case 2 schedules the pair per
         // display (new objective: PlayMe1st 1532, PlayMe2nd 469; "OBJECTIVE COMPLETE": PlayMe1st 468
-        // and ObjectiveSFXTriggered2 preset so the 2nd never plays) [M 0x19c310:148-164]; case 3
-        // fires PlayMe1st in the message's first 60 ticks — only while `ScriptCam == 0` (a cut-scene
-        // holds it) [M 0x19c310:219-229] — and PlayMe2nd once the steady phase begins (remaining + 60
-        // ≤ life) [M 0x19c310:232-235]. The port's pane cannot open while `hud_frozen` (the
-        // viewer+0x2a gate above), so at this point the ScriptCam gate has already cleared.
+        // and ObjectiveSFXTriggered2 preset so the 2nd never plays) [M 0x19c310:148-164] but plays
+        // NOTHING itself; case 3 — the NEXT pane frame — fires PlayMe1st while the message is in its
+        // flash window (remaining + 60 > life), ONLY while `ScriptCam == 0` [M 0x19c310:219-229], and
+        // PlayMe2nd (469) once the steady phase begins (remaining + 60 ≤ life; no camera check — the
+        // frozen timer cannot newly reach it mid-scene) [M 0x19c310:232-235]. The port's pane cannot
+        // OPEN while `hud_frozen` (the viewer+0x2a gate above [M 0x1b11d8:16-18]) — the same window a
+        // script camera holds `ScriptCam != 0` [M 0x1d9140:6 sets it, 0x1d9860 clears it] — so a
+        // banner queued mid-scene opens after the hand-back and its chime fires then; and a banner
+        // that opened the tick before a scene starts waits in its frozen flash window with the chime
+        // unplayed, exactly the game's held Triggered1 (objective-banner-timing).
         if let Some(m) = self.hud.objective_msgs.front_mut() {
             let cam = self.bond.head();
             if !m.opened {
+                // Case 2: the open — bind the header, schedule the pair, no sound yet [M 0x19c310:126-176].
                 m.opened = true;
+            } else if !m.sfx1 && m.time + 60.0 > m.life {
+                // Case 3's flash branch: PlayMe1st once (1532 new / 468 complete) [M 0x19c310:219-229].
+                m.sfx1 = true;
                 let id = if m.status == 0x0200_0053 { 468 } else { 1532 };
                 self.drones.audio.play3d(id, cam, None);
-            } else if !m.second && m.status != 0x0200_0053 && m.time <= m.life - 60.0 {
+            }
+            if m.sfx1 && !m.second && m.status != 0x0200_0053 && m.time <= m.life - 60.0 {
+                // The steady branch: PlayMe2nd (469) once [M 0x19c310:232-235] — only after the
+                // 1st fired (the game's Triggered2 arm sits in the steady branch, which the flash
+                // branch's ScriptCam hold can delay the 1st past; the timer freeze keeps the
+                // ordering 1532 then 469 exactly as the pane plays them).
                 m.second = true;
                 self.drones.audio.play3d(469, cam, None);
             }

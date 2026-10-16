@@ -87,7 +87,7 @@ interludes — the port logs and skips them), else 0x07000048 → `ResetMap_Leve
 
 | Event | The port's action |
 |---|---|
-| `Objective { label, is_new, ticks, failed }` | the objective banner queue (type 2); the text bound via `Lang::bind`, "Fail: %s" (0x170) when `failed`. The SFX play when the message first DISPLAYS, not when the event lands: 1532 at open (468 for "OBJECTIVE COMPLETE"), 469 sixty ticks later — new objectives only [M 0x19c310:148-164, 219-235; fix-objective-banner] |
+| `Objective { label, is_new, ticks, failed }` | the objective banner queue (type 2); the text bound via `Lang::bind`, "Fail: %s" (0x170) when `failed`. The SFX play from the pane, not when the event lands: case 2 (the open) only schedules the pair [M 0x19c310:148-164]; case 3 — the next pane frame — fires 1532 (468 for "OBJECTIVE COMPLETE") once the flash window (remaining + 60 > life), ONLY while `ScriptCam == 0` [M 0x19c310:219-229], and 469 sixty ticks into the display (the steady phase; new objectives only) [M 0x19c310:232-235]. A cut-scene starting inside a banner's flash window holds the chime at the hand-back (the timer frozen by the same viewer+0x2a gate [M 0x1b11d8:16-18]) [fix-objective-banner; objective-banner-timing] |
 | `FailLabel(u32)` | the mission banner's second line (`Lang::bind` at draw) |
 | `MissionComplete { next }` | the type-3 banner (240 ticks) |
 | `MissionFailed` | the type-3 banner (300 ticks) |

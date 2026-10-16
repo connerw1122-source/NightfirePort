@@ -15353,3 +15353,35 @@ remote-mine-detonate (2026-10-16)
 - Plan: find the objective banner path in the port (the HUD message queue + the sound trigger),
   find the game's NIS/cut-scene hold in the message update (Text_AddMsg callers, the NIS check),
   port it, test both sides (during-NIS held, non-NIS immediate).
+
+## objective-banner-timing (2026-10-16, branch s/objective-banner-timing) — close-out
+- Verified the 07000007 banner/sound gate end-to-end and closed the gaps the prior fix's tests
+  left. The gate itself was already on master (fix-objective-banner): `Text_UpdateMsg` 0x1b11d8:
+  16-18 returns 0 while the viewer's +0x2a HUD gate is off (set by `Script_CameraStart`
+  0x1d9140:41-49 — all 7 viewers disabled, the cinema viewer re-enabled at 4 — restored by
+  `Script_KillStream` 0x1d9860:71-72; `Camera_Enable` 0x1b9920 writes +0x29/+0x2a), so
+  `HUD_UpdateStatusPane` case 0 (0x19c310) can never open the pane mid-cut-scene; the port's
+  `hud_frozen` mirrors it and all four HUD panes skip while set. Mission_Update at the Drones::tick
+  top keeps the announce behind the scene's camera gate. All 13 prior banner/cutscene tests green
+  on the fresh master.
+- THE gap closed: the open chime's exact shape. The game's case 2 only SCHEDULES PlayMe1st/2nd
+  [M 0x19c310:148-164]; case 3 — the NEXT pane frame — fires PlayMe1st in the flash window
+  (remaining + 60 > life) ONLY while `ScriptCam == 0` [M 0x19c310:219-229]. The port played the
+  chime at open with no camera check, so a scene starting the tick after a banner's open chimed
+  during the cut-scene where the game holds it (the frozen timer keeps the flash window alive to
+  the hand-back). Ported: `Msg::sfx1` (new field, own line), case 2 = open only, case 3 = the
+  chime on the first unfrozen pane frame inside the flash window; 469 rides the steady branch
+  after the 1st [M 0x19c310:232-235]. mission.md's queue row refreshed.
+- Tests (crates/nf-view/tests/objective_banner_timing_live.rs, 3, all green): the sister —
+  outside a cut-scene the banner opens the tick it queues and 1532/469 play in the case-3 shape
+  (opened 1 → 1532@2 → 469@60, hud_frozen false throughout); the carry — the 06→07 carry with a
+  finished-06 mission snapshot (RamSave::with_mission) walks the real #412 trigger: no banner SFX
+  and no display from the trigger to the hand-back (+4326), then 468 at the hand-back, the Spy
+  announce opens at +177 with 1532@178/469@237; the flash-window hold — a banner opened at t=0
+  with the scene from t=1 keeps the pane open, holds the chime through the whole scene and fires
+  it at the hand-back (+0).
+- Probes (superseded by the tests): cold 07000007 has NO intro cut-scene (hud_frozen 0 ticks) —
+  the load announce shows at once, which IS the game's shape (no camera at the load); the carry
+  announces the carried COMPLETE at t=0 (468) and queues "Rendezvous…" at t=1, both with no
+  camera — the monitor's state-3 arm on the carried record [M 0x1827d8 case 3], the game's own
+  cold-load behaviour.
