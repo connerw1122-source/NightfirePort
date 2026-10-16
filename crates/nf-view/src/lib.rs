@@ -2501,8 +2501,13 @@ impl App {
                                 fe.flow.movie_playing = true; // BGFMVPlaying = 1 [M 0x1081a8]
                                 self.movie = Some(p);
                             }
-                            Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
+                            Err(e) => {
+                                eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in");
+                                fe.flow.movie_playing = false; // an un-started movie: BGFMVPlaying == 0 [M 0x1082e8]
+                            }
                         }
+                    } else {
+                        fe.flow.movie_playing = false;
                     }
                 }
             }
@@ -2523,7 +2528,16 @@ impl App {
                 let code = fe.flow.level_to_load;
                 if matches!((code >> 20) & 0xff, 0x71 | 0x73) {
                     match movie::Player::start(&movie_iso, code) {
-                        Ok(p) => { self.movie = Some(p); eprintln!("movie: decoding {code:08x} ahead of state 6"); }
+                        Ok(p) => {
+                            self.movie = Some(p);
+                            // BGFMVPlaying = 1 from the start [M psiStartBackgroundMovie 0x1081a8]: state 6
+                            // (pushed by ResetMap_Load phase 0 with no frame budget of its own) must see
+                            // the movie as playing on its first tick, or the countdown pops it at once
+                            // and the briefing never shows (playtest 1016 "went straight to the
+                            // loading screen"; it only worked while the boot intro left a budget behind).
+                            fe.flow.movie_playing = true;
+                            eprintln!("movie: decoding {code:08x} ahead of state 6");
+                        }
                         Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown stands in"),
                     }
                 }
