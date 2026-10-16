@@ -1851,9 +1851,25 @@ impl Sim {
         // the port's fixed tick stands in for the game's wall-clock delta (the module doc's
         // *Deviation*). Arena loads only — `None` on every campaign level.
         if let Some(m) = self.mp.as_mut() {
+            // mp-host-match-logic: the scenario objects' per-frame walk (`MP_ObjectUpdate` 0x18b198
+            // — the object system drives it every frame, the master/started gates inside) — the
+            // half the live host never ran before this task. `on_hill` is the caller's KOTH volume
+            // test [M 0x186ae0:88-93]; the port's live host parses no hill trigger box, so the
+            // flags stay false (KOTH scoring stays the headless rigs'; see the report's left
+            // items). Order: `update_objects` then `update`, the headless lockstep rig's recorded
+            // order (mp_lockstep drive). The RNG is drawn only by the GE/blueprint re-picks.
+            m.update_objects(1.0 / 60.0, &[false; 8], &mut self.drones.rng);
             // the shared bit-exact generator — the game's MP_Update draws the global RNG only on
             // the state-6 restart's site re-pick (MP_RestartScenario 0x183fc0)
             m.update(1.0 / 60.0, false, &mut self.drones.rng);
+            // mp-host-match-logic: the humans' live positions ride the match every tick (the game
+            // reads the live `obj+0x30` per comparison [M 0x185098:123-129]) — the net path set
+            // these per tick already; the local path never did, so the spawn policy and the rules
+            // saw the load-time positions.
+            m.set_slot(0, self.bond.pos);
+            for slot in 1..4 {
+                if let Some(b) = &self.mp_bonds[slot] { m.set_slot(slot, b.pos); }
+            }
         }
         // mp-bots-in-match: the bots' per-frame driver — the game's `BOT_update` 0x126448 family
         // runs per frame inside the MP flow (the brains + the firing pipeline + respawn/score
@@ -3845,7 +3861,13 @@ impl Sim {
             let alt = w.get(0x68..0x6c).is_some_and(|b| u32::from_le_bytes(b.try_into().unwrap()) & 0x40000 != 0) && self.gun.alt_fire_toggle == 0;
             Some((self.view_datum_matrix(if alt { 5 } else { 1 }).unwrap_or_else(|| self.gun_matrix()), self.bond.pos[1]))
         } else { None };
+        // mp-host-match-logic: the live match's death + respawn half. `mp_death_was_active`
+        // brackets the death's start tick — `MP_PlayerKilled` 0x188f70 fires from
+        // `Player_CheckForDeath` 0x190810:91 exactly when the health runs out, then the 5 s gate
+        // respawns (`Player_HandleDeath` 0x190bb0:41-54 → `MP_ReSpawn` 0x185368).
+        let mp_death_was_active = self.drones.death.active;
         self.drones.tick(&d, &player);
+        self.step_mp_death_respawn(mp_death_was_active);
         // fix-script-objects: the script-created AI volumes (`Drone_AIVolume_Create` 0x1376c0 via
         // `Script_CreateEntity` 0x1d8968's 0xF5 arm) join the level's volume list the tick their
         // script creates them (the game's `LList_Add` 0x2706c8 registration), and their matrix
@@ -7405,6 +7427,50 @@ impl Sim {
     /// here is a body-sphere sweep along the shot ray with the world's clear-line check — a
     /// stand-in for the full `Collide` capsule walk ([S], the sim's bots are not drone objects
     /// so the shared bullet system cannot hit them; see the report's left items).
+    /// mp-host-match-logic: the live match's kill-credit + respawn half for the local human
+    /// (slot 0) — the pieces `MP_Update`/the death path drive in the game, wired into
+    /// [`Sim::step_bond`] (the local and the online host tick the same path).
+    ///
+    /// - The death's start tick → `MP_PlayerKilled` 0x188f70 (`Player_CheckForDeath` 0x190810:91
+    ///   calls it when the health runs out). The killer resolves from the slot's last-shooter word
+    ///   (+0x20 — written per allowed bullet hit [M `MP_RegisterBulletHit` 0x1857c0:34]; the game
+    ///   resolves from the same death's HitByList, the port's stand-in chain is the
+    ///   registration). Values 0xfffe (the init / the respawn reset [M 0x183438:59,
+    ///   0x185368:56]) and 0xffff (the restart reset [M 0x183fc0:81]) mean no credit.
+    /// - After the 5 s death delay (`Player_HandleDeath` 0x190bb0:41-54 — `FRAME_RATE_INT * 5`
+    ///   frames from the death stamp) the respawn runs `MP_ReSpawn` 0x185368 via
+    ///   [`MpMatch::mp_respawn`]: the policy's spawn pick, the slot reset, the health
+    ///   (`armor_bonus + 100.0` [M 0x185368:65-73]), and the body moves (`Player_StandAtNewPosition`
+    ///   [M :97]). The bots respawn in [`Sim::step_mp_bots`] (`BOT_respawn` 0x124e38); the remote
+    ///   humans have no death pipeline in the port (their slots never die here).
+    pub fn step_mp_death_respawn(&mut self, death_was_active: bool) {
+        if self.mp.is_none() { return; }
+        if !death_was_active && self.drones.death.active {
+            // The death start: score it. The killer word 0..8 is a slot id (self-damage credits
+            // the victim — `player_killed`'s self-kill path [M 0x188f70:151-155,167-169]).
+            let Some(m) = self.mp.as_mut() else { return };
+            let st = m.game.slots[0].status;
+            let killer = if st < 8 { Some(st as usize) } else { None };
+            m.player_killed(0, killer, false, false, &mut self.drones.rng);
+        }
+        // The 5 s respawn gate [M 0x190bb0:41-54: `FRAME_RATE_INT * 5 <= GameState+0x34 -
+        // obj+0xec`] — the port's dead-tick counter starts at 0 on the stamp tick.
+        const RESPAWN_DELAY_TICKS: u32 = 300;
+        if !self.drones.death.active || self.drones.death.ticks < RESPAWN_DELAY_TICKS {
+            return;
+        }
+        let Some(m) = self.mp.as_mut() else { return };
+        let Some((sp_idx, hp)) = m.mp_respawn(0, &mut self.drones.rng) else { return };
+        let sp = m.spawns.points[sp_idx as usize];
+        // The body: `Player_StandAtNewPosition`'s port is the same `Bond::stand_at` the load's
+        // spawn uses; the health is `MP_ReSpawn`'s `Player_SetHealth(armor_bonus + 100.0)` [M
+        // 0x185368:65-73] and `obj+0xff = 3` ends the death sequence [M :93].
+        self.bond = nf_game::player::Bond::stand_at(&self.world, [sp.pos[0], sp.pos[1], sp.pos[2]], sp.facing[1]);
+        self.drones.health.health = hp;
+        self.drones.death = nf_game::death::Death::default();
+        m.set_slot(0, self.bond.pos);
+    }
+
     pub fn step_mp_bots(&mut self) {
         if self.mp.as_ref().map_or(true, |m| m.bots.is_empty()) { return; }
         let others = self.bot_others(); // the immutable pass ends before the match is taken &mut
@@ -7493,21 +7559,31 @@ impl Sim {
                 // death handler); the port applies the same raw `weapon_data+0x0C` word straight
                 // to the health block here — the bullet-spawn route (bots are not drone objects,
                 // the shared Bullet owners index the drones list) is the report's left item.
+                // mp-host-match-logic: the hit first registers through the match
+                // (`MP_RegisterBulletHit` 0x1857c0 — the friendly-fire gate + the last-shooter
+                // word the kill credit later resolves; the port has no HitByList), and a blocked
+                // hit deals no damage — the game's own order.
                 let hits_human = human.alive && ray_body_hit(shot.pos, end, human.pos, 0.6).is_some();
                 if hits_human {
-                    self.drones.health.health = (self.drones.health.health - dmg).max(0.0);
+                    let shooter = m.bots[i].slot;
+                    if m.register_bullet_hit(0, shooter) {
+                        self.drones.health.health = (self.drones.health.health - dmg).max(0.0);
+                    }
                 }
                 if let Some((j, _)) = best {
                     m.bots[j].health -= dmg;
                     if m.bots[j].health <= 0.0 {
-                        // The frag: the killer's score/kills, the victim's deaths [M 0x188f70].
+                        // mp-host-match-logic: the frag goes through the match's real scoring
+                        // (`MP_PlayerKilled` 0x188f70 — the killer/streak/team-score rules and
+                        // the carried-object drop, previously an inline stand-in); the entity's
+                        // own bookkeeping (the bot table's deaths/respawn timer) stays here.
+                        let victim_slot = m.bots[j].slot;
+                        let killer_slot = m.bots[i].slot;
                         m.bots[j].health = 0.0;
                         m.bots[j].dead = true;
                         m.bots[j].deaths += 1;
                         m.bots[j].respawn_at = frame + 180;
-                        m.game.slots[m.bots[j].slot].deaths += 1;
-                        m.game.slots[m.bots[i].slot].score += 1.0;
-                        m.game.slots[m.bots[i].slot].kills += 1;
+                        m.player_killed(victim_slot, Some(killer_slot), false, false, &mut self.drones.rng);
                     }
                 }
             }

@@ -995,6 +995,12 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                 }
             }
             m.start(&mut sim.drones.rng);
+            // mp-host-match-logic: the mode objects build here — `MP_Start` 0x183a50:77-114 creates
+            // them (the demo/prot/blueprint/GE draws — Deathmatch/CTF draw nothing) BEFORE the
+            // humans' spawn picks below, the game's draw order. The headless rigs call
+            // `create_mode_objects` themselves; the live host must too, or no scenario object ever
+            // exists (`update_objects` runs on an empty `objects_rt`).
+            m.create_mode_objects(&mut sim.drones.rng);
             // Every human's pick: `MP_Start` calls `MP_GetSpawnPoint(team, NULL)` BEFORE
             // `Player_Init` creates the obj [M 0x183a50:120-123] — no slots exist yet, so every used
             // point is a 9999-distance candidate (policy-dependent pick, empty slots). net-match-host:
@@ -3187,6 +3193,10 @@ impl ApplicationHandler for App {
                     self.ticked = n_ticks > 0;
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                     let look = self.cam.dir().to_array();
+                    // mp-host-match-logic: set inside the tick loop when the match's debriefing
+                    // request latched and the host opened the page (the grab waits for this
+                    // scope — the sim borrow).
+                    let mut debrief_opened = false;
                     if let Some(sim) = self.scene.sim.as_mut() {
                         for _ in 0..n_ticks {
                             if self.noclip { sim.step(eye, look, self.trigger, self.aiming); continue; }
@@ -3299,6 +3309,22 @@ impl ApplicationHandler for App {
                             }
                             self.prev_lock_ch = on;
                             if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
+                            // mp-host-match-logic: the match-end handover — `MP_Update` 0x184bd0's
+                            // case 4 sets `GameState+0x1C = 0x40000033` (the port's
+                            // `MpGame::request_debriefing`, state 5 waits); the host opens
+                            // P_MPDEBRIEFING with the board built from the match [M 0x212198 msg
+                            // 0x4c]. The fe is gone during gameplay (the load closed it), so the
+                            // host re-creates it (the net_fail pattern) — the frame loop's
+                            // `fe.is_none()` gate then stops the sim ticks behind the page, and
+                            // the debriefing page's own arms take over.
+                            if sim.mp.as_ref().is_some_and(|m| m.game.request_debriefing)
+                                && self.fe.as_ref().map_or(true, |fe| fe.mp_debriefing.is_none())
+                            {
+                                let m = sim.mp.as_ref().unwrap();
+                                let fe = self.fe.get_or_insert_with(menu::FrontEnd::new);
+                                fe.open_mp_debriefing(m);
+                                debrief_opened = true; // the grab waits for the sim borrow (below)
+                            }
                         }
                         // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
                         // (Moved below the sim borrow — see the end of this block.)
@@ -3359,6 +3385,7 @@ impl ApplicationHandler for App {
                         }
                     }
                     // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
+                    if debrief_opened { self.grab(false); } // the menus own the cursor again
                     if let Some(d) = self.dev.as_deref_mut() { d.after_tick(&mut self.scene); }
                     // The mission's end sequence (`Mission_Update` case 4 → `ResetMap_LevelToLoad`
                     // of the outro or the front end): the same front-end path the F8 hook drives.
