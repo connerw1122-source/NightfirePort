@@ -84,10 +84,11 @@ existing movie plane), per the task.
   clock restarts at the main menu's open. The pre-existing
   `the_attract_timer_counts_2700_inputless_frames` still holds (its Confirm now exercises the
   skip path).
-- **What I ran** (final tree, `cargo test --offline --release`): `nf-view` — `menus_flow`
-  42/42, plus `movie_playback_flow`, `menu_movies`, `menu_live`, `menu_backdrop_still`,
-  `mp_menu_flow`, `dev_menu_flow` and the lib tests (51 tests, 0 failed across those binaries).
-  `nf-game` + `nf-formats` + `nf-audio`: 105 passed, 3 failed — the 3 `disc_golden` tests
+- **What I ran** (final tree, `cargo test --offline --release`): `nf-view` — the affected
+  binaries `menus_flow` (42), `movie_playback_flow`, `menu_movies`, `menu_live`,
+  `menu_backdrop_still`, `mp_menu_flow`, `dev_menu_flow` and the lib tests: **93 passed,
+  0 failed** re-run after the audit fixes landed. `nf-game` + `nf-formats` + `nf-audio`:
+  105 passed, 3 failed — the 3 `disc_golden` tests
   (`bigf_header_fields_behave_as_documented`, `bigf_tables_match_the_golden_manifest`,
   `directory_tree_matches_the_golden_manifest`), which the task allows to fail on the slim ISO.
 - **Full suite**: `tools/test/suite.py` was started in the background at 23:31 UTC with
@@ -95,9 +96,12 @@ existing movie plane), per the task.
   `PKG_CONFIG_PATH` — this sandbox needs `PKG_CONFIG_PATH=/home/z/alsausr/usr/lib/x86_64-
   linux-gnu/pkgconfig`). Background jobs are killed between tool calls in this sandbox, so the
   350-binary pass cannot complete here (the same limitation the mp-match-rules task recorded);
-  the foreground crate runs above are the verification of record. The suite's per-binary log
-  is `/home/z/my-project/suite.log` (it had crossed 150 binary sections, all green so far, at
-  report time).
+  the foreground crate runs above are the verification of record (93/93 on the final tree for
+  every binary the task touches). The suite's per-binary log is
+  `/home/z/my-project/suite.log`: 177 binary sections in when this report was written, with
+  the only failures the 2 no-GPU `fix_0c_pylon_live` render tests (wgpu `request_adapter`
+  panic — the same no-GPU environment failure the mp-match-rules task recorded, unrelated to
+  this task).
 
 ## What's left
 
