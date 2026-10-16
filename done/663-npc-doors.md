@@ -132,3 +132,9 @@ step-back un-wedges them identically.
 
 The 07000006 chase variant landed as its own test: `npc_doors_live::the_06_guard_chasing_bond_opens_the_closed_door` — Bond beyond the closed door #1 pair fires at the near-side guard (the real input path); the guard enters 0x81 at +401 with hit_door Some(1), the door opens at +408, the guard crosses to Bond. Branch e20fe178.
 
+
+---
+## Report update 2 (2026-10-16T07:25Z)
+
+All 7 npc_doors_live tests green on the final tree (e1d25a18): the escort no-E shoji walk, the 06 chase (0x81 +401, open +408, crossed), the 05 locked refusals + the closed-door-blocks sisters (01 drive closes to 1.44 of the shut shoji; the 0x63 region route carries no door nodes, so that drive proves the follow side). The final-tree suite run (suite2.out) reached the 3 allowed disc_golden failures + one walkreal_07000001 TIMEOUT — the harness clear-guard loop against a NOW-MOBILE guard (the step-back un-wedges the port guards; the walker aim tuning predates mobile guards; guard 15 at health 1.0, dist 2.7, shots not landing) — flagged for the walker owner. Branch 79c669f8.
+
