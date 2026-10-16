@@ -1110,6 +1110,166 @@ pub struct ResultsFields {
     pub medal: u32,
 }
 
+// ── memcard-save-flow: the card-flow machine (docs/systems/memcard-save-flow.md) ─────────────
+// The game runs every save/delete/load through one message machine: page handlers set a mode
+// and call Menu_UpdateMessageBox 0x1f7de8, whose LS_* ops drive HandlePS2CardState 0x110b98's
+// MemCard_* states, whose message ids PS2_DoCardFlow 0x217bd8 renders as the dialog page's
+// text + buttons. The port keeps the ids and the shape, narrowed to what a file save can mean
+// (§4 of the doc: no card-hardware states — a directory of files has no "unformatted").
+
+/// The card-flow messages — `DAT_002462d4` in PS2_DoCardFlow 0x217bd8's switch [M :76-152].
+/// Only the ids the port's machine can reach are variants; `label`/`buttons` cover the table.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CardMsg {
+    /// 4 — Txt 0x27d "This codename already exists. Would you like to overwrite it?"
+    /// [M ASK_OVERWRITE 0x10ee38].
+    AskOverwrite,
+    /// 3 — Txt 0x26a "Insufficient space on memory card … NightFire requires %dKB of free
+    /// space to save data." — the port shows it when the OS reports the write failed for lack
+    /// of storage (`io::ErrorKind::StorageFull`), the file-save analogue of the game's free-
+    /// space check [M CHECK_FREE_SPACE 0x10ef00; docs/systems/memcard-save-flow.md §4].
+    CardFull,
+    /// 5 — Txt 0x26d "Save failed! Check memory card (8MB)(for PlayStation®2) in MEMORY CARD
+    /// slot %s and please try again." [M SAVEERROR 0x10f2d8].
+    SaveFailed,
+    /// 7 — Txt 0x273 "Load failed! Check memory card … and please try again." [M LOADERROR
+    /// 0x10f138; the port surfaces it from the codename load's failures].
+    LoadFailed,
+    /// 9 — Txt 0x26c "Saving data. Do not remove memory card (8MB)(for PlayStation®2) in
+    /// MEMORY CARD slot %s, reset, or switch off the console." [M CREATE_DIR 0x10f4a8 +
+    /// SAVE_DATA's write phases 0x10fa08 sub-8..0xe].
+    Saving,
+    /// 0xc — Txt 0x3e6 "Deleting data. Do not remove memory card …" [M DELETE_DATA 0x110320
+    /// sub-5..].
+    Deleting,
+    /// 0xd — Txt 0x3e5 "Are you sure you want to delete this codename?" [M ASK_DELETE
+    /// 0x10ec98].
+    AskDelete,
+    /// 0xe — Txt 0x3e7 "Delete failed! Check memory card … and please try again." [M
+    /// DELETE_ERROR 0x10f068].
+    DeleteFailed,
+}
+
+impl CardMsg {
+    /// The flow-state value (`DAT_002462d4`) [M 0x217bd8's case table].
+    pub fn id(self) -> u32 {
+        match self {
+            CardMsg::AskOverwrite => 4,
+            CardMsg::CardFull => 3,
+            CardMsg::SaveFailed => 5,
+            CardMsg::LoadFailed => 7,
+            CardMsg::Saving => 9,
+            CardMsg::Deleting => 0xc,
+            CardMsg::AskDelete => 0xd,
+            CardMsg::DeleteFailed => 0xe,
+        }
+    }
+    /// The Txt label `PS2_DoCardFlow` binds for the id [M 0x217bd8:76-152; the strings are
+    /// USATxt.dat [D], pinned by memcard_save_flow.rs against the disc].
+    pub fn label(self) -> u32 {
+        match self {
+            CardMsg::AskOverwrite => 0x27d,
+            CardMsg::CardFull => 0x26a,
+            CardMsg::SaveFailed => 0x26d,
+            CardMsg::LoadFailed => 0x273,
+            CardMsg::Saving => 0x26c,
+            CardMsg::Deleting => 0x3e6,
+            CardMsg::AskDelete => 0x3e5,
+            CardMsg::DeleteFailed => 0x3e7,
+        }
+    }
+    /// The dialog buttons `PS2CardFlow` 0x2462d0 carries while the message stands — 0 for the
+    /// progress messages (no buttons) [M the setting MemCard_* functions].
+    pub fn buttons(self) -> u32 {
+        match self {
+            CardMsg::AskOverwrite => BTN_YES | BTN_CANCEL,       // 0x6 [M 0x10ee38]
+            CardMsg::CardFull => BTN_OK,                          // 0x1 [M 0x10ef00 PS2CardFlow = 1]
+            CardMsg::SaveFailed | CardMsg::LoadFailed => BTN_RETRY | BTN_CANCEL, // 0xc
+            CardMsg::Saving | CardMsg::Deleting => 0,            // progress [M 0x10fa08 sub-8..]
+            CardMsg::AskDelete => BTN_DELETE | BTN_CANCEL,       // 0x24 [M 0x10ec98]
+            CardMsg::DeleteFailed => BTN_RETRY | BTN_CANCEL,     // 0xc [M 0x10f068]
+        }
+    }
+}
+
+/// The dialog buttons — `PS2CardFlow`'s bit mask; the pressed button's value IS its bit
+/// (`DAT_002462da` == 1/2/4/8/0x10/0x20 across the MemCard_* states) [M 0x217bd8:178-207
+/// binds the labels 0x3ce/0x3cf/0x3cd/0x3d0/0x3d1/0x3d2 onto the bits; the answer tests e.g.
+/// 0x10ec98's `== 0x20`, 0x10ee38's `== 2`, 0x10e858's `== 8/4`].
+pub const BTN_OK: u32 = 0x1;
+pub const BTN_YES: u32 = 0x2;
+pub const BTN_CANCEL: u32 = 0x4;
+pub const BTN_RETRY: u32 = 0x8;
+pub const BTN_FORMAT: u32 = 0x10;
+pub const BTN_DELETE: u32 = 0x20;
+
+/// The flow's phase — the port's narrowing of `Save_State`/`Load_State` 0x30cf16/0x30cf14 and
+/// the MemCard_* sub-states [M 0x1ce0c0: 0 idle → 2 running → 7 success / 8 failure].
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum CardState {
+    /// No operation (DAT_002462d4 = 0, no message) [M 0x217bd8 case 0].
+    Idle,
+    /// A question is up: the overwrite or the delete confirm (the askers set DAT_002462d9 and
+    /// wait for `card_answer`) [M ASK_OVERWRITE 0x10ee38 / ASK_DELETE 0x10ec98].
+    Ask,
+    /// The write/delete is running under its progress message (no buttons) [M SAVE_DATA's
+    /// write phases / DELETE_DATA's walk].
+    Run,
+    /// The op failed and the error dialog is up with Retry+Cancel [M SAVEERROR 0x10f2d8 /
+    /// DELETE_ERROR 0x10f068].
+    Error,
+}
+
+/// The port's card flow. State + messages live on `FrontEnd.card`; the file IO stays in the
+/// Profile API (the host's memory card — `fix-save-profile`), driven by [`FrontEnd::card_tick`]
+/// the way `HandlePS2CardState` is driven per frame on PS2 [M 0x110b98].
+#[derive(Clone, Debug)]
+pub struct CardFlow {
+    pub state: CardState,
+    /// The message on the box — None while nothing shows [M DAT_002462d4 = 0].
+    pub msg: Option<CardMsg>,
+    /// The button mask while a dialog stands (0 = progress) [M PS2CardFlow].
+    pub buttons: u32,
+    /// A dialog is up and [`FrontEnd::card_answer`] is expected [M DAT_002462d9].
+    pub awaiting: bool,
+    /// The codename the op runs under (the name buffer 0x2e1ae8 [M 0x1f7de8:19/28]).
+    pub name: String,
+    /// MENU_LS+0x3b — the flow ended with an error [M 0x217bd8:45].
+    pub failed: bool,
+    /// The completed ops — the tests' "writes once" counter [M PS2SaveGameFine's per-op verify
+    /// is the game's own once-check 0x10fa08 sub-0x10].
+    pub ops_done: u32,
+    /// MENU_LS+8: the page-change message the trigger queued, applied on completion [M
+    /// 0x217bd8:62-64 sends `param_3[2]`; codename create queues 0x4000001d 0x213a98:58].
+    pub pending_page: Option<u32>,
+    /// The create payload awaiting the overwrite answer: (name, reserved) — P_CNNAME's box 4
+    /// arms it [M 0x213790:62-76].
+    pending_create: Option<(String, Vec<String>)>,
+    /// The delete payload awaiting the confirm: (name, row) [M C_SBCNSELECT 0x212f58 case 0x5e].
+    pending_delete: Option<(String, usize)>,
+    /// The codename load awaiting the LOADERROR Retry: (row, edit-wheel mode) [M LOADERROR
+    /// 0x10f138's `== 8` arm re-runs the load].
+    pending_load: Option<(usize, bool)>,
+}
+
+impl Default for CardFlow {
+    fn default() -> Self {
+        CardFlow {
+            state: CardState::Idle,
+            msg: None,
+            buttons: 0,
+            awaiting: false,
+            name: String::new(),
+            failed: false,
+            ops_done: 0,
+            pending_page: None,
+            pending_create: None,
+            pending_delete: None,
+            pending_load: None,
+        }
+    }
+}
+
 /// The front end: which page is up, the cursor, and the flow machine it drives.
 pub struct FrontEnd {
     pub flow: GameFlow,
@@ -1361,6 +1521,21 @@ pub struct FrontEnd {
     /// The handlers' `menu_movie` static: set once the page-open pair has played, cleared by the
     /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
     pub menu_movie: bool,
+
+    // memcard-save-flow (each field on its own line [WORKLOG lesson 4]).
+    /// The card-flow machine — docs/systems/memcard-save-flow.md. The draw code reads
+    /// `card_message`/`card_buttons`; the host pumps [`FrontEnd::card_tick`] per frame.
+    pub card: CardFlow,
+    /// The results page's "Do you want to save your progress?" box (box 0xb, Txt 0x1000206
+    /// [D]) — P_NFRESULTS 0x208e78:24-32 opens it on the page's Confirm when the commit
+    /// improved and a SAVED codename is in play. Confirm answers Yes, Back answers No
+    /// [M the msg-0x50 arm :174-189].
+    pub results_box: bool,
+    /// `PlrStats_DoneBetter` 0x199ac0 at the results enter — the port's `Scored::done_better`
+    /// [M 0x1984b0:301-308]. Gates the save prompt with `saved_codename_in_play`.
+    pub results_improved: bool,
+    /// The save prompt's answer was No — the game re-asks only when it wasn't [M 0x208e78:196].
+    pub results_save_answer_no: bool,
 }
 
 impl FrontEnd {
@@ -1455,6 +1630,11 @@ impl FrontEnd {
             // state (crate::credits::CreditsRoll = the handler's own statics) and the opener.
             credits: crate::credits::CreditsRoll::new(crate::credits::PAGE_CN_AV, 100, false),
             credits_from: None,
+            // memcard-save-flow.
+            card: CardFlow::default(),
+            results_box: false,
+            results_improved: false,
+            results_save_answer_no: false,
 
             // menu-sfx (each new field on its own line [WORKLOG lesson 4]).
             /// The sounds this frame's input/page changes started — the host drains and plays them
@@ -1964,6 +2144,9 @@ impl FrontEnd {
     pub fn tick(&mut self) {
         self.flow.main_tick();
         if !self.flow.load_tick() { return; }
+        // memcard-save-flow: the card flow pumps per frame, the way HandlePS2CardState 0x110b98
+        // runs from the game's page handlers [M P_CNMENU 0x213288:14-16's 0x50 pump].
+        self.card_tick();
         // The intro run ends when the movie state pops (its frames ran out or the host ended it
         // after the second intro movie) [M 0x209e88: the page change follows the movies].
         if self.intro_playing && self.flow.get_state() != ST_MOVIE {
@@ -2050,6 +2233,9 @@ impl FrontEnd {
     /// score_table != 0 arm — always true for the SP hashes).
     pub fn results_enter(&mut self, progress: &mut nf_game::progress::Progress, base_map: u32, status: u32, difficulty: u32, lang: Option<&Lang>) -> bool {
         let scored = progress.get_score(base_map, status, difficulty, true); // [M :77 — GetScore(0)]
+        // memcard-save-flow: `PlrStats_DoneBetter` 0x199ac0 rides the commit [M 0x1984b0:301-308]
+        // — it gates the save prompt (the game checks it on the page's Confirm).
+        self.results_improved = scored.as_ref().map(|s| s.done_better).unwrap_or(false);
         let bind = |id: u32| -> String {
             lang.and_then(|l| l.bind(id)).map(str::to_string).unwrap_or_else(|| format!("<{id:#x}>"))
         };
@@ -2103,11 +2289,14 @@ impl FrontEnd {
         for (i, u) in self.unlocked.iter_mut().enumerate() {
             *u = bits & (1 << i) != 0;
         }
-        // The results flow's save [M the save prompt after the award — Menu_UpdateMessageBox
-        // 0x1f7de8 case 1 writes the chain under the codename; the fail menu has no save arm].
-        if self.active_profile.is_some() {
-            self.save_profile();
-        }
+        // memcard-save-flow: the save moved behind the game's prompt — P_NFRESULTS opens the
+        // "Do you want to save your progress?" box (Txt 0x1000206, box 0xb) on the page's
+        // Confirm (msg 0x4b) when the commit improved AND a SAVED codename is in play [M
+        // 0x208e78:24-32]; the answer drives `request_save` and the card flow shows the
+        // game's messages. The Default row and Play-without-saving never prompt [M :33-36 —
+        // Menu_UpdateDefaultCodename in memory, no file].
+        self.results_box = self.results_improved && self.saved_codename_in_play();
+        self.results_save_answer_no = false;
         self.results.is_some()
     }
 
@@ -2178,7 +2367,13 @@ impl FrontEnd {
         let Some(name) = self.profiles.get(row.wrapping_sub(2)).cloned() else { return false };
         let Some(dir) = self.profile_dir.clone() else { return false };
         let path = nf_game::profile::Profile::path_in(&dir, &name);
-        let Ok(profile) = nf_game::profile::Profile::load_file(&path) else { return false };
+        let Ok(profile) = nf_game::profile::Profile::load_file(&path) else {
+            // The game's load-failure dialog [M LOAD_DATA's read/CRC failures push LOADERROR
+            // 0x110870:29,49 → msg 7 "Load failed!…", Retry+Cancel 0x10f138; the retry re-runs
+            // the load].
+            self.card_load_failed(row, false);
+            return false;
+        };
         // The MSSN nightfire status IS the unlock mask [M Menu_SetNightfireStatus 0x2023a0
         // unpacks it into sp_level[i]+0x10; the MSSN load maps 0 → 0x3].
         let status = profile.progress.nightfire_status();
@@ -2199,7 +2394,10 @@ impl FrontEnd {
         let Some(name) = self.profiles.get(row.wrapping_sub(2)).cloned() else { return false };
         let Some(dir) = self.profile_dir.clone() else { return false };
         let path = nf_game::profile::Profile::path_in(&dir, &name);
-        let Ok(profile) = nf_game::profile::Profile::load_file(&path) else { return false };
+        let Ok(profile) = nf_game::profile::Profile::load_file(&path) else {
+            self.card_load_failed(row, true); // the same LOADERROR dialog [M the mode-0 box]
+            return false;
+        };
         let status = profile.progress.nightfire_status();
         for (i, u) in self.unlocked.iter_mut().enumerate() {
             *u = status & (1 << i) != 0;
@@ -2214,10 +2412,16 @@ impl FrontEnd {
     /// front-end unlock bits into the profile's progress and write the file. The host syncs
     /// the tally/medals in with `sync_profile_progress` first. No-op without a card/profile.
     pub fn save_profile(&mut self) -> bool {
+        self.save_profile_kind().is_none()
+    }
+
+    /// The same write with the OS error kind visible — the flow maps `StorageFull` to the
+    /// game's card-full message and anything else to "Save failed!" (doc §4). None = written.
+    fn save_profile_kind(&mut self) -> Option<std::io::ErrorKind> {
         let (Some(dir), Some(name)) = (self.profile_dir.clone(), self.active_profile.clone()) else {
-            return false;
+            return Some(std::io::ErrorKind::NotFound); // the old false: no card / no codename
         };
-        let Some(profile) = self.profile.as_mut() else { return false };
+        let Some(profile) = self.profile.as_mut() else { return Some(std::io::ErrorKind::NotFound) };
         let mut status = 0u32;
         for (i, &u) in self.unlocked.iter().enumerate() {
             if u {
@@ -2226,7 +2430,7 @@ impl FrontEnd {
         }
         profile.progress.set_nightfire_status(status);
         profile.name = name;
-        profile.save_to_dir(&dir).is_ok()
+        profile.save_to_dir(&dir).err().map(|e| e.kind())
     }
 
     /// The host merges the sim's mission tally (best scores, moments, medal bits) into the
@@ -2472,61 +2676,338 @@ impl FrontEnd {
                 // The validator uppercases + trims the buffer in place [M Menu_IsValidCodename
                 // 0x1f9930:60-77 strcpy(param_1, acStack_a0)].
                 self.cn_typed = normalized.clone();
-                match self.create_codename(&normalized, &reserved) {
-                    Ok(name) => {
-                        // The accept [M 0x213a98:53-65]: the working name 0x2e1ae8, the save
-                        // through the message box (mode 1 = LS_Save 0x1f7de8:21-29), then the
-                        // wheel 0x4000001d (DAT_002e1ad8 :58) whose init forwards to Controls
-                        // 0x40000022 [M P_CNMENU 0x213288:38-40 — not ported; the port lands
-                        // on the wheel].
-                        self.cn_name = name;
-                        self.cn_exit = Some(PAGE_CN_MENU);
-                        self.enter_page(Page::CnMenu);
-                        self.cursor = 1;
-                        true
-                    }
-                    Err(nf_game::profile::CodenameError::Exists) => {
-                        // The card flow's overwrite question — P_CNNAME's 0x50 tick watches
-                        // box 4 and saves on YES [M 0x213790:62-76]. The port refuses [M
-                        // MemCard_ASK_OVERWRITE 0x10ee38, create_codename's own note]; the
-                        // box stands for the host to answer.
-                        self.cn_box = Some((4, 0));
-                        false
-                    }
-                    Err(_) => false,
+                // The save rides the card flow [M C_KEYBOARD 0x213a98:53-65 — mode 1 + the name,
+                // pumped by the page's 0x50]: the file exists → the overwrite question (box 4,
+                // the caller answers Yes/No), otherwise "Saving data…" runs and the completion
+                // routes to the wheel (pending_page = 0x4000001d [M :58]).
+                let exists = self.profile_dir.as_ref()
+                    .map(|d| nf_game::profile::Profile::path_in(d, &normalized).exists())
+                    .unwrap_or(false);
+                let reserved: Vec<String> = self.cn_reserved.clone();
+                let reserved: Vec<&str> = reserved.iter().map(String::as_str).collect();
+                if !self.request_create(&normalized, &reserved) {
+                    return false;
                 }
+                // The accept's working name [M 0x213a98:54-57 strcpy(0x2e1ae8, …)]; the page
+                // change happens at the flow's completion (the game's "Saving data…" shows
+                // before the wheel).
+                self.cn_name = normalized;
+                self.cn_exit = Some(PAGE_CN_MENU);
+                if exists {
+                    self.cn_box = Some((4, 0));
+                }
+                true
             }
         }
     }
 
-    /// Dismisses the pending option box (the game's Confirm/Back both close the validator's box;
-    /// box 4's YES would re-save [M P_CNNAME 0x50:62-76] — the port only dismisses).
+    /// Dismisses the pending option box (the game's Confirm/Back both close the validator's
+    /// box; box 4 is the card flow's overwrite question — Confirm answers Yes, Back answers
+    /// Cancel [M P_CNNAME 0x50:62-76 + MemCard_ASK_OVERWRITE 0x10ee38]).
     pub fn cn_dismiss_box(&mut self) {
+        if self.cn_box == Some((4, 0)) {
+            // The overwrite question's dismissal through the flow (Cancel aborts; a Yes runs).
+            self.cn_box = None;
+            self.card_answer(BTN_CANCEL);
+            return;
+        }
         self.cn_box = None;
     }
 
     /// The Edit Codename list's ~X Delete request on a saved row [M C_SBCNSELECT 0x212f58 case
     /// 0x5e — sel > 1, box mode 3 psiDeleteData 0x1f7de8:38-57 under the card-flow confirm;
-    /// P_CNSELECT 0x212ad0 case 0x6e re-enumerates after]. Confirm = YES, Back = NO.
+    /// P_CNSELECT 0x212ad0 case 0x6e re-enumerates after]. Confirm = YES, Back = NO. The
+    /// question + walk are the card flow's now (memcard-save-flow): [`FrontEnd::request_delete`].
     pub fn cn_delete_begin(&mut self, row: usize) -> bool {
-        if row < 2 || row >= 2 + self.profiles.len() { return false; }
-        self.cn_delete_row = Some(row);
+        self.request_delete(row)
+    }
+
+    /// The delete confirm's YES [M the mode-3 box → the ASK_DELETE answer Delete 0x20].
+    pub fn cn_delete_confirm(&mut self) -> bool {
+        self.card_answer(BTN_DELETE)
+    }
+
+    /// The delete confirm's NO [M the ASK_DELETE answer Cancel 4].
+    pub fn cn_delete_cancel(&mut self) {
+        if !self.card_answer(BTN_CANCEL) { self.cn_delete_row = None; }
+    }
+
+    // ── memcard-save-flow: the card flow (docs/systems/memcard-save-flow.md) ─────────────────
+
+    /// A SAVED codename is in play — P_NFRESULTS 0x208e78's gate `DAT_002e1ae0 > 1` [M :24-27]:
+    /// the Default row and "Play without saving" hold templates, not card rows, and never save.
+    pub fn saved_codename_in_play(&self) -> bool {
+        matches!(&self.active_profile, Some(n) if self.profiles.iter().any(|p| p == n))
+    }
+
+    /// The save trigger — mode 1 + name + `Menu_UpdateMessageBox(page, 0xff, 0)` [M the
+    /// handlers' writes: P_NFRESULTS 0x208e78:175-186, C_SBCNOPTIONS 0x213528:60-69,
+    /// C_KEYBOARD 0x213a98:53-65]. Fires the overwrite question when the target file exists
+    /// [M MemCard_SAVE_DATA 0x10fa08 sub-7 → ASK_OVERWRITE 0x10ee38 — `OverWriteCheckDone`
+    /// is reset per op by psiSaveData 0x110df0, so every save to an existing codename asks],
+    /// otherwise starts the run. False without a card/active codename (the game's case-1
+    /// gate drops the op and only raises the completion flag [M 0x1f7de8:21-27]).
+    pub fn request_save(&mut self) -> bool {
+        if self.card.state != CardState::Idle { return false; }
+        let Some(name) = self.active_profile.clone() else { return false };
+        if self.profile_dir.is_none() || name.is_empty() { return false; }
+        self.card.name = name;
+        self.card.failed = false;
+        self.card.pending_page = None;
+        let dir = self.profile_dir.clone().unwrap();
+        let path = nf_game::profile::Profile::path_in(&dir, &self.card.name);
+        if path.exists() {
+            self.card.state = CardState::Ask;
+            self.card.msg = Some(CardMsg::AskOverwrite);
+            self.card.buttons = CardMsg::AskOverwrite.buttons();
+            self.card.awaiting = true;
+        } else {
+            self.card_begin_run(CardMsg::Saving);
+        }
         true
     }
 
-    /// The delete confirm's YES [M the mode-3 box → psiDeleteData(0x2e1ae8)].
-    pub fn cn_delete_confirm(&mut self) -> bool {
-        let Some(row) = self.cn_delete_row.take() else { return false };
-        let Some(name) = self.profiles.get(row - 2).cloned() else { return false };
+    /// The codename-create save — the keyboard's ✓ [M C_KEYBOARD 0x213a98:53-65 / P_CNNAME
+    /// 0x213790:62-76]: the name is already validated; an existing codename arms the overwrite
+    /// question (the caller keeps it on box 4 for the draw), a new one runs the save. The
+    /// completion routes to the wheel `0x4000001d` [M DAT_002e1ad8 0x213a98:58].
+    pub fn request_create(&mut self, name: &str, reserved: &[&str]) -> bool {
+        if self.card.state != CardState::Idle { return false; }
         let Some(dir) = self.profile_dir.clone() else { return false };
-        let gone = nf_game::profile::Profile::delete_in(&dir, &name);
-        self.reload_profiles();
-        self.cursor = self.cursor.min(self.rows().saturating_sub(1));
+        self.card.name = name.to_string();
+        self.card.failed = false;
+        self.card.pending_create = Some((name.to_string(), reserved.iter().map(|s| s.to_string()).collect()));
+        self.card.pending_page = Some(PAGE_CN_MENU);
+        let path = nf_game::profile::Profile::path_in(&dir, name);
+        if path.exists() {
+            self.card.state = CardState::Ask;
+            self.card.msg = Some(CardMsg::AskOverwrite);
+            self.card.buttons = CardMsg::AskOverwrite.buttons();
+            self.card.awaiting = true;
+        } else {
+            self.card_begin_run(CardMsg::Saving);
+        }
+        true
+    }
+
+    /// The delete trigger — C_SBCNSELECT 0x212f58 case 0x5e's mode 3: the confirm question
+    /// first [M MemCard_DELETE_DATA 0x110320 sub-2 pushes ASK_DELETE 0x14], the walk under
+    /// "Deleting data…" after. Keeps `cn_delete_row` armed (the page's own confirm flag).
+    pub fn request_delete(&mut self, row: usize) -> bool {
+        if self.card.state != CardState::Idle { return false; }
+        let Some(name) = self.profiles.get(row.wrapping_sub(2)).cloned() else { return false };
+        if self.profile_dir.is_none() { return false; }
+        self.card.name = name;
+        self.card.failed = false;
+        self.card.pending_delete = Some((self.card.name.clone(), row));
+        self.card.pending_page = None;
+        self.cn_delete_row = Some(row);
+        self.card.state = CardState::Ask;
+        self.card.msg = Some(CardMsg::AskDelete);
+        self.card.buttons = CardMsg::AskDelete.buttons();
+        self.card.awaiting = true;
+        true
+    }
+
+    fn card_begin_run(&mut self, progress: CardMsg) {
+        self.card.state = CardState::Run;
+        self.card.msg = Some(progress);
+        self.card.buttons = 0;
+        self.card.awaiting = false;
+    }
+
+    /// Pump the flow — the port's `HandlePS2CardState` 0x110b98 tick. The write/delete itself
+    /// runs here (the port's card IS the local file; there is no async device to wait for),
+    /// then the completion applies the queued page message [M 0x217bd8:62-64] or, on the
+    /// results page, re-opens the save prompt after a failure [M P_NFRESULTS 0x208e78:196-201
+    /// — the re-ask while the save did not verify fine and the answer wasn't No]. Returns
+    /// whether the flow ran an op this tick.
+    pub fn card_tick(&mut self) -> bool {
+        if self.card.state != CardState::Run { return false; }
+        let failure: Option<std::io::ErrorKind> = match self.card.msg {
+            Some(CardMsg::Deleting) => if self.card_run_delete() { None } else { Some(std::io::ErrorKind::Other) },
+            _ => self.card_run_save(),
+        };
+        if failure.is_none() {
+            self.card.state = CardState::Idle;
+            self.card.msg = None;
+            self.card.buttons = 0;
+            self.card.awaiting = false;
+            self.card.ops_done += 1;
+            // The completion [M 0x217bd8:62-71 — the page's queued message, then input back].
+            if let Some(pg) = self.card.pending_page.take() {
+                if let Some(p) = Page::from_id(pg) {
+                    self.enter_page(p);
+                    if p == Page::CnMenu { self.cursor = 1; } // the wheel opens on Controller Setup [L PCSX2 m30]
+                }
+            } else if self.page == Page::Results && self.outcome == Outcome::Complete {
+                self.results_route_on();
+            }
+        } else {
+            // The error dialog [M SAVEERROR 0x10f2d8 / DELETE_ERROR 0x10f068: msg + buttons,
+            // DAT_002462d9 = 1 until answered]. The honest card-full: the OS reported the
+            // storage is full — CHECK_FREE_SPACE's message means the same thing [M 0x10ef00].
+            let msg = match (&self.card.msg, failure) {
+                (Some(CardMsg::Deleting), _) => CardMsg::DeleteFailed,
+                (_, Some(std::io::ErrorKind::StorageFull)) => CardMsg::CardFull,
+                _ => CardMsg::SaveFailed,
+            };
+            self.card.state = CardState::Error;
+            self.card.msg = Some(msg);
+            self.card.buttons = msg.buttons();
+            self.card.awaiting = true;
+            self.card.failed = true;
+        }
+        true
+    }
+
+    fn card_run_save(&mut self) -> Option<std::io::ErrorKind> {
+        // The create save [M C_KEYBOARD 0x213a98:53-65] or the plain profile save (the results
+        // commit / the codename menu's save row) — the same LS_Save(0x2e1ae8) either way. A
+        // confirmed overwrite replaces the file [M the game re-writes the save "directory":
+        // ASK_OVERWRITE's Yes pops back into SAVE_DATA's write phases 0x10fa08 sub-8..].
+        if let Some((name, reserved)) = self.card.pending_create.clone() {
+            self.card.pending_create = None;
+            if let Some(dir) = self.profile_dir.clone() {
+                let path = nf_game::profile::Profile::path_in(&dir, &name);
+                if path.exists() {
+                    nf_game::profile::Profile::delete_in(&dir, &name);
+                }
+            }
+            let reserved: Vec<&str> = reserved.iter().map(String::as_str).collect();
+            return match self.create_codename(&name, &reserved) {
+                Ok(_) => None,
+                Err(_) => Some(std::io::ErrorKind::Other),
+            };
+        }
+        self.save_profile_kind()
+    }
+
+    fn card_run_delete(&mut self) -> bool {
+        let Some((name, row)) = self.card.pending_delete.clone() else { return false };
+        self.card.pending_delete = None;
+        let gone = self.profile_dir.as_ref()
+            .map(|d| nf_game::profile::Profile::delete_in(d, &name))
+            .unwrap_or(false);
+        if gone {
+            self.reload_profiles();
+            self.cursor = self.cursor.min(self.rows().saturating_sub(1));
+            self.cn_delete_row = None;
+        } else {
+            // Retry needs the payload back [M SAVEERROR's Retry pushes DELETE_DATA2, the same
+            // walk again 0x10f2d8 → 0x110638].
+            self.card.pending_delete = Some((name, row));
+        }
         gone
     }
 
-    /// The delete confirm's NO [M the card-flow box's cancel path].
-    pub fn cn_delete_cancel(&mut self) { self.cn_delete_row = None; }
+    /// The answer to the dialog on the box — the pressed button's bit [M `DAT_002462da`:
+    /// OK 1 / Yes 2 / Cancel 4 / Retry 8 / Format 0x10 / Delete 0x20, raised with
+    /// `DAT_002462d9 = 1` by C_LBERROPTIONS 0x2185e8's msg-0x4b arm]. Returns whether the
+    /// answer was consumed.
+    pub fn card_answer(&mut self, row: u32) -> bool {
+        if !self.card.awaiting { return false; }
+        self.card.awaiting = false;
+        match self.card.state {
+            CardState::Ask => match self.card.msg {
+                // ASK_OVERWRITE: Yes (2) continues the save, Cancel (4) aborts [M 0x10ee38 —
+                // Yes pops back to the run, Cancel sets PSIOP_State = 4].
+                Some(CardMsg::AskOverwrite) if row == BTN_YES => {
+                    self.card_begin_run(CardMsg::Saving);
+                    true
+                }
+                Some(CardMsg::AskOverwrite) => { self.card_abort(); row == BTN_CANCEL }
+                // ASK_DELETE: Delete (0x20) runs the walk, Cancel (4) aborts [M 0x10ec98].
+                Some(CardMsg::AskDelete) if row == BTN_DELETE => {
+                    self.card_begin_run(CardMsg::Deleting);
+                    true
+                }
+                Some(CardMsg::AskDelete) => { self.card_abort(); row == BTN_CANCEL }
+                _ => false,
+            },
+            // The error dialogs: Retry re-runs the op, the others end the flow failed [M the
+            // error states' `== 8` retry chains and `== 4` aborts].
+            CardState::Error => {
+                match self.card.msg {
+                    Some(CardMsg::SaveFailed) if row == BTN_RETRY => {
+                        self.card_begin_run(CardMsg::Saving);
+                        true
+                    }
+                    Some(CardMsg::DeleteFailed) if row == BTN_RETRY => {
+                        self.card_begin_run(CardMsg::Deleting);
+                        true
+                    }
+                    // LOADERROR's Retry re-runs the codename load [M 0x10f138's == 8 arm].
+                    Some(CardMsg::LoadFailed) if row == BTN_RETRY => {
+                        let load = self.card.pending_load.take();
+                        self.card_clear_dialog();
+                        match load {
+                            Some((r, true)) => { self.load_profile_data(r); true }
+                            Some((r, false)) => { self.load_codename(r); true }
+                            None => false,
+                        }
+                    }
+                    _ => { self.card_abort(); row == BTN_CANCEL || row == BTN_OK }
+                }
+            }
+            _ => false,
+        }
+    }
+
+    /// Clears the error dialog without the abort bookkeeping (the Retry path's reset) [M the
+    /// states' `PS2CardFlow = 0; DAT_002462d4 = 0` on retry].
+    fn card_clear_dialog(&mut self) {
+        self.card.state = CardState::Idle;
+        self.card.msg = None;
+        self.card.buttons = 0;
+        self.card.awaiting = false;
+    }
+
+    /// Arms the LOADERROR dialog for a failed codename read [M 0x10f138: msg 7, Retry+Cancel,
+    /// DAT_002462d9 = 1].
+    fn card_load_failed(&mut self, row: usize, edit: bool) {
+        self.card.state = CardState::Error;
+        self.card.msg = Some(CardMsg::LoadFailed);
+        self.card.buttons = CardMsg::LoadFailed.buttons();
+        self.card.awaiting = true;
+        self.card.failed = true;
+        self.card.pending_load = Some((row, edit));
+    }
+
+    /// Ends the flow without an op — the dialogs' cancel [M the states' `PSIOP_State = 4`
+    /// abort: LS_* maps it to Save_State/Load_State 8, the terminal failure].
+    fn card_abort(&mut self) {
+        self.card.state = CardState::Idle;
+        self.card.msg = None;
+        self.card.buttons = 0;
+        self.card.failed = true;
+        self.card.pending_create = None;
+        self.card.pending_delete = None;
+        self.card.pending_page = None;
+        self.cn_delete_row = None;
+        if self.page == Page::Results && self.outcome == Outcome::Complete {
+            // The results page treats the aborted save like a failed one: re-ask while the
+            // answer wasn't No [M 0x208e78:192-201].
+            if !self.results_save_answer_no { self.results_box = true; }
+            else { self.results_route_on(); }
+        }
+    }
+
+    /// The box the draw code renders — `(message id, Txt label id)` while the flow shows one
+    /// [M DAT_002462d4 + PS2_DoCardFlow's label table]. The buttons are `card.buttons`.
+    pub fn card_message(&self) -> Option<(u32, u32)> {
+        self.card.msg.map(|m| (m.id(), m.label()))
+    }
+
+    /// The results page's post-save routing — the game's 0x4000001c / 0x40000038 /
+    /// 0x40000053 arms [M 0x208e78:203-215; the port elides the bonus page's stop the same
+    /// way its Confirm already does, and the win page stays unported].
+    fn results_route_on(&mut self) {
+        if self.just_completed { return; }
+        self.cursor = (0..CAMPAIGN.len()).rev().find(|&i| self.unlocked_row(i)).unwrap_or(0);
+        self.enter_page(Page::MissionSelect);
+        self.flow.page = PAGE_MISSION_SELECT;
+    }
 
     /// One menu action. Returns true when the action changed the state.
     pub fn action(&mut self, a: Action) -> bool {
@@ -2623,11 +3104,16 @@ impl FrontEnd {
                         4 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.enter_page(Page::CnMp); self.cursor = 0; return true; }
                         5 => { self.opts_saved = Some(self.opts.clone()); self.av_screen_snapshot(); self.enter_page(Page::CnAv); self.cursor = 0; return true; }
                         6 => {
-                            if self.profiles.iter().any(|p| *p == self.cn_name) {
-                                self.save_profile();
+                            if self.profiles.iter().any(|p| *p == self.cn_name) && self.request_save() {
+                                // The save rides the card flow [M C_SBCNOPTIONS 0x213528:60-69];
+                                // the page change is the flow's completion — the game queues the
+                                // row's next page in MENU_LS+8 [M :61 → 0x217bd8:62-64; the row's
+                                // own target matches the port's existing CnSelect routing [S]].
+                                self.card.pending_page = Some(PAGE_CN_SELECT);
+                            } else {
+                                self.enter_page(Page::CnSelect);
+                                self.cursor = 1;
                             }
-                            self.enter_page(Page::CnSelect);
-                            self.cursor = 1;
                             return true;
                         }
                         _ => return false,
@@ -2647,7 +3133,18 @@ impl FrontEnd {
                         Action::Up => { self.cn_move(0, -1); return true; }
                         Action::Down => { self.cn_move(0, 1); return true; }
                         Action::Confirm => {
-                            if self.cn_box.is_some() { self.cn_dismiss_box(); return true; }
+                            if self.cn_box.is_some() {
+                                // Box 4 is the card flow's overwrite question: Confirm answers
+                                // YES and the save runs [M P_CNNAME 0x50:62-76]; the validator's
+                                // boxes just close [M Menu_CreateOptionBox's ok-only dismissal].
+                                if self.cn_box == Some((4, 0)) {
+                                    self.cn_box = None;
+                                    self.card_answer(BTN_YES);
+                                } else {
+                                    self.cn_dismiss_box();
+                                }
+                                return true;
+                            }
                             let cell = self.cn_cell;
                             return self.cn_press(cell);
                         }
@@ -3083,7 +3580,15 @@ impl FrontEnd {
                     return true;
                 }
                 // Case 0x5d — back goes to the Dossier [M 0x208e78:216-220
-                // `Manager_SendMessage(0x44, 0x4000002b, 0)`].
+                // `Manager_SendMessage(0x44, 0x4000002b, 0)`]. With the save prompt up, Back is
+                // the box's NO [M 0x208e78:186-189 — only the completion flag stands, and the
+                // page routes on].
+                Action::Back if self.results_box => {
+                    self.results_box = false;
+                    self.results_save_answer_no = true;
+                    self.results_route_on();
+                    return true;
+                }
                 Action::Back => {
                     self.page = Page::Dossier;
                     self.flow.page = PAGE_DOSSIER;
@@ -3093,6 +3598,21 @@ impl FrontEnd {
                 // P_NFRESULTS has no row list [L page 0x40000036's controls] — the wheel keys idle.
                 Action::Up | Action::Down => return false,
                 Action::Confirm => {
+                    // memcard-save-flow [M 0x208e78:24-36]: the save prompt opens on the FIRST
+                    // Confirm (the commit improved + a saved codename); the NEXT Confirm answers
+                    // Yes — `request_save` runs the card flow (the overwrite question when the
+                    // file exists [M 0x10fa08 sub-7], then "Saving data…"), and the completion
+                    // routes below. No prompt (or a No answer) routes straight on.
+                    if self.results_box {
+                        self.results_box = false;
+                        self.results_save_answer_no = false;
+                        self.request_save();
+                        return true;
+                    }
+                    if self.results_improved && self.saved_codename_in_play() {
+                        self.results_box = true;
+                        return true;
+                    }
                     // Case 0x4b [M 0x208e78:28-52]: a NEW reward routes to the bonus page
                     // 0x40000038, whose own Confirm lands on the mission list [M 0x209670:50-53];
                     // just_completed routes to the win page 0x40000053 — not ported (reported).
