@@ -2312,8 +2312,9 @@ impl FrontEnd {
     // the wheel to it, the ◀ ▶ columns of a value row are Left / Right, right click is Back and the wheel scrolls
     // (Up / Down). Coordinates are the menu's 640×480 space.
 
-    /// The row cursor of the current page (the MP wheels keep their own counters).
-    fn page_row(&self) -> usize {
+    /// The row cursor of the current page (the MP wheels keep their own counters). The tests
+    /// read it for the cursor-in-range invariant.
+    pub fn page_row(&self) -> usize {
         match self.page {
             Page::MpScenario => self.mp_scenario_row, Page::MpMap => self.mp_map_row, Page::MpOptions => self.mp_options_row,
             Page::MpBots => self.mp_bots_row, Page::MpBotChoose => self.mp_bot_char, _ => self.cursor,
@@ -2351,8 +2352,8 @@ impl FrontEnd {
     }
     // The wheel pages draw the five WHEEL_Y slots (Gadgets/Weapons too — the dossier's own
     // wheels [M menu_overlay's wheel() arms]); Records is a one-row spinner with drawn ◀ ▶, not
-    // a wheel, and Pause/ScreenAdjust carry their own geometry.
-    fn is_wheel_page(&self) -> bool {
+    // a wheel, and Pause/ScreenAdjust carry their own geometry. The tests read it.
+    pub fn is_wheel_page(&self) -> bool {
         matches!(self.page, Page::Codename | Page::Difficulty | Page::MissionSelect | Page::Dossier | Page::CnSelect | Page::CnMenu
             | Page::Gadgets | Page::Weapons
             | Page::MpScenario | Page::MpMap | Page::MpOptions | Page::MpBots | Page::MpBotChoose)
@@ -2369,8 +2370,9 @@ impl FrontEnd {
     /// The modals and the movie states block the page input the way the keyboard is blocked: the
     /// game's option box clears the queued actions and gates the 0x22 dispatcher [M 0x21c858 case
     /// 0x68 `Input_ClearAllActions`; 0x21c3d8:70], the hint boxes ride the same manager, and the
-    /// movies own the screen (P_INTRO's page has no controls [M 0x209e88]).
-    fn input_blocked(&self) -> bool {
+    /// movies own the screen (P_INTRO's page has no controls [M 0x209e88]). Public: the host and
+    /// the tests gate the mouse paths on it.
+    pub fn input_blocked(&self) -> bool {
         self.notice.is_some() || self.net_notice.is_some() || self.mp_error != 0
             || self.pause_hint.is_some() || self.intro_playing || self.attract_playing
     }
@@ -4579,8 +4581,12 @@ impl FrontEnd {
                         return true;
                     }
                     // △ leaves [M C_RBMPSTART's 0x6b arm un-joins state-1 agents; C_RBMPCNAME's
-                    // 0x6b un-chooses codenames].
-                    Action::Back if can_join && self.mp_join[0].state != 0 => {
+                    // 0x6b un-chooses codenames]. The arms act on the LOCAL agent and the page's
+                    // own close — not on the panel cursor (the game's △ is the pad's back, agent
+                    // 1's, wherever the wheel cursor stands; the menu-mouse-parity fuzz's
+                    // Back-leaves invariant caught the old can_join gate freezing Back while the
+                    // cursor sat on panels 2-4).
+                    Action::Back if self.mp_join[0].state != 0 => {
                         self.mp_join[0] = MpJoinAgent::default();
                         return true;
                     }
@@ -4588,7 +4594,7 @@ impl FrontEnd {
                     // close sends the delayed Manager 0x5f pop, so the under-page shows [M
                     // 0x20ca00's 0x6b arm → 0x5f(1); in the port's stack that under-page is the
                     // mode choice (S — the game's own under-page is Main)].
-                    Action::Back if can_join => {
+                    Action::Back => {
                         self.page = Page::MpMode;
                         self.cursor = 0;
                         return true;
