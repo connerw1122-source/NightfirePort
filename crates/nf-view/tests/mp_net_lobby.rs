@@ -131,15 +131,33 @@ fn to_mode(fe: &mut FrontEnd) {
 fn host_flow_listen_agents_choices_and_start() {
     let (mut fe, fake) = fe_with_session();
     to_mode(&mut fe);
-    // Host Online → the host page; the port default and ◀ ▶ stepping.
+    // Host Online → the host page; the port default, then the port row is a TYPED field
+    // (the playtest 1015-2142 "why does the port count down": ◀ ▶ / click-stepping is gone).
     fe.cursor = 1;
     assert!(fe.action(Action::Confirm), "Host Online confirm must navigate");
     assert_eq!(fe.page, Page::MpHost);
     assert_eq!(fe.page.id(), PAGE_MP_HOST);
     assert_eq!(fe.mp_net_port, 27420, "the plan's default port [S]");
-    assert!(fe.action(Action::Right), "▶ steps the port");
-    assert_eq!(fe.mp_net_port, 27421);
-    assert!(fe.action(Action::Left), "◀ steps it back");
+    assert!(!fe.action(Action::Left), "◀ no longer steps the port");
+    assert!(!fe.action(Action::Right), "▶ no longer steps the port");
+    assert_eq!(fe.mp_net_port, 27420, "the arrows left it alone");
+    for _ in 0..5 { assert!(fe.mp_net_backspace()); }
+    assert_eq!(fe.mp_net_port, 0, "Backspace clears digit by digit");
+    for c in "30000".chars() { assert!(fe.mp_net_type(c)); }
+    assert_eq!(fe.mp_net_port, 30000, "typed digits build the port");
+    assert!(!fe.mp_net_type('7'), "a sixth digit would pass 65535 — refused");
+    assert!(!fe.mp_net_type('.'), "only digits type on the port row");
+    for _ in 0..5 { fe.mp_net_backspace(); }
+    // Start refuses a port outside 1024..=65535 (the typed field can hold e.g. 80), and stays put.
+    for _ in 0..5 { fe.mp_net_backspace(); }
+    for c in "80".chars() { fe.mp_net_type(c); }
+    fe.cursor = 1;
+    assert!(!fe.action(Action::Confirm), "Start refuses port 80");
+    assert_eq!(fe.mp_net_error, Some(MpNetError::BadAddress));
+    assert!(!fe.mp_hosting, "nothing listens on a refused port");
+    fe.cursor = 0;
+    for _ in 0..5 { fe.mp_net_backspace(); }
+    for c in "27420".chars() { fe.mp_net_type(c); }
     assert_eq!(fe.mp_net_port, 27420);
     // Start Listening (row 1).
     fe.cursor = 1;
@@ -422,15 +440,13 @@ fn mouse_rows_hover_and_click_the_new_pages() {
     assert_eq!(fe.cursor, 1);
     assert!(fe.mouse_click(320.0, 183.0), "the click confirms");
     assert_eq!(fe.page, Page::MpHost);
-    // The port row's value columns step it (x 340..400 = ◀, 400..600 = ▶ [M the option pages']).
-    // Entering the page put the cursor on row 0, so hovering row 0 changes nothing (false) —
-    // assert the position, then click the columns (each click re-hovers first).
+    // Clicks on the port row never change the port (the old ◀ ▶ value columns knocked it down on
+    // every click — the playtest 1015-2142 report).
     fe.mouse_move(320.0, 151.0);
     assert_eq!(fe.cursor, 0);
-    assert!(fe.mouse_click(370.0, 151.0), "the ◀ column steps");
-    assert_eq!(fe.mp_net_port, 27419);
-    assert!(fe.mouse_click(450.0, 151.0), "the ▶ column steps");
-    assert_eq!(fe.mp_net_port, 27420);
+    fe.mouse_click(370.0, 151.0);
+    fe.mouse_click(450.0, 151.0);
+    assert_eq!(fe.mp_net_port, 27420, "clicks leave the port alone");
     // The Start row's click listens (the move lands the cursor on row 1 first).
     assert!(fe.mouse_move(320.0, 183.0), "hovering row 1 moves the cursor");
     assert!(fe.mouse_click(320.0, 183.0), "the Start row's click confirms");
