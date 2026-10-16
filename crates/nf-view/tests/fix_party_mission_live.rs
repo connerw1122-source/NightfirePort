@@ -23,7 +23,10 @@ fn tick_idle(sim: &mut nf_view::scene::Sim, n: u32) {
 }
 
 /// Probe: what do the drones at the party start look like (states, teams, health)?
+/// faster-live-tests: assertion-free evidence probe (print-only) — the behaviors it surveyed are
+/// pinned by `the_party_entrance_guards…` below; `--ignored` keeps it for manual runs.
 #[test]
+#[ignore = "assertion-free probe (prints drone states/teams/health); the pinned behavior lives in the_party_entrance_guards_never_shoot_unarmed_bond_at_the_start — run with --ignored"]
 fn probe_party_start_guards() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso, "07000007.bin");
@@ -83,7 +86,10 @@ fn the_party_entrance_guards_never_shoot_unarmed_bond_at_the_start() {
 }
 
 /// Probe: bouncer props (0x3c, 0x1f, 0x33) + sight variables.
+/// faster-live-tests: assertion-free evidence probe (print-only) — the bouncer behaviors are
+/// pinned by `punching_a_bouncer…` below; `--ignored` keeps it for manual runs.
 #[test]
+#[ignore = "assertion-free probe (prints bouncer props/sight vars); the pinned behavior lives in punching_a_bouncer_fails_the_mission_at_once — run with --ignored"]
 fn probe_bouncer_props() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso, "07000007.bin");
@@ -163,7 +169,10 @@ fn shooting_a_guest_through_the_bullet_path_fails_the_mission() {
 }
 
 /// Probe: guest hit boxes + bullet flight.
+/// faster-live-tests: assertion-free evidence probe (print-only) — the guest behaviors are
+/// pinned by `shooting_a_guest…` below; `--ignored` keeps it for manual runs.
 #[test]
+#[ignore = "assertion-free probe (prints guest hitboxes/bullet flight); pinned behavior lives in shooting_a_guest_through_the_bullet_path_fails_the_mission — run with --ignored"]
 fn probe_guest_hitboxes() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso, "07000007.bin");
@@ -336,7 +345,11 @@ fn the_cutscene_music_jumps_at_nis_start_and_end() {
 }
 
 /// Probe: what the objective banners bind to on 07/01/02/08, and WHEN they land (NIS running?).
+/// faster-live-tests: assertion-free evidence probe (print-only — the L362 comment's "pins the
+/// bound text" was wrong; the text pins live in `the_07000001_banner_survives_the_intro_cutscene`
+/// and `no_status_pane…` below). `--ignored` keeps it for manual runs.
 #[test]
+#[ignore = "assertion-free probe (prints banner landings on 07/01/02/08); the pinned behavior lives in the_07000001_banner_survives_the_intro_cutscene — run with --ignored"]
 fn probe_objective_banners() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     for level in ["07000007.bin", "07000001.bin", "07000002.bin", "07000008.bin"] {
@@ -359,8 +372,8 @@ fn probe_objective_banners() {
 /// ── Item 5: the banners wait for the cut-scene, and carry the objective text ────────────────────
 /// Playtest: "It just says new objective" (the user's build predates fix-mission's text binding —
 /// `Mission_MonitorObjectives` 0x1827d8 posts the objective record's label [0x04000000/0x02000000
-/// style] and the port binds it through the USATxt.dat table; probe_objective_banners pins the
-/// bound text on 07/01/02/08), "they show during cut-scenes — It needs to wait until after the
+/// style] and the port binds it through the USATxt.dat table; the bound text is pinned by
+/// `the_07000001_banner_survives_the_intro_cutscene` and `no_status_pane…` below), "they show during cut-scenes — It needs to wait until after the
 /// cutscene's finished", and on 07000001 "no banner came up": its only banner ("Escort Mayhew to
 /// bunker") is announced by the state-0 arm [M 0x1827d8:41-54] at mission start — while the intro
 /// NIS holds control from tick 0 to ~2120 — and died at tick 300 in the pre-fix build.
@@ -448,7 +461,10 @@ fn banner_bars(scene: &nf_view::scene::Scene, f: &nf_view::gpu::HudFrame) -> usi
 
 /// Probe (item 6): drive 07000007 into the Kimiko hand-back scene (trigger 412 → SP #420,
 /// 0x06000073) through the real path; snapshot every drone before and after.
+/// faster-live-tests: assertion-free evidence probe (print-only) — the same scenario's outcomes
+/// are pinned by `the_guards_reappear…` below; `--ignored` keeps it for manual runs.
 #[test]
+#[ignore = "assertion-free probe (prints drone snapshots around the Kimiko scene); the pinned behavior lives in the_guards_reappear_at_their_places_after_the_kimiko_scene — run with --ignored"]
 fn probe_kimiko_scene_guards() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso, "07000007.bin");
@@ -492,7 +508,10 @@ fn probe_kimiko_scene_guards() {
 }
 
 /// Probe: drone 23 (state 0xb4) across the Kimiko scene.
+/// faster-live-tests: assertion-free evidence probe (print-only) — the same scenario's outcomes
+/// are pinned by `the_guards_reappear…` below; `--ignored` keeps it for manual runs.
 #[test]
+#[ignore = "assertion-free probe (prints drone 23 across the Kimiko scene); the pinned behavior lives in the_guards_reappear_at_their_places_after_the_kimiko_scene — run with --ignored"]
 fn probe_drone23() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load(&iso, "07000007.bin");

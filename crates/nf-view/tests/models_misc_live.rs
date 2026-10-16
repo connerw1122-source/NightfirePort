@@ -14,6 +14,22 @@ use std::collections::BTreeMap;
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
+/// faster-live-tests: the misc census per archive, computed at most once per process. The census
+/// tests read ONLY `scene.misc_drawn` off a fresh `nf_view::load` — the binary did 80 loads of 34
+/// unique archives — and the suite runs binaries with `--test-threads=1`, so a process-wide map
+/// has no cross-test state to leak: each caller clones its entry out and never shares the Scene.
+/// The three FX tests below that MUTATE the sim (muzzle smoke, searchlight, grenade blast) keep
+/// their own fresh `nf_view::load` and do not use this cache.
+fn misc_drawn_cached(iso: &str, name: &str) -> Result<BTreeMap<u8, usize>, String> {
+    static CACHE: std::sync::OnceLock<std::sync::Mutex<BTreeMap<String, BTreeMap<u8, usize>>>> =
+        std::sync::OnceLock::new();
+    let mut cache = CACHE.get_or_init(|| std::sync::Mutex::new(BTreeMap::new())).lock().unwrap();
+    if let Some(got) = cache.get(name) { return Ok(got.clone()); }
+    let scene = nf_view::load(iso, name, false).map_err(|e| e.to_string())?;
+    cache.insert(name.to_string(), scene.misc_drawn.clone());
+    Ok(scene.misc_drawn)
+}
+
 /// Parse a level archive straight off the disc image (the same data `nf_view::load` reads).
 fn parse_level(iso: &str, name: &str) -> nf_formats::level::Level {
     let img = nf_formats::iso9660::IsoImage::open(iso).unwrap();
@@ -75,10 +91,10 @@ fn misc_static_entities_match_the_census_on_every_level() {
         "07000023.bin", "07000024.bin", "07000025.bin", "07000026.bin", "07000027.bin", "07000028.bin",
         "07000029.bin", "07000043.bin", "07000046.bin", "07000049.bin"];
     for name in levels {
-        let scene = nf_view::load(&iso, name, false).unwrap_or_else(|e| panic!("load {name}: {e}"));
+        let census = misc_drawn_cached(&iso, name).unwrap_or_else(|e| panic!("load {name}: {e}"));
         let level = parse_level(&iso, name);
         let expect = expected_misc(&level, &MISC_KINDS);
-        let mut got: BTreeMap<u8, usize> = scene.misc_drawn.clone();
+        let mut got: BTreeMap<u8, usize> = census.clone();
         // The cars' two children add to the 0xDA count in the sweep (body + 0x2000502 + 0x2000505 each);
         // the census expectation counts bodies, so subtract the drawn children for the comparison.
         let car_children = level.main_map().map(|m| level.by_hash.get(&0x0200_0502).is_some_and(|&(cm, co)| {
@@ -96,17 +112,17 @@ fn misc_static_entities_match_the_census_on_every_level() {
         // grapple sweep draws it under `grapple_hooks_drawn`, not the misc sweep — so 0x3a stays absent
         // from `misc_drawn` here.
         if name == "0700000c.bin" {
-            assert_eq!(scene.misc_drawn.get(&0x2e), Some(&5));
-            assert_eq!(scene.misc_drawn.get(&0x3b), Some(&5));
-            assert_eq!(scene.misc_drawn.get(&0x3a), None, "the grapple points draw via grapple_hooks_drawn, not the misc sweep [M fix-grapple-hook]");
+            assert_eq!(census.get(&0x2e), Some(&5));
+            assert_eq!(census.get(&0x3b), Some(&5));
+            assert_eq!(census.get(&0x3a), None, "the grapple points draw via grapple_hooks_drawn, not the misc sweep [M fix-grapple-hook]");
         }
         if name == "0700000d.bin" {
             // One of the five hides until its channel (param 0 = 43 [D placements dump]) and
             // WallHug_Blocker1_Long carries the no-draw bit 0x10 [D placements; gate above] — 3 draw.
-            assert_eq!(scene.misc_drawn.get(&0x3b), Some(&3));
-            assert_eq!(scene.misc_drawn.get(&0x3a), None, "the grapple points draw via grapple_hooks_drawn, not the misc sweep [M fix-grapple-hook]");
-            assert_eq!(scene.misc_drawn.get(&0x34), Some(&1));
-            assert_eq!(scene.misc_drawn.get(&0xe1), Some(&9));
+            assert_eq!(census.get(&0x3b), Some(&3));
+            assert_eq!(census.get(&0x3a), None, "the grapple points draw via grapple_hooks_drawn, not the misc sweep [M fix-grapple-hook]");
+            assert_eq!(census.get(&0x34), Some(&1));
+            assert_eq!(census.get(&0xe1), Some(&9));
         }
         // 07000014 carries 45 dynamic objects, 23 of them hidden until their switch channel (param 0 ≠ 0
         // [D placements; M DynamicObject_Create 0x18dbf8:31]) — 22 draw; its 12 monitors are SWITCH_
@@ -116,10 +132,10 @@ fn misc_static_entities_match_the_census_on_every_level() {
         // draws (Destroy_Create 0x12c318:57-59 zeroes their smash target). Its 11 Apocalypse placements
         // resolve to collision-only glists, which the game draws as nothing [M 0x18dcc0:20].
         if name == "07000014.bin" {
-            assert_eq!(scene.misc_drawn.get(&0x3b), Some(&22));
-            assert_eq!(scene.misc_drawn.get(&0x30), None, "all 12 monitors carry the no-draw bit");
-            assert_eq!(scene.misc_drawn.get(&0xe1), Some(&29), "48 destroyables − 19 no-draw-bit brushes");
-            assert_eq!(scene.misc_drawn.get(&0x4a), None);
+            assert_eq!(census.get(&0x3b), Some(&22));
+            assert_eq!(census.get(&0x30), None, "all 12 monitors carry the no-draw bit");
+            assert_eq!(census.get(&0xe1), Some(&29), "48 destroyables − 19 no-draw-bit brushes");
+            assert_eq!(census.get(&0x4a), None);
         }
     }
 }
@@ -135,12 +151,12 @@ fn meshless_kinds_never_draw() {
     // attaches one); 0700000b carries 17 mesh-ful rainboxes; 07000009 12. If any of these draw, the
     // sweep is wrong, not merely silent.
     for name in ["0700001b.bin", "0700000b.bin", "07000009.bin", "0700000c.bin"] {
-        let scene = nf_view::load(&iso, name, false).unwrap_or_else(|e| panic!("load {name}: {e}"));
+        let census = misc_drawn_cached(&iso, name).unwrap_or_else(|e| panic!("load {name}: {e}"));
         // fix-gadgets2 adds 0x3f (creep walls) to this list — the creator attaches no gfx [M 0x196fc8],
         // the user's red marker boxes. 0x3a stays: the grapple points draw via `grapple_hooks_drawn`
         // (fix-grapple-hook), never through this misc sweep.
         for bad in [0x29u8, 0x31, 0x32, 0x27, 0x38, 0x39, 0xf2, 0xd4, 0x3a, 0x3f] {
-            assert_eq!(scene.misc_drawn.get(&bad), None, "{name}: kind {bad:#x} must not draw");
+            assert_eq!(census.get(&bad), None, "{name}: kind {bad:#x} must not draw");
         }
         // The sister: the same levels really do carry those placements, so the assertion above has teeth.
         let level = parse_level(&iso, name);
@@ -162,15 +178,15 @@ fn meshless_kinds_never_draw() {
 #[test]
 fn cars_draw_body_and_two_fixed_parts() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let scene = nf_view::load(&iso, "07000024.bin", false).unwrap();
-    assert_eq!(scene.misc_drawn.get(&0xda), Some(&12), "4 cars × (body + 2 children)");
+    let census = misc_drawn_cached(&iso, "07000024.bin").unwrap();
+    assert_eq!(census.get(&0xda), Some(&12), "4 cars × (body + 2 children)");
     let level = parse_level(&iso, "07000024.bin");
     for &h in &[0x0200_0502u32, 0x0200_0505] {
         assert!(level.by_hash.contains_key(&h), "car part {h:#x} missing from the hash table");
     }
     // Sister: a level without cars draws none.
-    let scene = nf_view::load(&iso, "0700000d.bin", false).unwrap();
-    assert_eq!(scene.misc_drawn.get(&0xda), None);
+    let census = misc_drawn_cached(&iso, "0700000d.bin").unwrap();
+    assert_eq!(census.get(&0xda), None);
 }
 
 /// The sky clouds (`Cloud_Create` 0x18d620:26-27 → `View_AddSkyObj`, slot = param 4) ride the sky pass:
@@ -180,7 +196,7 @@ fn cars_draw_body_and_two_fixed_parts() {
 fn clouds_ride_the_sky_pass() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     for name in ["07000041.bin", "07000006.bin"] {
-        let data = nf_view::load(&iso, name, false).unwrap();
+        let census = misc_drawn_cached(&iso, name).unwrap();
         let level = parse_level(&iso, name);
         let m = level.main_map().unwrap();
         let clouds: Vec<_> = level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0xd4).collect();
@@ -188,7 +204,7 @@ fn clouds_ride_the_sky_pass() {
         let sky = level.sky_instances();
         let cloud_obj = if clouds[0].by_hash() { level.by_hash.get(&clouds[0].hashcode).copied() } else { Some((m, clouds[0].index as usize)) };
         assert!(cloud_obj.is_some_and(|c| sky.iter().any(|i| (i.0.map, i.0.object) == c)), "{name}: cloud not in the sky pass");
-        assert_eq!(data.misc_drawn.get(&0xd4), None, "the cloud must not also draw in the world sweep");
+        assert_eq!(census.get(&0xd4), None, "the cloud must not also draw in the world sweep");
     }
 }
 
@@ -199,7 +215,9 @@ fn clouds_ride_the_sky_pass() {
 #[test]
 fn lod_block_parses_and_destroy_swap_targets_resolve() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    nf_view::load(&iso, "0700000d.bin", false).unwrap();
+    // faster-live-tests: the old vestigial `nf_view::load("0700000d")` here was discarded unused —
+    // every assertion reads the raw archive parse below, and 0700000d's load is already pinned by
+    // the census tests that share this binary.
     let level = parse_level(&iso, "0700000d.bin");
     let m = level.maps.iter().position(|mp| mp.name == "010000cf").expect("map 010000cf");
     assert_eq!(level.maps[m].lod_target(6), Some(7));
@@ -233,9 +251,9 @@ fn misc_census_golden() {
         "07000048.bin", "07000049.bin", "0700004a.bin", "0700004b.bin"];
     let mut lines = Vec::new();
     for name in levels {
-        let scene = match nf_view::load(&iso, name, false) { Ok(s) => s, Err(e) => { eprintln!("skip {name}: {e}"); continue } };
+        let census = match misc_drawn_cached(&iso, name) { Ok(c) => c, Err(e) => { eprintln!("skip {name}: {e}"); continue } };
         let mut line = format!("{name}\t");
-        for (k, n) in &scene.misc_drawn { line.push_str(&format!("{k:#04x}:{n} ")); }
+        for (k, n) in &census { line.push_str(&format!("{k:#04x}:{n} ")); }
         lines.push(line.trim_end().to_string());
         eprintln!("{}", lines.last().unwrap());
     }
@@ -262,14 +280,14 @@ fn misc_census_golden() {
 #[test]
 fn frontend_level_loads_and_resolves() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let scene = nf_view::load(&iso, "07000048.bin", false).unwrap();
+    let census = misc_drawn_cached(&iso, "07000048.bin").unwrap();
     let level = parse_level(&iso, "07000048.bin");
     let m = level.main_map().expect("07000048 main map");
     assert_eq!(level.maps.len(), 5, "4 geometry maps + the texture main map");
     assert_eq!(level.maps[m].placements.len(), 1);
     let p = &level.maps[m].placements[0];
     assert_eq!(p.flags & 0xff, 0x31, "the only placement is a fusebox (meshless creator)");
-    assert_eq!(scene.misc_drawn.get(&0x31), None, "and it correctly draws nothing");
+    assert_eq!(census.get(&0x31), None, "and it correctly draws nothing");
     // The kind-8 menu-def entry exists in the archive (`LoaderProcess` 0x1d4880 case 8).
     let img = nf_formats::iso9660::IsoImage::open(&iso).unwrap();
     let (entries, bin) = nf_formats::disc::files_bin_entries(&img).unwrap();

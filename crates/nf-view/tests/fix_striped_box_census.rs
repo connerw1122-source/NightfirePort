@@ -271,14 +271,6 @@ fn probe_gate_verdicts_per_kind() {
         ("0700001b.bin", 0x4a, 8),   // 8x Apocalypse (0x30)
         ("0700001b.bin", 0xe1, 3),   // DESTROY_BoxMissile/BoxSatellite/BoxSmall
     ];
-    for (name, kind, probe_bit) in PROBE {
-        let sc = nf_view::load(&iso, name, false).unwrap_or_else(|e| panic!("load {name}: {e}"));
-        let level = Level::parse(&read_archive(&iso, name)).unwrap_or_else(|e| panic!("parse {name}: {e}"));
-        let (bit, nobit) = kind_flag_counts(&level, *kind);
-        assert_eq!(bit, *probe_bit, "{name} kind {kind:#x}: the probe's flagged count changed — re-check the gate scope");
-        let drawn = sc.misc_drawn.get(kind).copied().unwrap_or(0);
-        assert_eq!(drawn, nobit, "{name} kind {kind:#x}: drawn must equal the unflagged count (the probe's {bit} flagged objects must not draw)");
-    }
     // Sisters: same-kind objects WITHOUT the bit keep drawing — the gate is per-object flags.
     const SISTERS: &[(&str, u8, usize)] = &[
         ("0700000a.bin", 0x30, 1),   // the 0a monitor draws (no bit) while 14's 12 do not
@@ -288,13 +280,28 @@ fn probe_gate_verdicts_per_kind() {
         ("0700000b.bin", 0x35, 1),   // 0b's PCQ worm draws
         ("07000046.bin", 0x35, 1),   // 46's PCQ worm draws
     ];
-    for (name, kind, expect) in SISTERS {
+    // faster-live-tests: group the checks per archive — the two loops loaded 07000012 and
+    // 07000014 three times each and re-parsed every archive per entry (18 loads / 18 parses for
+    // 11 distinct archives). Same assertions per (name, kind), one load and one parse each; the
+    // suite runs --test-threads=1 and nothing here mutates.
+    let mut per_archive: std::collections::BTreeMap<&str, Vec<(u8, usize, bool)>> = std::collections::BTreeMap::new();
+    for (name, kind, probe_bit) in PROBE { per_archive.entry(name).or_default().push((*kind, *probe_bit, true)); }
+    for (name, kind, expect) in SISTERS { per_archive.entry(name).or_default().push((*kind, *expect, false)); }
+    for (name, checks) in &per_archive {
         let sc = nf_view::load(&iso, name, false).unwrap_or_else(|e| panic!("load {name}: {e}"));
         let level = Level::parse(&read_archive(&iso, name)).unwrap_or_else(|e| panic!("parse {name}: {e}"));
-        let (bit, nobit) = kind_flag_counts(&level, *kind);
-        assert_eq!(bit, 0, "{name} kind {kind:#x}: the sister level must carry no flagged object");
-        assert_eq!(nobit, *expect, "{name} kind {kind:#x}: expectation must match the placements");
-        assert_eq!(sc.misc_drawn.get(kind).copied().unwrap_or(0), *expect, "{name} kind {kind:#x}: the unflagged peers must keep drawing");
+        for (kind, want, is_probe) in checks {
+            let (bit, nobit) = kind_flag_counts(&level, *kind);
+            if *is_probe {
+                assert_eq!(bit, *want, "{name} kind {kind:#x}: the probe's flagged count changed — re-check the gate scope");
+                let drawn = sc.misc_drawn.get(kind).copied().unwrap_or(0);
+                assert_eq!(drawn, nobit, "{name} kind {kind:#x}: drawn must equal the unflagged count (the probe's {bit} flagged objects must not draw)");
+            } else {
+                assert_eq!(bit, 0, "{name} kind {kind:#x}: the sister level must carry no flagged object");
+                assert_eq!(nobit, *want, "{name} kind {kind:#x}: expectation must match the placements");
+                assert_eq!(sc.misc_drawn.get(kind).copied().unwrap_or(0), *want, "{name} kind {kind:#x}: the unflagged peers must keep drawing");
+            }
+        }
     }
 }
 
