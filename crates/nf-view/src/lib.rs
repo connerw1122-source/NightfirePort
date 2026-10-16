@@ -1847,7 +1847,10 @@ impl App {
                 snd.batch(|drv, out| {
                     // The 0x4c order: the removes land before the same frame's starts [M
                     // 0x20a408:17-22] — the restart replaces the loop instead of stacking it.
-                    for id in &menu_rm { drv.remove(0, Some(*id)); }
+                    // menu-music-stack: the pair's removes belong to the music channel too — the sfx channel's
+                    // remove landed after the music channel's start and killed it (half a second of menu music,
+                    // then silence at the main menu).
+                    for id in &menu_rm { if menu_music::menu_sfx_reaches_driver(*id) { drv.remove(0, Some(*id)); } }
                     for ev in &menu_sfx { if menu_music::menu_sfx_reaches_driver(ev.id) { drv.start(out, ev.id, None, 0, None); } }
                 });
             }
