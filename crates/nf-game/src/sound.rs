@@ -114,8 +114,10 @@ impl SoundTriggers {
     /// `SoundTrigger_Create` for every 0xF9 placement of the main map, in placement order [M
     /// parsemap_create_dynamic_objects 0x1d04f0 case 0xf9, from ResetMap_Load 0x1d6360 whose
     /// create gate is 1; the 0xa000-flagged placements never reach the dispatcher (its caller
-    /// 0x1d1b68 skips them)]. The difficulty gate is the record's +0x44 (param 6): skip when it
-    /// is below the difficulty, or 5/6/7 without difficulty 1/2/3 [M 0x1b2628:24-40].
+    /// 0x1d1b68 skips them)]. The difficulty gate is param 6 (the record's +0x44: the level-tag
+    /// carries the placement's param values at +0x2C+4k, so +0x44 = param 6 — the same layout the
+    /// switch/door param mapping uses [M 0x1b2628:24-40]): skip when it is below the difficulty,
+    /// or 5/6/7 without difficulty 1/2/3.
     pub fn create(placements: &[nf_formats::placement::Placement], difficulty: u32) -> SoundTriggers {
         let mut st = SoundTriggers { list: Vec::new(), global_voice: 0 };
         for p in placements {
@@ -124,16 +126,24 @@ impl SoundTriggers {
             let (on, one_shot, id, is2d, off, global) =
                 (param(0), param(1), param(2), param(3), param(4), param(5));
             if id == 0 || id == 0xffff || on == 0 { continue; }
-            let gate = p.extra[8];
+            // The difficulty gate is param 6, not the raw placement word at +0x44 [M 0x1b2628:24].
+            let gate = param(6);
             if gate != 0 && gate < difficulty || matches!(gate, 5 | 6 | 7) && difficulty != gate - 4 { continue; }
+            // keep_on = ext+0x11 = param 7 (level-tag +0x48 [M 0x1b2628:48]) — the byte that lets
+            // a looping siren ride its ON channel going low (alarm-panel-06: 07000006's #702 has
+            // 8 params, so the old params.len() read made the siren un-stoppable from ch 55).
             st.list.push(SoundTrigger {
                 on: on as u16, off: off as u16, one_shot: one_shot as u16, id: id as u16,
-                is2d: is2d as u16, global: global & 0xff != 0, keep_on: p.params.len() as u8,
+                is2d: is2d as u16, global: global & 0xff != 0, keep_on: param(7) as u8,
                 pos: p.translation, handle: 0,
             });
         }
         st
     }
+
+    /// Whether any trigger of `id` still holds a voice (the test-facing read of the handles,
+    /// `SFXIsSFXPlaying`'s view). `handle` is private to keep the driver API surface unchanged.
+    pub fn playing(&self, id: u16) -> bool { self.list.iter().any(|t| t.id == id && t.handle != 0) }
 
     /// `SoundTrigger_Update`, once per frame. Killed objects (`obj+0xfe` bit 0 →
     /// `control_delete_object` [M 0x1336f8:72-89]) leave the list.

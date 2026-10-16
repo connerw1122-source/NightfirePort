@@ -138,6 +138,11 @@ fn the_quit_fade_is_fademusic_only() {
     // C_GCPAUSE 0x204408:150 (restart AND quit arms), P_ENDMISSION 0x216618:28, P_MPCONFIRM
     // 0x20ec00:155: SFXFadeDown(1) — the music fades over 2 s, nothing else sounds.
     let mut fe = FrontEnd::new();
+    // menu-audio-state: the constructor's boot pair now rides the music channel too — drain it
+    // and assert the fade adds nothing but the fade.
+    let boot: Vec<MusicCmd> = fe.music.take_cmds();
+    assert!(boot.iter().all(|c| matches!(c, MusicCmd::StopJingles | MusicCmd::StartJingle(_))),
+        "the boot open queues only the pair");
     fe.music.quit_fade();
     assert_eq!(fe.music.take_cmds(), vec![MusicCmd::FadeDownMusic]);
 }

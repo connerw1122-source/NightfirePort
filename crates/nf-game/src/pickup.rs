@@ -306,8 +306,14 @@ impl Pickup {
         let c = self.centre();
         let r = self.bounds.radius + 1.1;
         let d2 = (c[0] - pos[0]).powi(2) + (c[1] - pos[1]).powi(2) + (c[2] - pos[2]).powi(2);
-        // The LOS ray from the player's world-sphere centre to the pickup's centre. A resting pickup whose
-        // model centre y ≈ 0 (live: the 07000001 guard drop of weapon 0xe rests with its centre ON the
+        // The game gates the ray on the distance: `fVar13 = Vec_SqDist3D(pickup+0x80, player+0x30) < fVar12 &&`
+        // short-circuits BEFORE `Collide_LineOfSight` [M 0x18e148:210-214] — a far pickup never casts. The
+        // port cast the take-ray for every pickup every tick (the 07000006 cut-scene profile: update_pickups
+        // 1.0 ms/tick on the level's 11 pickups — the sim tick's largest scoped block — vs 0.001 after), so
+        // the reordering is the game's own order, not an approximation. Same result: the LOS only decided
+        // when the distance gate passes.
+        if d2 >= r * r { return false; }
+        // A resting pickup whose model centre y ≈ 0 (live: the 07000001 guard drop of weapon 0xe rests with its centre ON the
         // floor [L, fix_player2_live take-test log]) ends the ray ON the floor triangle; the port's
         // `segment` counts t = 1.0 as a hit, which refused every such drop forever (the "some drops never
         // pick up" playtest symptom). The game takes floor-resting drops, so its `Collide_LineOfSight`
@@ -324,7 +330,7 @@ impl Pickup {
             eprintln!("[take-test] weapon {:#x} kind {} state {}: bond ({:.3}, {:.3}, {:.3}) centre ({:.3}, {:.3}, {:.3}) dist {:.3} vs r {:.3} los {}",
                 self.weapon, self.kind, self.state, pos[0], pos[1], pos[2], c[0], c[1], c[2], d2.sqrt(), r, los);
         }
-        d2 < r * r && los
+        los
     }
 }
 

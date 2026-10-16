@@ -589,6 +589,17 @@ impl Route {
                 self.target = self.creep.point(self.creep.step);
                 return (follow::MOVING, reached);
             }
+            // [M 0x15a148 LinkCreep_Decrement] at creep step 0 the game does NOT hard-block: it calls
+            // `AINetwork_SetupNextNode(-1)` — the route steps back one node and `LinkCreep_Calc`
+            // re-creeps it, so the drone re-approaches (root motion slides it past grazed corners
+            // while the creep holds). Only an index already past the start (`route+0x80 < 0`) fails,
+            // and that is what surfaces as the follow's 9/0xc through the route+2 latch [M 0x15b110].
+            // (The game's `LinkCreep_Calc(.., back = dir < 1)` flag's backward-creep half is not
+            // modelled — the port re-creeps the stepped-back node forward; *suggested*.)
+            if self.creep.step == 0 && self.index > 0 {
+                self.next_node(net, -1);
+                return (follow::MOVING, reached);
+            }
             return (follow::BLOCKED, reached);
         }
         // `LinkCreep_Increment`.
