@@ -21,3 +21,8 @@ invincible unless the game makes it so.
 
 ---
 claimed-by: sandbox6 at 2026-10-16T13:36Z
+
+---
+## Report (done, 2026-10-16T15:00Z)
+
+Closed by the driver: the report is on `s/inert-guards-02` (docs/reports/inert-guards-02.md); the worker didn't run finish.sh.
