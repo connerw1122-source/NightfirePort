@@ -16706,3 +16706,10 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+- 2026-10-16 s/guard-blast-smoke (task 727): guards ignore grenades and smoke entirely
+  (uncited-audit gap 2). Plan: port the blast-stagger state DSTATE 0x54 and the smoke
+  states 0x7B-0x7D [M] — entry from nearby explosion / stun / smoke cloud, the anims,
+  the timings, exit back to combat. Read docs/systems/uncited-audit.md gap section first.
+  Tests on 07000005: frag a few units from a guard staggers him the game's way; smoke
+  grenade puts guards inside the cloud into the smoke state until it clears. Branch
+  created from origin/master 170bcf01.
