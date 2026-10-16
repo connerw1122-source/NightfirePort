@@ -89,9 +89,16 @@ The Effect layer's casing attachment pool sizes to `KEEP_MAX` (128) instead of `
 
 ## Live checks for the main agent
 
-None required. The post-landing behaviour is fully determined from the code/disassembly (the class
-table is data, read from the ELF). The keep rest itself is a PC-port extra — the game has no ground
-truth for it by design ([S], flagged in the module docs).
+None required for the sim (the post-landing behaviour is fully determined from the code/disassembly;
+the class table is data, read from the ELF). The keep rest itself is a PC-port extra — the game has
+no ground truth for it by design ([S], flagged in the module docs).
+
+**Render check** (the rest attitude is visual work): place Bond at the 07000005 start
+(`--bond` spot: the level's default start position), fire ~20 rounds with
+`sim.drones.casings.set_keep(64)`, then look down at the feet: the shells should rest near the
+landing plane (≈ foot level), roughly horizontal with varied yaws (deterministic per position),
+one per shot, none sinking. The flying shells' look is unchanged (the in-flight reconstruction
+path is untouched).
 
 ## What's left
 

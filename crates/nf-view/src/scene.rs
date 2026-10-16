@@ -4689,6 +4689,16 @@ fn tracer_matrix(b: &nf_game::bullet::Bullet) -> Mat4 {
 /// tracer's +Z euler convention for it [S — the game eulers the weapon-local dir through the view-model basis;
 /// the port's eject origin/basis is already a documented stand-in, docs/atlas/effect.md].
 fn casing_matrix(c: &nf_game::casing::Casing) -> Mat4 {
+    // casings-persist: a rested casing (the "Keep shell casings" option [S]) has no velocity left —
+    // the in-flight reconstruction degenerates to pitch −π/2 (every shell planted nose-down), so a
+    // rest draws with its own settled attitude: roughly horizontal (the eject-reconstruction maps
+    // the euler's forward onto the shell's long axis), deterministically yawed by position so a
+    // pile of kept shells doesn't all lie identically. No RNG (determinism); the main agent's
+    // render check owns the look.
+    if c.resting {
+        let yaw = c.pos[0] * 0.7 + c.pos[2] * 1.3;
+        return nf_formats::placement::object_matrix([0.12, yaw, 0.08], c.pos);
+    }
     let g = 9.8 * (1.0 / 60.0) * (1.0 / 60.0);
     let v0 = [c.vel[0], c.vel[1] + g * c.age, c.vel[2]];
     let horiz = (v0[0] * v0[0] + v0[2] * v0[2]).sqrt();
