@@ -16706,3 +16706,10 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+- 2026-10-16 s/mp-map-objects (task 744): MP maps' dynamic objects — playtest 1016-1355: Gondola is
+  missing the actual gondolas; remote tanks and helicopters that should be pilotable are not.
+  Plan: census every MP map's dynamic objects from disc placements [D] (movers, usables, the
+  remote tank/helicopter), port movement + the pilot/remote-vehicle control mechanics from the
+  decompile [M]. Drawing is the main agent's; sim and controls are mine. Tests per map: gondolas
+  move on their routes; a player can take control of a remote tank/helicopter and drive it.
+  Branch created from origin/master f09f3c6c.
