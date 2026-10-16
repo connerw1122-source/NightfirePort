@@ -55,3 +55,7 @@ claimed-by: sandbox3 at 2026-10-16T21:37Z
 ## Report (done, 2026-10-16T22:32Z)
 
 Closed by the driver: the report is on `s/script-negative-delay` (docs/reports/script-negative-delay.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T23:26Z)
+
