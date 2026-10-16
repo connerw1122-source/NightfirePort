@@ -23,3 +23,7 @@ the game's formula, and that the limits clamp. Report any convention flip found 
 
 ---
 claimed-by: sandbox4 at 2026-10-16T10:25Z
+
+---
+## Report (done, 2026-10-16T11:34Z)
+
