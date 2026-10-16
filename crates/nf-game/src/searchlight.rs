@@ -120,20 +120,26 @@ fn dot3(a: V3, b: V3) -> f32 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2] }
 fn cross3(a: V3, b: V3) -> V3 { [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]] }
 
 /// `Mat_Align2Dir` (0x1df2a8) [M; cross order pinned against the live beam matrix 016e0130, L]:
-/// row 2 = normalize(dir), row 0 = normalize(cross(up, row2)), row 1 = normalize(cross(row2, row0)). The
-/// fallback replaces `up` when |up·row2| > 0.999; a degenerate cross leaves the last good axis.
+/// row 2 = normalize(dir), row 0 = normalize(cross(up, row2)), row 1 = normalize(cross(row2, row0)).
+/// The fallback replaces `up` when |up·row2| > 0x3f7fbe77 (0.998993 — `lui at,3f7f; ori at,at,be77`
+/// [M 0x1df2a8 disasm 0x1df320-0x1df354], not 0.999). A degenerate vector ZEROES the row — the
+/// game's sqrt(x)==0 arms store 0.0 to all three components [M 0x1df2a8 disasm 0x1df2d8-0x1df310 /
+/// 0x1df3a8-0x1df3e0: swc1 f3(=0.0) to the vector's slots] — the old [1,0,0]/[0,1,0] stand-ins
+/// snapped the beam basis onto the world axes where the game's own math keeps the (exact-FP)
+/// cross direction sound and continuous, the playtest's "flip on its side". Normalization multiplies
+/// by the reciprocal [M 0x1df2f4/0x1df3c4: div.s f0,1.0,len; the VMUL], it does not divide.
 pub fn align2dir(dir: V3, up: V3, fallback: V3) -> Mat4 {
     let len = dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2];
-    let z = if len == 0.0 { [0.0, 0.0, 1.0] } else { [dir[0] / len.sqrt(), dir[1] / len.sqrt(), dir[2] / len.sqrt()] };
+    let z = if len == 0.0 { [0.0, 0.0, 0.0] } else { let r = 1.0 / len.sqrt(); [dir[0] * r, dir[1] * r, dir[2] * r] };
     let ulen = up[0] * up[0] + up[1] * up[1] + up[2] * up[2];
-    let un = if ulen == 0.0 { [0.0, 1.0, 0.0] } else { [up[0] / ulen.sqrt(), up[1] / ulen.sqrt(), up[2] / ulen.sqrt()] };
-    let u = if (dot3(un, z)).abs() > 0.999 { fallback } else { un };
+    let un = if ulen == 0.0 { [0.0, 0.0, 0.0] } else { let r = 1.0 / ulen.sqrt(); [up[0] * r, up[1] * r, up[2] * r] };
+    let u = if dot3(un, z).abs() > f32::from_bits(0x3f7f_be77) { fallback } else { un };
     let r0 = cross3(u, z);
     let r0l = r0[0] * r0[0] + r0[1] * r0[1] + r0[2] * r0[2];
-    let r0 = if r0l < 1e-20 { [1.0, 0.0, 0.0] } else { [r0[0] / r0l.sqrt(), r0[1] / r0l.sqrt(), r0[2] / r0l.sqrt()] };
+    let r0 = if r0l == 0.0 { [0.0, 0.0, 0.0] } else { let r = 1.0 / r0l.sqrt(); [r0[0] * r, r0[1] * r, r0[2] * r] };
     let r1 = cross3(z, r0);
     let r1l = r1[0] * r1[0] + r1[1] * r1[1] + r1[2] * r1[2];
-    let r1 = if r1l < 1e-20 { [0.0, 1.0, 0.0] } else { [r1[0] / r1l.sqrt(), r1[1] / r1l.sqrt(), r1[2] / r1l.sqrt()] };
+    let r1 = if r1l == 0.0 { [0.0, 0.0, 0.0] } else { let r = 1.0 / r1l.sqrt(); [r1[0] * r, r1[1] * r, r1[2] * r] };
     [[r0[0], r0[1], r0[2], 0.0], [r1[0], r1[1], r1[2], 0.0], [z[0], z[1], z[2], 0.0], [0.0, 0.0, 0.0, 0.0]]
     // Row 3 stays zeroed as in the live matrix [L]: `Mat_Align2Dir` writes only the rotation rows and
     // `Mat_SetTrans` the translation's x/y/z — the w slot keeps its cleared value. The port's `transform`
