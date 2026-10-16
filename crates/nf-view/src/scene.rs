@@ -534,6 +534,10 @@ pub struct Sim {
     /// aim-bit arm] and this latch with it. Port-only input ([S] the playtest request); the
     /// game's pad zoom has no wheel and keeps the plain ramp.
     pub zoom_wheel: bool,
+    /// nis-event9-cnis: the C_NIS_Handler route's booted cut-scene script (`FMVScript` [M
+    /// `C_NIS_Handler` 0x205f10:71,87]) — the hash `nis_page_boot` started, `None` when the
+    /// page hasn't booted one. The msg-0x4b gate re-checks `Script_IsPlaying(FMVScript)`.
+    pub fmv_script: Option<u32>,
 }
 
 /// A status-pane message (`Text_AddMsg` 0x1b0c30's `TXT_MSG` node): the bound text, its remaining ticks,
@@ -2747,6 +2751,48 @@ impl Sim {
         let look_yaw = d[0].atan2(d[2]);
         let look_pitch = -(d[1]).atan2(horiz);
         Some((cam, look_yaw, look_pitch, 1.0))
+    }
+
+    /// nis-event9-cnis: the `C_NIS_Handler` route's boot — the mission-driven cut-scene entry the
+    /// SP placements don't cover (`C_NIS_Handler` 0x205f10, the IN-GAME NIS page 0x1000003e's
+    /// handler [M `Handler_HandleMessage` 0x2029e0:223-227]). The game's msg-0x4b tail [M
+    /// 0x205f10:92-112]: when the page's bound FMV script is NOT already playing, resolve the
+    /// current level's script hash (the page's list item value, `Menu_SendMessage(msg 0x35)` —
+    /// only `List_SendMessage` 0x2196e8:463 answers 0x35), `LoadableLoad` it if the isLoadable
+    /// table names a pack, then `Script_Load` + `Player_Disable(glb_players, 0)` + `Script_Play`
+    /// + `Camera_PushStates` + `Camera_Enable(7,0,0,0)`; `show_frame_count = 1` [M :88] is the
+    /// debug frame counter the port doesn't draw.
+    ///
+    /// Port mapping: the pack streaming is the load path's own type-0xC pass (`isLoadable`/
+    /// `LoadableLoad` — the pack's scripts already sit in `drones.scripts.lib`); `Script_Load` +
+    /// `Script_Play(…, 0)` is the once-mode script player (`Scripts::spawn_once`, identity matrix
+    /// [S] — the game's Script_Load carries no placement); `Player_Disable` rides the same
+    /// `player_events` hand-off event 4 uses; `Camera_Enable(7,0,0,0)` selects the cut-scene
+    /// viewer whose view the script's kind-4 camera stream drives — the port's single
+    /// `script_camera()` path. The route's `msg 0x51` bindings (≈70 `Menu_SendMessage(0x10,
+    /// control, hash)` pairs [M 0x205f10:7-70]) set runtime M_CONTROL heap pointers' values — the
+    /// disc census found NO authored def for page 0x1000003e anywhere on NTSC-U (the census test),
+    /// so no level resolves a binding today: the boot takes the resolved hash as its argument.
+    pub fn nis_page_boot(&mut self, script_hash: u32) -> bool {
+        // The FMVScript gate [M 0x205f10:92 — `Script_IsPlaying(FMVScript) == 0`]: the page
+        // re-shown while its cut-scene runs is a no-op.
+        if let Some(h) = self.fmv_script {
+            if self.drones.scripts.players.iter().any(|p| {
+                p.scripts[0] == h && p.state == 2 && p.info[p.cur].as_ref().is_some_and(nf_game::nis::Script::playing)
+            }) {
+                return false;
+            }
+            self.fmv_script = None;
+        }
+        // `hashtable_getitem(hash)` [M 0x205f10:104-106] — the port's lib; a hash neither the
+        // level nor its packs carry (the game's `Script_Load` would have nothing to load).
+        if !self.drones.scripts.lib.contains_key(&script_hash) { return false; }
+        let ident = [[1.0f32, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        self.drones.scripts.spawn_once(self.drones.scripts.players.len(), script_hash, ident);
+        self.fmv_script = Some(script_hash);
+        // `Player_Disable(glb_players, 0)` [M 0x205f10:102] — the same hand-off event 4 rides.
+        self.drones.player_events.push(nf_game::nis::Request::PlayerDisable);
+        true
     }
 
     /// The clip slot the held weapon reads and writes: the BASE's when the record is a twin (+0x05
@@ -6318,6 +6364,7 @@ impl Scene {
                 view_aspect: 4.0 / 3.0,
                 zoom_wheel: false,
                 laser_sight: None,
+                fmv_script: None,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
