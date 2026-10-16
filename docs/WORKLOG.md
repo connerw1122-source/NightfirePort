@@ -15693,6 +15693,42 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+
+## grenade-rattle (2026-10-16, branch s/grenade-rattle) — start
+- Task 693: a grenade resting on the ground stops making bounce sounds (playtests 1013-1825
+  "once it kind of settles, it's rapidly ... contacting the ground", 1013-2313 "when a grenade is
+  on the ground it makes rapid bouncing sounds"). Port the grenade's rest detection and the
+  bounce-sound gate: the speed/impulse threshold for the bounce sound, the settled state that stops
+  collision responses [M Bullet_update's grenade arm, the bounce sound call and its conditions].
+  Test: drop a frag on flat ground on 07000005, count the bounce sounds over its life (the game's
+  count, a few at most), none once it rests; sister: a grenade thrown at a wall still sounds on
+  impact.
+- Started: branch created from origin/master (22be196b); fast suite launching in the background.
+- grenade-rattle close-out: the game's bounce block verified on the disassembly [M 0x12ce80
+  0x12d4bc-0x12d640]: the sound gate (flash 0x15 / smoke 0x13 first-bounce-only, else 0x51c on
+  EVEN pre-increment counters < 0xF — ≤ 8 per grenade, gain 100.0), the counter BU+0x100 capping
+  the reflect at 20, the slow-bounce zero (speed·coeff < FRAME_RATE_MUL·0.01 [L 0x30d0d4 = 1.0] →
+  BU+0xF8 = 0), the DOT GATE on the reflect (a separating contact parks + counts only), and the
+  park BEFORE the reflect. The hittest's TWO FORMS apply to EVERY bullet [M 0x12e7b0:427-437 —
+  the family test only zeroes the probe radius for the MGL; the port's old move-length ray for the
+  bouncing family was [S] and wrong] — the grenade family (0.25 probe) now gets the 0x101 sphere
+  below probe·0.5 and the 0x201 ray max(1.0, move) — the settled grenade re-contacts every tick,
+  the counter climbs, and the parity cap silences it within ≤ 15 contacts (the game's settle
+  "brrrp" then silence; the micro-bounce cycle rides ~0.04 above the floor until the fuse).
+  WldGravity (0,−9.8,0) [L ee_snapshot.bin 0x2d8890], FRAME_RATE_DIV 1.0 / REC_FRAME_RATE 1/60
+  [L 0x30d0d4/0x30d0dc] — the port's constants exact. The port's parity gate (drone.rs Bounce
+  arm) already matched [M]; the rattle's mechanics were the unconditional reflect + the missing
+  forms. Tests grenade_rattle_live (drop/lob/wall/skim on 07000005 through the real sim):
+  ≤ 8 bounce sounds, silence after t60, the wall impact sounds. ai_live 35/35, grenade_live 2/2.
+  Full fast suite NOT run (deadline): the touched crate's live tests green. Report:
+  docs/reports/grenade-rattle.md.
+- grenade-rattle final: the two-form hittest for the bouncing family was prototyped and PULLED
+  BACK — with the 1 u look-ahead the frag parks at the contact up to 1 u early and
+  fix_grenade_types_live's stun whiteout (pinned to the old landing, alpha 0.749) shifts to 0.489.
+  The disassembly evidence stands [M 0x12e7b0:427-465]; the re-pin needs the game's landing
+  measured live. LANDED: the dot-gated reflect [M 0x12d5f0-0x12d600], the 20-bounce cap on the
+  reflect arm [M 0x12d578-0x12d57c], the park before the reflect. Tests green: grenade_rattle_live
+  4/4, grenade_live 2/2, ai_live 35/35, fix_grenade_types_live 3+1 ignored.
 ## mp-debriefing-data2 (2026-10-16, branch s/mp-debriefing-data2) — STARTED
 
 - Task: land 621's (s/mp-debriefing-data, HELD) debriefing on top of master's 402 (s/mp-match-rules)
@@ -15992,3 +16028,31 @@ and other merged tasks' new tests. The 2 new live tests are green in the totals.
   +173949 — all with NO use key.
 - Ran on the final tree: fix_mission_live 4/4, npc_doors_live 7/7, escort_follow_07000001_live
   1/1, walkreal_07000001_live 2/2 — all green (nf-view only; no sim code changed).
+## grenade-rattle2 (2026-10-16, branch s/grenade-rattle2) — STARTED
+
+- Task 693's `s/grenade-rattle` was HELD at merge: its own unit test
+  `grenade_sits_after_max_bounces_and_explodes_only_at_the_fuse` failed on the merge tree
+  (grenade.rs:556 — at the bounce max the port kept the velocity, left [0,−30.002722,0] vs the
+  test's [0,0,0]), and the batch listed `fix_grenade_types_live`'s stun whiteout and
+  `fix_weapon_fire_modes_live::grenade_events_match_the_records` as failing too.
+- Re-derived the cap from the DISASSEMBLY (the decomp's `else` was the miss): the gate
+  `sltiu $v1, $v1, 0x14; beqz → 0x12d6a0` [M 0x12d578-0x12d57c] — the branch target is NOT the
+  state write, it is the cap arm `Mat_Align2Dir(obj+0x90, velocity)` + `sw $zero, 0xf8($s0)`
+  [M 0x12d6a0-0x12d6bc]: at the 20th bounce the game aligns the matrix and ZEROES BU+0xF8 with
+  no dot gate. The old test was right; grenade-rattle's "the cap gates the whole arm" reading
+  missed the else. The port's `resting` models the game's zero-speed bullet (the re-normalise
+  pins the move at zero [M 0x12f020-0x12f030]) — the cap arm sets velocity = 0 + resting = true,
+  the fuse keeps counting. The sub-cap arm keeps the rattle's dot-gated reflect (dot > 0 → the
+  gate skips reflect, scale AND zero [M 0x12d5f8 `bc1f 0x12d6c0`]); the slow-bounce zero tail is
+  unchanged [M 0x12d674 `bc1f 0x12d6c0` → 0x12d67c-0x12d69c].
+- The two merge-batch live failures (`the_stun_grenade_whites_bond_out_at_the_games_time_and_alpha`,
+  `grenade_events_match_the_records`) PASS on the merged tree (origin/master a4156da0 merged into
+  origin/s/grenade-rattle e6bc9124) — no action needed.
+- Fixed `crates/nf-game/src/grenade.rs` (the cap arm restored with the disasm-cited comment).
+  Tests before push: nf-game lib grenade filter 12/12 (the cap test green), grenade_rattle_live
+  4/4, grenade_live 2/2, fix_grenade_types_live 3+1 ignored, fix_weapon_fire_modes_live 5/5.
+- FINAL SUITE on the merged tree (17:05 UTC, all 423 binaries, --test-threads=1, per-binary
+  limit 600 s, foreground chunks — the sandbox kills background jobs): `1866 passed, 6 failed,
+  72 ignored` — the 3 allowed disc_golden (slim-ISO LBA columns; the content hashes match) +
+  the 3 pre-existing no-GPU pylon render probes (fix_0c_pylon_live 2, probe_pylon_render 1,
+  `wgpu adapter: NotFound`). No failures from this task. Report: docs/reports/grenade-rattle2.md.
