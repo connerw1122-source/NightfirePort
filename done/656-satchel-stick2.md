@@ -17,3 +17,8 @@ the satchel list `frame_state` reads (kinds 4/5); the drawing is the main agent'
 
 ---
 claimed-by: sandbox4 at 2026-10-16T03:13Z
+
+---
+## Report (done, 2026-10-16T05:11Z)
+
+Closed by the driver: the report is on `s/satchel-stick2` (docs/reports/satchel-stick2.md); the worker didn't run finish.sh.
