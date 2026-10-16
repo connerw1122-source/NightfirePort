@@ -5474,9 +5474,58 @@ impl FrontEnd {
     /// [M P_MPDEBRIEFING 0x212198 msg 0x4c]. The level request itself stays the host's
     /// (`ResetMap_LevelToLoad(0x7000048)` — the front-end map the host already manages).
     pub fn open_mp_debriefing(&mut self, m: &nf_game::mp::MpMatch) {
+        let board = m.debriefing();
+        self.show_mp_debriefing(board);
+    }
+
+    /// mp-match-end: the handover's page half with an already-built board — the host cannot
+    /// borrow the match (it lives in the sim the front end replaces), so the board travels by
+    /// value from `Sim::take_mp_debrief_request`.
+    pub fn show_mp_debriefing(&mut self, board: nf_game::mp::debrief::MpDebriefing) {
         self.enter_page(Page::MpDebriefing);
         self.cursor = 0;
-        self.mp_debriefing = Some(m.debriefing());
+        self.mp_debriefing = Some(board);
+    }
+
+    /// mp-match-end: `Menu_RestoreMPSettings` 0x202848's port — the game memcpy's the pre-match
+    /// MPSettings backup (0x1dc bytes @0x2dec68) and the four PlayerSetting records (0x158 each)
+    /// back over the live state before C_MPDBG's Confirm reopens the scenario page
+    /// [M 0x217860:8-11]. The port's match never compacts its settings (`mp_confirm_start`
+    /// clones), but the front end that started it is GONE — the host builds a fresh one at the
+    /// handover — so the menu state is restored from the finished match's own settings copy:
+    /// the arena, the scenario, the limits (the time limit back to minutes [M the confirm's
+    /// ×0x3c inverse]), the weapon set, the radar and the friendly-fire choice, and the agents'
+    /// join records (the humans joined+ready with their codenames/teams/skins; the game's
+    /// per-agent PlayerSetting backup holds the same records [M the 0x158-byte rows]).
+    pub fn restore_mp_match(&mut self, s: &nf_game::mp::MpSettings) {
+        self.mp_level = s.level_code;
+        self.mp_scenario = s.scenario;
+        self.mp_scenario_row = MP_SCENARIO_ROWS.iter().position(|r| r.3 == s.scenario).unwrap_or(0);
+        self.mp_map_row = MP_MAP_ROWS.iter().position(|r| r.3 == s.level_code).unwrap_or(0);
+        self.mp_frag_limit = s.frag_limit;
+        self.mp_time_limit = if s.time_limit == -1 { -1 } else { s.time_limit / 60 };
+        self.mp_weapon_set = s.weapon_set;
+        self.mp_radar = s.radar;
+        self.mp_friendly_fire = s.friendly_fire;
+        for (i, slot) in self.mp_join.iter_mut().enumerate().take(4) {
+            let joined = (i as u32) < s.human_count;
+            slot.joined = joined;
+            slot.ready = joined;
+            slot.state = if joined { 5 } else { 0 };
+            slot.team = s.players[i].team as u32;
+            slot.skin = s.players[i].skin;
+            slot.codename = s.players[i].codename.clone();
+        }
+        // The bots: the enabled records are the match's bot slots, in slot order [M MP_Start
+        // 0x183a50:164's total = humans + bots; Menu_PrepareBots 0x1f94a0 compacts the enabled
+        // records into the settings' bot rows].
+        for (i, bot) in self.mp_bots.iter_mut().enumerate() {
+            let slot = s.human_count as usize + i;
+            bot.enabled = i < s.bot_count as usize;
+            if bot.enabled {
+                if let Some(p) = s.players.get(slot) { bot.character = p.skin; }
+            }
+        }
     }
 
     /// The debriefing's rows (up to 4, display order) [M P_MPDEBRIEFING 0x212198:131-219].

@@ -1844,6 +1844,18 @@ impl Sim {
         self.missile_cam.map(|c| (c.pos, c.dir))
     }
 
+    /// mp-match-end: the host's end-of-match poll — `MP_Update` 0x184bd0 case 4's handover
+    /// request (`MpGame::request_debriefing`, set at state 4→5 with the GameState+0x1C =
+    /// 0x40000033 navigation [M 0x184bd0:62-78]): taken once, it carries the finished match's
+    /// debriefing board (`MpMatch::debriefing`, P_MPDEBRIEFING 0x212198 msg 0x4c) and the
+    /// match's own settings (the game's pre-match MPSettings backup [M Menu_RestoreMPSettings
+    /// 0x202848] — the restore source, since the front end that started the match is gone).
+    pub fn take_mp_debrief_request(&mut self) -> Option<(nf_game::mp::debrief::MpDebriefing, nf_game::mp::MpSettings)> {
+        let m = self.mp.as_mut()?;
+        if !std::mem::take(&mut m.game.request_debriefing) { return None; }
+        Some((m.debriefing(), m.settings.clone()))
+    }
+
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
