@@ -2671,7 +2671,10 @@ impl Drone {
         let dy = [tv[0] - neck[0] * dn, tv[1] - neck[1] * dn, tv[2] - neck[2] * dn];
         let yaw = match unit(dy) {
             Some(to_y) if dy[0] * dy[0] + dy[1] * dy[1] + dy[2] * dy[2] >= 0.25 => {
-                let mut y = (fu[0] * to_y[0] + fu[1] * to_y[1] + fu[2] * to_y[2]).clamp(-1.0, 1.0).acos();
+                let mut y = (fu[0] * to_y[0] + fu[1] * to_y[1] + fu[2] * to_y[2]).clamp(-1.0, 1.0);
+                // G-046: the game measures the head-track angles with its own acosf [M AnimObjectHeadTrack
+                // 0x1bf618:189-281's two acos blocks → 0x232c48] — not host acos.
+                let mut y = crate::trig::acosf_libm(y);
                 let cf = cross(fu, to_y);
                 if cf[0] * neck[0] + cf[1] * neck[1] + cf[2] * neck[2] < 0.0 { y = -y; }
                 y
@@ -2687,7 +2690,9 @@ impl Drone {
                 if c < 0.0 {
                     0.0 // the behind skip: the measurement is skipped, the pitch stays 0
                 } else {
-                    let mut p = c.clamp(-1.0, 1.0).acos();
+                    let c = c.clamp(-1.0, 1.0);
+                    // G-046: the game's acosf [M 0x1bf618:192-236's pitch acos block → 0x232c48].
+                    let mut p = crate::trig::acosf_libm(c);
                     let cp = cross(fu, to_p);
                     if cp[0] * side[0] + cp[1] * side[1] + cp[2] * side[2] < 0.0 { p = -p; }
                     p

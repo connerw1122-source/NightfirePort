@@ -41,7 +41,10 @@ impl Ladder {
     pub fn create(p: &Placement, obj: Option<&MapObject>) -> Option<Ladder> {
         let o = obj?;
         let yaw = p.rotation[1];
-        let (s, c) = yaw.sin_cos();
+        // G-046: the object-matrix yaw rows are PS2Sinf-built [M the placement matrix; Control_BuildWorldSph
+        // 0x133070 consumes it] — the port's rebuild follows (nf-formats::placement::object_matrix already
+        // runs anim::sinf).
+        let (s, c) = (crate::trig::sinf(yaw), crate::trig::cosf(yaw));
         // row-vector matrix rows: row0 = (cos,0,−sin), row2 = (sin,0,cos) [M placement::object_matrix].
         let centre = [
             p.translation[0] + o.centre[0] * c + o.centre[2] * s,
