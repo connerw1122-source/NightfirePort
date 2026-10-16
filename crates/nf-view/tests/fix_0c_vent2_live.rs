@@ -131,10 +131,7 @@ fn from_the_duct_top_the_hole_drops_bond_onto_the_balcony() {
     for _ in 0..120 { sim.step_bond(Input { forward: 1.0, ..Default::default() }, false, false, false); }
     let p2 = sim.bond.pos;
     assert!(p2[2] < p[2], "he walks south along the balcony (from z {:.2} to {:.2})", p[2], p2[2]);
-    // hatch-crouch-0c: post-fix he rides the balcony's south pier ramp grounded (the pick-contact
-    // arm of the grounded rule [M Player_FeetOnPoint 0x194188:176-185]) instead of bouncing at
-    // its base — the ride tops at the ramp root over the 16.49 landing (y ~16.55).
-    assert!(p2[1] > 13.5 && p2[1] < 16.6, "he stays on the walkway structure, at y {:.2}", p2[1]);
+    assert!(p2[1] > 13.5 && p2[1] < 16.5, "he stays on the balcony level, at y {:.2}", p2[1]);
     eprintln!("landed at tick {tick} on ({:.2}, {:.2}, {:.2}); walked to ({:.2}, {:.2}, {:.2})",
         p[0], p[1], p[2], p2[0], p2[1], p2[2]);
 }

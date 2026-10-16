@@ -1130,17 +1130,7 @@ impl Bond {
             walkable = fw;
             floor = world.segment_hit(self.pos, [self.pos[0], self.pos[1] - ray, self.pos[2]]);
         }
-        // `Player_FeetOnPoint` 0x194188:176-185 + `Player_CollisionHandler` 0x1949a8:78-82: the
-        // grounded flag (`obj+0x60 |= 8`) is set when the capsule's pick hit list is NON-EMPTY
-        // (`HITTEST+0x9c != 0` — the capsule touching anything grounds, step faces included) OR
-        // the floor ray lands within `cc + 0.1` [M 0x194188:106]. The port's `walkable` alone
-        // missed the first arm: riding a step corner the push lifts the capsule past the ray
-        // tolerance (crouch rest 0.646 vs the 0.55+0.1 gate) and Bond bounced ungrounded instead
-        // of riding the corner up — the 0700000c balcony's south steps (playtest "can't crouch
-        // through"). A nonzero accumulated push is the port's pick-hit signal (every contact
-        // within the radius resolves to `r − dist` of push).
-        self.grounded = push != [0.0; 3]
-            || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
+        self.grounded = walkable || floor.is_some_and(|(t, _)| t * ray - 0.1 <= self.cc);
         if let Some((_, n)) = floor { self.floor_ny = n[1]; } else if walkable { self.floor_ny = 1.0; }
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }
