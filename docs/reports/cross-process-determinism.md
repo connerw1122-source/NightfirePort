@@ -118,4 +118,15 @@ in-process guard covers this tree regardless.
 
 ## Suite (final tree)
 
-(see the WORKLOG entry for the exact totals recorded at push time)
+The full fast suite (`tools/test/suite.py`) on this branch (merged with `origin/master`,
+commit 79df4d77), run to completion in the worker sandbox:
+
+```
+1838 passed, 6 failed, 72 ignored  (41 min)
+```
+
+The 6: the 3 allowed `disc_golden` slim-ISO failures, plus `probe_pylon_render::
+probe_render_pylon_only` and the 2 `fix_0c_pylon_live` pylon-render tests — the same two
+`fix_0c_pylon_live` failures were already present in the first session's suite run on the
+unmodified merged tree (branch = origin/master + one docs commit), before any of this task's code
+changes existed; they are pre-existing on master here and out of this task's scope.
