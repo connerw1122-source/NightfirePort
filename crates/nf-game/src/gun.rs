@@ -474,6 +474,18 @@ impl Gun {
     /// The fire script ended: state 9 → 0, the idle script re-queued [M 0x1a2e38 case 9:449-456].
     pub fn end_fire_state(&mut self) { self.fire_state = false; self.latch = false; }
 
+    /// `Player_ReloadAmmoType(player, 1)` [M 0x1a2e38 case 0xc :523]: one round from the pool into
+    /// the clip — the refill the grenade family's 0xb/0xc chain runs at the +0xB4 script's stop,
+    /// BEFORE the draw (remote-mine-detonate). The same move reload_tick's state 6 makes; here it
+    /// is the single-round form the game's call performs. False when the pool is dry or the clip
+    /// is full (the game's failure arm runs Player_HandleHasNoAmmo).
+    pub fn reload_one(&mut self, p: GunParams) -> bool {
+        if self.clip >= p.clip || self.spare == 0 { return false; }
+        self.clip += 1;
+        self.spare -= 1;
+        true
+    }
+
     /// `Player_SetFiringAnim` (0x1a3c70): which first-person fire script this shot queues, in the game's
     /// order —
     /// 1. flag 0x1000 (reload-anim-from-6) or base weapon 0x11: the LAST round (`clip < 1`, read after the

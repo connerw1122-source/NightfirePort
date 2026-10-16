@@ -453,12 +453,16 @@ fn mouse_rows_hover_and_click_the_new_pages() {
     assert_eq!(fe.page, Page::MpJoin);
     assert!(fe.mp_hosting);
     assert_eq!(fake.borrow().port, Some(27420));
-    // The join side: the address row's click dials.
+    // The join side: the address row's click dials. The drawn address line is the page's one row
+    // — the value label at (200,250,240×18), middle y 259 [M menu_overlay's MpHost/MpNetJoin arm;
+    // menu-mouse-parity moved the hit row from the stale 160 to the drawn position].
     assert!(fe.action(Action::Back)); // leave the host lobby
     fe.cursor = 2;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.page, Page::MpNetJoin);
     for c in "127.0.0.1:27420".chars() { fe.mp_net_type(c); }
-    assert!(fe.mouse_click(320.0, 168.0), "the address row's click confirms");
+    assert!(!fe.mouse_click(320.0, 168.0), "sister: a click off the drawn row does nothing");
+    assert_eq!(fe.mp_net_state, MpNetState::Idle, "the off-row click did not dial");
+    assert!(fe.mouse_click(320.0, 259.0), "the address row's click confirms");
     assert_eq!(fe.mp_net_state, MpNetState::Dialing);
 }

@@ -126,8 +126,11 @@ Deviations from the couch flow (all [S], all for the report):
 ## 4. Mouse support (the PC-mouse pattern)
 
 `mouse_move` hovers via `list_rows_y()`; the new pages add their hit rows (640×480 space, the draw
-contract): MpMode 143/175/207, MpHost 143/175, MpNetJoin 160 [S — port-only pages, the y's are
-these getters']. `mouse_click` treats every MpMode row, the MpHost Start row and the MpNetJoin
+contract): MpMode 138/164/190, MpHost 138/164, MpNetJoin 251 — the pages draw through
+`page_rows_no_head`, whose rows sit at y 140+26k, and the Join page's one drawn row is the address
+value label at (200,250,240×18), middle y 259 [M menu_overlay's MpMode / MpHost / MpNetJoin arms;
+menu-mouse-parity moved the hits onto the drawn rows — the old 143/175/207/160 predate the
+stand-in draw]. `mouse_click` treats every MpMode row, the MpHost Start row and the MpNetJoin
 address row as action rows (a click confirms); the MpHost port row keeps the ◀ ▶ value columns
 (x 340..400 left, 400..600 right — the option pages' own columns [M mouse_click's value columns]).
 

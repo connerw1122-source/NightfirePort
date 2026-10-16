@@ -15187,3 +15187,196 @@ menu-audio-state (2026-10-16)
   fix_guard_weapons_live 3x3 hit-rate/damage matrix. Plan: branch master + merge 664, reproduce the
   4/4 standalone failures, bisect which part of 664 shifts the fire streams (first-shot delay vs
   aim-raise gate vs RNG draw order), port it so the matrix stays green on origin/master + this branch.
+## pickups-08 (2026-10-16, branch s/pickups-08) — start
+- Task: the briefcase and the rocket launcher in the 07000008 safe room refuse pickup in playtests
+  1012-2337 / 1013-1758. Find why each refuses (placement types and pickup kinds [M Pickup_Create
+  0x18dda0, Pickup_Handler 0x18e650], the use/collect radius, any gate — script channel, safe state,
+  Q-Laser cut, gadget pickup status), fix the sim so walking or using the item collects it exactly as
+  the game does, with headless tests on 07000008 (collect both from Bond positions taken from the
+  placements; check the inventory and the HUD message; sister: out of range does nothing).
+- Started: branch created from origin/master (ad761677); fast suite running in the background.
+
+## pickups-08 (2026-10-16, branch s/pickups-08) — the 07000008 safe room's briefcase and rocket launcher
+- The take query decoded to the end (fix-safe08b's open item, all ACTION.ELF): `Pickup_Update`
+  0x18e148:213-214 → `Collide_LineOfSight` 0x1edf50(from = the player's world-sphere centre, to =
+  the pickup's, cel = the player's obj+0x20, exclude = the pickup obj, 0, 0x721); the wrapper's
+  disassembly (0x1edf50-0x1edf98) forwards `char = 0` — so `Collide_RayIntersect` 0x1ec690 tests
+  EVERY candidate node (dynamic-owned included) — query word `0x721|4 = 0x725` (HITTEST+0x98) and
+  mask 0x10 (HITTEST+0x9A), which arms the per-triangle `Collide_Filter` 0x1ed888 inside
+  `Intersect_RayGeom` 0x10a8c8 (same 0xd/0xe rule as `Collide_Intersect`'s tail). `Collide_PickObj`
+  0x1eae80 keeps a dynamic object unless obj+0xF0 & (0x20 | 0x1000) or its class byte (+0xff) is
+  0x02/0x03/0x05/0x11/0x12; the SS door's class is 0x25 [M SS_Create 0x1a9c58:52] and the safe's
+  shells carry glist flags 0 [D the level's records] — every blocker of the safe-room take rays is
+  tested by the game too. A surface-6 hit survives every filter: the doorway take at the
+  body-sphere facings that graze the safe's own shell refuses in the game exactly like the port
+  (the origin is the yaw-rotated body sphere [L M_CONTROL+0x80]); the player collects by walking
+  in. No take-path change needed — the port matches the query.
+- THE FIX (a real one): the script-entity drain's fresh-push arm skipped `Pickup_Create`'s
+  level-conditional rounds override [M 0x18dda0:116-118, applied inside the create so every arm
+  gets it] — 07000008's SafePickUps rocket (the script word says 5 [D 0x060009E2 s1]) held 5
+  rounds, so the take credited a phantom carried round (the clip is 4). Now
+  `create_rounds_override(d.level, sp.id, sp.rounds)` in `drone.rs`'s drain; the reserved-slot
+  path already applied it at reservation build (scene.rs `script_pickup_reservations`).
+- Tests `crates/nf-view/tests/pickups08_live.rs` (all through `nf_view::load` + `Sim::step_bond`):
+  the spawns sit at the script keys with the 4-round override; both items collect from the doorway
+  (inventory owned/clip/carried math, ch 0x4A, the HUD 0x200000D picked-up message, no auto-switch
+  [M 0x1a6eb0], the gadget-recharge slots excluded); the walk-through collects both; the
+  out-of-range sister does nothing; the glist-flags probe (NF_PICKUPS08_FLAGS=1) documents the
+  0x20/0x1000 evidence. 5/5 green after the fix.
+
+## scorpion-modes-12 (2026-10-16, branch s/scorpion-modes-12)
+- Branch created from origin/master (ad761677). Task: the Scorpion launcher's fire modes — the mode
+  switch (B / the fire-mode action [M Player_Weapon 0x1a24c8]) between the dumb rocket and the
+  heat-seeker (weapon records 0x2e/0x2f [L weapon_data]), and the homing behaviour (Bullet_homing
+  0x12f358 for +0x6C & 0x20000 — target acquisition, turn rate, re-target). Playtest 1012-1723
+  (07000012): "the scorpion launcher heat seeker mode doesn't work". Tests on 07000012 with a guard
+  target: a heat-seeker fired off-axis curves into the guard; a dumb rocket flies straight; the HUD
+  mode label value; sister: homing never locks onto Bond.
+- scorpion-modes-12 close-out: the AT-600 Scorpion's mode chain verified end-to-end on 07000012
+  through the real input path (Sim::step_bond only) — the disc record pins [L: 0x2E 'Heatseeker'
+  +0x6C = 0x32200 with the 0x20000 homing bit + the 0x200 quarter-speed, 0x2F 'Unguided' 0x1a200;
+  the twin +1/−1; BOTH records carry the same HUD name label 0x05000048 so the label the HUD reads
+  is stable across the swap; count 1 → ○ is the twin switch], the ○ swap 0x2F↔0x2E through
+  Input::mode_switch [M 0x1a24c8:246-260], the heat-seeker fired off-axis (auto-aim off) locks the
+  guard and curves in and HITS, the unguided twin flies straight and never locks, and the
+  never-locks-Bond sister (the owner is not a candidate [M 0x12f358's BU+0x30 skip]; no seekable
+  object → no lock ever). One fix: the homing LOS is the game's ONE bit-0x8 DROP trace
+  [M 0x12f358:92 Collide_LineOfSight(…,8)] — the port now uses world.segment_bullet (foliage
+  doesn't block the lock). Playtest 1012-1723 does not reproduce on the branch (the pre-fix
+  behaviour predates the fix-weapon-modes merge). Ran: the new test, nf-game --lib 237, the
+  weapon-mode regression binaries 5+5+6, the fast suite on the final tree (see the report).
+  Remaining: drone-fired homing (guards' own rockets), the copter/class-3/class-0x28 heatseekable
+  classes [M 0x12f248], the projectile-matrix realign (visual). Report:
+  docs/reports/scorpion-modes-12.md (3 live-check asks).
+
+## grates-02 (branch s/grates-02)
+
+- Task: the openable grates/vents on 07000002 (playtests 1011-1732, 1012-1723: grates that open
+  before climbing into the vent behind the NPC; a grate above the bunker bed won't open). Find the
+  grate objects: placement type/hash, door/switch class, the use prompt, what opens them [M the
+  create/update/activate]; port what's missing so E (or the right gadget) opens them as the game
+  does, collision freed. Headless: Bond at each grate, use, grate opens with a passable volume;
+  a locked grate stays shut.
+- Start: Fri Oct 16 09:03 UTC 2026. Sandbox survived from the previous task (ISO, work/, queue
+  worktree, cargo cache all present); branch cut from origin/master ad761677.
+
+## grates-02 (continued)
+
+- DONE: the four grates on 07000002 are SS props (272/308/440 E-usable, 309 locked by design —
+  mask 0x1, ch 1 has no writer on the disc); the port's channel-seek SS tick never moved the
+  ch-0 grates. Ported SS_Update 0x1a9948's true state machine (disasm-verified: states 1/8/0x40,
+  landing at ext+0x08=param5, wrap `(int)last<(int)t` → t=0, state = p1?0:0x40, states 0/0x40
+  never re-pose → the open pose HOLDS; the channel is an output, never a driver). E now opens
+  sg_grill_large #272, bath_hatch #308 and grill1 #440 (the bunker-bed grate) and they stay open;
+  bath_hatch1 #309 stays shut. Tests: fix_ss_grate_live 4/4, fix_0c_hatch_live 2+2ign,
+  fix_0c_vent2_live 3 (winch test re-pointed: ch word 0 is no channel [M 0x1a9df8:47-48]).
+  Suite: 1728 passed / 7 failed (3 allowed disc_golden + 3 render probes + 1 driving RNG, none
+  SS-related) / 72 ignored. Report: docs/reports/grates-02.md (live checks: SS collision ray
+  probe, the quaternion render gap, one-shot semantics).
+---
+
+remote-mine-detonate (2026-10-16)
+- Task: the Remote Mine's detonator (alt-fire/mode action while the mine weapon is held vs a
+  separate detonator item [M Player_Weapon / the mine record +0x6C/+0x70, the detonate arm in
+  Bullet_update]) and the throw cadence (the throw -> release frame, the re-throw interval [M
+  the fire script, Player_WeaponFiring 0x1a5460]). Playtests: the detonator was set to the
+  watch, and a heavy delay between throws.
+- Plan: measure the frames from the fire script + the weapon record, port them, headless tests:
+  throw 3 mines at the game's cadence then detonate with the alt fire (all three explode);
+  sister: firing while no mine is out does nothing.
+- Branch s/remote-mine-detonate from origin/master (27e5d48a). Report will be at
+  docs/reports/remote-mine-detonate.md.
+- remote-mine-detonate: the cadence measured and tabled (press→shot 0, shot→spawn 17 = the +0x44
+  26-frame release at the script clock, spawn→spawn 90 = the 0xb/0xc chain — the mine's +0x6C
+  0x400 bit routes it through the +0xB4 fire-last whose stop refills the clip BEFORE the draw
+  [M 0x1a2e38 case 0xc :521-523]). THE FIX: the port's 0xb/0xc arm skipped that refill — the
+  clip sat 0 through the draw and the next press did nothing (the playtest's heavy delay);
+  Gun::reload_one + the arm now refill first. The detonator halves verified on master (the twin
+  switch, the +0x20000 walk, the hand return). OPEN: the 3-mine detonation yields 0 blasts
+  (the single-mine path passes) — tests/remote_mine_detonate.rs's third test reproduces it.
+  Live checks L-1/L-2/L-3 in docs/reports/remote-mine-detonate.md.
+
+## hatch-crouch-0c (2026-10-16, branch s/hatch-crouch-0c) — start
+- Task: 0700000c hatch — playtests 1012-1723, 1013-1758, 1014-1725: after the hatch opens, Bond can't
+  get through ("he can't crouch through"), blocked and soft-locked under the hatch. Find the collision:
+  opening size vs crouched capsule height [M Player_Collide / crouch height in the player tables], the
+  hatch object's collision after it opens, any crawl-space trigger.
+- Plan: port crouched movement/collision so the passage is traversable exactly as in the game; headless
+  test from the hatch top: open, drop, crouch-walk the passage to the far room, assert Bond's position;
+  sister test: standing (not crouched) is blocked at the same spot.
+- Branch from origin/master ad761677, pushed.
+
+## hatch-crouch-0c (2026-10-16, branch s/hatch-crouch-0c) — close-out
+- THE fix: the grounded rule was missing the game's pick-contact arm — `Player_FeetOnPoint`
+  0x194188:176-185 grounds on a NON-EMPTY capsule pick list (HITTEST+0x9c) OR the floor ray within
+  cc+0.1 [M 0x194188:106]; the port grounded only off the ray/walkable push. Riding the balcony's
+  south pier ramp (14.61→16.49 over z −121..−122, ~58° [D probes]) the push lifted the crouched
+  capsule past the ray tolerance (crouch rest 0.646 vs the 0.55+0.1 gate) and Bond bounced
+  ungrounded at the base forever — the playtests' "can't crouch through" soft-lock. Port now:
+  `grounded = push != 0 || floor-within-tolerance` (player.rs, walk physics_tick).
+- Capsules verified against [M Player_Collision 0x194df0] (crouch case 3 r 0.55 top=feet+1.20;
+  stand case 0/6 r 0.275, same [0,1.86] envelope) — no capsule change needed; no crawl trigger
+  exists (no creepwall on 0c [D]; climb is ladder-only [M 0x196118]); the open hatch's collision
+  moves with the sweep correctly (probe: open band 15.3..17.6 clear, the panel low behind).
+- Tests (crates/nf-view/tests/hatch_crouch_live.rs, all green): the hatch-top → open → crouch-drop
+  onto the balcony; the crouch-walk south (east half, x 11) to the far walkway z<−125; the pier
+  ride stays grounded (the fix's regression); standing blocked at the pier (sister). Probes kept in
+  hatch_crouch_probe.rs. fix_0c_vent2's drop-test sister bound 16.5→16.6 (he now rides the pier).
+- The winch-elevator theory is DEAD [D]: #351/#364/#377 are contact-sway props (no translation
+  keys, mask 2 = kind 5 per SS_Operate 0x1a9df8). Suite on the pre-fix tree: 1729 passed / 6 failed
+  (3 disc_golden + 3 GPU render tests that can't run headless) / 72 ignored, 58 min; the post-fix
+  re-run didn't fit the window — the touched binaries (nf-game lib 237, hatch_crouch 4, vent2 3,
+  hatch 2, level_0c 4, walk_0c 4, walkreal_0c 18, playtest_spots 4) all green. Report:
+  docs/reports/hatch-crouch-0c.md (live checks: the pier climb, the east descent).
+
+## menu-mouse-parity (2026-10-16, branch s/menu-mouse-parity)
+- Task: the mouse works everywhere the keyboard does. For every page: mouse_move over drawn rows
+  (list_rows_y, wheel geometry, tab strip) sets the same cursor arrows would; mouse_click on a row
+  does what Enter does; clicks outside rows do nothing; right-click = Back, wheel = Up/Down; no
+  click changes a value it shouldn't. Fuzz: 20 seeded runs of 5000 steps, moves+clicks+keys, task-669
+  invariants (no panic, cursor in range, Back leaves).
+- Rule: drive the FrontEnd ONLY through action(), mouse_*(), tick() and host-side window calls —
+  never assign page/cursor/state to get somewhere. Ticks between actions until !intro_playing &&
+  !attract_playing (bounded). Every test gets sister assertions.
+- Plan: map the fe input surface (mouse_* entry points, per-page hit tests) and the draw-code row
+  geometry (list_rows_y etc.), write parity tests per page, fuzz, fix hit-test disagreements against
+  the draw code (numbers only, draw source cited), run touched crates + full suite.
+
+## menu-mouse-parity (2026-10-16, branch s/menu-mouse-parity) — the mouse hits the drawn rows
+- Audit: every page's mouse hit-test against the draw code's own positions. Fixes, all hit-test
+  numbers or missing hover paths, draw source cited:
+  - The page_rows pages (Options / MpMode / MpHost / MpNetJoin) drew rows at y 140+26k
+    [M page_rows_no_head] while list_rows_y still held 143/175/207/160 — the hits moved onto the
+    drawn rows (138/164/190, and MpNetJoin's address line at 251 = the value label's middle 259
+    [M the (200,250,240×18) label]); doc §4 updated with them. Options joined the action rows
+    (its stub ✕ is the keyboard's no-op [M action()'s Options arm]).
+  - Wheel pages: mouse_move now hovers the drawn slots (the wheel re-centres on the hovered row
+    — the same cursor the arrows step to); the click confirms the row the pointer HOVERED
+    (wheel_hover — the re-centre moves rows under a stationary pointer), a direct click keeps the
+    page's contract (centre confirms, a neighbour scrolls), and clicks LEFT of the wheel column no
+    longer confirm the centre row (they did — a stray click on MissionSelect's emblem side could
+    start a mission). Gadgets/Weapons draw wheels [M menu_overlay] and joined is_wheel_page.
+  - New hover/click paths: the pause tab strip (hover shows the tab), the OBJECTIVES rows
+    (159+22i [M pause_page]), the Screen Adjust bars [L page 0x40000047], the Join Game panels
+    [L page 0x40000019], the Records spinner's drawn ◀ ▶ (Up/Down) and row (✕ = Dossier [M]).
+  - The modals and movie states now block the mouse exactly like the keyboard (input_blocked:
+    notices / mp_error / pause_hint / intro / attract [M 0x21c858 case 0x68]) — a click through a
+    box is the ✕ (Enter's dismissal), hovers do nothing under it.
+  - CheatMedal's clicks are inert: the page draws no rows yet (the overlay's arm is empty), so
+    any click was "outside rows" — and the old fall-through CONFIRMED on click (a cheat toggle).
+  - The fuzz's Back-leaves invariant caught a real freeze: Back on MpJoin did nothing while the
+    panel cursor sat on panels 2-4 (the arms were gated on can_join). The game's △ acts on the
+    LOCAL agent and the page close [M C_RBMPSTART 0x20d048's 0x6b / the msg-0x6b close] — the
+    can_join gate came off the two Back arms (the un-join stays agent 1's; Confirm keeps it).
+- Host mappings extracted for the tests: menu::MOUSE_RIGHT_ACTION (= Back, lib.rs's right-press
+  arm) and menu::wheel_scroll_action (LineDelta → Up/Down, lib.rs's MouseWheel arm) — lib.rs calls
+  them; behavior unchanged.
+- Tests: crates/nf-view/tests/menus_mouse_parity.rs — 17 tests driven ONLY through action()/
+  mouse_*/tick()/host-side calls (open_pause/mission_ended; the two stub pages with no action
+  path enter the way lib.rs's --page override does). Sisters everywhere. The fuzz: 20 seeded runs
+  × 5000 steps (xorshift64*), moves+clicks+keys interleaved, the 669 invariants every step (no
+  panic, cursor/page_row in range, cheat_medal_sel < 6, Back leaves with the game's own
+  input-less pages excepted), the port invariant at each run's end. 17/17 green; the 16 existing
+  menu binaries re-run green (170 tests).
+- Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
+  single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
