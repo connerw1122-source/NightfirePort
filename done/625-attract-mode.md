@@ -27,3 +27,7 @@ claimed-by: sandbox4 at 2026-10-15T22:19Z
 ## Report (done, 2026-10-16T00:02Z)
 
 Closed by the driver: the report is on `s/attract-mode` (docs/reports/attract-mode.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T00:23Z)
+
