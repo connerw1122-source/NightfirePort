@@ -6637,6 +6637,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     b.speed = len;
                 }
             }
+            // bullet-light [M Bullet_update 0x12e7b0:271-274, case 1 after the gravity arm, before the
+            // move]: a record with `+0x6C & 0x2000` (the rockets) creates a one-tick light at the
+            // bullet's position every flying tick — `Light_Create(4.0, 2.0, obj+0x30, rgb +0x56/+0x55/
+            // +0x54, 0, 0, 1, 0)`. The travelling glow the PS2 shows on the corridor walls (render vs
+            // PCSX2 07000008); the port had no light on the projectile at all.
+            if !first {
+                if let Some(w) = d.weapons.records.get(b.weapon as usize) {
+                    if u32::from_le_bytes([w[0x6c], w[0x6d], w[0x6e], w[0x6f]]) & 0x2000 != 0 {
+                        self.lights.create(4.0, 2.0, b.pos, [w[0x56], w[0x55], w[0x54]], 0, 0, 1, 0, &mut self.rng);
+                    }
+                }
+            }
             b.travelled += step;
             if b.travelled > b.range { step -= b.travelled - b.range; }
             let l = step.max(1.0);
