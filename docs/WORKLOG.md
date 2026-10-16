@@ -14879,3 +14879,16 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+---
+
+menu-audio-state (2026-10-16)
+- Task: the menu music/sfx state must be right through every front-end flow. Playtest found menu music
+  playing in gameplay and during pause, and "audio breaks and there's no main menu music" after the intro.
+- Plan: drive the FrontEnd headless ONLY through action()/mouse_*/tick and host glue (movie_tick, menu_after,
+  page-enter music hook), assert the MenuMusic command stream and jingle state per flow against the game
+  [M frontend-music.md]: boot (intro full/skipped -> title -> Main), attract (natural/skipped), every backdrop
+  movie page, credits, SP mission start (music stops), pause (held, not removed), quit to front end, MP match
+  start and debriefing. Invariant: never two menu-music sources at once, none during gameplay.
+- Branch s/menu-audio-state created from origin/master (ad761677). Work in progress; report will be at
+  docs/reports/menu-audio-state.md.
