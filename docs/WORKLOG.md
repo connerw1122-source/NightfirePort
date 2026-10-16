@@ -16485,3 +16485,11 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
 - Report: docs/reports/uncited-gameplay-audit.md. Left: the 10 queued tasks (none started,
   audit-only by design) + the live checks; gap ④/⑤ should rebase onto task 704's
   s/mp-bots-in-match branch.
+
+mp-backout-after-character (queue 716, branch s/mp-backout-after-character)
+- Started 19:19 UTC 2026-10-16. Task: local MP setup breaks after backing out after setting a
+  character for player 1 (playtest 1015-2231). Walk menus_e2e-style back-out sequences (1 then 2
+  joined players: character pick -> back one page -> main MP menu -> forward again), find the
+  wrong state (enter_mp_setup states 2/3 join slots/cursor/team-character prompts, pair or
+  overlay stack), compare with the game's character page handler Back case, fix, add back-out
+  tests + match-starts-afterwards test.
