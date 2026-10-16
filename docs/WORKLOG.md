@@ -13858,3 +13858,9 @@ Work Log (async-level-load):
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+
+## mission-unlock-flow (2026-10-16, branch s/mission-unlock-flow) — started 00:32 UTC
+- Sandbox reset then repo recovered at /home/z/my-project/NightfirePort (work/, ISO, target/ cache intact).
+- Branch created from origin/master (0f5f07f4). Plan: docs/systems first (P_NFRESULTS_Handler 0x208e78 commit →
+  sp_level[i]+0x10 unlock → codename save → restart persistence; driving rows 0x0900000x / PTP handover / 502),
+  then flow+state in FrontEnd/progress with tests.
