@@ -14879,3 +14879,14 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## grates-02 (branch s/grates-02)
+
+- Task: the openable grates/vents on 07000002 (playtests 1011-1732, 1012-1723: grates that open
+  before climbing into the vent behind the NPC; a grate above the bunker bed won't open). Find the
+  grate objects: placement type/hash, door/switch class, the use prompt, what opens them [M the
+  create/update/activate]; port what's missing so E (or the right gadget) opens them as the game
+  does, collision freed. Headless: Bond at each grate, use, grate opens with a passable volume;
+  a locked grate stays shut.
+- Start: Fri Oct 16 09:03 UTC 2026. Sandbox survived from the previous task (ISO, work/, queue
+  worktree, cargo cache all present); branch cut from origin/master ad761677.
