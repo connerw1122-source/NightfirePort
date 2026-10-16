@@ -14104,3 +14104,11 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
 - Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
   (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
   attract page draws the movie fullscreen over black, no controls, no plate.
+
+## stun-ai-recover (2026-10-16, branch s/stun-ai-recover) — the stunner's stunned drone state, started
+
+- Playtest 1015-1738: stunner guards "get stunned infinitely and don't complete the animation".
+  Task: port the stunned drone state fully — entry (the stun arm in the drone damage path [M]),
+  the stun animation, the duration/re-hit rules, the exit back to the AI. Prove a stunned guard
+  completes the animation and returns to combat after the game's timer, and that re-stunning
+  behaves like the game. Tests on 07000005 with the Stunner (0x4a/0x4c) on a guard.
