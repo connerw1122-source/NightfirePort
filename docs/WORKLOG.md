@@ -16706,3 +16706,11 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+## drone-abseil-elevator (2026-10-16, branch s/drone-abseil-elevator) — start 20:15 UTC
+
+Task 720: the decompile census lists NDrone2_AbseilHang and the ElevatorJumper states as not cited
+in the port. Find which levels place drones that use them [D the placements / DCVars whose setup
+reaches those states]. Then port both: the hang / descend / land sequence with its anims and
+timings, and the elevator jump [M]. Tests on a level that uses them: the drone runs the sequence
+and lands at the game's position and tick — without those states the drone just stands there.
+Branch created from origin/master 170bcf01.
