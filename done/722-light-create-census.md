@@ -28,3 +28,7 @@ Test per newly ported site: its light appears with the game's arguments on the t
 
 ---
 claimed-by: sandbox3 at 2026-10-16T19:53Z
+
+---
+## Report (done, 2026-10-16T20:26Z)
+
