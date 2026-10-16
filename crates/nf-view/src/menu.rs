@@ -1722,10 +1722,17 @@ impl FrontEnd {
         if self.page == Page::Credits {
             if let Some(exit) = self.credits.tick() {
                 match exit {
-                    crate::credits::CreditsExit::ToMain => { self.page = Page::Main; self.cursor = 0; }
+                    crate::credits::CreditsExit::ToMain => {
+                        self.page = Page::Main; self.cursor = 0;
+                        // attract-mode: the re-opened page's 0x4c resets the count [M the 0x44
+                        // open runs P_MAIN's 0x4c — 0x20a7b0:37 Menu_ResetNoInputCount].
+                        self.no_input_frames = 0;
+                    }
                     crate::credits::CreditsExit::PopBack(from) => {
                         self.page = Page::from_id(from).unwrap_or(Page::Main);
                         self.cursor = 0;
+                        // [M the 0x5f re-open rides 0x44 lparam 5 → the opener's 0x4c reset]
+                        self.no_input_frames = 0;
                     }
                 }
             }
@@ -1734,6 +1741,10 @@ impl FrontEnd {
         if matches!(self.page, Page::Start | Page::Main) {
             self.press_start_on = self.flow.ticks % 240 < 120;
         }
+        // (the `!self.intro_playing` fire guard below: the port flips the page to Main before the
+        // intro plays, but the game's P_INTRO page is the up-page during the movies and never
+        // checks the count — the fire must wait for the real page's 0x4c, whose reset lands in
+        // the intro-cleanup block above.)
         self.no_input_frames = self.no_input_frames.saturating_add(1);
         // attract-mode: the title's and main menu's no-input timeout fires on the tick the count
         // reaches 0xa8c [M P_START 0x20a408 / P_MAIN 0x20a7b0 — `Menu_GetNoInputCount() == 0xa8c`
@@ -1741,6 +1752,7 @@ impl FrontEnd {
         // pages' 0x50 run, so the fire tick reads exactly 0xa8c]. Only these two pages check
         // [M the only `Menu_GetNoInputCount` callers], and the attract page itself never re-fires.
         if !self.attract_playing
+            && !self.intro_playing
             && matches!(self.page, Page::Start | Page::Main)
             && self.no_input_frames == ATTRACT_FRAMES
         {

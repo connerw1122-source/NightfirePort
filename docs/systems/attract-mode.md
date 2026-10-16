@@ -129,7 +129,13 @@ needs `attract_playing` + `attract_movie` to put the movie plane fullscreen.
 - `FrontEnd::attract_playing`, `attract_movie` (the code this run plays), `attract_toggle` (the
   game's `movie.291` bit), `attract_opener` (the page 0x5f returns to).
 - `FrontEnd::tick` opens the attract when the count hits `ATTRACT_FRAMES` on the title or main
-  page (the game's 0x44/0x40000035).
+  page (the game's 0x44/0x40000035). The fire is also guarded on `!intro_playing`: the port
+  flips the page to Main before the intro movies play, but the game's up-page during the intro
+  is `P_INTRO`, which never checks the count [M 0x209e88 has no `Menu_GetNoInputCount` call] —
+  the 45 s clock may only start at the real page's 0x4c. The same 0x4c reset is applied where
+  the port re-opens a page without its own handler run: the intro's end (P_MAIN's 0x4c stand-in
+  [M 0x20a7b0:37]) and the credits' two exits (ToMain rides msg 0x44 → the new page's 0x4c;
+  PopBack rides 0x5f → 0x44 lparam 5 → the opener's 0x4c [M 0x21c858 case 0x5f:592-597]).
 - `FrontEnd::action` gates input while `attract_playing`: Confirm = the skip (the game's
   StopMovie + 0x5f, collapsed into one call), everything else is swallowed (the game's block
   byte + cleared actions).
@@ -137,9 +143,11 @@ needs `attract_playing` + `attract_movie` to put the movie plane fullscreen.
   the opener comes back with the count reset.
 - The host (`lib.rs::movie_tick`) starts `movie::Player::start` on `attract_movie` while
   `attract_playing` (the game's `psiStartBackgroundMovie` on the one BGFMV slot), polls
-  `finished()` (the game's `psiMovieFinished` poll), and calls `attract_movie_finished`. The
-  music pair's stop/restart [M `SFXRemove`/`SFXStart` 0x1d7/0x470] is data for the menu-sfx
-  work — the port's front end has no menu-music voice yet.
+  `finished()` (the game's `psiMovieFinished` poll), and calls `attract_movie_finished`. A
+  declined start (a missing/corrupt PSS with the movies feature on) closes the attract at once
+  — the game's un-started movie leaves `BGFMVPlaying == 0`, so `psiMovieFinished` is true from
+  tick one [M 0x1082e8]. The music pair's stop/restart [M `SFXRemove`/`SFXStart` 0x1d7/0x470]
+  is data for the menu-sfx work — the port's front end has no menu-music voice yet.
 
 ## Tests
 
@@ -152,5 +160,7 @@ needs `attract_playing` + `attract_movie` to put the movie plane fullscreen.
   non-skip actions do not end it and do not reset the count);
 - the movie-end path: `attract_movie_finished` does the same (sister: it is a no-op when
   attract is not up);
+- the intro guard: no fire while the intro movies are up, even past 2700 idle ticks, and the
+  clock restarts at the main menu's open (sisters: one tick short / the fire one tick later);
 - the existing `the_attract_timer_counts_2700_inputless_frames` keeps holding (the count still
   reads 2700 at the fire tick, and the skip's Confirm zeroes it).

@@ -1764,7 +1764,13 @@ impl App {
                 if let Some(p) = self.movie.take() { p.stop(); }
                 match movie::Player::start(&movie_iso, code) {
                     Ok(p) => { self.movie = Some(p); eprintln!("movie: playing {code:08x} (attract)"); }
-                    Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless attract ends at once"),
+                    Err(e) => {
+                        // A declined start = the game's un-started movie: BGFMVPlaying == 0, so
+                        // psiMovieFinished is true from tick one and the page closes at once
+                        // [M 0x1082e8 + the 0x50 finish path 0x20a1f0:39-65].
+                        eprintln!("movie: {code:08x} not started: {e:?} — the attract closes at once");
+                        fe.attract_movie_finished();
+                    }
                 }
             }
             if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {

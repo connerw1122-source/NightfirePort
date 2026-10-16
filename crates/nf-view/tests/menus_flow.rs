@@ -1368,3 +1368,26 @@ fn the_movies_end_returns_to_the_opener() {
     assert_eq!(fe.no_input_frames, 5, "no attract, no reset");
     assert_eq!(fe.page, Page::Main);
 }
+
+#[test]
+fn the_timeout_does_not_fire_mid_intro_even_past_2700_ticks() {
+    let mut fe = FrontEnd::new();
+    tick_to_title(&mut fe);
+    assert!(fe.action(Action::Confirm), "START → the intro run (the page flips to Main at once)");
+    // A long intro (the real FMVs run 850 ticks; stretch the countdown to model a slow disc):
+    // the game's P_INTRO page is the up-page during the movies and never checks the count
+    // [M 0x209e88 has no Menu_GetNoInputCount call] — the fire must wait for the main menu's 0x4c.
+    fe.flow.movie_frames = 100_000;
+    for _ in 0..(menu::ATTRACT_FRAMES + 500) { fe.tick(); }
+    assert!(!fe.attract_playing, "sister: no attract while the intro is up, even past 0xa8c idle ticks");
+    assert_eq!(fe.page, Page::Main);
+    // The intro pops → the main menu's 0x4c reset lands [M 0x20a7b0:37] → the 45 s clock restarts.
+    fe.flow.movie_frames = 1;
+    fe.tick();
+    assert!(!fe.intro_playing);
+    assert!(!fe.attract_playing, "the count was reset at the main menu's open — no fire");
+    for _ in 0..(menu::ATTRACT_FRAMES - 2) { fe.tick(); }
+    assert!(!fe.attract_playing, "sister: one tick short (the pop tick already counted 1)");
+    fe.tick();
+    assert!(fe.attract_playing, "the timeout fires 0xa8c ticks after the main menu's open");
+}
