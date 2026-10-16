@@ -34,3 +34,8 @@ net-match-host.md to describe the single design.
 
 ---
 claimed-by: sandbox6 at 2026-10-16T04:52Z
+
+---
+## Report (done, 2026-10-16T05:56Z)
+
+Closed by the driver: the report is on `s/net-consolidate` (docs/reports/net-consolidate.md); the worker didn't run finish.sh.
