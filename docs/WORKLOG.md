@@ -14571,3 +14571,36 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
   the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
   docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
+## satchel-stick2 (2026-10-16, branch s/satchel-stick2)
+- Task: the playtest's satchel charge (0x3b, 07000005, thrown at the low wall by the start, --bond
+  105.97,24.87,110.12,-4.369,-0.166) never sticks — "even standing directly at a wall and throwing it at it, it
+  still bounced", and the countdown digits are wrong. The 109z worker could not bounce it headless, so the
+  headless setup differs from play: replay the exact window input path (the throw from the view model at the
+  real release frame, at a wall 1-2 m away, while walking), find the bounce, fix from the stick arm
+  [M Bullet_CollisionHandler 0x12ce80:256-266]. Digits: check the sim side feeding phase.digits and the satchel
+  list frame_state reads (kinds 4/5); drawing is the main agent's, the data must be there.
+- (start) branch created from origin/master 32647326; work started.
+
+## satchel-stick2 (2026-10-16, branch s/satchel-stick2) — close-out
+- The play-vs-headless difference (the 109z report's open question): `Bullet_update`'s world hittest has TWO
+  forms [M 0x12e7b0:425-465] — radius max(0.25, obj+0x8C), slow moves (move < radius·0.5) test a ONE-SIDED
+  sphere at the pre-move position (0x101: Collide_SphereIntersect 0x1ec940 → Intersect_PointGeom 0x1e92d8 →
+  Dist2Tri 0x1dfca8, closest point wins, behind-faces skipped [best gate init 0.0, :103-109; the flag word
+  only ever gets 0x20, :391]), fast moves a `max(1.0, move)` ray (0x201). The satchel (0.0667 u/tick [L
+  ee_start_05.bin weapon_data 0x3b +0x20]) spends its whole approach in the sphere form — the game parks it
+  the moment a face is within 0.25 u; the port's 0.067 u ray needed a centre crossing, so grazes/throws at
+  the wall flew on (the playtest's "it still bounced") while the dead-centre headless tests always crossed.
+- Fixes: `world.rs sphere_surface` (the 0x101 transcript) + `grenade.rs` picks the game's two forms for the
+  sticky family (0x37/0x3a/0x3b; hat 0x45 untouched; the bouncing family keeps the old ray [S backlog]);
+  scene.rs kinds-4/5 drops the `stuck` gate (DoTrails spawns the digit objects every tick in every state < 2
+  [M 0x12d890:418-553] — the numbers ride the satchel from the throw); the stick arm carries
+  last_qs/digits into the new phase (the countdown latch lives in BU; the old reset blanked the digits for a
+  tick at the stick).
+- Tests: two failing-first unit sisters (run against the reverted fix: both FAILED; with it: PASS — the 0.2 u
+  wall graze sticks on the first update, the 0.2 u floor graze parks 0.04 up); live 9/9 (the 109z five +
+  the pitch fan −0.02..−0.28 all stick on the wall top, the walk-up throw parks on the near side, digits
+  present in flight incl. the frame_state kinds-4/5 matrices); fix_satchel_tripbomb_live 5/5,
+  fix_grenade_release_live 4/4, fix_grenade_throw_live 4/4, fix_grenade_types_live 3/3+1 ign,
+  fix_remote_mine_play 3/3, nf-game lib 236/236 — all on the merged tree (origin/master 6bab6409).
+- Report: docs/reports/satchel-stick2.md (live checks: the rebuilt-binary replay of the user's repro, the
+  gdbwatch fallback, the obj+0x8C read; left: the frag family's 1 u look-ahead, the pierce roll, L-583).

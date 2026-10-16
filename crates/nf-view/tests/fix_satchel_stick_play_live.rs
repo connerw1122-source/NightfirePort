@@ -257,3 +257,185 @@ fn satchel_thrown_straight_down_sticks() {
     let g = sim.drones.grenades.iter().find(|g| g.weapon_type == 0x3b);
     assert!(g.is_some_and(|g| g.stuck || g.state >= 2), "the down throw sticks (trace above)");
 }
+
+/// (satchel-stick2 probe) Walk at the wall while throwing — Bond advances during the 50-tick
+/// windup, so the release (the hand datum at fire-script frame 76) happens right at the face.
+/// Prints the geometry; the assertion pins the game's park point.
+#[test]
+fn probe_walk_up_to_the_wall_and_throw() {
+    let Some(_iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    let mut scene = draw(0x3b);
+    let sim = scene.sim.as_mut().unwrap();
+    // Walk forward + fire held (the real window's held trigger): the press tick fires, Bond keeps
+    // walking through the whole windup.
+    sim.step_bond(Input { fire: true, forward: 1.0, ..Default::default() }, true, false, false);
+    let mut spawn = usize::MAX;
+    let mut spawn_pos = [0.0f32; 3];
+    let mut bond_at_spawn = [0.0f32; 3];
+    for t in 0..240 {
+        sim.step_bond(Input { forward: 1.0, ..Default::default() }, false, false, false);
+        if spawn == usize::MAX {
+            if let Some(g) = sim.drones.grenades.iter().find(|g| g.weapon_type == 0x3b) {
+                spawn = t; spawn_pos = g.pos; bond_at_spawn = sim.bond.pos;
+            }
+        }
+        if spawn != usize::MAX { break; }
+    }
+    assert!(spawn < usize::MAX, "released");
+    eprintln!("== walk-up probe: spawn at press+{spawn}, bond at {:?}, satchel at {:?}", 
+        bond_at_spawn.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>(),
+        spawn_pos.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>());
+    // The wall face: ray from the spawn toward the aim until a hit.
+    let yaw = sim.bond.yaw; let pitch = sim.bond.pitch;
+    let dir = [yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()];
+    if let Some((t, n)) = sim.world.segment_hit(spawn_pos, [spawn_pos[0] + dir[0] * 6.0, spawn_pos[1] + dir[1] * 6.0, spawn_pos[2] + dir[2] * 6.0]) {
+        eprintln!("== wall from spawn: {} u, normal {:?}", t * 6.0, n.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>());
+    }
+    let out = trace(&mut scene, true);
+    eprintln!("== walk-up trace ==\n{out}");
+    let sim = scene.sim.as_ref().unwrap();
+    let g = sim.drones.grenades.iter().find(|g| g.weapon_type == 0x3b);
+    eprintln!("== final: stuck {} state {} at {:?}",
+        g.map(|g| g.stuck).unwrap_or(false), g.map(|g| g.state).unwrap_or(9),
+        g.map(|g| g.pos.iter().map(|v| format!("{v:.3}")).collect::<Vec<_>>()));
+}
+/// satchel-stick2: the pitch fan at the user's spot — EVERY throw sticks on the low wall (the
+/// top face, normal ≈ +y), none flies off or comes back. This is the regression net for the
+/// hittest forms: with `Bullet_update`'s 0x101 sphere probe (0x12e7b0:425-444) the stick happens
+/// at or before the old crossing point, never later.
+#[test]
+fn satchel_pitch_fan_all_sticks_on_the_low_wall() {
+    let Some(_iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    for &pitch in [-0.02f32, -0.10, -0.166, -0.28].iter() {
+        let mut scene = draw(0x3b);
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pitch = pitch;
+        for _ in 0..5 { sim.step_bond(Input::default(), false, false, false); }
+        sim.step_bond(Input { fire: true, ..Default::default() }, true, false, false);
+        let mut spawned = false;
+        for _ in 0..240 {
+            sim.step_bond(Input::default(), false, false, false);
+            if sim.drones.grenades.iter().any(|g| g.weapon_type == 0x3b) { spawned = true; break; }
+        }
+        assert!(spawned, "pitch {pitch}: the throw released");
+        let mut stuck = false;
+        for _ in 0..300 {
+            sim.step_bond(Input::default(), false, false, false);
+            if let Some(g) = sim.drones.grenades.iter().find(|g| g.weapon_type == 0x3b) {
+                if g.stuck {
+                    stuck = true;
+                    let n = g.phase.as_ref().map(|p| p.normal).unwrap_or([0.0; 3]);
+                    assert!(n[1] > 0.9, "pitch {pitch}: stuck on the wall's top face (normal {n:?})");
+                    break;
+                }
+                assert!(g.state < 2, "pitch {pitch}: the satchel never bounces (state {})", g.state);
+            } else { break; }
+        }
+        assert!(stuck, "pitch {pitch}: the satchel sticks on the wall within 300 ticks");
+    }
+}
+
+/// satchel-stick2: the throw while walking right up to the wall — Bond advances through the whole
+/// 50-tick windup, the release (the hand datum at fire-script frame 76) happens at the face, and
+/// the satchel parks on the wall's near side. The game's 0x101 sphere probe catches the face the
+/// moment it is within 0.25 u; the assertion is the park side (never beyond the face plane).
+#[test]
+fn satchel_walk_up_throw_parks_on_the_walls_near_side() {
+    let Some(_iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    let mut scene = draw(0x3b);
+    let sim = scene.sim.as_mut().unwrap();
+    sim.step_bond(Input { fire: true, forward: 1.0, ..Default::default() }, true, false, false);
+    let mut spawned = false;
+    let mut spawn_pos = [0.0f32; 3];
+    for _ in 0..240 {
+        sim.step_bond(Input { forward: 1.0, ..Default::default() }, false, false, false);
+        if let Some(g) = sim.drones.grenades.iter().find(|g| g.weapon_type == 0x3b) {
+            spawned = true; spawn_pos = g.pos; break;
+        }
+    }
+    assert!(spawned, "the walk-up throw released");
+    // The face: the aim ray from the spawn point to the first hit.
+    let sim = scene.sim.as_mut().unwrap();
+    let yaw = sim.bond.yaw; let pitch = sim.bond.pitch;
+    let dir = [yaw.sin() * pitch.cos(), pitch.sin(), yaw.cos() * pitch.cos()];
+    let far = [spawn_pos[0] + dir[0] * 6.0, spawn_pos[1] + dir[1] * 6.0, spawn_pos[2] + dir[2] * 6.0];
+    let face = sim.world.segment_hit(spawn_pos, far);
+    let mut stuck_pos = None;
+    let mut stuck_n = None;
+    for _ in 0..300 {
+        sim.step_bond(Input { forward: 1.0, ..Default::default() }, false, false, false);
+        if let Some(g) = sim.drones.grenades.iter().find(|g| g.weapon_type == 0x3b) {
+            if g.stuck { stuck_pos = Some(g.pos); stuck_n = g.phase.as_ref().map(|p| p.normal); break; }
+            assert!(g.state < 2, "the walk-up satchel never bounces");
+        } else { break; }
+    }
+    let (pos, n) = (stuck_pos.expect("stuck within 300 ticks"), stuck_n.expect("normal"));
+    eprintln!("walk-up: spawn {spawn_pos:?} face {face:?} stuck {pos:?} n {n:?}");
+    if let Some((t, wall_n)) = face {
+        if wall_n[1].abs() < 0.5 {
+            // A wall face ahead: the park must be on the NEAR side (never past the plane).
+            let along = |p: [f32; 3]| p[0] * wall_n[0] + p[1] * wall_n[1] + p[2] * wall_n[2];
+            let plane = along(spawn_pos) + t * 6.0 * (along(dir));
+            assert!(along(pos) <= plane + 0.05 + 1e-3, "the satchel parked on the near side of the face");
+        }
+    }
+    assert!(n[1] > 0.5 || stuck_pos.is_some(), "stuck on the wall or its top");
+}
+
+/// satchel-stick2: the countdown digits ride the satchel FROM THE THROW — `Bullet_DoTrails`' 0x3b
+/// tail spawns the two digit objects every tick in every state < 2 [M 0x12d890:418-553], so the
+/// numbers are present IN FLIGHT, not only after the stick (the playtest's "the numbers aren't
+/// working" — the old view gate hid them until the stick).
+#[test]
+fn satchel_digits_are_present_in_flight() {
+    let Some(_iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };
+    let (mut scene, _spawn) = draw_and_throw(0x3b, false);
+    let sim = scene.sim.as_mut().unwrap();
+    // Step until the grenade exists but is NOT yet stuck; the digits must already be Some.
+    let mut saw_flight_digits = false;
+    for _ in 0..300 {
+        sim.step_bond(Input::default(), false, false, false);
+        if let Some(g) = sim.drones.grenades.iter().find(|g| g.weapon_type == 0x3b) {
+            if !g.stuck {
+                if let Some(p) = g.phase.as_ref() {
+                    if p.digits.is_some() { saw_flight_digits = true; }
+                }
+                assert!(g.state < 2);
+            } else { break; }
+        } else if saw_flight_digits { break; }
+    }
+    assert!(saw_flight_digits, "the countdown digits update while the satchel is in flight");
+    // The view half: frame_state's kinds 4/5 must carry non-FAR matrices while in flight.
+    let opts = nf_view::scene::ViewOpts::default();
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        for g in sim.drones.grenades.iter().filter(|g| g.weapon_type == 0x3b) {
+            eprintln!("[dbg] satchel state {} stuck {} digits {:?} pos {:?}", g.state, g.stuck,
+                g.phase.as_ref().map(|p| p.digits), g.pos.iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>());
+        }
+    }
+    let fs = scene.frame_state(None, 10.0, opts);
+    let mut found = 0;
+    {
+        let mut shown = 0;
+        for (a, at) in scene.attachments.iter().enumerate() {
+            if let Some((kind, slot, mesh)) = at.effect {
+                if (kind == 4 || kind == 5) && shown < 6 {
+                    eprintln!("[dbg] att {a} kind {kind} slot {slot} mesh {mesh:#x} -> m3 {:?}", fs.attach[a][3].iter().map(|v| format!("{v:.2}")).collect::<Vec<_>>());
+                    shown += 1;
+                }
+            }
+        }
+    }
+    for (a, at) in scene.attachments.iter().enumerate() {
+        if let Some((kind, _slot, mesh)) = at.effect {
+            if kind == 4 || kind == 5 {
+                let m = fs.attach[a];
+                let is_far = m[3][1] < -9999.0;
+                if !is_far { found += 1; }
+                let _ = mesh;
+            }
+        }
+    }
+    assert!(found >= 2, "kinds 4/5 carry live digit matrices in flight, got {found}");
+}

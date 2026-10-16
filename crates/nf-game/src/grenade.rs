@@ -295,9 +295,48 @@ impl Grenade {
         // A sitting grenade (speed zeroed by a slow bounce) skips the collision — the game's zero-length
         // move hits nothing and the fuse keeps counting [M 0x12ce80 tail].
         let speed2 = self.velocity[0] * self.velocity[0] + self.velocity[1] * self.velocity[1] + self.velocity[2] * self.velocity[2];
+        // satchel-stick2: `Bullet_update`'s world hittest has TWO forms [M 0x12e7b0:425-465 — the
+        // HITTEST build over the pre-move obj+0x30], picked by the move length against the probe
+        // radius `max(0.25, obj+0x8C)` (the grenade family keeps the 0.25 floor, 0x3e800000; only
+        // the MGL family 0x2c..0x31 / 0x62 / 0x6d zeroes it, :427-429):
+        // - move < radius·0.5 → version 0x101: a one-sided sphere of that radius AT THE CURRENT
+        //   position (0x1e92d8 `Intersect_PointGeom` → `Dist2Tri` 0x1dfca8: the closest point on
+        //   the triangle wins, faces the centre is behind are skipped);
+        // - move ≥ radius·0.5 → version 0x201: a ray of `max(1.0, move)` [M :443-465 —
+        //   `uVar19 = max(1.0, fVar16)`], i.e. up to 1 u of look-ahead.
+        // The satchel's speed is 0.0667 u/tick [L ee_start_05.bin weapon_data 0x3b +0x20], so its
+        // whole 1-2 m approach runs in the 0x101 sphere form: the game PARKS the satchel the
+        // moment a face comes within 0.25 u — grazing the wall top, hugging the wall, or a
+        // close-range throw all stick where the old port's 0.067 u ray sailed past (the playtest's
+        // "even standing directly at a wall and throwing it at it, it still bounced": no ray
+        // crossing, no stick, the satchel flies on). Scoped to the +0x100 sticky family this arm
+        // serves (0x37/0x3a/0x3b — the hat 0x45 keeps its verified path); the bouncing family
+        // (0x34…) keeps the old move-length ray — the game gives it the same two forms [S backlog:
+        // a 1.0 u look-ahead would shift every pinned frag bounce point].
+        let sticky = matches!(self.weapon_type, 0x37 | 0x3a | 0x3b);
+        const PROBE_RADIUS: f32 = 0.25;
+        let world_hit = if !sticky {
+            world.segment_surface(self.pos, end, false)
+                .map(|(t, normal, mat)| (t, [self.pos[0] + (end[0] - self.pos[0]) * t, self.pos[1] + (end[1] - self.pos[1]) * t, self.pos[2] + (end[2] - self.pos[2]) * t], normal, mat))
+        } else {
+            let speed = speed2.sqrt();
+            let move_len = speed * dt;
+            if move_len < PROBE_RADIUS * 0.5 {
+                // 0x101: the sphere at the pre-move position; the hit point IS the closest point
+                // (the game's HITDATA+0x40 = `Dist2Tri`'s out).
+                world.sphere_surface(self.pos, PROBE_RADIUS, false)
+                    .map(|(q, normal, mat, _)| (0.0f32, q, normal, mat))
+            } else {
+                // 0x201: the ray with the 1 u floor.
+                let dir = [self.velocity[0] / speed, self.velocity[1] / speed, self.velocity[2] / speed];
+                let len = 1.0f32.max(move_len);
+                let far = [self.pos[0] + dir[0] * len, self.pos[1] + dir[1] * len, self.pos[2] + dir[2] * len];
+                world.segment_surface(self.pos, far, false)
+                    .map(|(t, normal, mat)| (t, [self.pos[0] + (far[0] - self.pos[0]) * t, self.pos[1] + (far[1] - self.pos[1]) * t, self.pos[2] + (far[2] - self.pos[2]) * t], normal, mat))
+            }
+        };
         if speed2 > 1e-12 {
-            if let Some((t, normal, mat)) = world.segment_surface(self.pos, end, false) {
-                let hit = [self.pos[0] + (end[0] - self.pos[0]) * t, self.pos[1] + (end[1] - self.pos[1]) * t, self.pos[2] + (end[2] - self.pos[2]) * t];
+            if let Some((_t, hit, normal, mat)) = world_hit {
                 // fix-oddjob-hat: Oddjob's hat (0x45, `+0x70 & 0x100` [L record]) never bounces off
                 // the world — the +0x100 arm STICKS it: `obj+0xF4 = 3` [M 0x12ce80:255], the matrix
                 // aligns to the negated hit normal [:256-266] and the hat alone gets the 1500.0
@@ -338,12 +377,19 @@ impl Grenade {
                     self.velocity = [0.0; 3];
                     self.stuck = true;
                     self.resting = false;
+                    // satchel-stick2: the countdown latch (BU+0x100) and the digit meshes live in
+                    // BU, not the stick — `Bullet_CollisionHandler` writes only obj+0xF4/0x90/0x30
+                    // [M 0x12ce80:255-266 + the 0x12d478 park]; `Bullet_DoTrails`' 0x3b tail keeps
+                    // reading the same BU fields through state 3. The old reset to (0, None) opened
+                    // a one-tick digit gap at the stick (digits None → the kinds-4/5 slots FAR →
+                    // the numbers blink off exactly when the satchel parks).
+                    let (last_qs, digits) = self.phase.as_ref().map_or((0, None), |p| (p.last_qs, p.digits));
                     self.phase = Some(Box::new(StuckGadget {
                         normal,
                         arm: if self.weapon_type == 0x3a { 120.0 } else { 0.0 },
                         armed: false,
-                        last_qs: 0,
-                        digits: None,
+                        last_qs,
+                        digits,
                     }));
                     return Some(GrenadeEvent::Stick(stuck_at));
                 }
@@ -702,5 +748,52 @@ mod tests {
         }
         let n = stuck_normal.expect("it sticks somewhere (the floor) within 200 ticks");
         assert!(n[1] > 0.9, "NOT on the wall's entry face — the one-sided ray skips it (the game's shape, 0x10a8c8:150-168); normal {n:?}");
+    }
+
+    /// satchel-stick2 [M `Bullet_update` 0x12e7b0:425-444 — the slow-move hittest is the 0x101
+    /// sphere of radius max(0.25, obj+0x8C) AT THE CURRENT POSITION, `Intersect_PointGeom`
+    /// 0x1e92d8 + `Dist2Tri` 0x1dfca8; the satchel's 0.0667 u/tick throw [L ee_start_05.bin
+    /// weapon_data 0x3b +0x20] never leaves that form until gravity builds |v| past 0.125]: a
+    /// satchel flying PARALLEL to a face within 0.25 u of it sticks on the first tick — there is
+    /// no ray crossing to wait for. The old port ran a move-length ray and flew on (the playtest's
+    /// "it still bounced": the throw passes just over/along the wall and nothing catches it).
+    #[test]
+    fn satchel_flying_along_a_wall_within_the_probe_radius_sticks_at_once() {
+        let w = wall_world();
+        let mut g = satchel();
+        g.pos = [0.0, 1.0, 0.2]; // 0.2 u off the z = 0 wall face, moving ALONG it (−x)
+        g.velocity = [-0.0666_6667, 0.0, 0.0];
+        g.speed = 0.0666_6667;
+        let mut rng = Rng::new(0);
+        let mut stuck_at = None;
+        for t in 0..3 {
+            if let Some(ev) = g.update(&w, &mut rng) {
+                if matches!(ev, GrenadeEvent::Stick(_)) { stuck_at = Some(t); break; }
+            }
+        }
+        assert!(g.stuck, "the 0.2 u graze sticks within 3 ticks (the game's 0.25 probe)");
+        assert_eq!(stuck_at, Some(0), "on the FIRST update");
+        let p = g.phase.as_ref().expect("the phase box");
+        assert!((p.normal[2] - 1.0).abs() < 1e-4, "the wall's +z normal, got {:?}", p.normal);
+        // The park: Dist2Tri's closest point (z = 0) + normal·0.04 [M 0x12ce80:383-392].
+        assert!((g.pos[2] - 0.04).abs() < 1e-4, "parked 0.04 off the face, got z {}", g.pos[2]);
+        assert!((g.pos[1] - 1.0).abs() < 1e-4, "the closest point keeps the flight height");
+    }
+
+    /// Sister: the same probe catches a satchel descending onto a floor it has not reached yet —
+    /// the game parks it 0.25 u early (the graze-over-the-wall-top case).
+    #[test]
+    fn satchel_descending_onto_the_floor_within_the_probe_radius_sticks_early() {
+        let w = wall_world();
+        let mut g = satchel();
+        g.pos = [0.0, 0.2, 2.0]; // 0.2 u above the y = 0 floor, drifting along it
+        g.velocity = [-0.0666_6667, 0.0, 0.0];
+        g.speed = 0.0666_6667;
+        let mut rng = Rng::new(0);
+        for _ in 0..3 { g.update(&w, &mut rng); }
+        assert!(g.stuck, "the 0.2 u floor graze sticks within 3 ticks");
+        let p = g.phase.as_ref().expect("the phase box");
+        assert!(p.normal[1] > 0.9, "the floor's +y normal, got {:?}", p.normal);
+        assert!((g.pos[1] - 0.04).abs() < 1e-4, "parked 0.04 above the floor, got y {}", g.pos[1]);
     }
 }
