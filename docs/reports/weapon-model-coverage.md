@@ -7,15 +7,14 @@ missing)` on 07000005. Branch `s/weapon-model-coverage`.
 ## What the census found [D — measured through the port's own parsers]
 
 Method: `weapon_data` (115 × 0x10c) read from the EE snapshot at 0x2bf150 (filled by the boot
-initialiser; docs/formats/weapon-data.md), `ammo_data` (34 × 12) at 0x2c69b8, `FileList` at
-0x2466a0-style table (118 × 32) — all in `work/ee_snapshot.bin` (file offset = EE address); every
+initialiser; docs/formats/weapon-data.md), `ammo_data` (34 × 12) at 0x2c69b8, `FileList` (118 × 32) at 0x2446a0 — all in `work/ee_snapshot.bin` (file offset = EE address); every
 `.bin` archive on the disc scanned with the repo's `LevelBin`/`MapFile` rules (kind-3 skins, kind-5
 scripts, ENTITY_PARAMS (0x04) object hashcodes in kind-0/1/2/11 maps). The same numbers then
 re-proved in-tree by `crates/nf-view/tests/weapon_model_census_live.rs` through the REAL merge
 functions (`merge_weapon_models` + `merge_weapon_assets`), all 20 story levels.
 
 1. **Every fp-armed weapon's first-person skin (+0xDC) exists on the disc** — 41 distinct skins
-   over 96 weapon ids; the other 19 ids (0x39, 0x47-0x49, 0x5f-0x69, 0x6b, 0x70-0x72: the
+   over 95 weapon ids; the other 19 ids (0x39, 0x47-0x49, 0x5f-0x69, 0x6b, 0x70-0x72: the
    gadget/consumable tail) have `+0xDC = 0` and are usable without a model, exactly as the shipped
    game (`Player_EquipWeapon` only refuses +0xDC == 0 [M]).
 2. **A different archive per weapon class, exactly as suspected**: most fp skins live on the MP
@@ -133,7 +132,7 @@ run had it in the residue there).
 ## Verification
 
 - `crates/nf-view/tests/weapon_model_census_live.rs` (new):
-  - `dev_panel_weapons_resolve_on_three_levels` — `load_weapons` with all 96 fp-armed ids on
+  - `dev_panel_weapons_resolve_on_three_levels` — `load_weapons` with all 95 fp-armed ids on
     07000005, 0700000c, 07000014: every one builds its first-person view model.
   - `census_every_story_level_resolves_the_table` — the real `merge_weapon_models` +
     `merge_weapon_assets` (dev = `Wanted::All`) on all 20 story levels; asserts the residue is
