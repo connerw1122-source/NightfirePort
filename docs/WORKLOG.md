@@ -14474,3 +14474,29 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   disasm 0x1ebf40-0x1ec010); the aim trace is 0x20a/0x208 (Player_WeaponInitBullet 0x1a4bf0:154),
   Bullet_homing's LOS is 8 (0x12f358:92). 07000005's tree objects (map 50 obj 96/98) carry glist
   flags 0x41 — the whole tree is bullet-pass; leaf cards carry the 0x40 surface byte.
+
+## foliage-bullets (2026-10-16, branch s/foliage-bullets) — close-out
+- The foliage pass machinery mapped [M]: Collide_Intersect 0x1ebaa8 sets HITDATA+0x51 bit 1 from
+  the glist node's flags bit 0x40 (cel+0x94 = the placement's celglist+0x44 [0x1d1998:103]) or the
+  surface byte's bit 0x40 (disasm 0x1ebf78-80); bit 0x80 sets it only under HITTEST+0x98 bit 0x1;
+  the bit-0x8 queries (aim trace 0x20a/0x208 [0x1a4bf0:154], Bullet_homing LOS 8 [0x12f358:92],
+  the laser 0xa0a) drop pass-flagged hits outright (disasm 0x1ebff0-0x1ec010); Collide_Update
+  0x1ea398:216-229 walks past pass hits; Bullet_CollisionHandler 0x12ce80 re-derives per hit
+  (state 1 past, state 2 at the stop, Effect_Create per hit, ricochet mask 0).
+- [D] 07000005: the small trees = obj 96 (0x13/0x03, ×5) + obj 98 (0x13/0x04, ×2), glist flags
+  0x41 (node-pass); leaf cards obj 21/109/117/144, flags 0x10, byte 0x40 (material-pass); a wood
+  core obj 97 (30 tris, 0x04, flags 0) — unflagged — the aim trace's first stop behind the canopy.
+- [L] The flight does NOT pass: the bullets' HITTEST stays inactive (0x12c668 `sh $zero, 0xe4`),
+  Collide_Update never walks them, and the live-pinned guard cover trace (ai_live
+  guard_takes_cover_like_the_game, UnderCoverAim 37) fails with both the bit-0x8 drop and the
+  keep-walk flight models (90 each) and passes only with the original first-hit flight. Reverted
+  the flight paths; the playtest's "bulletproof" = the class-19 stop's record has no decal/gas —
+  debris chips only ([D] the parsed EffectInfo).
+- Port: CollisionWorld carries the node pass per triangle + segment_bullet/segment_surface_bullet
+  (the bit-0x8 family) + segment_surface_flags + effect::penetration_roll_node; the flight paths
+  unchanged. Tests: nf-game lib 235/235 (the new bullet_queries_drop_the_pass_flagged_hits),
+  ai_live 35/35 (the cover pin back green), grenade/spawner/nav_kick/level live green, nf-view
+  fix_foliage_bullets_live 3/3 on 07000005.
+- Not run: the full fast-runner suite (this sandbox reaps background jobs between tool calls; the
+  ~62 min foreground run does not fit the window) — flagged in the report.
+- Report: docs/reports/foliage-bullets.md; 4 live checks listed there.
