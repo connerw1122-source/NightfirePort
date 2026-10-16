@@ -543,3 +543,29 @@ pub fn movie_still(iso_path: &str, code: u32, n: usize) -> Result<crate::scene::
     let (pics, ..) = nf_formats::mpeg2::picture_counts(&m.demuxed.video);
     bail!("no frame {n} in the first {} chunks (the movie has {pics} pictures)", chunks.len())
 }
+
+/// The FMV briefing's subtitle track (subtitles-data): `ResetMap_Load` (0x1d6360) phase 0 loads the
+/// global pack `07000500.bin` from FILES.BIN and — only when the Subtitles option is on
+/// (`DAT_002a37c8`) — creates one ScriptPlayer per movie code from its 14 kind-7 scripts (single
+/// streams of op-0x1e `Script_TextStart` commands [D levels.md §5.4]) and plays it at once while
+/// the briefing movie runs, so the script's tick axis is the movie's. The port builds the same
+/// track from the pack's script: `nf_game::subtitle::intro_script_for(movie_code)` [M
+/// 0x1d6360:40-99] picks it and `SubtitleTrack::from_script` walks its Wait + Text commands with
+/// `Script_Run`'s clock. `Ok(None)` = the code has no intro row (e.g. 0x710004a — no briefing
+/// subtitles by the game's own table).
+pub fn briefing_subtitles(iso_path: &str, movie_code: u32, enabled: bool) -> Result<Option<nf_game::subtitle::SubtitleTrack>> {
+    let Some(script) = nf_game::subtitle::intro_script_for(movie_code) else { return Ok(None) };
+    let iso = IsoImage::open(iso_path)?;
+    let (entries, bin) = nf_formats::disc::files_bin_entries(&iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case("07000500.bin"))
+        .with_context(|| "no 07000500.bin in FILES.BIN (the global pack)")?;
+    let pack = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let plb = nf_formats::levelbin::LevelBin::parse(&pack)?;
+    for pe in plb.entries.iter().filter(|e| e.kind == 7) {
+        if pe.hash() == script {
+            let nis = nf_formats::nis::Nis::parse(script, plb.data(&pack, pe))?;
+            return Ok(Some(nf_game::subtitle::SubtitleTrack::from_script(&nis, enabled)));
+        }
+    }
+    bail!("script {script:08x} not in 07000500.bin")
+}

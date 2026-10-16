@@ -13314,6 +13314,22 @@ Stage Summary:
   menu_live 12 + menu_backdrop_still 1 + menu_movies 2 + menu_woman_live 5 + dev_menu_flow 1 green.
   New tests: nf-game mission_stats_rows 7 (incl. the 07000005 PCSX2 golden numbers) + nf-view
   mission_stats_flow 3.
+## dossier-pages-data (2026-10-15, branch s/dossier-pages-data) — start
+- (18:58 UTC) Task started: port the Dossier's Rewards / Gadgets / Weapons pages' data, state, flow and getters
+  (P_DSREWARDS_Handler 0x2172c8 + C_RBDSREWARDS_Handler 0x20c248, P_DSGADGETS_Handler 0x217190 +
+  C_SBDSGTSCROLL_Handler 0x20bcc0, P_DSWEAPONS_Handler 0x217038 + C_SBDSWPSCROLL_Handler 0x20bab0). No drawing —
+  data + Page variants + actions + getters + tests. Sandbox reused: repo, work/, ISO and nf-queue all present; branch
+  cut from origin/master 0157588d.
+- (20:15) dossier-pages-data: the three pages implemented + tested. docs/systems/dossier-pages-data.md (all
+  addresses + tags); menu.rs: Page::Rewards/Gadgets/Weapons (+ids 0x4000003b/3c/3d), WEAPONS_TABLE 27 rows /
+  GADGETS_TABLE 14 rows / REWARD_BONUS 12×(label,tex)×4 [L ee_start_05.bin, disc-verified against ACTION.ELF
+  .data by dossier_pages::the_port_tables_match_the_discs_action_elf_data], getters reward_rows/wheel_row/
+  gadget_row/weapon_row/weapon_overview_row, the Dossier Confirm map (rows 1-3 open the pages, cursor reset),
+  clamp scroll actions [M Scroll_Update 0x2221b20], minimal draw arms + lib.rs --page rewards|gadgets|weapons.
+  FOUND+FIXED in nf-game/progress.rs: gold_group grouped kind-4 descs by desc[0]'s packed word (= 0 for every
+  entry → one 12-member group, rank = table index) — the game scans descs 1..4 of every entry for the target
+  desc's own word [M 0x199210:39-62]; real groups {1,5,7}→bits 0..2 and {4,11}→bits 9/10. Added
+  Progress::object_upgrade_level [M 0x2025f8]. nf-game lib 188/188; dossier_pages 7/7; menus_flow 36/36.
 ## drive-crp-format (2026-10-15, branch s/drive-crp-format) — started 17:00 UTC
 
 Task: driving phase 1 — decode the .crp container (chunks, tables, the track mesh, the car model and its parts) from the data and DRIVING.ELF's consumer (task 501's map names it, or find it from the BIGF read of the track entry), write docs/formats/crp.md, and add a parser with golden numbers for every .crp in the 23 archives (NF_DRIVING or the full retail image). Files: crates/nf-formats/src/crp.rs (new), crates/nf-formats/tests/driving_golden.rs. Merge s/drive-refpack if not on master (done: merged 5a0e53f9). Deadline: stop new work 18:32 UTC, sandbox expires ~18:52 UTC.
@@ -13857,3 +13873,82 @@ Stage Summary:
   path kept green; 8 new tests pin the wiring.
 - Left for the next session: the nf-view serial sweep completion (~220 binaries), the real-data
   NF_DRIVING golden (the 429 MB archive, disk-bound), the curve-eval live check L-3.
+## mp-defaults-and-setup (2026-10-15, branch s/mp-defaults-and-setup)
+- (21:05) Started: branch from origin/master f59b47fb. Task: make FrontEnd's MP defaults match the game's
+  MPSettings init (Location Damage On, Respawn Random, Explosive Scenery Locked via the reward gate), and add the
+  Health Handicap third step to mp_setup_state with per-step prompt label/texture/value getters for the main agent.
+
+## mp-defaults-and-setup (2026-10-15, branch s/mp-defaults-and-setup) — DONE 22:52 UTC
+- (21:05-21:45) Research: MPSettings 0x2a47a0 inits in bootup_bootup 0x1c7e78 (memset 0x1dc + field
+  stores: +0x1C0=2 @0x1c7fac, +0x1C8=1 @0x1c7ff8, +0x1BC=0, +0x19C/+0x1A0=10, +0x1A4/+0x1AC/+0x1C4=1,
+  rest 0; roster 8×0x30 +0x20=team i&1, +0x28=1, +0x2c=0); EE snapshots match [L]. The codename
+  profile saves +0x1BC/+0x1C0/+0x1C4 into record+0x2e/2f/30 (Menu_UpdateDefaultCodename 0x1f8218 /
+  Menu_MapDefaultCodename 0x1f7fa8) — evidence only, not ported (save-format decision needed).
+- Explosive Scenery gate: Menu_UnlockMPSettings 0x1ff698 ORs bonus[0..3] @0x2e1b88 and sets
+  mp_stuff[0x370] @0x2df2d0 iff a type-3 id-0x3e reward is unlocked — the shipped RewardsTable
+  0x2bc920's only type-3 entry is level 0x07000014 counter 3 [D]. P_MPENVIROMODS 0x210030 binds the
+  locked row's single node (0x10, label 0x1000076), Left/Right no-ops, page close stores 0x10
+  [M 0x210464]; P_MPCONFIRM masks &1 [M 0x20f708/0x20f710]. Ported as mp_bonus_mask +
+  mp_explosive_unlocked() + mp_enviro_value_label() + the step/close/mask behavior.
+- Health Handicap: P_MPSETUP 0x20d7a8 + C_RBMPSETUP 0x20de58 give states 2/3/4/5 — the 0x4b state-3
+  arm builds 8 nodes (−75..+100, .data strings 0x30d390..0x30d3c8 [D], the literals P_CNMPOPTIONS
+  0x2144d8 shares for label 0x296), stores the pick in MPSettings+slot·0x30+0x2c; state 4 → 5 sets
+  mpjoin+1, and Menu_MPAreWeReady 0x1f78d8 sends 0x44/0x40000012. Port: mp_setup_state 2/3/4/5,
+  mp_handicap, MP_HANDICAPS, the handler (Confirm 2→3→4→5, Back 4→3→2-team-only per 0x6b), getters
+  mp_setup_prompt_label/mp_setup_image/mp_setup_value_text (0x37c/0x37d/0x296; 0x30001a3/0x30001a2
+  team, character previews, 0x30001a1 green cross).
+- Quick-Game fix: C_SBMPSCEN stores +0x1CC=2 Helicopters @0x20c734 (docs/systems/mp-menus.md §5
+  corrected) and +0x1D4=0 @0x20c748; +0x1C0 is never written — mp_quick_start now matches.
+- Tests: new mp_defaults_setup 10/10 (defaults table, the gate locked/unlocked + the 0x10 close
+  write + the &1 match-start mask, enviro value labels, quick start, the 3-prompt flow with
+  per-step pins, re-select, back walk, FFA, node table); mp_menu_flow updated for the 3-step flow
+  (4 paths) 9/9; menus_flow 36/36, dev_menu_flow 5/5. Suite slice on the final merged tree
+  (origin/master 8ba16019 merged; foreground --only — background runs are killed here):
+  410 passed / 0 failed over 18 binaries (menu family + MP set + the 4 crates' unit binaries);
+  359 test binaries build clean. The no-GPU fix_0c_pylon_live pair stays the known pre-existing
+  failure outside the slice.
+- Report docs/reports/mp-defaults-and-setup.md with 5 live checks (Locked row + the 0x10 read-back,
+  the On/Random rows, the handicap prompt/image/values, the team image swap, the render spots).
+## subtitles-data (2026-10-15, branch s/subtitles-data)
+- Task started: port the Subtitles On/Off option's data path — where NIS/script cut-scene and FMV briefing subtitle
+  lines are stored, their timing (start/end ticks), label ids, and the drawing function/font/position/colour — as a
+  data model + per-tick `active_subtitle(t)` wired to the profile flag (control 0x10000136, P_CNAVOPTIONS_Handler
+  0x214818). No drawing; tests with numbers/ids only. Setup verified, branch cut from origin/master (2bda7b46).
+
+## subtitles-data (2026-10-15, branch s/subtitles-data)
+- Ported the Subtitles option's data path (no drawing — the main agent draws): `nf_game::subtitle::SubtitleTrack`
+  = `Text_AddMsg` 0x1b0c30's type-4/5 TXT_MSG queue as an absolute timeline (`SubtitleLine{label,start,end}`):
+  `push` (the DAT_002a37c8 gate [M 0x1b0c30 — type-4/id-0 adds pass only with the option on], the verbatim u16
+  duration [M disasm 0x1b1050: the 60-clamp skips types 4/5; one wrap part = the un-scaled time], the FIFO chain
+  start = max(push, prev end) [M Text_UpdateMsg 0x1b11d8 — only the head's timer runs]), `active_subtitle(t)` (the
+  per-tick query), `flush` (Text_FlushAllSubtitles 0x1b15c8 — head clamped, queued die), `from_script` (the briefing
+  walk: Wait(t) → release tick t+1 [M Script_Update 0x1da998's pre-increment clock]). `intro_script_for` = the
+  movie-code → script chain [M ResetMap_Load 0x1d6360:40-99]; `nf_view::movie::briefing_subtitles(iso, code, on)`
+  reads 07000500.bin (FILES.BIN) and walks the pack's script.
+- Wiring: `Drones::subtitle_track` (own line); `Request::Text` pushes at the script tick and gates `script_msgs`
+  (the HUD drain) on the flag — the fresh profile's default is Off [M profile.rs], so hosts must wire
+  `subtitle_track.enabled` from `Profile::gset.subtitles` / the AV row (0x10000136). `TextFlush` flushes the track.
+- Tests: 6 unit (chaining, verbatim duration, zero-time, Off, flush, from_script) + `subtitles_live.rs` 4 ISO-gated:
+  the disc-pinned 0x06000961 timeline (ticks 184/1340/2113/3570, labels 0x06000068-6b, times 1132/756/988/555 [D]),
+  no-row codes, the Off gate through the real Sim, the ON queue at the right tick. fix_script_commands_live's text
+  test now pins the ON behaviour explicitly. Ran: nf-game lib 212/212, nf-formats+nf-audio green (disc_golden 3 =
+  the slim-ISO set), the HUD-affected view binaries 34/34, suite runner over 104 more binaries across five chunks (menus_flow, level_live,
+  mp_arenas_live, codename_entry, the fields/fix_* sets…) — 0 failed; fix_0c_pylon_live's 2 = the sandbox's missing Vulkan ICD (adapter
+  request, pre-existing). The full 356-binary sweep didn't fit the window (background jobs die here; the runner
+  rebuilds cost 336 s). Doc: docs/systems/subtitles.md (the queue layout, both presenters, all three sources).
+- (20:42) dossier-pages-data: report docs/reports/dossier-pages-data.md pushed (merged tree f7d9fb6e).
+  Verification: foreground chunks (the bg suite.py is reaped by this sandbox): nf-game lib 197/197,
+  nf-view lib 9/9, nf-formats lib 76/76, nf-audio lib 9/9; menus_flow 36/36, dossier_pages 7/7 (incl. the
+  disc ACTION.ELF byte check), mp_menu_flow 9/9, dev_menu_flow 5/5; progress consumers progress_live 1/1,
+  fix_progress_live 5/5, fix_scores_handoff_live 3/3, fix_save_profile_live 4/4, campaign_flow_live 1/1.
+  Left: the main agent's draw pass for --page rewards|gadgets|weapons; Records' pre-existing % wrap noted.
+## objective-hints (2026-10-15, branch s/objective-hints) — close-out
+- Suite on the final tree (foreground runner chunks — this sandbox kills background jobs): all 353 binaries BUILD;
+  nf-formats+nf-audio 117 passed / 3 failed (the 3 allowed disc_golden environmental fails); nf-game full green;
+  nf-view menus_flow 36/36, objective_hints_flow 7/7, credits_data 11/11, mp_menu_flow 9/9,
+  fix_objective_messages_live 5/5. The 242 other nf-view _live binaries did not fit the window (disk + no
+  background) — flagged in the report for the next window.
+- Report: docs/reports/objective-hints.md (evidence: C_GCPAUSE 0x204408 case 1 = control 1's ✕ → the ok-only
+  option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
+  P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
+  outside 0x182630, no PlrStat hints counter).
