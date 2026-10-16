@@ -16569,3 +16569,41 @@ crates before pushing: 12 nf-view menu-cluster binaries 143/0. Final-tree suite 
 origin/master c10b530f, six foreground chunks): 1908 passed, 7 failed, 72 ignored over 436/437
 binaries — the 7 exactly the known environmental set (3 disc_golden, driving_ai_follow, 3
 no-GPU pylon probes); no TIMEOUT/CRASH. Report: docs/reports/options-persist-roundtrip.md
+---
+
+script-census STARTED (18:16 UTC 10-16). Task: census every 0x07 level archive on the disc
+(front end included) — every script (players/NIS/SimpleScripts) and its opcode/event types with
+counts, every trigger placement type + action codes, every placement type the level parse sees;
+classify handled ([M] port handler) vs unhandled ([M] game handler) into
+docs/systems/script-census.md + a test pinning the handled set (numbers only). Branch
+s/script-census off master c10b530f.
+
+---
+
+script-census PROGRESS (19:25 UTC 10-16). Census complete over every 07* archive on the disc
+(34 level + 27 pack + 38 anim): 468 NIS scripts / 5,263 streams / 227,544 commands — all 20
+opcodes on the disc are handled by the port (matches nis.rs's own 5,263-stream census);
+851 NIS events across 14 kinds, 3 on kinds the port drops (0x08 coder drone, 0x09 cam mode,
+0x0a break — all in script 0600005b of 07000001, one command each); 676 trigger placements
+over 8 action codes (port lacks only 0xd movie: 1 record, 07000041); 7,372 dynamic placements
+across 62 types — 1,399 records on 14 types the game handles and the port does not (cover
+nodes 0xe5/0xe6 = 968, AI points 0xe9 = 162, hurt 0xe4 = 64, sensor 0x28 = 62, start-slot-0
+0x2d = 51, GT 0x27 = 41, music trigger 0xfb = 15, lightning 0x2c = 15, plus 8 single-digit
+types); 138 records on 4 marker types the game ignores too (0xdd/0xf6/0xf7 one per level,
+0xff) + 165 flags-0xffffffff records skipped by both; entry kinds: 13 seen, port src lacks
+runtime kind 8 (34 menu defs) and kind 15 (1 memcard icon); anim scripts (kind 5): 18,231
+scripts / 50,279 commands, ops 0/1/4 all handled, op-4 kinds 1/2/3/7 (13,056 commands) not
+replayed — kind 2 dispatches through animobj+0x70 which is zeroed for player scripts
+[M 0x1c1600:51]. Deliverables: docs/systems/script-census.md (per-level tables, unhandled
+ranked, top-10 queue-ready tasks, live checks) + crates/nf-formats/tests/script_census.rs
+(6 tests, pins handled sets 20/14/7/56 + all histograms; green). Parse integrity cross-checked
+against three golden totals (5,263 streams, 23,329 placements, 2,230 maps); zero truncations /
+unknown ops. Fast-runner suite started 18:16 UTC on the pre-census tree; final-tree delta is
+docs + the new test only.
+
+---
+
+script-census DONE (19:41 UTC 10-16). Suite on merged base: 1894 passed, 6 failed, 72 ignored
+(46 min; the 3 allowed disc_golden + 3 pre-existing pylon render probes). Final tree delta =
+docs + the pinning test only; script_census 6/6 green on it. Report:
+docs/reports/script-census.md. finish.sh + ntfy follow.
