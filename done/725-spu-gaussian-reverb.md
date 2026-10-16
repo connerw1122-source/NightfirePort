@@ -20,3 +20,7 @@ level's reverb preset decodes to the register set the game writes. Keep tests si
 
 ---
 claimed-by: sandbox7 at 2026-10-16T20:25Z
+
+---
+## Report (done, 2026-10-16T21:50Z)
+
