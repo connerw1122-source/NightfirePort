@@ -27,3 +27,7 @@ claimed-by: sandbox5 at 2026-10-16T05:17Z
 ## Report (done, 2026-10-16T08:25Z)
 
 Closed by the driver: the report is on `s/guard-reaction-delay` (docs/reports/guard-reaction-delay.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T08:58Z)
+
