@@ -312,7 +312,7 @@ pub fn merge_weapon_assets<R: std::io::Read + std::io::Seek>(
                 }
             }
         }
-        stats.maps += crate::take_maps_holding(level, foreign, &hashes);
+        stats.maps += crate::take_maps_holding(level, &foreign, &hashes);
         stats.archives += 1;
         eprintln!("weapon assets: merged {archive_name} ({} skins, {} maps so far)", new_skins.len(), stats.maps);
     }

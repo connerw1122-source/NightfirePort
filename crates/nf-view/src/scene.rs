@@ -4384,7 +4384,55 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 
 /// Grouped by layer, then (world layers) the object — the game sorts cels per object (`View_AddCels`) — then texture
 /// and draw state. The value keeps the object's world centre and scaled radius for the per-frame sort + frustum cull.
-type Groups = BTreeMap<(Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u16), (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>, u32)>;
+pub type GroupKey = (Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u16);
+type Groups = BTreeMap<GroupKey, (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>, u32)>;
+
+/// ── Pool-slot replay (level-load-time) ───────────────────────────────────────────────────────────
+/// The decal/casing/debris/gas/projectile/tracer pools call `add_instance` once per pool slot with
+/// IDENTICAL geometry (same object, same identity matrix, same layer and character pattern — only
+/// the attachment index and the pushed `Attachment` differ). Slots 1..N therefore replay slot 0's
+/// group pushes bit-exactly instead of re-transforming every vertex: `pool_record` snapshots what
+/// the slot-0 call grew, `pool_replay` re-pushes it. Every replayed value is the same the original
+/// per-slot call would have written: the vertex/CharVertex data is a pure function of the identical
+/// (object, matrix, mult) inputs; indices are re-based on the current group length (the original
+/// `base` was the group length at push time, and replays append the same vertex count each time);
+/// centre/cel/node are constants of the pool; the radius update is a max, and the record's r is
+/// exactly max(glist radius, all batch bounds) of the same geometry, so
+/// `r_n = max(r_{n-1}, r_record)` equals the original `r.max(glist).max(batch_d2.sqrt())` chain.
+type PoolRecord = Vec<(GroupKey, Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>, u32)>;
+
+/// The group lens before a slot-0 `add_instance` call (for `pool_record`'s diff).
+fn pool_snapshot(groups: &Groups) -> std::collections::BTreeMap<GroupKey, (usize, usize, usize)> {
+    groups.iter().map(|(k, v)| (k.clone(), (v.0.len(), v.1.len(), v.2.len()))).collect()
+}
+/// After the slot-0 call: what it pushed, per touched group (indices re-based to vertex offsets,
+/// i.e. relative to the base the slot-0 call used = the recorded pre-call vertex count).
+fn pool_record(groups: &Groups, before: &std::collections::BTreeMap<GroupKey, (usize, usize, usize)>) -> PoolRecord {
+    groups.iter().filter_map(|(k, (vs, is, cv, centre, r, cel, node))| {
+        let &(l0, l1, l2) = before.get(k).unwrap_or(&(0, 0, 0)); // absent from `before` = created by slot 0 (base 0)
+        let base = l0 as u32;
+        let vsn = &vs[l0.min(vs.len())..];
+        let isn: Vec<u32> = is[l1.min(is.len())..].iter().map(|i| i - base).collect();
+        let cvn = &cv[l2.min(cv.len())..];
+        if vsn.is_empty() && isn.is_empty() && cvn.is_empty() { return None; } // untouched by slot 0
+        Some((k.clone(), vsn.to_vec(), isn, cvn.to_vec(), *centre, *r, *cel, *node))
+    }).collect()
+}
+/// Replays a slot's contribution for pool slots 1..N. `attachment` = the slot's own attachment
+/// index (the only per-slot difference in the CharVertex stream).
+fn pool_replay(groups: &mut Groups, rec: &PoolRecord, attachment: Option<u32>) {
+    for (k, vs, is, cv, centre, r, cel, node) in rec {
+        let e = groups.entry(k.clone()).or_default();
+        let base = e.0.len() as u32;
+        e.0.extend_from_slice(vs);
+        e.1.extend(is.iter().map(|i| i + base));
+        e.2.extend(cv.iter().map(|c| { let mut c = *c; if c.attachment.is_some() { c.attachment = attachment; } c }));
+        e.3 = *centre;
+        e.4 = e.4.max(*r);
+        e.5 = *cel;
+        e.6 = *node;
+    }
+}
 
 /// fix-safe08: the pickups the level's scripts spawn through `Script_CreateEntity` 0x1d8968's
 /// obj_type-0xF0 arm (`Pickup_Create` 0x18dda0 at the stream's posed position, rest = 1 [M disasm
@@ -5181,9 +5229,16 @@ impl Scene {
         // direction by the speed (Control_GetObjMatrix scale 1, 1, speed); a pool of slots, hidden when unused.
         // Slot TRACER_SLOTS is the gadget beam (fix-laser-beam: the Laser/Stunner's per-shot beam draw).
         if let (Some(_), Some(&(tmap, tobj))) = (drones, level.by_hash.get(&0x0200_0123)) {
-            for slot in 0..TRACER_SLOTS {
-                let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
-                add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+            // Pool-slot replay (level-load-time): slot 0 decodes, slots 1..N replay it (identical
+            // identity-matrix geometry; only the attachment index and `tracer` slot differ).
+            let tplacement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
+            let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: tplacement.clone() };
+            let before = pool_snapshot(&groups);
+            add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+            let rec = pool_record(&groups, &before);
+            attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(0), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
+            for slot in 1..TRACER_SLOTS {
+                pool_replay(&mut groups, &rec, Some(attachments.len() as u32));
                 attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
             }
             // fix-gadgets-live: the gadget BEAM draws the game's own sprites, not the trail stand-in —
@@ -5238,10 +5293,16 @@ impl Scene {
         let pslot_placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
         for &mesh in &proj_meshes {
             let Some(&(pmap, pobject)) = level.by_hash.get(&mesh) else { continue };
-            for slot in 0..proj_slots {
-                let pinst = Instance { map: pmap, object: pobject, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: pslot_placement.clone() };
-                add_instance(level, &pinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u16, mesh)), script: None, gas: None, effect: None, silencer: false });
+            // Pool-slot replay (level-load-time): slot 0 decodes, slots 1..N replay it (identical geometry).
+            let pident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+            let pinst = Instance { map: pmap, object: pobject, matrix: pident, placement: pslot_placement.clone() };
+            let before = pool_snapshot(&groups);
+            add_instance(level, &pinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+            let rec = pool_record(&groups, &before);
+            attachments.push(Attachment { character: 0, bone: 0, local: pident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((0, mesh)), script: None, gas: None, effect: None, silencer: false });
+            for slot in 1..proj_slots {
+                pool_replay(&mut groups, &rec, Some(attachments.len() as u32));
+                attachments.push(Attachment { character: 0, bone: 0, local: pident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u16, mesh)), script: None, gas: None, effect: None, silencer: false });
             }
         }
         crate::phase_mark("b5c projectile pools", t); t = std::time::Instant::now();
@@ -5279,9 +5340,14 @@ impl Scene {
                     let gident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
                     for &mesh in &gas_meshes {
                         let Some(&(m, o)) = level.by_hash.get(&mesh) else { continue };
-                        for slot in 0..GAS_DRAW_SLOTS {
-                            let inst = Instance { map: m, object: o, matrix: gident, placement: gslot_placement.clone() };
-                            add_instance(level, &inst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                        // Pool-slot replay (level-load-time): slot 0 decodes, slots 1..N replay it.
+                        let ginst = Instance { map: m, object: o, matrix: gident, placement: gslot_placement.clone() };
+                        let before = pool_snapshot(&groups);
+                        add_instance(level, &ginst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                        let rec = pool_record(&groups, &before);
+                        attachments.push(Attachment { character: 0, bone: 0, local: gident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: Some((0, mesh)), effect: None, silencer: false });
+                        for slot in 1..GAS_DRAW_SLOTS {
+                            pool_replay(&mut groups, &rec, Some(attachments.len() as u32));
                             attachments.push(Attachment { character: 0, bone: 0, local: gident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: Some((slot as u16, mesh)), effect: None, silencer: false });
                         }
                     }
@@ -5296,9 +5362,14 @@ impl Scene {
                 ] {
                     for &mesh in meshes {
                         let Some(&(m, o)) = level.by_hash.get(&mesh) else { continue };
-                        for slot in 0..slots {
-                            let inst = Instance { map: m, object: o, matrix: ident, placement: slot_placement.clone() };
-                            add_instance(level, &inst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                        // Pool-slot replay (level-load-time): slot 0 decodes, slots 1..N replay it.
+                        let inst = Instance { map: m, object: o, matrix: ident, placement: slot_placement.clone() };
+                        let before = pool_snapshot(&groups);
+                        add_instance(level, &inst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                        let rec = pool_record(&groups, &before);
+                        attachments.push(Attachment { character: 0, bone: 0, local: inst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, 0, mesh)), silencer: false });
+                        for slot in 1..slots {
+                            pool_replay(&mut groups, &rec, Some(attachments.len() as u32));
                             attachments.push(Attachment { character: 0, bone: 0, local: inst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)), silencer: false });
                         }
                     }
@@ -5669,6 +5740,12 @@ impl Scene {
             }
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        // level-load-time: pre-reserve the final arrays (the groups' totals are known) — the extends
+        // used to realloc through several doublings of ~500 MB of vertex/CharVertex traffic.
+        {
+            let (tv, ti, tc) = groups.values().fold((0usize, 0usize, 0usize), |(a, b, c), g| (a + g.0.len(), b + g.1.len(), c + g.2.len()));
+            vertices.reserve(tv); indices.reserve(ti); char_verts.reserve(tc);
+        }
         crate::phase_mark("b5 characters + attachments + pools", t); t = std::time::Instant::now();
         let mut char_vertex_start = None;
         for ((layer, _, _, chain, key, draw, lflags), (vs, is, cv, centre, mut radius, cel, node)) in groups {
@@ -5678,6 +5755,10 @@ impl Scene {
             // which dropped in-view statics at the frustum edge (the user's pale fog-coloured patches).
             // The game's cull consults the bbox next to the sphere (`View_AddObjects` 0x1e62d8 passes
             // obj+0x8c AND obj+0x80 to `Vision_InView` 0x1e89e0); this is that bbox term.
+            // level-load-time: this pass is NOT redundant with add_instance's per-batch fold — that
+            // measures each instance's verts against the INSTANCE centre, this measures every vert of
+            // the MERGED group against the group's (last-instance) centre; non-World groups share one
+            // key across instances (ikey = 0), so this pass is the only sound bound. Kept verbatim.
             {
                 let mut d2max = radius * radius;
                 for v in &vs {

@@ -1077,9 +1077,9 @@ fn casing_meshes(elf: &[u8]) -> Vec<u32> {
     nf_formats::sfx::AmmoData::from_action_elf(elf).map(|a| a.casing_mesh).unwrap_or_default()
 }
 
-/// Moves the foreign maps that hold any of `hashes` into `level` (appended; `by_hash` first-wins, so a
+/// Clones the foreign maps that hold any of `hashes` into `level` (appended; `by_hash` first-wins, so a
 /// hash the level resolves locally keeps its (map, object)). Returns how many maps moved.
-fn take_maps_holding(level: &mut Level, foreign: Level, hashes: &[u32]) -> usize {
+fn take_maps_holding(level: &mut Level, foreign: &Level, hashes: &[u32]) -> usize {
     let mut take: std::collections::HashSet<usize> = Default::default();
     for (mi, m) in foreign.maps.iter().enumerate() {
         if m.objects.iter().any(|o| hashes.contains(&o.hashcode)) { take.insert(mi); }
@@ -1087,16 +1087,29 @@ fn take_maps_holding(level: &mut Level, foreign: Level, hashes: &[u32]) -> usize
     if take.is_empty() { return 0; }
     let base = level.maps.len();
     let mut moved = 0;
-    for (mi, m) in foreign.maps.into_iter().enumerate() {
+    for (mi, m) in foreign.maps.iter().enumerate() {
         if !take.contains(&mi) { continue; }
         let idx = base + moved;
         for (oi, o) in m.objects.iter().enumerate() {
             level.by_hash.entry(o.hashcode).or_insert((idx, oi));
         }
-        level.maps.push(m);
+        // level-load-time: the caller's parsed-archive cache hands shared `&Level`s now, so the
+        // taken maps CLONE out (bit-identical data — load_scene_digest pins it) instead of moving.
+        level.maps.push(m.clone());
         moved += 1;
     }
     moved
+}
+
+/// level-load-time: the parsed-foreign-archive cache behind `merge_weapon_models`. The session mesh
+/// merge used to re-parse every earlier story archive on EVERY load (5-7 `Level::parse` per level,
+/// ~6.7 s of the 27-level probe total). Entries are immutable after parse; a hit's taken maps clone
+/// out bit-identically. Bounded FIFO of 2 entries (the parsed maps can be tens of MB each — keep
+/// the resident set small); the scan order (STORY_ORDER descending per load) re-visits the same
+/// archives across consecutive levels, so the small window still hits.
+fn foreign_level_cache() -> &'static std::sync::Mutex<(std::collections::VecDeque<String>, std::collections::HashMap<String, std::sync::Arc<Level>>)> {
+    static C: std::sync::OnceLock<std::sync::Mutex<(std::collections::VecDeque<String>, std::collections::HashMap<String, std::sync::Arc<Level>>)>> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new((Default::default(), Default::default())))
 }
 
 /// The session object table (`models-weapons-items`, see the caller's comment): every weapon-model mesh
@@ -1112,9 +1125,23 @@ fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     for code in STORY_ORDER.iter().rev().filter(|&&c| c < level_id) {
         if needed.is_empty() { break; }
         let name = format!("{code:08x}.bin");
-        let fd = match read(&name) { Ok(Some(d)) => d, _ => continue };
-        let Ok(foreign) = Level::parse(&fd) else { continue };
-        let moved = take_maps_holding(level, foreign, &needed);
+        let foreign: std::sync::Arc<Level> = {
+            let mut c = foreign_level_cache().lock().unwrap();
+            if let Some(l) = c.1.get(&name) { l.clone() } else {
+                drop(c);
+                let fd = match read(&name) { Ok(Some(d)) => d, _ => continue };
+                let Ok(l) = Level::parse(&fd) else { continue };
+                let l = std::sync::Arc::new(l);
+                let mut c = foreign_level_cache().lock().unwrap();
+                if !c.1.contains_key(&name) {
+                    c.0.push_back(name.clone());
+                    c.1.insert(name.clone(), l.clone());
+                    while c.1.len() > 2 { if let Some(old) = c.0.pop_front() { c.1.remove(&old); } }
+                }
+                l
+            }
+        };
+        let moved = take_maps_holding(level, &foreign, &needed);
         if moved > 0 {
             needed.retain(|h| !level.by_hash.contains_key(h));
             eprintln!("session mesh merge: {moved} map(s) from {name} ({} weapon-model hashes still missing)", needed.len());
