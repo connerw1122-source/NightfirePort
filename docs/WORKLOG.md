@@ -14270,3 +14270,18 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   open_mp_debriefing + rows/result/portrait getters, the C_MPDBG 0x5d replay arm, the confirm's
   codename handover. Tests: nf-game/tests/mp_debriefing.rs (10) + nf-view/tests/mp_debriefing_flow.rs
   (6) adapted from 621; 402's mp_match_rules (14) all green on the merged machine.
+
+## mp-debriefing-data2 (2026-10-16, branch s/mp-debriefing-data2) — DONE
+
+- Merged origin/master mid-task (the driving batch + the online-MP chain): the mp/mod.rs conflict
+  was both sides' module declarations (debrief + hash + replay all kept); menu.rs auto-merged and
+  the new Rewards/Gadgets/Weapons pages got their idle Action::Extra arms; WORKLOG both kept.
+- Suite: foreground slices (the sandbox reaps background jobs) over all 364 binaries on the
+  branch tree: 1565 passed / 7 failed / 66 ignored — the 3 disc_golden (allowed on the slim ISO),
+  3 no-GPU wgpu probes (probe_pylon_render, fix_0c_pylon_live), 1 TIMEOUT at the 480 s cap on the
+  pre-existing walkreal_07000001_live full-level walk. On the final merged tree: nf-game FULL
+  452/1/2 (the 1 = driving_ai_follow's real-data walk, pre-existing on master's tip — driving/ is
+  byte-identical to origin/master on my branch) + the MP slice 87/0 + the nf-view menu-flow set
+  85/0. Details in docs/reports/mp-debriefing-data2.md.
+- Report: docs/reports/mp-debriefing-data2.md (the reconciliation table, the verification, 5
+  live-check asks); systems doc docs/systems/mp-debriefing.md.
