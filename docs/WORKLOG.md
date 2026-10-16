@@ -16706,3 +16706,14 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+## ninja-melee (2026-10-16, branch s/ninja-melee) — start 20:47 UTC
+
+Task 728: audit gap ③ — the Ninja drones' melee chain, DSTATE 0xab-0xb3 [M], isn't ported. The
+ported NinjaAttack router (kiko.rs ports 0xa6-0xaa + 0xb2) collapses the close band into standing
+and shooting. Port: the approach (NinjaGetCloseToPlayer 0xab), the attack selection, each strike's
+anim and damage (NinjaSword 0xac), the block/dodge states (Somersault 0xad, Backflip 0xae,
+Sideflip 0xb3/Left 0xaf/Right 0xb0), NoRoute 0xb1 (star throwing), and the transitions
+[0x16c650..0x16d878]. Do it on the level that places Ninjas [D] (assassin 07000004/16 chaser).
+Tests: a Ninja engages Bond in melee with the game's sequence and damage; states follow the game's
+transitions over a scripted fight. Deadline 22:26 UTC for new work.
+- Branch created from origin/master 170bcf01. work/ + ISO already in sandbox from prior task.
