@@ -16227,3 +16227,14 @@ fix_cutscenes_live 4/4, fix_cutscenes2_live 5/5, fix_kimiko_handback_live 1/1,
 models_characters_live 6/6, fix_party_mission_live 9/9, scenario_live 6/6. The pre-change
 full-suite run `1864 passed, 6 failed, 72 ignored (50 min)` (the 3 allowed disc_golden + the 3
 pre-existing pylon render probes); the final-tree fast-runner suite started 16:41 UTC.
+
+## stun-recovery (2026-10-16, branch s/stun-recovery) — start 19:02 UTC
+
+Task 713: stunned guards stay stunned forever (playtest 1015-1738, 07000005, the stunner) — port
+the stunned guard's whole timeline: the stun state + timer, the animation and how the state ends,
+the re-stun rule, the recovery to normal AI [M the drone's stun/taser state handler 0x4a/0x4b/
+0x4c, the stunner hit path weapons 0x4A/0x4C]. First check whether master already behaves like the
+game; if it does, pin it and say so. Plan: the stun-ai-recover task already ported the family —
+verify its timeline against the decompile, pin the correct behaviour with a test that fails on the
+old behaviour, fix any constant that diverges (the TASER fall timer), run the touched crates + the
+suite.
