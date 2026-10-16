@@ -340,20 +340,20 @@ pub fn load_mp(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
 }
 
 fn load_inner(iso: &str, archive: &str, all: bool, mp: bool) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, false, &[], mp, None)
+    load_impl(iso, archive, all, None, false, &[], mp, None, 1)
 }
 
 /// net-match-host: the ONLINE match load — the MP core from the negotiated settings (the host's
 /// choices + seed, equal on every machine) instead of the `--mp` default. The level build draws
 /// from the settings' seed (see `Scene::build`'s Rng note).
 pub fn load_mp_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, settings: nf_game::mp::MpSettings) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, false, &[], true, Some(settings))
+    load_impl(iso, archive, all, save, false, &[], true, Some(settings), 1)
 }
 
 /// `--dev`: the same load with the dev view-model merge (folded 190-fix-dev2). Normal play never
 /// passes `dev = true`, so no extra archive is opened without the flag.
 pub fn load_dev(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, true, &[], false, None)
+    load_impl(iso, archive, all, None, true, &[], false, None, 1)
 }
 
 /// `load` pre-merged for the given weapon ids (`--give` at startup, the dev menu's lazy give):
@@ -361,7 +361,7 @@ pub fn load_dev(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
 /// from their owning archive before the scene builds, so the weapon draws exactly as it does on a
 /// level that carries it (`weapon_assets::merge_weapon_assets`).
 pub fn load_weapons(iso: &str, archive: &str, all: bool, wids: &[u8]) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, false, wids, false, None)
+    load_impl(iso, archive, all, None, false, wids, false, None, 1)
 }
 
 /// The sim catch-up cap (`NF_MAXTICKS`, default 4) — see the frame loop.
@@ -378,18 +378,31 @@ const NET_HASH_EVERY: u32 = 15;
 /// wrote, and `Player_InitWeapon` (0x1a7ef8) runs the per-level loadout switch over `Player_RamLoad`
 /// (0x1957a8). `None` = a cold load (the game's boot path; `Player_RamLoad`'s whole body is skipped).
 pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, false, &[], false, None)
+    load_impl(iso, archive, all, save, false, &[], false, None, 1)
 }
 
 /// The carry-over load pre-merged for the given weapon ids (the dev menu's lazy give: the same
 /// warm reload the level transition runs, plus the given weapons' assets).
 pub fn load_with_carry_weapons(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, wids: &[u8]) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, false, wids, false, None)
+    load_impl(iso, archive, all, save, false, wids, false, None, 1)
 }
 
 /// `--dev` level transition: the carry-over load with the dev view-model merge.
 pub fn load_with_carry_dev(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, true, &[], false, None)
+    load_impl(iso, archive, all, save, true, &[], false, None, 1)
+}
+
+/// difficulty-effects: the front-end's launch path — the mission loads with the difficulty the
+/// player picked on the wheel (GameState+0x28 = 0x2a3790; every create-time gate reads it
+/// [M C_SBNFDFCTY 0x216ca8:15, 0x1c7e78:25 boot default 2]). The plain `load*` wrappers keep 1
+/// (the old direct-load replay parity).
+pub fn load_with_carry_difficulty(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, difficulty: u32) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, save, false, &[], false, None, difficulty)
+}
+
+/// difficulty-effects: the warm reload with a weapon-asset set at the selected difficulty.
+pub fn load_with_carry_weapons_difficulty(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, wids: &[u8], difficulty: u32) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, save, false, wids, false, None, difficulty)
 }
 
 /// The fail/death menu's Restart serve — the reload loop's `level_exit_restart` branch
@@ -466,7 +479,7 @@ pub fn entry_checkpoint_save(sim: &scene::Sim) -> nf_game::player::RamSave {
         .with_mission(&sim.drones.mission)
 }
 
-fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8], mp: bool, mp_settings: Option<nf_game::mp::MpSettings>) -> Result<scene::Scene> {
+fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8], mp: bool, mp_settings: Option<nf_game::mp::MpSettings>, difficulty: u32) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
     let iso = IsoImage::open(iso_path)?;
@@ -553,6 +566,16 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                 &casing_meshes(&elf))?;
             eprintln!("weapon assets: merged {} archive(s), {} skin(s), {} map(s), {} sequence(s), {} script(s) in {:.2}s",
                 st.archives, st.skins, st.maps, st.sequences, st.scripts, t.elapsed().as_secs_f32());
+            // weapon-model-coverage: the honest final tally — the session mesh merge's per-stage
+            // "still missing" count is before this merge ran. The residue is the set on NO archive
+            // of the disc (the shipped game cannot resolve it either, e.g. the two casing meshes
+            // 0x02000446/0x02000443 [D census]).
+            let still: Vec<u32> = weapon_assets::meshes_for_wanted(&level, wd, &weapon_wanted, &casing_meshes(&elf))
+                .into_iter().filter(|h| !level.by_hash.contains_key(h)).collect();
+            if !still.is_empty() {
+                eprintln!("weapon models: {} hash(es) unresolved after the merge, on no archive of the disc: {}",
+                    still.len(), still.iter().map(|h| format!("{h:08x}")).collect::<Vec<_>>().join(" "));
+            }
         }
     }
     // The weapon_data the DroneContext consumes: the hoisted build when the merge ran, else built
@@ -761,7 +784,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         // machine — the session's settings blob carries it); 0 keeps the pre-net constant.
         mp_seed: mp_settings.as_ref().map_or(0, |st| st.seed),
     };
-    let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
+    let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones), difficulty);
     // The pause/fail menus' burning woman [M `psiDecompressWoman` 0x1202a8]: the archive's kind-16 "woman" run-length
     // mask filled from the fire texture 0x030000da, drawn into 0x030000db's texels through 0x030000da's CLUT (the
     // disc's 0x030000db is a placeholder). The HUD texture starts on the first decoded frame.
@@ -1080,7 +1103,7 @@ fn take_maps_holding(level: &mut Level, foreign: Level, hashes: &[u32]) -> usize
 /// The session object table (`models-weapons-items`, see the caller's comment): every weapon-model mesh
 /// (`weapon_data` +0x80 held guns, +0x4C muzzle flashes, +0x5C projectile bodies, and the view-model
 /// sleeves) the level archive misses is merged from the latest earlier story archive that holds it.
-fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
+pub fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     read: &impl Fn(&str) -> Result<Option<Vec<u8>>>, prefix: &str, level: &mut Level) -> Result<()> {
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let Ok(wd) = nf_formats::weapon::WeaponData::from_action_elf(&elf) else { return Ok(()) };
@@ -1586,6 +1609,10 @@ struct App {
     iso: String,
     /// A pending level transition: the next level's hashcode, set by `LOAD_LEVEL`; consumed by the main loop.
     pending_level: Option<u32>,
+    /// difficulty-effects: the selected difficulty, the port's `GameState+0x28` (0x2a3790) —
+    /// boot default 2 [M 0x1c7e78:25], the difficulty page's confirm writes it [M 0x216ca8:15],
+    /// and every load/adopt reads it.
+    selected_difficulty: u32,
     /// fix-weapon-assets: a dev-menu/panel give of a weapon whose assets the level archive lacks —
     /// the tick loop answers it with a warm same-level reload (`load_with_carry_weapons`) that
     /// merges the weapon's assets, then re-places Bond and re-issues the switch request.
@@ -1754,6 +1781,12 @@ impl App {
     /// After a menu action (key, click or hover): the page's sounds, the level it requested and its close.
     fn menu_after(&mut self) {
         let Some(fe) = self.fe.as_mut() else { return };
+        // difficulty-effects: the difficulty page's confirm writes GameState+0x28 at pick time
+        // [M C_SBNFDFCTY 0x216ca8:15] — the game keeps it across loads; the port stores it on
+        // the App and every following load adopts it (Scene::build's create-time gates).
+        if let Some(d) = fe.requested_difficulty.take() {
+            self.selected_difficulty = d;
+        }
         // menu-sfx: the front end's sound events play straight through the driver's 2-D start —
         // `Menu_PlaySound`'s `Sound_Play(100.0f, id, 0, 0)` tail [M 0x1f3278] batched like the EE's
         // `SFXStart`. The loaded bank(s) decide audibility exactly as the game's lookup does (a
@@ -1970,11 +2003,15 @@ impl App {
         // net-match-host: an online match's handover loads the MP core from the negotiated
         // settings (the same `load_mp_carry` on every machine — the seed rides inside). The local
         // menu confirm's settings ride here too now (they were set but never read before).
+        // difficulty-effects: otherwise the front-end pick rides every front-end load [M the game's
+        // level load reads GameState+0x28; the direct-load wrappers keep the replay 1].
         let mp_settings = self.pending_mp_settings.take();
+        let difficulty = self.selected_difficulty;
         let job = async_load::Job::spawn(move || {
             if let Some(st) = mp_settings {
                 load_mp_carry(&iso, &name, all, save.as_ref(), st)
-            } else if dev { load_with_carry_dev(&iso, &name, all, save.as_ref()) } else { load_with_carry(&iso, &name, all, save.as_ref()) }
+            } else if dev { load_with_carry_dev(&iso, &name, all, save.as_ref()) }
+            else { load_with_carry_difficulty(&iso, &name, all, save.as_ref(), difficulty) }
                 .map_err(|e| e.to_string())
         });
         self.async_load = Some(LevelLoad { job, next, ptp_return, ready: None });
@@ -2919,7 +2956,7 @@ impl ApplicationHandler for App {
                         self.entry_save = save.clone();
                         let name = level_archive_name(self.scene.sim.as_ref().map_or(0, |s| s.level));
                         eprintln!("weapon assets: {w:#04x} is not on this level — warm reload with its assets");
-                        match load_with_carry_weapons(&self.iso, &name, self.all, save.as_ref(), &[w]) {
+                        match load_with_carry_weapons_difficulty(&self.iso, &name, self.all, save.as_ref(), &[w], self.selected_difficulty) {
                             Ok(mut scene) => {
                                 self.sound = build_sound(&mut scene);
                                 if let Some(sim) = scene.sim.as_mut() {
@@ -3696,7 +3733,7 @@ pub fn run() -> Result<()> {
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
     let force_channel = if dev { args.iter().position(|a| a == "--set-channel").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u8>().ok()) } else { None };
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, zoom_cycle: 0, pending_mission_end: false, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
         net: None, net_lobby: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,

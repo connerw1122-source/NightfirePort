@@ -118,7 +118,7 @@ fn cross_level_ids(level: &nf_formats::level::Level, wd: &nf_formats::weapon::We
     idx: &nf_view::weapon_assets::DiscIndex) -> (Vec<usize>, Vec<(usize, &'static str)>) {
     let mut give = Vec::new();
     let mut none = Vec::new();
-    for w in 1..0x72usize {
+    for w in 1..0x73usize {
         let fp = wd.first_person(w);
         if fp == 0 || fp == u32::MAX { none.push((w, "no first-person model (+0xDC = 0)")); continue; }
         if level.skins.contains_key(&fp) { continue; }
@@ -333,7 +333,7 @@ fn ids_without_a_first_person_model() {
     let index = d.index();
     let wd = d.weapons(0x0700_0005);
     let mut no_model: Vec<(usize, &'static str)> = Vec::new();
-    for w in 1..0x72usize {
+    for w in 1..0x73usize {
         let fp = wd.first_person(w);
         if fp == 0 || fp == u32::MAX { no_model.push((w, "no fp model (+0xDC = 0)")); }
         else if !index.skins.contains_key(&fp) { no_model.push((w, "fp skin on no archive")); }

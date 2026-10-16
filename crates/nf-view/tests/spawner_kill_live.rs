@@ -365,7 +365,9 @@ fn the_kill_channel_waits_for_the_npcs_to_be_re_enabled() {
 #[test]
 fn tower2_stairwell_the_kill_channel_keeps_the_drawn_guard() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    let mut scene = nf_view::load(&iso, "07000011.bin", false).expect("load 07000011");
+    // the 00-Agent load: the scenario was calibrated on the full roster, which Drone_Create's min-difficulty gate [M 0x136be0:49] makes the 00-Agent roster (the game holds back the param2>=2 placements at 1/2): the stairwell spawner's group-1 templates are param2>=2 placements (Agent/00 Agent
+    // only), so the Operative load never creates them and the spawner has nothing to spawn.
+    let mut scene = nf_view::load_with_carry_difficulty(&iso, "07000011.bin", false, None, 3).expect("load 07000011");
     // The level-start cut-scene holds the NPCs; wait it out (the fix-actors `free` shape).
     for _ in 0..400 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); if !scene.sim.as_ref().unwrap().disabled { break; } }
     let tpls: Vec<usize> = scene.sim.as_ref().unwrap().drones.list.iter().enumerate()
