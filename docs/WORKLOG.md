@@ -14034,6 +14034,14 @@ Stage Summary:
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
 
+## frame-cost-guard (2026-10-16, branch s/frame-cost-guard)
+- Task: NF_ISO-gated release-only budget tests timing per-frame CPU work headless on the single-player level
+  archives (skin_palette, frame_state, colour_mults, posed_vertices if on a per-frame path, HUD/menu overlay
+  builders, cel_visibility if GPU-free), median-of-N after warm-up, generous asserted budgets, measured numbers
+  printed; plus an audit of loops over char_verts/vertices/attachments/groups on the RedrawRequested path whose
+  cost scales with pools rather than live objects; bit-identical palette/colour output proven on 3 levels;
+  sister assertion (a deliberately slow closure must fail the budget helper).
+- (start) branch created from origin/master 0f5f07f4; work started.
 ## net-determinism (2026-10-15, branch s/net-determinism) — lockstep audit, started
 - Task: prove the MP match sim (mp-core/mp-bots/match-rules/MpSettings) is a pure function of
   (settings, seed, per-tick inputs): audit nondeterminism sources (wall clock, HashMap order,
@@ -14727,6 +14735,79 @@ Playtest: "guards shoot way too soon upon spotting you, at least give it half a 
   mid-session "stall" was a harness bug — a dropped start_match arm in the ported test — traced
   and fixed; all 4 ported tests pass.)
 - Report: docs/reports/net-consolidate.md; no live checks needed (no game-referenced behaviour).
+
+## drake-cutscene-06 (2026-10-16, branch s/drake-cutscene-06)
+- Branch created from origin/master (f42de6ff). Task: playtest 1015-2142 — "drake cutscene on o6 has
+  some lag and glitchiness with objects" (07000006 Drake cut-scene, the script camera's NIS).
+- Plan: (1) headless profile of the cut-scene's per-frame CPU cost (sim tick, script players,
+  frame_state / skin_palette, script entities), extend 649's frame-cost-guard budget tests to it,
+  fix spikes with results unchanged, before/after numbers; (2) list every script entity/character
+  the cut-scene drives with per-frame matrices, flag discontinuities (jump/pop/teleport), compare
+  against the game's script interp [M Script_GetInterp 0x1da158, entity create/delete ops], fix
+  sim-side causes (wrong key interp, missed delete, drawn-before-create), report draw-only problems;
+  (3) tests: cut-scene runs to completion headless, flagged entities' matrices continuous.
+
+## frame-cost-guard (2026-10-16, branch s/frame-cost-guard) — close-out
+- Budget tests: crates/nf-view/tests/frame_cost_live.rs (release-only, NF_ISO-gated). frame_budgets_hold_on_
+  every_single_player_archive times the per-frame CPU phases headless on all 34 SP archives (27 on-foot
+  [levels_sweep enumeration] + driving 07000023-29 [levels.md:91]): frame_state / colour_mults / skin_palette
+  (with the real room mask) / hud::overlay / the cel_visibility composition replicated headless (gpu.rs:567's
+  body is pure CPU; cutscene_models' recipe) — median-of-7 after 2 warm-ups; posed_vertices timed with NO
+  budget (off the window's per-frame path: only caller is NF_BENCH, lib.rs:1462; level-dependent 0.4-716 ms).
+  menu_overlay over the 6 front-end pages ≤0.014 ms (budget 3).colour_attach_map_covers_every_slot_on_the_lag_
+  levels pins the invariant that kept fix 1 dead. a_deliberately_slow_closure_fails_the_budget_helper: a 25 ms
+  closure panics against a 5 ms budget, a fast one passes (the sister assertion, no ISO/release gate).
+- Fixes (bit-identical, FNV-1a palette/colour/mults hashes at t=120/121 on all 34 archives — 68/68 identical
+  before vs after, and again after the master merge):
+  1. skin_palette's per-attachment fallback loop was DEAD (colour_mults inserts every index 0..len whenever
+     sim is Some; the loop ran only under `has` ⇒ sim Some ⇒ contains_key always true): deleted — 8561 hash
+     lookups/frame on 07000005, 12724 on the biggest.
+  2. colour_mults' pickup/attach HashMaps preallocated to their loop bounds (no rehash-grow to 12k/frame).
+  Before→after: colour_mults 0.45-0.59 → 0.16-0.32 ms; skin_palette −0.3…−0.5 ms (07000005 1.806→1.322,
+  07000014 4.051→3.580). Budgets: 8 ms fs/cm/sp, 3 ms hud/cel/menu — ≥2.2× headroom on the worst level.
+- Audit (report "Left/candidates"): uniform staging scales with ALL materials (gpu.rs:662-686 staged/clone×2/
+  per-draw pick2, ~0.5-1.5 ms + 1.4 MB/frame — unfixable headless, needs --shot before/after); lerp_palette
+  blends the full 12k palette every rendered frame (lib.rs:2969-2989 — a x==y fast path is ULP-different, not
+  bit-identical); upload_skin re-uploads ~0.9 MB on idle frames; frame_state poses hidden chars before the
+  hidden check (would change attachment collapse translations); view_model_entries scans all attachments/frame.
+- Ran: the budget test on pre-fix / post-fix / merged trees (34/34 each, 172 s on the merged tree); gpu_skin 3/3,
+  cutscene_models 4/4, fix_portal 6/6, render3 3/3, portal_eyecel 1/1, door_portal 2/2, fix_portal3 4/4+2 ign,
+  character_lighting 4/4, fix_hud 6/6, menus_flow 37/37, nf-game lib 212/212. Suite (final merged tree):
+  144/372 binaries completed in the window — 143 passed, 1 failed (walkreal_07000001's contact-route AI-nav
+  assert, pre-existing: failed identically on the pre-fix tree), 0 TIMEOUT/CRASH; the rest did not fit.
+- Report: docs/reports/frame-cost-guard.md (the 34-row before/after table is in the test's [cost]/[budget]
+  output; [hash] lines are the bit-identity vehicle for future cost fixes).
+
+## drake-cutscene-06 close-out (2026-10-16, branch s/drake-cutscene-06)
+- Playtest 1015-2142 "drake cutscene on o6 has some lag and glitchiness with objects": the
+  cut-scene is the dressing NIS 0x06000071 (SP #810, the level's only script camera, 1129 ticks:
+  164-key camera [D hold to t875 then sweep, hard cuts at 150/549/874], two `Script_AnimStart`
+  actors — suit Bond 0x05000007 on anim 060001fc, tux 0x0500000d on 060001fb [D — no entity
+  streams], events 4/5 at t0, sounds 0x119/0x172, fade -82 at t1049, ch 0x83 at t1052, events
+  6+0xD[2,1]+0x12[07000007] at t1129), driven headless through the real LoadPoint #746 → ch 0x83
+  path (walk_07000006_live's route, carry [0x1d,0x45,0x70]).
+- **Lag found + fixed**: `Pickup_Update`'s port cast the take-ray (`segment_take_scoped`) for
+  EVERY pickup every tick — `touches()` computed the LOS before the distance gate, while the
+  game short-circuits it (`Vec_SqDist3D < r² &&` Collide_LineOfSight [M 0x18e148:210-214]).
+  NF_PROFILE through the scene: update_pickups 1.0 ms/tick during the scene (0.56 idle) of a
+  1.67/1.33 ms sim tick — the largest scoped block. Reordered to the game's own gate
+  (bit-identical boolean, pickup.rs `touches`): update_pickups 0.001 ms, sim tick **1.67 → 0.54
+  ms/tick in the scene (−68 %), 1.33 → 0.83 idle (−37 %)**; render phases flat through the scene
+  (frame_state 1.7, skin_palette 2.1, colour_mults 0.17, cel_vis ≤0.006 ms — the script camera's
+  one-room mask).
+- **Objects audited**: every matrix the scene drives tracked per tick (cutscene_06_live): the
+  camera, the two actor roots (script_pose_together → world_pose, the draw path's own pose) and
+  the SP live matrix. All discontinuities are the game's own data: the camera's 3 key-time cuts
+  [D stream 0] and the actors' root jumps at f550→551 (suit 9.92 m, tux 5.79 m) + f875→876 (tux
+  2.62 m) — present in the sequences' own ROOT channels [D seq 04000174/04000173], each landing
+  on a camera cut tick (the game's teleport-under-the-cut staging; nothing to fix, no draw-only
+  suspects beyond the docs' known F3 tux-skin hand-back note).
+- Tests: cutscene_06_live (the scene runs 1128 ticks to level_exit 07000007 + the objective
+  completes; camera cuts exactly {150,549,874}; every actor jump coincides with a cut ±2 ticks
+  and reproduces the raw sequence root data), frame_cost_live's
+  frame_budgets_hold_through_the_07000006_dressing_cutscene (the scene phases + the sim-tick
+  median, budget 1.5 ms — the pre-fix tick would fail it). pickup_live/rng_live/
+  walk_07000006_live/14 pickup unit tests green on the fix.
 ## satchel-stick2 (2026-10-16, branch s/satchel-stick2)
 - Task: the playtest's satchel charge (0x3b, 07000005, thrown at the low wall by the start, --bond
   105.97,24.87,110.12,-4.369,-0.166) never sticks — "even standing directly at a wall and throwing it at it, it
