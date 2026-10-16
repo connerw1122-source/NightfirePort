@@ -13866,3 +13866,13 @@ timer, the scenario's objective status — flags held, uplink progress, the Top 
 radar's blips) as a per-frame snapshot struct with getters (scores sorted the game's way, timer
 mm:ss, objective markers in world space, radar blips relative to the viewer). No drawing — the
 main agent draws it. Tests: a headless match's snapshot matches the sim state. Branch s/mp-hud-data.
+
+### mp-hud-data progress (sandbox7, 2026-10-16T00:55Z–)
+
+- nf_game::mp::hud: MpHudSnapshot::build(&MpMatch, viewer_slot, viewer_radar_on) — rows (slot
+  order; sorted_rows = the debrief's descending Menu_GetMPScore order), time_left + timer_string
+  (Timer_Seconds2String mode 2), team_scores, flag carriers (MP_HasTeamFlag's carrier-pointer
+  datum), uplink owner/controller/RGB, assassin/target (the globals' inverted names pinned),
+  names_on_radar gate, radar blips (MP_GetRadarObjects: viewer excluded, dead dropped, team
+  colors, the per-scenario markers, the +0x28 radar toggle gate — new MpPlayer::radar_on).
+  Feeds nf_view::hud::radar_project (already ported). Tests mp_hud_data 4/0 headless.
