@@ -78,13 +78,12 @@ takes the per-tick hash as an opaque `u64` via `Session::submit_hash`;
 - `cargo test --offline -p nf-net --lib` — 9/9 unit tests green (codec
   round-trips incl. bit-exact f32, decode rejection of garbage/truncation,
   each with a failing sister assertion).
-- `cargo test --offline -p nf-net --test lockstep` — 5/8 integration tests
-  green on loopback with the deterministic loss/latency shim:
-  handshake+settings+seed+GO; version & build mismatch refused; stall
-  freezes the sim and resumes with catch-up; client timeout reported and
-  the match continues on NEUTRAL; EndMatch policy fires `MatchEnded`.
-- Final tree: the release-mode rerun gave the same 9 lib + 5 integration
-  passes.
+- `cargo test --offline --release -p nf-net` — **all green**: 9/9 unit
+  tests and 8/8 integration tests (`four_agents_2000_ticks_lossy_stay_in_sync`,
+  `one_flipped_input_byte_is_caught_as_desync`, `stall_never_guesses_then_resumes`,
+  `client_timeout_reported_then_neutral_continuation`,
+  `endmatch_policy_ends_match_instead`, `handshake_delivers_settings_seed_and_go`,
+  `version_and_build_mismatch_refused`, `real_udp_loopback_sync`).
 - Fast suite (`tools/test/suite.py`, background from 22:50 UTC): it never
   produced a result line in this sandbox (background jobs are killed
   between tool calls here); the only crates my code touches are `nf-net`
@@ -94,30 +93,27 @@ takes the per-tick hash as an opaque `u64` via `Session::submit_hash`;
 
 ## What's left (honest)
 
-Three integration tests still fail at report time, all after the two wedge
-fixes above, all in the 2000-tick-class runs:
+Nothing in this task's scope. **All 17 tests pass**: 9 unit + 8/8
+integration, including the full `four_agents_2000_ticks_lossy_stay_in_sync`
+(host + 3 clients, 2000 ticks, 5% loss + 30-50 ms latency, zero desyncs,
+hash chains agree at every tick), the one-bit desync sister test, and the
+real-`UdpSocket` loopback run. (An intermediate state of this report said
+3 tests were red; the reds turned out to be TEST-harness bugs, not session
+bugs, and are fixed: (a) the final-hash assertion compared chains of
+DIFFERENT lengths because the host legally overshoots the target tick while
+slower clients finish — hashes are now compared AT tick 1999/299 with
+per-tick marks; (b) the desync sister test corrupted the input at SAMPLING
+time, which propagates the flipped value to every machine through the input
+packets — correct lockstep behaviour that can never desync; the corruption
+now applies to one machine's sim view only, like a real sim bug. A third
+find: a first-HASH piggyback default (`prev_tick == tick`, prev_hash 0)
+was being stored as a remote hash and produced a bogus `Desync` at tick 0;
+the receiver now skips that marker.)
 
-1. `four_agents_2000_ticks_lossy_stay_in_sync` — progress now flows past
-   the old wedge (host 1536 / clients 1492-1528 by step ~1418, no desyncs,
-   no timeouts), but the run had not reached 2000 ticks in its budget when I
-   had to stop; the pacing (catch-up ~1-3 ticks/poll under 5% loss + 30-50 ms
-   latency) needs either more steps or a re-examined lookahead in the test
-   rig.
-2. `one_flipped_input_byte_is_caught_as_desync` — same rig/seed as (1), so
-   it inherits the same pacing; the desync machinery itself is exercised
-   (spurious desyncs from a first-hash piggyback bug were found and fixed —
-   `prev_tick == tick` now marks "no previous hash").
-3. `real_udp_loopback_sync` — reaches 300 ticks over real `UdpSocket`s but
-   final hashes disagree. Suspects, in order: the test's logical-ms clock
-   advancing 16 ms per ~1 ms real iteration (timeout/keepalive interplay),
-   or a real ordering difference between hosts worth investigating with
-   per-tick input dumps. NOT yet diagnosed.
-
-The session layer's core guarantees are the parts covered by the 5 green
-tests + 9 unit tests; the three red tests are all long-run stability
-assertions on the same rig, and my next steps would be: give (1)/(2) a
-bigger step budget, dump per-tick inputs for (3), and then wire
-`MpSettings`/seed into a real `nf-view` host-app path.
+Next steps beyond this task: wire `MpSettings`/seed into a real `nf-view`
+host-app path, replace the fake `sim_hash` with 050's `state_hash(&MpWorld)`
+once it lands, and (optionally) add reconnect-after-timeout as a follow-up
+task.
 
 ## Live checks for the main agent
 

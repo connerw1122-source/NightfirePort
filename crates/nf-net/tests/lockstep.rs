@@ -73,11 +73,13 @@ struct AgentSim {
     executed: u32,
     prev_hash: u64,
     desync_ticks: Vec<u32>,
+    /// (tick, hash) every 50 ticks, for divergence hunting.
+    marks: Vec<(u32, u64)>,
 }
 
 impl AgentSim {
     fn new() -> AgentSim {
-        AgentSim { executed: 0, prev_hash: 0, desync_ticks: Vec::new() }
+        AgentSim { executed: 0, prev_hash: 0, desync_ticks: Vec::new(), marks: Vec::new() }
     }
 }
 
@@ -151,10 +153,7 @@ impl World {
             }
             while self.scheduled[slot] < cap {
                 let t = self.scheduled[slot];
-                let mut inp = agent_input(slot as u8, t);
-                if self.corrupt == Some((slot, t)) {
-                    inp.fire = !inp.fire; // one-bit divergence
-                }
+                let inp = agent_input(slot as u8, t);
                 if slot == 0 {
                     self.host.local_input(t, inp);
                 } else {
@@ -174,6 +173,9 @@ impl World {
                     let h = sim_hash(host_sim.executed, &inputs, host_sim.prev_hash);
                     self.host.submit_hash(host_sim.executed, h);
                     host_sim.prev_hash = h;
+                    if host_sim.executed % 1 == 0 {
+                        host_sim.marks.push((host_sim.executed, h));
+                    }
                     host_sim.executed += 1;
                 }
                 None => break,
@@ -184,10 +186,20 @@ impl World {
             let mut sim = std::mem::replace(&mut self.client_sims[ci], AgentSim::new());
             while self.scheduled[ci + 1] > sim.executed {
                 match self.clients[ci].ready_inputs(sim.executed) {
-                    Some(inputs) => {
+                    Some(mut inputs) => {
+                        // A desync is a SIM-side divergence: flip the input in
+                        // ONE machine's view only (it still sends the clean
+                        // value on the wire, like a real sim bug would).
+                        if self.corrupt == Some((ci + 1, sim.executed)) {
+                            let ls = self.clients[ci].local_slot() as usize;
+                            inputs[ls].fire = !inputs[ls].fire;
+                        }
                         let h = sim_hash(sim.executed, &inputs, sim.prev_hash);
                         self.clients[ci].submit_hash(sim.executed, h);
                         sim.prev_hash = h;
+                        if sim.executed % 1 == 0 {
+                            sim.marks.push((sim.executed, h));
+                        }
                         sim.executed += 1;
                     }
                     None => break,
@@ -345,10 +357,19 @@ fn four_agents_2000_ticks_lossy_stay_in_sync() {
         desyncs.is_empty(),
         "no desync allowed on identical input streams, got {desyncs:?}"
     );
-    // All four machines must have computed the same final hash.
-    let h = w.host_sim.prev_hash;
-    for s in &w.client_sims {
-        assert_eq!(s.prev_hash, h, "final hash mismatch across machines");
+    // All four machines must agree at every common tick (the host may run
+    // a few ticks past the target — compare hashes AT tick 1999, and every
+    // recorded tick for good measure).
+    let h = w.host_sim.marks.iter().find(|(t, _)| *t == 1999).map(|(_, h)| *h)
+        .expect("host must have a hash mark at tick 1999");
+    for (i, s) in w.client_sims.iter().enumerate() {
+        let ch = s.marks.iter().find(|(t, _)| *t == 1999).map(|(_, h)| *h)
+            .unwrap_or_else(|| panic!("client {i} missing hash mark at tick 1999"));
+        assert_eq!(ch, h, "hash mismatch at tick 1999 (client {i})");
+        for (hm, cm) in w.host_sim.marks.iter().zip(s.marks.iter()) {
+            assert_eq!(hm.0, cm.0, "tick sets must align (client {i})");
+            assert_eq!(hm.1, cm.1, "client {i} diverged from host at tick {}", hm.0);
+        }
     }
 }
 
@@ -544,6 +565,8 @@ fn real_udp_loopback_sync() {
                         let h = sim_hash(sims[slot].executed, &inputs, sims[slot].prev_hash);
                         s.submit_hash(sims[slot].executed, h);
                         sims[slot].prev_hash = h;
+                        let et = sims[slot].executed;
+                        sims[slot].marks.push((et, h));
                         sims[slot].executed += 1;
                     }
                     None => break,
@@ -555,7 +578,12 @@ fn real_udp_loopback_sync() {
         }
     }
     assert!(sims.iter().all(|s| s.executed >= 300), "real-UDP run must reach 300 ticks: {:?}", sims.iter().map(|s| s.executed).collect::<Vec<_>>());
-    let h = sims[0].prev_hash;
-    assert!(sims[1..].iter().all(|s| s.prev_hash == h), "hashes must agree over real UDP");
+    // Compare hashes AT tick 299 (the host may run past 300 — chains of
+    // different lengths must not be compared).
+    let at = |m: &AgentSim, t: u32| m.marks.iter().find(|(mt, _)| *mt == t).map(|(_, h)| *h);
+    let h = at(&sims[0], 299).expect("host hash at 299");
+    for (i, s) in sims.iter().enumerate().skip(1) {
+        assert_eq!(at(s, 299), Some(h), "hash mismatch at tick 299 (agent {i}) over real UDP");
+    }
     let _ = client_addrs;
 }
