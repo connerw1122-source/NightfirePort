@@ -16329,3 +16329,51 @@ processes between tool calls; the runner's own per-binary --test-threads=1 + 600
   still holds with the game's math); fix_searchlight_alarm_live 3/3,
   fix_searchlight_remainder_live 2/2, models_world_live 2/2. The full suite runs on the final
   tree (tools/test/suite.py, restarted after the context break killed the first one).
+## mp-match-end (2026-10-16, branch s/mp-match-end) — STARTED 17:20 UTC
+Task 705: a local MP match ends and returns through the debriefing — start a local MP match from
+the menus (frag limit 1 or a 1-minute time limit), play it headless until the end condition fires
+[M MP_CheckForEndCondition 0x184268 / MP_Update states, 402 + 621b on master], and assert the
+host's handover to the front end: the debriefing page (board, ranks, winner line), Confirm → the
+scenario page, a second match starts. The host glue may be missing (port it the way the SP
+mission end works: Drones::mission_end → the host). Tests for the frag-limit and the time-limit
+ends.
+
+## mp-match-end (2026-10-16, branch s/mp-match-end) — close-out 17:36 UTC
+Task 705: the local match's end and the debriefing return. STATE ON MASTER: the MP core (402 +
+mp-debriefing-data2) was complete — `MP_CheckForEndCondition` 0x184268's latches, the `MP_Update`
+0x184bd0 end states 1-6 (the handover flag, the `request_debriefing` exposure, the restart), the
+debriefing board builder (`MpMatch::debriefing`, P_MPDEBRIEFING 0x212198 msg 0x4c) and the front
+end's debriefing page with its Confirm → scenario / Extra → replay arms (C_MPDBG 0x217860) — but
+NOTHING consumed the request: `MpGame::request_debriefing` was set at state 4→5 and read by no
+one, so a real local match ended into a log line. THE GLUE (the SP end's shape, `demo_results`):
+- `Sim::take_mp_debrief_request` (scene.rs): the host's poll — takes the request once and returns
+  the finished match's board + settings (the board from `MpMatch::debriefing`; the settings are
+  the game's pre-match MPSettings backup's port-side source [M Menu_RestoreMPSettings 0x202848 —
+  the game memcpy's 0x1dc bytes @0x2dec68 + the 4 PlayerSetting rows back before C_MPDBG's
+  Confirm reopens the scenario page]).
+- `App::mp_results(board, settings)` (lib.rs, beside `demo_results`/`pending_mission_end`): a
+  fresh FrontEnd inheriting the music statics (frontend-music), the flow on the runner state
+  [M 0x1c98c8 case 1], `restore_mp_match` (the menu state from the match's settings: the arena,
+  the scenario + wheel rows, the limits with the confirm's ×0x3c inverted, the weapon set, radar,
+  friendly fire, the agents' join records, the bot slots), `show_mp_debriefing` (the page
+  0x40000033 [M 0x184bd0:63]), then the level request `ResetMap_LevelToLoad(0x7000048)` + the
+  fade push [M 0x184bd0:64-78] — the sim freezes (the tick loop runs only while the fe is
+  closed; the game's per-slot GS_PausePlayer).
+- `menu.rs`: `open_mp_debriefing` delegates to the new `show_mp_debriefing(board)` (the host
+  cannot borrow the match — it lives in the sim the front end replaces); `restore_mp_match`
+  ports the backup restore.
+Confirm then returns to the scenario page [M 0x217860:8-11] with the match's choices live, and
+`mp_confirm_start` hands the same arena over again — the second match needs nothing new.
+TESTS `crates/nf-view/tests/mp_match_end_live.rs` (2, green): the frag limit (1) end — the arena
+loads through `load_mp_carry` (the confirm's own loader), one frag rides the scoring entry
+`MpMatch::player_killed` (the port's MP_RegisterKill; the sim's drone-death wiring is phase 2
+and will call this same fn), the real per-tick machine walks 1 → 3 → 4 → 5, the board carries
+"Player 1" 1st with the frag, the winner line binds the codename, the front-end map 0x07000048
+is requested, Confirm lands on the scenario page (0x4000001a) with the arena/limit/agent
+restored, and `mp_confirm_start` re-requests the arena with the settings; the time-limit end
+(1 minute = 3600 real ticks) — 0xfe latches [M 0x184268:142-143], the machine runs 2 → 3 → 4 → 5,
+the scoreless board's result line is the draw text 0x010002a0. Tests run before push:
+mp_match_end_live 2/2, mp_debriefing_flow 6/6, mp_menu_flow 9/9, mp_defaults_setup 10/10,
+menus_e2e_mp 5/5, mp_net_lobby 9/9, menu_audio_flows 9/9, mp_bots_live 2/2, mp_core_live 5/5,
+nf-game mp_debriefing 10/10 + mp_match_rules 14/14 + mp_hud_data 4/4 (85 green across the
+touched path). The fast-runner suite on the final tree started 17:34 UTC.

@@ -1673,6 +1673,10 @@ struct App {
     menu_clock: f32,
     /// The sim reported the mission's own end this frame (see `Drones::mission_end`).
     pending_mission_end: bool,
+    /// mp-match-end: the sim's MP machine reached the debriefing handover (`MP_Update` 0x184bd0
+    /// case 4 → `MpGame::request_debriefing`): the finished match's debriefing board and its
+    /// settings (`Sim::take_mp_debrief_request`), drained by `App::mp_results` after the tick.
+    pending_mp_debrief: Option<(nf_game::mp::debrief::MpDebriefing, nf_game::mp::MpSettings)>,
     /// Dev `--set-channel <ch>`: a switch channel raised 2 s into the level (channel 100 = mission
     /// success — what scratchpad complete.py writes in PCSX2), for end-of-mission checks.
     force_channel: Option<u8>,
@@ -2212,6 +2216,43 @@ impl App {
     /// F8/F9: show the mission-complete / mission-failed results page for the loaded mission [S demo
     /// hook — the game reaches it from `Mission_Update` 0x182c60:74's event; the port's mission-event
     /// → results glue is listed in docs/reports/fix-menus.md as remaining host work].
+    /// mp-match-end: the local match's end handover — the `MP_Update` 0x184bd0 case-4 sequence
+    /// [M :62-78: `GameState+0x1C = 0x40000033` + `ResetMap_LevelToLoad(0x7000048)` + the fade +
+    /// the per-slot `Player_SetCamMode`/`GS_PausePlayer`] on the front end the SP end built
+    /// (`demo_results`'s shape): a fresh `FrontEnd` inheriting the music statics, the flow on the
+    /// runner state, the front-end map requested, the debriefing page up with the board, and the
+    /// MP menu state restored from the match's settings ([M `Menu_RestoreMPSettings` 0x202848 —
+    /// the game's backup restore; the port restores at the handover because the manager that
+    /// started the match was deleted). Confirm then returns to the scenario page (C_MPDBG
+    /// 0x217860:8-11) and a second match starts from it through the existing flow.
+    fn mp_results(&mut self, board: nf_game::mp::debrief::MpDebriefing, settings: nf_game::mp::MpSettings) {
+        let mut fe = menu::FrontEnd::new();
+        // The same music-statics inheritance `demo_results` runs (frontend-music): the match ran
+        // with no front end, so the statics come from the last stash.
+        if let Some(old) = self.fe.take() {
+            Self::inherit_music_statics(&mut fe, old.music.bank_flip, old.music.loaded_bank, old.music.music_master);
+        } else {
+            Self::inherit_music_statics(&mut fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
+        }
+        // The game's handover deletes the menu manager with the match-start request; the fresh
+        // manager boots into the runner state [M 0x1c98c8 case 1] — the flow must be live for the
+        // page's own `reset_map_level_to_load`-shaped pushes.
+        fe.flow.stack = vec![menu::ST_RUNNER];
+        fe.flow.current_level = menu::FRONTEND_LEVEL;
+        // The restore BEFORE the page open: C_MPDBG's Confirm must land on a scenario page that
+        // already holds the match's choices (the game's manager-side restore is the same data).
+        fe.restore_mp_match(&settings);
+        fe.show_mp_debriefing(board);
+        // The level request + the fade, the game's order [M 0x184bd0:64-78]: the front-end map
+        // load pushes first, the fade state lands on top. The sim (the arena) freezes: the tick
+        // loop runs only while `fe.is_none()` — the game's GS_PausePlayer per slot.
+        fe.requested_level = Some(menu::FRONTEND_LEVEL);
+        fe.flow.reset_map_level_to_load(menu::FRONTEND_LEVEL, false, false);
+        fe.flow.push_state(menu::ST_FADE_HOLD);
+        self.fe = Some(fe);
+        self.grab(false);
+    }
+
     fn demo_results(&mut self, complete: bool) {
         if self.level_code == 0 || self.level_code == menu::FRONTEND_LEVEL { return; }
         let mut fe = menu::FrontEnd::new();
@@ -3314,6 +3355,15 @@ impl ApplicationHandler for App {
                             eprintln!("level: mission over (LevelToEndTo {end_to:08x}) — the outro + results");
                             self.pending_mission_end = true;
                         }
+                        // mp-match-end: `MP_Update` 0x184bd0 case 4's handover — the debriefing
+                        // request carries the finished match's board + settings to the front end
+                        // (the drain runs after the tick block, beside `pending_mission_end`'s).
+                        if self.pending_mp_debrief.is_none() {
+                            if let Some((board, settings)) = sim.take_mp_debrief_request() {
+                                eprintln!("mp: match over — the debriefing handover ({} rows)", board.rows.len());
+                                self.pending_mp_debrief = Some((board, settings));
+                            }
+                        }
                         if let Some(next) = sim.drones.level_exit.take() {
                             let resolved = nf_game::triggers::resolve_exit_code(next);
                             if resolved != next { eprintln!("level: exit {next:08x} resolves to {resolved:08x} [M 0x1d3560]"); }
@@ -3370,6 +3420,8 @@ impl ApplicationHandler for App {
                         }
                     }
                     if std::mem::take(&mut self.pending_mission_end) { self.demo_results(true); }
+                    // mp-match-end: the debriefing handover, drained beside the mission end.
+                    if let Some((board, settings)) = self.pending_mp_debrief.take() { self.mp_results(board, settings); }
                 }
                 let Some(g) = &mut self.gfx else { return };
                 if g.minimized {
@@ -3815,7 +3867,7 @@ pub fn run() -> Result<()> {
     // `--hold-npcs` (dev): the window run holds every guard in place, still shootable.
     if dev && args.iter().any(|a| a == "--hold-npcs") { if let Some(sim) = scene.sim.as_mut() { sim.drones.hold_npcs = true; } }
     let force_channel = if dev { args.iter().position(|a| a == "--set-channel").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u8>().ok()) } else { None };
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, pending_mp_debrief: None, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
         net: None, net_lobby: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,

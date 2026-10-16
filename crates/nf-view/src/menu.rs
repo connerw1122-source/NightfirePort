@@ -5493,9 +5493,58 @@ impl FrontEnd {
     /// [M P_MPDEBRIEFING 0x212198 msg 0x4c]. The level request itself stays the host's
     /// (`ResetMap_LevelToLoad(0x7000048)` — the front-end map the host already manages).
     pub fn open_mp_debriefing(&mut self, m: &nf_game::mp::MpMatch) {
+        let board = m.debriefing();
+        self.show_mp_debriefing(board);
+    }
+
+    /// mp-match-end: the handover's page half with an already-built board — the host cannot
+    /// borrow the match (it lives in the sim the front end replaces), so the board travels by
+    /// value from `Sim::take_mp_debrief_request`.
+    pub fn show_mp_debriefing(&mut self, board: nf_game::mp::debrief::MpDebriefing) {
         self.enter_page(Page::MpDebriefing);
         self.cursor = 0;
-        self.mp_debriefing = Some(m.debriefing());
+        self.mp_debriefing = Some(board);
+    }
+
+    /// mp-match-end: `Menu_RestoreMPSettings` 0x202848's port — the game memcpy's the pre-match
+    /// MPSettings backup (0x1dc bytes @0x2dec68) and the four PlayerSetting records (0x158 each)
+    /// back over the live state before C_MPDBG's Confirm reopens the scenario page
+    /// [M 0x217860:8-11]. The port's match never compacts its settings (`mp_confirm_start`
+    /// clones), but the front end that started it is GONE — the host builds a fresh one at the
+    /// handover — so the menu state is restored from the finished match's own settings copy:
+    /// the arena, the scenario, the limits (the time limit back to minutes [M the confirm's
+    /// ×0x3c inverse]), the weapon set, the radar and the friendly-fire choice, and the agents'
+    /// join records (the humans joined+ready with their codenames/teams/skins; the game's
+    /// per-agent PlayerSetting backup holds the same records [M the 0x158-byte rows]).
+    pub fn restore_mp_match(&mut self, s: &nf_game::mp::MpSettings) {
+        self.mp_level = s.level_code;
+        self.mp_scenario = s.scenario;
+        self.mp_scenario_row = MP_SCENARIO_ROWS.iter().position(|r| r.3 == s.scenario).unwrap_or(0);
+        self.mp_map_row = MP_MAP_ROWS.iter().position(|r| r.3 == s.level_code).unwrap_or(0);
+        self.mp_frag_limit = s.frag_limit;
+        self.mp_time_limit = if s.time_limit == -1 { -1 } else { s.time_limit / 60 };
+        self.mp_weapon_set = s.weapon_set;
+        self.mp_radar = s.radar;
+        self.mp_friendly_fire = s.friendly_fire;
+        for (i, slot) in self.mp_join.iter_mut().enumerate().take(4) {
+            let joined = (i as u32) < s.human_count;
+            slot.joined = joined;
+            slot.ready = joined;
+            slot.state = if joined { 5 } else { 0 };
+            slot.team = s.players[i].team as u32;
+            slot.skin = s.players[i].skin;
+            slot.codename = s.players[i].codename.clone();
+        }
+        // The bots: the enabled records are the match's bot slots, in slot order [M MP_Start
+        // 0x183a50:164's total = humans + bots; Menu_PrepareBots 0x1f94a0 compacts the enabled
+        // records into the settings' bot rows].
+        for (i, bot) in self.mp_bots.iter_mut().enumerate() {
+            let slot = s.human_count as usize + i;
+            bot.enabled = i < s.bot_count as usize;
+            if bot.enabled {
+                if let Some(p) = s.players.get(slot) { bot.character = p.skin; }
+            }
+        }
     }
 
     /// The debriefing's rows (up to 4, display order) [M P_MPDEBRIEFING 0x212198:131-219].
@@ -6208,8 +6257,49 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             logo_stamp(&mut h);
         }
         // Not drawn yet: the per-agent setup step (PCSX2 m52-m54 — the Join Game panels with Choose Team / Choose
-        // Character / Health Handicap), the Start summary (m65) and the debriefing.
-        Page::MpSetup | Page::MpConfirm | Page::MpDebriefing => {}
+        // Character / Health Handicap) and the Start summary (m65).
+        Page::MpSetup | Page::MpConfirm => {}
+        // The debriefing [L the menu-def page 0x40000033 (mp-debriefing.md §4): header (50,40,376×17)
+        // 0x151; the column titles (120×16) x=52 at y 183/217/250/284/318 = Agent/Points/Victories/
+        // Deaths/TOTAL; the four slot panels x 176/280/384/488 (the portrait 81×81 at y=102, the name
+        // 100×16 at y=183, the values 78×16 at 217/250/284/318, the rank caption 72×17 over the
+        // portrait, the placeholder portrait texes 0x0300015d/c/56/6b); the result plate
+        // (176,355,408×52) + line (178,369,405×24); the hint (50,419) 0x2c1; the logo (434,38,156×43)
+        // TEX 0x0300016d. The rows/result come from `MpMatch::debriefing` through the getters
+        // (mp-debriefing-data2); the small-table portraits draw [0,0,128,128] like the join page's.]
+        Page::MpDebriefing => {
+            centred(&mut h, font, -2, &hint(MP_DEBRIEFING_HEADER, "DEBRIEFING"), mx(50.0 + 188.0), my(48.0), bright, true, 1.25);
+            if textures.iter().any(|(hash, _)| *hash == 0x0300_016d) {
+                quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+            }
+            const COL_YS: [f32; 5] = [183.0, 217.0, 250.0, 284.0, 318.0];
+            for (i, id) in MP_DEBRIEFING_COLS.iter().enumerate() {
+                centred(&mut h, font, -2, &bind(*id), mx(52.0 + 60.0), my(COL_YS[i] + 8.0), bright, true, 1.0);
+            }
+            const PORTRAIT_PLACEHOLDER: [u32; 4] = [0x0300_015d, 0x0300_015c, 0x0300_0156, 0x0300_016b];
+            for (i, (rank, name, tex, points, victories, deaths, total)) in fe.mp_debriefing_rows().iter().enumerate() {
+                let px = 176.0 + i as f32 * 104.0;
+                let ptex = if *tex != 0 { *tex } else { PORTRAIT_PLACEHOLDER[i] };
+                tex_quad_or_plate(&mut h, textures, ptex, px, 102.0, 81.0, 81.0, [0.0, 0.0, 128.0, 128.0], gs(0x7f7f7f, 0xff));
+                // The rank caption over the portrait [S the exact y — the live render check pins it].
+                centred(&mut h, font, -2, &bind(*rank), mx(px + 36.0), my(96.0), bright, true, 1.0);
+                let nm = match name {
+                    nf_game::mp::debrief::MpDebriefName::Human(s) => s.clone(),
+                    nf_game::mp::debrief::MpDebriefName::Bot(ch) => nf_game::mp::MpMatch::bot_short_name_label(*ch)
+                        .map(|l| bind(l)).filter(|s| !s.is_empty()).unwrap_or_else(|| "Bot".into()),
+                };
+                centred(&mut h, font, -2, &nm, mx(px + 50.0), my(183.0 + 8.0), bright, false, 1.0);
+                for (j, v) in [points, victories, deaths, total].iter().enumerate() {
+                    centred(&mut h, font, -2, &v.to_string(), mx(px + 39.0), my(COL_YS[j + 1] + 8.0), cream, false, 1.0);
+                }
+            }
+            plate(&mut h, 176.0, 355.0, 408.0, 52.0, gs(0x1e1210, 0x60));
+            let (rl, rarg) = fe.mp_debriefing_result();
+            let line = if rarg.is_empty() { bind(rl) } else { bind(rl).replace("%s", &rarg) };
+            centred(&mut h, font, -2, &line, mx(178.0 + 202.5), my(369.0 + 12.0), bright, true, 1.0);
+            hint_bar(&mut h, font, &hint(MP_DEBRIEFING_HINT, "~A Continue  ~Y Replay"), 50.0, 419.0, cream);
+            logo_stamp(&mut h);
+        }
         Page::Start => {
             // The title [M menu-def page 0x40000009: the art control 0x10000196 (0,0,640,480) TEX
             // 0x03000074; the prompt control 0x100000fa (131,309,379×16) LBL 0x1c9, colours 0x7f621fff;
