@@ -26,3 +26,8 @@ ISO-gated where they read the disc, each with a sister assertion that can fail).
 
 ---
 claimed-by: sandbox2 at 2026-10-16T01:09Z
+
+---
+## Report (done, 2026-10-16T02:30Z)
+
+Closed by the driver: the report is on `s/drive-keyboard-input` (docs/reports/drive-keyboard-input.md); the worker didn't run finish.sh.
