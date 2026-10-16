@@ -1104,7 +1104,7 @@ fn take_maps_holding(level: &mut Level, foreign: &Level, hashes: &[u32]) -> usiz
 /// level-load-time: the parsed-foreign-archive cache behind `merge_weapon_models`. The session mesh
 /// merge used to re-parse every earlier story archive on EVERY load (5-7 `Level::parse` per level,
 /// ~6.7 s of the 27-level probe total). Entries are immutable after parse; a hit's taken maps clone
-/// out bit-identically. Bounded FIFO of 2 entries (the parsed maps can be tens of MB each — keep
+/// out bit-identically. Bounded FIFO of 4 entries (the parsed maps can be tens of MB each — keep
 /// the resident set small); the scan order (STORY_ORDER descending per load) re-visits the same
 /// archives across consecutive levels, so the small window still hits.
 fn foreign_level_cache() -> &'static std::sync::Mutex<(std::collections::VecDeque<String>, std::collections::HashMap<String, std::sync::Arc<Level>>)> {
@@ -1136,7 +1136,7 @@ fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
                 if !c.1.contains_key(&name) {
                     c.0.push_back(name.clone());
                     c.1.insert(name.clone(), l.clone());
-                    while c.1.len() > 2 { if let Some(old) = c.0.pop_front() { c.1.remove(&old); } }
+                    while c.1.len() > 4 { if let Some(old) = c.0.pop_front() { c.1.remove(&old); } }
                 }
                 l
             }
