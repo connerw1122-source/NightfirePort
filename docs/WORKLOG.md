@@ -14579,3 +14579,15 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   resolves it per SP level; (2) fix the misses (unmerged archives, hash aliases, per-class archive
   rules); (3) headless test on 3 levels that every dev-panel weapon resolves a view model, plus a
   bogus-hash-must-report-missing sister; (4) census table before/after in the report.
+- weapon-model-coverage close-out: the disc index tabulates map objects (DiscIndex.objects, cache
+  V2 — every kind-0/1/2/11 ENTITY_PARAMS hashcode -> first holding archive); merge_weapon_assets
+  tops up the still-missing weapon-model meshes from the archive the index names (surgical for
+  --give, whole-table for --dev). Census [D: weapon_data/ammo_data/FileList from the EE snapshot,
+  all 99 archives scanned]: every fp-armed weapon's +0xDC skin exists (41 skins / 96 ids, mostly
+  on the MP packs 07000029/4B/46/43 — the per-class archive shape), the silenced twins / variants
+  share skins (benign aliases), the session merge's "27 still missing" on 07000005 was a mid-load
+  stage count, and the one real miss was weapon 0x63's tp mesh 02000312 (on 07000004/16 only —
+  unreachable on 07000001-03). Residue = the casing meshes 02000446/02000443 on NO archive (the
+  shipped game's own gap, now logged honestly). Tests: weapon_model_census_live 3/3 (dev-panel
+  view models on 07000005/0c/14; the 20-level table through the real merges; the bogus-hash
+  sister), weapon_assets_live 5/5. Report: docs/reports/weapon-model-coverage.md.
