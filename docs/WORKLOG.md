@@ -15824,3 +15824,12 @@ fix_swim_entry_live, fix_swim_vent_live, fix_swim_vent5_live, walkreal_07000005_
 LADDER-02 FINAL SUITE (14:16 UTC): the final-tree fast-runner total `1808 passed, 6 failed,
 72 ignored (42 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes; no
 regressions from the cel-scoped hit-below fix.
+
+## kimiko-actors-07 (2026-10-16, branch s/kimiko-actors-07) — STARTED 15:41 UTC
+Task 701: the right actors in the 07000007 Kimiko cut-scene — playtest 1012-2337: "models in
+that cutscene arent accurate" (earlier reports: duplicates in the Drake scene, models present
+before they should be). Plan: list every actor the 07000007 scene script creates or uses (skin
+hash, spawn/despawn ticks, script actor vs level drone) [M the script's entity create ops,
+Script_AnimStart 0x1d8f40, the actor binding]; compare against the script data; fix the port's
+binding (wrong skin / level drone drawn instead of the script actor / missing despawn); tests:
+the actor set and skins per scene phase match the script, with no duplicates.
