@@ -14462,3 +14462,13 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+## faster-live-tests (2026-10-16, branch s/faster-live-tests) — start
+- Task: cut the slow live-test binaries' time (weapon_matrix_live 307 s, levels_sweep_live 184 s,
+  fix_guard_weapons_live 157 s, walkreal_07000001_live 132 s, models_misc_live 100 s,
+  campaign_flow_live 85 s, then fix_striped_box_census 73 s, fix_party_mission_live 61 s,
+  portal_sweep_live 40 s) without losing coverage: share loaded levels across a binary's tests
+  (OnceLock cache + per-test clone), cut tick counts only where the assertion provably doesn't
+  need them, delete the f71a2925 probe `crates/nf-view/tests/zz_obj_drives_probe.rs` (moving any
+  real assertion first). No assertions weakened or removed.
+- Baseline full suite started on the untouched master tree (suite-baseline.out).
