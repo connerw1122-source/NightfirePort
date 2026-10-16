@@ -209,6 +209,15 @@ impl MenuMusic {
 /// loaded level (a mission's bank resolves neither jingle [D SB_12]); `StopJingles`,
 /// `StartMusic`, `StopMusic`, `MusicVolume` and `FadeDownMusic` always run.
 pub fn fe_music_step(fe: &mut crate::menu::FrontEnd, music_page: &mut Option<Page>) -> Vec<MusicCmd> {
+    // The intro run owns the screen: the game's up-page is P_INTRO until the movies end [M
+    // 0x209e88's page change follows the movies] — the port's early page flip to Main (the
+    // menus_flow draw contract) is NOT the game's msg-0x44 to Main, and firing Main's 0x4c here
+    // restarted the jingle UNDER the intro (menu-audio-state). Hold the transition: the
+    // intro-end restart (open_pair_sfx) collapses the pair, and the real page enter after it
+    // sends nothing while the pair is up.
+    if fe.intro_playing {
+        return fe.music.take_cmds();
+    }
     if *music_page != Some(fe.page) {
         if *music_page == Some(Page::Credits) {
             fe.music.credits_leave();

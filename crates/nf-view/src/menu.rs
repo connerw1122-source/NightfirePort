@@ -4024,6 +4024,13 @@ impl FrontEnd {
                         );
                     } else {
                         self.requested_level = Some(level);
+                        // The game DELETES the menu manager at the pick (C_SBNFMAP case 0x4b's
+                        // load hand-over [M 0x20b8d8]), so the pair dies here — the port's manager
+                        // only goes at the async swap, and without this the jingle played on under
+                        // the briefing (menu-audio-state). menu_movie clears with it [M
+                        // MenuManager_Delete 0x21c2b0:15].
+                        self.menu_movie = false;
+                        self.remove_pair();
                     }
                     return true;
                 }
@@ -5176,8 +5183,12 @@ impl FrontEnd {
             if let Some(sess) = self.mp_session.as_mut() { sess.start_match(&s.clone()); }
         }
         // [M the match-start calls] — the level request + the fade push; MenuManager_Delete is
-        // the host closing the overlay once the load leaves the front-end map.
+        // the host closing the overlay once the load leaves the front-end map. The delete takes
+        // the pair with it [M 0x21c2b0:11-15] — the port's manager only goes at the async swap,
+        // so the pair dies here (menu-audio-state).
         self.requested_level = Some(self.mp_level);
+        self.menu_movie = false;
+        self.remove_pair();
         self.flow.reset_map_level_to_load(self.mp_level, false, false);
         self.flow.push_state(ST_FADE_HOLD);
         true
