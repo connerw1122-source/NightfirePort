@@ -5433,7 +5433,15 @@ pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelle
     /// ee_start_05.bin]) sets it — the 'Unguided' 0x2D (0x1a200) and the Torpedo 'Guided' 0x30
     /// (0x20200, homing only) do not [L], matching the PCSX2 pass (only 0x2C puts the view on the
     /// rocket).
-    pub guided_cam: bool }
+    pub guided_cam: bool,
+    /// `BU+0xF0`: the launch sound's handle (`Bullet_init` 0x12c5a0:269-290 stores the LAST
+    /// `Sound_Play3D` return there — for the ammo-0x0e rockets the 0x10e whoosh's; 0 = none).
+    /// `Bullet_update` 0x12e7b0:98-108 moves the voice with the rocket every tick and clears the
+    /// handle when the driver finished it; `Bullet_Delete` 0x12e660:13-16 stops it on the object's
+    /// delete (disasm 0x12e680 `lw a0, 0xf0(s2)` → `jal Sound_Stop` → `sw zero, 0xf0(s2)`).
+    /// rocket-sound-leak: on its own line (merge lesson 4).
+    pub snd: crate::sound::Handle,
+}
 
 /// fix-weapon-fire-modes: the guided missile's look-input steering (`Bullet_update` 0x12e7b0:177-244,
 /// run while the owner rides the camera in substate 10): the look analog floats (the game's
@@ -6255,7 +6263,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // grenade ammo pool (docs/fields/ammo-data.md rec 14: the frag/cluster grenades 0x2c-0x31's
         // rocket/torpedo kin) — also plays the launch whoosh 0x10e at the shooter, on top of the
         // fire sound. sound-coverage port (audit-sound-calls).
-        if w[0x90] == 0x0e { self.audio.play3d(0x10e, from, None); }
+        // rocket-sound-leak: the HANDLE is kept (the game stores it at BU+0xF0 [M 0x12c5a0:277-282]).
+        // 0x10e is a LOOPED id ([L ACTION.ELF SFXOutputData @0x2c94a0, entry 0x10e: looped 1, inner
+        // 5 / outer 30]) — the EE pool only frees a looped node on `Sound_Stop`, so the old
+        // fire-and-forget play left a looping whoosh at the muzzle per shot, stacking per rocket
+        // (playtest 1015-1738: "it doesn't stop, and it can stack up"). The game stops it in
+        // `Bullet_Delete` [M 0x12e660:13-16] / `Bullet_update` case 3 [M 0x12ed68]. The play sits
+        // outside the pellet loop; every disc 0x0e record (0x2c/0x2d/0x2e/0x2f/0x30/0x31/0x6d [L
+        // ee_start_05.bin weapon_data +0x90 sweep]) is single-pellet, so one whoosh per shot is the
+        // game's one `Sound_Play3D` per `Bullet_init` exactly.
+        let whoosh = if w[0x90] == 0x0e { self.audio.play3d(0x10e, from, None) } else { 0 };
         let f = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
         for _ in 0..u32::from_le_bytes(w[0x18..0x1c].try_into().unwrap()).clamp(1, 16) {
@@ -6286,6 +6303,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 target: None,
                 // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:234-254]: `+0x6C & 4` rides the camera.
                 guided_cam: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x4 != 0,
+                // rocket-sound-leak: BU+0xF0 — the launch whoosh's handle (0 when the weapon plays none).
+                snd: whoosh,
             });
         }
         // `Bullet_init_casing` 0x12fde0 (Player_WeaponInitBullet 0x1a4bf0:306, right after the
@@ -6378,6 +6397,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let mut bullets = std::mem::take(&mut self.player_bullets);
         for (bi, b) in bullets.iter_mut().enumerate() {
             if b.dead { continue; }
+            // rocket-sound-leak [M Bullet_update 0x12e7b0:98-108, the head of EVERY tick before the
+            // state machine]: while BU+0xF0 is live the game moves the launch sound with the bullet
+            // (`Sound_SetPosition(handle, obj)`), and when the driver reports it finished it zeroes
+            // the handle (a looped voice never finishes on its own; the clear covers a stopped one).
+            if b.snd != 0 {
+                if self.audio.finished(b.snd) { b.snd = 0; }
+                else { self.audio.set_position(b.snd, b.pos); }
+            }
             if b.travelled > b.range { b.dead = true; continue; }
             let mut step = if b.first { (self.rng.frand(0.5) + 0.5) * b.speed } else { b.speed };
             b.first = false;
@@ -6649,6 +6676,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // fix-gas-rng4: the dead-bullet retain moved to the impact flush (`flush_world_impacts`,
         // the end of `tick`) — a deferred ricochet/pierce revives its bullet in place through
         // `player_bullets[bi]`, and the flush replays the world-hit walk before the retain runs.
+        // rocket-sound-leak: the launch whoosh's `Sound_Stop` rides the REAL delete pass at the
+        // flush's retain (a revived bullet keeps its handle, as in the game — `Bullet_Delete`
+        // never ran for a bullet that lived on).
         self.player_bullets = bullets;
     }
 
@@ -6781,6 +6811,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     b.first = false;
                 }
             }
+        }
+        // rocket-sound-leak [M Bullet_Delete 0x12e660:13-16 — every bullet death funnels through
+        // the object's delete pass]: `if (BU+0xF0 != 0) { Sound_Stop(BU+0xF0); BU+0xF0 = 0; }`
+        // (disasm 0x12e680: `lw a0, 0xf0(s2)`; 0x12e68c: `jal Sound_Stop`; 0x12e694: `sw zero,
+        // 0xf0(s2)`). The guided camera's restore rides the same function ([M :22-31 — BL+0x878 = 0,
+        // BL+0x944 = 0xf]). The retain below IS the delete (fix-gas-rng4 moved it here from
+        // `update_player_bullets`): the bullets still flagged dead at this point are the removed
+        // ones — a pierce/ricochet revived its bullet above (dead = false, handle kept, the game's
+        // Bullet_Delete never ran for it); the pre-fix leak never stopped the looped whoosh at all
+        // (playtest 1015-1738).
+        for b in self.player_bullets.iter().filter(|b| b.dead) {
+            if b.snd != 0 { self.audio.stop(b.snd); }
         }
         self.player_bullets.retain(|b| !b.dead);
     }
@@ -8352,10 +8394,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 if done_msg != 0 || next_ai != 0 { dr.send(d, rng, frame, done_msg); }
             }
             // `DroneAnim_EventFunc` datum 1 (the grenade-throw release): `DroneWeap_ThrowGrenade` creates a
-            // projectile (WORKLOG 0080). The throw sound 0x5EF enters the pool.
+            // projectile (WORKLOG 0080). rocket-sound-leak: the 0x5EF this used to play here is a LOOPED
+            // id ([L ACTION.ELF SFXOutputData entry 0x5ef: looped 1, weight 0]) entered fire-and-forget —
+            // one stuck looping voice per drone grenade, the same stacking leak as the guided rocket's
+            // whoosh. The game plays NO sound on the throw: `DroneWeap_ThrowGrenade` 0x179558 has no
+            // `Sound_Play3D` call at all, and `DroneWeap_FireWeapon` 0x178f68:275 explicitly SKIPS the
+            // 0x5ef id ("the silent" sound — the shot-pitch draw is skipped with it [M
+            // fix-guard-weapons3]); `Bullet_init`'s own 0x5ef arm belongs to the hat record (+2 == 0x45
+            // [M 0x12c5a0:286-290]) whose handle `Bullet_Delete` stops [M 0x12e660:13-16]. [M]
             if std::mem::take(&mut dr.pending_grenade) {
                 if let Some(g) = dr.throw_grenade(d, rng, index) {
-                    if let Some(t) = d.sfx { let h = t.get(0x5ef); self.audio.play3d(h.id, g.pos, None); }
                     self.grenades.push(g);
                 }
             }
