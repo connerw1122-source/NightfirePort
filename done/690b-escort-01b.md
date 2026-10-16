@@ -28,3 +28,8 @@ escort_follow_07000001_live. Run the FULL suite before you finish, and list ever
 
 ---
 claimed-by: sandbox6 at 2026-10-16T15:00Z
+
+---
+## Report (done, 2026-10-16T16:13Z)
+
+Closed by the driver: the report is on `s/escort-01b` (docs/reports/escort-01b.md); the worker didn't run finish.sh.
