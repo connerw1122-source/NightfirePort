@@ -86,7 +86,11 @@ headroom on the worst level.
 - Targeted regression set on the merged tree: gpu_skin_live 3/3, cutscene_models_live 4/4, fix_portal_live 6/6,
   render3_live 3/3, portal_eyecel_live 1/1, door_portal_live 2/2, fix_portal3_live 4/4 (+2 ignored),
   character_lighting_live 4/4, fix_hud_live 6/6, menus_flow 37/37, nf-game lib 212/212.
-- Full suite: see the WORKLOG entry for the final merged-tree run's total line.
+- Full suite (tools/test/suite.py): the 2-hour window did not fit all 372 binaries (two runs; the walkreal_*
+  binaries alone take ~9.5 min each). The final merged-tree run completed **144 of 372 binaries, 143 passed,
+  1 failed** — the pre-existing `walkreal_07000001_live` AI-nav failure below; 0 TIMEOUT/CRASH. The binaries
+  ran on the merged tree (125abbd7's build; the two later commits are comment/doc-only, codegen-identical).
+  The remaining ~228 binaries did not fit the window — the next window should run the suite to completion.
 - One failure in the suite runs is pre-existing and unrelated: `walkreal_07000001_live::
   walk_from_the_spawn_to_the_exit_with_the_contact` ("the contact must walk his route to the
   LoadPointActivator plate", walkreal_07000001_live.rs:218) failed identically on the pre-fix tree (before

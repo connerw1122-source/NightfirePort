@@ -14112,3 +14112,34 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
 - Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
   (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
   attract page draws the movie fullscreen over black, no controls, no plate.
+
+## frame-cost-guard (2026-10-16, branch s/frame-cost-guard) — close-out
+- Budget tests: crates/nf-view/tests/frame_cost_live.rs (release-only, NF_ISO-gated). frame_budgets_hold_on_
+  every_single_player_archive times the per-frame CPU phases headless on all 34 SP archives (27 on-foot
+  [levels_sweep enumeration] + driving 07000023-29 [levels.md:91]): frame_state / colour_mults / skin_palette
+  (with the real room mask) / hud::overlay / the cel_visibility composition replicated headless (gpu.rs:567's
+  body is pure CPU; cutscene_models' recipe) — median-of-7 after 2 warm-ups; posed_vertices timed with NO
+  budget (off the window's per-frame path: only caller is NF_BENCH, lib.rs:1462; level-dependent 0.4-716 ms).
+  menu_overlay over the 6 front-end pages ≤0.014 ms (budget 3).colour_attach_map_covers_every_slot_on_the_lag_
+  levels pins the invariant that kept fix 1 dead. a_deliberately_slow_closure_fails_the_budget_helper: a 25 ms
+  closure panics against a 5 ms budget, a fast one passes (the sister assertion, no ISO/release gate).
+- Fixes (bit-identical, FNV-1a palette/colour/mults hashes at t=120/121 on all 34 archives — 68/68 identical
+  before vs after, and again after the master merge):
+  1. skin_palette's per-attachment fallback loop was DEAD (colour_mults inserts every index 0..len whenever
+     sim is Some; the loop ran only under `has` ⇒ sim Some ⇒ contains_key always true): deleted — 8561 hash
+     lookups/frame on 07000005, 12724 on the biggest.
+  2. colour_mults' pickup/attach HashMaps preallocated to their loop bounds (no rehash-grow to 12k/frame).
+  Before→after: colour_mults 0.45-0.59 → 0.16-0.32 ms; skin_palette −0.3…−0.5 ms (07000005 1.806→1.322,
+  07000014 4.051→3.580). Budgets: 8 ms fs/cm/sp, 3 ms hud/cel/menu — ≥2.2× headroom on the worst level.
+- Audit (report "Left/candidates"): uniform staging scales with ALL materials (gpu.rs:662-686 staged/clone×2/
+  per-draw pick2, ~0.5-1.5 ms + 1.4 MB/frame — unfixable headless, needs --shot before/after); lerp_palette
+  blends the full 12k palette every rendered frame (lib.rs:2969-2989 — a x==y fast path is ULP-different, not
+  bit-identical); upload_skin re-uploads ~0.9 MB on idle frames; frame_state poses hidden chars before the
+  hidden check (would change attachment collapse translations); view_model_entries scans all attachments/frame.
+- Ran: the budget test on pre-fix / post-fix / merged trees (34/34 each, 172 s on the merged tree); gpu_skin 3/3,
+  cutscene_models 4/4, fix_portal 6/6, render3 3/3, portal_eyecel 1/1, door_portal 2/2, fix_portal3 4/4+2 ign,
+  character_lighting 4/4, fix_hud 6/6, menus_flow 37/37, nf-game lib 212/212. Suite (final merged tree):
+  144/372 binaries completed in the window — 143 passed, 1 failed (walkreal_07000001's contact-route AI-nav
+  assert, pre-existing: failed identically on the pre-fix tree), 0 TIMEOUT/CRASH; the rest did not fit.
+- Report: docs/reports/frame-cost-guard.md (the 34-row before/after table is in the test's [cost]/[budget]
+  output; [hash] lines are the bit-identity vehicle for future cost fixes).
