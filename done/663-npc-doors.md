@@ -126,3 +126,9 @@ step-back un-wedges them identically.
 2. 07000007, the party: a guest crossing the doorway at (80.0, 43.0, -49.9) (door #3) — does the
    real game's party girl open it herself, or does the doorway sit open via its ch_open 130
    channel? `gdbwatch` on the door's obj+0xF4 while a guest approaches.
+
+---
+## Report update (2026-10-16T07:00Z)
+
+The 07000006 chase variant landed as its own test: `npc_doors_live::the_06_guard_chasing_bond_opens_the_closed_door` — Bond beyond the closed door #1 pair fires at the near-side guard (the real input path); the guard enters 0x81 at +401 with hit_door Some(1), the door opens at +408, the guard crosses to Bond. Branch e20fe178.
+
