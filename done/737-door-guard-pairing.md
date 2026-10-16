@@ -21,3 +21,8 @@ say so in the report. Never weaken a decompile-backed test to make code pass.
 
 ---
 claimed-by: sandbox5 at 2026-10-16T22:32Z
+
+---
+## Report (done, 2026-10-16T23:43Z)
+
+Closed by the driver: the report is on `s/door-guard-pairing` (docs/reports/door-guard-pairing.md); the worker didn't run finish.sh.
