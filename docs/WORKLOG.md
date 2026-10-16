@@ -14879,3 +14879,12 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## scorpion-modes-12 (2026-10-16, branch s/scorpion-modes-12)
+- Branch created from origin/master (ad761677). Task: the Scorpion launcher's fire modes — the mode
+  switch (B / the fire-mode action [M Player_Weapon 0x1a24c8]) between the dumb rocket and the
+  heat-seeker (weapon records 0x2e/0x2f [L weapon_data]), and the homing behaviour (Bullet_homing
+  0x12f358 for +0x6C & 0x20000 — target acquisition, turn rate, re-target). Playtest 1012-1723
+  (07000012): "the scorpion launcher heat seeker mode doesn't work". Tests on 07000012 with a guard
+  target: a heat-seeker fired off-axis curves into the guard; a dumb rocket flies straight; the HUD
+  mode label value; sister: homing never locks onto Bond.
