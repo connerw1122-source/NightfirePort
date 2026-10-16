@@ -24,3 +24,8 @@ the draw.
 
 ---
 claimed-by: sandbox2 at 2026-10-16T11:42Z
+
+---
+## Report (done, 2026-10-16T13:19Z)
+
+Closed by the driver: the report is on `s/cutscene-faces` (docs/reports/cutscene-faces.md); the worker didn't run finish.sh.
