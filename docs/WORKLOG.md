@@ -15918,3 +15918,19 @@ and other merged tasks' new tests. The 2 new live tests are green in the totals.
   inert. Sister: with bots disabled only the human is in the match.
 - Started: branch created from origin/master (3bb7be9a). Setup in progress (sandbox was reset —
   full re-clone + downloads); suite starts as soon as the game files are in.
+- mp-bots-in-match close-out (BLOCKED — the window): sandbox was reset at 17:00 (full re-setup:
+  clone, work-slim + ISO, cargo, the alsa prefix — ~30 min of the 2 h gone before any code). The
+  wiring landed: `MpMatch::create_bots` (MP_Start 0x183a50:134-160's bot half — slots 4..4+count,
+  the record team byte into MPSettings+slot·0x30+0x20, a spawn pick per bot, `BotBrain::bot_init`),
+  `Sim::step_mp_bots` (the BOT_update 0x126448 driver: the 8-slot others table per
+  BOT_setOtherPlayerInfo 0x125390, the brain step per tick, the shot→damage/frag/death/respawn
+  bookkeeping) + the observation API. bots.rs's `#[cfg(any(test, feature = "mp-bots"))]` gates
+  lifted (18 sites — the machinery is now the sim's). VERIFIED: the bots exist in the loaded
+  Quick Game (3/3), the sister (bot_count 0 → only the human) green, net_match_live lockstep
+  still 1/1, mp_menu_flow 9/9, nf-game lib mp:: 12/12. THE GAP: the brains tick but stay in
+  BotIdle (state 0xF9) — pick_goal finds nothing: ctx.pickups is empty (the arena's MP pickup
+  placements are not lifted into BotPickup rows) and find_opponent never acquires (its inputs —
+  dist2/cel data — are unfilled stand-ins). The 3600-tick proof test is committed RED under
+  #[ignore] with the reason; the report has the per-bot table (all inert values) and the exact
+  next steps. The full fast suite never ran (the setup + wiring consumed the window; only the
+  touched-crate runs above stand) — flagged in the report.
