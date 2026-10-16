@@ -17,3 +17,8 @@ relative to the viewer). The main agent draws it. Tests: a headless match's snap
 
 ---
 claimed-by: sandbox7 at 2026-10-16T00:20Z
+
+---
+## Report (done, 2026-10-16T01:51Z)
+
+Closed by the driver: the report is on `s/mp-hud-data` (docs/reports/mp-hud-data.md); the worker didn't run finish.sh.
