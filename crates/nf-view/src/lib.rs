@@ -3585,6 +3585,25 @@ impl ApplicationHandler for App {
     }
 }
 
+/// The AV volume rows reach the sound layer's volumes — the game's own settings load applies
+/// the persisted volumes straight to the IOP statics at boot [M LS_LoadGlobalSettings
+/// 0x1cdbc8:69-70 `SFXMusicSetVolume/SFXSetVolume(loaded)`; Boot_LoadPTPData 0x1c8560:81-82].
+/// The driver's `music_master`/`master` are those statics: `ES_CombineVolumes` 0x1300 scales
+/// every jingle (0x1d7/0x470) by `music_master` and every other sample by `master` [M
+/// nf-audio/src/sfx.rs `combine`]. The menu-music model carries the same music volume so a
+/// mission-return fe rebuild inherits it (inherit_music_statics' stash seeds from the boot fe).
+/// The option map stores the volume scale the restore-defaults list writes [M 0x214818:97-110
+/// — slider 0xe → volume 70, sfx 0x14 → 100], so the rows map 1:1 onto the driver fields.
+pub fn apply_av_volumes(fe: &mut menu::FrontEnd, driver: Option<&mut nf_audio::sfx::Driver>) {
+    let music = fe.opt_value(0x1000_0135);
+    let sfx = fe.opt_value(0x1000_0134);
+    fe.music.music_master = music;
+    if let Some(d) = driver {
+        d.music_master = music;
+        d.master = sfx;
+    }
+}
+
 pub fn run() -> Result<()> {
     // A panic also goes to nf-view-crash.log (message, place, backtrace): a crash in a window without a console
     // leaves a trace.
@@ -3893,6 +3912,11 @@ pub fn run() -> Result<()> {
         let (opts, warn) = settings::load_default();
         if let Some(w) = warn { eprintln!("[settings] {w}"); }
         app.fe.as_mut().unwrap().opts = opts;
+        // options-persist-roundtrip: the AV volume rows reach the sound layer at boot [M
+        // LS_LoadGlobalSettings 0x1cdbc8:69-70 — the loaded settings call
+        // SFXMusicSetVolume/SFXSetVolume].
+        let fe = app.fe.as_mut().unwrap();
+        apply_av_volumes(fe, app.sound.as_mut().map(|s| &mut s.driver));
         // The front end needs the game's strings even when the front-end map carries no Sim
         // (`Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` = USATxt.dat [M lib.rs load_impl]).
         match read_files_bin(&app.iso, "USATxt.dat") {
@@ -3903,6 +3927,16 @@ pub fn run() -> Result<()> {
             None => eprintln!("no USATxt.dat in FILES.BIN — menu labels show their label ids"),
         }
         eprintln!("[front end] title screen (P_START 0x40000034); Enter/click = start, arrows = move, Esc = back");
+    } else {
+        // options-persist-roundtrip: a mission started straight from the command line boots
+        // the persisted volumes too — the game's boot applies them before any menu exists
+        // [M Boot_LoadPTPData 0x1c8560:81-82 SFXSetVolume/SFXMusicSetVolume(DAT_0031c17c/78)].
+        // The headless --shot path returned above and never touches the user's config.
+        let (opts, warn) = settings::load_default();
+        if let Some(w) = warn { eprintln!("[settings] {w}"); }
+        let music = opts.get(&0x1000_0135).copied().unwrap_or(70);
+        let sfx = opts.get(&0x1000_0134).copied().unwrap_or(100);
+        if let Some(s) = app.sound.as_mut() { s.driver.music_master = music; s.driver.master = sfx; }
     }
     // `--bond x,y,z` in the window too (it only applied to the headless `--frame` path): Bond starts exactly there.
     if let Some(i) = args.iter().position(|a| a == "--bond") {
