@@ -43,3 +43,8 @@ headless, extract it into a testable function.
 
 ---
 claimed-by: sandbox4 at 2026-10-16T07:00Z
+
+---
+## Report (done, 2026-10-16T08:30Z)
+
+Closed by the driver: the report is on `s/menu-audio-state` (docs/reports/menu-audio-state.md); the worker didn't run finish.sh.
