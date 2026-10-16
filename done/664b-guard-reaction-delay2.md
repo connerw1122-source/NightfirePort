@@ -23,3 +23,7 @@ process-to-process variance you saw; don't widen tolerances to hide either.
 
 ---
 claimed-by: sandbox3 at 2026-10-16T09:27Z
+
+---
+## Report (done, 2026-10-16T13:21Z)
+
