@@ -6,6 +6,7 @@ publish.workspace = true
 description = "Level viewer for 007: Nightfire (PS2) data read from the user's own disc image"
 
 [dependencies]
+libc = "0.2"
 nf-formats = { path = "../nf-formats" }
 nf-game = { path = "../nf-game" }
 nf-audio = { path = "../nf-audio" }

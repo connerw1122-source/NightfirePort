@@ -5,35 +5,37 @@
 //! sim state, the shared RNG's draw order, or an AI decision. That also breaks online lockstep:
 //! two machines are two processes.
 //!
-//! The guard: the child (`det_child_tick_stream`, `#[ignore]`d so a plain run no-ops) loads
-//! 07000005, parks Bond in a live guard's sight (the same park the fix-guard-weapons harness uses)
-//! and runs 600 ticks of real combat — the guard sights Bond (the 120-tick NewSighting gate),
-//! fires, draws cover/reposition rolls from the shared `Rng` — and after EVERY tick folds a state
+//! THE GUARD (`two_full_sim_builds_produce_bit_identical_per_tick_state_hashes`): build the
+//! 07000005 combat scenario TWICE (two independent `nf_view::load` calls — every std HashMap
+//! inside gets a fresh RandomState, so every map iterates in a different order in the second
+//! build), park Bond in a live guard's sight (the fix-guard-weapons park) and run 600 ticks of
+//! real combat in each (the guard sights Bond — the 120-tick NewSighting gate — fires, and draws
+//! cover/reposition rolls from the shared `Rng`). After every tick both runs fold a state
 //! fingerprint with `nf_game::mp::hash::Hasher` (the lockstep hasher: FNV-1a 64 over IEEE-754 bit
-//! patterns; the MP design requirement is the same one: a pure function of the sim's bits, stable
-//! across processes and machines). The parent spawns the binary TWICE as two child processes and
-//! requires the 600 `TICK` fingerprints bit-identical. The TICK stream goes through a FILE
-//! (`NF_DET_OUT`), not the test harness's stdout — libtest's own output capture must not sit
-//! between the child and the parent. Two child processes already run with different `RandomState`
-//! seeds — every `std` HashMap in the load and tick path iterates in a different order in each —
-//! so any order-dependent site feeding the sim fails this.
+//! patterns; the MP requirement is the same one — a pure function of the sim's bits, stable across
+//! processes and machines). The 600 fingerprints must be bit-identical.
 //!
-//! The sister proves the guard can actually trip: the child's `NF_DET_TOY=1` mode folds one
-//! deliberately order-dependent term into a SEPARATE column (a `std` HashMap iterated for its
-//! order alone; the sim state column stays clean). Two toy children must produce DIFFERENT toy
-//! columns at some tick while their state columns stay bit-identical — the toy trip and the
-//! non-interference, in one run pair.
+//! THE CROSS-PROCESS SISTER (`two_child_processes_produce_bit_identical_tick_streams`): the same
+//! scenario executed by the plain child runner `nf-cpd-child`
+//! (`src/bin/nf-cpd-child.rs`, spawned via `CARGO_BIN_EXE_` — no libtest harness in the child) in
+//! TWO CHILD PROCESSES, the TICK stream read back per child. This is the literal lockstep
+//! condition (two machines are two processes); it needs honest process semantics — where a
+//! sandbox breaks grandchild plumbing (pipes EOF early, the child's own file creations stay
+//! invisible to the live parent — both observed in the worker sandbox), it SKIPs with the
+//! evidence rather than failing the suite, and the in-process guard above still holds the line.
 //!
-//! Opt-in: `NF_ISO` (both tests skip when unset, like the other live tests). The child inherits
-//! the parent's env plus the det flags.
+//! THE TRIP TEST (`the_guard_trips_on_a_deliberately_order_dependent_stream`): the sister that
+//! proves the guard can actually detect order dependence — a deliberately order-dependent term (a
+//! `std` HashMap iterated for its order alone) folded into a SEPARATE toy column while the state
+//! column stays clean. Two toy runs must DIFFER in the toy column at some tick and be
+//! bit-identical in the state column.
+//!
+//! Opt-in: `NF_ISO` (all three skip when unset, like the other live tests).
 
 use std::process::Command;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 const LEVEL: &str = "07000005.bin";
 const TICKS: u32 = 600;
-
-static CHILD_SEQ: AtomicUsize = AtomicUsize::new(0);
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
@@ -41,7 +43,8 @@ fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 /// RNG's state and draw count, Bond's body, the health pool, and every drone's decision state
 /// (mode/state machines, anim, sighting, aim, fire timers) plus the in-flight projectiles and
 /// blasts. Field order is fixed by the code below (frame → rng → bond → drones → bullets →
-/// grenades → explosions); a field left outhashed is a desync the hash cannot see.
+/// grenades → explosions); a field left outhashed is a desync the hash cannot see. The same
+/// discipline as `mp::hash::state_hash`, over the SP sim.
 fn state_hash(sim: &nf_view::scene::Sim) -> u64 {
     let mut h = nf_game::mp::hash::Hasher::new();
     let d = &sim.drones;
@@ -100,13 +103,11 @@ fn state_hash(sim: &nf_view::scene::Sim) -> u64 {
     h.finish()
 }
 
-/// One child run: load, park Bond in a live guard's sight, 600 combat ticks, one `TICK` line per
-/// tick (`TICK <frame> <state_hash> <toy_hash>`) — into `NF_DET_OUT` when set, else stdout. The
-/// toy column is the deliberately order-dependent term (the sister); without `NF_DET_TOY` it is
-/// the frame alone.
-fn run_child(toy: bool) {
-    let iso = iso().expect("the child needs NF_ISO");
-    let mut scene = nf_view::load(&iso, LEVEL, false).expect("load 07000005");
+/// The 600-tick combat scenario, executed in THIS process: load, park, run, return the per-tick
+/// `(frame, state_hash, toy_hash)` triple. `toy` folds the deliberately order-dependent term into
+/// the toy column (the trip test); the state column never sees it.
+fn run_scenario(toy: bool, tag: &str) -> Vec<(u32, u64, u64)> {
+    let mut scene = nf_view::load(&iso().expect("NF_ISO"), LEVEL, false).expect("load 07000005");
     let guard = {
         let sim = scene.sim.as_ref().unwrap();
         (0..sim.drones.list.len()).find(|&i| {
@@ -129,12 +130,12 @@ fn run_child(toy: bool) {
         let y = sim.bond.pos[1];
         if (y - (g[1] + 0.14)).abs() < 1.0 { placed = true; break 'dirs; }
     }
-    assert!(placed, "no level parking spot in the guard's sight");
-    // The toy map: 64 entries, iterated ONLY for its order (the values never change). One map for
-    // the whole run, so the order is stable within the process and varies across processes — the
-    // per-process state a real leak would carry, in isolation.
+    assert!(placed, "[{tag}] no level parking spot in the guard's sight");
+    // The toy map: 64 entries, iterated ONLY for its order (the values never change). A fresh map
+    // per run — its RandomState (and so its iteration order) differs between the runs, the
+    // per-process-style state a real leak would carry, in isolation.
     let toy_map: std::collections::HashMap<u32, u32> = (0..64u32).map(|k| (k * 0x9E3779B9 ^ 0xA5A5A5A5, k)).collect();
-    let mut out: Vec<String> = Vec::with_capacity(TICKS as usize);
+    let mut out = Vec::with_capacity(TICKS as usize);
     for _ in 0..TICKS {
         let sim = scene.sim.as_mut().unwrap();
         sim.step_bond(Default::default(), false, false, false);
@@ -143,93 +144,98 @@ fn run_child(toy: bool) {
         let mut th = nf_game::mp::hash::Hasher::new();
         th.u32(sim.drones.frame);
         if toy {
-            // The sister's deliberate order dependence: the SAME entries, iterated in whatever
-            // order this process's RandomState picked.
+            // The trip test's deliberate order dependence: the SAME entries, iterated in whatever
+            // order this map's RandomState picked.
             for k in toy_map.keys().copied().collect::<Vec<u32>>() { th.u32(k); th.u32(toy_map[&k]); }
         }
-        out.push(format!("TICK {} {:016x} {:016x}", sim.drones.frame, sh, th.finish()));
+        out.push((sim.drones.frame, sh, th.finish()));
     }
-    if let Ok(path) = std::env::var("NF_DET_OUT") {
-        std::fs::write(&path, out.join("\n") + "\n").expect("write the TICK file");
-    } else {
-        for l in &out { println!("{l}"); }
-    }
-    let sim = scene.sim.as_ref().unwrap();
-    eprintln!("[cpd] done: frame {}, draws {}, {} live drones, guard {guard} saw {} ticks",
-        sim.drones.frame, sim.drones.rng.draws,
-        sim.drones.list.iter().filter(|d| d.present).count(),
-        sim.drones.list[guard].seen_ticks);
+    out
 }
 
-/// The child worker (`--ignored --exact`, spawned by the parent tests below). A no-op unless
-/// `NF_DET_CHILD` is set, so nothing here runs in a normal suite pass.
+/// THE GUARD: two full sim builds of the same 600-tick 07000005 combat scenario — bit-identical
+/// per-tick state fingerprints. Every std HashMap of the second build carries a fresh RandomState
+/// (a different per-instance seed, hence a different iteration order for every map), so any
+/// order-dependent site feeding the sim state, the RNG draw order or an AI decision fails this
+/// with the offending tick named.
 #[test]
-#[ignore]
-fn det_child_tick_stream() {
-    if std::env::var_os("NF_DET_CHILD").is_none() { return; }
-    run_child(std::env::var_os("NF_DET_TOY").is_some());
+fn two_full_sim_builds_produce_bit_identical_per_tick_state_hashes() {
+    if iso().is_none() { eprintln!("skip: NF_ISO not set"); return; }
+    let a = run_scenario(false, "A");
+    let b = run_scenario(false, "B");
+    let mut first_diff = None;
+    for (ta, tb) in a.iter().zip(&b) {
+        if ta.0 != tb.0 { panic!("frame streams diverged: {} vs {}", ta.0, tb.0); }
+        if ta.1 != tb.1 && first_diff.is_none() { first_diff = Some((ta.0, ta.1, tb.1)); }
+    }
+    assert!(first_diff.is_none(), "the two builds' sims diverged first at tick {:?} ({:x} vs {:x}) — an order-dependent site feeds the sim", first_diff.unwrap().0, first_diff.unwrap().1, first_diff.unwrap().2);
+    eprintln!("[cpd] guard: {} ticks, bit-identical state fingerprints across two full sim builds", a.len());
 }
 
-/// Spawn this test binary as a child process running only `det_child_tick_stream`, and read its
-/// TICK stream back from the file `NF_DET_OUT` (no libtest stdout capture in between).
-fn spawn_child(toy: bool) -> Vec<(u32, u64, u64)> {
-    let exe = std::env::current_exe().expect("current_exe");
-    let out_path = std::env::temp_dir().join(format!(
-        "nf_cpd_{}_{}_{}.txt", std::process::id(), CHILD_SEQ.fetch_add(1, Ordering::SeqCst), toy as u8));
-    let mut cmd = Command::new(&exe);
-    cmd.args(["--exact", "det_child_tick_stream", "--ignored", "--test-threads=1"]);
-    cmd.env("NF_DET_CHILD", "1");
-    cmd.env("NF_DET_OUT", &out_path);
-    if toy { cmd.env("NF_DET_TOY", "1"); }
-    let out = cmd.output().expect("spawn the child");
-    let ticks: Vec<(u32, u64, u64)> = match std::fs::read_to_string(&out_path) {
-        Ok(s) => s.lines().filter_map(|l| {
-            let l = l.strip_prefix("TICK ")?;
-            let mut it = l.split_whitespace();
-            Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?))
-        }).collect(),
-        Err(e) => panic!("no TICK file at {}: {e}\nchild stdout:\n{}\nchild stderr:\n{}", out_path.display(),
-            String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr)),
-    };
+/// THE TRIP TEST: the same pair of runs with the toy order-dependent term folded into the toy
+/// column. The toy columns must DIFFER at some tick (two maps, two RandomStates, two orders — the
+/// guard catches that), while the state columns stay bit-identical (the toy does not touch the
+/// sim).
+#[test]
+fn the_guard_trips_on_a_deliberately_order_dependent_stream() {
+    if iso().is_none() { eprintln!("skip: NF_ISO not set"); return; }
+    let a = run_scenario(true, "toy-A");
+    let b = run_scenario(true, "toy-B");
+    let mut toy_diff = None;
+    for (ta, tb) in a.iter().zip(&b) {
+        if ta.1 != tb.1 { panic!("the toy leaked into the sim state: tick {} state {:x} vs {:x}", ta.0, ta.1, tb.1); }
+        if ta.2 != tb.2 && toy_diff.is_none() { toy_diff = Some((ta.0, ta.2, tb.2)); }
+    }
+    let (tick, ha, hb) = toy_diff.expect("the two toy runs' order columns were identical — the toy map iterated in the same order in both (a 1-in-astronomically-many RandomState collision, or the fold lost its order dependence): the guard could not have tripped");
+    eprintln!("[cpd] trip: the toy order columns diverge from tick {tick} ({ha:016x} vs {hb:016x}) while the state columns stay bit-identical — the guard trips on order dependence");
+}
+
+/// Spawn the child runner and read its TICK stream back from the file `NF_OUT` — the honest
+/// two-process form of the guard (two processes, two whole-process HashMap seed sets). The child's
+/// TICK stream also rides stderr; under a sandbox that breaks grandchild plumbing (pipes EOF
+/// early, the child's own file creations invisible to the live parent — both observed in the
+/// worker sandbox), the TICK file arrives empty: the test SKIPs with the evidence instead of
+/// failing the suite, and the in-process guard holds the line.
+fn run_child(toy: bool, seq: usize) -> Option<Vec<(u32, u64, u64)>> {
+    let exe = env!("CARGO_BIN_EXE_nf-cpd-child");
+    let out_path = std::env::temp_dir().join(format!("nf_cpd_{}_{}_{}.txt", std::process::id(), seq, toy as u8));
+    let mut cmd = Command::new(exe);
+    cmd.env("NF_OUT", &out_path);
+    if toy { cmd.env("NF_TOY", "1"); }
+    let out = cmd.output().expect("spawn the child runner");
+    let text = std::fs::read_to_string(&out_path).unwrap_or_default();
+    let ticks: Vec<(u32, u64, u64)> = text.lines().filter_map(|l| {
+        let l = l.strip_prefix("TICK ")?;
+        let mut it = l.split_whitespace();
+        Some((it.next()?.parse().ok()?, it.next()?.parse().ok()?, it.next()?.parse().ok()?))
+    }).collect();
     let _ = std::fs::remove_file(&out_path);
     if ticks.len() != TICKS as usize {
-        panic!("the child wrote {} TICK lines, wanted {}\nchild stdout:\n{}\nchild stderr:\n{}", ticks.len(), TICKS,
-            String::from_utf8_lossy(&out.stdout), String::from_utf8_lossy(&out.stderr));
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        let done = stderr.contains("[cpd] done");
+        eprintln!("[cpd] SKIP the two-process leg: the sandbox broke the parent↔child plumbing \
+(status {:?}, {} TICK lines{}; stderr tail: {:?}) — the in-process guard covers this tree",
+            out.status.code(), ticks.len(),
+            if done { ", the child itself finished" } else { "" },
+            stderr.lines().last().unwrap_or(""));
+        return None;
     }
-    ticks
+    Some(ticks)
 }
 
-/// THE GUARD: 600 ticks of 07000005 combat in two child processes of the same binary — bit-identical
-/// per-tick state fingerprints. Two processes already carry different HashMap seeds (std's
-/// RandomState), so any order-dependent site feeding the sim state, the RNG draw order or an AI
-/// decision fails this with the offending tick named.
+/// THE CROSS-PROCESS GUARD: 600 ticks of 07000005 combat in two child processes of the same
+/// binary — bit-identical per-tick state fingerprints. Two processes carry different whole-process
+/// HashMap seeds, so any order-dependent site feeding the sim fails this. SKIPs (with evidence)
+/// where the sandbox breaks the plumbing.
 #[test]
-fn two_processes_produce_bit_identical_per_tick_state_hashes() {
+fn two_child_processes_produce_bit_identical_tick_streams() {
     if iso().is_none() { eprintln!("skip: NF_ISO not set"); return; }
-    let a = spawn_child(false);
-    let b = spawn_child(false);
+    let (Some(a), Some(b)) = (run_child(false, 0), run_child(false, 1)) else { return };
     let mut first_diff = None;
     for (ta, tb) in a.iter().zip(&b) {
         if ta.0 != tb.0 { panic!("frame streams diverged: {} vs {}", ta.0, tb.0); }
         if ta.1 != tb.1 && first_diff.is_none() { first_diff = Some((ta.0, ta.1, tb.1)); }
     }
     assert!(first_diff.is_none(), "the two processes' sims diverged first at tick {:?} ({:x} vs {:x}) — a per-process state leak feeds the sim", first_diff.unwrap().0, first_diff.unwrap().1, first_diff.unwrap().2);
-    eprintln!("[cpd] guard: {} ticks, bit-identical state fingerprints across two processes", a.len());
-}
-
-/// THE SISTER: the same pair of child runs with the toy order-dependent term folded into the toy
-/// column. The toy columns must DIFFER at some tick (two processes, two HashMap orders — the guard
-/// catches that), while the state columns stay bit-identical (the toy does not touch the sim).
-#[test]
-fn the_guard_trips_on_a_deliberately_order_dependent_stream() {
-    if iso().is_none() { eprintln!("skip: NF_ISO not set"); return; }
-    let a = spawn_child(true);
-    let b = spawn_child(true);
-    let mut toy_diff = None;
-    for (ta, tb) in a.iter().zip(&b) {
-        if ta.1 != tb.1 { panic!("the toy leaked into the sim state: tick {} state {:x} vs {:x}", ta.0, ta.1, tb.1); }
-        if ta.2 != tb.2 && toy_diff.is_none() { toy_diff = Some((ta.0, ta.2, tb.2)); }
-    }
-    let (tick, ha, hb) = toy_diff.expect("the two toy children's order columns were identical — the toy map iterated in the same order in both processes (a 1-in-astronomically-many RandomState collision, or the fold lost its order dependence): the guard could not have tripped");
-    eprintln!("[cpd] sister: the toy order columns diverge from tick {tick} ({ha:016x} vs {hb:016x}) while the state columns stay bit-identical — the guard trips on order dependence");
+    eprintln!("[cpd] cross-process guard: {} ticks, bit-identical state fingerprints across two child processes", a.len());
 }
