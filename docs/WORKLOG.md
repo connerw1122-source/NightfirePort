@@ -15934,3 +15934,11 @@ and other merged tasks' new tests. The 2 new live tests are green in the totals.
   #[ignore] with the reason; the report has the per-bot table (all inert values) and the exact
   next steps. The full fast suite never ran (the setup + wiring consumed the window; only the
   touched-crate runs above stand) — flagged in the report.
+
+## mp-host-match-logic (2026-10-16, branch s/mp-host-match-logic) — start
+- Task 729 (audit gap 4): in a live match the host never runs the match logic — update_objects,
+  player_killed and respawn are only exercised by tests. Wire them into the running match loop
+  (local and online host) the way MP_Update drives them [M]. Branch based on s/mp-bots-in-match
+  (704) per the task note, so the bot wiring is inherited, not redone. Tests: a local deathmatch
+  in the real app path — a kill scores, the victim respawns at the policy's point, the frag
+  limit ends the match into the debriefing. Reading docs/systems/uncited-audit.md gap 4 first.
