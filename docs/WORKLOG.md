@@ -15391,3 +15391,30 @@ remote-mine-detonate (2026-10-16)
   slots, holds the rests past 240, the 105th round recycles slot 8). nf-game lib 240 ✓,
   impacts_live 5 ✓, fix_shell_eject_live 2 ✓; full suite on the final tree (see the report).
 - Report: docs/reports/casings-persist.md
+## pss-vag-recheck — GAPS G-008: pss.rs / vag.rs on every movie
+
+Plan: (1) branch s/pss-vag-recheck from origin/master; (2) complete the PSS legs on
+`MOVIES/30_FPS/*.PSS` — video picture count vs the GOP walk, audio-vs-video duration at ±1 frame
+(the existing live test allows ±1 s), and every picture decoding without error; (3) the VAG/stream
+leg — every bank-referenced VAG stream decoded with sample count and loop points checked (the
+unmerged s/verify-pss-vag work is the reference; re-verified on this tree); (4) goldens: numbers
+and SHA-1s only; (5) docs/formats + close G-008.
+
+## pss-vag-recheck — GAPS G-008 closed: pss.rs / vag.rs on every movie
+
+- Branch s/pss-vag-recheck from origin/master. The slim on-foot ISO stubs all 22 `MOVIES/30_FPS/*.PSS`
+  (size 0), so the retail `007 - Nightfire (USA)` image was downloaded into the sandbox for the movie legs
+  (never committed; the repo's own .gitignore covers it).
+- The VAG half: `s/verify-pss-vag`'s unmerged golden test (`pss_vag_golden.rs` + `pss_vag.tsv`) was ported to
+  master's tree and re-verified green on the slim image (4/4, 111 s); the G-008 loop-point leg was added —
+  every looped bank sample's loop points validated (frame multiples, start < end, end = the extent) and
+  pinned per bank (`loop_sha1`, `loop_starts_sum`). `vag.rs` keeps the survey-corrected decoder attribution
+  (doc-only diff vs master).
+- The movie half: `pss_movies_g008.rs` + `golden/pss_movies_g008.tsv` (numbers/SHA-1s only) — on all 22
+  movies of the retail image the GOP walk equals the picture scan (no pictures outside a GOP), the demuxed
+  ES SHA-1s are pinned, audio kind/rate/channels + sample counts hold, audio-vs-video duration is within
+  ±1 frame for 15/20 audio-bearing movies (5 muxer-padded audio beds recorded: 0730000D −3040, 073B0048
+  −2880, 07300017 −2160, 073F0048 −1200, 073A0048 −1160 mf; 2 menu movies silent), and every picture decodes
+  without error with the all-frames YUV SHA-1 pinned per movie (~50 fps decoder; PIN_ONLY re-pin helper).
+- 5/5 g008 tests + 4/4 vag golden tests green on their images; sisters prove the goldens catch tampering.
+- Report: docs/reports/pss-vag-recheck.md (the full-suite status and what ran is in it).
