@@ -13776,3 +13776,35 @@ wrong; porting the deferral onto the HITDATA walk, deciding from the disassembly
 penetration roll falls relative to the effect draws and whether a pierce's exit-side hits defer
 too, keeping the flush's per-hit order. Every G-041 test and every 111d3 test green; re-run the
 cover/fire-rate AI tests the first gas-rng hold broke.
+
+## fix-gas-rng4 (2026-10-15/16, branch s/fix-gas-rng4) — DONE 01:20 UTC
+
+- Ported 111d3's (s/fix-gas-rng3) deferred impact draws onto master's G-041 HITDATA walk; one
+  file: crates/nf-game/src/drone.rs (effect.rs/gas.rs untouched — the held merge's conflicts
+  there existed only for a mechanical merge of the 10-arg bullet_impact tests and init_effect_puff).
+- From the decompile (Bullet_CollisionHandler 0x12ce80): per HITDATA the penetration roll
+  (Rand_Rand(0x3f) [0x12cfd0..0x12cfe4]) precedes Effect_Create's draws [0x12d060]; the explode
+  arms [0x12d068..0x12d188] gate on non-pierce; the ricochet roll draws with mask 0 on a pierce;
+  the loop tail [0x12d81c] advances on pierce — so a pierce's EXIT-side hit takes its own roll +
+  effects in the same collide pass. Collide_Update 0x1ea398 runs at 0x1336f8:238, after the whole
+  update walk — every handler draw lands after every guard's update-pass roll.
+- The port: pending_world_impacts records (bullet index, segment start, flight ray) per world-hit
+  bullet; flush_world_impacts (called in tick after the guard bullets' retain — 111d3's slot)
+  replays the walk per record in order, bit-identical geometry (RNG-free re-query, end = start +
+  ray, the revive reuses the raw ray); the reflection reads the LIVE dir (the game's collide pass
+  sees Bullet_homing's update-pass steer — this also restores the game's homing-then-collide order
+  master's inline shape inverted); the dead-bullet retain moved to the flush (a deferred
+  ricochet/pierce revives in place; no mid-tick reader of player_bullets exists — checked).
+- Verified (release, --test-threads=1): nf-game lib 206/0; nf-game integration 375/0 (ai_live
+  35/35 incl. guard_takes_cover_like_the_game, grenade 2/2, cover_selection 2/2); nf-view direct:
+  fix_guard_weapons 3/0 (the fire-rate hold's test), models_misc 10/0, fire_modes3 5/0,
+  fix_weapon_effects 6/0, impact_remainder 3/0, fix_samurai_fire 3/0, weapon_fx_levels 2/0,
+  fix_handcannon 3/0; nf-view slices 506/0; nf-formats 110/3 (the 3 allowed slim-ISO disc_golden);
+  nf-audio 13/0. Total 1245/3/1 ignored (pre-existing). NO re-seeds needed anywhere.
+- Background jobs die between tool calls in this sandbox (the 23:59 suite.py start died, suite.out
+  empty) — the runner's per-binary/--test-threads=1 discipline ran as foreground slices instead;
+  the walkreal_* walkers (35 binaries, multi-minute live walks) window-cut as every session.
+- Out of scope (documented in the report): 111d2's item 2 — the muzzle latch + init_muzzle_smoke
+  (fix_gas_rng_live.rs); master keeps those sites at the counter hash until their re-base.
+- Report: docs/reports/fix-gas-rng4.md (the draw-order table site → draws → pass, before/after
+  tallies, one confirmatory live check for the main agent).
