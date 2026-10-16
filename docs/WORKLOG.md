@@ -15729,6 +15729,27 @@ must be faded/off those actors when it plays.
   measured live. LANDED: the dot-gated reflect [M 0x12d5f0-0x12d600], the 20-bounce cap on the
   reflect arm [M 0x12d578-0x12d57c], the park before the reflect. Tests green: grenade_rattle_live
   4/4, grenade_live 2/2, ai_live 35/35, fix_grenade_types_live 3+1 ignored.
+## guards-0c (2026-10-16, branch s/guards-0c) — start
+- Task 698: the 0700000c guards' AI and walking (playtests 1012-1723 / 1012-2105: "All of the AI in
+  this level is bugged as hell. The walking animation is kind of fucked too."). List every 0c drone
+  at start and over 1800 ticks: class, state transitions, route, the anim sequence and frame per
+  tick; compare against the game's route/patrol data and the NDrone2 state machine; find stuck
+  states, walk anims that don't match their speed (foot sliding — the anim rate vs the move
+  speed), route nodes they never reach. Fix the sim side with evidence; table before/after. Tests:
+  each patrol guard completes its route loop within the game's period, with the walk anim rate
+  tied to its speed.
+- Started: branch created from origin/master (22be196b); the fast suite launching in the background.
+- guards-0c close-out: the trace (guards_0c_live) found the walk-anim slide's root cause — the
+  drawn gate's five LOS rays on the FLAT segment hid guards the game draws (the 0c glass displays;
+  the game's draw test is the portal-visible cels + Vision_InView 0x1e89e0, a pure plane test, no
+  rays [M 0x1e62d8/0x1e7df8]) and NDrone2_DoAnimation 0x149f88 slides an undrawn guard at the
+  danim's AnimInfo+4 speed (0.02 for walk 392) with no gait [L switch_trace]. Landed: the drawn
+  gate's rays on the BULLET segment (pass-flagged hits drop [M 0x1ebff0-0x1ec010]) — opaque
+  occluders still block, so ai_live's castle-patroller live pin is bit-identical (35/35 green).
+  #39 before/after: 71 anim frames over 1797 ticks (frozen) → 1783 over 1766 (the full gait).
+  The route-block park (#15) = the un-modelled LinkCreep backward creep (nav.rs [S]) — follow-up.
+  The frustum-only prototype broke the pin (the cel gate is load-bearing) — pulled back, the
+  portal-walk wiring documented in the report. walkreal 1/2/4/5 green; the full suite pending.
 ## mp-debriefing-data2 (2026-10-16, branch s/mp-debriefing-data2) — STARTED
 
 - Task: land 621's (s/mp-debriefing-data, HELD) debriefing on top of master's 402 (s/mp-match-rules)
@@ -16143,3 +16164,12 @@ Rand(500)−250 pitch jitter (determinism-stream change — follow-up task; live
 report). Suite: 413/415 binaries, 1756 passed / 7 failed (all the known allowed set) / 72
 ignored, 2 tail binaries unreached in the foreground-only window. Report:
 docs/reports/pistol-sound-12.md.
+## guards-0c-b (2026-10-16, branch s/guards-0c-b) — start
+- Task 698b: guards-0c (s/guards-0c, HELD at merge) broke
+  fix_finale_live.rs::the_0700001b_drakes_defeat_ends_the_space_station
+  (fix_finale_live.rs:161 "the gate spawns Drake (spawner #187 [D])"). Moving visible_to's body
+  rays onto the bullet segment changed something spawner #187's release on 0700001b depends on.
+  Find the reader of visible_to / the drawn flag the spawner path uses, and what the game gates
+  the spawner release on [M DroneSpawner_Control 0x137e68]. Decouple the game's way or fix the
+  segment query. Keep guards_0c_live AND all of fix_finale_live green.
+- Started: branch = origin/s/guards-0c (7b3c746a) merged with origin/master; suite starting next.
