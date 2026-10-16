@@ -735,6 +735,10 @@ pub struct Drone {
     pub player_pos: V3,
     /// The last `update_mission_route` report was BLOCKED/NO_PATH (fix-actors; Lead's PlayerInWay entry).
     pub route_blocked: bool,
+    /// The mission-path distance to Bond the escort states threshold — the game's SM+0x20 scratch
+    /// (`DroneMove_ObjectMissionPathDistance` 0x153f50 writes it every Lead/Wait/BondCombat tick
+    /// [M 0x15e698:60, 0x15eda8:35, 0x15f120:31]); kept as a field for the escort tests' asserts.
+    pub mission_path_dist: f32,
     /// The distance to the nearest started, alive, team-1 drone (the "armed drone" of
     /// `NDrone2_NearArmedDrone` 0x15ea28's calls — the port snapshots positions, so the team/started
     /// filter runs where the snapshot is built; f32::MAX = none) (fix-actors).
@@ -1065,6 +1069,7 @@ impl Drone {
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false,
             mission_wait_channel: 0,
+            mission_path_dist: 0.0,
             stun_until: 0, player_pos: [0.0; 3],
             down: false,
             tase_accum: 0,
@@ -1321,6 +1326,54 @@ impl Drone {
         self.desired_yaw = atan2_approx(target[0] - self.pos[0], target[2] - self.pos[2]);
     }
 
+    /// `DroneMove_ObjectMissionPathDistance` (0x153f50): the signed route distance between the
+    /// drone's current route node and the route node nearest the object. The node scan ranks by
+    /// squared 2D distance from obj+0x30 — the FIRST route node is always a candidate, later ones
+    /// only while strictly closer than the best (the 5.0 arg is only the initial cutoff,
+    /// [M 0x153f50:89-127]) — and qualifies a node with MoveTest's constants: 3D distance ≤ 30
+    /// (DAT_002c7954 = 900.0), |dy| ≤ 4.0 (DAT_002c794c), the slope band DAT_002c7948/44 (the port's
+    /// `Network::node_scan_ok` — Drone_PostLoad_Init 0x136938:53-62 writes 4.0/30.0 and the
+    /// slope pair) and the BOUNDARY test gated on the boundary count DAT_002c8774 — no
+    /// collision-world LOS, the game's scan sees through furniture [M 0x153f50:100-121]. No qualifying node → 0.0 (also the no-route
+    /// return). The distance sums the route's link lengths between the two node positions in the
+    /// route list, signed by direction: the object AHEAD (a higher index) is positive, BEHIND
+    /// negative [M AINetwork_GetRouteDistanceBetweenNodes 0x156160:47-53 — the walk from the lower
+    /// to the higher index returns +sum, the reverse −sum]. The drone's "current node" is the
+    /// route's index (game +0x9f0, clamped — GetRouteDistanceBetweenNodes clamps negatives to 0
+    /// [M 0x156160:27-30]).
+    fn object_mission_path_distance(&self, d: &Data, max_dist: f32, obj_pos: V3) -> f32 {
+        let Some(route) = self.route.as_ref() else { return 0.0 };
+        let p = &d.nav.paths[route.path];
+        let feet = [self.player_pos[0], self.player_pos[1] - 0.6, self.player_pos[2]];
+        let mut best_sq2d = max_dist * max_dist;
+        let mut best: Option<usize> = None;
+        for (k, &node_id) in route.nodes.iter().enumerate() {
+            let np = p.nodes[node_id as usize].pos;
+            let sq2d = (np[0] - obj_pos[0]).powi(2) + (np[2] - obj_pos[2]).powi(2);
+            if !best.is_none_or(|_| sq2d < best_sq2d) { continue; }
+            if !d.nav.node_scan_ok(feet, np) { continue; }
+            best_sq2d = sq2d;
+            best = Some(k);
+        }
+        let Some(to) = best else { return 0.0 };
+        let from = route.index.clamp(0, route.nodes.len() as i32 - 1) as usize;
+        if from == to { return 0.0; }
+        let (lo, hi, sign) = if from < to { (from, to, 1.0) } else { (to, from, -1.0) };
+        let mut dist = 0.0;
+        for k in lo..hi { dist += p.links[route.links[k] as usize].len; }
+        sign * dist
+    }
+
+    /// The escort band: Bond's 2D distance from this drone and whether he stands inside a facing
+    /// cone (`NDrone2_BondWithinAngle` 0x154f98: ATAN2_APPROX(bond − lead) against the lead's yaw
+    /// +0x54, |difference| ≤ the argument).
+    fn bond_band(&self, radius: f32, cone: f32) -> bool {
+        let dx = self.player_pos[0] - self.pos[0];
+        let dz = self.player_pos[2] - self.pos[2];
+        if (dx * dx + dz * dz).sqrt() >= radius { return false; }
+        angle_difference(self.yaw, atan2_approx(dx, dz)).abs() <= cone
+    }
+
     /// CivilianMission's route half (`UpdateMissionRoute` 0x154a80 = `NDrone2_FollowRoute`): `moving_anim` while the
     /// route MOVES (each game DSTATE picks its own — CivilianMission walks, `DSTATE_AllyLead` 0x15e698 case 3 calls
     /// `CallAnim(0x1e)` = RUN on code 0/2), look-around/stand when the creep is blocked (the game's route creep byte
@@ -1464,6 +1517,7 @@ impl Drone {
     /// script keeps playing** (no `SetHTAnim`): e.g. an unarmed guard (anim set 0xC) has no death or corpse script, so
     /// the last one holds instead of an empty pose.
     fn set_danim(&mut self, d: &Data, danim: u16, blend: u16) {
+        if danim == 0x188 && std::env::var_os("NF_SDLOG").is_some() { eprintln!("[sd] -> 188 blend {}", blend); }
         // The replaced danim: a 180° turn (info flag 0x100) still running.
         let old_info = d.tables.info.get(self.anim.danim as usize).copied().unwrap_or([0; 24]);
         let old_turn = self.anim.danim != 0 && old_info[1] & 1 != 0 && self.anim.script.is_some() && !self.anim.held;
@@ -4552,7 +4606,18 @@ impl Drone {
             }
             (ALLY_LEAD, msg::ENTER) => { self.call_anim(d, anim_state::RUN, 0, 0); true } // [M 0x15e698 case 1: 0x1e]
             (ALLY_LEAD, msg::UPDATE) => {
-                // The route first: done → AllyLeadDone [M 0x15e698 case 3, FollowRoute branch 3].
+                // The game's case-3 order [M 0x15e698]: the armed-peer scan first, then the route,
+                // then the Bond checks.
+                // An armed, started hostile within 10 → LeadHide (the cower) [M 0x15e698's armed-drone
+                // branch + 0x15ec08; the port's armed_peer_dist snapshot. `NDrone2_FindRunToPoint`
+                // 0x15168 — the branch's run-to-a-point half → AllyGoToGoalPosition 0x28 — is not
+                // ported; the hide arm only, as fix-actors].
+                if self.armed_peer_dist <= 10.0 {
+                    if std::env::var_os("NF_AILOG").is_some() { eprintln!("[ailog] escort {} → LeadHide (peer {:.1})", self.index, self.armed_peer_dist); }
+                    self.set_state(LEAD_HIDE);
+                    return true;
+                }
+                // The route: done → AllyLeadDone [M 0x15e698 case 3, FollowRoute branch 3].
                 // MOVING rides the RUN anim [M 0x15e698 case 3: code 0/2 → CallAnim(0x1e)] — the old
                 // walk-anim stand-in walked the whole lead at half speed and spent the test's escort
                 // window on the stairs.
@@ -4560,27 +4625,35 @@ impl Drone {
                 // `ReachedDestNode` queued `DSTATE_OpenDoor` — the sub-state checks below must not
                 // stomp it (the game's SetState applies at once; the port's flush is deferred).
                 if self.next_state.is_some() { return true; }
-                // An armed, started hostile within 10 → LeadHide (the cower) [M 0x15e698's armed-drone
-                // branch + 0x15ec08; the port's armed_peer_dist snapshot].
-                if self.armed_peer_dist <= 10.0 {
-                    if std::env::var_os("NF_AILOG").is_some() { eprintln!("[ailog] escort {} → LeadHide (peer {:.1})", self.index, self.armed_peer_dist); }
-                    self.set_state(LEAD_HIDE);
-                    return true;
+                // Bond standing in the lead's path: within the π/6 (0x3f060a92) facing cone and 3.0
+                // → PlayerInWay [M 0x15e698 case 3 + BondWithinAngle 0x154f98 — the entry is the
+                // cone, replacing fix-actors' route_blocked stand-in].
+                if self.bond_band(3.0, 0.523_598_8) { self.set_state(PLAYER_IN_WAY); return true; }
+                // The escort band [M 0x15e698 case 3's `ObjectMissionPathDistance` rules, the value
+                // stored at SM+0x20]: Bond more than 9 route-units BEHIND (path < −9.0) → wait for
+                // him; no route node within the 5.0 scan of Bond (path == 0.0 — he strayed off the
+                // route) with Bond ≥ 5.0 straight-line → wait too. The (15,25) Drone+0x9F8 band →
+                // BondCombat is dead in the game: no decomp writer for +0x9F8 exists
+                // (docs/fields/hitdata-spawner-ally.md §3), so `alert ≤ 15` always keeps the lead
+                // [M 0x15e698:83].
+                let pd = self.object_mission_path_distance(d, 5.0, self.player_pos);
+                self.mission_path_dist = pd;
+                if pd < -9.0 || (pd == 0.0 && crate::nav::dist2d(self.pos, self.player_pos) >= 5.0) {
+                    if std::env::var_os("NF_AILOG").is_some() { eprintln!("[ailog] escort {} → LeadWait (path {pd:.1})", self.index); }
+                    self.set_state(ALLY_LEAD_WAIT);
                 }
-                // Bond blocking the route → PlayerInWay [M 0x15ea28's entry; the port's route_blocked].
-                if self.route_blocked && self.dist <= 3.0 { self.set_state(PLAYER_IN_WAY); return true; }
-                // Bond far behind → wait for him [M 0x15e698 case 3: the path-distance rules of
-                // ObjectMissionPathDistance — the port's straight-line stand-in uses 12 units; the
-                // game's close-Bond wait also needs BondWithinAngle(0.52) (the "assure him" stance),
-                // which a following escort does not trigger].
-                if self.dist > 12.0 { self.set_state(ALLY_LEAD_WAIT); }
                 true
             }
             (ALLY_LEAD_WAIT, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15eda8 case 1: 0x21]
             (ALLY_LEAD_WAIT, msg::UPDATE) => {
-                // Resume the lead once Bond is back in the escort band (the game's path-distance
-                // resume 0x15eda8 case 3 → 0x1d; hysteresis against the 12-unit entry).
-                if self.dist <= 10.0 { self.set_state(ALLY_LEAD); }
+                // [M 0x15eda8 case 3]: an armed hostile within 10 → hide (the FindRunToPoint stand-in,
+                // as Lead's arm); else the path bands: ≤ −7.0 (Bond still over 7 behind on the route)
+                // stays, and 0.0 with Bond ≥ 5.0 straight-line stays; anything else resumes the lead
+                // (the game's −9.0 enter / −7.0 resume hysteresis).
+                if self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
+                let pd = self.object_mission_path_distance(d, 5.0, self.player_pos);
+                self.mission_path_dist = pd;
+                if pd > -7.0 && (pd != 0.0 || crate::nav::dist2d(self.pos, self.player_pos) < 5.0) { self.set_state(ALLY_LEAD); }
                 true
             }
             // ---- the AllyLead sub-states (fix-actors; 038's brief) ---------------------------------
@@ -4590,10 +4663,11 @@ impl Drone {
             // parks him in PlayerInWay.
             (PLAYER_IN_WAY, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15ea28 case 1: 0x21]
             (PLAYER_IN_WAY, msg::UPDATE) => {
-                // No armed drone within 10 and Bond out of the way band → Lead [M 0x15ea28 case 3;
-                // the 1.06-rad facing check is the game's nudge-aside, the port resumes on distance —
-                // *suggested*, documented in docs/systems/actors.md].
-                if self.armed_peer_dist > 10.0 && self.dist > 3.0 { self.set_state(ALLY_LEAD); }
+                // An armed hostile within 10 → hide (the FindRunToPoint stand-in, as Lead's arm);
+                // otherwise resume the lead once Bond leaves the stay band — inside the π/3
+                // (0x3f860a92) facing cone AND 3.5 [M 0x15ea28 case 3].
+                if self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
+                if !self.bond_band(3.5, 1.047_197_6) { self.set_state(ALLY_LEAD); }
                 true
             }
             (LEAD_HIDE, msg::ENTER) => { self.call_anim(d, anim_state::COWER, 0, 0); true } // [M 0x15ec08 case 1: 0x19]
@@ -4622,11 +4696,16 @@ impl Drone {
                 true
             }
             // AllyLeadBondCombat 0x22 (0x15f120): Bond is fighting near the escort — hold the alert
-            // idle until the fight moves away, then Lead. The game's ObjectMissionPathDistance(5.0)
-            // route check is the port's armed-peer + distance band [*suggested*; documented].
+            // idle. UPDATE [M 0x15f120 case 3]: an armed hostile within 10 → hide (the FindRunToPoint
+            // stand-in); else the path distance: < 0 (Bond still behind on the route) stays;
+            // `DAT_00298f80 != 0` stays (no decomp writer — reads 0, docs/fields/
+            // hitdata-spawner-ally.md §3); otherwise Lead.
             (LEAD_BOND_COMBAT, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f120 case 1: 0x21]
             (LEAD_BOND_COMBAT, msg::UPDATE) => {
-                if self.armed_peer_dist > 10.0 { self.set_state(ALLY_LEAD); }
+                if self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
+                let pd = self.object_mission_path_distance(d, 5.0, self.player_pos);
+                self.mission_path_dist = pd;
+                if pd >= 0.0 { self.set_state(ALLY_LEAD); }
                 true
             }
             // ---- the AllyFollow chain (0x24–0x27, 0x15f3c8/0x15f4e0/0x15f6a0/0x15f858) -------------
@@ -5595,15 +5674,55 @@ pub fn flash_amount(head: V3, blast: V3, px: f32, pz: f32, yaw: f32, has_los: bo
     f
 }
 
-/// Stand-in for the renderer's "drawn" (`obj+0xFC`) and `Drone_PositionVisible`: within 60° of Bond's aim (or within
-/// 2 units) and any of five body points in line of sight from his eye (thin occluders hide one ray, not a cel).
+/// Stand-in for the renderer's "drawn" (`obj+0xFC`) ONLY: within 60° of Bond's aim (or within 2 units) and any of
+/// five body points in line of sight from his eye (thin occluders hide one ray, not a cel). The SPawner's
+/// "player can see the spot" gate is a different reader — `drone_position_visible` below; guards-0c-b decoupled
+/// them (the spawner must not ride the drawn gate's rays).
+/// guards-0c: the game's draw test is `Vision_InView` (0x1e89e0 [M], the four fov side planes) over the PORTAL-VISIBLE
+/// cels (`View_AddObjects` 0x1e62d8 walks `Vision_Portal_Recurse` first) — no occlusion rays anywhere. The sim has no
+/// portal graph, so the rays stand in for the room gate — but they run on the BULLET segment (the pass-flagged hits
+/// drop, [M `Collide_Intersect` 0x1ebff0-0x1ec010 for the bit-0x8 queries]): the renderer draws through the
+/// pass-flagged surfaces (the 0c museum's glass displays, the foliage), and the old flat-segment rays marked those
+/// guards undrawn — `NDrone2_DoAnimation` (0x149f88 [M]) then slides them at the danim's speed (0.02 for walk 392)
+/// with no gait, ON SCREEN: the playtests' "the walking animation is kind of fucked" (1012-1723/2105). Opaque
+/// occluders (the 05 castle behind the switch-trace patroller [L work/switch_trace.tsv]) block both segment kinds,
+/// so the live-pinned slide of that guard is untouched.
 pub fn visible_to(player: &Player, world: &CollisionWorld, pos: V3, head: V3) -> bool {
     let v = [pos[0] - player.eye[0], pos[2] - player.eye[2]];
     let (a, l) = ([player.aim[0], player.aim[2]], (v[0] * v[0] + v[1] * v[1]).sqrt());
     let al = (a[0] * a[0] + a[1] * a[1]).sqrt();
     let side = [-v[1] / l.max(1e-6) * 0.5, v[0] / l.max(1e-6) * 0.5];
     let pts = [head, pos, [pos[0] + side[0], pos[1], pos[2] + side[1]], [pos[0] - side[0], pos[1], pos[2] - side[1]], [pos[0], pos[1] - 0.8, pos[2]]];
-    l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5 && pts.iter().any(|&q| world.line_of_sight(player.eye, q)))
+    l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5 && pts.iter().any(|&q| world.segment_bullet(player.eye, q).is_none()))
+}
+
+/// The spawner's own "player can see the spot" gate — the game's `Drone_PositionVisible`
+/// (0x13a7a0 [M]), called from the post-selection abort of `DroneSpawner_SpawnDrone` (0x137cb0:43-47 [M]: the
+/// picked template's spot visible → `return 0`, the slot persists and retries next tick; `DroneSpawner_Control`
+/// 0x137e68 itself reads NO visibility — its release test is the trigger channel's one-shot latch +0x1e
+/// [M 0x137e68:53-70] — so the abort is the spawner path's ONLY visibility reader). The game's test, in order:
+/// (1) `Vision_InView(pos, 2.0, viewer)` — the four fov side planes, radius slack 2.0, no collision
+/// [M 0x1e89e0 disasm: 4 plane dots, `< -param_1` fails]; (2) the spot's cel byte +0xa0 — when the template
+/// carries a cel (0x137cb0 passes `piVar10[1]`), an undrawn cel short-circuits to NOT visible → the spawn
+/// proceeds [M 0x13a7a0:58-60]; (3) ONE `Collide_LineOfSight` ray viewer→spot — `DroneVision_LineOfSightToObject`
+/// (0x178390 [M]: the AI cel walk, then) with HITTEST word 0xa27 [M 0x13a7a0:73-74 `param_6 | 0xa27`], which is
+/// the FLAT segment: NO bit 0x8 (pass-flagged occluders — glass, foliage — BLOCK the ray, unlike the bullet
+/// family 0x1ebff0-0x1ec010), bit 0x20 set (the 0x1000 missile cage is skipped — `segment_actor`,
+/// [M Collide_Pick 0x1eb480]), char 0 (dynamic-owned nodes tested [M 0x1edf50 wrapper]).
+/// guards-0c-b: the spawner must NOT ride the drawn gate's bullet rays — on 0700001b the sightline to spawner
+/// #187's Drake spot is bullet-CLEAR but flat-BLOCKED (a pass-flagged surface), so the drawn-gate abort rejected
+/// every spawn and the fight never started (fix_finale_live the_0700001b_drakes_defeat_ends_the_space_station).
+/// Stand-ins, same as the drawn gate: the 60°/2-unit cone for `Vision_InView` (no camera frustum in the sim) and
+/// the five bullet rays for the cel byte +0xa0 (no portal graph); only the game's own ray is exact.
+pub fn drone_position_visible(player: &Player, world: &CollisionWorld, pos: V3) -> bool {
+    let v = [pos[0] - player.eye[0], pos[2] - player.eye[2]];
+    let (a, l) = ([player.aim[0], player.aim[2]], (v[0] * v[0] + v[1] * v[1]).sqrt());
+    let al = (a[0] * a[0] + a[1] * a[1]).sqrt();
+    let side = [-v[1] / l.max(1e-6) * 0.5, v[0] / l.max(1e-6) * 0.5];
+    let pts = [pos, [pos[0] + side[0], pos[1], pos[2] + side[1]], [pos[0] - side[0], pos[1], pos[2] - side[1]], [pos[0], pos[1] - 0.8, pos[2]]];
+    l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5
+        && pts.iter().any(|&q| world.segment_bullet(player.eye, q).is_none())        // the cel byte +0xa0
+        && world.segment_actor(player.eye, pos).is_none())                           // the game's 0xa27 ray
 }
 
 /// Every drone placement of the level's main map, in placement order (`Drone_Create`); spawner templates included
@@ -8148,8 +8267,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     |i, min| { let q = list[i].pos; let dd = ((q[0] - player.pos[0]).powi(2) + (q[2] - player.pos[2]).powi(2)).sqrt();
                         dd >= min },
                     // Post-selection abort: the picked spot visible to Bond fails the attempt
-                    // [M 0x137cb0:43 — the slot persists and retries next tick].
-                    |i| { let q = list[i].pos; visible_to(player, d.world, q, [q[0], q[1] + 0.6, q[2]]) },
+                    // [M 0x137cb0:43 — the slot persists and retries next tick]. The game's test is
+                    // `Drone_PositionVisible` (0x13a7a0), NOT the drawn gate — its ONE 0xa27 ray is the
+                    // FLAT segment, so guards-0c's bullet-segment drawn rays must not feed it
+                    // (guards-0c-b: they aborted every Drake spawn on 0700001b, fix_finale_live).
+                    |i| { let q = list[i].pos; drone_position_visible(player, d.world, q) },
                     &mut |n| rng.rand(n));
                 match action {
                     crate::spawners::Action::Spawn(i) => {
@@ -9359,6 +9481,7 @@ mod tests {
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
             mission_wait_channel: 0,
+            mission_path_dist: 0.0,
             stun_until: 0, player_pos: [0.0; 3],
             down: false,
             tase_accum: 0,

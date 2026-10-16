@@ -216,6 +216,8 @@ fn the_escort_opens_his_door_without_bonds_help() {
     let start_ticks = w.total_ticks;
     let (mut saw_0x81, mut door_opened, mut crossed) = (None, false, false);
     let mut cleared: std::collections::HashSet<usize> = std::collections::HashSet::new();
+    let mut piw_ticks = 0u32;
+    let mut piw_anchor = [0.0f32; 3];
     let mut stall = 0u32;
     let mut last = w.scene.sim.as_ref().unwrap().drones.list[ci].pos;
     'follow: for _round in 0..8 {
@@ -240,7 +242,23 @@ fn the_escort_opens_his_door_without_bonds_help() {
                 }
                 // The stall watch: the escort parked > 2700 ticks → clear the armed guards near him
                 // (LeadHide's band [M 0x15ec08]); 4.0+ movement resets the window (the nav-gap rule).
-                if walker::dxz(c.pos, last) > 0.05 { stall = 0; last = c.pos; } else { stall += 1; }
+                // The cower sways a few hundredths per tick, so the hide state itself counts
+                // as parked — the sway must not reset the watch (the merge-batch repro: the
+                // escort cowered at the spawn for 60000 ticks, the sway resetting the old
+                // per-tick counter, the armed peer never cleared).
+                // The PlayerInWay park tracker: the idle's root motion resets the per-tick stall
+                // counter, so the ahead-ride keys on its own anchor — ticks spent in 0x1e
+                // without 1.0 of cumulative travel [M 0x15ea28 case 3's stay band].
+                if c.state == nf_game::drone::state::PLAYER_IN_WAY {
+                    if walker::dxz(c.pos, piw_anchor) > 1.0 { piw_anchor = c.pos; piw_ticks = 0; }
+                    else { piw_ticks += 1; }
+                } else { piw_ticks = 0; piw_anchor = [0.0; 3]; }
+                if c.state == nf_game::drone::state::LEAD_HIDE || walker::dxz(c.pos, last) <= 0.05 {
+                    stall += 1;
+                } else {
+                    stall = 0;
+                }
+                last = c.pos;
             }
             if crossed && door_opened { break 'follow; }
             if w.scene.sim.as_ref().unwrap().drones.level_exit.is_some() { break 'follow; }
@@ -250,11 +268,20 @@ fn the_escort_opens_his_door_without_bonds_help() {
                     let sim = w.scene.sim.as_ref().unwrap();
                     (0..sim.drones.list.len()).filter(|&i| {
                         let d = &sim.drones.list[i];
-                        i != ci && d.team == 1 && d.started && !d.corpse && d.enabled
+                        // no `enabled` filter: the escort's cower keys on ANY started armed guard
+                            // (the port's armed-peer snapshot; the intro's courtyard WAIT_SWITCH
+                            // guards are started but unenabled and were unreachable before)
+                            i != ci && d.team == 1 && d.started && !d.corpse
                             && walker::dxz(d.pos, sim.drones.list[ci].pos) < 16.0 && !cleared.contains(&i)
                     }).collect()
                 };
-                if !guards.is_empty() {
+                // Clear guards ONLY for the cower (LEAD_HIDE): that park is the armed-peer
+                // band [M 0x15ec08 / 0x15e698 case 3]. Any other park (PlayerInWay, Wait) is
+                // Bond's own geometry, not the guards' — clearing them there burned ~360k
+                // ticks on the unenabled WAIT_SWITCH pair while the escort stood in the
+                // PlayerInWay stay band at the courtyard hairpin.
+                if w.scene.sim.as_ref().unwrap().drones.list[ci].state
+                    == nf_game::drone::state::LEAD_HIDE && !guards.is_empty() {
                     let glist = guards.clone();
                     eprintln!("[01] +{}: escort parked — clearing guards {glist:?}",
                         w.total_ticks - start_ticks);
@@ -264,25 +291,85 @@ fn the_escort_opens_his_door_without_bonds_help() {
                         if walker::dxz(gpos, w.scene.sim.as_ref().unwrap().bond.pos) > 9.0 {
                             w.walk_nav_to(gpos, &format!("approach guard {g}"), 3.5);
                         }
-                        if !w.shoot(g, &format!("guard {g}")) { cleared.remove(&g); }
+                        // The escort_follow recovery pattern: the lead's cower (AllyLeadHide,
+                        // [M 0x15ec08]) holds while ANY armed started guard stands within 10
+                        // [M 0x15e698 case 3's NearArmedDrone(10)], so the shot must actually
+                        // kill — a single bullet leaves the peer up and the escort cowers
+                        // forever (the merge-batch repro: peer 7.5 for 60000 ticks).
+                        if w.scene.sim.as_ref().unwrap().gun.clip + w.scene.sim.as_ref().unwrap().gun.spare < 8 {
+                            w.resupply("ammo");
+                        }
+                        let killed = w.shoot(g, &format!("guard {g}"))
+                            || { w.resupply("ammo retry"); w.shoot(g, &format!("guard {g}")) };
+                        let dead = w.scene.sim.as_ref().unwrap().drones.list[g].corpse
+                            || w.scene.sim.as_ref().unwrap().drones.list[g].health <= 0.0;
+                        if !killed && !dead { cleared.remove(&g); }
                     }
+
                     let cpos = w.scene.sim.as_ref().unwrap().drones.list[ci].pos;
                     w.walk_nav_to(cpos, "back to the escort", 3.9);
                     continue 'follow;
                 }
             }
-            // Trail: 3.9 behind along the escort's own heading (outside PlayerInWay's 3.0).
-            let (mp, myaw, bp) = { let sim = w.scene.sim.as_ref().unwrap();
-                (sim.drones.list[ci].pos, sim.drones.list[ci].yaw, sim.bond.pos) };
-            let trail = [mp[0] + myaw.sin() * -3.9, mp[1], mp[2] + myaw.cos() * -3.9];
-            let d = walker::dxz(bp, trail);
-            let desired = (trail[0] - bp[0]).atan2(trail[2] - bp[2]);
-            let input = Input {
-                turn: walker::wrap_pi(desired - w.scene.sim.as_ref().unwrap().bond.yaw).clamp(-0.07, 0.07),
-                forward: if d > 5.0 { 1.0 } else if d > 4.2 { 0.45 } else { 0.0 },
-                ..Default::default()
-            };
-            w.tick(input, false);
+            // Bond rides the ROUTE polyline 3.9 arc-units behind the lead (the walking player
+            // of escort_follow_07000001_live, collision-free in this harness): his nearest
+            // route node tracks the chain, so the arc the bands read (SM+0x20 [M 0x15e698:60,
+            // 0x15eda8:35]) stays a true ~3.9 lag and the game's own resume [M 0x15eda8 case 3]
+            // fires when the lead parks (parked at his node, Bond 3.9 back on the link: the
+            // node scan's 5.0 cutoff [M 0x153f50] makes the lead's own node the nearest → path
+            // 0.0 → resume with Bond inside the 5.0 straight-line check). The old yaw-offset
+            // trail held the STRAIGHT-LINE lag at 3.9 while the coarse spawn links put Bond's
+            // nearest node a whole link back — the arc froze ≤ -7 and the escort parked in 0x20
+            // five units from the start, the shoji never reached (the merge-batch failure). 3.9
+            // stays outside the PlayerInWay bands (enter 3.0 [M 0x15e698 case 3], stay 3.5
+            // [M 0x15ea28 case 3]). No use key anywhere — the door work is all Mayhew's
+            // [M DSTATE_OpenDoor 0x1681f8 → NDrone2_OpenDoor 0x14aa38].
+            {
+                let (mp, rinfo) = {
+                    let sim = w.scene.sim.as_ref().unwrap();
+                    (sim.drones.list[ci].pos,
+                        sim.drones.list[ci].route.as_ref().map(|r| (r.path, r.index, r.nodes.clone())))
+                };
+                let node_pos = |k: i32, nodes: &[u16], path: usize| -> [f32; 3] {
+                    let sim = w.scene.sim.as_ref().unwrap();
+                    sim.nav.paths[path].nodes[nodes[k as usize] as usize].pos
+                };
+                let mut spot: Option<[f32; 3]> = None;
+                if let Some((path, index, nodes)) = rinfo {
+                    // Walk past a lead stuck in the PlayerInWay stay band [M 0x15ea28 case 3]:
+                    // at the courtyard hairpin the 3.9 ARC ride is ~2.5 STRAIGHT-LINE across
+                    // the fold — inside the π/3 × 3.5 stay cone forever. The game's player
+                    // walks past his halted guide, breaking the cone, and the lead resumes;
+                    // the ride models it once the park has held (stall > 600) by riding 4.2
+                    // AHEAD on the polyline instead of 3.9 behind.
+                    let ahead = piw_ticks > 900;
+                    let mut want = if ahead { 4.2f32 } else { 3.9f32 };
+                    let mut cur = mp;
+                    let mut k = if ahead { index + 1 } else { index.min(nodes.len() as i32 - 1) };
+                    let step: i32 = if ahead { 1 } else { -1 };
+                    while want > 0.0 && k >= 0 && (k as usize) < nodes.len() && spot.is_none() {
+                        let np = node_pos(k, &nodes, path);
+                        let (dx, dz) = (np[0] - cur[0], np[2] - cur[2]);
+                        let l = (dx * dx + dz * dz).sqrt();
+                        if l >= want && l > 0.0 {
+                            spot = Some([cur[0] + dx / l * want, mp[1], cur[2] + dz / l * want]);
+                        } else {
+                            want -= l;
+                            cur = np;
+                            k += step;
+                        }
+                    }
+                    if spot.is_none() { spot = Some([cur[0], mp[1], cur[2]]); }
+                }
+                if let Some(p) = spot {
+                    let floor = {
+                        let sim = w.scene.sim.as_ref().unwrap();
+                        sim.world.floor_below([p[0], mp[1], p[2]], 6.0).unwrap_or(mp[1])
+                    };
+                    w.scene.sim.as_mut().unwrap().bond.pos = [p[0], floor + 1.1, p[2]];
+                }
+            }
+            w.tick(Default::default(), false);
             if (w.total_ticks - start_ticks) % 3000 == 0 {
                 let sim = w.scene.sim.as_ref().unwrap();
                 let c = &sim.drones.list[ci];
@@ -290,7 +377,7 @@ fn the_escort_opens_his_door_without_bonds_help() {
                     w.total_ticks - start_ticks, c.pos[0], c.pos[1], c.pos[2], c.state, c.hit_door, c.armed_peer_dist,
                     door_idx, sim.drones.doors.list[door_idx].state, sim.drones.doors.list[door_idx].pos01);
             }
-            if w.total_ticks - start_ticks > 60_000 { break 'follow; }
+            if w.total_ticks - start_ticks > 240_000 { break 'follow; }
         }
     }
     eprintln!("[01] result: 0x81 at {saw_0x81:?}, opened {door_opened}, crossed {crossed}");

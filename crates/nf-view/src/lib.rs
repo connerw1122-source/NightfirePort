@@ -1855,6 +1855,13 @@ impl App {
             // The menu picked a level: through the same reload path a LOAD_LEVEL uses. A cold pick
             // (the pause page's RESTART [M 0x204408:139]) loads fresh, not with the current state.
             if !fe.flow.warm_reset { if let Some(sim) = self.scene.sim.as_mut() { sim.drones.level_exit_cold = true; } }
+            // death-loop-07: the results page's REPLAY row carries the `Player_RamLoad(Bond, 1)`
+            // half [M P_ENDMISSION_Handler 0x216618:19-21] — mark the serve so the reload comes
+            // off the ENTRY checkpoint (the restart arm), not the dying sim's live capture: the
+            // carried fail channel re-failed the mission the tick it came back — the 07000007
+            // replay loop (playtest 1012-1723). Consumed with the request, one pick only.
+            let replay_pick = std::mem::take(&mut fe.requested_restart);
+            if replay_pick { if let Some(sim) = self.scene.sim.as_mut() { sim.drones.level_exit_restart = true; } }
             self.pending_level = Some(code);
             // net-match-host: the confirm page's settings ride with the level (`mp_confirm_start`
             // builds them [M mp-menu-flow]; before this they were set but never read — the match
