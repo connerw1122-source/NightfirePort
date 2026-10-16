@@ -234,7 +234,17 @@ pub struct NetCore {
     closed: bool,
     /// Events for the app (`take_app_events`).
     events: Vec<CoreEvent>,
+    /// Host: the match-start payload (tag 1) and the polls left to repeat it. The DATA tunnel is
+    /// unacknowledged, so a single send is lost with the link's loss rate (the 5 % e2e lost it);
+    /// the host repeats it every `START_RESEND_EVERY` polls for `START_RESEND_POLLS` polls and
+    /// the client keeps the first copy [S port protocol].
+    start_resend: Option<(Vec<u8>, u32)>,
 }
+
+/// The host repeats the match-start payload every this many polls …
+const START_RESEND_EVERY: u32 = 4;
+/// … for this many polls after the arm (≈ 2 s of 60 Hz frames).
+const START_RESEND_POLLS: u32 = 120;
 
 fn session_cfg() -> Config {
     Config { hash_every: 15, ..Default::default() } // NET_HASH_EVERY's cadence
@@ -254,6 +264,7 @@ impl NetCore {
             host_timed_out: false,
             closed: false,
             events: Vec::new(),
+            start_resend: None,
         })))
     }
 
@@ -306,12 +317,21 @@ impl NetCore {
             host_timed_out: false,
             closed: false,
             events: Vec::new(),
+            start_resend: None,
         })))
     }
 
     /// Pump the transport once per frame: receive, timers, events → state.
     pub fn poll(&mut self) {
         let now = self.epoch.elapsed().as_millis() as u64;
+        if self.is_host && !self.closed {
+            if let Some((bytes, left)) = self.start_resend.as_mut() {
+                *left = left.saturating_sub(1);
+                let resend = (*left % START_RESEND_EVERY == 0).then(|| bytes.clone());
+                if *left == 0 { self.start_resend = None; }
+                if let Some(b) = resend { self.sess.send_data(b); }
+            }
+        }
         for ev in self.sess.poll(now) {
             match ev {
                 Event::Refused { .. } => {
@@ -344,7 +364,8 @@ impl NetCore {
                         Some(0) => {
                             self.choices = MpNetChoices::decode(&bytes);
                         }
-                        Some(1) => {
+                        // The host repeats the start (start_resend); the first copy wins.
+                        Some(1) if self.match_start.is_none() => {
                             if let Some((m, seed)) = decode_match_start(&bytes) {
                                 let s = match_to_mp(&m, seed);
                                 self.match_start = Some(s.clone());
@@ -376,7 +397,9 @@ impl NetCore {
         self.sess.start_match(0).ok();
         self.match_start = Some(s.clone());
         self.events.push(CoreEvent::MatchStarted(Box::new(s.clone())));
-        self.sess.send_data(encode_match_start(&mp_to_match(s), s.seed));
+        let payload = encode_match_start(&mp_to_match(s), s.seed);
+        self.sess.send_data(payload.clone());
+        self.start_resend = Some((payload, START_RESEND_POLLS));
     }
 
     /// The lobby's agents (the trait's `agents`).
