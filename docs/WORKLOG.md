@@ -16716,3 +16716,20 @@ Tests on 07000005: spotting Bond plays the game's bark once, within the cooldown
 first alert goes through state 0x39 with the game's timing. Tests silent (NF_SILENT). Acceptance
 criteria in docs/systems/uncited-audit.md gap ⑨.
 - 2026-10-16 21:37 UTC: branch created from origin/master 65bf8a09; starting with the audit doc.
+- guard-barks-first-alert (task 731): ported the first-alert route — `DroneFunc_FirstAlertState`
+  0x147f58 (consulted by FirstAttack 0x148010 when the attack is not the drone's own sight and a
+  pending alert +0x4F8 0x70000000 is consumed; returns 0x39 when the ConsiderAlerted-shifted
+  source marker says the source was interrogating, on {05,07,41}), the pending-alert bits
+  (`alert_pending`, set by DoForcedAttack/AlertSound/the sound-alert states/the alarm), +0x528
+  (`alert_source`) with the per-tick TestEndInterogationAssist verdict, and the states 0x39
+  InterogateAssist (timer C at now+Rand(120) → goal 10 units from Bond: GoToGoal with return 0x3a,
+  else the wait) and 0x3a InterogateAssistWait (alert idle 0x21 unarmed / aim stand 10 armed; ends
+  into Attack when the interrogator stops; EXIT = EndInterogateAssist &0xffdfffdf|0x10). Barks:
+  HeardNoiseTalk (type 1 only, 0x26, no roll), NewSight/LostSightTalk (types 5/6 on 0c/0d only —
+  silent on 05, latches ported), and the MP chatter family (Injured/RunForCover/UnderCover/
+  UnderCoverAimTalk) with the exact line tables behind the MP gate MPSettings+0x184 == 0 → return
+  [M disasm ×4] — dead in both modes, zero RNG in SP, call sites wired. No reload bark exists
+  [M 0x15ff80/0x16a8b0 have no talk calls]. Tests: crates/nf-game/tests/guard_barks_live.rs 4/4
+  (spot bark once within the cooldown rules; first alert → 0x39 with the Rand(120) timing and both
+  TIMER_C branches; suppress bits fall through to combat; the chatter sites draw nothing).
+  Report: docs/reports/guard-barks-first-alert.md.
