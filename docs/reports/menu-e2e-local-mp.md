@@ -61,13 +61,16 @@ cited at the write). Verified by the new test: toggle On in Player Mods → sett
 - `menus_e2e_mp` (new): 5 passed.
 - `menus_e2e` 5, `mp_menu_flow` 9, `mp_net_lobby` 9, `menu_music_flow` 14, `menu_sfx_flow` 14 —
   all passed on the final tree (master ad761677 + the two task commits).
-- The fast suite (`tools/test/suite.py`) on the final tree: **build ok: 394 test binaries in 92 s**;
-  the run phase was cut twice by this sandbox (background runs are reaped between tool calls here —
-  nohup and setsid both die; a foreground run hit the 9.5-minute tool cap) and the log buffer was
-  lost with the kill, so **no total line**. The earlier partial foreground run on the pre-change
-  tree (07:24-07:28 UTC, master) ran nf-game's binaries green (e.g. 234 passed in its unit binary)
-  before the kill. Remaining verification: one uninterrupted suite run (needs the main agent's
-  runner or a sandbox that keeps background jobs), or the rule-5 cargo line in chunks.
+- The fast suite (`tools/test/suite.py`) on the final tree: **build ok: 394 test binaries** (25 s
+  with the warm cache); the run phase could not finish inside this sandbox — background runs are
+  reaped between tool calls here (nohup and setsid both die), and the run's FIRST binary is
+  `fix_striped_box_census`, a multi-minute whole-game census that blocks the per-binary log write
+  for its entire run, so a foreground tool-call window (9.5 min cap) ends before anything is
+  written. With `--limit 20` the runner is proven healthy: it advanced past the census with the
+  documented `TIMEOUT fix_striped_box_census after 20 s` line. **No suite total line.** The
+  nf-view binaries the task touches all pass when run directly (listed above); one uninterrupted
+  suite run on this tree is the remaining verification (the main agent's runner, or a sandbox
+  that keeps background jobs).
 
 ## Remaining / for the next round
 
