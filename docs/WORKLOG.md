@@ -16485,3 +16485,11 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
 - Report: docs/reports/uncited-gameplay-audit.md. Left: the 10 queued tasks (none started,
   audit-only by design) + the live checks; gap ④/⑤ should rebase onto task 704's
   s/mp-bots-in-match branch.
+
+## drone-investigate — STARTED 2026-10-16 19:16 UTC (sandbox ~21:12 UTC)
+- Branch s/drone-investigate cut from origin/master c8186aa1. Suite started in background at 19:14 UTC (suite.out).
+- Task: NDrone2 Investigate state (DSTATE_Investigate 0x7E, 0x168070). Initial reads: handler decomp in hand;
+  task-710 audit claims it is dead on retail (no SetState 0x7E caller) — verifying independently before changing code.
+- Plan: (1) trace dispatch + all entry sites [M]; (2) trace the heard-sound-below-alert-threshold path the game
+  actually takes; (3) compare with nf-game master on 07000005; pin with tests (guard investigates origin + returns;
+  sister hears nothing stays put).
