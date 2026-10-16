@@ -29,3 +29,8 @@ failure.
 
 ---
 claimed-by: sandbox7 at 2026-10-16T16:00Z
+
+---
+## Report (done, 2026-10-16T16:30Z)
+
+Closed by the driver: the report is on `s/guards-0c-b` (docs/reports/guards-0c-b.md); the worker didn't run finish.sh.
