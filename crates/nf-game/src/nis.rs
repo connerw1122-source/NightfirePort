@@ -113,6 +113,12 @@ struct Stream {
     /// Op 0x1b (`Script_SubScriptStart` 0x1db050): the running sub-script's index in the owning
     /// `Player`'s `subs` (`Script_Load`'s SCRIPTINFO at stream+0x10); `None` = none yet.
     sub: Option<usize>,
+    /// `Script_SoundStart`'s live handle (`stream+0x10`), as the sound id the EE keeps at Sound+0x34
+    /// (`Sound_IsLooping` reads the SFX table through it [M 0x1de260]); `None` = no live sound — the
+    /// game's handle 0, from a refused start, a 0xffff id or after a kill [M 0x1d9860:96-127].
+    sound_id: Option<u32>,
+    /// `stream+0x22`: the frame the line started (`Script_SoundStart` writes stream clock + 1) [M 0x1d8820].
+    sound_start_frame: i16,
 }
 
 /// A running script (`SCRIPTINFO`).
@@ -222,6 +228,10 @@ pub trait World {
     /// `Control_BuildWorldSph` 0x133070 transforms the centre by the object matrix into obj+0x80,
     /// obj+0x8C carries the radius). `None` = the hash resolves to nothing above nf-game.
     fn glist_sphere(&self, hash: u32) -> Option<([f32; 3], f32)> { let _ = hash; None }
+    /// `Sound_IsLooping` (0x1de260): the SFX table's loop bit for the sound id (`SFXOutputData
+    /// [id*0x18+0x14]`) — `Script_SoundEnd` (0x1daf60) stops only a looping sound at its marker.
+    /// Default true (stop): no-table callers behave as before.
+    fn sfx_looped(&self, id: u32) -> bool { let _ = id; true }
 }
 
 const IDENT: Mat4 = [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
@@ -424,16 +434,40 @@ impl Script {
                         // `Script_SoundStart` (0x1d8820): 2-D when asked or when the object stream has no object.
                         let (Some(id), Some(b)) = (rd(0, 4), cmds.get(pc + 5..pc + 8)) else { self.streams[i].pc = None; return };
                         let stream = if b[1] == 0 { i.saturating_sub(1) } else { b[2] as usize };
+                        let at = self.streams.get(stream).filter(|o| matches!(o.kind, 1 | 2)).and_then(|o| o.obj);
                         let s = &mut self.streams[i];
                         s.tag = stream as u16;
-                        s.kind = 5;
-                        let at = self.streams.get(stream).filter(|o| matches!(o.kind, 1 | 2)).and_then(|o| o.obj);
-                        out.push(Request::Sound { id, at: if b[0] == 1 { None } else { at }, src: (self.nis.hashcode, i as u8) });
+                        // The tag (+0x20) and the start frame (+0x22 = stream clock + 1) are written
+                        // before the start gate [M 0x1d8820:20-28].
+                        s.sound_start_frame = (s.clock as i32 + 1) as i16;
+                        // The start gate [M 0x1d8820]: `stream+0x10 == 0 && script+0xAB5 & 0x20 == 0`.
+                        // A stream with a live handle never re-fires, and once the skip's fade has run
+                        // past its length (+0xAB5 bit 5 — the catch-up state `Script_Update` sets) no
+                        // new line starts: the skipped script's remaining lines (and their SoundEnd
+                        // arms) never come to be. The kind still becomes 5 even when the id is the
+                        // 0xffff "none" (handle 0) [M :36-52].
+                        if s.sound_id.is_none() && self.fade_flags & 0x20 == 0 {
+                            s.kind = 5;
+                            s.sound_id = (id & 0xfffff != 0xffff).then_some(id);
+                            out.push(Request::Sound { id, at: if b[0] == 1 { None } else { at }, src: (self.nis.hashcode, i as u8) });
+                        }
                         next = pc + 9;
                     }
                     0x17 => {
+                        // `Script_SoundEnd` (0x1daf60): the marker stops only a live LOOPING sound
+                        // under the game's condition — `Sound_IsLooping` reads the SFX table's loop
+                        // bit for the handle's id [M 0x1de260]; a one-shot line keeps playing to its
+                        // own sample end. A stream with no live handle returns from `Script_KillStream`
+                        // case 5 untouched (kind and restartability stay) [M 0x1d9860:96-99]. The
+                        // kill/free path stops unconditionally (kill() case 5).
                         let s = &mut self.streams[i];
-                        if s.kind == 5 { s.kind = 0; out.push(Request::SoundStop { src: (self.nis.hashcode, i as u8) }); }
+                        if let Some(sid) = s.sound_id {
+                            if w.sfx_looped(sid) && (s.clock < self.nis.length as f32 || self.play & 8 == 0 || s.sound_start_frame != 1) {
+                                s.sound_id = None;
+                                s.kind = 0;
+                                out.push(Request::SoundStop { src: (self.nis.hashcode, i as u8) });
+                            }
+                        }
                         next = pc + 2;
                     }
                     0x0d => {
@@ -674,6 +708,7 @@ impl Script {
         }
         s.kind = 0;
         s.obj = None;
+        s.sound_id = None;
     }
 
     /// `Script_Free`'s stream pass (`Script_Free` 0x1da880).

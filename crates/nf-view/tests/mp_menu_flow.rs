@@ -209,6 +209,11 @@ fn start_checks_refuse_single_player() {
     // Sister: the same single human WITH a bot passes (the bots flow test covers that path
     // end-to-end; here enable a bot directly and retry).
     fe.mp_bots[0].enabled = true;
+    // The refusal's message box stands (it was never drawn before — playtest 1015-2231): Enter
+    // dismisses it first, then Continue passes.
+    assert!(fe.action(Action::Confirm), "Enter dismisses the message box");
+    assert_eq!(fe.mp_error, 0);
+    assert_eq!(fe.page, Page::MpOptions, "dismissing doesn't also continue");
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.page, Page::MpConfirm);
 }

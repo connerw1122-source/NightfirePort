@@ -24,6 +24,7 @@
 //! 4-byte header `4E 46 <ptype> <reserved>`, then per-type payloads.
 //! Star topology: clients talk only to the host; the host relays.
 
+pub mod hash;
 pub mod input;
 pub mod net;
 pub mod proto;
@@ -31,9 +32,10 @@ pub mod session;
 pub mod settings;
 pub mod shim;
 
+pub use hash::Hasher;
 pub use input::{Input, NEUTRAL};
 pub use net::UdpTransport;
-pub use session::{Config, DropPolicy, Event, LeaveReason, RefuseReason, Session, SessionError};
+pub use session::{AgentInfo, Config, DropPolicy, Event, LeaveReason, RefuseReason, Session, SessionError};
 pub use settings::MatchSettings;
 
 /// Maximum agents in an MP match — the game's own limit: humans occupy slots
@@ -44,14 +46,14 @@ pub use settings::MatchSettings;
 pub const MAX_AGENTS: usize = 4;
 
 /// Wire protocol version. Bumped on any incompatible packet-layout change.
-pub const PROTOCOL_VERSION: u16 = 1;
+/// 2: settings 208 B (per-player radar_on + registered_pickups), the HELLO
+/// codename is a display name (not compared), REFUSE 3 = started, DATA added
+/// (net-consolidate 2026-10-16).
+pub const PROTOCOL_VERSION: u16 = 2;
 
 /// Build id carried in the handshake so mismatched executables refuse cleanly.
 /// The host app sets this (e.g. a build counter); both sides must match exactly.
 pub const DEFAULT_BUILD_ID: u32 = 1;
-
-/// Default codename, nul-padded to 32 bytes on the wire. Both sides must match.
-pub const DEFAULT_CODENAME: &str = "nightfire-port";
 
 /// Largest packet we ever build or accept (fits a 1500-byte MTU with headroom).
 pub const MAX_PACKET: usize = 1400;

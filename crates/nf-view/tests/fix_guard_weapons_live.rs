@@ -90,14 +90,16 @@ fn collect_shots(scene: &mut nf_view::scene::Scene, weapon: u32, wanted: u32, wa
             if warmup == 5999 { eprintln!("[gw] guard {cand} (weapon {weapon:#x}): no fire in 6000 ticks (shots {}, seen {})", d.shots.len(), d.seen_ticks); }
         }
         if !warmed { guard = usize::MAX; continue 'guards; }
-        // Collect from THIS guard. Guards stall (no new shot for 3000 ticks) once the opening
+        // Collect from THIS guard. Guards stall (no new shot for 900 ticks — faster-live-tests,
+        // was 3000: a re-park decision needs a window far above the 75-tick min-gap floor and a
+        // burst's ≤12-tick gaps, and 900 = 15 game-seconds is still 12× the 75-tick floor) once the opening
         // engagement is over — they reposition out of the sight line or fall back to another
         // cover point (CombatTooClose / BOT_update's goal picks). A stall is not the end of the
         // collection: re-park Bond around the SAME guard (fresh axis, level floor) to re-open the
         // sight line and keep going — up to 4 re-parks, then abandon him for the next candidate.
         // fix-guard-weapons2: the pre-restructure runs' "ran out of ticks" failures were exactly
-        // these stalls. (The gap/burst asserts are stall-safe: a re-park boundary gap is >= 3000
-        // ticks, far above both the 75-tick min-gap floor and a burst's <= 12-tick gaps, so no
+        // these stalls. (The gap/burst asserts are stall-safe: a re-park boundary gap is >= 900
+        // ticks (the stall window), far above both the 75-tick min-gap floor and a burst's <= 12-tick gaps, so no
         // burst is ever joined across a boundary and no true gap is hidden.)
         hit_events.clear();
         let start_frame = scene.sim.as_ref().unwrap().drones.frame;
@@ -125,7 +127,7 @@ fn collect_shots(scene: &mut nf_view::scene::Scene, weapon: u32, wanted: u32, wa
             sim.drones.player_hits.clear();
             if got >= wanted as usize + 5 { break 'guards; } // +5: let the in-flight bullets land before matching
             if got > last_progress.1 { last_progress = (frame, got); }
-            else if frame - last_progress.0 > 3000 {
+            else if frame - last_progress.0 > 900 {
                 if reparks < 4 {
                     reparks += 1;
                     eprintln!("[gw] guard {cand} (weapon {weapon:#x}) stalled at {got}/{wanted} shots — re-park #{reparks}");

@@ -74,7 +74,9 @@ impl LeaveReason {
 pub enum RefuseReason {
     Version,
     Build,
-    Codename,
+    /// The match already started (port from the match-host layer: a HELLO
+    /// after GO is refused — no mid-match join; the lobby flow owns joins).
+    Started,
     Full,
 }
 
@@ -83,7 +85,7 @@ impl RefuseReason {
         match self {
             RefuseReason::Version => 1,
             RefuseReason::Build => 2,
-            RefuseReason::Codename => 3,
+            RefuseReason::Started => 3,
             RefuseReason::Full => 4,
         }
     }
@@ -106,7 +108,7 @@ pub enum Event {
     /// Host: the transport is bound and accepting HELLOs.
     Listening,
     /// Host: a client passed the handshake and took `slot`.
-    ClientJoined { slot: u8 },
+    ClientJoined { slot: u8, codename: String },
     /// Client: the host refused our HELLO.
     Refused { reason: RefuseReason },
     /// Client: handshake done; the match config is authoritative from here.
@@ -127,6 +129,9 @@ pub enum Event {
     HostTimeout,
     /// Both: `DropPolicy::EndMatch` fired.
     MatchEnded { reason: LeaveReason },
+    /// Both: an app-to-app blob arrived (the lobby's choices mirror). The
+    /// session never inspects the bytes.
+    Data { from_slot: u8, bytes: Vec<u8> },
 }
 
 /// Session configuration. Defaults are the task's recommended values.
@@ -136,8 +141,6 @@ pub struct Config {
     pub protocol_version: u16,
     /// Handshake build id; mismatched clients are refused (mismatched exes).
     pub build_id: u32,
-    /// Handshake codename; mismatched clients are refused.
-    pub codename: String,
     /// Ticks between sampling an input and running it (2..=4 per the task;
     /// any value works). Sent to clients in WELCOME so both sides agree.
     pub input_delay: u32,
@@ -164,7 +167,6 @@ impl Default for Config {
         Config {
             protocol_version: PROTOCOL_VERSION,
             build_id: crate::DEFAULT_BUILD_ID,
-            codename: crate::DEFAULT_CODENAME.to_string(),
             input_delay: 3,
             redundancy: 4,
             hash_every: 30,
@@ -189,6 +191,9 @@ pub enum SessionError {
 struct Peer {
     addr: SocketAddr,
     slot: u8,
+    /// The peer's lobby display codename (the HELLO payload; not compared —
+    /// the version/build check is the compatibility gate).
+    codename: String,
     connected: bool,
     last_recv_ms: u64,
     last_send_ms: u64,
@@ -203,6 +208,13 @@ struct Peer {
     remote_hashes: HashMap<u32, u64>,
     go_confirmed: bool,
     last_go_ms: u64,
+}
+
+/// One lobby agent as the app sees it (slot 0 = the host).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct AgentInfo {
+    pub slot: u8,
+    pub codename: String,
 }
 
 enum Role {
@@ -230,6 +242,9 @@ pub struct Session<T: Transport> {
     last_hash: Option<(u32, u64)>,
     last_ready: Option<u32>,
     stalled: bool,
+    /// This machine's lobby display codename (slot 0's name on the host; the
+    /// local slot's on a client).
+    display_name: String,
     /// Stalled/Resumed are detected by the app's sequential `ready_inputs`
     /// queries and flushed as events on the next `poll`.
     pending_stall: Option<(u32, Vec<u8>)>,
@@ -261,6 +276,7 @@ impl<T: Transport> Session<T> {
             last_hash: None,
             last_ready: None,
             stalled: false,
+            display_name: "player".to_string(),
             pending_stall: None,
             pending_resume: None,
             keepalive_seq: 0,
@@ -287,6 +303,7 @@ impl<T: Transport> Session<T> {
             last_hash: None,
             last_ready: None,
             stalled: false,
+            display_name: "player".to_string(),
             pending_stall: None,
             pending_resume: None,
             keepalive_seq: 0,
@@ -298,6 +315,32 @@ impl<T: Transport> Session<T> {
 
     pub fn local_slot(&self) -> u8 {
         self.local_slot
+    }
+
+    /// Set this machine's lobby display codename (rides HELLO / WELCOME;
+    /// never compared — the compatibility gate is protocol + build).
+    pub fn set_display_name(&mut self, name: &str) {
+        self.display_name = name.chars().take(31).collect();
+    }
+
+    /// The lobby view: this machine's agent plus every peer, by slot. The
+    /// match-host layer's `NetAgent` port (its socket address stays internal).
+    pub fn agents(&self) -> Vec<AgentInfo> {
+        let mut out = vec![AgentInfo { slot: self.local_slot, codename: self.display_name.clone() }];
+        match &self.role {
+            Role::Host { peers, .. } => {
+                for p in peers.iter().filter(|p| p.connected) {
+                    out.push(AgentInfo { slot: p.slot, codename: p.codename.clone() });
+                }
+            }
+            Role::Client { host_peer, .. } => {
+                if let Some(p) = host_peer {
+                    out.push(AgentInfo { slot: 0, codename: p.codename.clone() });
+                }
+            }
+        }
+        out.sort_by_key(|a| a.slot);
+        out
     }
 
     pub fn is_started(&self) -> bool {
@@ -393,6 +436,22 @@ impl<T: Transport> Session<T> {
         miss
     }
 
+    /// Host: set (or replace) the match settings + seed clients receive in
+    /// WELCOME. The lobby arms the match AFTER clients joined (the confirm
+    /// page runs once the panels are full), so the constructor-time payload
+    /// must be replaceable — the re-send path (a re-HELLO's idempotent
+    /// WELCOME) then carries the real match, not the placeholder.
+    /// Host-only and only before GO; later calls are ignored.
+    pub fn set_host_match(&mut self, settings: MatchSettings, seed: u32) {
+        if self.started {
+            return;
+        }
+        if let Role::Host { settings: s, seed: sd, .. } = &mut self.role {
+            *s = settings;
+            *sd = seed;
+        }
+    }
+
     /// Host: start the match at `first_tick` and tell every connected client.
     pub fn start_match(&mut self, first_tick: u32) -> Result<(), SessionError> {
         if self.started {
@@ -421,6 +480,13 @@ impl<T: Transport> Session<T> {
     /// Leave the session (send LEAVE, stop participating).
     pub fn leave(&mut self) {
         let pkt = Packet::Leave { slot: self.local_slot, reason: LeaveReason::Graceful.to_wire() };
+        self.send_to_peers(&pkt);
+    }
+
+    /// Send an opaque app-to-app blob to every connected peer (the lobby's
+    /// choices mirror rides this). Peers see [`Event::Data`].
+    pub fn send_data(&mut self, bytes: Vec<u8>) {
+        let pkt = Packet::Data { bytes };
         self.send_to_peers(&pkt);
     }
 
@@ -479,7 +545,7 @@ impl<T: Transport> Session<T> {
                 let pkt = Packet::Hello {
                     proto: self.cfg.protocol_version,
                     build: self.cfg.build_id,
-                    codename: self.cfg.codename.clone(),
+                    codename: self.display_name.clone(),
                 };
                 let host = match &self.role {
                     Role::Client { host, .. } => *host,
@@ -729,8 +795,10 @@ impl<T: Transport> Session<T> {
                     Some(RefuseReason::Version)
                 } else if build != self.cfg.build_id {
                     Some(RefuseReason::Build)
-                } else if codename != self.cfg.codename {
-                    Some(RefuseReason::Codename)
+                } else if self.started {
+                    // No mid-match join (the match-host layer's DENY Started):
+                    // the lobby flow owns joins; a GO'd host refuses.
+                    Some(RefuseReason::Started)
                 } else {
                     None
                 };
@@ -775,6 +843,7 @@ impl<T: Transport> Session<T> {
                     peers.push(Peer {
                         addr: from,
                         slot,
+                        codename: codename.chars().take(31).collect(),
                         connected: true,
                         last_recv_ms: self.now_ms,
                         last_send_ms: self.now_ms,
@@ -788,7 +857,7 @@ impl<T: Transport> Session<T> {
                     self.slot_human[slot as usize] = true;
                 }
                 self.send_welcome_to(from, slot);
-                events.push(Event::ClientJoined { slot });
+                events.push(Event::ClientJoined { slot, codename: codename.chars().take(31).collect() });
                 self.broadcast_slotmap();
             }
             Packet::Input { base_tick, agent_mask, ack_tick, ack_bits, inputs } => {
@@ -847,6 +916,25 @@ impl<T: Transport> Session<T> {
                     }
                 }
             }
+            Packet::Data { bytes } => {
+                let slot = match &mut self.role {
+                    Role::Host { peers, .. } => match peers.iter_mut().find(|p| p.addr == from) {
+                        Some(p) => {
+                            p.last_recv_ms = self.now_ms;
+                            p.slot
+                        }
+                        None => return,
+                    },
+                    Role::Client { host_peer, .. } => match host_peer {
+                        Some(p) => {
+                            p.last_recv_ms = self.now_ms;
+                            p.slot
+                        }
+                        None => return,
+                    },
+                };
+                events.push(Event::Data { from_slot: slot, bytes });
+            }
             Packet::Leave { slot, reason } => {
                 if let Role::Host { peers, .. } = &mut self.role {
                     if let Some(i) = peers.iter().position(|p| p.addr == from) {
@@ -869,7 +957,7 @@ impl<T: Transport> Session<T> {
         let pkt = Packet::Welcome {
             proto: self.cfg.protocol_version,
             build: self.cfg.build_id,
-            codename: self.cfg.codename.clone(),
+            codename: self.display_name.clone(),
             slot,
             input_delay: self.cfg.input_delay.min(255) as u8,
             hash_every: self.cfg.hash_every.min(255) as u8,
@@ -899,9 +987,7 @@ impl<T: Transport> Session<T> {
                     if s.is_some() {
                         return; // already connected
                     }
-                    let ok = proto == self.cfg.protocol_version
-                        && build == self.cfg.build_id
-                        && codename == self.cfg.codename;
+                    let ok = proto == self.cfg.protocol_version && build == self.cfg.build_id;
                     if !ok {
                         events.push(Event::Refused { reason: RefuseReason::Version });
                         return;
@@ -911,6 +997,8 @@ impl<T: Transport> Session<T> {
                     *host_peer = Some(Peer {
                         addr: from,
                         slot: 0,
+                        // The WELCOME payload is the HOST's display codename.
+                        codename: codename.chars().take(31).collect(),
                         connected: true,
                         last_recv_ms: self.now_ms,
                         last_send_ms: self.now_ms,
@@ -934,7 +1022,7 @@ impl<T: Transport> Session<T> {
                 let reason = match reason {
                     1 => RefuseReason::Version,
                     2 => RefuseReason::Build,
-                    3 => RefuseReason::Codename,
+                    3 => RefuseReason::Started,
                     _ => RefuseReason::Full,
                 };
                 events.push(Event::Refused { reason });
@@ -989,6 +1077,14 @@ impl<T: Transport> Session<T> {
                 if let Role::Client { host_peer, .. } = &mut self.role {
                     if let Some(p) = host_peer {
                         p.last_recv_ms = self.now_ms;
+                    }
+                }
+            }
+            Packet::Data { bytes } => {
+                if let Role::Client { host_peer, .. } = &mut self.role {
+                    if let Some(p) = host_peer {
+                        p.last_recv_ms = self.now_ms;
+                        events.push(Event::Data { from_slot: p.slot, bytes });
                     }
                 }
             }

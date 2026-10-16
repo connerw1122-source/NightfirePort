@@ -98,7 +98,8 @@ fn killing_a_protected_guest_fails_the_mission_but_scaring_him_does_not() {
 #[test]
 fn the_spawner_arrives_on_its_channels() {
     let iso = iso();
-    let mut scene = nf_view::load(&iso, "07000011.bin", false).expect("load 07000011");
+    // the 00-Agent load: the scenario was calibrated on the full roster, which Drone_Create's min-difficulty gate [M 0x136be0:49] makes the 00-Agent roster (the game holds back the param2>=2 placements at 1/2): the group-1 templates are param2>=2 placements, absent from an Operative load.
+    let mut scene = nf_view::load_with_carry_difficulty(&iso, "07000011.bin", false, None, 3).expect("load 07000011");
     {
         let sim = scene.sim.as_mut().unwrap();
         assert!(free(sim, 400));

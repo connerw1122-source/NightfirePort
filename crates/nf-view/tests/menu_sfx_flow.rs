@@ -193,3 +193,94 @@ fn credits_open_plays_the_pair_when_menu_movie_is_clear() {
     ], "P_CREDITS is one of the twelve pair pages");
     assert!(fe.menu_movie, "the static is set again after the pair [M P_CREDITS 0x2152b0]");
 }
+
+
+// ── menu-audio-leaks: the pair's SFXRemove side ─────────────────────────────────────────────
+
+/// The 0x4c arm removes the pair before it restarts [M 0x20a408:17-22] — the boot open emits
+/// the removes too (no-ops on an empty item list, exactly the IOP's), and every restart clears
+/// the old loop first.
+#[test]
+fn pair_opens_carry_remove_events_before_the_starts() {
+    let mut fe = FrontEnd::new();
+    let rm: Vec<u32> = fe.drain_sfx_removes().collect();
+    assert_eq!(rm, vec![SFX_MENU_OPEN_MOVE, SFX_MENU_OPEN_SELECT],
+        "the boot 0x4c removes both ids [M 0x20a408:17-18]");
+    assert_eq!(drain(&mut fe).len(), 2, "then starts the pair");
+    assert!(fe.menu_movie, "the static is set [M 0x20a408:22]");
+}
+
+/// The intro start removes the pair and starts nothing — the menu music is silent under the EA
+/// logo [M P_INTRO's 0x50 frame-1 0x209e88:37-47 removes the pair and clears the static; the
+/// restart only comes at the movie-2 end :23-29].
+#[test]
+fn the_intro_start_silences_the_pair() {
+    let mut fe = FrontEnd::new();
+    let _ = drain(&mut fe);
+    let _ = fe.drain_sfx_removes().collect::<Vec<u32>>();
+    assert!(fe.action(Action::Confirm), "Start confirms into the intro");
+    let rm: Vec<u32> = fe.drain_sfx_removes().collect();
+    assert_eq!(rm, vec![SFX_MENU_OPEN_MOVE, SFX_MENU_OPEN_SELECT],
+        "P_INTRO's frame-1 removes the pair [M 0x209e88:38-39]");
+    assert!(!fe.menu_movie, "the static is cleared [M 0x209e88:44]");
+    assert!(drain(&mut fe).iter().all(|e| e.sound != MENU_SOUND_PAGE_OPEN),
+        "no pair restart under the movies [M — the restart rides the movie-2 end]");
+    assert_eq!(fe.page, menu::Page::Main, "the page flip keeps menus_flow's contract");
+}
+
+/// The movie-2 end restarts the pair [M 0x209e88:23-29]: remove, then SFXStart both.
+#[test]
+fn the_intro_end_restarts_the_pair_with_a_remove() {
+    let mut fe = FrontEnd::new();
+    let _ = drain(&mut fe);
+    let _ = fe.drain_sfx_removes().collect::<Vec<u32>>();
+    assert!(fe.action(Action::Confirm));
+    let _ = fe.drain_sfx_removes().collect::<Vec<u32>>();
+    let budget = fe.flow.movie_frames + 4;
+    for _ in 0..budget {
+        fe.tick();
+        if !fe.intro_playing { break; }
+    }
+    assert!(!fe.intro_playing, "the intro popped within {} ticks", budget);
+    let rm: Vec<u32> = fe.drain_sfx_removes().collect();
+    assert_eq!(rm, vec![SFX_MENU_OPEN_MOVE, SFX_MENU_OPEN_SELECT],
+        "the movie-2 end removes before it restarts [M 0x209e88:24-25]");
+    let opens: Vec<MenuSfx> = drain(&mut fe).into_iter().filter(|e| e.sound == MENU_SOUND_PAGE_OPEN).collect();
+    assert_eq!(opens, vec![
+        MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_MOVE },
+        MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_SELECT },
+    ], "the pair restarts [M 0x209e88:26-27]");
+    assert!(fe.menu_movie, "the static stands again [M 0x209e88:28]");
+}
+
+/// The attract movie end removes+restarts the pair [M P_ATTRACT 0x20a1f0:45-50].
+#[test]
+fn the_attract_end_restarts_the_pair() {
+    let mut fe = FrontEnd::new();
+    let _ = drain(&mut fe);
+    let _ = fe.drain_sfx_removes().collect::<Vec<u32>>();
+    fe.attract_playing = true;
+    fe.attract_movie = 0x073a_0048;
+    fe.attract_movie_finished();
+    let rm: Vec<u32> = fe.drain_sfx_removes().collect();
+    assert_eq!(rm, vec![SFX_MENU_OPEN_MOVE, SFX_MENU_OPEN_SELECT],
+        "the 0x50 removes the pair [M 0x20a1f0:45-46]");
+    assert_eq!(drain(&mut fe).len(), 2, "then restarts it [M 0x20a1f0:47-50]");
+}
+
+/// `MenuManager_Create` zeroes the static on every manager open [M 0x21b908:125] — the pause
+/// page's 0x4c starts no pair and removes none (P_PAUSE 0x203c28 has no pair calls
+/// [M-negative]); the mission bank lacks the pair ids anyway [D SB_4/SB_5.SFX].
+#[test]
+fn open_pause_clears_menu_movie_and_starts_no_pair() {
+    let mut fe = FrontEnd::new();
+    let _ = drain(&mut fe);
+    let _ = fe.drain_sfx_removes().collect::<Vec<u32>>();
+    fe.flow.current_level = 0x0700_0001;
+    assert!(fe.open_pause(), "the pause opens over a mission");
+    assert!(!fe.menu_movie, "the manager open cleared the static [M 0x21b908:125]");
+    assert!(drain(&mut fe).iter().all(|e| e.sound != MENU_SOUND_PAGE_OPEN),
+        "P_PAUSE starts no pair [M-negative 0x203c28]");
+    assert!(fe.drain_sfx_removes().collect::<Vec<u32>>().is_empty(),
+        "and removes none");
+}

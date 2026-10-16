@@ -232,7 +232,7 @@ fn sweep_every_level_near_los_never_culled() {
     let img = nf_formats::iso9660::IsoImage::open(&iso).unwrap();
     let levels = on_foot_levels(&img);
     eprintln!("[sweep] {} on-foot levels", levels.len());
-    let (mut spots_total, mut dirs_total, mut raw_fail_levels, mut shipped_failures) = (0usize, 0usize, Vec::new(), Vec::new());
+    let (mut spots_total, mut dirs_total, mut shipped_failures) = (0usize, 0usize, Vec::new());
     for lv in &levels {
         let scene = match nf_view::load(&iso, lv, false) { Ok(s) => s, Err(e) => { eprintln!("[sweep] {lv}: load failed {e}"); continue } };
         let g = scene.cel_graph.clone();
@@ -242,7 +242,7 @@ fn sweep_every_level_near_los_never_culled() {
         let mut spots: Vec<[f32; 3]> = scene.sim.as_ref().map(|s| vec![s.bond.pos]).unwrap_or_default();
         let stride = (waypoints.len() / 150).max(1);
         spots.extend(waypoints.into_iter().step_by(stride));
-        let (mut raw_fails, mut checked) = (0usize, 0usize);
+        let (mut checked) = (0usize);
         for spot in &spots {
             let eye = [spot[0], spot[1] + 0.7, spot[2]];
             for k in 0..4u32 {
@@ -255,22 +255,10 @@ fn sweep_every_level_near_los_never_culled() {
                 let Some(cell) = scene::eye_cell(&g, &mut state, eye, world) else { continue };
                 checked += 1;
                 let Some(mut mask) = scene::portal_visible_cels_game_from_cell(&g, cell, eye, &depth0, &sides) else { continue };
-                // The raw walk's near failures (the documented causes — counts only).
-                for (i, c) in g.cells.iter().enumerate() {
-                    if mask[i] || !matches!(c.flags & 0xffff, 0x8017 | 0x8018 | 0x8019) { continue; }
-                    if !in_view(c.sphere.0, c.sphere.1, &sides) { continue; }
-                    let mut tp = [0f32; 3];
-                    if (0..3).any(|k| !c.min[k].is_finite() || !c.max[k].is_finite() || c.min[k] > c.max[k]) { continue; }
-                    for j in 0..3 { tp[j] = eye[j].clamp(c.min[j], c.max[j]); }
-                    let d = ((tp[0] - eye[0]).powi(2) + (tp[1] - eye[1]).powi(2) + (tp[2] - eye[2]).powi(2)).sqrt();
-                    if d > 30.0 { continue; }
-                    if let Some(w) = world {
-                        if scene::los_ray_clear(w, eye, tp, d) {
-                            raw_fails += 1;
-                            if raw_fails <= 3 { eprintln!("[sweep] {lv}: raw walk drops cell {i} at ({:.1},{:.1},{:.1}) yaw {yaw:.2}", eye[0], eye[1], eye[2]); }
-                        }
-                    }
-                }
+                // faster-live-tests: the old RAW-WALK diagnostic scan here re-ran los_ray_clear over
+                // every near generic cell purely to PRINT raw-failure counts — the shipped loop
+                // below reuses the identical filters, so the diagnostic doubled the sweep's raycasts
+                // without feeding any assertion (the shipped-mask assert at the end is the pin).
                 // The shipped mask must be clean.
                 if let Some(w) = world { scene::near_los_rescue(&g, &mut mask, eye, &sides, w, 30.0); }
                 for (i, c) in g.cells.iter().enumerate() {
@@ -291,11 +279,9 @@ fn sweep_every_level_near_los_never_culled() {
         }
         spots_total += spots.len();
         dirs_total += checked;
-        if raw_fails > 0 { raw_fail_levels.push((lv.clone(), raw_fails)); }
-        eprintln!("[sweep] {lv}: {} spots, {checked} directions, raw-walk near failures {raw_fails}", spots.len());
+        eprintln!("[sweep] {lv}: {} spots, {checked} directions", spots.len());
     }
     eprintln!("[sweep] pinned: {spots_total} spots, {dirs_total} spot-directions over {} levels", levels.len());
-    eprintln!("[sweep] raw-walk failing levels (counts only): {raw_fail_levels:?}");
     eprintln!("[sweep] shipped-mask failures: {} ({:?})", shipped_failures.len(), shipped_failures.iter().take(8).map(|(l, c, _, _)| format!("{l} cell {c}")).collect::<Vec<_>>());
     assert!(dirs_total >= 400, "the sweep must cover a meaningful number of spot-directions, got {dirs_total}");
     assert!(shipped_failures.is_empty(), "near unoccluded generics culled by the shipped mask: {}", shipped_failures.len());

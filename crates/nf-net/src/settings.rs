@@ -10,10 +10,13 @@
 //! carries two unrelated profile fields) — this wire layout is new, tagged
 //! [S] as a port feature (the PS2 game has no network mode).
 //!
-//! Wire layout (176 bytes, little-endian): 19 `u32` scalars in a fixed order,
-//! then 8 per-player records of 3 `u32` (team, skin, armor_bonus), then 4
-//! reserved zero bytes. Offsets in comments are the game's `MpSettings` hex
-//! offsets for cross-reference.
+//! Wire layout (208 bytes, little-endian, protocol 2): 19 `u32` scalars in a
+//! fixed order, then 8 per-player records of 4 `u32` (team, skin, armor_bonus,
+//! radar_on), then a `u16` registered_pickups + 2 reserved bytes. Offsets in
+//! comments are the game's `MpSettings` hex offsets for cross-reference.
+//! Protocol 1 carried 176 bytes with 3-field player records and no
+//! registered_pickups — the consolidation (net-consolidate 2026-10-16) added
+//! the two fields the match-host layer carried and this one dropped.
 
 /// The match configuration the host sends in `WELCOME`.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -57,14 +60,18 @@ pub struct MatchSettings {
     /// friendly_fire (0x198 hex; Ghidra `_408_` decimal 0x198 was once
     /// misread as decimal +0x408 — the merge-review trap this field caused)
     pub friendly_fire: u32,
-    /// Per-slot records: (team 0x20, skin 0x24, armor_bonus 0x2c) per
-    /// MpPlayer; name (+0x00) and saved-flag (+0x28) are not carried by the
-    /// port's MpPlayer. 8 records, slots 0..8.
-    pub players: [(u32, u32, u32); 8],
+    /// Per-slot records: (team 0x20, skin 0x24, armor_bonus 0x2c, radar_on
+    /// +0x28) per MpPlayer; name (+0x00) and saved-flag (+0x28's bit) are not
+    /// carried by the port's MpPlayer. 8 records, slots 0..8. radar_on rides
+    /// since protocol 2 (net-consolidate): `MP_GetRadarObjects` 0x189840 and
+    /// `HUD_RadarUpdate` 0x19f6e8 read it per slot [M].
+    pub players: [(u32, u32, u32, u32); 8],
+    /// +0x472 (u16): the registered pickup count (protocol 2).
+    pub registered_pickups: u16,
 }
 
 /// Bytes occupied by a [`MatchSettings`] on the wire.
-pub const SETTINGS_WIRE_SIZE: usize = 176;
+pub const SETTINGS_WIRE_SIZE: usize = 208;
 
 impl Default for MatchSettings {
     fn default() -> Self {
@@ -88,7 +95,8 @@ impl Default for MatchSettings {
             spawn_policy: 0,
             radar: 0,
             friendly_fire: 0,
-            players: [(0, 0, 0); 8],
+            players: [(0, 0, 0, 1); 8],
+            registered_pickups: 0,
         }
     }
 }
@@ -121,12 +129,16 @@ impl MatchSettings {
         put(16, self.spawn_policy);
         put(17, self.radar);
         put(18, self.friendly_fire);
-        for (k, &(team, skin, armor)) in self.players.iter().enumerate() {
-            let base = 19 + k * 3;
+        for (k, &(team, skin, armor, radar_on)) in self.players.iter().enumerate() {
+            let base = 19 + k * 4;
             put(base, team);
             put(base + 1, skin);
             put(base + 2, armor);
+            put(base + 3, radar_on);
         }
+        // +0x472: the registered pickup count (u16) in the old reserved tail.
+        out[19 * 4 + 8 * 16..19 * 4 + 8 * 16 + 2]
+            .copy_from_slice(&self.registered_pickups.to_le_bytes());
     }
 
     /// Decode from `buf`; `None` if too short.
@@ -137,11 +149,15 @@ impl MatchSettings {
         let get = |i: usize| {
             u32::from_le_bytes([buf[i * 4], buf[i * 4 + 1], buf[i * 4 + 2], buf[i * 4 + 3]])
         };
-        let mut players = [(0u32, 0u32, 0u32); 8];
+        let mut players = [(0u32, 0u32, 0u32, 0u32); 8];
         for (k, p) in players.iter_mut().enumerate() {
-            let base = 19 + k * 3;
-            *p = (get(base), get(base + 1), get(base + 2));
+            let base = 19 + k * 4;
+            *p = (get(base), get(base + 1), get(base + 2), get(base + 3));
         }
+        let registered_pickups = u16::from_le_bytes([
+            buf[19 * 4 + 8 * 16],
+            buf[19 * 4 + 8 * 16 + 1],
+        ]);
         Some(MatchSettings {
             started: get(0),
             gametype_mask: get(1),
@@ -163,6 +179,7 @@ impl MatchSettings {
             radar: get(17),
             friendly_fire: get(18),
             players,
+            registered_pickups,
         })
     }
 }
@@ -179,12 +196,16 @@ mod tests {
         s.scenario = 0x1234_5678;
         s.friendly_fire = 1;
         s.frag_limit = -1;
-        s.players[3] = (2, 5, 300);
+        s.players[3] = (2, 5, 300, 0);
+        s.registered_pickups = 0x1234;
         let mut b = [0u8; SETTINGS_WIRE_SIZE];
         s.encode(&mut b);
         assert_eq!(MatchSettings::decode(&b).unwrap(), s);
-        // Sister assertion: a flipped byte must change the decoded value.
+        // Sister assertions: a flipped byte must change the decoded value.
         b[18 * 4] ^= 1; // friendly_fire low bit
+        assert_ne!(MatchSettings::decode(&b).unwrap(), s);
+        b[18 * 4] ^= 1;
+        b[19 * 4 + 8 * 16] ^= 1; // registered_pickups low byte
         assert_ne!(MatchSettings::decode(&b).unwrap(), s);
     }
 

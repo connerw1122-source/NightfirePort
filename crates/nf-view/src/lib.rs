@@ -27,6 +27,7 @@ pub mod credits;
 pub mod menu;
 pub mod menu_music;
 pub mod movie;
+pub mod mpnet;
 pub mod scene;
 pub mod replay;
 pub mod panel;
@@ -339,20 +340,20 @@ pub fn load_mp(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
 }
 
 fn load_inner(iso: &str, archive: &str, all: bool, mp: bool) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, false, &[], mp, None)
+    load_impl(iso, archive, all, None, false, &[], mp, None, 1)
 }
 
 /// net-match-host: the ONLINE match load — the MP core from the negotiated settings (the host's
 /// choices + seed, equal on every machine) instead of the `--mp` default. The level build draws
 /// from the settings' seed (see `Scene::build`'s Rng note).
 pub fn load_mp_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, settings: nf_game::mp::MpSettings) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, false, &[], true, Some(settings))
+    load_impl(iso, archive, all, save, false, &[], true, Some(settings), 1)
 }
 
 /// `--dev`: the same load with the dev view-model merge (folded 190-fix-dev2). Normal play never
 /// passes `dev = true`, so no extra archive is opened without the flag.
 pub fn load_dev(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, true, &[], false, None)
+    load_impl(iso, archive, all, None, true, &[], false, None, 1)
 }
 
 /// `load` pre-merged for the given weapon ids (`--give` at startup, the dev menu's lazy give):
@@ -360,13 +361,16 @@ pub fn load_dev(iso: &str, archive: &str, all: bool) -> Result<scene::Scene> {
 /// from their owning archive before the scene builds, so the weapon draws exactly as it does on a
 /// level that carries it (`weapon_assets::merge_weapon_assets`).
 pub fn load_weapons(iso: &str, archive: &str, all: bool, wids: &[u8]) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, None, false, wids, false, None)
+    load_impl(iso, archive, all, None, false, wids, false, None, 1)
 }
 
 /// The sim catch-up cap (`NF_MAXTICKS`, default 4) — see the frame loop.
 static MAX_TICKS: std::sync::OnceLock<u32> = std::sync::OnceLock::new();
 
-/// net-match-host: the state-hash cadence — every 15 ticks (4 Hz at the fixed 60 Hz) [S].
+/// net-consolidate: the state-hash cadence moved into the session's own
+/// `hash_every` (nf_net `session_cfg`, mpnet.rs) — the app submits every tick
+/// and the session sends + piggybacks on that schedule.
+#[allow(dead_code)]
 const NET_HASH_EVERY: u32 = 15;
 
 /// `load` with the level-transition carry-over (fix-level2). `Some(save)` = a warm transition:
@@ -374,18 +378,31 @@ const NET_HASH_EVERY: u32 = 15;
 /// wrote, and `Player_InitWeapon` (0x1a7ef8) runs the per-level loadout switch over `Player_RamLoad`
 /// (0x1957a8). `None` = a cold load (the game's boot path; `Player_RamLoad`'s whole body is skipped).
 pub fn load_with_carry(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, false, &[], false, None)
+    load_impl(iso, archive, all, save, false, &[], false, None, 1)
 }
 
 /// The carry-over load pre-merged for the given weapon ids (the dev menu's lazy give: the same
 /// warm reload the level transition runs, plus the given weapons' assets).
 pub fn load_with_carry_weapons(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, wids: &[u8]) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, false, wids, false, None)
+    load_impl(iso, archive, all, save, false, wids, false, None, 1)
 }
 
 /// `--dev` level transition: the carry-over load with the dev view-model merge.
 pub fn load_with_carry_dev(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>) -> Result<scene::Scene> {
-    load_impl(iso, archive, all, save, true, &[], false, None)
+    load_impl(iso, archive, all, save, true, &[], false, None, 1)
+}
+
+/// difficulty-effects: the front-end's launch path — the mission loads with the difficulty the
+/// player picked on the wheel (GameState+0x28 = 0x2a3790; every create-time gate reads it
+/// [M C_SBNFDFCTY 0x216ca8:15, 0x1c7e78:25 boot default 2]). The plain `load*` wrappers keep 1
+/// (the old direct-load replay parity).
+pub fn load_with_carry_difficulty(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, difficulty: u32) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, save, false, &[], false, None, difficulty)
+}
+
+/// difficulty-effects: the warm reload with a weapon-asset set at the selected difficulty.
+pub fn load_with_carry_weapons_difficulty(iso: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, wids: &[u8], difficulty: u32) -> Result<scene::Scene> {
+    load_impl(iso, archive, all, save, false, wids, false, None, difficulty)
 }
 
 /// The fail/death menu's Restart serve — the reload loop's `level_exit_restart` branch
@@ -462,7 +479,7 @@ pub fn entry_checkpoint_save(sim: &scene::Sim) -> nf_game::player::RamSave {
         .with_mission(&sim.drones.mission)
 }
 
-fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8], mp: bool, mp_settings: Option<nf_game::mp::MpSettings>) -> Result<scene::Scene> {
+fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8], mp: bool, mp_settings: Option<nf_game::mp::MpSettings>, difficulty: u32) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
     let iso = IsoImage::open(iso_path)?;
@@ -549,6 +566,16 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                 &casing_meshes(&elf))?;
             eprintln!("weapon assets: merged {} archive(s), {} skin(s), {} map(s), {} sequence(s), {} script(s) in {:.2}s",
                 st.archives, st.skins, st.maps, st.sequences, st.scripts, t.elapsed().as_secs_f32());
+            // weapon-model-coverage: the honest final tally — the session mesh merge's per-stage
+            // "still missing" count is before this merge ran. The residue is the set on NO archive
+            // of the disc (the shipped game cannot resolve it either, e.g. the two casing meshes
+            // 0x02000446/0x02000443 [D census]).
+            let still: Vec<u32> = weapon_assets::meshes_for_wanted(&level, wd, &weapon_wanted, &casing_meshes(&elf))
+                .into_iter().filter(|h| !level.by_hash.contains_key(h)).collect();
+            if !still.is_empty() {
+                eprintln!("weapon models: {} hash(es) unresolved after the merge, on no archive of the disc: {}",
+                    still.len(), still.iter().map(|h| format!("{h:08x}")).collect::<Vec<_>>().join(" "));
+            }
         }
     }
     // The weapon_data the DroneContext consumes: the hoisted build when the merge ran, else built
@@ -757,7 +784,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         // machine — the session's settings blob carries it); 0 keeps the pre-net constant.
         mp_seed: mp_settings.as_ref().map_or(0, |st| st.seed),
     };
-    let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
+    let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones), difficulty);
     // The pause/fail menus' burning woman [M `psiDecompressWoman` 0x1202a8]: the archive's kind-16 "woman" run-length
     // mask filled from the fire texture 0x030000da, drawn into 0x030000db's texels through 0x030000da's CLUT (the
     // disc's 0x030000db is a placeholder). The HUD texture starts on the first decoded frame.
@@ -1076,7 +1103,7 @@ fn take_maps_holding(level: &mut Level, foreign: Level, hashes: &[u32]) -> usize
 /// The session object table (`models-weapons-items`, see the caller's comment): every weapon-model mesh
 /// (`weapon_data` +0x80 held guns, +0x4C muzzle flashes, +0x5C projectile bodies, and the view-model
 /// sleeves) the level archive misses is merged from the latest earlier story archive that holds it.
-fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
+pub fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     read: &impl Fn(&str) -> Result<Option<Vec<u8>>>, prefix: &str, level: &mut Level) -> Result<()> {
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let Ok(wd) = nf_formats::weapon::WeaponData::from_action_elf(&elf) else { return Ok(()) };
@@ -1563,6 +1590,9 @@ struct App {
     /// direct selection (number keys). Consumed by the next game tick.
     weapon_cycle: i8,
     gadget_cycle: i8,
+    /// microcam-wheel-zoom: pending wheel zoom step (±1) — the wheel while the aim (right) button
+    /// is held on a weapon that can zoom. Consumed by the next game tick, like `weapon_cycle`.
+    zoom_cycle: i8,
     weapon_switch_to: Option<u8>,
     /// The external dev panel (http://127.0.0.1:7007, `--dev`) and the level its catalog describes.
     panel: Option<panel::Handle>,
@@ -1579,6 +1609,10 @@ struct App {
     iso: String,
     /// A pending level transition: the next level's hashcode, set by `LOAD_LEVEL`; consumed by the main loop.
     pending_level: Option<u32>,
+    /// difficulty-effects: the selected difficulty, the port's `GameState+0x28` (0x2a3790) —
+    /// boot default 2 [M 0x1c7e78:25], the difficulty page's confirm writes it [M 0x216ca8:15],
+    /// and every load/adopt reads it.
+    selected_difficulty: u32,
     /// fix-weapon-assets: a dev-menu/panel give of a weapon whose assets the level archive lacks —
     /// the tick loop answers it with a warm same-level reload (`load_with_carry_weapons`) that
     /// merges the weapon's assets, then re-places Bond and re-issues the switch request.
@@ -1613,6 +1647,11 @@ struct App {
     frame_ticks: u32,
     /// The paused menus' 60 Hz accumulator (seconds) for the animations that run while the game is paused.
     menu_clock: f32,
+    /// The sim reported the mission's own end this frame (see `Drones::mission_end`).
+    pending_mission_end: bool,
+    /// Dev `--set-channel <ch>`: a switch channel raised 2 s into the level (channel 100 = mission
+    /// success — what scratchpad complete.py writes in PCSX2), for end-of-mission checks.
+    force_channel: Option<u8>,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -1623,9 +1662,13 @@ struct App {
     /// The front end (fix-menus): Some while a menu page is up (title / main / mission select /
     /// difficulty / options / pause / results). None = playing a mission directly.
     fe: Option<menu::FrontEnd>,
-    /// net-match-host: the UDP lockstep session while an online match runs (`--net-host` /
-    /// `--net-join`, later the lobby pages). None = local play, no session, no gate.
-    net: Option<nf_game::net::NetSession>,
+    /// net-consolidate: the ONE session layer (nf-net) while an online match runs (`--net-host` /
+    /// `--net-join`, or adopted from the lobby pages' `fe.mp_session` when their match starts).
+    /// None = local play, no session, no gate.
+    net: Option<mpnet::SessionProxy>,
+    /// The lobby's session (the same core `fe.mp_session` wraps): created when the online pages
+    /// open, adopted into `net` when the match starts.
+    net_lobby: Option<mpnet::SessionProxy>,
     /// This machine's slot in the online match (the host is 0; a client's arrives in WELCOME).
     net_local_slot: usize,
     /// The next sim tick of the online match (the lockstep counter; render interpolation is
@@ -1689,6 +1732,23 @@ struct LevelLoad {
     /// drive-ptp: the DRIVING return (`Boot_LoadPTPData` 0x1c8560), taken from the OLD sim at
     /// spawn and applied to the NEW one at the swap (see `swap_in_scene`).
     ptp_return: Option<nf_game::ptp::DriveReturn>,
+    /// The finished build, parked while the loading screen's minimum time runs (`LOADING_HOLD`).
+    ready: Option<Option<Result<scene::Scene, String>>>,
+}
+
+/// The loading screen's minimum time on screen. The PS2's disc load kept it up ~11.5 s on
+/// 07000001 → 07000002 (PS2LSActive 2 → 0, measured in PCSX2 2026-10-15) — long enough to read
+/// the objective and the hint while the dots sweep (183.5 ms a step, the port's 11-vblank cadence
+/// exactly). The port builds a level in 1-2 s, so the screen flashed by (playtest 1015-2142); the
+/// user chose to hold it a few seconds [S — a PC-port choice, not the game's timing].
+const LOADING_HOLD: f64 = 5.0;
+
+/// microcam-wheel-zoom: where a wheel notch goes. While the aim (right) button is held on a weapon
+/// that can zoom — the game's own scope flag +0x68 & 0x40 with a magnification above 1 [M
+/// weapon_data 0x2bf150; the sim's zoom block gates on the same two] — the wheel steps the zoom
+/// [S the 2026-10-15 playtest]. Otherwise it keeps switching weapons (the pre-feature behaviour).
+pub fn wheel_steps_zoom(zoom_held: bool, weapon_flags: u32, weapon_zoom: f32) -> bool {
+    zoom_held && weapon_flags & 0x40 != 0 && weapon_zoom > 1.0
 }
 
 impl App {
@@ -1703,7 +1763,10 @@ impl App {
         // up during a movie]. The port's Confirm keys (Enter/Space) stand in for
         // the pad's X/Start [S docs/systems/input.md §3].
         if fe.flow.get_state() == menu::ST_MOVIE {
-            if a == MA::Confirm { fe.flow.skip_movie(); }
+            // A movie can't be skipped in its first second on screen: the press that picked the
+            // mission (or a quick double-tap) used to skip its briefing before a frame showed.
+            let shown = self.movie.as_ref().map_or(f32::MAX, |p| p.shown_for());
+            if a == MA::Confirm && shown >= 1.0 { fe.flow.skip_movie(); }
             return;
         }
         if fe.page == menu::Page::Pause && a == MA::Back {
@@ -1718,20 +1781,43 @@ impl App {
     /// After a menu action (key, click or hover): the page's sounds, the level it requested and its close.
     fn menu_after(&mut self) {
         let Some(fe) = self.fe.as_mut() else { return };
+        // difficulty-effects: the difficulty page's confirm writes GameState+0x28 at pick time
+        // [M C_SBNFDFCTY 0x216ca8:15] — the game keeps it across loads; the port stores it on
+        // the App and every following load adopts it (Scene::build's create-time gates).
+        if let Some(d) = fe.requested_difficulty.take() {
+            self.selected_difficulty = d;
+        }
         // menu-sfx: the front end's sound events play straight through the driver's 2-D start —
         // `Menu_PlaySound`'s `Sound_Play(100.0f, id, 0, 0)` tail [M 0x1f3278] batched like the EE's
         // `SFXStart`. The loaded bank(s) decide audibility exactly as the game's lookup does (a
         // miss returns without starting): the front-end map boots bank 0xC, a paused mission keeps
         // its own bank, which carries the pause blips [D SB_4/SB_5; docs/systems/menu-sfx.md §2-3].
         let menu_sfx: Vec<_> = fe.drain_sfx().collect();
-        if !menu_sfx.is_empty() {
+        let menu_rm: Vec<u32> = fe.drain_sfx_removes().collect();
+        if !menu_sfx.is_empty() || !menu_rm.is_empty() {
             if let Some(snd) = self.sound.as_mut() {
                 snd.batch(|drv, out| {
+                    // The 0x4c order: the removes land before the same frame's starts [M
+                    // 0x20a408:17-22] — the restart replaces the loop instead of stacking it.
+                    for id in &menu_rm { drv.remove(0, Some(*id)); }
                     for ev in &menu_sfx { drv.start(out, ev.id, None, 0, None); }
                 });
             }
         }
         let Some(fe) = self.fe.as_mut() else { return };
+        // net-consolidate: the online pages need their session. The proxy is
+        // created lazily on page entry (the listen/dial rows replace its
+        // unbound placeholder core); `net_lobby` holds the same Rc so the app
+        // can adopt it when the match starts.
+        if matches!(fe.page, menu::Page::MpHost | menu::Page::MpNetJoin) && self.net_lobby.is_none() {
+            match mpnet::SessionProxy::host(0) {
+                Ok(p) => {
+                    fe.mp_session = Some(Box::new(p.clone()));
+                    self.net_lobby = Some(p);
+                }
+                Err(_) => {}
+            }
+        }
         let closed = fe.closed;
         if let Some(code) = fe.requested_level.take() {
             // The menu picked a level: through the same reload path a LOAD_LEVEL uses. A cold pick
@@ -1742,21 +1828,54 @@ impl App {
             // builds them [M mp-menu-flow]; before this they were set but never read — the match
             // core now gets the menu's own scenario/map/limits/players).
             if let Some(st) = fe.mp_match_settings.take() { self.pending_mp_settings = Some(st); }
+            // net-consolidate: an online match starting (the host's confirm page armed the
+            // session, or the client took the tunnel's match payload) — adopt the lobby's
+            // session as the lockstep gate. `has_match` is exact: match_start is Some only
+            // after the arm / the tunnel payload, and a cancelled lobby's core is closed.
+            let adopt = self.net_lobby.as_ref().map_or(false, |p| p.has_match() && !p.core_is_closed());
+            if adopt && self.net.is_none() {
+                if let Some(p) = self.net_lobby.take() {
+                    self.net_local_slot = p.0.borrow().local_slot();
+                    self.net_tick = 0;
+                    self.net = Some(p);
+                    eprintln!("[net] adopted the lobby's session for the match");
+                }
+            }
         }
         // The pause page's Resume row (cursor 0) closes the menu [M C_GCPAUSE_Handler
         // 0x204408 — the game's resume is its own row]: the host consumes the flag and
         // leaves the menu (the sound hold lifts through the diff below).
         if closed {
-            self.fe = None;
-            if self.scene.sim.is_some() { self.grab(true); }
+            self.close_front_end();
         }
+    }
+
+    /// The front end closes (a briefing resolved to a level, the pause's pick, the resume):
+    /// the menu-music pair dies with it. The game's exit path plays the menus fade and lets the
+    /// level's own `SFXLoadSoundBank` reset the items [M C_SBNFMAP 0x20b8d8 case 0x4b —
+    /// SFXFadeDown(1), no explicit pair remove]; the port's banks swap without that reset, so
+    /// the close removes the pair explicitly through the driver (all instances of the id — the
+    /// IOP's KillSFX semantics [M IRX 0x1f88 → KillSFX 0x1ea4]). Without it the looped items
+    /// played on through gameplay and the pause (the playtest's "music continues after I leave
+    /// the menu").
+    fn close_front_end(&mut self) {
+        let rm: Vec<u32> = self.fe.as_mut().map(|fe| fe.drain_sfx_removes().collect()).unwrap_or_default();
+        if let Some(snd) = self.sound.as_mut() {
+            snd.batch(|drv, _out| {
+                for id in &rm { drv.remove(0, Some(*id)); }
+                for id in [menu::SFX_MENU_OPEN_MOVE, menu::SFX_MENU_OPEN_SELECT] { drv.remove(0, Some(id)); }
+            });
+        }
+        self.fe = None;
+        if self.scene.sim.is_some() { self.grab(true); }
     }
 
     // ── net-match-host: the online session's app surface ────────────────────────────────────────
     /// Host: listen on `port` (slot 0 is this machine's agent). The lobby pages are task 052's;
     /// the flag path (`--net-host`) arms the demo match for the first join.
     pub fn net_host(&mut self, port: u16) -> Result<(), String> {
-        self.net = Some(nf_game::net::NetSession::host(port)?);
+        self.net = Some(mpnet::SessionProxy::host(port)?);
+        self.net_lobby = None;
         self.net_local_slot = 0;
         self.net_tick = 0;
         Ok(())
@@ -1764,20 +1883,22 @@ impl App {
 
     /// Client: dial `addr` ("host:port"); the slot arrives in the session's WELCOME.
     pub fn net_join(&mut self, addr: &str) -> Result<(), String> {
-        let mut s = nf_game::net::NetSession::connect(addr, "Bond")?;
-        s.set_codename("Bond");
+        let s = mpnet::SessionProxy::connect(addr)?;
+        s.0.borrow_mut().set_codename("Bond");
         self.net = Some(s);
-        self.net_local_slot = 0; // corrected when WELCOME arrives
+        self.net_lobby = None;
+        self.net_local_slot = 0; // corrected when the WELCOME lands
         self.net_tick = 0;
         Ok(())
     }
 
-    /// A desync / a lost peer / a refused join: the game's message box (the front end's option
+    /// A desync / a lost host / a refused join: the game's message box (the front end's option
     /// box with the port-only string) and the lobby page underneath it; the session is closed.
     fn net_fail(&mut self, msg: &str) {
         eprintln!("[net] {msg}");
-        if let Some(se) = self.net.as_mut() { se.close(); }
+        if let Some(se) = self.net.as_mut() { se.0.borrow_mut().close(); }
         self.net = None;
+        self.net_lobby = None;
         self.net_armed = None;
         let fe = self.fe.get_or_insert_with(menu::FrontEnd::new);
         fe.net_notice = Some(msg.to_string());
@@ -1882,14 +2003,18 @@ impl App {
         // net-match-host: an online match's handover loads the MP core from the negotiated
         // settings (the same `load_mp_carry` on every machine — the seed rides inside). The local
         // menu confirm's settings ride here too now (they were set but never read before).
+        // difficulty-effects: otherwise the front-end pick rides every front-end load [M the game's
+        // level load reads GameState+0x28; the direct-load wrappers keep the replay 1].
         let mp_settings = self.pending_mp_settings.take();
+        let difficulty = self.selected_difficulty;
         let job = async_load::Job::spawn(move || {
             if let Some(st) = mp_settings {
                 load_mp_carry(&iso, &name, all, save.as_ref(), st)
-            } else if dev { load_with_carry_dev(&iso, &name, all, save.as_ref()) } else { load_with_carry(&iso, &name, all, save.as_ref()) }
+            } else if dev { load_with_carry_dev(&iso, &name, all, save.as_ref()) }
+            else { load_with_carry_difficulty(&iso, &name, all, save.as_ref(), difficulty) }
                 .map_err(|e| e.to_string())
         });
-        self.async_load = Some(LevelLoad { job, next, ptp_return });
+        self.async_load = Some(LevelLoad { job, next, ptp_return, ready: None });
     }
 
     /// One frame of the running load (async-level-load): `false` = the worker still runs — the
@@ -1899,18 +2024,37 @@ impl App {
     /// the swap is done, the caller falls through to normal play.
     fn poll_async_load(&mut self) -> bool {
         let Some(load) = self.async_load.as_mut() else { return true; };
-        let Some(res) = load.job.poll() else {
+        if load.ready.is_none() { load.ready = load.job.poll(); }
+        // A successful build into a level with a loading screen waits out LOADING_HOLD (the
+        // front-end map draws no loading screen [M ResetMap_GenLoadScreen skipped for 0x07000048];
+        // a failure goes at once).
+        let hold = load.next != menu::FRONTEND_LEVEL
+            && load.job.elapsed_ticks() < (LOADING_HOLD * 60.0) as u32
+            && !matches!(load.ready, Some(Some(Err(_))) | Some(None));
+        if load.ready.is_none() || hold {
             let (level, dots) = (load.next, loading::dots_lit(load.job.elapsed_ticks()));
             self.draw_loading_screen(level, dots);
             if let Some(g) = &self.gfx { g.window.request_redraw(); }
             return false;
-        };
+        }
         // The job is over whatever the result: take it and let the frame finish normally.
-        let load = self.async_load.take().unwrap();
+        let mut load = self.async_load.take().unwrap();
+        let res = load.ready.take().unwrap();
         match res {
             Some(Ok(scene)) => {
                 let name = level_archive_name(load.next);
                 self.swap_in_scene(scene, load.ptp_return);
+                // A real level loaded from the front end: the menu manager is gone [M the MP
+                // confirm's / the SP pick's MenuManager_Delete — "the host closing the overlay once
+                // the load leaves the front-end map"]. The MP start loads its arena directly (no
+                // briefing hand-over), and the front end stayed open over it — the arena never
+                // showed, only the menu's backdrop (playtest 1015-2231 "cant get into a match").
+                if load.next != menu::FRONTEND_LEVEL
+                    && self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() != menu::ST_MOVIE)
+                {
+                    self.fe = None;
+                    if self.scene.sim.is_some() { self.grab(true); }
+                }
                 // frontend-music: `Sound_Ready`'s front-end case [M 0x1dceb8 case 0x7000048] — the
                 // load alternates bank 0xc (SBI slot 0 = SB_0, jingle 0x1d7) and 0x38 (slot 1 =
                 // SB_1, jingle 0x470) through DAT_002e1b11, then `MenuManager_Create` resets
@@ -1924,7 +2068,7 @@ impl App {
                     }
                     self.fe_music_page = None; // the manager re-create re-runs the page's 0x4c [M 0x21b908:127]
                 }
-                eprintln!("level: loaded {name}");
+                eprintln!("level: loaded {name} (loading screen {:.1} s)", load.job.elapsed_ticks() as f64 / 60.0);
             }
             Some(Err(e)) => eprintln!("level: failed to load {}: {e}", level_archive_name(load.next)),
             None => eprintln!("level: load of {} panicked (worker thread died)", level_archive_name(load.next)),
@@ -1940,6 +2084,14 @@ impl App {
     /// return, the renderer rebuild — GPU upload, this thread owns the device — and the entry
     /// checkpoint, in the exact order the synchronous path ran.
     fn swap_in_scene(&mut self, mut scene: scene::Scene, ptp_return: Option<nf_game::ptp::DriveReturn>) {
+        // The previous scene's skin palette and its interpolation cameras belong to the OLD skin
+        // layout: uploading them into the new renderer overran its palette buffer every frame
+        // until a tick rebuilt them — and a level that doesn't tick at once (an MP arena with the
+        // menu still up) never did (the 787 GPU validation errors, playtest 1015-2231).
+        self.pal_cur = None;
+        self.pal_prev = None;
+        self.cam_prev = None;
+        self.cam_cur = None;
         self.sound = build_sound(&mut scene);
         // The fresh sound stack is unpaused: reset the mirror so the per-frame diff
         // re-applies the current hold (a menu can still be up over the reload).
@@ -2013,12 +2165,14 @@ impl App {
         // :77 GetScore(0) + :169 Menu_SetLevelBonus] — the fields the overlay draws
         // (front-end-chain). GameState+0x72 is BaseMap [M 0x182c60:68-70's clamp].
         if complete {
-            let lang = self.lang.as_ref();
+            // The front end's language table isn't loaded while a mission runs — fall back to the
+            // level's own (the medal name drew as a raw "<0x2c7>" on the live end sequence).
+            let lang = self.lang.clone().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.clone()));
             if let Some(sim) = self.scene.sim.as_mut() {
                 let b = sim.drones.mission.base_map;
                 let base = if b == u32::MAX || b == 0 { self.level_code } else { b };
                 let diff = sim.drones.progress.difficulty;
-                fe.results_enter(&mut sim.drones.progress, base, 6, diff, lang);
+                fe.results_enter(&mut sim.drones.progress, base, 6, diff, lang.as_ref());
             }
         }
         self.fe = Some(fe);
@@ -2091,7 +2245,17 @@ impl App {
     /// the phase-2 resolve routing the host's level load [M ResetMap_Load 0x1d6360 LoadState 2].
     fn movie_tick(&mut self) {
         let movie_iso = self.movie_iso_path();
-        let Some(fe) = self.fe.as_mut() else { return };
+        let Some(fe) = self.fe.as_mut() else {
+            // No front-end page is up: no page wants the looping backdrop — stop it. The game's
+            // page-change arm stops the aux when the new page's aux is 0 [M 0x21c858:334-338];
+            // the front end's close is that arm with no page at all (menu-audio-leaks finding 1:
+            // the backdrop — the menu music — played on through gameplay and the pause). A
+            // non-looping movie (a briefing's tail) keeps playing to its end.
+            if self.movie.as_ref().is_some_and(|p| p.is_looping()) {
+                if let Some(p) = self.movie.take() { let c = p.code(); p.stop(); eprintln!("movie: stopped {c:08x} (no front-end page)"); }
+            }
+            return;
+        };
         // A pending end_to request from mission_ended rides the same path a menu pick does.
         if let Some(code) = fe.requested_level.take() {
             // A cold menu reload (the pause page's RESTART [M 0x204408:139 ResetMap_LevelToLoad(.., 0, 1)])
@@ -2142,7 +2306,15 @@ impl App {
             if wrong {
                 if let Some(p) = self.movie.take() { p.stop(); }
                 match movie::Player::start(&movie_iso, code) {
-                    Ok(p) => { self.movie = Some(p); eprintln!("movie: playing {code:08x} (attract)"); }
+                    Ok(p) => {
+                        self.movie = Some(p); eprintln!("movie: playing {code:08x} (attract)");
+                        // frontend-music: P_ATTRACT's 0x4c removes the menu-music pair before the
+                        // movie (menu_movie = 0) [M 0x20a1f0:20-22] — the trailer's own soundtrack
+                        // replaces it. Missing here, the menu music kept playing over the trailer
+                        // (the user's "the cutscene that plays if you don't touch anything should
+                        // have its own audio").
+                        fe.music.movie_started();
+                    }
                     Err(e) => {
                         // A declined start = the game's un-started movie: BGFMVPlaying == 0, so
                         // psiMovieFinished is true from tick one and the page closes at once
@@ -2153,9 +2325,17 @@ impl App {
                 }
             }
             if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {
+                // The 0x50 finish arm restarts the pair while it is down [M 0x20a1f0:34-39].
+                fe.music.movie_finished();
                 fe.attract_movie_finished();
             }
         } else if fe.flow.get_state() == menu::ST_MOVIE {
+            // psiStartBackgroundMovie replaces whatever the one BGFMV slot holds [M 0x1081a8] —
+            // a looping page backdrop standing in the slot must yield to the state-6 movie
+            // (menu-audio-leaks: the playtest's menu music under the EA logo).
+            if self.movie.as_ref().is_some_and(|p| p.is_looping()) {
+                if let Some(p) = self.movie.take() { let c = p.code(); p.stop(); eprintln!("movie: stopped {c:08x} (state 6 replaces the backdrop)"); }
+            }
             match &mut self.movie {
                 Some(p) => {
                     // BGFMVPlaying follows the player: 1 while it decodes, 0 at the end of file —
@@ -2203,6 +2383,12 @@ impl App {
             // The page's aux loop [M 0x21c858:338]: stop when the page has no aux, (re)start when
             // the playing code differs from the page's.
             let aux = menu::aux_movie_for(fe.page_id());
+            // A skipped attract (the Enter skip ends it inside the FrontEnd, not through the
+            // finished poll above) leaves the trailer's player here: its 0x50 arm restarts the
+            // menu-music pair the same way the natural end does [M 0x20a1f0:34-39].
+            if self.movie.as_ref().is_some_and(|p| !p.is_looping() && matches!(p.code(), menu::ATTRACT_MOVIE_A | menu::ATTRACT_MOVIE_B)) {
+                fe.music.movie_finished();
+            }
             let wrong = match &self.movie {
                 Some(p) => aux == 0 || p.code() != aux || !p.is_looping(),
                 None => aux != 0,
@@ -2227,8 +2413,7 @@ impl App {
             if resolved != menu::FRONTEND_LEVEL {
                 // The briefing's return: the real level loads and the front end closes — the game
                 // leaves the menu system and Game_Draw takes over.
-                self.fe = None;
-                if self.scene.sim.is_some() { self.grab(true); }
+                self.close_front_end();
             }
             // The outro's return: the front end stays and the results page reopens on the map
             // (phase 2 set flow.page = 0x40000036 [M]; fe.page follows below in the hud build).
@@ -2494,7 +2679,19 @@ impl ApplicationHandler for App {
                     }
                 }
             } else if self.grabbed && !self.noclip {
-                if y > 0.0 { self.weapon_cycle = 1; }
+                // microcam-wheel-zoom: while the right button (aim) is held and the held weapon can
+                // zoom, the wheel steps the zoom instead of switching [S the 2026-10-15 playtest:
+                // "have the scroll wheel do the zoom while you're right-clicking to aim in. And if
+                // you're not right-clicking, of course, weapon switch"]. Zoomable = the game's own
+                // scope flag +0x68 & 0x40 with a magnification above 1 [M weapon_data; the sim's
+                // zoom block gates on the same two]. Otherwise the wheel keeps switching weapons.
+                let zoomable = self.scene.sim.as_ref().is_some_and(|s| {
+                    wheel_steps_zoom(self.zoom, s.weapons.flags(s.gun.weapon as usize), s.weapons.zoom(s.gun.weapon as usize))
+                });
+                if zoomable {
+                    if y > 0.0 { self.zoom_cycle = 1; }
+                    else if y < 0.0 { self.zoom_cycle = -1; }
+                } else if y > 0.0 { self.weapon_cycle = 1; }
                 else if y < 0.0 { self.weapon_cycle = -1; }
             }
         }
@@ -2529,7 +2726,7 @@ impl ApplicationHandler for App {
             }
             // Left button: grab the mouse, then fire (action 9) while held. With the dev menu open (F2), a left click
             // selects a menu item instead (WORKLOG 0081).
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } if self.fe.is_some() && self.async_load.is_none() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
                 if state == ElementState::Pressed {
                     if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) {
                         if fe.flow.get_state() == menu::ST_MOVIE { self.menu_input(menu::Action::Confirm); }
@@ -2537,7 +2734,7 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } if self.fe.is_some() && self.async_load.is_none() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
                 self.menu_input(menu::Action::Back);
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
@@ -2550,7 +2747,7 @@ impl ApplicationHandler for App {
                 if self.grabbed { self.zoom = state == ElementState::Pressed; }
             }
             // Cursor moves: track the NDC position for the dev menu's click hit-test (when the menu is open).
-            WindowEvent::CursorMoved { position, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+            WindowEvent::CursorMoved { position, .. } if self.fe.is_some() && self.async_load.is_none() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
                 self.menu_pointer = self.menu_space(position.x, position.y);
                 if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) {
                     if fe.mouse_move(x, y) { self.menu_after(); }   // the hover's focus-move sound
@@ -2586,6 +2783,11 @@ impl ApplicationHandler for App {
                     eprintln!("[spot] {m}");
                     return;
                 }
+                // No menu input while a level load runs: the loading screen owns the frame and the
+                // game's main loop runs no menu manager inside ResetMap_Load [M 0x1d6360 state 3].
+                // Keys pressed there used to reach the still-open front end — a second Enter on
+                // the MP confirm page started a second load of the same arena (playtest 1015-2231).
+                if event.state == ElementState::Pressed && self.fe.is_some() && self.async_load.is_some() { return; }
                 if event.state == ElementState::Pressed && self.fe.is_some() {
                     // net-online-lobby: the join address page takes the raw keys FIRST — digits,
                     // dots and the colon type, Backspace deletes, Ctrl+C/Ctrl+V work the page's
@@ -2616,7 +2818,14 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
-                    if let Some(a) = menu::key_action(k) { self.menu_input(a); }
+                    // Windows key auto-repeat never confirms, backs out or skips: the game's actions
+                    // are edge-triggered [M Input_Action(.., 1)], and a held Enter's repeats skipped
+                    // the briefing the moment it started (playtest 1015-2231 "no intro"). Held
+                    // arrows still scroll.
+                    if let Some(a) = menu::key_action(k) {
+                        if event.repeat && matches!(a, menu::Action::Confirm | menu::Action::Back) { return; }
+                        self.menu_input(a);
+                    }
                     return;
                 }
                 // fix-ingame-dev-menu: while the dev menu is open, the keys drive the menu and never the game
@@ -2747,7 +2956,7 @@ impl ApplicationHandler for App {
                         self.entry_save = save.clone();
                         let name = level_archive_name(self.scene.sim.as_ref().map_or(0, |s| s.level));
                         eprintln!("weapon assets: {w:#04x} is not on this level — warm reload with its assets");
-                        match load_with_carry_weapons(&self.iso, &name, self.all, save.as_ref(), &[w]) {
+                        match load_with_carry_weapons_difficulty(&self.iso, &name, self.all, save.as_ref(), &[w], self.selected_difficulty) {
                             Ok(mut scene) => {
                                 self.sound = build_sound(&mut scene);
                                 if let Some(sim) = scene.sim.as_mut() {
@@ -2815,52 +3024,62 @@ impl ApplicationHandler for App {
                 // batch) only run inside the tick gate below. The fail/results page opens with
                 // `pause_sound` = 0 in the game (sound keeps playing [M Mission_Update 0x182c60:78])
                 // — the port's demo results hook rides the same gate [S, remaining host glue].
-                // net-match-host: pump the session once per frame (receive, timeouts, handshake,
-                // the armed START). The events drive the same handover a menu confirm drives.
+                // net-consolidate: pump the ONE session once per frame (receive, timeouts,
+                // handshake, the armed GO). The events drive the same handover a menu confirm
+                // drives; the lobby pages drive the same core through their `MpSession` proxy.
                 if let Some(session) = self.net.as_mut() {
-                    for ev in session.poll() {
-                        match ev {
-                            nf_game::net::NetEvent::MatchStarted(st) => {
+                    session.0.borrow_mut().poll();
+                }
+                // Drain first, then react: the borrow must be gone before the
+                // handlers touch `self` again (net_fail replaces the session).
+                let net_events = self.net.as_mut()
+                    .map(|session| session.0.borrow_mut().take_app_events())
+                    .unwrap_or_default();
+                for ev in net_events {
+                    match ev {
+                            mpnet::CoreEvent::MatchStarted(st) => {
                                 // Every machine takes the same handover: the level loads from the
-                                // settings (the seed rides inside), the menu closes.
+                                // settings (the seed rides inside), the menu closes. The lobby
+                                // pages also see this through `match_started()` (mp_net_poll),
+                                // which mirrors it into the same fields — idempotent.
                                 eprintln!("[net] match starting: arena {:08x}, {} humans, seed {:#x}",
                                     st.level_code, st.human_count, st.seed);
+                                self.net_local_slot = self.net.as_ref().map_or(0, |s| s.0.borrow().local_slot());
                                 self.pending_level = Some(st.level_code);
                                 self.pending_mp_settings = Some(*st);
                                 if let Some(fe) = self.fe.as_mut() { fe.closed = true; }
                             }
-                            nf_game::net::NetEvent::AgentJoined { slot, codename } => {
-                                eprintln!("[net] agent {slot} joined ({codename})");
+                            mpnet::CoreEvent::AgentJoined { slot } => {
+                                eprintln!("[net] agent {slot} joined");
                                 // The flag path's auto-start: the first join arms the match.
-                                if let Some(st) = self.net_armed.as_mut() {
-                                    let n = 1 + self.net.as_ref().map_or(0, |se| se.agent_count() - 1).max(0);
-                                    st.human_count = n as u32;
-                                    st.player_count = n as u16;
-                                    st.total_players = n as u32;
-                                    let armed = st.clone();
-                                    if let Some(se) = self.net.as_mut() { se.start_match(&armed); }
-                                    self.net_armed = None;
+                                if let Some(st) = self.net_armed.take() {
+                                    let n = 1 + slot as u32;
+                                    let mut armed = st;
+                                    armed.human_count = n;
+                                    armed.player_count = n as u16;
+                                    armed.total_players = n;
+                                    if let Some(s) = self.net.as_mut() { s.0.borrow_mut().start_match(&armed); }
+                                    self.pending_level = Some(armed.level_code);
+                                    self.pending_mp_settings = Some(armed);
                                 }
                             }
-                            nf_game::net::NetEvent::Joined { slot } => {
-                                self.net_local_slot = slot;
-                                eprintln!("[net] joined as slot {slot}");
+                            mpnet::CoreEvent::Refused => {
+                                self.net_fail("Refused: a different build or the match is full");
                             }
-                            nf_game::net::NetEvent::Refused(r) => {
-                                let why = match r {
-                                    nf_game::net::DenyReason::Version => "Refused: a different build",
-                                    nf_game::net::DenyReason::Full => "Refused: the match is full",
-                                    nf_game::net::DenyReason::Started => "Refused: the match already started",
-                                };
-                                self.net_fail(why);
-                            }
-                            nf_game::net::NetEvent::Desynced { tick } => {
+                            mpnet::CoreEvent::Desync { tick } => {
                                 self.net_fail(&format!("State desync at tick {tick}\nReturning to the lobby"));
                             }
-                            nf_game::net::NetEvent::PeerLost { slot } => {
-                                self.net_fail(&format!("Player {} left the match\nReturning to the lobby", slot + 1));
+                            mpnet::CoreEvent::ClientLeft { slot, graceful } => {
+                                // DropPolicy::Neutral: the dropped agent rides NEUTRAL inputs and
+                                // the match runs on — the game's own disconnected-pad shape
+                                // (psiInput_PollDevices 0x10ca78 writes buttons 0 / analog 0x7f
+                                // for a dead pad), not the old terminal PeerLost.
+                                eprintln!("[net] player {} {} — the match runs on with NEUTRAL inputs",
+                                    slot + 1, if graceful { "left" } else { "timed out" });
                             }
-                        }
+                            mpnet::CoreEvent::HostTimeout => {
+                                self.net_fail("The host went away\nReturning to the lobby");
+                            }
                     }
                 }
                 let menu_hold = self.paused || self.fe.as_ref().is_some_and(|fe| fe.page == menu::Page::Pause);
@@ -2897,13 +3116,14 @@ impl ApplicationHandler for App {
                     if let Some(sim) = self.scene.sim.as_mut() {
                         for _ in 0..n_ticks {
                             if self.noclip { sim.step(eye, look, self.trigger, self.aiming); continue; }
-                            // net-match-host: the lockstep gate — the sim advances tick t only when
-                            // every live agent's input for t has arrived. A stalled tick renders the
-                            // last ticked frame (`ticked` false keeps the interpolation honest), and
-                            // NO capture runs on it, so key edges survive the stall. Never guess: the
-                            // session's missing input is a wait, not a default.
+                            // net-consolidate: the lockstep gate — the sim advances tick t only
+                            // when every live agent's input for t has arrived. A stalled tick
+                            // renders the last ticked frame (`ticked` false keeps the
+                            // interpolation honest), and NO capture runs on it, so key edges
+                            // survive the stall. Never guess: the session's missing input is a
+                            // wait, not a default.
                             if let Some(session) = self.net.as_mut() {
-                                if session.ready_inputs(self.net_tick).is_none() { self.ticked = false; break; }
+                                if session.0.borrow_mut().ready_inputs(self.net_tick).is_none() { self.ticked = false; break; }
                             }
                             // B-5 record/replay: when `--replay` is set, the input comes from the recording, not the
                             // keyboard. The recorded tick drives `step_bond` exactly as it did when recorded; the user
@@ -2930,6 +3150,7 @@ impl ApplicationHandler for App {
                                     aiming: self.aiming,
                                     weapon_cycle: std::mem::take(&mut self.weapon_cycle),
                                     gadget_cycle: std::mem::take(&mut self.gadget_cycle),
+                                    zoom_cycle: std::mem::take(&mut self.zoom_cycle),
                                     switch_to: self.weapon_switch_to.take(),
                                     fire: self.trigger,
                                     zoom: self.zoom,
@@ -2960,21 +3181,28 @@ impl ApplicationHandler for App {
                             // The party weapon lock (`Player_Weapon` 0x1a24c8:242-275): on 07000007 with
                             // ch 0x48 off the cycle actions cannot leave the fists (fix-level2 F4).
                             nf_game::player::weapon_lock_input(sim.level, sim.drones.channels.on(nf_game::player::WEAPON_LOCK_CHANNEL), &mut input);
-                            // net-match-host: the finalized input goes to the session (this slot's
-                            // entry in the per-tick exchange; the peers' inputs arrive the same way).
-                            if let Some(session) = self.net.as_mut() { session.local_input(self.net_tick, input); }
+                            // net-consolidate: the finalized input goes to the session (this slot's
+                            // entry in the per-tick exchange; the trigger/reload/use_key lanes ride
+                            // the 24-byte wire input now — 053's 20-byte packing dropped them).
+                            if let Some(session) = self.net.as_mut() {
+                                let ni = mpnet::to_net_input(&input, trigger, reload, use_key);
+                                session.0.borrow_mut().local_input(self.net_tick, ni);
+                            }
                             // B-5 record: capture the exact input passed to step_bond, before the call.
                             if let Some(r) = &mut self.recorder { r.push(replay::TickInput::from_parts(&input, trigger, reload, use_key)); }
                             sim.step_bond(input, trigger, reload, use_key);
                             // weapon-matrix: the "Test weapon" run watches the tick's result (the
                             // phase machine in dev.rs; `sim` and `self.dev` are disjoint fields).
                             if let Some(d) = self.dev.as_deref_mut() { d.test_observe(&*sim); }
-                            // net-match-host: the remote agents' movement tick with the session's
+                            // net-consolidate: the remote agents' movement tick with the session's
                             // inputs (the same `Bond::tick_ctx` core on every machine), the MP
-                            // slots' live positions, and the state hash every N ticks.
+                            // slots' live positions, and the state hash on the session's own
+                            // cadence (hash_every 15; the previous hash piggybacks every packet).
                             if self.net.is_some() {
+                                let session = self.net.as_mut().unwrap();
                                 let slot = self.net_local_slot;
-                                if let Some(inputs) = self.net.as_mut().and_then(|se| se.ready_inputs(self.net_tick)) {
+                                if let Some(net_inputs) = session.0.borrow_mut().ready_inputs(self.net_tick) {
+                                    let inputs = net_inputs.map(|i| mpnet::to_player_input(&i));
                                     sim.step_net_remotes(&inputs, slot);
                                     if let Some(m) = sim.mp.as_mut() {
                                         for sl in 0..4 {
@@ -2982,11 +3210,8 @@ impl ApplicationHandler for App {
                                         }
                                         m.set_slot(slot, sim.bond.pos);
                                     }
-                                    if self.net_tick % NET_HASH_EVERY == 0 {
-                                        if let Some(session) = self.net.as_mut() {
-                                            session.send_state_hash(self.net_tick, sim.net_state_hash(slot));
-                                        }
-                                    }
+                                    let h = sim.net_state_hash(slot);
+                                    session.0.borrow_mut().submit_hash(self.net_tick, h);
                                 }
                                 self.net_tick += 1;
                             }
@@ -3009,6 +3234,10 @@ impl ApplicationHandler for App {
                         // 0700004a's pack cut-scene → the 0x0720004a movie code) — resolve the movie/wrapper
                         // codes the way the game's load pipeline does [M 0x1d3800 + 0x1d6360 phase 2 +
                         // 0x1d3560; nf_game::triggers::resolve_exit_code].
+                        if let Some(end_to) = sim.drones.mission_end.take() {
+                            eprintln!("level: mission over (LevelToEndTo {end_to:08x}) — the outro + results");
+                            self.pending_mission_end = true;
+                        }
                         if let Some(next) = sim.drones.level_exit.take() {
                             let resolved = nf_game::triggers::resolve_exit_code(next);
                             if resolved != next { eprintln!("level: exit {next:08x} resolves to {resolved:08x} [M 0x1d3560]"); }
@@ -3057,6 +3286,14 @@ impl ApplicationHandler for App {
                     }
                     // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
                     if let Some(d) = self.dev.as_deref_mut() { d.after_tick(&mut self.scene); }
+                    // The mission's end sequence (`Mission_Update` case 4 → `ResetMap_LevelToLoad`
+                    // of the outro or the front end): the same front-end path the F8 hook drives.
+                    if let Some(ch) = self.force_channel {
+                        if let Some(sim) = self.scene.sim.as_mut() {
+                            if sim.drones.frame >= 120 { sim.drones.set_channel(ch); self.force_channel = None; eprintln!("[dev] channel {ch} raised"); }
+                        }
+                    }
+                    if std::mem::take(&mut self.pending_mission_end) { self.demo_results(true); }
                 }
                 let Some(g) = &mut self.gfx else { return };
                 if g.minimized {
@@ -3495,10 +3732,11 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let force_channel = if dev { args.iter().position(|a| a == "--set-channel").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u8>().ok()) } else { None };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
-        net: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,
+        net: None, net_lobby: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,
         async_load: None, };
     if dev {
         // fix-ingame-dev-menu: the browser panel is no longer part of `--dev` — the in-window F2
