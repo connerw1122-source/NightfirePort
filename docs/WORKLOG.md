@@ -15342,3 +15342,14 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+
+## objective-banner-timing (2026-10-16, branch s/objective-banner-timing) — start
+- Task: playtests 1012-1723 / 1012-2337 (07000007) — the objective banner (and its "new objective"
+  sound) plays DURING the Kimiko cut-scene; the game gates it until the scene hands back. Port the
+  gate: how Text_AddMsg / the objective-message queue hold while an NIS / script camera runs [M the
+  message update's NIS check, Mission_ObjectiveState], and when the "new objective" sound plays.
+- Tests on 07000007's Kimiko scene: banner + sound appear only after the scene hands back; sister:
+  outside a cut-scene the banner shows immediately.
+- Plan: find the objective banner path in the port (the HUD message queue + the sound trigger),
+  find the game's NIS/cut-scene hold in the message update (Text_AddMsg callers, the NIS check),
+  port it, test both sides (during-NIS held, non-NIS immediate).
