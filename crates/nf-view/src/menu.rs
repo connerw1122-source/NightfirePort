@@ -529,6 +529,9 @@ pub fn aux_movie_for(page_id: u32) -> u32 {
         PAGE_MP_JOIN | PAGE_MP_SCENARIO | PAGE_MP_MAP | PAGE_MP_SETUP | PAGE_MP_OPTIONS | PAGE_MP_RULES
         | PAGE_MP_PLAYERMODS | PAGE_MP_ENVIROMODS | PAGE_MP_BOTS | PAGE_MP_BOTCHOOSE | PAGE_MP_BOTSETUP
         | PAGE_MP_CONFIRM | PAGE_MP_DEBRIEFING => 0x0735_0048,
+        // The port-only online pages (net-online-lobby) sit between Main and the MP Join page, so they
+        // take the same list backdrop as their MP neighbours [S: no game record exists for them].
+        PAGE_MP_MODE | PAGE_MP_HOST | PAGE_MP_NETJOIN => 0x0735_0048,
         _ => 0,
     }
 }
