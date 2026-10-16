@@ -13858,3 +13858,11 @@ Work Log (async-level-load):
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+
+## drive-hud-data (2026-10-16, branch s/drive-hud-data)
+- Branch created from origin/master (0f5f07f4). Task: port the driving-mission HUD's data model from DRIVING.ELF
+  as a per-frame snapshot (values + label/texture ids + positions as the game sets them), wired to 506's physics /
+  107's state where they exist; the main agent draws it. Tests: the snapshot follows the sim (numbers only).
+- Plan: read docs/atlas/driving-elf.md + the DRIVING.ELF decomp for the HUD writers (speed/gear, vehicle health,
+  weapon+ammo, minimap/radar, objective markers, timers); check how s/mp-hud-data wired its snapshot; implement
+  the snapshot in nf-game + numbers-only tests; run the crates my tests touch, then the full suite before push.
