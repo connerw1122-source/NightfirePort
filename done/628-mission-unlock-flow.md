@@ -28,3 +28,8 @@ claimed-by: sandbox4 at 2026-10-16T00:02Z
 ---
 ## Report (done, 2026-10-16T02:01Z)
 
+
+---
+## Report from the worker (done, 2026-10-16T02:01Z)
+
+Closed by the driver: the report is on `s/mission-unlock-flow` (docs/reports/mission-unlock-flow.md); the worker didn't run finish.sh.
