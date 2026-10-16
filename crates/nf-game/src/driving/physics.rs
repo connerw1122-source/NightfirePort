@@ -18,7 +18,7 @@
 //! - Per-car parameters: the pvehicle attribute schema [M `FUN_001968f8`]; the shipped
 //!   `data\sim\attrib\pvehicle\vanquish.atr` (Bond's Aston Martin) [D].
 
-use std::collections::HashMap;
+use std::collections::BTreeMap;
 
 /// The game's fixed physics step [M `FUN_002d6b90`'s {60,60,50,60} table; sim+0xdc0 = 1/fps].
 pub const DT: f32 = 1.0 / 60.0;
@@ -30,10 +30,15 @@ pub const DT: f32 = 1.0 / 60.0;
 /// One open tuning file: the parsed `KEY=VALUE` pairs. The game keeps the text in memory and
 /// substring-searches it per registered variable name (`FUN_001790f8`), then sscanf's the number
 /// [M 0x1426a8]; the parser here keeps the same case-sensitivity and the same "first line whose
-/// start matches" semantics at the granularity the port's variables need.
+/// start matches" semantics at the granularity the port's variables need. The map is a
+/// `BTreeMap` (cross-process-determinism): `get`'s prefix fallback breaks equal-length ties by
+/// iteration order, and a `HashMap`'s order is randomly seeded per process — two processes could
+/// resolve the same ambiguous prefix to different values and drive the car sim apart. A
+/// `BTreeMap` iterates in key order, so the tie-break (shortest key, then lexicographically
+/// smallest) is a pure function of the text.
 #[derive(Debug, Default, Clone)]
 pub struct Tuning {
-    values: HashMap<String, f32>,
+    values: BTreeMap<String, f32>,
 }
 
 impl Tuning {
@@ -41,7 +46,7 @@ impl Tuning {
     /// not part of the .tun form — the sscanf `%f` stops at the first non-numeric char, so a
     /// trailing space or letter is ignored exactly like `%f` does).
     pub fn parse(text: &str) -> Tuning {
-        let mut values = HashMap::new();
+        let mut values = BTreeMap::new();
         for line in text.lines() {
             let line = line.trim();
             if line.is_empty() || line.starts_with('#') { continue; }
@@ -69,7 +74,7 @@ impl Tuning {
             if k.starts_with(name) && k.len() > name.len() {
                 let rest = &k[name.len()..];
                 if rest.starts_with(' ') || rest.starts_with('=') || rest.starts_with('[') {
-                    if best.map_or(true, |(bk, _)| k.len() < bk.len()) { best = Some((k, v)); }
+                    if best.map_or(true, |(bk, _)| (k.len(), k.as_str()) < (bk.len(), bk.as_str())) { best = Some((k, v)); }
                 }
             }
         }

@@ -15679,3 +15679,51 @@ must be faded/off those actors when it plays.
   85/0. Details in docs/reports/mp-debriefing-data2.md.
 - Report: docs/reports/mp-debriefing-data2.md (the reconciliation table, the verification, 5
   live-check asks); systems doc docs/systems/mp-debriefing.md.
+
+## cross-process-determinism (2026-10-16, branch s/cross-process-determinism) — start
+- Branch created from origin/master (e416e5f0). Task: the sim must give the same result in every
+  process — 664's guard-reaction matrix test measured different streams in different processes
+  (same cell 125/200 in a suite run, 153/200 standalone). Plan: reproduce (10 standalone runs of
+  that test binary, per-cell numbers), audit every HashMap/HashSet iteration that feeds sim state
+  / RNG draws / AI decisions in nf-game and nf-view's Sim glue (RandomState is per-process),
+  replace with BTreeMap/IndexMap or sorted iteration, add a two-process 600-tick 07000005 combat
+  guard test requiring bit-identical per-tick state hashes (mp/hash.rs), plus the sister toy-map
+  test that trips the guard.
+
+## cross-process-determinism (2026-10-16, branch s/cross-process-determinism) — close-out
+- THE REPRO (task step 1): `fix_guard_weapons_live`'s matrix test run 10× standalone
+  (NF_SILENT alternating), plus one whole-binary and one suite-context run, in the worker sandbox
+  on the slim ISO — all nine per-cell numbers identical to the digit every run (e.g. 0x0e/d1
+  82/200, 0x12/d1 88/200, 0x16/d3 190/200, same guards, same distances, same per-hit damages).
+  The 664 split does not reproduce on the current tree; the merged fix-guard-weapons3 gate-clean
+  filter (its own doc records the pre-fix re-rolled stream reading 0.52 vs model 0.975) explains
+  the original observation.
+- THE AUDIT (task step 2, subagent + hand verification): every HashMap/HashSet in
+  nf-game/nf-view/nf-formats/nf-net classified by what its iteration order feeds. Tick entity
+  lists are all Vecs; the shared Rng (drone.rs:387, seeded 0x1234_5678 in Scene::build) sees only
+  deterministic code. Six order-dependent sites fixed: physics.rs `Tuning::get` (HashMap prefix
+  tie-break → BTreeMap + (len,key)), scene.rs `by_hash` + `seqs` (skeleton-bucket last-wins over
+  HashMap order → ascending skeleton id), scene.rs `view_model_chars` (values() order → build-loop
+  order), weapon_assets.rs foreign-skins merge (HashMap order → ascending hashcode),
+  nf-net session.rs desync-compare order (→ ascending tick). The rest verified lookup-only or
+  order-insensitive (list in the report).
+- THE GUARD (task step 3): `crates/nf-view/tests/cross_process_determinism.rs` + the child runner
+  `crates/nf-view/src/bin/nf-cpd-child.rs` (via CARGO_BIN_EXE_, no libtest in the child). 600-tick
+  07000005 combat (Bond parked in a live guard's sight, NewSighting gate, real fire/cover draws)
+  fingerprinted per tick with mp::hash::Hasher (FNV-1a 64 over IEEE bits; frame → rng → bond →
+  drones → bullets → grenades → explosions). GREEN: two full sim builds — bit-identical for all
+  600 ticks (two builds ⇒ every std HashMap re-seeded ⇒ different iteration orders); the trip
+  sister — a 64-entry toy HashMap folded into a separate column diverges from tick 91
+  (4e3009c91fe1cc63 vs 27e7d6277a72cab3) while the state column stays bit-identical. The
+  two-process leg (child runner, NF_OUT file) SKIPs with evidence in this sandbox (see below) and
+  runs the honest cross-process comparison where process semantics are honest.
+- SANDBOX QUIRK (cost the bulk of the session, documented): a libtest parent's spawned
+  grandchildren misbehave here — Command::output()/status() return while the child still runs
+  (captured stdout ends mid-load), the child's own file creations stay invisible to the live
+  parent (they appear after the tool call), and the child's stderr only reaches the parent's
+  original stdio. A plain parent (shell or a standalone Rust spawner: spawn + file stdio + poll)
+  runs the same child perfectly in ~2 s. The child keeps both channels (NF_OUT file + stderr TICK
+  stream) so the cross-process leg works on honest machines.
+- Touched crates run before the push: nf-view guard suite 3/3 green (7.9 s); the full fast suite
+  on the final tree totals in the report. nf-net/nf-game/nf-audio results ride the suite's
+  per-binary lines.
