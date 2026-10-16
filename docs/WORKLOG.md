@@ -14888,3 +14888,19 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+- menu-e2e-singleplayer close-out: crates/nf-view/tests/menu_sp_e2e.rs — 9 e2e tests driven only through
+  action()/tick()/the host-side calls (set_profile_dir, --unlock-all, requested_level/phase2_resolved takes,
+  the lib.rs demo_results flow prep before mission_ended, results_enter/bonus_enter/sync_profile_progress/
+  win_movie_finished, the card dialog answers); the name grid walked by d-pad BFS over CN_GRID (no other
+  window input path exists for it). Coverage: intro skip + playout; Back at every step to the title; all
+  three Select Codename branches (New Codename incl. the 0x3bc empty-name refusal + create + save + reload,
+  Play without saving's cancel/re-arm, an existing saved codename); the clamped difficulty wheel × all rows;
+  CAMPAIGN == SP_LEVEL_HASHES; all 12 rows' exact requested_level (driving rows → the notice, both
+  dismissals); the complete walk (results fields, the save prompt → ASK_OVERWRITE → the write → the NfBonus
+  hop → the list on the highest unlocked row → Double Cross through the chained driving rows → the file and
+  reload carry rows 0-2); the fail menu (REPLAY warm / QUIT); Equinox → the real 0x0730001b outro wrap →
+  just_completed → WinGame → Credits. Merged origin/master ad761677 mid-task (WORKLOG conflict resolved,
+  both entries kept). Findings: the fail-menu REPLAY sequencing (the headless front-end load clobbers
+  GameState+0x12 before the answer — the test answers in the disc's streaming window; live check asked) and
+  the per-leg phase2_resolved consume the walker mirrors from lib.rs 2326. Report:
+  docs/reports/menu-e2e-singleplayer.md (2 live checks).
