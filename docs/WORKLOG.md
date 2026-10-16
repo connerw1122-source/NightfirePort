@@ -16706,3 +16706,9 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+- 2026-10-16 nis-event9-cnis (task 733): NIS event 9 (cam2mode) and the C_NIS_Handler
+  mission-driven cut-scene route aren't ported (uncited-audit gap 10). Plan: read the
+  docs/systems/uncited-audit.md entry, port event 9 and the C_NIS_Handler route from the
+  decompile [M], find every script/level that uses them [D], add a test that fails without
+  the change plus a sister, run the touched crates + the fast suite.
+  Branch created from origin/master f09f3c6c.
