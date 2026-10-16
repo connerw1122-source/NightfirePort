@@ -14462,3 +14462,13 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+## net-consolidate (2026-10-16, branch s/net-consolidate) — started
+- Task: one lockstep session layer from the 050-053 chain. 051 nf-net (std-only crate,
+  handshake/input-delay/redundancy+32-tick ack bitmap/stall/desync-hash/timeout) vs 053
+  nf_game::net (UdpSocket, 3-tick redundancy, no acks, 5 s timeout; the wired one) vs
+  052's MpSession trait in the lobby. Pick the stronger protocol, port unique features,
+  wire app + lobby, delete the other layer, keep/port all tests, add a 2-client loopback
+  e2e (loss+reorder, 600 ticks, identical state hashes) + desync-detector test, update
+  docs/systems/net-lockstep.md + net-match-host.md.
+- Plan: study both layers -> justify choice -> port -> wire -> e2e -> suite -> report.
