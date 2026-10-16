@@ -23,3 +23,7 @@ claimed-by: sandbox5 at 2026-10-16T15:37Z
 ## Report (done, 2026-10-16T16:47Z)
 
 Closed by the driver: the report is on `s/kimiko-actors-07` (docs/reports/kimiko-actors-07.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T17:33Z)
+
