@@ -5426,6 +5426,14 @@ pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelle
     /// `*(int*)(BU+0x40)` object pointer; none = re-scan, and the scan re-runs when the target
     /// dies [M 0x12f3b4: the `+0xfe & 1` clear-and-rescan]).
     pub target: Option<usize>,
+    /// delta-repeater: `weapon_data+0x6C & 0x8` — the GRAVITY bit `Bullet_update` 0x12e7b0's case 1
+    /// applies to any bullet (`velocity = dir·speed; velocity += WldGravity·FRAME_RATE_DIV·
+    /// REC_FRAME_RATE²; dir = norm(velocity), speed = len`), not a grenade-family marker. The Delta
+    /// Repeater 0x11 (+0x6C = 0x808 [L ee_start_05.bin @ 0x2bf150 + 0x11·0x10C]) flies its lobbed arc
+    /// with this bit while its +0x70 = 0x2 carries no bounce/stick/ricochet flag [M Bullet_CollisionHandler
+    /// 0x12ce80 — the bounce block gates on +0x70 & 0x80, the stick arm on 0x100, the ricochet on 0x10].
+    /// Field on its own line (merge lesson 4).
+    pub gravity: bool,
     /// fix-weapon-fire-modes: the weapon record's `+0x6C` carries the 0x4 GUIDED-CAMERA bit —
     /// `Bullet_init` 0x12c5a0:234-254 hands the view to the projectile: `Player_ChangeSubState
     /// (owner, 10)`, `BLData+0x878 = the bullet obj`, `Player_SetCamMode(BLData, 0xc)`,
@@ -6305,6 +6313,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 pos: from, dir, speed, travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
                 homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
                 target: None,
+                // delta-repeater: `Bullet_init` spawns the record's bullet with the gravity bit
+                // untouched; `Bullet_update` case 1 applies it per flight tick [M 0x12e7b0]. The
+                // spawn tick (state 0's half step) applies none — the game's gravity arm lives in
+                // case 1 only.
+                gravity: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x8 != 0,
                 // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:234-254]: `+0x6C & 4` rides the camera.
                 guided_cam: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x4 != 0,
                 // rocket-sound-leak: BU+0xF0 — the launch whoosh's handle (0 when the weapon plays none).
@@ -6411,7 +6424,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             if b.travelled > b.range { b.dead = true; continue; }
             let mut step = if b.first { (self.rng.frand(0.5) + 0.5) * b.speed } else { b.speed };
+            let first = b.first;
             b.first = false;
+            // delta-repeater: `Bullet_update` 0x12e7b0 case 1's gravity arm [M] for `+0x6C & 8`
+            // records — velocity = dir·speed, `velocity += WldGravity · (FRAME_RATE_DIV ·
+            // REC_FRAME_RATE²)` (= (0, −9.8/3600, 0) at the fixed 60 Hz; WldGravity (0x2d8890) =
+            // (0, −9.8, 0) [L docs/systems/pickups.md], REC_FRAME_RATE = 1/60, FRAME_RATE_DIV = 1/60),
+            // then `Vec_NormaliseLen` writes the normalised direction back and stores the length into
+            // BU+0xF8. The spawn tick (state 0) applies none — the arm lives in case 1. The port's
+            // grenade path runs the same integration (grenade.rs, fix-player3).
+            if b.gravity && !first {
+                let (vx, vy, vz) = (b.dir[0] * b.speed, b.dir[1] * b.speed, b.dir[2] * b.speed);
+                let vy = vy + crate::grenade::WLD_GRAVITY[1] * crate::grenade::REC_FRAME_RATE * crate::grenade::REC_FRAME_RATE;
+                let len = (vx * vx + vy * vy + vz * vz).sqrt();
+                if len > 1e-9 {
+                    b.dir = [vx / len, vy / len, vz / len];
+                    b.speed = len;
+                }
+            }
             b.travelled += step;
             if b.travelled > b.range { step -= b.travelled - b.range; }
             let l = step.max(1.0);
