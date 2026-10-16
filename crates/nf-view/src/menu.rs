@@ -1777,6 +1777,8 @@ pub struct FrontEnd {
     /// for things the port can't do yet (a driving mission) and for the online session's failures.
     /// Confirm or Back dismisses it; every other action is swallowed while it stands.
     pub notice: Option<String>,
+    /// The level the last mission ended on (`mission_ended`) — the fail page's REPLAY target.
+    pub ended_level: Option<u32>,
 
     // menu-sfx (each new field on its own line [WORKLOG lesson 4]).
     /// The sounds this frame's input/page changes started — the host drains (`drain_sfx`) and
@@ -1976,6 +1978,7 @@ impl FrontEnd {
             /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
             net_notice: None,
             notice: None,
+            ended_level: None,
             menu_movie: false,
             // net-online-lobby (each new field on its own line [WORKLOG lesson 4]).
             mp_net_port: 27420,
@@ -2685,6 +2688,11 @@ impl FrontEnd {
     /// `Menu_SetLevelBonus(GameState+0x72, medal, 0)` [M 0x208e78:169], which the port drives
     /// through [`FrontEnd::results_enter`].
     pub fn mission_ended(&mut self, outcome: Outcome, stats: Stats) {
+        // The level the mission ended on, captured NOW: the front-end load the end arms can land
+        // before the player answers and overwrite `flow.current_level` (GameState+0x12) with
+        // 0x07000048 — REPLAY then reloaded the menu map instead of the mission
+        // (menu-e2e-singleplayer finding 1).
+        self.ended_level = Some(self.flow.current_level);
         self.outcome = outcome;
         self.stats = stats;
         self.flow.page = PAGE_RESULTS;
@@ -4283,7 +4291,7 @@ impl FrontEnd {
                         // row 0 sent arm 1). Row 1 → `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)`
                         // — BaseMap, COLD. Row 2 → `GameState+0x28 = 0x4000001c` + 0x7000048.
                         0 => {
-                            let level = self.flow.current_level;
+                            let level = self.ended_level.unwrap_or(self.flow.current_level);
                             self.requested_level = Some(level);
                             self.flow.reset_map_level_to_load(level, true, true);
                             self.enter_page(Page::Main);
