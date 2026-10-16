@@ -14581,3 +14581,23 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   the panel stops the alarm exactly as the game does (channel, sound stop, guard state).
   Headless: raise alarm on 07000006, walk Bond to the panel, use it, assert alarm state + sound
   + channel clear; sister: use with no alarm. Branch created from origin/master f42de6ff.
+
+## alarm-panel-06 (2026-10-16, branch s/alarm-panel-06) — the panel is a walk-in trigger + inverter; the siren's keep byte was the bug — DONE 07:41 UTC
+- Playtest 1015-2142 "no panel to turn off the alarm" root-caused: there is NO E-usable switch on
+  07000006 [L SwitchList=0 @0x002bf0f8; the only 0x29 placements (map 4 #2/#15, ch 1) are in a map
+  that is never instanced; all 61 live SPs are ownerless]. The game's silencer: TouchOnce #765
+  (out ch 177, mask 8 = player contact, volume = object 195's world tris (31.1,42.2,−59.1)..(37.0,
+  46.8,−48.9)) → InverterTrigger #749 (0x41, in 177 → forces ch 55 = 0 every frame [M 0x1b30a8,
+  the game's only channel-clearing object]) → the searchlight-latched alarm ch 55 clears and the
+  siren SoundTrigger #702 (global sound 329, ON ch 55, OFF ch 177 [M 0x1b2628/0x1b2790]) stops.
+- Fix: SoundTriggers::create read keep_on = params.len(); the game reads param 7 (level-tag +0x48
+  [M 0x1b2628:48]). #702 has 8 params → keep byte 8 → the stop-when-ON-clears arm (keep_on == 0)
+  never fired → the siren rode ch 55 forever. Also the difficulty gate is param 6, not raw +0x44
+  [M 0x1b2628:24]. Added SoundTriggers::playing(id) as the test probe.
+- Tests (nf-view alarm_panel_06_live, real loader + step_bond): raise the alarm via a tracking gate
+  searchlight (ch 55 + siren live), head gives up after 900 ticks but ch 55 STAYS LATCHED with the
+  siren riding (the symptom), then the panel fires ch 177, the inverter holds ch 55 low and the
+  siren releases its voice; sister: no alarm → the panel still fires ch 177, ch 55 stays low, no
+  siren. Both pass; nf-game lib 234, nf-view lib 15, sound_coverage_live 4, alarm_panel_06_live 2.
+  Report: docs/reports/alarm-panel-06.md (render asks + 3 live checks; suite owed — the sandbox
+  reaped the background fast runner twice mid-build).
