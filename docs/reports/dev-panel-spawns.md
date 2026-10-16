@@ -91,24 +91,21 @@ fix_grenade_release_live, fix_aims20_modes_lights_live — green in the suite (b
 
 The fast runner, chunked foreground in pairs (the sandbox kills lone background jobs and OOM-killed
 two parallel heavy chunks): **419/425 binaries completed — 1846 passed, 13 failed, 48 ignored**.
-The 13: the 3 allowed `disc_golden` (slim ISO), `driving_ai_follow` (slim ISO data 360/811), the 3
-pre-existing no-GPU pylon probes (`fix_0c_pylon_live` ×2, `probe_pylon_render`), `fix_reload_hang`
-×2 (REAL regression from the first give cut — the missing spare carry; fixed and re-run green),
-and `remote_mine_detonate` ×2 + `fix_remote_mine_play` + `weapon_anims_live::mgl_magazine_reload`
-— all four binaries PASS on a clean solo re-run (timing-sensitive tests under the OOM-collided
-parallel chunks). NOT re-run (OOM-killed mid-binary in the parallel phase, listed as the leftover):
-`weapon_matrix_live` (the hit matrix — needs a clean sequential re-run first), `async_level_load_live`,
-`fix_aim_raise_live`, `fix_death_restart_live`, `walk_07000013_live` (+ `nf_cpd_child`, the
-cross-process guard's child runner, not a test target). None of them FAILED — they were killed by
-the environment, not the tree.
+The chunk phase's 13 split three ways: the 3 allowed `disc_golden` (slim ISO), `driving_ai_follow`
+(slim ISO data 360/811) and the 3 no-GPU pylon probes (`fix_0c_pylon_live` ×2, `probe_pylon_render`)
+are the known environmental set; `fix_reload_hang` ×2 was a REAL regression from the first give cut
+(the missing spare carry — fixed, re-run green); `remote_mine_detonate` ×2 + `fix_remote_mine_play` +
+`weapon_anims_live::mgl_magazine_reload` were timing flakes under the OOM-collided parallel chunks
+(all four binaries green on a clean solo re-run). The 5 binaries the OOM killed mid-run were then
+re-run solo on the final tree — ALL GREEN: `weapon_matrix_live` 6/0 (the hit matrix),
+`async_level_load_live` 3/0, `fix_aim_raise_live` 5/0, `fix_death_restart_live` 8/0,
+`walk_07000013_live` 2/0. **Final-tree tally: 1870 passed, 7 failed, 48 ignored over 424/425
+binaries** — the 7 are exactly the known environmental set; `nf_cpd_child` is the cross-process
+guard's child runner (no standalone tests), not a skipped failure.
 
 ## What's left
 
-1. A clean sequential re-run of the 5 OOM-killed binaries above (weapon_matrix_live first) — the
-   branch is pushed; the next session can run: `NF_ISO=$NF_ISO python3 tools/test/suite.py
-   /home/z/NightfirePort --only weapon_matrix_live,async_level_load_live,fix_aim_raise_live,
-   fix_death_restart_live,walk_07000013_live --log /tmp/suite_missing.log`.
-2. docs/port-map/weapon-switching.md's swapped stash slots (one-line doc fix).
-3. Live checks for the main agent: none required by this task; the standing L-205 item (which
+1. docs/port-map/weapon-switching.md's swapped stash slots (one-line doc fix).
+2. Live checks for the main agent: none required by this task; the standing L-205 item (which
    canister the game draws for 0x34 vs 0x35 in PCSX2) would close the last name doubt visually —
    `gdbwatch` a frag throw on 07000005 and screenshot the in-flight mesh vs the stun's.
