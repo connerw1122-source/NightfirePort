@@ -16227,3 +16227,15 @@ fix_cutscenes_live 4/4, fix_cutscenes2_live 5/5, fix_kimiko_handback_live 1/1,
 models_characters_live 6/6, fix_party_mission_live 9/9, scenario_live 6/6. The pre-change
 full-suite run `1864 passed, 6 failed, 72 ignored (50 min)` (the 3 allowed disc_golden + the 3
 pre-existing pylon render probes); the final-tree fast-runner suite started 16:41 UTC.
+
+## blood-puff-render (2026-10-16, branch s/blood-puff-render) — start 17:50 UTC
+
+Task 711: the blood puff (mesh 0x0200_08bc) sits in drones.gas.puffs (pool idx 1: pos
+99.13,16.96,101.65, scale 3.0→3.2, rgba 255→238, life 60, kind 5) and the scene-matrix gas
+branch runs for it, but nothing red draws in the render (master a4156da0 --shot repro). Plan:
+resolve level.by_hash[0x0200_08bc] (geometry/material/texture), check add_instance into
+groups/Layer::Effect with cel args (&room_cels, u32::MAX, u32::MAX) — cel/portal/layer filter?,
+gas_rgba/blend zeroing alpha?, and whether the sibling pool meshes (SMOKE_QUAD 0x0200_0039,
+0x0200_001f, 0x0200_026e) draw either. Fix per [M View_DrawObjectGlist 0x1e6780 obj+0xF0 & 8
+billboard + gas colour bytes]; add a render-side assertion (vertices/pixels at the puff pos),
+not just a pool check.
