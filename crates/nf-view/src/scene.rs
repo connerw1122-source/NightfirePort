@@ -4695,6 +4695,7 @@ impl Scene {
 
     /// `skeletons`: every skeleton on the disc by id; `sequences`: the level's animation archive, grouped by skeleton.
     pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>) -> Scene {
+        let mut t = std::time::Instant::now();
         let by_hash: HashMap<u32, (u8, usize)> = sequences.iter()
             .flat_map(|(&sk, v)| v.iter().enumerate().map(move |(i, s)| (s.hashcode, (sk, i)))).collect();
         let (mut instances, missing) = level.scene_instances(cels_only);
@@ -4735,6 +4736,7 @@ impl Scene {
         }
         let mut npc_pool: Vec<NpcSlot> = Vec::new();
         let sky = level.sky_instances();
+        crate::phase_mark("b1 instances gather (scene/char/npc/sky)", t); t = std::time::Instant::now();
         let mut groups: Groups = BTreeMap::new();
         let mut bounds = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
         // Level-placed pickups (`Pickup_Create` 0x18dda0 via `parsemap_create_dynamic_objects` type 0xF0),
@@ -4790,6 +4792,7 @@ impl Scene {
             placed_pickups.extend(reserved);
 
         // The spawn comes from the placement records even when entities are not drawn (Player1 is not a 0x8000 cel).
+        crate::phase_mark("b2 placed pickups", t); t = std::time::Instant::now();
         let start = level.instances(false).0.iter()
             .find(|i| level.maps[i.map].objects[i.object].name.trim() == "Player1")
             .map(|i| (i.placement.translation, i.placement.rotation[1]));
@@ -4802,6 +4805,7 @@ impl Scene {
         // the snap in `control_link_object_to_cel` 0x1346b8; channels are all 0 here, so triple 1 reads).
         let (room_cels, mut cel_graph) = parse_cel_graph(level);
         let sim_cels = room_cels.clone();
+        crate::phase_mark("b3 cel/portal graph", t); t = std::time::Instant::now();
         // Bug 3 diagnostic (`NF_COLL=1`): log objects that have collision but are not drawn — the "invisible walls".
         // An object is an invisible wall if it has collision triangles but: it's skipped by the cel pass (flag 0x10),
         // it's a door/searchlight/corona that the static pass skips (drawn elsewhere — but if those paths also skip
@@ -4910,6 +4914,7 @@ impl Scene {
             add_instance(level, inst, Layer::World, None, &mut groups, Some(&mut bounds), None, None, None, mult, &room_cels, chain, node);
         }
         let mut characters = Vec::new();
+        crate::phase_mark("b4 static world instances", t); t = std::time::Instant::now();
         let (mut attachments, mut armed, mut weapons_missing) = (Vec::new(), std::collections::HashSet::new(), 0);
         // Spawner roles of the main map's drone placements, keyed by translation (docs/systems/drone-animation.md).
         let roles: HashMap<[u32; 3], drone::SpawnRole> = match level.main_map() {
@@ -4990,6 +4995,7 @@ impl Scene {
         // The first-person gun models: one character per owned weapon with a first-person skin (`weapon_data+0xDC`),
         // drawn with a sleeve mesh and rigid parts on their bones. The active one is selected each frame
         // in `animate` from `sim.gun.weapon`. The P2K (weapon 2) is always first; others follow the owned list [M].
+        crate::phase_mark("b5a characters + held weapons", t); t = std::time::Instant::now();
         let mut view_models: HashMap<u8, usize> = HashMap::new();
         if let Some(wd) = drones.and_then(|d| d.weapons.as_ref()) {
             const SLEEVES: [u32; 8] = [0x0200_09d0, 0x0200_0900, 0x0200_01f7, 0x0200_0929, 0x0200_09e6, 0x0200_09ff, 0x0200_0a14, 0x0200_0a13];
@@ -5215,6 +5221,7 @@ impl Scene {
         // then PLAYER_BULLET_SLOTS of Bond's. One instance per (slot, mesh) for every distinct projectile mesh the
         // level archive resolves — the others hide (FAR) in `frame_state`.
         let proj_slots = GRENADE_SLOTS + TRACER_SLOTS + PLAYER_BULLET_SLOTS;
+        crate::phase_mark("b5b view models (sleeves/FP)", t); t = std::time::Instant::now();
         let mut proj_meshes: Vec<u32> = Vec::new();
         if drones.is_some() {
             for w in 1..0x73usize {
@@ -5237,6 +5244,7 @@ impl Scene {
                 attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u16, mesh)), script: None, gas: None, effect: None, silencer: false });
             }
         }
+        crate::phase_mark("b5c projectile pools", t); t = std::time::Instant::now();
         for (inst, follows_camera) in &sky {
             add_instance(level, inst, if *follows_camera { Layer::SkyCamera } else { Layer::SkyFixed }, None, &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
         }
@@ -5301,6 +5309,7 @@ impl Scene {
         // 0x17ea80 — mesh 0x2000273, kind 1): a static class-0x2A object whose only update is the
         // 1200-tick countdown (0x17eba0), drawn at `obj+0x30` with no rotation. One Effect pool per
         // level archive that resolves the mesh, 4 slots (the game caps nothing; clouds are rare).
+        crate::phase_mark("b5d impact pools (decal/casing/debris/gas)", t); t = std::time::Instant::now();
         if drones.is_some() {
             if let Some(&(m, o)) = level.by_hash.get(&0x0200_0273) {
                 let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
@@ -5349,6 +5358,7 @@ impl Scene {
         // function — static glow quads at their placement transforms, in every view mode. The glist's +0x44
         // flags word (bit 0x1: `View_AddObjects` draw list 1, mirrored sort key) is the object's own flags
         // here, so `Layer::World` puts them in the alpha list with the leaves' own blend state [L 13/13].
+        crate::phase_mark("b5e occluder/scan/digit pools", t); t = std::time::Instant::now();
         if let Some(m) = level.main_map() {
             for pl in nf_game::corona::placements(&level.maps[m].placements) {
                 let p = &level.maps[m].placements[pl];
@@ -5575,6 +5585,7 @@ impl Scene {
         // Searchlight parts (`Searchlight_Create`'s creation order = `part_placements`): each part's object as
         // Character-layer vertices posed by the simulation every tick — the mount and head rotating, the beam
         // cone along the aim, the spot on its ray hit, the corona a camera billboard (docs/systems/world-objects.md).
+        crate::phase_mark("b5f coronas/wires/ladders/misc", t); t = std::time::Instant::now();
         if let Some(m) = level.main_map() {
             for (pi, pl) in nf_game::searchlight::part_placements(&level.maps[m].placements).into_iter().enumerate() {
                 let p = &level.maps[m].placements[pl];
@@ -5658,6 +5669,7 @@ impl Scene {
             }
         }
         let (mut vertices, mut indices, mut materials, mut char_verts) = (Vec::new(), Vec::new(), Vec::new(), Vec::new());
+        crate::phase_mark("b5 characters + attachments + pools", t); t = std::time::Instant::now();
         let mut char_vertex_start = None;
         for ((layer, _, _, chain, key, draw, lflags), (vs, is, cv, centre, mut radius, cel, node)) in groups {
             if is.is_empty() { continue; }
@@ -5682,6 +5694,7 @@ impl Scene {
             char_verts.extend(cv);
         }
         let keys: BTreeSet<(usize, u32)> = materials.iter().filter_map(|m| m.key).collect();
+        crate::phase_mark("b6 materials assembly", t); t = std::time::Instant::now();
         // Bug 1 diagnostic: how many world materials have no texture (render as the white fallback). A high count on a
         // non-07000005 level would explain "ghostly white": texture × white vertex × GAIN → white.
         let untextured = materials.iter().filter(|m| m.key.is_none()).count();
@@ -5704,6 +5717,7 @@ impl Scene {
         let stats = format!("{} world instances ({hidden} skipped by the cel pass: flag 0x10), {} animated character meshes, {chars_missing} drones with a skin from another archive, {} sky objects, {missing} unresolved, {} triangles, {} materials, {n_seq} sequences",
             instances.len(), characters.len(), sky.len(), indices.len() / 3, materials.len());
         let char_vertex_start = char_vertex_start.unwrap_or(vertices.len());
+        crate::phase_mark("b7 texture decode", t); t = std::time::Instant::now();
         for c in characters.iter_mut() {
             c.floor = floor_below(&vertices, &indices, &materials, [c.matrix[3][0], c.matrix[3][1], c.matrix[3][2]]);
         }
@@ -5713,11 +5727,13 @@ impl Scene {
             }
         }
         let started = characters.iter().filter(|c| c.start.as_ref().is_some_and(|s| !s.sequences.is_empty())).count();
+        crate::phase_mark("b8 floor_below", t); t = std::time::Instant::now();
         let flashes = attachments.iter().filter(|a| a.flash.is_some()).count();
         let held_back = characters.iter().filter(|c| matches!(c.role, drone::SpawnRole::Reinforcement { .. })).count();
         let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum), {flashes} with a muzzle flash; {held_back} character meshes held back by spawners (R shows them); {script_objects} script objects", characters.len(), attachments.iter().filter(|a| a.script.is_none() && a.flash.is_none() && a.tracer.is_none()).count());
         // The guard AI: one drone per main-map drone placement present at level start; characters map to it by
         // placement translation.
+        crate::phase_mark("b9 sim create", t); t = std::time::Instant::now();
         let seqs: HashMap<u32, Sequence> = sequences.values().flatten().map(|s| (s.hashcode, s.clone())).collect();
         let mut sim = drones.and_then(|d| Some((d, d.props.clone()?, d.weapons.clone()?))).and_then(|(d, props, weapons)| {
             let m = level.main_map()?;
@@ -5782,6 +5798,7 @@ impl Scene {
                 }
                 world.attribute_scope(&instance_cell);
             }
+            crate::phase_mark("b9a collision world + scope", t); let mut t9 = std::time::Instant::now();
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
             let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
             let hitboxes = d.hitboxes.clone()?;
@@ -5816,6 +5833,7 @@ impl Scene {
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.lights = lights;
             drones.attach_level(level);
+            crate::phase_mark("b9b nav/cover/volumes/drone creates", t9);
             // fix-door-portal-links (G-035): `build_LinkDoors2Portals` (0x1c8ac8) runs at load — each
             // portal-linked door (placement param 4) takes the portal quad it sits in; the vision
             // walk then skips it while `Door_IsClosed` reads closed. The Scene's graph and the Sim's
@@ -5941,6 +5959,7 @@ impl Scene {
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
+        crate::phase_mark("b9 sim create (total)", t); t = std::time::Instant::now();
         let snow_texture = level.maps.iter().enumerate().find_map(|(mi, m)| m.textures.iter().find(|t| t.hashcode == 0x0300_0045).map(|t| {
             TextureImage::from_texture(mi, t)
         }));
@@ -5964,6 +5983,7 @@ impl Scene {
         // fix-portal4: sim-less loads never built a world — the chains fall back to the
         // bbox-face FindCel approximation (documented deviation; every live load path builds sim).
         if sim.is_none() { build_chains(&mut cel_graph, None); }
+        crate::phase_mark("b10 collider index + final assembly", t);
         Scene { cels: room_cels, cel_graph, streams: None, music_files: None, music_tables: None, sound_bank: None, sound_spares: Vec::new(), snow_texture, vertices, indices, materials, textures, hud_textures, woman: None, hud, script_billboards, view_models, fog, bounds, start, stats, characters, char_vertex_start, char_verts, sequences, attachments, sim, colliders, models_0x800, npc_pool, ladders_drawn, grapple_hooks_drawn, misc_drawn }
     }
 

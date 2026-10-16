@@ -41,6 +41,23 @@ use glam::{Mat4, Vec3};
 use nf_formats::{disc, iso9660::IsoImage, level::Level};
 use std::collections::HashSet;
 use std::sync::Arc;
+
+/// ── Load-phase timing (level-load-time probe) ───────────────────────────────────────────────────
+/// `load_impl` and `Scene::build` mark their phases here; the probe test reads them back.
+/// Collection is always on but costs one `Instant::now` + a Vec push per phase (a few dozen per
+/// load — noise against multi-second loads); it never feeds the Sim (no wall-clock in game state).
+pub(crate) fn phase_mark(name: &'static str, t: std::time::Instant) {
+    LOAD_PHASES.with(|p| p.borrow_mut().push((name, t.elapsed().as_secs_f64())));
+}
+/// Clears the phase log for the calling thread (the probe calls it before each timed load).
+pub fn phases_reset() { LOAD_PHASES.with(|p| p.borrow_mut().clear()); }
+/// Takes the phase log the calling thread accumulated since the last reset/clear.
+pub fn phases_take() -> Vec<(&'static str, f64)> {
+    LOAD_PHASES.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+thread_local! {
+    static LOAD_PHASES: std::cell::RefCell<Vec<(&'static str, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -464,13 +481,16 @@ pub fn entry_checkpoint_save(sim: &scene::Sim) -> nf_game::player::RamSave {
 fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8], mp: bool, mp_settings: Option<nf_game::mp::MpSettings>) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
+    let mut t = std::time::Instant::now();
     let iso = IsoImage::open(iso_path)?;
     let (entries, bin) = disc::files_bin_entries(&iso)?;
+    phase_mark("01 iso open + FILES.BIN", t); t = std::time::Instant::now();
     let read = |name: &str| -> Result<Option<Vec<u8>>> {
         let Some(fe) = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)) else { return Ok(None) };
         Ok(Some(iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?))
     };
     let data = read(archive)?.with_context(|| format!("no {archive} in FILES.BIN"))?;
+    phase_mark("02 archive read", t); t = std::time::Instant::now();
     let mut level = Level::parse(&data)?;
     // ── The session object table (`models-weapons-items`) ───────────────────────────────────────────
     // `hashtable_delete_hashtype` is called from the loadable-pack path ONLY (`LoadableLoad`
@@ -500,7 +520,9 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             sequences.entry(s.skeleton).or_default().push(s);
         }
     }
+    phase_mark("03 level+levelbin parse, skeletons, 07F sequences", t); t = std::time::Instant::now();
     merge_weapon_models(&iso, &read, &archive[..8], &mut level)?;
+    phase_mark("04 weapon-models merge", t); t = std::time::Instant::now();
 
     // The dev view models (folded 190-fix-dev2): each level archive ships only its own weapons'
     // first-person skins (+0xDC), so the dev panel's "no 1st-person model here" covers most weapons.
@@ -561,7 +583,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
         },
     };
-
+    phase_mark("05 weapon_data (ACTION.ELF)", t); t = std::time::Instant::now();
 
     // G-021 (models-characters): drone placements whose skin (placement param 0) is not in their
     // level's archive — 33 of them on 2 levels [D scan]. TWO mechanisms, read off the decompile:
@@ -729,6 +751,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         eprintln!("loadable pack {pack_name}: {} scripts, {} sequences (for {hash:08x})", plb.entries.iter().filter(|e| e.kind == 7).count(), plb.entries.iter().filter(|e| e.kind == 4).count());
     }
     // Drone start animations: ACTION.ELF's tables (read through its symbols) and the level's scripts (type 5).
+    phase_mark("06 skin merge + loadable packs", t); t = std::time::Instant::now();
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let drones = scene::DroneContext {
         tables: nf_formats::drone::DroneAnimData::from_action_elf(&elf)?,
@@ -757,6 +780,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         mp_seed: mp_settings.as_ref().map_or(0, |st| st.seed),
     };
     let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones));
+    phase_mark("07 scene build (Scene::build)", t); t = std::time::Instant::now();
     // The pause/fail menus' burning woman [M `psiDecompressWoman` 0x1202a8]: the archive's kind-16 "woman" run-length
     // mask filled from the fire texture 0x030000da, drawn into 0x030000db's texels through 0x030000da's CLUT (the
     // disc's 0x030000db is a placeholder). The HUD texture starts on the first decoded frame.
@@ -831,6 +855,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         eprintln!("animated textures: {anim}");
     }
     // The level's sound bank (`Sound_Ready`): its hash's slot in SBINFO.SBI, then SB_<slot>.{SHF,SFX,SBF}.
+    phase_mark("08 woman + lang", t); t = std::time::Instant::now();
     let mut scene = scene;
     let level_id = u32::from_str_radix(&archive[..8], 16).unwrap_or(0);
     scene.sound_bank = (|| -> Option<(usize, nf_formats::soundbank::Bank, Vec<u8>)> {
@@ -870,6 +895,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     })();
     // Music (`Sound_Ready` → `Music_Event(0, level)`; docs/systems/music.md): the MapMusic / MapDroneData tables, and
     // the level's track through MFXINFO.MXI to PS2/MUSIC/MFX_<n>.{SMF,SSD}.
+    phase_mark("09 sound banks + streams", t); t = std::time::Instant::now();
     scene.music_tables = nf_formats::music::tables(&elf).map_err(|e| eprintln!("music tables: {e}")).ok();
     // The music logic rides every load (the game's `Sound_Ready` runs before the first frame whether or
     // not an output device exists); the audio driver takes the tables later in `build_sound`.
@@ -998,6 +1024,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         eprintln!("loadout: level {level_id:08x} switch request {req} ({} owned weapons, health {:.0}, armour {:.0})",
             sim.drones.inventory.owned.iter().filter(|&&o| o).count(), sim.drones.health.health, sim.drones.health.armour);
     }
+    phase_mark("10 music + starts + loadout", t);
     Ok(scene)
 }
 
