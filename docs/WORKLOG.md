@@ -15363,3 +15363,31 @@ remote-mine-detonate (2026-10-16)
   re-traced floor hit + dot math; back to full-auto → off; fresh P2K → off). Suite on the final
   tree: 1781 passed, 6 failed (3 disc_golden = the slim-ISO expected set; 3 wgpu no-GPU sandbox
   failures), 72 ignored. Report: docs/reports/sg5-semi-laser.md
+## casings-persist (2026-10-16, branch s/casings-persist) — start
+- Task: queue 683 — port exactly what the game does after a casing lands (rest state, lifetime, fade, the
+  32-casing pool's recycling order [M Bullet_InitCasingLists 0x12fd48, casing update/deletion, nf_game::casing]),
+  then a PC-port option "Keep shell casings: N" (0, 32, 64, 128; default = game behaviour) keeping the newest N
+  resting casings, oldest-first recycling. Deterministic, no wall-clock. Tests: fire 40 rounds → game count +
+  lifetime by default; keep=64 holds resting casings, oldest-first; sister: in-flight casings still collide and
+  bounce the same. Branch from master aa3bc1f5; suite started in background.
+
+## casings-persist (2026-10-16, branch s/casings-persist) — close-out
+- [M] correction first: the armed slot's class byte is 0x0d (`Bullet_init_casing` 0x12fde0:24) and
+  `control_funcs` 0x26f890 class 0x0d = update 0x12faa0, collide NULL — the game's casings NEVER
+  collide/bounce/rest/fade: the landing plane is a sound-only trigger parked at 0xc9742400 (−1e6)
+  after the sound [M 0x12fb88-94], the casing sinks through the floor, despawn at age > 240 → state
+  2 + undrawn + age 32767 [M 0x12fc58-94] (the tick still integrates after the despawn stores). The
+  state-1 ×0.1-gravity arm is unreachable for class 0x0d. The old [S] "the sound re-triggers every
+  tick" was wrong; the port now parks the plane exactly like the game.
+- Ported: the exact plane store + `landed` derived from it; the age-32767 store; the despawn-tick
+  integration. PC-port option `Casings::set_keep(n)` (0 = the game): n > 0 grows the pool to
+  max(32, n), rests each crossing casing on its plane (vel/spin zeroed, no integration, no despawn
+  for rests; in-flight still die at 240), the game's NextCasing order recycles oldest-first.
+  `Casings::ejected` counts slot takeovers. nf-view's casing attachment pool sizes to KEEP_MAX (128)
+  so kept casings have draw slots (default visual identical — the state-0 + mesh guards).
+- Tests: 7 unit (casing.rs — 40-round default cap+despawn, keep-64 hold + oldest-first recycle,
+  sister flight-identity with keep 0/64: bit-identical pos/vel + sound schedule until the landing);
+  1 live through step_bond (104 real rounds: default ≤ 32 + drains at 240; keep 64 fills all 64
+  slots, holds the rests past 240, the 105th round recycles slot 8). nf-game lib 240 ✓,
+  impacts_live 5 ✓, fix_shell_eject_live 2 ✓; full suite on the final tree (see the report).
+- Report: docs/reports/casings-persist.md

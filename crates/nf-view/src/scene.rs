@@ -4759,6 +4759,16 @@ fn tracer_matrix(b: &nf_game::bullet::Bullet) -> Mat4 {
 /// tracer's +Z euler convention for it [S — the game eulers the weapon-local dir through the view-model basis;
 /// the port's eject origin/basis is already a documented stand-in, docs/atlas/effect.md].
 fn casing_matrix(c: &nf_game::casing::Casing) -> Mat4 {
+    // casings-persist: a rested casing (the "Keep shell casings" option [S]) has no velocity left —
+    // the in-flight reconstruction degenerates to pitch −π/2 (every shell planted nose-down), so a
+    // rest draws with its own settled attitude: roughly horizontal (the eject-reconstruction maps
+    // the euler's forward onto the shell's long axis), deterministically yawed by position so a
+    // pile of kept shells doesn't all lie identically. No RNG (determinism); the main agent's
+    // render check owns the look.
+    if c.resting {
+        let yaw = c.pos[0] * 0.7 + c.pos[2] * 1.3;
+        return nf_formats::placement::object_matrix([0.12, yaw, 0.08], c.pos);
+    }
     let g = 9.8 * (1.0 / 60.0) * (1.0 / 60.0);
     let v0 = [c.vel[0], c.vel[1] + g * c.age, c.vel[2]];
     let horiz = (v0[0] * v0[0] + v0[2] * v0[2]).sqrt();
@@ -5438,7 +5448,13 @@ impl Scene {
                 let ident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
                 for (meshes, slots, kind) in [
                     (&decal_meshes, DECAL_SLOTS, 0u8),
-                    (&casing_meshes, nf_game::casing::POOL, 1u8),
+                    // casings-persist: the pool sizes to KEEP_MAX, not POOL — the PC-port "Keep
+                    // shell casings: N" option grows the sim's pool past the game's 32 [S
+                    // Casings::set_keep] and every kept casing needs a draw slot. The per-frame
+                    // pose draws `sim.drones.casings.list.get(slot)` only while that slot carries
+                    // this mesh and is flying (state 0), so at the game's default (keep = 0,
+                    // 32 slots) slots 32..127 pose `far` — no visual change.
+                    (&casing_meshes, nf_game::casing::KEEP_MAX, 1u8),
                     (&debris_meshes, DEBRIS_SLOTS, 2u8),
                 ] {
                     for &mesh in meshes {
