@@ -16227,3 +16227,12 @@ fix_cutscenes_live 4/4, fix_cutscenes2_live 5/5, fix_kimiko_handback_live 1/1,
 models_characters_live 6/6, fix_party_mission_live 9/9, scenario_live 6/6. The pre-change
 full-suite run `1864 passed, 6 failed, 72 ignored (50 min)` (the 3 allowed disc_golden + the 3
 pre-existing pylon render probes); the final-tree fast-runner suite started 16:41 UTC.
+
+---
+
+script-census STARTED (18:16 UTC 10-16). Task: census every 0x07 level archive on the disc
+(front end included) — every script (players/NIS/SimpleScripts) and its opcode/event types with
+counts, every trigger placement type + action codes, every placement type the level parse sees;
+classify handled ([M] port handler) vs unhandled ([M] game handler) into
+docs/systems/script-census.md + a test pinning the handled set (numbers only). Branch
+s/script-census off master c10b530f.
