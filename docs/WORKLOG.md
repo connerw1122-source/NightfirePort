@@ -14462,3 +14462,6 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+## guard-reaction-delay — guards don't fire the instant they see you (started 2026-10-16)
+Playtest: "guards shoot way too soon upon spotting you, at least give it half a second", "his gun's firing before it lowers at me" (07000006 wine cellar, searchlights, 07000005). Porting the game's sight-to-fire pipeline: noticed/alert latch timers, the aim-raise animation gate, the first-shot delay / reaction time (per difficulty if scaled), the searchlight-spot path. Branch s/guard-reaction-delay.
