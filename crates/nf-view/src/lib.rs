@@ -1884,6 +1884,14 @@ impl App {
     fn demo_results(&mut self, complete: bool) {
         if self.level_code == 0 || self.level_code == menu::FRONTEND_LEVEL { return; }
         let mut fe = menu::FrontEnd::new();
+        // frontend-music: `DAT_002e1b11` and `MusicMasterVolume` are statics, not per-manager —
+        // the demo fe inherits the bank-flip state (the next front-end load must flip like the
+        // game's), the resident bank and the music volume [M 0x1dceb8:94-101, 0x30c958].
+        if let Some(old) = self.fe.take() {
+            fe.music.bank_flip = old.music.bank_flip;
+            fe.music.loaded_bank = old.music.loaded_bank;
+            fe.music.music_master = old.music.music_master;
+        }
         // The demo hook stands in for Mission_Update 0x182c60, which fires in state 2 — the flow
         // must be in a state reset_map_level_to_load accepts (its gate [M 0x1d3800]) for the outro
         // request to wrap into the movie state.
@@ -3267,6 +3275,15 @@ pub fn run() -> Result<()> {
     app.level_code = u32::from_str_radix(level.trim_end_matches(".bin"), 16).unwrap_or(0);
     if front_end {
         app.fe = Some(menu::FrontEnd::new());
+        // frontend-music: the boot front end's own `Sound_Ready` case 0x7000048 consumes the
+        // flip [M 0x1dceb8:94-101 — DAT_002e1b11 (.bss) = 0 → bank 0xc resident, DAT → 1;
+        // P_START's once arm pins it right after, 0x20a408:31]. The port consumes it here so
+        // the first mission-return load flips to 0x38 like the game's, and re-points the
+        // driver's primary at the boot bank's slot.
+        if let Some(fe) = app.fe.as_mut() {
+            let hash = fe.music.front_end_sound_ready();
+            if let Some(s) = app.sound.as_mut() { s.driver.set_primary(if hash == 0x38 { 1 } else { 0 }); }
+        }
         // The front end needs the game's strings even when the front-end map carries no Sim
         // (`Txt_LoadLanguage` 0x1caad0 loads `FNames[SelLang]` = USATxt.dat [M lib.rs load_impl]).
         match read_files_bin(&app.iso, "USATxt.dat") {

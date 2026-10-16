@@ -201,9 +201,15 @@ when the front end is the loaded level [M lib.rs `menu_music_tick`'s `front_end_
 - **The host** (`crates/nf-view/src/lib.rs`): `menu_music_tick()` runs per redraw beside
   `movie_tick` — applies the page-change transitions (Credits leave on the page changing away,
   then the new page's enter [M §3/§4]), drains the queue onto the sound driver, and pumps the
-  driver once per frame while the menus are up. The front-end load hook runs
+  driver once per frame while the menus are up. The boot (`run()`, the front-end level) and the
+  async-load hook (`poll_async_load`'s swap — master's `start_async_load` worker lands the
+  scene in `swap_in_scene`, the hook runs right after it) both consume the flip:
   `front_end_sound_ready()` → `Driver::set_primary(slot)` → `jingles_up = false` (the
   `MenuManager_Create` reset) → `fe_music_page = None` (the re-create re-runs the page's 0x4c).
+  `demo_results` (the F8/F9 stand-in) inherits `bank_flip`/`loaded_bank`/`music_master` onto
+  its fresh `FrontEnd` — the statics outlive any one manager [M 0x1dceb8's `DAT_002e1b11` is a
+  .bss byte]. [S] A mission started straight from the command line never sees the boot front
+  end, so its first front-end return flips 0xc one step behind the game's absolute sequence.
   Silent under NF_SILENT: without an output device `build_sound` returns None and the commands
   only bookkeep on the state machine — the tests exercise the state machine either way.
 - **`crates/nf-audio/src/sfx.rs`** — `Driver::set_primary(slot)`: re-points the first lookup at

@@ -13813,3 +13813,23 @@ Work Log (async-level-load):
   several times too fast on a fast display. She now ticks off her own 60 Hz wall-clock
   accumulator (`menu_clock`), matching `Game_Run`'s once-per-60 Hz-frame `psiDecompressWoman`
   [M 0x1c9790:36-41].
+
+### frontend-music — merge + final-suite note (2026-10-16, ~01:10 UTC)
+
+- Merged origin/master (24b1f4dd): master's async-level-load moved the scene load onto a worker
+  (`start_async_load`/`poll_async_load`/`swap_in_scene`) — the front-end music hook re-homed to
+  `poll_async_load`'s Ok arm right after `swap_in_scene` (which owns `build_sound` now), keyed
+  on `load.next == FRONTEND_LEVEL`. WORKLOG both kept. Two integration gaps fixed while merging:
+  the boot's own flip was never consumed (run()'s `if front_end` now calls
+  `front_end_sound_ready()` + `set_primary`, so the first mission-return flips to 0x38 like the
+  game's), and `demo_results`' fresh FrontEnd lost the global `DAT_002e1b11`/volume state
+  (it now inherits `bank_flip`/`loaded_bank`/`music_master`).
+- Final tree (merged, 80cfabfb+): full four-crate suite `cargo test --offline --release -j2
+  --no-fail-fast -p nf-game -p nf-formats -p nf-audio -p nf-view -- --test-threads=1` — every
+  binary green except the 3 slim-ISO `disc_golden` (the allowed trio) and `fix_0c_pylon_live` ×2
+  (the documented no-GPU environmental set, wgpu "adapter: NotFound"). A capture run reached
+  766 passed / 5 failed before a tool timeout killed it mid `fix_guard_weapons_live`; that
+  binary re-ran clean (3/3). The fast runner (tools/test/suite.py) was started detached and died
+  between tool calls again (empty suite.out, 0 processes) — the foreground four-crate command is
+  the substitute, as in the three previous tasks. Crates the tests touch (nf-view, nf-audio)
+  ran 145/0 pre-merge and 14+37 flow tests post-merge, all green.
