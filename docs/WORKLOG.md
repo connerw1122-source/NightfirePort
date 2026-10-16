@@ -14571,3 +14571,11 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
   the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
   docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
+
+## weapon-model-coverage (2026-10-16, branch s/weapon-model-coverage)
+- Branch created from origin/master (f42de6ff). Task: every weapon id 1..0x73 gets its first-person
+  view-model on every single-player level; load logs still print "27 weapon-model hashes still missing".
+- Plan: (1) census — each weapon's view-model skin hash, which archive holds it, and whether the port
+  resolves it per SP level; (2) fix the misses (unmerged archives, hash aliases, per-class archive
+  rules); (3) headless test on 3 levels that every dev-panel weapon resolves a view model, plus a
+  bogus-hash-must-report-missing sister; (4) census table before/after in the report.
