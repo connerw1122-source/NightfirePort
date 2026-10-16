@@ -2594,6 +2594,15 @@ impl ApplicationHandler for App {
                     // [S docs/systems/net-online-lobby.md §2.2]. Enter/Escape still confirm and
                     // back out below for the non-typing keys.
                     let ctrl = self.keys.contains(&KeyCode::ControlLeft) || self.keys.contains(&KeyCode::ControlRight);
+                    // The host page's port row types digits too (Backspace deletes); its other keys
+                    // (arrows, Enter, Esc) still drive the page below.
+                    if let Some(fe) = self.fe.as_mut().filter(|fe| fe.page == menu::Page::MpHost && fe.cursor == 0 && !fe.mp_hosting) {
+                        let typed = match k {
+                            KeyCode::Backspace => fe.mp_net_backspace(),
+                            _ => menu::net_char_key(k).is_some_and(|c| fe.mp_net_type(c)),
+                        };
+                        if typed { return; }
+                    }
                     let typing = self.fe.as_ref().is_some_and(|fe| fe.page == menu::Page::MpNetJoin);
                     if typing {
                         let fe = self.fe.as_mut().unwrap();

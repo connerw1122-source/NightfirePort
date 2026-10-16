@@ -1153,6 +1153,15 @@ pub const MP_NET_TIMEOUT_TICKS: u32 = 600;
 
 /// The address gate: "host:port" with host = 1-4 dot-separated digit parts each ≤ 255 and port =
 /// 1..65535 [S §2.2 — the typed set is digits, dots, colon (the task's own list); no hostnames].
+/// This PC's LAN address — the source address the OS would pick to reach the internet. A UDP
+/// `connect` sends nothing; it only resolves the route. None when there is no network.
+pub fn local_ip() -> Option<String> {
+    let s = std::net::UdpSocket::bind("0.0.0.0:0").ok()?;
+    s.connect("192.0.2.1:9").ok()?;
+    let ip = s.local_addr().ok()?.ip();
+    if ip.is_unspecified() { None } else { Some(ip.to_string()) }
+}
+
 pub fn mp_net_addr_ok(addr: &str) -> bool {
     let Some((host, port)) = addr.split_once(':') else { return false; };
     if host.is_empty() || port.is_empty() { return false; }
@@ -2353,8 +2362,7 @@ impl FrontEnd {
                 // net-online-lobby: the mode page's rows, the host Start row and the join address
                 // row are actions (a click confirms); the host's port row keeps the value columns
                 // [S §4].
-                Page::MpMode | Page::MpNetJoin => true,
-                Page::MpHost => self.cursor == 1,
+                Page::MpMode | Page::MpNetJoin | Page::MpHost => true,
                 _ => false,
             };
             if is_action { return self.action(Action::Confirm); }
@@ -4248,10 +4256,9 @@ impl FrontEnd {
                 match a {
                     Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
                     Action::Down if self.cursor + 1 < 2 => { self.cursor += 1; return true; }
-                    // ◀ ▶ step the port ±1, clamped to the legal UDP range [S — a free number,
-                    // not the game's list values].
-                    Action::Left if self.cursor == 0 => { self.mp_net_port = self.mp_net_port.saturating_sub(1).max(1024); return true; }
-                    Action::Right if self.cursor == 0 => { self.mp_net_port = (self.mp_net_port + 1).min(65535); return true; }
+                    // The port row is a typed field (digits + Backspace through mp_net_type /
+                    // mp_net_backspace): the playtest's "why does the port count down" — the old
+                    // ◀ ▶ stepping (and the mouse's value columns) knocked it down on every click.
                     Action::Confirm if self.cursor == 1 => { return self.mp_host_begin(); }
                     Action::Confirm => {}   // the port row's ✕ does nothing
                     Action::Back => { self.mp_net_cancel(); self.page = Page::MpMode; self.cursor = 1; return true; }
@@ -5108,6 +5115,10 @@ impl FrontEnd {
     /// line reads mp_net_error).
     pub fn mp_host_begin(&mut self) -> bool {
         self.mp_net_error = None;
+        if !(1024..=65535).contains(&self.mp_net_port) {
+            self.mp_net_error = Some(MpNetError::BadAddress);
+            return false;
+        }
         let codename = self.mp_net_codename();
         let Some(sess) = self.mp_session.as_mut() else {
             self.mp_net_error = Some(MpNetError::Denied);
@@ -5341,6 +5352,14 @@ impl FrontEnd {
     /// The address page's typing: digits, dots, the colon, capped at 22 chars [S §2.2]. Returns
     /// whether the character landed (the page is the join address page and the set fits).
     pub fn mp_net_type(&mut self, c: char) -> bool {
+        if self.page == Page::MpHost && self.cursor == 0 && !self.mp_hosting {
+            let Some(d) = c.to_digit(10) else { return false };
+            let next = self.mp_net_port * 10 + d;
+            if next > 65535 { return false; }
+            self.mp_net_port = next;
+            self.mp_net_error = None;
+            return true;
+        }
         if self.page != Page::MpNetJoin { return false; }
         if !(c.is_ascii_digit() || c == '.' || c == ':') { return false; }
         if self.mp_net_addr.chars().count() >= 22 { return false; }
@@ -5351,6 +5370,10 @@ impl FrontEnd {
     /// The address page's Backspace — the keyboard layer routes it BEFORE the menu's Back
     /// (key_action maps the physical key to Back) [S §2.2].
     pub fn mp_net_backspace(&mut self) -> bool {
+        if self.page == Page::MpHost && self.cursor == 0 && !self.mp_hosting {
+            self.mp_net_port /= 10;
+            return true;
+        }
         if self.page != Page::MpNetJoin { return false; }
         self.mp_net_addr.pop();
         true
@@ -5930,7 +5953,16 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             page_rows(&mut h, fe, font, match fe.page { Page::MpHost => "HOST ONLINE", Page::MpNetJoin => "JOIN ONLINE", _ => "LOBBY" }, dim, bright);
             let mut y = 250.0f32;
             match fe.page {
-                Page::MpHost => label(&mut h, font, &format!("Port  {}", fe.mp_net_port), 200.0, y, 240.0, 18.0, bright, true, 1.0),
+                Page::MpHost => {
+                    let editing = fe.cursor == 0 && !fe.mp_hosting;
+                    let port = if fe.mp_net_port == 0 { String::new() } else { fe.mp_net_port.to_string() };
+                    label(&mut h, font, &format!("Port  {}{}", port, if editing { "_" } else { "" }), 200.0, y, 240.0, 18.0, bright, true, 1.0);
+                    // The address a friend types into Join Online: this PC's LAN address (the
+                    // interface the OS would route out of) and the port. Over the internet they
+                    // need the router's public address and a forwarded UDP port instead.
+                    let ip = local_ip().unwrap_or_else(|| "this PC's IP".into());
+                    label(&mut h, font, &format!("Friends join:  {}:{}", ip, fe.mp_net_port), 200.0, y + 30.0, 240.0, 14.0, dim, true, 1.0);
+                }
                 Page::MpNetJoin => {
                     let shown = if fe.mp_net_addr.is_empty() { "IP:PORT" } else { &fe.mp_net_addr };
                     label(&mut h, font, shown, 200.0, y, 240.0, 18.0, bright, true, 1.0);
