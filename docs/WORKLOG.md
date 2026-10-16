@@ -16712,3 +16712,15 @@ suite.
   the port runs it fast (per-frame step at uncapped fps vs per tick, or wrong constant),
   fix, and pin a test: a hint shows for the game's tick count at 60 Hz and the same at
   240 rendered fps (frame-rate independent). Branch created from origin/master f09f3c6c.
+- hint-bar-speed-05: traced the hint bar's game timing end to end — `Hint_Update` 0x1b3380:33
+  posts the type-1 INFO message with life 0xB4 = 180 ticks (stack arg confirmed in the disasm at
+  0x1b3450; ThirdIcon_Update 0x196e80:42 the same for "Press Action"), `HUD_UpdateStatusPane`
+  0x19c310 runs per tick from `Player_Update` 0x193600:79, `Text_UpdateMsg` 0x1b11d8:48-50 ticks
+  the pane's HEAD node alone by FRAME_RATE_MUL 1.0, the fade is alpha = time·17 below 15
+  [0x19c310:261-265], the close 16 px/tick. The port's sim already matched all of that (probe:
+  exactly 180) and is frame-rate independent (fixed 60 Hz). The real defect: the port's
+  pickup/script queue (`hud.msgs`) ticked EVERY member in parallel, spending queued texts' lives
+  before they surfaced — they flashed past one after another (the playtest symptom). Fixed to
+  head-only, matching 0x1b11d8 (the same fix objective_msgs got earlier). Tests
+  (hint_bar_timing_live): the 180-tick life, 60 Hz vs 240 rendered fps independence, the time·17
+  fade, the head-ticks-alone sequencing (fails 180→60 on the old code).
