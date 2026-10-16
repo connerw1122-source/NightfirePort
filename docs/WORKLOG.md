@@ -16485,3 +16485,11 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
 - Report: docs/reports/uncited-gameplay-audit.md. Left: the 10 queued tasks (none started,
   audit-only by design) + the live checks; gap ④/⑤ should rebase onto task 704's
   s/mp-bots-in-match branch.
+- 2026-10-16 s/rocket-glass-08 (task 721): the 08 corridor rocket stops ~5 units
+  short (side-by-side vs PCSX2, 2026-10-16). PS2: ~72 frames launch→explosion,
+  ~24 units at the measured 0.3367 u/frame [L]; port: 56 ticks, 19.25 units —
+  explodes at the far window. Plan: find what the port's rocket hits at 19.25 u
+  and whether the game's bullet passes it (Bullet_CollisionHandler 0x12ce80,
+  HITTEST flags on the segment query, 08's surface material/flags); fix in
+  sim/flow. Test: 08 start shot explodes ~24 units ±1; sister: plain wall still
+  stops on its face. Branch created from origin/master c8186aa1.
