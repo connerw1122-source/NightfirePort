@@ -22,6 +22,11 @@ struct Moving {
     geo: Geo,
     movers: Vec<(u64, Mat4, Mat4)>,
     last: std::collections::HashMap<u64, Mat4>,
+    /// The last call's `(id, hash)` parts, in order — the unchanged-set fast path's key (`set_dynamic`).
+    last_parts: Vec<(u64, u32)>,
+    /// The last call's shape-bearing parts `(id, hash, matrix)`, aligned with `geo.objects` — the
+    /// per-part reuse key (a part whose triple is unchanged memcpy's its stored block).
+    last_objects: Vec<(u64, u32, Mat4)>,
 }
 
 type Mat4 = nf_formats::anim::Mat4;
@@ -402,16 +407,55 @@ impl CollisionWorld {
     /// tick) pairs an object with its matrix of the previous call.
     pub fn set_dynamic(&self, parts: &[(u64, u32, Mat4)]) {
         let mut d = self.dynamic.write().unwrap();
+        // Unchanged fast path: the same `(id, hash)` parts with the same matrices as the last call
+        // (a door at rest, a static SS object — most ticks on most levels). The stored geo IS this
+        // set's world-space triangles (the same matrix over the same object-space points gives the
+        // same floats, in the same parts order) and `last` is already current. Only `movers` may
+        // need the cheap no-transform rebuild (a matrix that moved last call and stopped: its
+        // `prev` must read the now-current matrix). The probe's baseline put the full
+        // transform+allocation rebuild at ~0.19 ms/tick on the moving-object levels (sim-tick-cost).
+        let same = d.last_parts.len() == parts.len()
+            && parts.iter().zip(d.last_parts.iter())
+                .all(|((&(id, h, m)), &(lid, lh))| id == lid && h == lh && d.last.get(&id).is_some_and(|pm| *pm == m));
+        if same {
+            // movers must read `(id, cur, cur)` for the shape-bearing parts, in parts order.
+            let (mut mi, mut ok) = (0usize, true);
+            for &(id, h, m) in parts {
+                if !self.shapes.contains_key(&h) { continue; }
+                match d.movers.get(mi) { Some(&(mid, p, c)) if mid == id && p == m && c == m => {}, _ => { ok = false; break } }
+                mi += 1;
+            }
+            if ok && mi == d.movers.len() { return; }
+            d.movers = parts.iter().filter(|(_, h, _)| self.shapes.contains_key(h)).map(|&(id, _, m)| (id, m, m)).collect();
+            return;
+        }
         let (mut geo, mut movers, mut last) = (Geo::default(), Vec::new(), std::collections::HashMap::new());
+        geo.tris.reserve(d.geo.tris.len());
+        geo.mats.reserve(d.geo.mats.len());
+        let mut last_objects: Vec<(u64, u32, Mat4)> = Vec::with_capacity(parts.len());
         for &(id, h, m) in parts {
             last.insert(id, m);
             let Some(t) = self.shapes.get(&h) else { continue };
             let n = geo.objects.len();
             let mats = self.shape_mats.get(&h);
-            geo.push(t.iter().enumerate().map(|(k, t)| (t.map(|p| transform(&m, p)), mats.and_then(|v| v.get(k).copied()).unwrap_or(0))));
-            if geo.objects.len() > n { movers.push((id, d.last.get(&id).copied().unwrap_or(m), m)); }
+            // Partial reuse: an unchanged (id, hash, matrix) part memcpy's its previous world-space
+            // block (the same floats the transform re-derives) — on the animating levels the
+            // resting doors/static SS objects were paying a full re-transform every tick
+            // (sim-tick-cost's `drones: set_dynamic` 0.4–0.6 ms on 07000008/16/1b).
+            let reused = d.last_objects.get(n).copied().is_some_and(|(pid, ph, pm)| pid == id && ph == h && pm == m)
+                && n < d.geo.objects.len();
+            if reused {
+                let po = &d.geo.objects[n];
+                let (start, end) = (po.tris.start, po.tris.end);
+                geo.tris.extend_from_slice(&d.geo.tris[start..end]);
+                geo.mats.extend_from_slice(&d.geo.mats[start..end]);
+                geo.objects.push(Object { lo: po.lo, hi: po.hi, tris: geo.tris.len() - (end - start)..geo.tris.len() });
+            } else {
+                geo.push(t.iter().enumerate().map(|(k, t)| (t.map(|p| transform(&m, p)), mats.and_then(|v| v.get(k).copied()).unwrap_or(0))));
+            }
+            if geo.objects.len() > n { movers.push((id, d.last.get(&id).copied().unwrap_or(m), m)); last_objects.push((id, h, m)); }
         }
-        *d = Moving { geo, movers, last };
+        *d = Moving { geo, movers, last, last_parts: parts.iter().map(|&(id, h, _)| (id, h)).collect(), last_objects };
     }
 
     /// When the first collision surface along `from → to` belongs to a moving object, how that object moved over the
