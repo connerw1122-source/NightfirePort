@@ -26,3 +26,8 @@ claimed-by: sandbox6 at 2026-10-16T10:52Z
 ---
 ## Report (done, 2026-10-16T12:39Z)
 
+
+---
+## Report from the worker (done, 2026-10-16T12:39Z)
+
+Closed by the driver: the report is on `s/cutscene-walk-stutter` (docs/reports/cutscene-walk-stutter.md); the worker didn't run finish.sh.
