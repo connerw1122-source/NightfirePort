@@ -75,3 +75,42 @@ count = `SSbd body / (2·channels)` and agrees with the video picture count at 3
 audio-bearing movies; SHA-1s of frames 0 and 1000 (feature `movies`). Sister assertions flip one value in each
 comparison. The slim on-foot image stubs the movies (size 0) — point `NF_MOVIE_ISO` (or `NF_ISO`) at an image
 with movie data (e.g. the retail `007 - Nightfire (USA)` image).
+
+## G-008: the recheck on the disc's own data (pss-vag-recheck)
+
+`crates/nf-formats/tests/pss_movies_g008.rs` (opt-in `NF_MOVIE_ISO`, golden `golden/pss_movies_g008.tsv` —
+numbers and SHA-1s only) adds the movie legs G-008 asked for, measured on the retail image:
+
+- **The GOP walk vs the picture count**: the GOP start codes (`00 00 01 B8`) split every movie's video ES into
+  spans; every picture header sits inside exactly one GOP (`pics_outside_gops = 0` on all 22), the walk's
+  total equals `mpeg2::picture_counts`, and the GOP count, per-GOP min/max and the I/P/B split are pinned.
+- **The ES SHA-1s**: the demuxed video and audio elementary streams hash to pinned values — the data-image
+  pin G-008 wanted (any byte drift in demuxing is caught).
+- **The audio kind/rate/channels and the sample count**: kind 1 (16-bit LE PCM) at 48 kHz, 2 channels, for all
+  20 audio-bearing movies; 07330048 and 07350048 (the two menu backdrop loops) carry no audio stream.
+- **The audio duration vs the video duration, ±1 frame** (the old live test allowed ±1 s): 15/20 sit within
+  one frame; the deltas are pinned in milli-frames. Five movies run an audio bed padded past the video end —
+  0730000D −3040, 073B0048 −2880, 07300017 −2160, 073F0048 −1200, 073A0048 −1160 milli-frames (i.e. 1.2–3.0
+  frames of extra audio). This is a property of the files, not a decoder error: the sample counts are
+  structural (`SSbd body / (2·channels)`), the counts reproduce byte-identically across the two independent
+  demux runs (`pss_movies.tsv` from the earlier retail-image task and this recheck), and ffprobe confirms the
+  video side independently (0730000D: 1700 frames at 30 fps — the same count the port's scan produces;
+  ffmpeg's `pss` demuxer exposes video only, so the audio leg has no third-party counter beyond the structural
+  identity). They are recorded in `RECORDED_AUDIO_LONG`; any other file drifting past a frame fails the test.
+- **Every picture decodes without error** (feature `movies`): `decode_video` succeeds on all 22 movies, the
+  decoded frame count equals the golden picture count, every frame is 512×448, and the packed YUV of ALL
+  frames hashes to the per-movie `frames_sha1`. The decoder averages ~50 fps, so the full walk is ~10 min;
+  `PIN_ONLY=name1,name2` restricts a re-run to named movies.
+- Sisters: a tampered GOP start code (`B8→B9`) moves its pictures outside the walk with the total unchanged;
+  a tampered picture coding type drops the scan by exactly one and the walk tracks it; a flipped ES byte
+  changes the all-frames hash.
+
+The VAG half (this branch re-verified the unmerged verify-pss-vag work and added the loop points):
+`crates/nf-formats/tests/pss_vag_golden.rs` — all 25 banks parse and decode with 0 errors on the slim image,
+`.SHF` sizes fill the `.SBF`, every extent ends with the end flag, **every looped sample's loop points are
+validated** (frame multiples, start < end, end = the extent) and pinned per bank (`loop_sha1` +
+`loop_starts_sum` in `golden/pss_vag.tsv`); the 16 music SSDs de-interleave to pinned hashes; the speech LUT's
+828 end-marker streams decode and all 1552 bank `FileRef`s resolve. `vag.rs` keeps both prediction variants;
+the DuckStation/ffmpeg/vgmstream attribution survey (2026-10-15) stands: no published software decoder
+implements the port's Rounded form, so the SPU2 hardware form stays a live-check question (verify-pss-vag's
+report lists the definitive PCSX2 check).

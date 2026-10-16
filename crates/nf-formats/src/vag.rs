@@ -5,11 +5,14 @@
 //! then 14 bytes = 28 four-bit samples, low nibble first. Bank samples (the `sound_bank` lump's second chunk)
 //! and the music / speech VAG bodies use the same frames.
 //!
-//! Two decoders are provided because the disc cannot decide between them (one prediction differs by up to
-//! 2 LSB, since OpenGOAL floors each term; the error then feeds the history):
-//! [`decode`] is the PCSX2 / DuckStation form with the prediction rounded (`+32` before `>> 6`), the form the
-//! port plays; [`decode_opengoal_variant`] shifts the two prediction terms separately without rounding
-//! (OpenGOAL `game/sound/common/voice.cpp`, `Voice::DecodeSamples`), kept for later trace comparison.
+//! Two decoders are provided because no available reference settles the prediction rounding (the error between
+//! forms is up to a few LSB per step, and it then feeds the history; measured on the disc's own data,
+//! docs/formats/pss.md §independent): [`decode`] is the rounded form (`+32` before `>> 6`, the classic SPU
+//! description and the form the port plays); [`decode_opengoal_variant`] shifts the two prediction terms
+//! separately without rounding (OpenGOAL `game/sound/common/voice.cpp` `Voice::DecodeSamples`). Checked against
+//! published implementations (2026-10-15): DuckStation master (`spu.cpp`) shifts per term (the OpenGoal form),
+//! ffmpeg's `adpcm_psx` truncates the summed products toward zero, vgmstream's `psx_decoder.c` uses float
+//! coefficients — none of them is the rounded form, so both are kept until the SPU2's own behaviour is traced.
 
 use crate::buf::{invalid, Result};
 

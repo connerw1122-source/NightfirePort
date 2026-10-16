@@ -4,15 +4,14 @@
 //! (0x1e1140) over the placement's 0x19 key list (`m_paths[record+0x44]` = `extra[8] & 0xffff`),
 //! from key 0 to key `count−1` at the current playhead. The SS's posed matrix joins the sim's
 //! set_dynamic collision world with its placement object's glist hashcode (`Ss.hash`, fix-party-
-//! mission item 7: 07000008's safe door ch 136 and doorway bolt ch 137 are solid like the doors). The playhead advances while the SS's switch
-//! channel (param 3) is on and returns while it is off — the open/closed swap of the lift screens,
-//! shutters and lift doors (07000012's `sh_screen-shutter_down/up`, `lft_screen-liftopen/closed`,
-//! `lft_LIFTDOOR1/2`, `sh_shuttersclosed/open_LEFT`).
+//! mission item 7: 07000008's safe door ch 136 and doorway bolt ch 137 are solid like the doors).
 //!
-//! The at-rest pose is key 0 — for every pair member on 07000012 key 0 equals the placement
-//! transform [D, the level's 0x19 blocks 12–20], so the covering/closed member sits in place and the
-//! complementary member rests parked (its key 0 is the away position). Triggering the channel swaps
-//! them: each member glides to its other key.
+//! The playhead is STATE-driven, not channel-seeked (grates-02: the disassembly at 0x1a9b90-0x1a9c18
+//! confirms the decomp word for word; the old channel-seek model was the port's invention): state 1
+//! sweeps and holds its last posed matrix after the wrap, 0x40 re-sweeps only while `SS_Operate`
+//! (presence, or the channel word ≠ 0 and set) says so, 8 loops forever, everything else holds. The
+//! channel (param 3) is an output written from the operate result while it is 0-valued — and the
+//! latch `SS_Activate` 0x1a9ea8 makes on E for ch ≠ 0.
 //!
 //! Playhead rate [M, fix-0c-hatch]: `SS_Create` sets ext+0x04 = `(key count − 1) / rate` (the rate
 //! word `extra[7] >> 16`, default 0x4B = 75 when zero) and `SS_Update` adds that step (×
@@ -52,6 +51,17 @@ pub struct Ss {
     /// mesh (`Collide_PickObj` walks the cel-linked objects; fix-party-mission item 7 — the safe
     /// door and the doorway bolt are solid like the doors).
     pub hash: u32,
+    /// ext+0x08 = param 5 — the sweep's rest point in key units, snapped to whole steps
+    /// (`SS_Create` tail: `step * (int)((float)param5 / step)` [M 0x1a9dc8-0x1a9dd8 disasm]).
+    /// Every SS on the shipped levels carries 0, so the landing window (below) never fires and
+    /// the wrap ends every sweep.
+    pub rest: f32,
+    /// ext+0x24 = param 1 — the wrap flag: 0 → the wrap re-arms to 0x40 (re-operable), non-zero →
+    /// the wrap disarms to 0 [M 0x1a9948:121-126].
+    pub wrap_flag: u16,
+    /// ext+0x14 = param 4 — the operate sound id (0xffff = none; `Sound_Play3D` at the 0x40
+    /// operate arm [M 0x1a9948:86-88]). Unplayed headlessly; kept for the field map.
+    pub sound: u16,
 }
 
 impl Ss {
@@ -88,46 +98,96 @@ impl SsList {
             if keys.is_empty() { continue; }
             let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map_or(0, |&(_, v)| v);
             let rate = (p.extra[7] >> 16) as u32;
+            let rate = if rate == 0 { 75 } else { rate };
             let last = (count.min(keys.len()) - 1) as u16;
             let matrix = interp(&keys, 0, last, 0.0, param(6) != 0).unwrap_or(IDENT);
+            // ext+0x08's snap [M 0x1a9dbc-0x1a9dd8 disasm]: step * (int)(rest / step).
+            let step = last as f32 / rate as f32;
+            let rest = if step > 0.0 { step * ((param(5) as f32 / step) as i32) as f32 } else { 0.0 };
             list.push(Ss {
                 placement: i,
                 channel: param(3) as u16,
                 keys,
-                rate: if rate == 0 { 75 } else { rate },
+                rate,
                 spline: param(6) != 0,
                 state: param(0) as u16,
                 mask: param(2) as u16,
                 t: 0.0,
                 matrix,
                 hash: hash(p),
+                rest,
+                wrap_flag: param(1) as u16,
+                sound: param(4) as u16,
             });
         }
         SsList { list }
     }
 
-    /// `SS_Update`'s playhead: toward the last key while the channel is on, back to key 0 while off,
-    /// then the `KeyFrame_Interp` pose [M 0x1a9948 + 0x1e1140].
+    /// `SS_Update` 0x1a9948 — the playhead is **state-driven**, not channel-seeked [M, the
+    /// disassembly at 0x1a9b90-0x1a9c18 confirms the decomp word for word]:
+    ///
+    /// * state **1** (armed by `SS_Activate` 0x1a9ea8 or the 0x40 operate arm): pose at `t`,
+    ///   advance `t += step * FRAME_RATE_MUL` (2-key scripts add `step` alone [M 0x1a9948:103-108];
+    ///   `FRAME_RATE_MUL` is 1.0 at the port's fixed 60 Hz [M GS_SetRefreshRate 0x17d2b8:15]),
+    ///   then the landing check (`rest < t && |t − rest| < 0.0002` → state 0x40 [M 0x1a9948:109-115])
+    ///   and the wrap check (`(int)last_key < (int)t` → `t = 0`, state = `wrap_flag == 0 ? 0x40 : 0`
+    ///   [M 0x1a9948:119-128]). States 0/0x40 never re-pose the matrix, so **the object holds its
+    ///   last posed pose after the wrap** — a one-shot grate (p1=1) ends disarmed at state 0 with
+    ///   the open pose held; a looping prop (p1=0) re-arms at 0x40.
+    /// * state **0x40** (armed rest): re-sweeps only while `SS_Operate` returns non-zero — the
+    ///   presence bits (mask 0x2/0x8/0x10 vs the obj+0xD0 contact chain [M 0x1a9df8:12-46]) or the
+    ///   channel path (channel word ≠ 0 and `switch_channels[ch]` ≠ 0 [M 0x1a9df8:47-51]). The
+    ///   port has no contact chain, so only the channel half is live; every mask-0x2/0x8/0x10 SS
+    ///   rests until its channel (if any) is set.
+    /// * state **8**: the infinite loop — pose, advance, wrap `t` to 0 past the last key, stay 8
+    ///   [M 0x1a9948:48-71].
+    /// * every other state: nothing (the pose stays) [M 0x1a9948:74-83].
+    ///
+    /// The channel is an OUTPUT, never a playhead driver: with mask bit 0 clear and the channel
+    /// word non-zero, `SS_Update` writes the operate result into a 0-valued channel
+    /// [M 0x1a9948:20-23] — unported here (it needs the presence result; the E latch in
+    /// `activate` covers the ch≠0 write the game makes there [M 0x1a9ea8:11-13]).
     ///
     /// The per-tick step is `SS_Create`'s ext+0x04 = **`(key count − 1) / rate`**, computed once at
-    /// create [M 0x1a9c58:51 `puVar2[1] = (float)last / (float)rate`], and the update adds
-    /// `step * FRAME_RATE_MUL` (the 2-key special case adds `step` alone, [M 0x1a9948:103-108]).
-    /// `GS_SetRefreshRate` 0x17d2b8:15 sets `FRAME_RATE_MUL = 60.0 / FRAME_RATE` — 1.0 at the game's
-    /// 60 Hz, which is the port's fixed tick — so the rate word is the whole sweep's duration in
-    /// ticks: 0700000c's `ventmesh-front` #138 (6 keys, rate 50 [D]) opens in 50 ticks, not 250
+    /// create [M 0x1a9c58:51], so the rate word is the sweep's whole duration in ticks:
+    /// 0700000c's `ventmesh-front` #138 (6 keys, rate 50 [D]) reaches its last key in 50 ticks
     /// (fix-0c-hatch; the old 1/rate model was five times slow).
     pub fn tick(&mut self, ch: &Channels) {
         for s in &mut self.list {
             if s.keys.len() < 2 { continue; }
-            let last = (s.keys.len() - 1) as f32;
-            let step = last / s.rate as f32;
-            // The channel INDEX is not special: `SS_Update` 0x1a9948:20-23 reads AND writes
-            // `switch_channels[ch]` for any channel word including 0 (the 0c pulley winches
-            // #351/#364/#377 listen on ch 0 [D]); only the channel VALUE gates the sweep.
-            let target = if ch.on(s.channel as u32) { last } else { 0.0 };
-            if s.t < target { s.t = (s.t + step).min(target); }
-            else if s.t > target { s.t = (s.t - step).max(target); }
-            if let Some(m) = interp(&s.keys, 0, (s.keys.len() - 1) as u16, s.t, s.spline) { s.matrix = m; }
+            let last = (s.keys.len() - 1) as u16;
+            let step = last as f32 / s.rate as f32;
+            // `SS_Operate` 0x1a9df8, channel half (the presence half needs the obj+0xD0 contact
+            // chain — unported; see the module report). Channel word 0 means "no channel" [M
+            // 0x1a9df8:47-48 — the `== 0` short-circuit], so a ch-0 SS never re-arms here.
+            let operate = s.channel != 0 && ch.on(s.channel as u32);
+            match s.state {
+                1 => Self::sweep(s, last, step),
+                0x40 if operate => Self::sweep(s, last, step), // the sound arm [M 0x1a9948:86-89] is unplayed
+                8 => {
+                    // The loop: pose, advance, wrap t to 0 past the last key, stay 8.
+                    if let Some(m) = interp(&s.keys, 0, last, s.t, s.spline) { s.matrix = m; }
+                    s.t += step;
+                    if (last as i32) < (s.t as i32) { s.t = 0.0; }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    /// The shared state-1 sweep body [M 0x1a9948:92-129]: pose, advance, landing, wrap.
+    fn sweep(s: &mut Ss, last: u16, step: f32) {
+        if let Some(m) = interp(&s.keys, 0, last, s.t, s.spline) { s.matrix = m; }
+        s.t += step; // FRAME_RATE_MUL is 1.0 at 60 Hz [M 0x17d2b8:15]; the 2-key case is then identical
+        // Landing: rest < t && |t − rest| < 0.0002 → armed rest at 0x40 [M 0x1a9948:109-115 +
+        // disasm 0x1a9b9c-0x1a9bd4]. With the shipped rest = 0 this never fires.
+        if s.rest < s.t && (s.t - s.rest).abs() < 0.0002 { s.state = 0x40; }
+        // Wrap: (int)last_key < (int)t (signed trunc) → t = 0, state per the wrap flag
+        // [M 0x1a9948:119-128 + disasm 0x1a9bdc-0x1a9c10]. The pose is NOT rewritten here —
+        // states 0/0x40 hold the last posed matrix, so the object stays at its end pose.
+        if (last as i32) < (s.t as i32) {
+            s.t = 0.0;
+            s.state = if s.wrap_flag == 0 { 0x40 } else { 0 };
         }
     }
 
