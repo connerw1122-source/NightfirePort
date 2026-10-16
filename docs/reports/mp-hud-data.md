@@ -61,7 +61,22 @@ the evidence are in `docs/systems/mp-hud-data.md`; this report summarizes.
 
 Fast runner on the final tree, slim on-foot ISO, `--test-threads=1`:
 
-    (the total line — filled in below when the run finished)
+    (the run was still executing its last binaries at this window's 02:31 UTC stop time — the
+    total line had not printed; the next message can re-run `tools/test/suite.py` for it)
+
+    Observed failures up to the stop (02:25 UTC): the 3 ALLOWED slim-ISO `disc_golden` failures,
+    plus `fix_0c_pylon_live` (2 tests) and `probe_pylon_render` — the render probes. The pylon
+    probes are NOT this task's diff: the master-baseline suite run earlier in this same sandbox
+    (00:52 UTC, before any of this task's code was on the tree) failed `probe_pylon_render`
+    identically, and this task changed no drawing (the only render-adjacent file it touches is
+    none — the MpPlayer field and the new mp/hud data module are not in any render path). They
+    arrived with master's 0f5f07f4 merge window (objective-hints) or the environment; the next
+    window should confirm against a clean master before treating them as regressions.
+
+    No FAILED/TIMEOUT from the crates this task's tests touch: nf-game's lib, `mp_hud_data`,
+    `mp_match_rules`, `mp_core_live` and nf-view's lib all ran clean in the suite by the stop
+    (alphabetically before the p-binaries). `walkreal_07000001_live` had not run yet at the stop
+    (it failed on the master baseline too — the minutes-long walk, window-sensitive).
 
 Known-red before this task (from the master baseline run earlier in this sandbox):
 `disc_golden::directory_tree_matches_the_golden_manifest` (one of the 3 slim-ISO-allowed
