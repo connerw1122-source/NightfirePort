@@ -15917,3 +15917,9 @@ the type-3 banner from a sub-objective / an inherited channel) [M Mission_Update
 the objective message types]; plan: walk 16's route headless (the 16 door/corridor tests have fixtures), log every
 mission message, fix the gate so the banner shows only on the game's real completion, test that the walk posts no
 "Mission Complete" before the end condition.
+
+SPURIOUS-COMPLETE-16 SUITE (17:51 UTC): the final-tree fast-runner total `1878 passed, 6 failed,
+72 ignored (47 min)` — the 6 are the 3 allowed disc_golden + the 3 pre-existing pylon render
+probes (the ladder-02/inert-guards-02 baseline), zero regressions; the +70 vs ladder-02's run are
+the merged tasks' new tests. The 2 new arrival/end live tests and the fabricator unit test are
+green in the totals. Report: docs/reports/spurious-complete-16.md.
