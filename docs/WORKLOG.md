@@ -16706,3 +16706,12 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+## astronaut-guards-1b (2026-10-16, branch s/astronaut-guards-1b) — start 21:20 UTC
+
+Task 730: zero-G astronaut guards on 0700001b (uncited-audit gap 7) — port the whole actor
+class: skin kind 0x18 forces mode 0x1D + start state AstronautLaunch 0xBD [M 0x14b300:722-727],
+states DSTATE_AstronautCombat 0xC0 (0x174458) / AstronautCombatMove 0xC1 (0x174550) /
+AstronautHit 0xBE (0x174690) / AstronautDeath 0xBF (0x1747b8), float movement
+DroneMove_AstronautCombat 0x154618, bob/float anim DroneMove_AstronautAnim 0x155ea0.
+Acceptance: headless 0700001b load — astronauts drift (no floor snap), float anim runs,
+hit/death variants fire. Branch from origin/master 170bcf01.
