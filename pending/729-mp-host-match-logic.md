@@ -2,7 +2,7 @@
 
 Audit gap ④: in a live match the host never runs the match logic. `update_objects`, `player_killed` and respawn are
 only exercised by tests. Wire them into the running match loop (local and online host) the way `MP_Update`
-0x?????? drives them [M].
+drives them [M].
 
 If task 704's `s/mp-bots-in-match` branch exists, rebase onto it rather than redoing its wiring.
 
