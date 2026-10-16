@@ -945,6 +945,15 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                 // then p3 == 2 → `Vec_Zero(&WldGravity)` (the spacewalk starts; disasm 0x19151c-
                 // 0x191550 the default, 0x191618 the zero). fix-world-gravity.
                 sim.bond.world_gravity = if s.p3 == 2 { [0.0; 3] } else { [0.0, -9.8, 0.0] };
+                // p3 == 3 → `Player_StandAtNewPosition(.., 4)` (the crouch substate) and
+                // `BLData+0x90C = 0.45` (0x3ee66666, the full crouch eye drop) [M Player_Init 0x1910f8
+                // :172-176]. 07000014 starts this way inside its crawl vent [L: PCSX2 substate 4,
+                // BL+0x90C 0.45 at the start]; standing there put the eye above the duct roof.
+                if s.p3 == 3 {
+                    sim.bond.crouched = true;
+                    sim.bond.cc = nf_game::player::CROUCH_ROOT_HEIGHT;
+                    sim.bond.crouch_drop = 0.45;
+                }
                 scene.start = Some((s.pos, s.yaw));
             }
         } else if let Some((pos, yaw)) = scene.start {
