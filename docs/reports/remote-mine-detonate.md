@@ -1,7 +1,7 @@
 # remote-mine-detonate (679) — the Remote Mine's detonator and throw cadence
 
-**Status: the cadence measured + tabled and its real delay fixed; the multi-mine detonation is
-the open item.** Branch `s/remote-mine-detonate` from origin/master (27e5d48a).
+**Status: done** — the cadence measured + tabled, its real delay fixed, the three-mine
+detonation flow green end to end. Branch `s/remote-mine-detonate` from origin/master (27e5d48a).
 
 ## What was already on master (this task verified it, no rework)
 
@@ -45,27 +45,31 @@ note (the same chain): the next throw ~+125 with taps. The raw `+0x40 = 450.0` r
 
 ## Verification
 
-- `cargo test --release -p nf-view --test remote_mine_detonate` (NF_ISO): 2/3 —
+- `cargo test --release -p nf-view --test remote_mine_detonate` (NF_ISO): **3/3** —
   - `the_throw_release_frame_and_the_re_throw_interval_match_the_game` (the table, end to end);
   - `firing_the_detonator_with_no_mine_out_does_nothing` (the sister: no blast, no projectile
     [M the +0x20000 arm returns before Bullet_init], the hand returns to the mine [M 0x1a4c88-
     0x1a4cbc]);
-  - `three_mines_at_the_games_cadence_then_one_detonation_explodes_all_three` — **FAILS at the
-    detonation: one detonator fire over THREE placed mines yields 0 blasts** (the single-mine
-    detonate on master passes). The 3 throws + the placements assert green; the gap is in the
-    mark/detonate path under multiple mines — the next session's first step.
-- What ran: `remote_mine_detonate` (above); the fast runner on this tree — see the total line
-  below; the touched crates: nf-game (reload_one), nf-view (the 0xc arm).
+  - `three_mines_at_the_games_cadence_then_one_detonation_explodes_all_three` — three placed
+    mines, ONE detonator fire, exactly three blasts (the walk has no break [M 0x1a4c88]), the
+    mines gone, the hand back on the mine. (The Sim's explosion list is per-frame — the test
+    accumulates the blasts as they fire.)
+- The touched crates on the final tree: `nf-game` lib 237/237; `fix_remote_mine_play` 3/3 and
+  `fix_weapon_fire_modes_live` 3/3 and `grenade_live` 2/2 (nf-game) — the mine family's
+  neighbours untouched.
+- **The fast runner** (tools/test/suite.py, the release tree at the branch point — the run
+  overlapped this task's edits): `1762 passed, 7 failed, 72 ignored (56 min)`. The 7: the 3
+  `disc_golden` slim-ISO fails (allowed), `fix_0c_pylon_live` ×2 + `probe_pylon_render` (the
+  documented pylon Vulkan-ICD fails), and `walkreal_probe13` CRASH (exit -9 — a probe binary
+  killed, not an assertion).
 
 ## What's left
 
-1. **The 3-mine detonation** — one fire must explode all three [M the walk has no break]. The
-   single-mine path works; trace the third+ mine's mark (the walk's `g.state < 2` filter, the
-   fuse tick under the stacked positions) and turn the third test green.
-2. The cadence test's press→spawn leg pins the port's script clock (17 ticks); the game-side
-   tick count for the +0x44 release is a live check (below).
-3. The fast runner's total line on the final tree (the run was cut off by the sandbox window —
-   the partial lines are in `suite.out` at the sandbox repo root).
+- The game-side tick count for the +0x44 release (L-1) and the +0x92C window through two throws
+  (L-2) — the live checks below; the port's numbers are pinned and the anchors are cited.
+- The final-tree fast-runner re-run: the sandbox window fit only the branch-point run above
+  plus the touched-crate runs on the final tree; the next session can re-run the 56-minute
+  suite on the merged tree.
 
 ## Live checks for the main agent
 

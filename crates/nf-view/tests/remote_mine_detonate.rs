@@ -107,14 +107,11 @@ fn explosions_of(scene: &Scene, wt: u32) -> usize {
 fn pull(scene: &mut Scene, t: usize) -> (usize, Option<usize>) { pull_after(scene, t, mines_out(scene)) }
 
 fn pull_after(scene: &mut Scene, t: usize, already: usize) -> (usize, Option<usize>) {
-    let trace = std::env::var_os("NF_TRACE").is_some();
     scene.sim.as_mut().unwrap().step_bond(Input::default(), true, false, false);
-    if trace { let s = scene.sim.as_ref().unwrap(); eprintln!("press+0: timer={:.1} fs={} clip={} script={:#x} vt={:.1} rec40={:02x?} u32_40={}", s.gun.timer, s.gun.fire_state, s.gun.clip, s.view_script, s.view_time, &s.weapons.records[0x37][0x3e..0x46], u32::from_le_bytes(s.weapons.records[0x37][0x40..0x44].try_into().unwrap())); }
     scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
     let mut spawn = None;
     for k in 0..120 {
-        if trace && k < 30 { let s = scene.sim.as_ref().unwrap(); eprintln!("press+{}: timer={:.1} fs={} rl={} clip={} spare={} pend={} sw={} script={:#x} vt={:.1} carried22={}", k + 1, s.gun.timer, s.gun.fire_state, s.gun.reload_state, s.gun.clip, s.gun.spare, s.gun.pending, s.gun.switch_state, s.view_script, s.view_time, s.drones.inventory.carried.get(22).copied().unwrap_or(0)); }
-        if spawn.is_none() && mines_out(scene) > already { spawn = Some(t + 1 + k); if trace { eprintln!("SPAWN at press+{}", k + 1); } }
+        if spawn.is_none() && mines_out(scene) > already { spawn = Some(t + 1 + k); }
         if spawn.is_some() { break; }
         scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
     }
@@ -151,12 +148,7 @@ fn the_throw_release_frame_and_the_re_throw_interval_match_the_game() {
     // 0x1a5460:662-664; +0x40 = 0.0 [L]]. Press again on the FIRST tick the timer allows.
     let mut t2 = None;
     for k in 1..200 {
-        let sim = scene.sim.as_ref().unwrap();
-        if std::env::var_os("NF_TRACE").is_some() && k < 190 {
-            eprintln!("tick +{k}: timer={:.1} fire_state={} reload={} clip={} switch={} idle={} script={:#x} vt={:.1}",
-                sim.gun.timer, sim.gun.fire_state, sim.gun.reload_state, sim.gun.clip, sim.gun.switch_state, idle(&scene), sim.view_script, sim.view_time);
-        }
-        let ready = sim.gun.timer <= 0.0 && idle(&scene);
+        let ready = scene.sim.as_ref().map_or(false, |sim| sim.gun.timer <= 0.0) && idle(&scene);
         if ready { t2 = Some(s1 + k); break; }
         scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
     }
@@ -237,10 +229,18 @@ fn three_mines_at_the_games_cadence_then_one_detonation_explodes_all_three() {
     // ONE fire: the walk marks all three (no break [M 0x1a4c88]) → three blasts on the next
     // ticks (each −10.0 fuse counts down 1/tick in Bullet_DoTrails [M 0x12d890:268-285]).
     let before = explosions_of(&scene, 0x37);
-    scene.sim.as_mut().unwrap().step_bond(Input::default(), true, false, false);
-    for _ in 0..4 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
-    let after = explosions_of(&scene, 0x37);
-    assert_eq!(after - before, 3, "one detonator fire must explode ALL three placed mines [M the walk has no break]");
+    // Hold the trigger like the single-mine test's pull; the Sim's explosion list is per-frame,
+    // so the blasts are accumulated as they fire.
+    let mut blasts = 0usize;
+    for _ in 0..8 {
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), true, false, false);
+        let now = explosions_of(&scene, 0x37);
+        if now > before { blasts += now - before; }
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+        let now = explosions_of(&scene, 0x37);
+        if now > before { blasts += now - before; }
+    }
+    assert_eq!(blasts, 3, "one detonator fire must explode ALL three placed mines [M the walk has no break]");
     assert_eq!(mines_out(&scene), 0, "the placed mines are gone");
     // The hand returns to the mine [M 0x1a4cb8: BL+0x63 = base — mines remain in the pool].
     for _ in 0..7200 {
