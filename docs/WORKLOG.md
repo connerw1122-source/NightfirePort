@@ -16716,3 +16716,37 @@ suite.
 - Plan: read the decomp of Bullet_DoTrails + Player_MuzzleFlash + the gas functions,
   audit crates/nf-game gas init/update for kind 0x0200001f, test one 0x2d shot on 08 for
   puff count/per-puff data/lifetimes, pin with tests, full suite, push.
+
+## rocket-trail-gas (2026-10-16, branch s/rocket-trail-gas) — close-out 20:35 UTC
+- The audit: one 0x2d shot on 08 spawns exactly ONE gas puff in the game — the muzzle smoke.
+  Evidence chain: weapon_data 0x2d [L ee_start_05.bin @ 0x2bf150, rec 0x10c each]:
+  +0x68 = 0x14000 (no 0x2000 → the muzzle smoke runs [M Player_MuzzleFlash 0x1a4298:91-102;
+  the 0x2000-skip records are 0x32/0x33/0x4e/0x4f only]); +0x6c = 0x0001a200 (bit 0x2000
+  fly-light + 0x10000 swoosh ribbon; NONE of Bullet_DoTrails 0x12d890's gas bits 0x2/0x20/
+  0x80000 — those records are 0x1b/0x36/0x69 (bit 2), 0x2a/0x2b (bit 20), 0x41 (bit 0x80000));
+  +0x70 = 0x00000004 (no timer arm — the timer-arm/impact-gas records are the grenades 0x2b/
+  0x34-0x40 and 0x35/0x59/0x5b). Bullet_Init 0x12c5a0 has no Gas_Init — no launch puff. The
+  thin PS2 trail is the swoosh RIBBON (0x2000481, size +0x76 = 240, fed per tick), not gas.
+- Fixes: (1) the port's per-tick cyan stand-in for bit-0x10000 records now gates to the
+  0x20005cd family (base 0x33/0x6a/0x6e — the Samurai bolt) — the rockets get none (this was
+  the port-only grey haze down the 08 corridor); (2) the muzzle puff's decomp-dropped life is
+  0x80 = 128 ticks [M 0x1a43f8 li v0,0x80 → 0x1a442c sw v0,0(sp)] — was [S] 8 — and the packed
+  END rgba is 1 = bytes (0,0,0,1) [M 0x1a4440 delay slot] (scene.rs now init_ex(..., 1, 128));
+  (3) gases_smoke case 7 keeps the puff's own vel and the buoyancy is WldGravity·(REC·−0.02)
+  upward [M 0x1ab2d0:47-65] — the port sank puffs at 0.05·REC with vel dropped; (4) Gas_Init's
+  kind-7 wind velocity ×REC_FRAME_RATE [M 0x1aacc8:108-115] — the generic init_ex arm was ~12×
+  too fast. The trail-smoke site's life 0x78 verified [M 0x12cc28/0x12cc60]. No RNG-stream
+  changes (the muzzle site's 5 missing Gas_Init draws stay the documented G-033 deviation).
+- Tests: crates/nf-view/tests/rocket_trail_gas_live.rs — one 0x2d shot on 07000008 (via the ○
+  twin switch from the panel-given 0x2c): the pool holds ≤1 puff, it carries the muzzle data
+  (mesh 0x02000039, kind 7, scale 0.05→0.1/128, rgba 0x48403080→(0,0,0,1), life 128), the
+  flight runs ≥5 ticks with no new puff, the round resolves to its blast; sister: the 0x2c
+  flight same. Both FAIL on the pre-fix tree (verified by checkout) — the pin is real.
+  Ran before push: nf-game lib (241) + full nf-game, nf-view targets rocket_trail_gas_live /
+  fix_weapon_effects_live / weapon_fx_levels / lighting_live — all green after the
+  origin/master merge (b4161012, WORKLOG conflict = appends only).
+- Report: docs/reports/rocket-trail-gas.md. Left: the unported swoosh ribbon (the thin trail
+  itself — nf-game has no sprite-strip system); the AR-GL 0x1b's bit-0x2 trail smoke has no
+  bullet-path site (the grenade path covers 0x36/0x69 only); the 0x41 small-puff site (bit
+  0x80000); the muzzle site's 5 unconsumed Gas_Init draws (G-033); gases_smoke kinds 3/6/8/0xb
+  motion details (0xb's alpha = life·8.5 override) — no rocket-scope caller.
