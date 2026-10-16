@@ -588,6 +588,9 @@ impl NetSession {
 // ---- wire packing ----
 
 /// Pack `Input` into the 20-byte wire form (f32 x4 LE, a bit byte, i8 cycle pairs, i8 switch_to).
+/// `zoom_cycle` stays off the wire: the zoom is the local player's view state and the remote path
+/// never runs the zoom pipeline (`Sim::step_net_remotes` ticks `Bond::tick_ctx` only), so the
+/// packet is unchanged (microcam-wheel-zoom).
 pub fn pack_input(i: &Input) -> [u8; 20] {
     let mut o = [0u8; 20];
     o[0..4].copy_from_slice(&i.forward.to_le_bytes());
@@ -608,7 +611,6 @@ pub fn pack_input(i: &Input) -> [u8; 20] {
     o[19] = i.switch_to.map(|v| v as i8).unwrap_or(-1) as u8;
     o
 }
-
 /// The inverse of [`pack_input`].
 pub fn unpack_input(b: &[u8; 20]) -> Input {
     let f = |o: usize| f32::from_le_bytes([b[o], b[o + 1], b[o + 2], b[o + 3]]);
@@ -628,6 +630,8 @@ pub fn unpack_input(b: &[u8; 20]) -> Input {
         weapon_cycle: b[17] as i8,
         gadget_cycle: b[18] as i8,
         switch_to: if b[19] == 0xff { None } else { Some(b[19]) },
+        // microcam-wheel-zoom: local view input, not on the wire (see `pack_input`).
+        zoom_cycle: 0,
     }
 }
 

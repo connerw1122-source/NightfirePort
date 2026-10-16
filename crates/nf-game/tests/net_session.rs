@@ -37,6 +37,8 @@ fn scripted_input(t: u32, slot: usize) -> Input {
         scope: false,
         fire: t % 23 == 0,
         mode_switch: false,
+        // microcam-wheel-zoom: local view input, off the wire — the packed round trip carries 0.
+        zoom_cycle: 0,
     }
 }
 

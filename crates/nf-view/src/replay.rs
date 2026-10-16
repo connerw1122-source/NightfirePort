@@ -71,6 +71,9 @@ impl TickInput {
             // The mode press is not part of the replay format (replays predate it); no recorded
             // replay presses it (fix-weapon-modes).
             mode_switch: false,
+            // microcam-wheel-zoom: the wheel's zoom steps are not part of the replay format either
+            // (local view input; a replayed run holds the recorded zoom as it was recorded).
+            zoom_cycle: 0,
         };
         (input, self.trigger, self.reload, self.use_key)
     }
