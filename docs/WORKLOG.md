@@ -15379,6 +15379,16 @@ directly: the hut ladder's celglist resolves through the synthetic (map,object) 
 100 triangles — and its capsules HIT the settle spot); a NEUTRAL pause after the dismount
 re-latches once the 5-tick regrab expires. Whether the real game re-latches the neutral settle
 turns on the climber's cel (the game's cel-scoped climb scan vs the bed living in the water cel) —
-a live check is listed in the report. Tests run before push: ladder_02_live (3/3) + the ladder/
-swim regression set (fix_ladder2_live, fix_ladder_water_live, fix_ladder_live, fix_swim_live,
-fix_swim_entry_live, fix_swim_vent_live, fix_swim_vent5_live — 21 tests, all green).
+a live check is listed in the report. ADDENDUM (the fix's final form): the hit-below read is the CEL-SCOPED straddle ray
+(segment_hit_scoped(self.cel, …) — the game's own mechanism [M Player_FeetOnPoint 0x194188 →
+Collide_StraddleCels 0x1eac98]; the material filter was the interim form): with Bond in the garden
+cel the water cel's bed is outside the straddle set, the climb-down runs UNDER the surface to the
+bottom threshold, and the dismount lands at root 2.811 < bottom 2.830 (asserted) — below the grab
+window's strict lower bound. The residual neutral-settle re-latch is the pond bed's capsule-push
+equilibrium (the solid mat-10 bed at y≈2.09 pushes the swim spine up to a root of ≈3.20, inside
+the window and inside the ladder's authored mesh — the game's own collision settles him the same
+way); the test locks the natural get-off (the continuous push-off from the dismount tick: 300
+ticks free, out of the grab column) and lists the neutral settle as a live check.
+Tests run before push: ladder_02_live (3/3) + nf-game (49 binaries green) + the ladder/swim
+regression set (fix_ladder2_live, fix_ladder_water_live, fix_ladder_live, fix_swim_live,
+fix_swim_entry_live, fix_swim_vent_live, fix_swim_vent5_live, walkreal_07000005_live — all green).

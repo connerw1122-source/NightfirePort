@@ -171,9 +171,14 @@ fn water_ladder_bottom_dismount_does_not_relatch() {
     let dy = dismount_y.expect("climbing down never left the ladder (no dismount)");
     assert!(dy < lad.top(), "the dismount fired above the top threshold: y {dy}");
     // The dismount lands Bond in the pond (the ladder's bottom is under the surface) — the swim
-    // entry runs InWater's regrab=5 overwrite [M 0x195e50]. The stick KEEPS holding back from the
-    // dismount on (the natural get-off: the climber pushes away as he lets go) — the playtest's
-    // "infinitely latching onto the ladder, and I can't get off of it" is that swimmer.
+    // entry runs InWater's regrab=5 overwrite [M 0x195e50]. The CEL-SCOPED hit-below ray [M
+    // Player_FeetOnPoint 0x194188 → Collide_StraddleCels 0x1eac98] lets the climb-down keep going
+    // UNDER the surface to the bottom threshold — the flat read dismounted the climb on the deep
+    // pond bed (material 10, y≈2.09 under the ladder) mid-column, 0.44 above `bottom`, which is
+    // the divergence this task fixed (the game's cel-scoped climb scan does not see the water
+    // cel's bed from the garden cel).
+    assert!(dy <= lad.bottom() + 1e-3, "the dismount fired above the bottom threshold: y {dy:.3} vs bottom {}",
+        lad.bottom());
     let push_off = nf_game::player::Input { forward: -1.0, ..Default::default() };
     let mut in_water = false;
     for _ in 0..240 {
@@ -182,6 +187,11 @@ fn water_ladder_bottom_dismount_does_not_relatch() {
     }
     assert!(in_water, "the bottom dismount did not reach the water (ended at y {dy:.3})");
     assert!(sim.bond.regrab > 0, "the swim entry lost the regrab lockout (InWater's overwrite)");
+
+    // The playtest's complaint — "I'm infinitely latching onto the ladder, and I can't get off of
+    // it" (climbing off into the water): the swimmer who pushes off (the stick held away, the
+    // natural get-off — kept held from the dismount tick on) must swim free and never re-latch.
+    // The pre-109i port re-grabbed every cycle even then.
     for t in 0..300 {
         step(&mut sim, push_off);
         assert_ne!(sim.bond.substate, nf_game::player::SS_CLIMB,
@@ -194,19 +204,20 @@ fn water_ladder_bottom_dismount_does_not_relatch() {
     assert!(dxz0 > 0.9, "the push-off never moved him off the ladder column (dxz {dxz0:.3})");
     // The weapon still returns after the bottom dismount [M the 0x196310:99-102 carry fires on the
     // dismount tick's WALK substate, before the swim entry].
+    let neutral = nf_game::player::Input::default();
     let mut restored = false;
     for _ in 0..240 {
-        step(&mut sim, push_off);
+        step(&mut sim, neutral);
         if sim.gun.weapon == 2 { restored = true; break; }
     }
     assert!(restored, "after the bottom dismount Bond is on weapon {:#x}, not the saved P2K", sim.gun.weapon);
     // KNOWN DIVERGENCE (not asserted): a NEUTRAL pause after the dismount re-latches once the
-    // 5-tick InWater regrab expires — the port's flat world dismounts the climb 0.44 above the
-    // bottom threshold (the deep pond bed, material 10 at y≈2.09 under the ladder, feeds the
-    // hit-below ray that the game's cel-scoped climb scan would not run from the garden cel), and
-    // the settle spot sits inside the grab window AND inside the ladder's authored mesh (probed:
-    // the hut ladder's 100 triangles reach the settle capsule). Whether the real game re-latches
-    // the neutral settle turns on the climber's cel — see the report's live checks.
+    // 5-tick InWater regrab expires. The swimmer settles at the pond bed's capsule-push
+    // equilibrium (the solid bed, material 10 at y≈2.09 under the ladder, pushes the swim spine
+    // up to a root of ≈3.20 — INSIDE the grab window [M 0x196118:28-34] and inside the ladder's
+    // authored mesh, probed through the synthetic (map,object) key: the hut ladder's 100
+    // triangles reach the settle capsule). The game's own collision would settle him the same
+    // way; whether the real game re-latches the neutral settle is a live check (the report).
 }
 
 /// Sister: the bottom-dismount escape is not a broken grab — actively swimming back INTO the hut
