@@ -35,3 +35,7 @@ claimed-by: sandbox5 at 2026-10-16T11:51Z
 ## Report (done, 2026-10-16T14:02Z)
 
 Closed by the driver: the report is on `s/cross-process-determinism` (docs/reports/cross-process-determinism.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T14:44Z)
+
