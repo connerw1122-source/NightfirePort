@@ -25,3 +25,7 @@ claimed-by: sandbox1 at 2026-10-16T10:14Z
 ## Report (done, 2026-10-16T11:17Z)
 
 Closed by the driver: the report is on `s/casings-persist` (docs/reports/casings-persist.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T12:09Z)
+
