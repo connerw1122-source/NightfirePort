@@ -83,7 +83,9 @@ a comment at the site.
   paths — pools, cull radii, decals, casings, effects, portals, weapon models): frustum_cull_live
   2/2, decal_order_live 1/1, casings16_live 4/4, impacts_live 2/2, world_fx_live 4/4,
   fix_flesh_impacts_live 5/5, fix_weapon_effects_live 2/2, portal_live 4/4, fix_portal2_live 6/6,
-  fix_render_artifacts_live 4/4, models_weapons_live 4/4 — 38/38 PASS.
+  fix_render_artifacts_live 4/4, models_weapons_live 4/4 — 38/38 PASS; the merge-cache set
+  (weapon_assets_live 6/6, fix_weapons_all_live 4/4, fix_start_loadouts_live 5/5, mp_core_live
+  5/5) and the real-path smokes (walkreal_0700000c 9/9, level_reload_live 1/1) — 30/30 PASS.
 - nf-formats: 11 passed / 3 failed = exactly the 3 `disc_golden` tests the slim ISO allows to fail
   (bigf header/tables/directory golden manifests).
 - nf-game / nf-audio are untouched by this branch (no source change); their crates were not rerun.
