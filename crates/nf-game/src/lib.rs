@@ -25,6 +25,7 @@ pub mod kiko;
 pub mod input;
 pub mod light;
 pub mod mp;
+pub mod net;
 pub mod fusebox;
 pub mod gadget;
 pub mod gas;

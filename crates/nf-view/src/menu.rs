@@ -1472,6 +1472,10 @@ pub struct FrontEnd {
     /// credits-data: the page the credits were opened from, as a Page when it is a ported one
     /// (AV Options; the win page 0x40000053 is not ported and stays None) [M page_from_523].
     pub credits_from: Option<Page>,
+    /// net-match-host: the online session's message box (a desync, a lost peer, a refused join) —
+    /// the game's Menu_CreateOptionBox error box with a port-only string (no label id exists for
+    /// it [S]); the page under it returns to the MP lobby (MpJoin). None = no notice.
+    pub net_notice: Option<String>,
 
     // menu-sfx (each new field on its own line [WORKLOG lesson 4]).
     /// The sounds this frame's input/page changes started — the host drains (`drain_sfx`) and
@@ -1616,6 +1620,7 @@ impl FrontEnd {
             enabled_sound_flags: 0x0b,
             /// The handlers' `menu_movie` static: set once the open pair has played, reset by the
             /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
+            net_notice: None,
             menu_movie: false,
             // net-online-lobby (each new field on its own line [WORKLOG lesson 4]).
             mp_net_port: 27420,
@@ -4634,6 +4639,18 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             }
             hint_bar(&mut h, font, &hint(0x49b, "~A Confirm  ~V Change  ~B Back"), 50.0, 419.0, cream);
             quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+            // net-match-host: the session's message box (the game's Menu_CreateOptionBox error
+            // box [M mp-menus]; the port-only texts have no label ids, so the string draws raw
+            // [S]). The page under it is the lobby (MpJoin) — the failure path set it.
+            if let Some(t) = &fe.net_notice {
+                quad640(&mut h, 0x0300_0199, 120.0, 196.0, 400.0, 88.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
+                let lines: Vec<String> = t.split('\n').flat_map(|p| wrap_px(p, font, mx(360.0))).collect();
+                let n = lines.len().min(3) as f32;
+                for (k, l) in lines.iter().take(3).enumerate() {
+                    let mid = 240.0 + (k as f32 - (n - 1.0) / 2.0) * 22.0;
+                    centred(&mut h, font, -2, l, mx(320.0), my(mid), cream, true, 1.0);
+                }
+            }
         }
         // The MP wheels with the codename wheel's layout [L pages 0x40000012 (header 0x2c4 Scenario Options),
         // 0x40000027 / 0x4000003f (header 0x294 Multiplayer Bot Setup); hint 0x218; PCSX2 m55, m56, m57, m61, m63].

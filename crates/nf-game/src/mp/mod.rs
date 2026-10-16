@@ -130,6 +130,11 @@ pub struct MpSettings {
     /// bullet hits in `MP_RegisterBulletHit` 0x1857c0:43-57 [M]. The menu's Player Mods row 0x1ae
     /// writes it [M mp-menus.md].
     pub friendly_fire: u32,
+    /// Port-only ([S], no game field): the deterministic lockstep seed — every machine in an
+    /// online match builds the level from the same seed (net-match-host). The game's local flow
+    /// keeps the level-build constant the port used before (0x1234_5678 equivalent: seed 0 keeps
+    /// `Rng::new`'s mixing for local play — see `net-match-host.md`'s local-compat note).
+    pub seed: u32,
 }
 
 impl MpSettings {
@@ -159,6 +164,7 @@ impl MpSettings {
             radar: 1,
             registered_pickups: 0,
             friendly_fire: 0,
+            seed: 0,
         }
     }
 

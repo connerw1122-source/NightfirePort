@@ -13764,6 +13764,16 @@ Work Log (async-level-load):
   transition, the cold + fail-Restart arms, the movie-wrapped load, the weapon-give hitch left
   synchronous, the failure path).
 
+## net-match-host (sandbox7, started 2026-10-15T23:15Z)
+
+Task 053: wire 051's UDP lockstep session into the running app (crates/nf-view/src/lib.rs, the MP match
+path from 611/402): online match start builds the same MP level with the host's settings + seed on every
+machine; the local agent's keyboard+mouse input goes to the session each frame; the sim advances one tick
+only when `ready_inputs(tick)` returns all agents' inputs; each machine renders its own agent's view, the
+others as remote characters; state hash every N ticks; desync/disconnect show the game's message box and
+return to the lobby. Tests: two app sims in one process over loopback, 1 000 ticks of scripted input end
+in the same state; a forced desync is detected. Branch s/net-match-host.
+
 ## fix-ingame-lag + pause-woman clock (2026-10-15, main agent, branch mine/pc-menus2)
 
 - User's playtest: "very laggy and also the pause background is going wayy too fast".
@@ -13945,3 +13955,13 @@ Work Log (async-level-load):
 - Deliverables: docs/systems/net-online-lobby.md (the design + evidence) and
   docs/reports/net-online-lobby.md (the report: deviations, live checks for the main agent, and
   the one crate ask — the system clipboard for Ctrl+V).
+
+### net-match-host progress (sandbox7, 2026-10-15T23:15Z–00:10Z)
+
+- nf_game::net: the UDP lockstep session (051's API), nf-view wiring: the settings handover
+  (mp_match_settings was never read; the menu path loaded mp=false), load_mp_carry + MpSettings.seed
+  (0 keeps the local Rng constant), all-human slot-order spawn + Sim::mp_bonds +
+  swap_local_slot, the ready_inputs tick gate (no capture on a stall), step_net_remotes,
+  net_state_hash every 15 ticks, the message-box + return-to-lobby failure path, --net-host /
+  --net-join. Tests: net_session 5/0 (headless loopback), net_match_live 3/0 (two real sims,
+  1000 ticks same state; forced desync; disconnect). Suite on the merged tree: see the report.
