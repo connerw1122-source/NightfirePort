@@ -32,6 +32,15 @@ match reached state 5 and the end only logged. The fix mirrors the single-player
   borrow the match that lives in the sim the front end replaces) and `restore_mp_match(&MpSettings)`
   (the arena, the scenario + wheel rows, the limits with the confirm's ×0x3c inverted, the
   weapon set, radar, friendly fire, the agents' join records, the bot slots).
+- `menu.rs` — the debriefing page's **draw** (the data existed; the page drew nothing): the
+  menu-def page 0x40000033's layout [L mp-debriefing.md §4] — the header (50,40) 0x151, the
+  five column titles (Agent/Points/Victories/Deaths/TOTAL) at x=52 on the pinned ys
+  183/217/250/284/318, the four slot panels at x 176/280/384/488 (the portrait 81×81 at y=102 —
+  the row's small-table texture or the panel's placeholder 0x0300015d/c/56/6b; the rank caption
+  over the portrait; the name at y=183; the values under the pinned ys), the result plate
+  (176,355,408×52) + line (178,369) with the winner/draw text, the hint bar 0x2c1 and the
+  NightFire logo — all binding the mp-debriefing-data2 getters (`mp_debriefing_rows` /
+  `mp_debriefing_result`).
 
 Confirm then returns to the scenario page with the match's choices live, and `mp_confirm_start`
 hands the same arena over again — the second match needs nothing new.
@@ -72,7 +81,12 @@ hands the same arena over again — the second match needs nothing new.
 1. **The frag-limit match end**: start a local match (frag limit 1), frag the bot — the
    debriefing page should open over the arena: the board (2 rows), the ranks, "Player 1 wins
    the match."
-2. **Confirm** on the debriefing → the scenario page; **start another match** from it — the
+2. **The debriefing page's render**: header "Debriefing" top-left, the five column titles on
+   the left column, the up-to-4 slot panels (portrait, rank caption over it, name, the three
+   value columns + TOTAL), the result plate at the bottom with the winner line, the hint bar
+   "~A Continue  ~Y Replay". The rank caption's exact y over the portrait is [S] (the def gives
+   no y; drawn at the portrait's top edge) — PCSX2 m-page 0x40000033 settles it.
+3. **Confirm** on the debriefing → the scenario page; **start another match** from it — the
    same arena, the same limits.
-3. **The time-limit match**: set a 1-minute limit, wait it out — the debriefing opens with
+4. **The time-limit match**: set a 1-minute limit, wait it out — the debriefing opens with
    "Match was a draw" (no frags).
