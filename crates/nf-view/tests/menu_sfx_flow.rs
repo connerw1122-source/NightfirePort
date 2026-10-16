@@ -177,21 +177,25 @@ fn grid_moves_tick_only_on_change() {
         "the profile grid's tick is the same MENU_SOUND 7 → 0x1da");
 }
 
-/// The open pair rides the page transitions into the pair-playing pages, still under `menu_movie`
-/// [M the twelve handlers' 0x4c case; the port's page correspondence is docs/systems/menu-sfx.md §3].
+/// The credits' 0x4c is the SWAP, not a pair page: `SFXRemove(0,0x1d7); SFXRemove(0,0x470);
+/// menu_movie = 0; SFXStartMusic(0x27,0)` [M 0x2152b0:90-93 — the decomp; the pair restart is
+/// the LEAVE arm's, :58-63]. menu-audio-state corrected enter_page(Credits) to this.
 #[test]
-fn credits_open_plays_the_pair_when_menu_movie_is_clear() {
+fn credits_open_swaps_to_the_track_and_clears_the_pair_static() {
     let mut fe = FrontEnd::new();
     drain(&mut fe);
     fe.page = menu::Page::CnAv;
-    fe.menu_movie = false; // an intro/attract movie end cleared it [M 0x209e88:44,58]
+    fe.menu_movie = true; // the pair is up on the options pages [M §3 group C]
     assert!(fe.open_credits(nf_view::credits::PAGE_CN_AV, 100, false), "the credits open");
+    // No pair starts on the enter — the swap removes the pair through the music channel
+    // (MenuMusic::page_enter(Credits) queues StopJingles + StartMusic(0x27)).
     let ev = drain(&mut fe);
-    assert_eq!(ev, vec![
-        MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_MOVE },
-        MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_SELECT },
-    ], "P_CREDITS is one of the twelve pair pages");
-    assert!(fe.menu_movie, "the static is set again after the pair [M P_CREDITS 0x2152b0]");
+    assert!(ev.is_empty(), "the credits 0x4c starts no pair [M 0x2152b0:90-93]");
+    assert!(!fe.menu_movie, "the static clears on the swap [M 0x2152b0:92]");
+    // The music state mirrors the swap: jingles down, the credits track up, the volume saved.
+    assert!(!fe.music.jingles_up);
+    assert!(fe.music.credits_music);
+    assert_eq!(fe.music.credits_saved_vol, Some(100), "the entry volume is saved [M 0x2152b0:88]");
 }
 
 
