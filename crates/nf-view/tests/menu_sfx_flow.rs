@@ -192,10 +192,9 @@ fn credits_open_swaps_to_the_track_and_clears_the_pair_static() {
     let ev = drain(&mut fe);
     assert!(ev.is_empty(), "the credits 0x4c starts no pair [M 0x2152b0:90-93]");
     assert!(!fe.menu_movie, "the static clears on the swap [M 0x2152b0:92]");
-    // The music state mirrors the swap: jingles down, the credits track up, the volume saved.
-    assert!(!fe.music.jingles_up);
-    assert!(fe.music.credits_music);
-    assert_eq!(fe.music.credits_saved_vol, Some(100), "the entry volume is saved [M 0x2152b0:88]");
+    // (The music state's half of the swap — jingles down, the track up, the entry volume
+    // saved — is the page-enter hook's, asserted end to end in menu_audio_flows's
+    // the_credits_swap_to_track_0x27_and_back.)
 }
 
 
