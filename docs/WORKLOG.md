@@ -14471,6 +14471,39 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
 
+## guard-reaction-delay — guards don't fire the instant they see you (started 2026-10-16)
+Playtest: "guards shoot way too soon upon spotting you, at least give it half a second", "his gun's firing before it lowers at me" (07000006 wine cellar, searchlights, 07000005). Porting the game's sight-to-fire pipeline: noticed/alert latch timers, the aim-raise animation gate, the first-shot delay / reaction time (per difficulty if scaled), the searchlight-spot path. Branch s/guard-reaction-delay.
+
+### guard-reaction-delay progress (2026-10-16 ~07:50 UTC)
+
+- Verified the pending CombatNoRoute change against the decomp: [M 0x164c08:29-30] case 1 (ENTER) fires
+  `DroneWeap_Fire(1)` and then clears `+0x3b` on the same tick (the entry tick cannot release a bullet);
+  [M 0x164c08:41] case 3 not-seen clears `+0x3b` before ChooseCombatMove; [M 0x164c08:63] case 3 seen only
+  refreshes `+0x3b = (+0x1e == 0)` — no NextBulletTime (no writer of Drone+0x1e exists in the decompiles, so the
+  byte is 0 and the refresh is always 1). [M 0x17a8c0:9-14] DroneWeap_Fire gates NextBulletTime on `+0x3b` already
+  set in SP (`MPSettings._388_4_ == 0`) — the port's `fire()` guard matches.
+- New test crates/nf-game/tests/guard_reaction_live.rs measures the three sighting paths (07000005, the ai_live
+  notice spot, positions only):
+  - path1 fresh idle: sight ack 60 (live 61), ATTACK 60, first combat move 0x74 StepAimRight, first bullet 161.
+  - path2 alert-1.0 (alarm-raised): self-attacks during the warm-up (AlertSound 0x177800 forced-attack bits, no
+    sighting needed), sight ack tick 1 — the 59-tick floor is gone; first bullet 114 (a 100-frame step was in
+    flight when Bond appeared).
+  - path3 mid-combat re-sight: re-sight → COMBAT_NEW_SIGHTING → AimStandFire in 0-2 ticks (the entry fire
+    0x166328:59-61); at dist ≤ 4.0 CanBackoff routes AimBackoff first (0x166328:96-102), so no bullet until the
+    backoff ends.
+- KEY finding (anim call completion): a class-3 danim call (the step/strafe moves) never completes in the port —
+  guards sat in StepAimRight forever. The game's chain [M 0x13add0/0x13aee8]: when the transition danim of the
+  call's state starts, `+0x57b` (reached) is set and `ZeroAnimCall` clears the request record but the completion
+  action (+0x596 next AI state / +0x598 msg) SURVIVES; class 3 skips CallFullyComplete, so the call completes only
+  when the step's FOLLOW-ON danim (class 2) starts after the anim ends — reached is still set and the follow-on's
+  class 2 triggers `CallFullyComplete` → SetEndAIState(+0x596=0x68). The port's `call_handler` gate
+  `matches!(class, 2|9) || (class == 1 && !once)` blocks class 3 forever, and the step danim here is a 100-frame
+  one-shot (hash 100664390, anim set 5), so the guard steps the full 1.67 s, cannot fire during it
+  ([M 0x1676a0:16-18] the step enter clears `+0x3b`, no Fire in the step update, and steps do not abort on sight),
+  then AimStandFire releases. The port already mirrors this end-to-end (set_danim keeps the call + reached);
+  the 100-frame step play-out is game-exact behavior, not a stall — the earlier "stuck in 0x74" trace was the
+  test's 120-tick window, not a bug.
+
 ## stun-ai-recover (2026-10-16, branch s/stun-ai-recover) — the stunner's stunned drone state, started
 
 - Playtest 1015-1738: stunner guards "get stunned infinitely and don't complete the animation".
