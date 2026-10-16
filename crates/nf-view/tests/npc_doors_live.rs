@@ -484,3 +484,73 @@ fn a_locked_door_stays_shut_for_drones() {
     assert!(walker::dxz(start6, sim.drones.list[6].pos) > 2.0, "the 0x63 drive never moved the guard");
     assert!(min_side < 1.0, "the guard crossed the locked door's plane (Δz {min_side}) — a closed unopenable door did not block");
 }
+
+/// The 07000006 chase: Bond beyond the closed door #1 pair (path 7 n0–n1), firing at a guard on
+/// the near side — the guard's investigate/chase route crosses the doorway pair, and the guard
+/// must open the door himself (the combat-route dispatch reaches `route_reached_special`,
+/// fix-guard-misc2; the creep step-back keeps the chase from wedging on the doorway's walls).
+#[test]
+fn the_06_guard_chasing_bond_opens_the_closed_door() {
+    let mut scene = nf_view::load(&iso(), "07000006.bin", false).expect("load 07000006");
+    settle(&mut scene, 300);
+    // The pair and door #1 (the fix_guard_misc census: path 7 n0 (35.9,40.7,-15.7) — n1 —, door #1 at (36.5,40.0,-16.3)).
+    let (di, dpos) = (1usize, {
+        let sim = scene.sim.as_ref().unwrap();
+        sim.drones.doors.list[1].pos
+    });
+    // The enabled IDLE guard nearest the pair on the +z side (the census: #2 at (27.5,39.0,-10.3)).
+    let gi = {
+        let sim = scene.sim.as_ref().unwrap();
+        sim.drones.list.iter().enumerate().filter(|(_, dr)| dr.present && !dr.corpse && dr.enabled && dr.health > 0.0
+            && dr.pos[2] > dpos[2] && dr.pos[2] < dpos[2] + 10.0)
+            .min_by(|a, b| ((a.1.pos[0]-dpos[0]).powi(2) + (a.1.pos[2]-dpos[2]).powi(2))
+                .total_cmp(&((b.1.pos[0]-dpos[0]).powi(2) + (b.1.pos[2]-dpos[2]).powi(2))))
+            .map(|(i, _)| i).expect("an enabled guard on the near side of door #1")
+    };
+    eprintln!("[06c] guard #{gi} at {:?} state {:#x}; door #{di} at {dpos:?}",
+        scene.sim.as_ref().unwrap().drones.list[gi].pos, scene.sim.as_ref().unwrap().drones.list[gi].state);
+    // Bond beyond the door (the far side), facing the guard: the shot's noise pulls the chase.
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [dpos[0], dpos[1] + 1.1, dpos[2] - 4.5];
+        sim.bond.yaw = (sim.drones.list[gi].pos[0] - sim.bond.pos[0]).atan2(sim.drones.list[gi].pos[2] - sim.bond.pos[2]);
+    }
+    let (mut saw_0x81, mut opened, mut crossed) = (None, false, false);
+    let mut shots = 0;
+    for t in 0..9000u32 {
+        let (aim_err, dist) = {
+            let sim = scene.sim.as_ref().unwrap();
+            let (bp, gp) = (sim.bond.pos, sim.drones.list[gi].pos);
+            let want = (gp[0] - bp[0]).atan2(gp[2] - bp[2]);
+            (walker::wrap_pi(want - sim.bond.yaw), walker::dxz(bp, gp))
+        };
+        let input = Input {
+            turn: aim_err.clamp(-0.08, 0.08),
+            forward: 0.0,
+            ..Default::default()
+        };
+        let trigger = shots < 8 && t % 40 == 0 && aim_err.abs() < 0.05 && t > 30;
+        if trigger { shots += 1; }
+        scene.sim.as_mut().unwrap().step_bond(input, trigger, false, false);
+        let sim = scene.sim.as_ref().unwrap();
+        let (st, gp) = (sim.drones.list[gi].state, sim.drones.list[gi].pos);
+        if saw_0x81.is_none() && st == 0x81 {
+            saw_0x81 = Some(t);
+            eprintln!("[06c] +{t}: guard entered 0x81, hit_door {:?}", sim.drones.list[gi].hit_door);
+        }
+        if !opened && sim.drones.doors.list[di].state == nf_game::door::OPEN {
+            opened = true;
+            eprintln!("[06c] +{t}: door #{di} OPENED by the chasing guard");
+        }
+        if gp[2] < dpos[2] - 1.0 { crossed = true; }
+        if crossed && opened { break; }
+        if t % 900 == 0 {
+            eprintln!("[06c] +{t}: guard #{gi} state {st:#x} at ({:.1},{:.1},{:.1}); door {} {:#x} pos01 {:.2}; bond {:?} shots {shots}",
+                gp[0], gp[1], gp[2], di, sim.drones.doors.list[di].state, sim.drones.doors.list[di].pos01, sim.bond.pos);
+        }
+    }
+    eprintln!("[06c] result: 0x81 at {saw_0x81:?}, opened {opened}, crossed {crossed}");
+    assert!(opened, "the chasing guard never opened door #{di}");
+    assert!(crossed, "the door opened but the chasing guard never crossed to Bond's side");
+    assert!(saw_0x81.is_some(), "the chase opened the door without the DSTATE_OpenDoor dispatch");
+}

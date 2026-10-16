@@ -70,12 +70,13 @@ step-back un-wedges them identically.
   read before the session ended — the next session should read `tail -1 suite2.out` and its
   FAILED lines.
 
-## Remaining
+1b. `the_06_guard_chasing_bond_opens_the_closed_door` (07000006) — Bond beyond the closed door #1
+   pair fires at the enabled IDLE guard #2 on the near side (the real input path, 8 shots); the
+   guard's chase crosses the path 7 doorway pair: 0x81 at +401 with `hit_door Some(1)`, the door
+   OPENED at +408, the guard crosses to Bond's side. (The 0x63-driven variant is master's
+   `fix_guard_misc_live::the_06_guard_driven_through_a_door_pair_opens_it_and_crosses`.)
 
-- **07000006 chase variant**: the guard-opens-door chain on 06 is covered by master's
-  `fix_guard_misc_live::the_06_guard_driven_through_a_door_pair_opens_it_and_crosses` (0x63 drive
-  through the path 7 pair → door #1) and now by the step-back fix for the chase geometry; the
-  combat-triggered chase (Bond fired at beyond a closed door) is not its own test yet.
+## Remaining
 - **07000007 guests**: the watch shows party girls (kind 13, PARTY_GIRL 0x2f) never receive their
   `AssignAIPath(8)` routes in the port (prop 0x1d's route assignment — PartyGirlInit 0x1728c0), so
   no guest walks the kind-8 door pairs (paths 3/6/7 → doors #3/#1). The game's party wanders
