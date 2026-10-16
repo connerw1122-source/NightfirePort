@@ -16277,3 +16277,20 @@ start per the task message), report.
   known no-GPU pylon environmental failures (same trio prior tasks recorded). Audit found
   and I fixed: a net_notice line my edit had dropped, an i64 overflow edge in the clamp,
   and a missing settings load on the F8/F9 demo-results fe. See docs/reports/settings-persist.md.
+
+OPTIONS-PERSIST-ROUNDTRIP CLOSE-OUT (19:15 UTC): 651 was NOT on master — merged
+origin/s/settings-persist (601733f0, both sides kept in lib.rs's three conflicts), then proved
+the file end to end by the real input path: actions+ticks only from the boot through the card
+flow into the Edit wheel, every ADV/MP/AV value row changed through Left (+ the page Confirm;
+sliders twice so the music edit can't land on the driver's boot 70), host drain via the
+menu_after replica, drop → fresh FrontEnd on the same NF_CONFIG_DIR shows the same values, Back
+restores the snapshot and re-saves the RESTORED values (edits gone from map AND file), unknown
+keys/out-of-range values tolerated and clamped. The MISSING half — the AV volume rows reaching
+the sound layer — landed as nf_view::apply_av_volumes (driver.music_master/master + the
+menu-music model) called at the --fe boot and the CLI-mission boot [M LS_LoadGlobalSettings
+0x1cdbc8:69-70; Boot_LoadPTPData 0x1c8560:81-82; ES_CombineVolumes 0x1300 scales by the
+statics]. Tests: 3 new in options_persist_roundtrip.rs (env-serialized) + 651's 13. Touched
+crates before pushing: 12 nf-view menu-cluster binaries 143/0. Final-tree suite (merged
+origin/master c10b530f, six foreground chunks): 1908 passed, 7 failed, 72 ignored over 436/437
+binaries — the 7 exactly the known environmental set (3 disc_golden, driving_ai_follow, 3
+no-GPU pylon probes); no TIMEOUT/CRASH. Report: docs/reports/options-persist-roundtrip.md
