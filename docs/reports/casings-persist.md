@@ -84,8 +84,13 @@ The Effect layer's casing attachment pool sizes to `KEEP_MAX` (128) instead of `
 - `cargo test --offline --release -p nf-game --lib` — 240 passed (includes the 7 casing tests).
 - `cargo test --offline --release -p nf-view --test impacts_live` — 5 passed;
   `-p nf-view --test fix_shell_eject_live` — 2 passed.
-- The full four-crate suite via `tools/test/suite.py` on the final tree: **(total line — filled in
-  below)**.
+- The full four-crate suite via `tools/test/suite.py` on the final tree (master aa3bc1f5 + this
+  branch, nothing else pending): **1783 passed, 6 failed, 72 ignored (43 min)**. The 6: the 3
+  `disc_golden` tests the slim ISO always fails, plus `probe_pylon_render::probe_render_pylon_only`
+  and `fix_0c_pylon_live::{the_0c_pylon_fills_the_view_from_the_closeup_spot,
+  the_0c_pylon_is_on_screen_at_the_user_spot}` — the identical 3 pylon failures the pre-session
+  baseline run shows (suite.log 2026-10-16 09:50: 1729 passed, the same 6 failed), i.e. pre-existing
+  on master, not from this branch (this branch touches only the casing pool and its tests).
 
 ## Live checks for the main agent
 
