@@ -185,6 +185,10 @@ fn actual_row(path: &str, data: &[u8]) -> (String, Row) {
     (line, row)
 }
 
+/// The recorded audio-long movies (delta in milli-frames, negative = the audio runs longer than the
+/// video): the muxer pads the audio bed past the video end on these five (docs/formats/pss.md G-008).
+const RECORDED_AUDIO_LONG: &[&str] = &["0730000D.PSS", "07300017.PSS", "073A0048.PSS", "073B0048.PSS", "073F0048.PSS"];
+
 const HEADER: &str = "movie\tvideo_es_sha1\taudio_es_sha1\tgops\tgop_pictures\tpictures\ti_pictures\tp_pictures\tb_pictures\tpics_outside_gops\tpics_per_gop_min\tpics_per_gop_max\taudio_kind\taudio_rate\taudio_channels\taudio_samples\tdelta_milliframes\tframes_sha1";
 
 /// The GOP walk and the duration check for every movie with data. Skips on stub-only images.
@@ -198,14 +202,25 @@ fn gop_walk_and_durations_match_the_golden() {
     }
     eprintln!("movies with data: {}/22", movies.len());
     let golden = include_str!("../golden/pss_movies_g008.tsv");
-    let mut lines = Vec::new();
+    // Pass 1: render every row and run the structural checks (no golden needed) - the GOP walk's own
+    // invariants and the +-1-frame duration leg.
+    let mut rows: Vec<(String, String, Row)> = Vec::new();
     for (p, data) in &movies {
         let (line, row) = actual_row(p, data);
-        let name = p.rsplit('/').next().unwrap();
-        let g = golden_row(name, golden).unwrap_or_else(|| panic!("{name}: no golden row"));
-        // The video picture count vs the GOP walk: every picture sits in exactly one GOP and the totals agree.
+        let name = p.rsplit('/').next().unwrap().to_string();
+        // The video picture count vs the GOP walk: every picture sits in exactly one GOP, totals agree.
         assert_eq!(row.gop_pictures, row.pictures, "{name}: GOP-walk pictures vs picture_counts");
         assert_eq!(row.pics_outside_gops, 0, "{name}: pictures outside any GOP");
+        if row.audio_samples > 0 {
+            assert_eq!(row.audio_kind, 1, "{name}: PCM (the RC2 ADPCM parser rejected this)");
+        }
+        rows.push((name, line, row));
+    }
+    let actual = format!("{HEADER}\n{}\n", rows.iter().map(|(_, l, _)| l.clone()).collect::<Vec<_>>().join("\n"));
+    if std::env::var_os("PIN_GOLDEN").is_some() { println!("{actual}"); }
+    // Pass 2: the golden comparison - every measured number and ES SHA-1 must hold.
+    for (name, _, row) in &rows {
+        let g = golden_row(name, golden).unwrap_or_else(|| panic!("{name}: no golden row"));
         assert_eq!(row.pictures, g.pictures, "{name}: picture count vs golden");
         assert_eq!(row.i_pictures, g.i_pictures, "{name}: I pictures vs golden");
         assert_eq!(row.p_pictures, g.p_pictures, "{name}: P pictures vs golden");
@@ -214,20 +229,21 @@ fn gop_walk_and_durations_match_the_golden() {
         assert_eq!(row.gop_pictures, g.gop_pictures, "{name}: GOP-walk total vs golden");
         assert_eq!(row.pics_outside_gops, g.pics_outside_gops, "{name}: outside-GOP pictures vs golden");
         assert_eq!((row.pics_per_gop_min, row.pics_per_gop_max), (g.pics_per_gop_min, g.pics_per_gop_max), "{name}: per-GOP min/max vs golden");
-        // The audio kind/rate/channels and sample count vs golden.
         assert_eq!((row.audio_kind, row.audio_rate, row.audio_channels), (g.audio_kind, g.audio_rate, g.audio_channels), "{name}: audio format vs golden");
         assert_eq!(row.audio_samples, g.audio_samples, "{name}: audio samples vs golden");
-        assert_eq!(row.audio_kind, 1, "{name}: PCM (the RC2 ADPCM parser rejected this)");
-        // The duration leg, tightened to ±1 frame (1000 milli-frames).
-        assert!(row.delta_milliframes.abs() <= 1000, "{name}: audio vs video duration drifts {} milli-frames (> 1 frame)", row.delta_milliframes);
+        // The duration leg, tightened to +-1 frame (1000 milli-frames). Five movies carry an audio bed
+        // padded past the video end by 1.2-3.0 frames - a property of the FILE, not a decoder error: the
+        // sample counts are structural (SSbd body / (2*channels)), reproduced byte-identically by the
+        // earlier retail-image run (pss_movies.tsv), and ffprobe independently confirms the video frame
+        // count (0730000D: 1700 frames at 30 fps). They are recorded here and in docs/formats/pss.md;
+        // any OTHER file drifting past a frame fails.
+        if !RECORDED_AUDIO_LONG.contains(&name.as_str()) {
+            assert!(row.delta_milliframes.abs() <= 1000, "{name}: audio vs video duration drifts {} milli-frames (> 1 frame)", row.delta_milliframes);
+        }
         assert_eq!(row.delta_milliframes, g.delta_milliframes, "{name}: duration delta vs golden");
-        // The demuxed ES hashes vs golden (the pinned data-image run).
         assert_eq!(row.video_es_sha1, g.video_es_sha1, "{name}: video ES SHA-1 vs golden");
         assert_eq!(row.audio_es_sha1, g.audio_es_sha1, "{name}: audio ES SHA-1 vs golden");
-        lines.push(line);
     }
-    let actual = format!("{HEADER}\n{}\n", lines.join("\n"));
-    if std::env::var_os("PIN_GOLDEN").is_some() { println!("{actual}"); }
     let golden_full = format!("{HEADER}\n{}", golden.lines().skip(1).collect::<Vec<_>>().join("\n"));
     let d = diff_tsv(&golden_full, &actual);
     assert!(d.is_empty(), "{} g008 differences:\n{}", d.len(), d.join("\n"));
@@ -292,6 +308,11 @@ fn every_picture_decodes_without_error() {
     let golden = include_str!("../golden/pss_movies_g008.tsv");
     for (p, data) in &movies {
         let name = p.rsplit('/').next().unwrap();
+        // PIN_ONLY=07100001.PSS,073F0048.PSS restricts the (slow) decode to the named movies - the
+        // re-pinning helper for a partial run.
+        if let Ok(only) = std::env::var("PIN_ONLY") {
+            if !only.split(',').any(|m| m == name) { continue; }
+        }
         let g = golden_row(name, golden).unwrap_or_else(|| panic!("{name}: no golden row"));
         let d = demux(data).unwrap();
         let frames = decode_video(&d.video).unwrap_or_else(|e| panic!("{name}: DECODE FAILED: {e}"));
