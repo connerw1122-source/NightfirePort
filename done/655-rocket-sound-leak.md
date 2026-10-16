@@ -17,3 +17,8 @@ leftover live looping items in the driver.
 
 ---
 claimed-by: sandbox7 at 2026-10-16T03:10Z
+
+---
+## Report (done, 2026-10-16T03:57Z)
+
+Closed by the driver: the report is on `s/rocket-sound-leak` (docs/reports/rocket-sound-leak.md); the worker didn't run finish.sh.
