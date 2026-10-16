@@ -30,3 +30,8 @@ Sister assertion: a deliberately slow closure must fail the budget helper.
 
 ---
 claimed-by: sandbox4 at 2026-10-16T02:01Z
+
+---
+## Report (done, 2026-10-16T03:13Z)
+
+Closed by the driver: the report is on `s/frame-cost-guard` (docs/reports/frame-cost-guard.md); the worker didn't run finish.sh.
