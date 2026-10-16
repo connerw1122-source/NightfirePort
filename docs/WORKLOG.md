@@ -16485,3 +16485,14 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
 - Report: docs/reports/uncited-gameplay-audit.md. Left: the 10 queued tasks (none started,
   audit-only by design) + the live checks; gap ④/⑤ should rebase onto task 704's
   s/mp-bots-in-match branch.
+
+## rocket-trail-gas (2026-10-16, branch s/rocket-trail-gas) — start 20:05 UTC
+- Task: audit the gas puffs a rocket spawns against the game — Bullet_DoTrails 0x12d890
+  (trail smoke kind 0x0200001f: spawn interval, start/end scale, rgba, life), the muzzle
+  smoke in Player_MuzzleFlash 0x1a4298 (skipped for +0x68 & 0x2000 records), any launch
+  puff. Compare the port's gas.init calls and gas update per kind; fix mismatches in the
+  sim. Symptom: port fills the 08 corridor with grey haze during a rocket flight; PS2
+  stays mostly clear.
+- Plan: read the decomp of Bullet_DoTrails + Player_MuzzleFlash + the gas functions,
+  audit crates/nf-game gas init/update for kind 0x0200001f, test one 0x2d shot on 08 for
+  puff count/per-puff data/lifetimes, pin with tests, full suite, push.
