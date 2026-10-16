@@ -4026,18 +4026,30 @@ impl Drone {
                 self.timer_c = Some(frame + 60);
                 self.croute = None;
                 self.fire(d, rng, frame, true);
+                // [M 0x164c08 case 1, last line] `DroneWeap_Fire(1)` is followed by `+0x3b = 0` on the
+                // enter: the burst schedule arms (NextBulletTime ran inside Fire), but the fire request
+                // is OFF — the guard cannot release a bullet on the entry tick; the seen UPDATE's
+                // refresh re-arms the request (guard-reaction-delay).
+                self.firing = false;
                 true
             }
             (COMBAT_NO_ROUTE, msg::UPDATE) => {
                 self.desired_yaw = self.yaw_to_opp;
                 if !self.seen {
+                    // [M 0x164c08 case 3, not-seen branch] `+0x3b = 0` before ChooseCombatMove.
+                    self.firing = false;
                     match self.choose_combat_move(d, rng) {
                         0 | AIM_STAND | AIM_CROUCH => self.call_anim(d, anim_state::ALERT_IDLE, 0, 0),
                         m => self.set_state(m),
                     }
                 } else {
                     self.call_anim(d, anim_state::AIM_STAND, 0, 0);
-                    self.fire(d, rng, frame, true);
+                    // [M 0x164c08 case 3, seen branch] the game REFRESHES the request
+                    // (`+0x3b = +0x1e == 0`, no NextBulletTime — Fire's own `+0x3b` guard means a
+                    // Fire(1) here with the request already on can never re-schedule either): the
+                    // burst scheduled on the enter (or the earlier state) stays; HandleFiring
+                    // releases it through the usual `+0xbc4` stamp + Ready2Fire gates.
+                    self.firing = true;
                 }
                 true
             }
