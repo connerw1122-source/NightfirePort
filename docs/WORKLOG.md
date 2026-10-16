@@ -16244,3 +16244,16 @@ channel; every disc alarm switch writes 0x61 [S]) and when the attempt is abando
 ported), timer-C payload plumbing in `PreDroneControl` 0x148db0:93-108 (msg 0xC carries +0xCC8).
 Plan: AI-point registry from 0xE9 placements in `attach_level`, real RunToAlarm/PressAlarm/
 DonePressAlarm arms, the EnemyRunToPoint prop-0x56 arm, disc census test, then the suite.
+
+## drone-press-alarm (2026-10-16, branch s/drone-press-alarm) — checkpoint 20:57 UTC (sandbox expiring)
+
+The decompile pass is complete and the chain is ported (RunToAlarm/PressAlarm/DonePressAlarm/
+HostageGoToGoal/JustStand arms, the 0xE9 AI-point + 0x29 switch registry, the EnemyRunToPoint
+prop-0x56 gate; `cargo check -p nf-game` clean) — commits 28582c23 + eb888ad0 pushed. NOT done: the
+HandleImpact 0x1469b8 08/09 guard-reassignment (the disc's real trigger), the two tests, the suite
+run, the seen-and-attacking tick list. Full findings + the live-check list:
+docs/reports/drone-press-alarm.md. Key discovery: the disc's alarm levels are 07000008/09 (impact
+reassignment → FirstAttack +0x5a4=0x89) and 0700000a (9 panels, 10 ch-0x61 switches, prop 0x56 on
+all 20 guards); the disc's alarm channels are 0x61 (0a) and 0x37 (09), and DroneTypeSettings row 14
+= start/alt 0x89 is reached via DroneModeSettings row 18 (AlarmRaiser) or GetDTYPENEW block 3 +
+prop 0x56.
