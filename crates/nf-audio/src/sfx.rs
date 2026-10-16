@@ -753,6 +753,10 @@ impl Driver {
     /// a spare's slot only for ids it lacks.
     pub fn item_slot(&self, id: u32) -> Option<usize> { self.items.iter().find(|it| it.id == id).map(|it| it.slot) }
 
+    /// rocket-sound-leak test hook: the live item's tracked 3-D position (`SFXSetPositionAndVelocity`'s
+    /// target, item `real_pos`, /1000 back to units), first item with the id.
+    pub fn item_pos(&self, id: u32) -> Option<[f32; 3]> { self.items.iter().find(|it| it.id == id).map(|it| it.real_pos.map(|x| x as f32 / 1000.0)) }
+
     /// The ids of the live items (tests).
     pub fn ids(&self) -> Vec<u32> { self.items.iter().map(|it| it.id).collect() }
 }
