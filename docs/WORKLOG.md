@@ -16227,3 +16227,15 @@ fix_cutscenes_live 4/4, fix_cutscenes2_live 5/5, fix_kimiko_handback_live 1/1,
 models_characters_live 6/6, fix_party_mission_live 9/9, scenario_live 6/6. The pre-change
 full-suite run `1864 passed, 6 failed, 72 ignored (50 min)` (the 3 allowed disc_golden + the 3
 pre-existing pylon render probes); the final-tree fast-runner suite started 16:41 UTC.
+
+## net-e2e-loopback (2026-10-16, branch s/net-e2e-loopback) — start 17:55 UTC
+
+Task 706: host and join an online match end to end over loopback — two FrontEnds plus two Sims in
+one test, over 127.0.0.1 through nf-net (661): host = Multiplayer → Host Online → port → Start
+Listening → the lobby; client = Join Online → types 127.0.0.1:port → Connect → the lobby; the host
+picks the scenario/map/options and starts; both load the arena via load_mp_carry with the same
+seed; 1200 lockstep ticks with scripted inputs on both; the per-tick state hashes match; a
+scripted kill updates both scores; the match end hands both to the debriefing. A variant injects
+5% packet loss + reordering. Every step goes through FrontEnd actions (no direct page writes).
+Plan: map the nf-net API and the FrontEnd multiplayer pages, write the failing e2e test, fix what
+breaks, run the touched crates, then the full suite on the final tree.
