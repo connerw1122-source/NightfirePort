@@ -2294,8 +2294,8 @@ impl FrontEnd {
         // Confirm (msg 0x4b) when the commit improved AND a SAVED codename is in play [M
         // 0x208e78:24-32]; the answer drives `request_save` and the card flow shows the
         // game's messages. The Default row and Play-without-saving never prompt [M :33-36 —
-        // Menu_UpdateDefaultCodename in memory, no file].
-        self.results_box = self.results_improved && self.saved_codename_in_play();
+        // Menu_UpdateDefaultCodename in memory, no file]. (The box itself opens on the
+        // Confirm — the enter only computes the gate.)
         self.results_save_answer_no = false;
         self.results.is_some()
     }
