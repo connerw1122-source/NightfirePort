@@ -14889,3 +14889,26 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   test from the hatch top: open, drop, crouch-walk the passage to the far room, assert Bond's position;
   sister test: standing (not crouched) is blocked at the same spot.
 - Branch from origin/master ad761677, pushed.
+
+## hatch-crouch-0c (2026-10-16, branch s/hatch-crouch-0c) — close-out
+- THE fix: the grounded rule was missing the game's pick-contact arm — `Player_FeetOnPoint`
+  0x194188:176-185 grounds on a NON-EMPTY capsule pick list (HITTEST+0x9c) OR the floor ray within
+  cc+0.1 [M 0x194188:106]; the port grounded only off the ray/walkable push. Riding the balcony's
+  south pier ramp (14.61→16.49 over z −121..−122, ~58° [D probes]) the push lifted the crouched
+  capsule past the ray tolerance (crouch rest 0.646 vs the 0.55+0.1 gate) and Bond bounced
+  ungrounded at the base forever — the playtests' "can't crouch through" soft-lock. Port now:
+  `grounded = push != 0 || floor-within-tolerance` (player.rs, walk physics_tick).
+- Capsules verified against [M Player_Collision 0x194df0] (crouch case 3 r 0.55 top=feet+1.20;
+  stand case 0/6 r 0.275, same [0,1.86] envelope) — no capsule change needed; no crawl trigger
+  exists (no creepwall on 0c [D]; climb is ladder-only [M 0x196118]); the open hatch's collision
+  moves with the sweep correctly (probe: open band 15.3..17.6 clear, the panel low behind).
+- Tests (crates/nf-view/tests/hatch_crouch_live.rs, all green): the hatch-top → open → crouch-drop
+  onto the balcony; the crouch-walk south (east half, x 11) to the far walkway z<−125; the pier
+  ride stays grounded (the fix's regression); standing blocked at the pier (sister). Probes kept in
+  hatch_crouch_probe.rs. fix_0c_vent2's drop-test sister bound 16.5→16.6 (he now rides the pier).
+- The winch-elevator theory is DEAD [D]: #351/#364/#377 are contact-sway props (no translation
+  keys, mask 2 = kind 5 per SS_Operate 0x1a9df8). Suite on the pre-fix tree: 1729 passed / 6 failed
+  (3 disc_golden + 3 GPU render tests that can't run headless) / 72 ignored, 58 min; the post-fix
+  re-run didn't fit the window — the touched binaries (nf-game lib 237, hatch_crouch 4, vent2 3,
+  hatch 2, level_0c 4, walk_0c 4, walkreal_0c 18, playtest_spots 4) all green. Report:
+  docs/reports/hatch-crouch-0c.md (live checks: the pier climb, the east descent).
