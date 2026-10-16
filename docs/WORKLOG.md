@@ -16717,3 +16717,18 @@ Sideflip 0xb3/Left 0xaf/Right 0xb0), NoRoute 0xb1 (star throwing), and the trans
 Tests: a Ninja engages Bond in melee with the game's sequence and damage; states follow the game's
 transitions over a scripted fight. Deadline 22:26 UTC for new work.
 - Branch created from origin/master 170bcf01. work/ + ISO already in sandbox from prior task.
+- ninja-melee: settled the state-id table from the EE snapshot [L 0x29b300] — 0xaf is the ±3
+  Sideflip router (0x173e08), 0xb0/0xb1 the anim-0x68/0x69 flips, 0xb3 NoRoute (the audit's gap ③
+  ids were shifted by one). Ported the full chain in drone.rs: 0xab run-in (+180 timer), 0xac
+  sword (anim 0x6d → 0xa7; damage rides the anim melee event → CloseCombatImpact), 0xad/0xae/
+  0xb0/0xb1 evasion flips (invalidate route, variant Rand(3), Fire(1), EXIT clears +0x3B), 0xb2
+  replaced with the real handler (TIMER_C +180, somersault/sideflip alternatives), 0xb3 NoRoute
+  (TIMER_C +30, star throws, re-route to 0xa7 when a route exists), 0xa7's real close-band
+  routing, 0xa8/0xa9's no-route → 0xb3 arms, melee band +0xEC (4.0/2.0 ninja, DefaultInit
+  0x14b300:744-753) and the +0x2C8 attack-hold counter [S seen-gated]. Tests
+  ninja_melee_live.rs (both green): the 07000004 assassin closes and swings with the game's
+  transitions, throws and landed damage; NoRoute throws and recovers. Touched crates run:
+  nf-game 54 binaries all ok; nf-view fix_finale_live 4 + ninja_melee_live 2 passed. The fast
+  runner was started per the driver but this sandbox kills background processes between tool
+  calls (both attempts died in the build phase, suite.out 0 bytes) — no window left to run it in
+  the foreground; report: docs/reports/ninja-melee.md.
