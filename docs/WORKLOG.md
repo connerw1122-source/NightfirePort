@@ -16056,3 +16056,25 @@ and other merged tasks' new tests. The 2 new live tests are green in the totals.
   72 ignored` — the 3 allowed disc_golden (slim-ISO LBA columns; the content hashes match) +
   the 3 pre-existing no-GPU pylon render probes (fix_0c_pylon_live 2, probe_pylon_render 1,
   `wgpu adapter: NotFound`). No failures from this task. Report: docs/reports/grenade-rattle2.md.
+## oddjob-hat (2026-10-16, branch s/oddjob-hat) — start
+- Branch from origin/master. Task: Oddjob's hat — the hit damage (one-shot? the playtests say it
+  "acts like a grenade"), the wall-hit sound id ("weird sound"), and the projectile pool
+  cap/recycling ("throw enough and you stop seeing them fly"). Tests: a hat hit kills a guard in
+  one hit if the game says so; the wall hit plays the game's sound; 10 rapid throws keep the
+  game's count of live hats with the oldest recycled the game's way.
+- VERIFICATION: the weapon record re-read byte-for-byte [L ee_start_05.bin @0x2c398c]: damage
+  +0x0C = 100.0, interval +0x40 = 26, release frame +0x44 = 13, rounds +0x91 = 100, +0x6C =
+  0x20C08 (gravity|homing|no flesh pass), +0x70 = 0x100 (stick, no fuse/blast). The stick arm's
+  0x4a7 clang + the 0x44160000 (1500.0) lifetime are literally in the decompile
+  [M 0x12ce80:315-317]; the 6-placed cap counts only the satchel 0x3a / mine 0x37 same-weapdef
+  set [M 0x12ce80:335-370] — the hat is not in it; the draw ring is 512 [M View_AddObjects
+  0x1e62d8, L viewer[0] sizes 512/512/128].
+- NEW TEST: `crates/nf-view/tests/oddjob_hat_spree_live.rs` — the task's 10-rapid-throw ask:
+  ten press-release throws at the throw cadence (the record's 26-tick interval floor; the throw
+  anim spans a press cycle, so the measured rapid cadence is a regular 52/hat), 10/10 stay live,
+  10/10 draw, the count still 10 after 300 more ticks (inside the stuck hats' 1500-tick
+  lifetime). GREEN (2.3 s). The five existing hat tests re-verified green on the branch
+  (oddjob_hat_live 2/2, hat_details_live 2/2, gadgets_live 4/4).
+- SUITE (final tree): 1835 passed, 6 failed, 72 ignored (43 min); the 6 = the 3 allowed
+  disc_golden + the 3 pre-existing pylon-render failures (same set as the unmodified-tree suite
+  of the cross-process session). The hat binaries via the runner --only: 9 passed, 0 failed.
