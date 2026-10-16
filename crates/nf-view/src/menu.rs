@@ -2111,6 +2111,11 @@ impl FrontEnd {
             // frame's StopJingles and played for under a frame — menu-audio-state).
             self.menu_movie = false;
         }
+        if p == Page::MpScenario {
+            // [M P_MPSCENARIO_Handler 0x217348:23 — the page's 0x4c open runs
+            // Menu_UnlockMPSettings 0x1ff698, re-deriving the reward gates from the bonus words.]
+            self.unlock_mp_settings();
+        }
     }
 
     /// `SFXRemove(0, 0x1d7)` + `SFXRemove(0, 0x470)` [M the twelve handlers' 0x4c arm removes
@@ -5220,6 +5225,34 @@ impl FrontEnd {
     /// page enter, so a pure read is equivalent. The unlock-everything cheat does NOT set it [M
     /// menu_unlock_everything never touches the bonus words].
     pub fn mp_explosive_unlocked(&self) -> bool { self.mp_bonus_mask >> 0x3e & 1 != 0 }
+
+    /// [M Menu_UnlockMPSettings 0x1ff698 — decomp work/decomp/ACTION.ELF/001ff698:53-104: the
+    /// OR of the four player bonus words (`bonus | DAT_002e1b90 | DAT_002e1b98 | DAT_002e1ba0`
+    /// @0x2e1b88..0x2e1ba8), the unlock flags cleared, then the 12 campaign rows' counters 1..4
+    /// read through `PlrStarts_ProcessRewardCounter` 0x199210's get arm; a set bit with
+    /// descriptor kind 2 raises the scenario/bot unlock flags by id 0x38..0x3d (mp_scenario
+    /// [0x100/0x70/0x130/0xa0/0xb8/0xe8]) and kind 3 id 0x3e raises `mp_stuff[0x370]`. Kinds
+    /// 0/1/4 set nothing, so the mask keeps exactly the kind-2/3 ids found set.] The words are
+    /// the active profile's (the load applied the BNUS block to the game's globals); without a
+    /// codename in play the port has no session layer here, so the mask clears [S — the game's
+    /// in-memory globals would carry a Play-without-saving session's awards].
+    pub fn unlock_mp_settings(&mut self) {
+        let all = self.profile.as_ref().map_or(0u64, |p| {
+            p.progress.bonus.iter().take(4).fold(0u64, |a, &b| a | b)
+        });
+        let mut mask = 0u64;
+        for hash in nf_game::progress::SP_LEVEL_HASHES {
+            let Some(e) = nf_game::progress::REWARDS_TABLE.iter().find(|e| e.hash == hash) else { continue };
+            for counter in 1..=4usize {
+                let d = e.desc[counter];
+                if d.kind != 2 && d.kind != 3 { continue; }
+                let bit = d.bit as u64;
+                if bit >= 0x3f || all >> bit & 1 == 0 { continue; }
+                mask |= 1u64 << bit;
+            }
+        }
+        self.mp_bonus_mask = mask;
+    }
 
     /// The Enviro-Mods rows' value labels — P_MPENVIROMODS 0x210030's msg-0x4c node lists [M the
     /// msg-0x10 binds]: row 0 view distance 0x1b0/0x1b1/0x1b2 at 0/1/2, row 1 (+0x1B8) and row 4
