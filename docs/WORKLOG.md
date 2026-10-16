@@ -14951,3 +14951,28 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   menu_sfx_flow 14 — all green on the final tree. The fast suite built 394 binaries ok but its
   run phase was cut by the sandbox (background jobs reaped between tool calls; the foreground run
   hit the 9.5-min tool cap) — no total line; details in docs/reports/menu-e2e-local-mp.md.
+---
+
+menu-audio-state (2026-10-16)
+- Task: the menu music/sfx state must be right through every front-end flow. Playtest found menu music
+  playing in gameplay and during pause, and "audio breaks and there's no main menu music" after the intro.
+- Plan: drive the FrontEnd headless ONLY through action()/mouse_*/tick and host glue (movie_tick, menu_after,
+  page-enter music hook), assert the MenuMusic command stream and jingle state per flow against the game
+  [M frontend-music.md]: boot (intro full/skipped -> title -> Main), attract (natural/skipped), every backdrop
+  movie page, credits, SP mission start (music stops), pause (held, not removed), quit to front end, MP match
+  start and debriefing. Invariant: never two menu-music sources at once, none during gameplay.
+- Branch s/menu-audio-state created from origin/master (ad761677). Work in progress; report will be at
+  docs/reports/menu-audio-state.md.
+- menu-audio-state: the flows found four real state bugs and the fixes are in. The jingle
+  restarted UNDER the intro (the early page flip fired Main's 0x4c — fe_music_step now holds
+  the transition while intro_playing [M 0x209e88]); the main menu sat silent after a skipped
+  intro (the skip arm now runs the 0x50 finish restart [M 0x209e88:23-28] and open_pair_sfx/
+  remove_pair drive the music channel so a tick-queued restart lands at the next redraw, not
+  the next keypress); the pair played under the briefing (the SP pick and the MP start now
+  kill it — the game deletes the manager at the pick [M 0x20b8d8 case 0x4b]); the bank
+  alternation reset at the pause (the App now stashes the .bss statics across manager drops
+  and restores them into the pause's fresh fe and the demo results [M 0x1dceb8; L 0x30c958]).
+  enter_page(Credits) no longer starts the pair (the credits 0x4c is the swap [M 0x2152b0]).
+  tests/menu_audio_flows.rs: 9 action-driven flows with the per-frame invariants (<=1 audible
+  source, none during gameplay, never jingles + credits track). Report:
+  docs/reports/menu-audio-state.md (live checks 1-6).
