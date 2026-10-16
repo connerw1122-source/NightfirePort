@@ -163,6 +163,25 @@ pub const PAGE_FAIL_MENU: u32 = 0x4000_0042;
 pub const PAGE_RESULTS: u32 = 0x4000_0036;
 pub const PAGE_RESULTS_QUIT_TARGET: u32 = 0x4000_001c;
 
+// ── unlock-popups: the post-results unlock pages ──────────────────────────────────────────────
+/// The 007 Bonus page [M the page table 0x2029e0:463-466 → P_NFBONUS_Handler 0x209670; PAGE record
+/// hash 0x80000002, aux movie 0x07350048, kind 0 [L the menu-def dump 2026-10-15]]. The results
+/// page's Confirm opens it while a new reward stands [M 0x208e78:39-52]; its own Back lands on the
+/// win page or the mission list [M 0x209670:46-57]. Header Txt 0x2c5, hint 0x2d0, the texture
+/// control 0x100001cf and the text list 0x100001d0 [L page 0x40000038's controls].
+pub const PAGE_NF_BONUS: u32 = 0x4000_0038;
+/// The campaign-win page [M the page table 0x2029e0:569-572 → P_WINGAME_Handler 0x215100; PAGE
+/// record with NO controls and no aux movie [L the menu-def dump — the page is the handler's own
+/// background movie 0x073f0048]]. Reached from the results/bonus pages while `just_completed`
+/// [M 0x208e78:46, 0x209670:50-57]; on the movie's end it sends msg 0x44 → 0x40000030 (credits)
+/// with arg 1 [M 0x215100:48].
+pub const PAGE_WIN_GAME: u32 = 0x4000_0053;
+/// The cheat-medal page [M the page table 0x2029e0:511-513 → P_CHEATMEDAL_Handler 0x2086b0]. NOT
+/// in the front-end menu-def and no static code route reaches it [L the menu-def dump: 56 pages,
+/// no PAGE 0x4000004c; the whole-decompile grep: no msg 0x44 carries 0x4000004c] — the port models
+/// the handler's own behaviour; its reachability in the shipped game is an open question.
+pub const PAGE_CHEAT_MEDAL: u32 = 0x4000_004c;
+
 // ── mp-menu-flow: the multiplayer front-end pages ─────────────────────────────────────────────
 // All 13 PAGE records verified in the disc's menu-def (08000002 in 07000048.bin, parsed 2026-10-15 —
 // every one kind 0 with the list pages' aux movie 0x07350048); the handlers are the decomp files
@@ -584,7 +603,9 @@ pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Recor
     // mp-menu-flow: the multiplayer front end (page ids in the PAGE_MP_* constants below).
     MpJoin, MpScenario, MpMap, MpSetup, MpOptions, MpRules, MpPlayerMods, MpEnviroMods, MpBots, MpBotChoose, MpBotSetup, MpConfirm, MpDebriefing,
     // net-online-lobby: the port-only online pages (ids in the PAGE_MP_* constants below).
-    MpMode, MpHost, MpNetJoin, MpLobby, Credits }
+    MpMode, MpHost, MpNetJoin, MpLobby, Credits,
+    // unlock-popups: the post-results pages (ids in PAGE_NF_BONUS / PAGE_WIN_GAME / PAGE_CHEAT_MEDAL).
+    NfBonus, WinGame, CheatMedal }
 
 impl Page {
     pub fn id(self) -> u32 {
@@ -605,6 +626,7 @@ impl Page {
             Page::MpMode => PAGE_MP_MODE, Page::MpHost => PAGE_MP_HOST,
             Page::MpNetJoin => PAGE_MP_NETJOIN, Page::MpLobby => PAGE_MP_LOBBY,
             Page::Credits => crate::credits::PAGE_CREDITS,
+            Page::NfBonus => PAGE_NF_BONUS, Page::WinGame => PAGE_WIN_GAME, Page::CheatMedal => PAGE_CHEAT_MEDAL,
         }
     }
     fn from_id(id: u32) -> Option<Page> {
@@ -625,6 +647,7 @@ impl Page {
             PAGE_MP_MODE => Page::MpMode, PAGE_MP_HOST => Page::MpHost,
             PAGE_MP_NETJOIN => Page::MpNetJoin, PAGE_MP_LOBBY => Page::MpLobby,
             crate::credits::PAGE_CREDITS => Page::Credits,
+            PAGE_NF_BONUS => Page::NfBonus, PAGE_WIN_GAME => Page::WinGame, PAGE_CHEAT_MEDAL => Page::CheatMedal,
             _ => return None,
         })
     }
@@ -1254,6 +1277,41 @@ pub struct ResultsFields {
     pub medal: u32,
 }
 
+/// One tier's line of the 007 Bonus page: whether the tier's reward is EARNED (`Menu_HasMedal`
+/// 0x202580 — the bonus bit [M 0x1ffe98:20-29]) and the label/texture the entry's data carries
+/// ([L] REWARD_TEXT in nf-game::progress). Tier 1..4 = the RewardsTable descriptors 1..4.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RewardLine {
+    /// The tier's reward bit stands (`Menu_HasMedal(level, tier, 0)`).
+    pub has: bool,
+    /// The tier's label id (entry +0x18+4·tier [L]; `Txt_BindLabel` id).
+    pub label: u32,
+    /// The tier's texture hash (entry +0x2c+4·tier [L]; a 0x03xxxxxx sprite hash, msg 0x24 into
+    /// control 0x100001cf [M 0x209670:23]).
+    pub texture: u32,
+}
+
+/// The 007 Bonus page's fields [M P_NFBONUS_Handler 0x209670 case 0x4c]: the four tier lines of
+/// `Menu_GetLevelBonuses(GameState+0x72)` 0x1ffe98 and the page's composed text — line 1's label
+/// first, then tiers 4, 3, 2 appended with the separator between each [M 0x209670:22-41].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BonusFields {
+    /// The level the page reads (GameState+0x72 at the results [M 0x209670:14]).
+    pub level: u32,
+    /// The four tier lines, indexed `[tier - 1]` [M 0x1ffe98:20-29].
+    pub lines: [RewardLine; 4],
+    /// The page's own texture (tier 1's, sent to 0x100001cf when the tier-1 line stands [M
+    /// 0x209670:22-26]).
+    pub texture: Option<u32>,
+    /// The composed text as label ids in send order: tier 1, then tiers 4, 3, 2 — only the tiers
+    /// whose line stands [M 0x209670:22-41; the game concatenates the bound strings with the
+    /// 0x34d048 separator]. Empty when no line stands (the game then sends no text [M :16-17]).
+    pub text_labels: Vec<u32>,
+    /// Whether the game sends the text at all — `DAT_002e1c2c` (the new-reward flag) gates it [M
+    /// 0x209670:16-43].
+    pub has_text: bool,
+}
+
 /// The front end: which page is up, the cursor, and the flow machine it drives.
 pub struct FrontEnd {
     pub flow: GameFlow,
@@ -1353,11 +1411,10 @@ pub struct FrontEnd {
     pub results: Option<ResultsFields>,
     /// `just_completed` 0x30d344 — Menu_SetLevelBonus's return: the FINAL mission (0x0700001b)
     /// just finished and the results page routes to the win page [M 0x208e78:40-52, 0x1ffa10
-    /// tail]. Not ported past the flag (the win page is reported).
+    /// tail].
     pub just_completed: bool,
     /// `DAT_002e1c2c` — a new reward unlocked at this results page [M 0x208e78:169 → 0x1ffa10
-    /// :74-79]: the page's Confirm routes to the bonus page 0x40000038 while it stands (not
-    /// ported — reported).
+    /// :74-79]: the page's Confirm routes to the bonus page 0x40000038 while it stands.
     pub new_reward: bool,
     // codename-entry (each field on its own line [WORKLOG lesson 4]).
     /// The name-entry page's typed buffer — the game's `buffer` at 0x34e028, shown by the draw
@@ -1413,6 +1470,27 @@ pub struct FrontEnd {
     /// 0x214818:29/135], restored by the page's Back (msg 0x4d) [M :79-85].
     pub screen_av_saved_x: i32,
     pub screen_av_saved_y: i32,
+    /// unlock-popups: the level the results page scored (`base_map` from [`FrontEnd::results_enter`]
+    /// — the game re-reads GameState+0x72 inside the bonus page's handler [M 0x209670:14]).
+    pub results_level: u32,
+    // ── unlock-popups: the post-results pages (each new field on its own line [WORKLOG lesson 4]) ──
+    /// The 007 Bonus page's fields, built by [`FrontEnd::bonus_enter`] (P_NFBONUS case 0x4c from
+    /// `Menu_GetLevelBonuses` 0x1ffe98). None until the page enters.
+    pub bonus: Option<BonusFields>,
+    /// The win page's movie state: true from [`FrontEnd::win_enter`] (P_WINGAME case 0x4c starts
+    /// the background movie 0x073f0048 [M 0x215100:12-21]) until the host reports the movie's end
+    /// through [`FrontEnd::win_movie_finished`] (case 0x50's `psiMovieFinished` arm [M :23-49]).
+    pub win_movie: bool,
+    /// The cheat-medal page's list cursor (control 0x1000021c's selection, rows 0..5 [M
+    /// 0x2086b0:19-40 — row 0 the fail-channel arm, rows 1..5 the medal grants]).
+    pub cheat_medal_sel: usize,
+    /// `medal_from_cheat` 0x30cc74 — the medal the cheat-medal page grants [M 0x2086b0:27-39:
+    /// rows 1..5 → 999/1/2/3/4; 999 = the none-grant]. Write-only in ACTION.ELF [M the
+    /// whole-decompile grep: the only reference is the handler's own store].
+    pub medal_from_cheat: i32,
+    /// P_WINGAME's captured `SFXGetVolume()` [M 0x215100:19-20], reused at the credits open
+    /// [M :48 → open_credits's volume].
+    pub win_movie_vol: i32,
     // ── mp-menu-flow: the multiplayer front end (each new field on its own line [WORKLOG lesson 4]) ──
     /// The four Join-Game panels [M mpjoin 0x2dee68 (4 × 0x10: +0x00 joined, +0x01 ready,
     /// +0x04 team, +0x08 skin) and mp_stuff+0x360+slot·4 (the per-slot state: 0 = press ✕ to
@@ -1588,10 +1666,6 @@ impl FrontEnd {
             opts: default_opts(),
             opts_saved: None,
             cn_name: String::new(),
-            // front-end-chain (each new field on its own line [WORKLOG lesson 4]).
-            results: None,
-            just_completed: false,
-            new_reward: false,
             // codename-entry (each on its own line [WORKLOG lesson 4]).
             cn_typed: String::new(),
             cn_cell: 0,
@@ -1616,7 +1690,17 @@ impl FrontEnd {
             screen_saved_y: 0,
             screen_av_saved_x: 0,
             screen_av_saved_y: 0,
-
+            // front-end-chain (each new field on its own line [WORKLOG lesson 4]).
+            results: None,
+            just_completed: false,
+            new_reward: false,
+            // unlock-popups (each new field on its own line [WORKLOG lesson 4]).
+            results_level: 0,
+            bonus: None,
+            win_movie: false,
+            cheat_medal_sel: 0,
+            medal_from_cheat: 0,
+            win_movie_vol: 0,
             // mp-menu-flow (each new field on its own line [WORKLOG lesson 4]).
             mp_join: std::array::from_fn(|_| MpJoinAgent::default()),
             mp_scenario: 0,
@@ -1792,6 +1876,11 @@ impl FrontEnd {
             // credits-data: the credits page has no wheel rows (the two list controls are the
             // roll itself) [M P_CREDITS_Handler 0x2152b0 has no cursor code].
             Page::Credits => 0,
+            // unlock-popups: the bonus/win pages have no wheel [M P_NFBONUS 0x209670 /
+            // P_WINGAME 0x215100 have no cursor code]; the cheat-medal list has 6 rows
+            // [M 0x2086b0's switch over the selection 0..5].
+            Page::NfBonus | Page::WinGame => 0,
+            Page::CheatMedal => 6,
             // The Screen Adjust page's two sliders (the vertical and the horizontal bar) [L page
             // 0x40000047's two 0x100001eb controls, d1 0 = vertical / 1 = horizontal].
             Page::ScreenAdjust => 2,
@@ -1869,6 +1958,11 @@ impl FrontEnd {
             Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().get(row).map_or(String::new(), |r| bind(r.label)),
             // credits-data: no rows — the roll's text lives in fe.credits.visible() [M].
             Page::Credits => String::new(),
+            // unlock-popups: the bonus page's text is `bonus.text_labels` (the composed chain,
+            // not a wheel row); the win page has no rows [L its PAGE record]; the cheat-medal
+            // list is not in the menu-def (no labels — the handler only reads the selection [M
+            // 0x2086b0:19]).
+            Page::NfBonus | Page::WinGame | Page::CheatMedal => String::new(),
             // The pause rows are the page data's own labels [L page 0x4000004b's d1=6 list m0x11:
             // 0x16a/0x16b/0x16c — the game's letter-spaced strings]. The ACTIONS are the handler's
             // [M C_GCPAUSE_Handler 0x204408: d1=6 case 0 → MenuManager_Delete (resume), case 1 → the
@@ -2400,6 +2494,7 @@ impl FrontEnd {
         // Menu_SetLevelBonus's own: level == 0x0700001b [M 0x1ffa10 tail].
         let medal = self.results.as_ref().map_or(5, |r| r.medal);
         self.just_completed = base_map == 0x0700_001b;
+        self.results_level = base_map;
         progress.set_level_bonus(base_map, medal, 0);
         self.new_reward = progress.new_reward;
         // sp_level[i]+0x10 is the packed nightfire status's bits [M 0x202360's OR loop] — mirror
@@ -2414,6 +2509,72 @@ impl FrontEnd {
             self.save_profile();
         }
         self.results.is_some()
+    }
+
+    // ── unlock-popups: the post-results pages ────────────────────────────────────────────────
+
+    /// P_NFBONUS 0x209670 case 0x4c — the 007 Bonus page's enter: `Menu_GetLevelBonuses(level)`
+    /// 0x1ffe98 builds the four tier lines (`Menu_HasMedal(level, tier, 0)` 0x202580 + the
+    /// entry's label/texture pair [L REWARD_TEXT]), the page's texture is tier 1's [M 0x209670
+    /// :22-26] and the text is the tier 1 → 4 → 3 → 2 label chain [M :22-41]. `has_text` = the
+    /// game's `DAT_002e1c2c` gate [M :16-43] — the host passes `new_reward`'s value at the open.
+    /// `level` = GameState+0x72 at the results ([`FrontEnd::results_level`]).
+    pub fn bonus_enter(&mut self, progress: &nf_game::progress::Progress, level: u32, has_text: bool) {
+        let idx = nf_game::progress::REWARDS_TABLE.iter().position(|e| e.hash == level);
+        let lines = [1u32, 2, 3, 4].map(|tier| {
+            let (label, texture) = idx.map_or((0, 0), |i| nf_game::progress::REWARD_TEXT[i][(tier - 1) as usize]);
+            RewardLine { has: progress.has_medal(level, tier, 0), label, texture }
+        });
+        // The send order: tier 1's sprintf first, then tiers 4, 3, 2 appended [M 0x209670:22-41].
+        let text_labels = if has_text {
+            [0usize, 3, 2, 1].iter().filter(|&&i| lines[i].has).map(|&i| lines[i].label).collect()
+        } else {
+            Vec::new()
+        };
+        let texture = if lines[0].has && has_text { Some(lines[0].texture) } else { None };
+        self.bonus = Some(BonusFields { level, lines, texture, text_labels, has_text });
+    }
+
+    /// P_WINGAME 0x215100 case 0x4c — the win page's enter: the movie state goes up (the game
+    /// `psiStartBackgroundMovie(0x073f0048, 0, SFXGetVolume())` [M :12-21]; the port's host plays
+    /// the movie while `win_movie` stands) and the page's two gate bytes set [M :13-15 —
+    /// DAT_002e1c4a/c49=1, DAT_002e1c4c=0]. The host sets `win_movie_vol` to the real
+    /// `SFXGetVolume()` value first.
+    pub fn win_enter(&mut self) {
+        self.win_movie = true;
+    }
+
+    /// P_WINGAME 0x215100 case 0x50 — the host reports the background movie's end
+    /// (`psiMovieFinished() != 0` [M :23-38]): the game restarts SFX 0x1d7/0x470, clears the
+    /// movie flags, sends the manager msg 0x68 arg 0, then msg 0x44 → 0x40000030 (the credits
+    /// page) with arg 1 [M :39-49]. The port lands on [`Page::Credits`] through
+    /// [`FrontEnd::open_credits`] with the win page as the source [M :48]. Returns whether the
+    /// transition happened (false before the movie ran or on a second call).
+    pub fn win_movie_finished(&mut self) -> bool {
+        if !self.win_movie { return false; }
+        self.win_movie = false;
+        // [M 0x215100:29-37] the SFX restart + msg 0x68,0 — the audio side is the host's; the
+        // port's model keeps only the page flow. [M :48] the credits open with arg 1:
+        let vol = self.win_movie_vol;
+        let bonus = self.just_completed; // DAT_002e1c49: the page only runs while the campaign ended
+        self.open_credits(PAGE_WIN_GAME, vol, bonus);
+        true
+    }
+
+    /// P_CHEATMEDAL 0x2086b0 case 0x4b — the cheat-medal page's confirm over control
+    /// 0x1000021c's selection [M :19-45]: the game deletes the menu manager and either sets
+    /// `switch_channels[99]` + parks the level at 0x27031c (row 0 — the mission-FAIL channel
+    /// Mission_Update 0x182c60:23 reads) or grants `medal_from_cheat` 0x30cc74 and sets
+    /// `switch_channels[100]` + the level at 0x270320 (rows 1..5 → 999/1/2/3/4 — the mission-PASS
+    /// channel [M :24-44]). The port records both; the caller decides what a simulated mission end
+    /// does (the page itself has no route into the shipped flow [M the doc on PAGE_CHEAT_MEDAL]).
+    pub fn cheat_medal_confirm(&mut self) {
+        self.medal_from_cheat = match self.cheat_medal_sel {
+            0 => 0, // row 0: the fail-channel arm — no medal grant [M :22-25]
+            1 => 999,
+            row @ 2..=5 => (row - 1) as i32,
+            _ => 0,
+        };
     }
 
     /// P_NFSTATS_Handler 0x209938's page enter — the Mission Stats rows against the LIVE progress
@@ -3414,11 +3575,23 @@ impl FrontEnd {
                 // P_NFRESULTS has no row list [L page 0x40000036's controls] — the wheel keys idle.
                 Action::Up | Action::Down => return false,
                 Action::Confirm => {
-                    // Case 0x4b [M 0x208e78:28-52]: a NEW reward routes to the bonus page
-                    // 0x40000038, whose own Confirm lands on the mission list [M 0x209670:50-53];
-                    // just_completed routes to the win page 0x40000053 — not ported (reported).
-                    // The port elides the bonus page's stop and takes the same landing.
-                    if self.just_completed { return false; }
+                    // Case 0x4b [M 0x208e78:39-52]: a new reward (DAT_002e1c2c) routes to the
+                    // bonus page 0x40000038 — whose fields build on the host's next `bonus_enter`
+                    // call (the action handler owns no Progress — the results_enter split);
+                    // just_completed routes to the win page 0x40000053 [M :46]; else the mission
+                    // list [M :40-43].
+                    if self.new_reward {
+                        self.page = Page::NfBonus;
+                        self.flow.page = PAGE_NF_BONUS;
+                        self.cursor = 0;
+                        return true;
+                    }
+                    if self.just_completed {
+                        self.win_enter();
+                        self.page = Page::WinGame;
+                        self.flow.page = PAGE_WIN_GAME;
+                        return true;
+                    }
                     // P_NFMAP 0x20b608 case 0x4c's cursor rule: scan sp_level+0x10 from row 11 down
                     // — the list opens on the HIGHEST unlocked row [M :57-64].
                     self.cursor = (0..CAMPAIGN.len()).rev().find(|&i| self.unlocked_row(i)).unwrap_or(0);
@@ -3867,6 +4040,35 @@ impl FrontEnd {
             // credits-data: the credits take no input — the handler has no input cases at all
             // (the roll cannot be skipped) [M P_CREDITS_Handler 0x2152b0's message cases].
             Page::Credits => {}
+            // unlock-popups — P_NFBONUS 0x209670 case 0x4b: Confirm/Back (the page's msg-0x4b
+            // arm is the hint's continue): the win page while the campaign just ended, else the
+            // mission list [M 0x209670:46-57].
+            Page::NfBonus => match a {
+                Action::Up | Action::Down | Action::Side | Action::Left | Action::Right => {}
+                Action::Confirm | Action::Back => {
+                    if self.just_completed {
+                        self.win_enter();
+                        self.page = Page::WinGame;
+                        self.flow.page = PAGE_WIN_GAME;
+                    } else {
+                        self.cursor = (0..CAMPAIGN.len()).rev().find(|&i| self.unlocked_row(i)).unwrap_or(0);
+                        self.page = Page::MissionSelect;
+                        self.flow.page = PAGE_MISSION_SELECT;
+                    }
+                    return true;
+                }
+            }
+            // P_WINGAME 0x215100 — the page has no controls [L its PAGE record] and no input
+            // cases [M :12-51: only 0x4c/0x50]; the movie path is `win_movie_finished()`.
+            Page::WinGame => {}
+            // P_CHEATMEDAL 0x2086b0 — the list is control 0x1000021c; Up/Down move the selection
+            // (the list's msg-0x11 walk), Confirm is the handler's 0x4b case [M :19-45].
+            Page::CheatMedal => match a {
+                Action::Up => { self.cheat_medal_sel = (self.cheat_medal_sel + 5) % 6; return true; }
+                Action::Down => { self.cheat_medal_sel = (self.cheat_medal_sel + 1) % 6; return true; }
+                Action::Confirm => { self.cheat_medal_confirm(); return true; }
+                _ => {}
+            }
         }
         false
     }
@@ -5248,6 +5450,12 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
         // credits-data: the main agent draws the roll from fe.credits.visible() (the game's
         // own line list + y positions) — nothing here yet.
         Page::Credits => {}
+        // unlock-popups: the main agent draws these from the model — NFBONUS from fe.bonus
+        // (the tier lines + the composed text; the page's own layout is header Txt 0x2c5, hint
+        // 0x2d0, texture control 0x100001cf at (89,112,171×256), text list 0x100001d0 at
+        // (268,94,284×292) [L the menu-def dump]), WINGAME is the movie page only, CHEATMEDAL
+        // has no page data (nothing static to draw).
+        Page::NfBonus | Page::WinGame | Page::CheatMedal => {}
     }
     h.finish()
 }

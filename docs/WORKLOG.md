@@ -13500,6 +13500,24 @@ Work Log (credits-data):
 - (19:50-19:56) Tests crates/nf-view/tests/credits_data.rs (11, all green): count 0x242 + order pins (entries 0/1/2 = labels 0x10002a5/a6/a7 wide; 361 = 0x1000264 kind 2; 565 = 0x10002a1; 577 = a wide gap) + the slot accounting (209/504/241/202) + scroll rate (510 on entry, −2/frame exact) + the 14-frame period/mod-26 slots + the music fade window (686@vol700 → 0 at 578×14) + the exit/return pages (AV → CnAv, win → Main, no early fire) + the AV row opens the page + the NF_ISO pin: USATxt 0x198 binds "Credits", neighbour 0x197 does not. Fail-first evidence: the order pins caught the wrong tail index (553 vs the real 565) and a reversed sign in the scroll assert before the fixes.
 - (19:56) Run on this tree: nf-view lib 9/9, credits_data 11/11, menus_flow 36/36 (the file menu.rs touches); nf-view release build clean. The full suite didn't fit the window's tail (suite.py not on master; background jobs get reaped here) — the affected crates are nf-view only (no nf-game/nf-formats/nf-audio code changed).
 - (19:25) Extended verification on the final tree: campaign_flow_live 5/5, dev_menu_flow 5/5, fix_weapon_modes_live 6/6 (all the menu-driven nf-view suites) — 72 nf-view tests green total on this branch; no nf-game/nf-formats/nf-audio code touched. Finish steps ran (queue: done/613-credits-data.md carries the report); ntfy quota-429 on all three fallbacks, recorded in the report.
+
+## unlock-popups (2026-10-15, branch s/unlock-popups) — started 20:44 UTC
+Task: the unlock pages after a mission's results — P_NFBONUS_Handler 0x209670 (007 Bonus earned), P_CHEATMEDAL_Handler 0x2086b0 (cheat/medal unlock), P_WINGAME_Handler 0x215100 (campaign end). Port when each appears (medal tiers, the 007 Bonus, which unlocks — missions, MP maps/characters/scenarios, cheats — from which progress fields), what each shows (label ids, textures), the order, and where each returns. State + flow on FrontEnd after results_enter; getters for the draw code. No drawing.
+
+Work Log (unlock-popups):
+- (20:44) Sandbox reused: repo present but on stale branch; work/ + ISO + target/ salvaged from the previous sandbox's repo copy (no downloads needed). Branch s/unlock-popups created from origin/master @ 1d1b98dc, pushed with this entry. Full suite starting in background next.
+
+Work Log (unlock-popups):
+- (20:44-21:05) Setup: repo salvaged from the previous sandbox copy (work/ + ISO + target/, no downloads); branch s/unlock-popups from origin/master 1d1b98dc. Background processes get reaped here, so the suite ran as foreground per-crate chunks instead.
+- (21:05-21:30) Research [M 0x2029e0 the page table]: results 0x40000036 → NFBONUS 0x40000038 → (just_completed) WINGAME 0x40000053 → 0x40000030 credits; else NFMAP 0x4000001c. The trigger flag DAT_002e1c2c is set inside Menu_SetLevelBonus 0x1ffa10's reward loop (a tier's bit not yet standing); just_completed = level==0x0700001b. NFBONUS 0x209670:13-43 builds its text from Menu_GetLevelBonuses 0x1ffe98 — per tier Menu_HasMedal(level,N,0) + entry labels at +0x1c..+0x28 and textures at +0x30..+0x3c, concatenated tier 1→4→3→2.
+- (21:30-21:40) [L] dumps: RewardsTable from ee_start_05.bin 0x2bc920 (real layout: five 4-byte descriptors + 4 labels + 4 textures — the port's {bit,kind} fields were right, labels/textures unmodeled → new REWARD_TEXT static); the three pages walked from the disc's menu-def (08000002): NFBONUS full layout (header 0x2c5, hint 0x2d0, 0x100001cf texture, 0x100001d0 text list), WINGAME a bare root-only record, CHEATMEDAL 0x4000004c NOT in the def and no code/data route into it (open question; its rows grant medal_from_cheat 0x30cc74 = 999/1/2/3/4 and poke the mission-end channels 99/100).
+- (21:40-22:05) The port: menu.rs PAGE_NF_BONUS/PAGE_WIN_GAME/PAGE_CHEAT_MEDAL + Page variants, BonusFields/RewardLine, bonus_enter/win_enter/win_movie_finished/cheat_medal_confirm, the Results-Confirm three-way route, results_level; progress.rs REWARD_TEXT. Tests: unlock_popups.rs 12 headless + unlock_popups_live.rs ISO-gated pins. Fail-first caught: the win-page "no controls" pin was wrong (the root control counts) before the fix.
+- (22:05-22:20) Ran: nf-view + nf-game full test sets green (205+35+... all ok; unlock_popups 12/12, unlock_popups_live 1/1). Doc docs/systems/unlock-popups.md; report docs/reports/unlock-popups.md.
+
+## unlock-popups2 (2026-10-15, branch s/unlock-popups2) — started 23:40 UTC
+
+Work Log (unlock-popups2):
+- (23:40) Branch created from origin/s/unlock-popups @ b1432898 (the HELD 619: post-results bonus / cheat-medal / win pages; 1540/1 on master+619 with campaign_flow_live's front_end_chain_01_to_05 expecting Page::MissionSelect after the results Confirm but getting Page::NfBonus). Next: merge origin/master, reproduce, decide from the game's own flow which is right, fix code or test with that evidence.
 ## drive-physics (2026-10-15, branch s/drive-physics) — started 20:21 UTC
 - Task: the driving missions' car physics. Port the player car's physics step from DRIVING.ELF: the tuning
   parameters (parse data\tuning\Physics\*.tun from the VIV archives), the integration (engine/gear/brake/
@@ -14104,3 +14122,42 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
 - Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
   (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
   attract page draws the movie fullscreen over black, no controls, no plate.
+## unlock-popups2 (2026-10-15, branch s/unlock-popups2) — DONE 01:10 UTC
+
+Work Log (unlock-popups2):
+- (23:38-23:45) Branch from origin/s/unlock-popups @ b1432898, pushed with the start entry; merged
+  origin/master. menu.rs had 4 conflict blocks — all "both sides" (619's fields/methods/wheel arms
+  beside codename-entry/nfstats-model/secret-codes/screen-adjust); `secret: SecretEntry` was on both
+  sides, kept once. Two merge slips fixed right after: stats_enter was nested inside
+  cheat_medal_confirm (unclosed delimiter) and the master-side constructor inits were missing
+  (E0063) — the merge commit + the fix commit are separate on the branch.
+- (23:47-23:49) Reproduced: front_end_chain_01_to_05 FAILED at :751 (expected MissionSelect after
+  the results Confirm, got NfBonus) — same as the hold record.
+- (23:50-00:00) The evidence: P_NFRESULTS case 0x4b routes on DAT_002e1c2c — set inside
+  Menu_SetLevelBonus 0x1ffa10's tier loop (medal 4..1, ProcessRewardCounter's "not already
+  standing" arm [M 0x1ffa10:71-82]) — to the 007 Bonus page 0x40000038 [M 0x208e78:48-53]; only
+  with no new reward does Confirm go straight to the mission list [M :39-44]. P_NFBONUS's own 0x4b
+  lands on 0x4000001c while !just_completed [M 0x209670:50-53]. A probe of the failing leg:
+  mission 01 scores 24150000 → medal 4 (platinum) → on a fresh profile every tier 1-4 is newly
+  granted → the game DOES show P_NFBONUS. The port's new_reward mirrors the same gate
+  (results_enter → set_level_bonus → progress.new_reward). VERDICT: the code is right, the test
+  was wrong — fixed by Confirming through the bonus page when it shows (with sister asserts: the
+  hop implies new_reward, the host's bonus_enter runs on the page enter, the second Confirm).
+  front_end_chain_live's single-Confirm test is untouched (its mission_ended path never sets
+  new_reward — matches the 1540/1 record).
+- (00:00-01:08) The suite on the final merged tree (background suite.py starts kept dying — the
+  cargo-lock race + this sandbox reaping detached processes; foreground slices + a direct sweep):
+  nf-game FULL 41 binaries 375 passed / 0 failed. nf-formats + nf-audio FULL 105 passed / 3 failed
+  = exactly the 3 disc_golden slim-ISO tests (allowed). nf-view: all 304 test binaries executed
+  (a -P 2 direct sweep, 90 s caps) — the ONLY real failure is the known no-GPU fix_0c_pylon_live
+  pair (2 tests); campaign_flow_live 5/5 (99 s), fix_guard_weapons_live 3/3 (164 s),
+  fix_party_mission_live 15/15 (74 s), fix_death_restart_live 8/8 (13 s) all pass with serial
+  re-runs — their sweep failures were the 90 s cap (124) or the parallel kill (137), not real.
+
+Stage Summary:
+- 619 landed: the held suite failure is fixed by the test change the evidence demanded (the game's
+  own post-results hop through P_NFBONUS on a new reward), the code needed nothing.
+- Branch s/unlock-popups2: merge 7f715272 + fix b1f7b487 + test fix eea62bcc + report.
+- Left: the pylon pair needs the main agent's GPU render check (as recorded by 507/drive-ptp);
+  P_NFBONUS's page-enter build is host-driven (bonus_enter) — a host integration may want to call
+  it automatically on the page switch.
