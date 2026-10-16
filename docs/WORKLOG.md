@@ -15351,3 +15351,34 @@ machine's look limits, the weapon holster/redraw, and the dismount-at-bottom-int
 [M Ladder_* / the player's ladder state in Player_Update, the dismount checks]; headless tests on
 02's water ladder and the bunker ladder (look within the game's clamp, dismount top+bottom with no
 re-latch, weapon returns after dismount).
+
+## ladder-02 (2026-10-16, branch s/ladder-02) — 14:18 UTC
+Task 691: the 07000002 ladders (the bunker exit + the pond hut) — playtests 1011-1732 /
+1014-1725: no camera movement on ladders; the grab unequips the weapon and the dismount never
+re-equips; "I'm infinitely latching onto the ladder, and I can't get off of it" (climbing off
+into the water). State on master: fix-ladder2 already ported the climb look [M Player_Climb
+0x196310:18-33 + Player_Update 0x193600 + Player_Aiming 0x1a1d28 + ViewClamping 0x1a92e8], the
+weapon save/redraw [M Player_WeaponNone 0x1a9858 + the 0x196310:99-102 carry + SetWeaponAnimObj
+0x1a2e38:197-201] and fix-ladder-water(2) the swim reach + the walk-on grab; FRAME_RATE_DIV = 1.0
+[L 0x30d0d4] re-verified (the InWater regrab is (u8)(1.0·5.0) = 5 [M 0x195e50:27]). This task's
+work: (1) the lock on BOTH 02 ladders — crates/nf-view/tests/ladder_02_live.rs: the bunker ladder
+(walk-on grab → the snap centre+fwd·0.5 [M 0x196118:36-44] → hands 0x47 with the P2K saved → the
+turn/pitch look inside the eased ±90° window and ViewClamping ±1.0 → the top lunge dismount [M
+0x196310:54-62] → no re-latch on the roof → the P2K back through the draw cycle); the pond hut
+ladder (the swim grab → up → climb DOWN → the bottom-into-water dismount → the swim entry regrab →
+a continuous push-off swims free (300 ticks, no re-latch, out of the grab column) → the weapon
+returns after the bottom dismount); the sister: swimming back INTO the hut ladder still grabs and
+climbs. (2) THE FIX: the climb hit-below read [S stand-in for the CollisionHandler's climb scan]
+now uses the player's WATER-FILTERED world (segment_hit drops mat 0xE, like the grounding ray and
+the capsule [M 0x194188's cel scoping]): the climb-down over the pond no longer dismounts on the
+water bed mid-column (root 4.47 → the climb continues under the surface). KNOWN DIVERGENCE (the
+report's live checks): the deep pond bed (material 10, y≈2.09 under the hut ladder — NOT mat 0xE)
+still stops the hit-below ray 0.44 above the bottom threshold (2.83), so the flat-world dismount
+lands the swimmer at 3.27, inside the grab window AND inside the ladder's authored mesh (probed
+directly: the hut ladder's celglist resolves through the synthetic (map,object) key 0x8033012b —
+100 triangles — and its capsules HIT the settle spot); a NEUTRAL pause after the dismount
+re-latches once the 5-tick regrab expires. Whether the real game re-latches the neutral settle
+turns on the climber's cel (the game's cel-scoped climb scan vs the bed living in the water cel) —
+a live check is listed in the report. Tests run before push: ladder_02_live (3/3) + the ladder/
+swim regression set (fix_ladder2_live, fix_ladder_water_live, fix_ladder_live, fix_swim_live,
+fix_swim_entry_live, fix_swim_vent_live, fix_swim_vent5_live — 21 tests, all green).

@@ -546,8 +546,19 @@ impl Bond {
                 if self.head_bump && fwd > 0.0 { fwd = 0.0; }
                 // A hit below (flag 8) with a down-push dismounts [M]; the port reads the floor under
                 // Bond's feet within 1.2 units as "hit below" [S — the game's hit comes from the
-                // CollisionHandler's climb scan; see docs/atlas/ladder.md].
-                let floor_below = world.floor_below(self.pos, 1.2).is_some();
+                // CollisionHandler's climb scan; see docs/atlas/ladder.md]. The read is the player's
+                // WATER-FILTERED world (segment_hit drops the mat-0xE planes, like the grounding ray
+                // and the capsule [M 0x194188's cel scoping — the water surfaces/beds live in the
+                // water cels the climber is not tested against]): a climb-down over the pond keeps
+                // going UNDER the surface to the bottom threshold (centre.y − radius + 1.0 [M
+                // 0x196118]), and the dismount lands the swimmer below the grab window instead of
+                // dropping him onto the bed right above it (the ladder-02 "infinitely latching onto
+                // the ladder" — the unfiltered read dismounted the climb at the pond bed, and the
+                // swimmer settled inside the grab column; the game's mesh refine was measured to
+                // reach the settle spot, so the bed-hit path is the divergence).
+                let floor_below = world
+                    .segment_hit([self.pos[0], self.pos[1] + 0.5, self.pos[2]], [self.pos[0], self.pos[1] - 1.2, self.pos[2]])
+                    .is_some();
                 if !floor_below || fwd >= 0.0 {
                     self.vel[1] = fwd * 0.02 * 60.0; // +0x14 += fwd·0.02 per tick → 1.2·fwd u/s
                     self.physics_tick_climb(world);
