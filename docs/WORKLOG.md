@@ -16485,3 +16485,11 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
 - Report: docs/reports/uncited-gameplay-audit.md. Left: the 10 queued tasks (none started,
   audit-only by design) + the live checks; gap ④/⑤ should rebase onto task 704's
   s/mp-bots-in-match branch.
+
+## hatch-02-intro — s/hatch-02-intro (started 2026-10-16 ~19:33 UTC)
+- Task 715: the hatch in 07000002's intro cut-scene never opens (playtest 1014-1725 [intro02]).
+  Plan: find the hatch object the 02 intro's script animates (script lib / NIS streams /
+  Script_AnimStart + object event), then find why the port's run doesn't move it (wrong object,
+  missing event type, or unresolved placement). Test via the real path; pin with a test.
+- Setup reused from prior session: repo, work/ (decomp, symtab, EE snapshots), ISO all present.
+  Branch cut from origin/master @ c8186aa1.
