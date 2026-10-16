@@ -141,7 +141,7 @@ mod tests {
         let mut ch = Channels::default();
         let world = empty_world();
         let mut locks = vec![Lock {
-            placement: 0, pos: [99.5, 0.0, 0.0], radius: 1.0, out: 134, key_channels: [0xffff; 2], burn: 0, burned: false,
+            placement: 0, pos: [99.5, 0.0, 0.0], radius: 1.0, out: 134, key_channels: [0xffff; 2], burn: 0, burned: false, unlock_on_operative: false, unlocked: false,
         }];
         let (a, b) = laser_tick([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], &mut locks, &world, &mut ch, 10);
         assert!(locks[0].burned, "the aim line passes 0.5 from the lock's centre — within 1.0+0.25");
@@ -155,7 +155,7 @@ mod tests {
         let mut ch = Channels::default();
         let world = empty_world();
         let mut locks = vec![Lock {
-            placement: 0, pos: [99.5, 4.0, 0.0], radius: 1.0, out: 135, key_channels: [0xffff; 2], burn: 0, burned: false,
+            placement: 0, pos: [99.5, 4.0, 0.0], radius: 1.0, out: 135, key_channels: [0xffff; 2], burn: 0, burned: false, unlock_on_operative: false, unlocked: false,
         }];
         let _ = laser_tick([0.0, 0.0, 0.0], [1.0, 0.0, 0.0], &mut locks, &world, &mut ch, 10);
         assert!(!locks[0].burned, "the aim line passes 4 units off the lock's centre — no contact");

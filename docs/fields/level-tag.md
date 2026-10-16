@@ -31,7 +31,7 @@ from the placement transform and its glist).
 
 | Placement type | Creator | level_tag reads |
 |---|---|---|
-| 0x0F | Drone_Create 0x136be0 | **p2 = the spawn frame** (skip unless `p2 <= GameState[0x40]`, 0x136be0:49 — the atlas's "placement+0x34" is this level_tag offset); the whole block is copied to DIVars+0xC34 for the drone AI |
+| 0x0F | Drone_Create 0x136be0 | **p2 = the minimum-difficulty tag** (skip unless `p2 <= GameState[0x40]`, 0x136be0:49 — the atlas's "placement+0x34" is this level_tag offset; the old "spawn frame" name here was a misread — the gate is the selected difficulty, verified live on 07000011: rosters 20/33/37 at d1/2/3); the whole block is copied to DIVars+0xC34 for the drone AI |
 | 0x20 | Break_Create 0x12bfd8 | p0, p1, p2 |
 | 0x21 | Ripples_Create 0x1acc90 | p0, p1 (shorts) |
 | 0x22 | Ladder_Create 0x1966c0 | p1 → inst+0x02 (no reader found — docs/fields/ladder.md) |
