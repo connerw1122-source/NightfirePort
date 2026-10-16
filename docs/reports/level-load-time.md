@@ -79,6 +79,11 @@ a comment at the site.
 - `async_level_load_live` (the task's reusable comparison): 3/3 PASS.
 - `load_time_probe` + `load_scene_digest`: PASS on the final tree.
 - nf-view lib tests: 15/15 PASS.
+- nf-view integration, the scene-sensitive set (every test that exercises the changed code
+  paths — pools, cull radii, decals, casings, effects, portals, weapon models): frustum_cull_live
+  2/2, decal_order_live 1/1, casings16_live 4/4, impacts_live 2/2, world_fx_live 4/4,
+  fix_flesh_impacts_live 5/5, fix_weapon_effects_live 2/2, portal_live 4/4, fix_portal2_live 6/6,
+  fix_render_artifacts_live 4/4, models_weapons_live 4/4 — 38/38 PASS.
 - nf-formats: 11 passed / 3 failed = exactly the 3 `disc_golden` tests the slim ISO allows to fail
   (bigf header/tables/directory golden manifests).
 - nf-game / nf-audio are untouched by this branch (no source change); their crates were not rerun.
