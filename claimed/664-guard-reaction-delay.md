@@ -19,3 +19,6 @@ Keep `walkreal_07000001` and the `ai_live` tests green (the 110f hold broke them
   `NF_ISO=<abs path> nohup python3 tools/test/suite.py > suite.out 2>&1 &` (docs/tools/test-suite.md; once `tools/test/suite.py`
   is on your branch: merge `origin/master` first). Read `tail -1 suite.out` and its FAILED/TIMEOUT lines before you push, and
   run it once more on your final tree (merged with `origin/master`). Report the total line.
+
+---
+claimed-by: sandbox5 at 2026-10-16T05:17Z
