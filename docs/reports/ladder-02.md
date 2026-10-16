@@ -92,8 +92,8 @@ climb-down runs UNDER the pond surface to the bottom threshold, and the dismount
 - The full suite (fast runner `tools/test/suite.py`) on the pre-fix tree: **`1805 passed,
   6 failed, 72 ignored (37 min)`** — the 6 are the 3 `disc_golden` (allowed on the slim ISO) +
   `probe_pylon_render`/2 `fix_0c_pylon_live` render probes from the 07000005 pylon task
-  (pre-existing, GPU-render, untouched here). The final-tree rerun is running; its total line is
-  appended to the WORKLOG entry.
+  (pre-existing, GPU-render, untouched here). The final-tree rerun (merged tree, this branch): **`1808 passed, 6 failed, 72 ignored
+  (42 min)`** — the same 6 pre-existing failures, no regressions.
 
 ## What's left
 

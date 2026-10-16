@@ -15392,3 +15392,7 @@ ticks free, out of the grab column) and lists the neutral settle as a live check
 Tests run before push: ladder_02_live (3/3) + nf-game (49 binaries green) + the ladder/swim
 regression set (fix_ladder2_live, fix_ladder_water_live, fix_ladder_live, fix_swim_live,
 fix_swim_entry_live, fix_swim_vent_live, fix_swim_vent5_live, walkreal_07000005_live — all green).
+
+LADDER-02 FINAL SUITE (14:16 UTC): the final-tree fast-runner total `1808 passed, 6 failed,
+72 ignored (42 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes; no
+regressions from the cel-scoped hit-below fix.
