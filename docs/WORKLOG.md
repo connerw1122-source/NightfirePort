@@ -14621,3 +14621,34 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   assert, pre-existing: failed identically on the pre-fix tree), 0 TIMEOUT/CRASH; the rest did not fit.
 - Report: docs/reports/frame-cost-guard.md (the 34-row before/after table is in the test's [cost]/[budget]
   output; [hash] lines are the bit-identity vehicle for future cost fixes).
+
+## drake-cutscene-06 close-out (2026-10-16, branch s/drake-cutscene-06)
+- Playtest 1015-2142 "drake cutscene on o6 has some lag and glitchiness with objects": the
+  cut-scene is the dressing NIS 0x06000071 (SP #810, the level's only script camera, 1129 ticks:
+  164-key camera [D hold to t875 then sweep, hard cuts at 150/549/874], two `Script_AnimStart`
+  actors — suit Bond 0x05000007 on anim 060001fc, tux 0x0500000d on 060001fb [D — no entity
+  streams], events 4/5 at t0, sounds 0x119/0x172, fade -82 at t1049, ch 0x83 at t1052, events
+  6+0xD[2,1]+0x12[07000007] at t1129), driven headless through the real LoadPoint #746 → ch 0x83
+  path (walk_07000006_live's route, carry [0x1d,0x45,0x70]).
+- **Lag found + fixed**: `Pickup_Update`'s port cast the take-ray (`segment_take_scoped`) for
+  EVERY pickup every tick — `touches()` computed the LOS before the distance gate, while the
+  game short-circuits it (`Vec_SqDist3D < r² &&` Collide_LineOfSight [M 0x18e148:210-214]).
+  NF_PROFILE through the scene: update_pickups 1.0 ms/tick during the scene (0.56 idle) of a
+  1.67/1.33 ms sim tick — the largest scoped block. Reordered to the game's own gate
+  (bit-identical boolean, pickup.rs `touches`): update_pickups 0.001 ms, sim tick **1.67 → 0.54
+  ms/tick in the scene (−68 %), 1.33 → 0.83 idle (−37 %)**; render phases flat through the scene
+  (frame_state 1.7, skin_palette 2.1, colour_mults 0.17, cel_vis ≤0.006 ms — the script camera's
+  one-room mask).
+- **Objects audited**: every matrix the scene drives tracked per tick (cutscene_06_live): the
+  camera, the two actor roots (script_pose_together → world_pose, the draw path's own pose) and
+  the SP live matrix. All discontinuities are the game's own data: the camera's 3 key-time cuts
+  [D stream 0] and the actors' root jumps at f550→551 (suit 9.92 m, tux 5.79 m) + f875→876 (tux
+  2.62 m) — present in the sequences' own ROOT channels [D seq 04000174/04000173], each landing
+  on a camera cut tick (the game's teleport-under-the-cut staging; nothing to fix, no draw-only
+  suspects beyond the docs' known F3 tux-skin hand-back note).
+- Tests: cutscene_06_live (the scene runs 1128 ticks to level_exit 07000007 + the objective
+  completes; camera cuts exactly {150,549,874}; every actor jump coincides with a cut ±2 ticks
+  and reproduces the raw sequence root data), frame_cost_live's
+  frame_budgets_hold_through_the_07000006_dressing_cutscene (the scene phases + the sim-tick
+  median, budget 1.5 ms — the pre-fix tick would fail it). pickup_live/rng_live/
+  walk_07000006_live/14 pickup unit tests green on the fix.

@@ -250,3 +250,81 @@ fn crate_texture(hash: u32) -> nf_view::scene::TextureImage {
     let (w, h) = if hash == 0x0300_0075 { (256, 128) } else if hash == 0x0300_0005 { (512, 128) } else { (8, 8) };
     nf_view::scene::TextureImage { key: (0, hash), width: w as u32, height: h as u32, rgba: vec![255; (w * h * 4) as usize], more: vec![], rate: 1 }
 }
+
+/// drake-cutscene-06: the 07000006 dressing cut-scene (0x06000071, SP #810, the playtest
+/// 1015-2142 "drake cutscene on o6 has some lag" report) — 649's budgets extended to a running
+/// cut-scene. The scene is driven through the real path (the truck-ride carry, the LoadPoint
+/// trigger #746 → ch 0x83), and at three scene ticks (the hold, the mid-swap cut, the closing
+/// sweep) the window's per-frame phases are timed with the SCENE's script camera. The sim tick's
+/// own median over the scene is budgeted too: the profile found `Pickup_Update`'s port casting a
+/// take-ray for every pickup every tick there (1.0 of the 1.7 ms tick — the game's
+/// `Pickup_Update` 0x18e148 gates the `Collide_LineOfSight` on the distance; fixed in this
+/// task), so the tick budget fails if that class of per-tick waste comes back.
+#[test]
+#[cfg(not(debug_assertions))]
+fn frame_budgets_hold_through_the_07000006_dressing_cutscene() {
+    use nf_game::player::{Input, RamSave};
+    let Some(iso_path) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut ch = nf_game::triggers::Channels::default();
+    for &c in &[0x1du32, 0x45, 0x70] { ch.set(c, 1, 0); }
+    let save = RamSave::capture(&Default::default(), 0, &nf_game::pickup::Inventory::level_start(0x73, 34), &ch);
+    let mut scene = nf_view::load_with_carry(&iso_path, "07000006.bin", false, Some(&save)).expect("07000006 loads");
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        for _ in 0..3000 { sim.step_bond(Input::default(), false, false, false); if !sim.disabled { break; } }
+        let mut input = Input::default();
+        input.forward = 1.0;
+        for _ in 0..60 { sim.step_bond(input, false, false, false); }
+    }
+    let lp = scene.sim.as_ref().unwrap().drones.triggers.iter().find(|t| t.out == 0x83).expect("LoadPoint #746").clone();
+    let c = lp.centre();
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [c[0], c[1] + 1.0, c[2]];
+        for _ in 0..300 { sim.step_bond(Input::default(), false, false, false); if sim.drones.channels.on(0x83) { break; } }
+    }
+    assert!(scene.sim.as_ref().unwrap().drones.scripts.players.iter()
+        .any(|p| p.scripts.contains(&0x0600_0071) && p.state == 2), "the dressing scene did not start");
+
+    // The sim tick's median over 300 scene ticks (the frozen-AI scene state — event 5's
+    // Drone_EnableAll(0) at tick 0 [D 0x06000071 stream 8]).
+    let tick_ms = median_ms(20, 300, || { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); });
+
+    let opts = ViewOpts::default();
+    let (layout, _attrs) = scene.skin_layout();
+    for label in ["hold_t100", "swap_t560", "sweep_t1100"] {
+        let steps: u32 = label.rsplit("_t").next().and_then(|x| x.parse().ok()).unwrap_or(100);
+        { let sim = scene.sim.as_mut().unwrap(); for _ in 0..steps { sim.step_bond(Input::default(), false, false, false); } }
+        let (pos, yaw, pitch, fov) = scene.sim.as_ref().and_then(|s| s.script_camera())
+            .unwrap_or(([0.0; 3], 0.0, 0.0, 1.0));
+        let eye = pos;
+        let vp = view_proj(eye, yaw, pitch, fov.max(0.2));
+        // The cel_visibility composition headless — the room mask the palette gate consumes
+        // (the same recipe `time_a_level` uses; during the scene the eye is the script camera's).
+        let cel_once = || -> Option<Vec<bool>> {
+            let planes = nf_view::gpu::extract_frustum(vp);
+            if scene.cel_graph.portals.is_empty() { return None; }
+            let depth0 = depth0_game(&planes, eye);
+            let sides = [planes[0], planes[1], planes[2], planes[3]];
+            let world = scene.sim.as_ref().map(|s| &s.world);
+            let mut state = scene::ViewerCel::default();
+            let cell = scene::eye_cell(&scene.cel_graph, &mut state, eye, world)?;
+            let mut game = scene::portal_visible_cels_game_from_cell_doors(&scene.cel_graph, cell, eye, &depth0, &sides, None);
+            if let (Some(m), Some(w)) = (game.as_mut(), world) { scene::near_los_rescue(&scene.cel_graph, m, eye, &sides, w, 30.0); }
+            let strict = scene::portal_visible_cels_from_cell_doors(&scene.cel_graph, cell, eye, &depth0, None)?;
+            Some(scene.cel_graph.room_to_cell.iter().map(|m| m.map(|c| strict[c]).unwrap_or(true)).collect())
+        };
+        let vis = cel_once();
+        let fs = median_ms(2, 7, || { let _ = scene.frame_state(None, steps as f32, opts); });
+        let cm = median_ms(2, 7, || { let _ = scene.colour_mults(); });
+        let sp = median_ms(2, 7, || { let _ = scene.skin_palette(&layout, None, steps as f32, opts, vis.as_deref()); });
+        let cel = median_ms(2, 7, || { let _ = cel_once(); });
+        eprintln!("[cost] dressing scene {label}: frame_state {fs:.3} ms | colour_mults {cm:.3} | skin_palette {sp:.3} | cel_vis {cel:.3}");
+        assert_budget(&format!("dressing {label} frame_state"), 8.0, fs);
+        assert_budget(&format!("dressing {label} colour_mults"), 8.0, cm);
+        assert_budget(&format!("dressing {label} skin_palette"), 8.0, sp);
+        assert_budget(&format!("dressing {label} cel_vis"), 3.0, cel);
+    }
+    eprintln!("[cost] dressing scene sim tick: {tick_ms:.3} ms (median of 300)");
+    assert_budget("dressing scene sim tick (step_bond)", 1.5, tick_ms);
+}
