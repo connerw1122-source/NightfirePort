@@ -15148,3 +15148,9 @@ menu-audio-state (2026-10-16)
   pump [M 0x182c60:78 + 0x1c9790:30-35]; results stats are Stats::default (host gap); Esc during a
   cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
   (live checks 1-3).
+
+## guard-drops-flashbang (2026-10-16, branch s/guard-drops-flashbang) — start
+Task 681: guards drop exactly the game's drops on death; the stun/flash grenade (0x35) stuns and
+never kills. Plan: read DroneWeap_DropWeapon + the death pickup-create path + the stun explode arm;
+write the 5-guard drop-list test, the 3-guard flashbang no-damage test, and the sisters (frag
+kills, empty-handed guard drops nothing); fix any mismatch against the decompile.
