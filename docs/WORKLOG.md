@@ -16681,3 +16681,13 @@ sweep over EVERY live driver item (any id, pre-fire ambient ids forgiven) finds 
 launch spot. Suite on the final tree (merged origin/master): 1878 passed / 6 failed / 72 ignored,
 434 binaries — the 6 are the allowed set (3 disc_golden + 3 pre-existing pylon probes). Report:
 docs/reports/guided-rocket-sound-stop.md.
+## stun-recovery (2026-10-16, branch s/stun-recovery) — start 19:02 UTC
+
+Task 713: stunned guards stay stunned forever (playtest 1015-1738, 07000005, the stunner) — port
+the stunned guard's whole timeline: the stun state + timer, the animation and how the state ends,
+the re-stun rule, the recovery to normal AI [M the drone's stun/taser state handler 0x4a/0x4b/
+0x4c, the stunner hit path weapons 0x4A/0x4C]. First check whether master already behaves like the
+game; if it does, pin it and say so. Plan: the stun-ai-recover task already ported the family —
+verify its timeline against the decompile, pin the correct behaviour with a test that fails on the
+old behaviour, fix any constant that diverges (the TASER fall timer), run the touched crates + the
+suite.
