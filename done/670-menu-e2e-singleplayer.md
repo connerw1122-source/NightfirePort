@@ -46,3 +46,7 @@ claimed-by: sandbox2 at 2026-10-16T06:27Z
 ## Report (done, 2026-10-16T07:48Z)
 
 Closed by the driver: the report is on `s/menu-e2e-singleplayer` (docs/reports/menu-e2e-singleplayer.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T08:20Z)
+
