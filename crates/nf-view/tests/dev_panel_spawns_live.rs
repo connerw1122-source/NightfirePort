@@ -167,10 +167,11 @@ fn the_panel_give_is_the_level_pickup_take() {
         let mut armour = 0.0f32;
         let taken = scene.sim.as_mut().unwrap().drones.inventory.take(&wd, &weapon_pickup(id, rounds), true, &mut armour, clock);
         assert!(matches!(taken, Some(nf_game::pickup::Taken::Weapon { .. })), "{id:#04x}: the reference take must succeed");
-        // The panel's ONE documented affordance on top of the take — the twin-clip fill
+        // The panel's TWO documented affordances on top of the take — the twin-clip fill
         // (fix-aims20-modes-lights: the AIMS-20 0x1a's mode press needs the twin 0x1b's slot; the
-        // game gives the twin's rounds as a separate pickup) — applied to the reference too, so
-        // the comparison pins take+affordance == give and any OTHER drift still fails.
+        // game gives the twin's rounds as a separate pickup) and the 3-clip spare carry (a reload
+        // right after a give must have spare rounds) — applied to the reference too, so the
+        // comparison pins take+affordances == give and any OTHER drift still fails.
         {
             let sim = scene.sim.as_mut().unwrap();
             let twin = wd.records.get(id as usize).map(|r| r[5] as i8).unwrap_or(0);
@@ -180,6 +181,8 @@ fn the_panel_give_is_the_level_pickup_take() {
                     if *c == 0 { *c = wd.clip_size(t).max(1); }
                 }
             }
+            let carry = (wd.clip_size(id as usize).max(1) * 3).max(rounds);
+            sim.drones.inventory.equip_ammo(&wd, id as usize, carry);
         }
         let after_take = {
             let sim = scene.sim.as_ref().unwrap();

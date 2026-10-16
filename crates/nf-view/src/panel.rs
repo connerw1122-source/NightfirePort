@@ -381,6 +381,12 @@ pub fn apply(scene: &mut crate::scene::Scene, q: &[(String, String)]) -> (String
                         if *c == 0 { *c = wd.clip_size(t).max(1); }
                     }
                 }
+                // The panel's second documented affordance on top of the take: the 3-clip spare
+                // carry (the give's historical generosity — a reload right after a give must have
+                // spare rounds; the take alone lands only the pickup's own rounds). Raw id, the
+                // pre-take behaviour.
+                let carry = (wd.clip_size(id as usize).max(1) * 3).max(rounds);
+                drones.inventory.equip_ammo(&wd, id as usize, carry);
                 let remapped = nf_game::pickup::Inventory::upgrade_weapon(id as u16, 0, clock);
                 let note = if remapped != id as u16 {
                     format!(" — a level pickup of {id:#04x} remaps to {remapped:#04x} (Upgrade_Weapon [M 0x18e650:142]); gave that record")
