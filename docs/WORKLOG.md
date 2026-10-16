@@ -15290,3 +15290,55 @@ remote-mine-detonate (2026-10-16)
   re-run didn't fit the window — the touched binaries (nf-game lib 237, hatch_crouch 4, vent2 3,
   hatch 2, level_0c 4, walk_0c 4, walkreal_0c 18, playtest_spots 4) all green. Report:
   docs/reports/hatch-crouch-0c.md (live checks: the pier climb, the east descent).
+
+## menu-mouse-parity (2026-10-16, branch s/menu-mouse-parity)
+- Task: the mouse works everywhere the keyboard does. For every page: mouse_move over drawn rows
+  (list_rows_y, wheel geometry, tab strip) sets the same cursor arrows would; mouse_click on a row
+  does what Enter does; clicks outside rows do nothing; right-click = Back, wheel = Up/Down; no
+  click changes a value it shouldn't. Fuzz: 20 seeded runs of 5000 steps, moves+clicks+keys, task-669
+  invariants (no panic, cursor in range, Back leaves).
+- Rule: drive the FrontEnd ONLY through action(), mouse_*(), tick() and host-side window calls —
+  never assign page/cursor/state to get somewhere. Ticks between actions until !intro_playing &&
+  !attract_playing (bounded). Every test gets sister assertions.
+- Plan: map the fe input surface (mouse_* entry points, per-page hit tests) and the draw-code row
+  geometry (list_rows_y etc.), write parity tests per page, fuzz, fix hit-test disagreements against
+  the draw code (numbers only, draw source cited), run touched crates + full suite.
+
+## menu-mouse-parity (2026-10-16, branch s/menu-mouse-parity) — the mouse hits the drawn rows
+- Audit: every page's mouse hit-test against the draw code's own positions. Fixes, all hit-test
+  numbers or missing hover paths, draw source cited:
+  - The page_rows pages (Options / MpMode / MpHost / MpNetJoin) drew rows at y 140+26k
+    [M page_rows_no_head] while list_rows_y still held 143/175/207/160 — the hits moved onto the
+    drawn rows (138/164/190, and MpNetJoin's address line at 251 = the value label's middle 259
+    [M the (200,250,240×18) label]); doc §4 updated with them. Options joined the action rows
+    (its stub ✕ is the keyboard's no-op [M action()'s Options arm]).
+  - Wheel pages: mouse_move now hovers the drawn slots (the wheel re-centres on the hovered row
+    — the same cursor the arrows step to); the click confirms the row the pointer HOVERED
+    (wheel_hover — the re-centre moves rows under a stationary pointer), a direct click keeps the
+    page's contract (centre confirms, a neighbour scrolls), and clicks LEFT of the wheel column no
+    longer confirm the centre row (they did — a stray click on MissionSelect's emblem side could
+    start a mission). Gadgets/Weapons draw wheels [M menu_overlay] and joined is_wheel_page.
+  - New hover/click paths: the pause tab strip (hover shows the tab), the OBJECTIVES rows
+    (159+22i [M pause_page]), the Screen Adjust bars [L page 0x40000047], the Join Game panels
+    [L page 0x40000019], the Records spinner's drawn ◀ ▶ (Up/Down) and row (✕ = Dossier [M]).
+  - The modals and movie states now block the mouse exactly like the keyboard (input_blocked:
+    notices / mp_error / pause_hint / intro / attract [M 0x21c858 case 0x68]) — a click through a
+    box is the ✕ (Enter's dismissal), hovers do nothing under it.
+  - CheatMedal's clicks are inert: the page draws no rows yet (the overlay's arm is empty), so
+    any click was "outside rows" — and the old fall-through CONFIRMED on click (a cheat toggle).
+  - The fuzz's Back-leaves invariant caught a real freeze: Back on MpJoin did nothing while the
+    panel cursor sat on panels 2-4 (the arms were gated on can_join). The game's △ acts on the
+    LOCAL agent and the page close [M C_RBMPSTART 0x20d048's 0x6b / the msg-0x6b close] — the
+    can_join gate came off the two Back arms (the un-join stays agent 1's; Confirm keeps it).
+- Host mappings extracted for the tests: menu::MOUSE_RIGHT_ACTION (= Back, lib.rs's right-press
+  arm) and menu::wheel_scroll_action (LineDelta → Up/Down, lib.rs's MouseWheel arm) — lib.rs calls
+  them; behavior unchanged.
+- Tests: crates/nf-view/tests/menus_mouse_parity.rs — 17 tests driven ONLY through action()/
+  mouse_*/tick()/host-side calls (open_pause/mission_ended; the two stub pages with no action
+  path enter the way lib.rs's --page override does). Sisters everywhere. The fuzz: 20 seeded runs
+  × 5000 steps (xorshift64*), moves+clicks+keys interleaved, the 669 invariants every step (no
+  panic, cursor/page_row in range, cheat_medal_sel < 6, Back leaves with the game's own
+  input-less pages excepted), the port invariant at each run's end. 17/17 green; the 16 existing
+  menu binaries re-run green (170 tests).
+- Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
+  single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).

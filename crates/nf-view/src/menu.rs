@@ -1702,6 +1702,11 @@ pub struct FrontEnd {
     pub mp_level: u32,
     /// The scenario wheel's cursor [M C_SBMPSCEN 0x20c600's msg-0x40 selection over mp_scenario].
     pub mp_scenario_row: usize,
+    /// menu-mouse-parity: the wheel row the pointer last hovered (the wheel pages' mouse_move).
+    /// The wheel re-centres on a hover, which moves the rows under a stationary pointer — the
+    /// click reads this to confirm the row the user aimed at. Cleared on every action, page
+    /// change and hover-off-rows.
+    wheel_hover: Option<usize>,
     /// The map wheel's cursor [M C_SBMPMAP 0x217538's selection over mp_level].
     pub mp_map_row: usize,
     /// The options hub's cursor [M C_SBMPOPTIONS 0x20e818's selection over mp_options].
@@ -1930,6 +1935,8 @@ impl FrontEnd {
             mp_scenario: 0,
             mp_level: 0,
             mp_scenario_row: 0,
+            // menu-mouse-parity (each new field on its own line [WORKLOG lesson 4]).
+            wheel_hover: None,
             mp_map_row: 0,
             mp_options_row: 0,
             mp_bots_row: 1,
@@ -2033,6 +2040,7 @@ impl FrontEnd {
     /// is the swap, handled below and in `MenuMusic::page_enter`).
     fn enter_page(&mut self, p: Page) {
         self.page = p;
+        self.wheel_hover = None;   // menu-mouse-parity: the hover named a row of the old page.
         if matches!(p, Page::Start | Page::Main | Page::MissionSelect | Page::Results
                     | Page::MpDebriefing) {
             self.open_pair_sfx();
@@ -2327,8 +2335,9 @@ impl FrontEnd {
     // the wheel to it, the ◀ ▶ columns of a value row are Left / Right, right click is Back and the wheel scrolls
     // (Up / Down). Coordinates are the menu's 640×480 space.
 
-    /// The row cursor of the current page (the MP wheels keep their own counters).
-    fn page_row(&self) -> usize {
+    /// The row cursor of the current page (the MP wheels keep their own counters). The tests
+    /// read it for the cursor-in-range invariant.
+    pub fn page_row(&self) -> usize {
         match self.page {
             Page::MpScenario => self.mp_scenario_row, Page::MpMap => self.mp_map_row, Page::MpOptions => self.mp_options_row,
             Page::MpBots => self.mp_bots_row, Page::MpBotChoose => self.mp_bot_char, _ => self.cursor,
@@ -2340,7 +2349,14 @@ impl FrontEnd {
             Page::MpBots => self.mp_bots_row = r, Page::MpBotChoose => self.mp_bot_char = r, _ => self.cursor = r,
         }
     }
-    /// The value-list rows' y (640 space) on the list pages, or None off them.
+    /// The value-list rows' y (640 space) on the list pages, or None off them. The numbers are the
+    /// draw code's own row positions: the option pages draw from `opt_rows()`'s y's and the MP
+    /// value pages from the same literals in `menu_overlay`, so they cannot drift. The page_rows
+    /// pages (Options, MpMode, MpHost, MpNetJoin) draw their rows centred at y 140+26k
+    /// (`page_rows_no_head`), whose ink middle sits ~6 under the pen [M label()'s measured
+    /// pen-to-middle offset] — the bands (y0−6, y0+22) centre on y0+8, so y0 = 138+26k. The
+    /// MpNetJoin address line is the page's one drawn row: the value label at (200,250,240×18)
+    /// puts its middle at 259, so y0 = 251.
     fn list_rows_y(&self) -> Option<Vec<f32>> {
         Some(match self.page {
             Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().iter().map(|r| r.y).collect(),
@@ -2348,43 +2364,116 @@ impl FrontEnd {
             Page::MpPlayerMods => vec![143.0, 175.0, 207.0, 239.0, 271.0],
             Page::MpEnviroMods => vec![143.0, 177.0, 209.0, 241.0, 273.0],
             Page::MpBotSetup => (0..8).map(|i| 85.0 + 32.0 * i as f32).collect(),
-            // net-online-lobby: the port-only pages' hit rows (the draw contract's y's, 640
-            // space) [S §4 — the y's live here AND in the doc, so the draw code and the mouse
-            // cannot drift apart].
-            Page::MpMode => vec![143.0, 175.0, 207.0],
-            Page::MpHost => vec![143.0, 175.0],
-            Page::MpNetJoin => vec![160.0],
+            // The page_rows pages' drawn rows (140/166/192 …): Options [S three stub rows] and
+            // the port-only online pages (the y's live here AND in
+            // docs/systems/net-online-lobby.md §4, so the draw code and the mouse cannot drift).
+            Page::Options | Page::MpMode => vec![138.0, 164.0, 190.0],
+            Page::MpHost => vec![138.0, 164.0],
+            Page::MpNetJoin => vec![251.0],
             _ => return None,
         })
     }
-    fn is_wheel_page(&self) -> bool {
+    // The wheel pages draw the five WHEEL_Y slots (Gadgets/Weapons too — the dossier's own
+    // wheels [M menu_overlay's wheel() arms]); Records is a one-row spinner with drawn ◀ ▶, not
+    // a wheel, and Pause/ScreenAdjust carry their own geometry. The tests read it.
+    pub fn is_wheel_page(&self) -> bool {
         matches!(self.page, Page::Codename | Page::Difficulty | Page::MissionSelect | Page::Dossier | Page::CnSelect | Page::CnMenu
+            | Page::Gadgets | Page::Weapons
             | Page::MpScenario | Page::MpMap | Page::MpOptions | Page::MpBots | Page::MpBotChoose)
     }
 
-    /// The pointer moved to (x, y): hovering a list row selects it. Returns whether the selection changed.
+    /// The wheel slot under (x, y): the drawn rows' bands (WHEEL_Y[slot]−6 … +23, the slots'
+    /// 17-tall controls padded to the click shape) across the wheel column (the slots' controls
+    /// start at x 304; the band's 290 keeps clear of the emblem). None off them.
+    fn wheel_slot_at(&self, x: f32, y: f32) -> Option<usize> {
+        if x < 290.0 { return None; }
+        WHEEL_Y.iter().position(|&wy| y >= wy - 6.0 && y < wy + 23.0)
+    }
+
+    /// The modals and the movie states block the page input the way the keyboard is blocked: the
+    /// game's option box clears the queued actions and gates the 0x22 dispatcher [M 0x21c858 case
+    /// 0x68 `Input_ClearAllActions`; 0x21c3d8:70], the hint boxes ride the same manager, and the
+    /// movies own the screen (P_INTRO's page has no controls [M 0x209e88]). Public: the host and
+    /// the tests gate the mouse paths on it.
+    pub fn input_blocked(&self) -> bool {
+        self.notice.is_some() || self.net_notice.is_some() || self.mp_error != 0
+            || self.pause_hint.is_some() || self.intro_playing || self.attract_playing
+    }
+
+    /// The pointer moved to (x, y): hovering a drawn row selects it — the same cursor the arrows
+    /// would set. Returns whether the selection changed.
     pub fn mouse_move(&mut self, x: f32, y: f32) -> bool {
+        if self.input_blocked() { return false; }
         let pick = |rows: &[(f32, f32)], x0: f32, x1: f32| rows.iter().position(|&(a, b)| y >= a && y < b && x >= x0 && x < x1);
-        let before = (self.page_row(), self.confirm_sel);
+        let before = (self.page_row(), self.confirm_sel, self.pause_tab, self.pause_objectives_sel);
         match self.page {
             Page::Main => if let Some(i) = pick(&(0..3).map(|i| (262.0 + 32.0 * i as f32, 290.0 + 32.0 * i as f32)).collect::<Vec<_>>(), 167.0, 473.0) { self.cursor = i; },
             Page::Pause if self.confirming_restart || self.confirming_quit => {
                 if let Some(i) = pick(&[(220.0, 254.0), (254.0, 288.0)], 238.0, 403.0) { self.confirm_sel = i; }
             }
+            // The tab strip [L the page's four type-1 controls (84/199/339/465,120,·×16)]: hovering
+            // a tab shows it — the tab the ◀ ▶ cycle would land on. Only while the MISSION rows are
+            // the input (the YES/NO confirm is modal, like the keyboard's).
+            Page::Pause if !(self.confirming_restart || self.confirming_quit) && (110.0..140.0).contains(&y) => {
+                let tabs = [(84.0, 191.0), (199.0, 331.0), (339.0, 457.0), (465.0, 555.0)];
+                if let Some(t) = tabs.iter().position(|&(a, b)| x >= a && x < b) {
+                    if t != self.pause_tab {
+                        self.pause_tab = t;
+                        if t == 1 { self.pause_objectives_sel = self.pause_objectives.len().saturating_sub(1); }
+                    }
+                }
+            }
             Page::Pause if self.pause_tab == 0 => {
                 if let Some(i) = pick(&(0..3).map(|i| (192.0 + 33.5 * i as f32, 225.5 + 33.5 * i as f32)).collect::<Vec<_>>(), 153.0, 487.0) { self.cursor = i; }
+            }
+            // The OBJECTIVES tab's rows [M pause_page's tab-1 arm: rows at y 159+22i from the
+            // list's top, the list (98,147,445×190)]: hovering a row scrolls the tab's selection
+            // to it — the keyboard's ~V.
+            Page::Pause if self.pause_tab == 1 => {
+                let n = self.pause_objectives.len().min(8);
+                for i in 0..n {
+                    let mid = 159.0 + i as f32 * 22.0;
+                    if y >= mid - 11.0 && y < mid + 11.0 && (98.0..543.0).contains(&x) { self.pause_objectives_sel = i; break; }
+                }
+            }
+            Page::Pause => {}
+            // The two slider bars [L page 0x40000047: vertical (304,176,32×128) d1 0, horizontal
+            // (256,224,128×32) d1 1]: hovering a bar picks it — the keyboard's ~V.
+            Page::ScreenAdjust => {
+                if (304.0..336.0).contains(&x) && (176.0..304.0).contains(&y) { self.cursor = 0; }
+                else if (256.0..384.0).contains(&x) && (224.0..256.0).contains(&y) { self.cursor = 1; }
             }
             Page::Results if self.outcome == Outcome::Failed => {
                 if let Some(i) = pick(&[(200.0, 235.0), (235.0, 273.0)], 197.0, 443.0) { self.cursor = i; }
             }
+            // The Join Game panels [L page 0x40000019: (50/328, 103/253, 262×134)]: hovering a
+            // panel walks the panel cursor — the keyboard's ~V.
+            Page::MpJoin => {
+                let panels = [(50.0f32, 103.0f32), (328.0, 103.0), (50.0, 253.0), (328.0, 253.0)];
+                if let Some(i) = panels.iter().position(|&(px, py)| x >= px && x < px + 262.0 && y >= py && y < py + 134.0) { self.cursor = i; }
+            }
             _ => {
-                if let Some(ys) = self.list_rows_y() {
+                if self.is_wheel_page() {
+                    // The wheel's drawn slots: hovering a row selects it — the wheel re-centres on
+                    // it, the row the arrows step to. The row the pointer aimed at rides
+                    // wheel_hover so the click confirms it (the re-centre moves the rows under a
+                    // stationary pointer; an empty slot — a row out of range — hovers nothing).
+                    self.wheel_hover = None;
+                    if let Some(slot) = self.wheel_slot_at(x, y) {
+                        let r = self.page_row() as i32 + slot as i32 - 2;
+                        if r >= 0 && (r as usize) < self.rows() {
+                            let r = r as usize;
+                            self.wheel_hover = Some(r);
+                            if r != self.page_row() { self.set_page_row(r); }
+                        }
+                    }
+                } else if let Some(ys) = self.list_rows_y() {
                     let rows: Vec<(f32, f32)> = ys.iter().map(|&y0| (y0 - 6.0, y0 + 22.0)).collect();
                     if let Some(i) = pick(&rows, 40.0, 600.0) { self.cursor = i; }
                 }
             }
         }
-        let changed = (self.page_row(), self.confirm_sel) != before;
+        let changed = (self.page_row(), self.confirm_sel, self.pause_tab, self.pause_objectives_sel) != before;
         if changed {
             // The pointer landing on a different control is the game's cursor-over-focus change:
             // MENU_SOUND 7 [M Page_Update 0x21edc8:38-53 — Menu_GetControl picks the control under
@@ -2396,6 +2485,14 @@ impl FrontEnd {
 
     /// A left click at (x, y), as the keyboard action it stands for. Returns whether anything happened.
     pub fn mouse_click(&mut self, x: f32, y: f32) -> bool {
+        // The modals and the movie states take the ✕ only — the keyboard's Enter dismisses the
+        // box / skips the movie and the page under it takes nothing [M action()'s gates; 0x21c858
+        // case 0x68].
+        if self.input_blocked() { return self.action(Action::Confirm); }
+        // Wheels first: the click acts on the row the pointer hovered, and the hover must not run
+        // inside the click (a re-centre would chase the pointer's row one slot further — see
+        // wheel_click).
+        if self.is_wheel_page() { return self.wheel_click(x, y); }
         // Hover first, so a click lands on the row under the pointer.
         self.mouse_move(x, y);
         // The pause tabs [L page 0x4000004b's four type-1 controls at y 120].
@@ -2409,17 +2506,25 @@ impl FrontEnd {
                 return true;
             }
         }
-        // Wheels: a neighbour row scrolls the wheel to it, the centre row confirms.
-        if self.is_wheel_page() && x >= 290.0 {
-            for (slot, &wy) in WHEEL_Y.iter().enumerate() {
-                if y >= wy - 6.0 && y < wy + 23.0 {
-                    let d = slot as i32 - 2;
-                    if d == 0 { return self.action(Action::Confirm); }
-                    let r = self.page_row() as i32 + d;
-                    if r >= 0 && (r as usize) < self.rows() { self.set_page_row(r as usize); return self.focus_moved(); }
-                    return false;
-                }
+        // The Records spinner [L page 0x4000003a: the mission spinner 0x10000174 (132,124,376×16)
+        // with drawn ◀ ▶ at x 144 / 497, mid y 133]: a click on an arrow walks the campaign — the
+        // keyboard's ~V; a click on the row itself is ✕ (back to the Dossier, Enter's action
+        // [M action()'s Records arm]); the score rows below are readouts.
+        if self.page == Page::Records {
+            if (125.0..141.0).contains(&y) {
+                if (136.0..152.0).contains(&x) { return self.action(Action::Up); }
+                if (489.0..505.0).contains(&x) { return self.action(Action::Down); }
             }
+            if (132.0..508.0).contains(&x) && (124.0..140.0).contains(&y) { return self.action(Action::Confirm); }
+            return false;
+        }
+        // The Screen Adjust bars [L page 0x40000047: (304,176,32×128) d1 0, (256,224,128×32) d1 1]:
+        // a click on a bar is ✕ — Enter keeps the offset and leaves; a click off the bars does
+        // nothing (the page's only controls are the bars, the picture and the hint).
+        if self.page == Page::ScreenAdjust {
+            let on_v = (304.0..336.0).contains(&x) && (176.0..304.0).contains(&y);
+            let on_h = (256.0..384.0).contains(&x) && (224.0..256.0).contains(&y);
+            if on_v || on_h { return self.action(Action::Confirm); }
             return false;
         }
         // Value rows: the ◀ / ▶ columns step the value; the rest of an action row confirms.
@@ -2427,10 +2532,11 @@ impl FrontEnd {
             if !ys.iter().any(|&y0| y >= y0 - 6.0 && y < y0 + 22.0) { return false; }
             let is_action = match self.page {
                 Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().get(self.cursor).is_some_and(|r| r.kind == OptKind::Action),
-                // net-online-lobby: the mode page's rows, the host Start row and the join address
-                // row are actions (a click confirms); the host's port row keeps the value columns
-                // [S §4].
-                Page::MpMode | Page::MpNetJoin | Page::MpHost => true,
+                // The mode page's rows, the host Start row and the join address row are actions (a
+                // click confirms); the host's port row keeps the value columns [S §4]. The Options
+                // page's three rows are actions too — the stubs' ✕ is the keyboard's no-op [M
+                // action()'s Options arm], the Back row's ✕ leaves.
+                Page::MpMode | Page::MpNetJoin | Page::MpHost | Page::Options => true,
                 _ => false,
             };
             if is_action { return self.action(Action::Confirm); }
@@ -2446,14 +2552,55 @@ impl FrontEnd {
             Page::Main => if (167.0..473.0).contains(&x) && (262.0..358.0).contains(&y) { return self.action(Action::Confirm); },
             Page::Pause if self.confirming_restart || self.confirming_quit => if (238.0..403.0).contains(&x) && (220.0..288.0).contains(&y) { return self.action(Action::Confirm); },
             Page::Pause if self.pause_tab == 0 => if (153.0..487.0).contains(&x) && (192.0..293.0).contains(&y) { return self.action(Action::Confirm); },
+            // The OBJECTIVES tab's rows: a click shows the hovered row's hint — the row's ✕ [M
+            // 0x204408's control-1 0x4b activation]. The CONTROLS/SCORE tabs draw no selectable
+            // rows; a click does nothing.
+            Page::Pause if self.pause_tab == 1 => {
+                let n = self.pause_objectives.len().min(8);
+                for i in 0..n {
+                    let mid = 159.0 + i as f32 * 22.0;
+                    if y >= mid - 11.0 && y < mid + 11.0 && (98.0..543.0).contains(&x) { return self.action(Action::Confirm); }
+                }
+                return false;
+            }
             Page::Pause => {}
             Page::Results if self.outcome == Outcome::Failed => if (197.0..443.0).contains(&x) && (200.0..273.0).contains(&y) { return self.action(Action::Confirm); },
+            // The Join panels: a click on a panel is that panel's ✕ (the hover picked it); outside
+            // the four panels a click does nothing — the keyboard's Confirm acts on agent 1 only
+            // [M action()'s can_join gate].
+            Page::MpJoin => {
+                let panels = [(50.0f32, 103.0f32), (328.0, 103.0), (50.0, 253.0), (328.0, 253.0)];
+                if panels.iter().any(|&(px, py)| x >= px && x < px + 262.0 && y >= py && y < py + 134.0) {
+                    return self.action(Action::Confirm);
+                }
+                return false;
+            }
             // The letter grid and the MP setup panels keep the keyboard (typing / the per-agent steps).
             Page::CnName | Page::MpSetup => {}
-            // Single-action pages (the title, the results page, the credits, the Join panel, the summary): a click is ✕.
+            // The cheat-medal list draws no rows yet (the overlay's arm is empty — the drawing task
+            // owns the page's look): no drawn row to hit, so a click does nothing; the keyboard's
+            // selection and ✕ stay the only toggle.
+            Page::CheatMedal => {}
+            // Single-action pages (the title, the results page, the credits, the summary): a click is ✕.
             _ => return self.action(Action::Confirm),
         }
         false
+    }
+
+    /// A left click on a wheel page: the row the pointer hovered (mouse_move's wheel_hover — the
+    /// wheel re-centred on it, so it IS the selection) takes the click as its ✕, exactly what
+    /// Enter does on it. A direct click with no hover behind it falls back to the slot under the
+    /// pointer: the centre row confirms, a neighbour row scrolls the wheel to it, an empty slot
+    /// (a row out of range) and anything off the wheel column do nothing.
+    fn wheel_click(&mut self, x: f32, y: f32) -> bool {
+        let Some(slot) = self.wheel_slot_at(x, y) else { return false; };
+        if self.wheel_hover == Some(self.page_row()) { return self.action(Action::Confirm); }
+        let d = slot as i32 - 2;
+        let r = self.page_row() as i32 + d;
+        if r < 0 || r as usize >= self.rows() { return false; }
+        if d == 0 { return self.action(Action::Confirm); }
+        self.set_page_row(r as usize);
+        self.focus_moved()
     }
 
     /// The option page's rows (empty off the option pages).
@@ -3617,6 +3764,8 @@ impl FrontEnd {
 
     /// One menu action. Returns true when the action changed the state.
     pub fn action(&mut self, a: Action) -> bool {
+        // menu-mouse-parity: any action moves the wheel under the pointer — the hover is stale.
+        self.wheel_hover = None;
         // The MP start checks' refusal is the game's option box too (Menu_CreateOptionBox with the
         // error label [M C_SBMPOPTIONS 0x20e818:50-130]); it was never drawn, so Continue just did
         // nothing (playtest 1015-2231 "cant get into a match").
@@ -4487,8 +4636,12 @@ impl FrontEnd {
                         return true;
                     }
                     // △ leaves [M C_RBMPSTART's 0x6b arm un-joins state-1 agents; C_RBMPCNAME's
-                    // 0x6b un-chooses codenames].
-                    Action::Back if can_join && self.mp_join[0].state != 0 => {
+                    // 0x6b un-chooses codenames]. The arms act on the LOCAL agent and the page's
+                    // own close — not on the panel cursor (the game's △ is the pad's back, agent
+                    // 1's, wherever the wheel cursor stands; the menu-mouse-parity fuzz's
+                    // Back-leaves invariant caught the old can_join gate freezing Back while the
+                    // cursor sat on panels 2-4).
+                    Action::Back if self.mp_join[0].state != 0 => {
                         self.mp_join[0] = MpJoinAgent::default();
                         return true;
                     }
@@ -4496,7 +4649,7 @@ impl FrontEnd {
                     // close sends the delayed Manager 0x5f pop, so the under-page shows [M
                     // 0x20ca00's 0x6b arm → 0x5f(1); in the port's stack that under-page is the
                     // mode choice (S — the game's own under-page is Main)].
-                    Action::Back if can_join => {
+                    Action::Back => {
                         self.page = Page::MpMode;
                         self.cursor = 0;
                         return true;
@@ -7287,6 +7440,20 @@ pub fn key_action(key: winit::keyboard::KeyCode) -> Option<Action> {
         KeyCode::Tab | KeyCode::KeyE => Action::Side,
         _ => return None,
     })
+}
+
+/// menu-mouse-parity: the host's right-button mapping for the menu — a right PRESS is the pad's
+/// △ = Back [M lib.rs's `MouseButton::Right` arm feeds `menu_input`; the game's △ rides
+/// MenuManager_Update 0x21c3d8:78-105]. The LEFT button is the row hit-test (`mouse_click`), not
+/// an Action; releases do nothing.
+pub const MOUSE_RIGHT_ACTION: Action = Action::Back;
+
+/// menu-mouse-parity: the scroll wheel's notch → Action — up = Up (previous row), down = Down,
+/// the same Actions the d-pad sends [M lib.rs's `DeviceEvent::MouseWheel` arm; the weapon-cycle
+/// mapping's up = previous direction]. A zero delta (some pads' free-spinning wheels report one)
+/// is no action.
+pub fn wheel_scroll_action(y: f32) -> Option<Action> {
+    if y > 0.0 { Some(Action::Up) } else if y < 0.0 { Some(Action::Down) } else { None }
 }
 
 /// net-online-lobby: the join address page's typing keys — the digits, the dot and the colon
