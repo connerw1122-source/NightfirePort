@@ -36,6 +36,13 @@ struct Geo {
     tris: Vec<[V3; 3]>,
     /// Each triangle's surface byte (`HITDATA+0x50`; `& 0x3F` indexes `EffectInfo`).
     mats: Vec<u8>,
+    /// Per triangle: the owning glist node's bullet-pass flag — the placement's glist flags bit
+    /// 0x40 (`celglist+0x44` → `cel+0x94` [M parsemap_block_map_data_static 0x1d1998:103]).
+    /// `Collide_Intersect` 0x1ebaa8:143-145 ORs it into `HITDATA+0x51` bit 1 on every hit of the
+    /// node, and the bullet-family queries (HITTEST+0x98 bit 0x8 — the aim trace 0x20a/0x208,
+    /// `Bullet_homing`'s LOS 8) drop such hits outright (disasm 0x1ebff0-0x1ec010), so bullets fly
+    /// through the whole node. fix-foliage-bullets.
+    pass: Vec<bool>,
     objects: Vec<Object>,
     /// Static only (`chunk`): bounds over runs of consecutive `objects` (`tris` = an object index range), so a query
     /// skips whole runs. Empty = test every object.
@@ -46,16 +53,29 @@ struct Geo {
 }
 
 impl Geo {
-    fn push(&mut self, tris: impl IntoIterator<Item = ([V3; 3], u8)>) {
+    fn push(&mut self, tris: impl IntoIterator<Item = ([V3; 3], u8)>) { self.push_flags(tris, false) }
+
+    fn push_flags(&mut self, tris: impl IntoIterator<Item = ([V3; 3], u8)>, node_pass: bool) {
         let start = self.tris.len();
         let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
         for (w, m) in tris {
             for p in &w { for k in 0..3 { lo[k] = lo[k].min(p[k]); hi[k] = hi[k].max(p[k]); } }
             self.tris.push(w);
             self.mats.push(m);
+            self.pass.push(node_pass);
         }
         if self.tris.len() > start { self.objects.push(Object { lo, hi, tris: start..self.tris.len() }); }
     }
+
+    /// Whether a hit on triangle `k` carries the game's bullet-pass bit (`HITDATA+0x51` bit 1):
+    /// the node's glist flags bit 0x40 OR the surface byte's bit 0x40 — `Collide_Intersect`
+    /// 0x1ebaa8 sets the flag from either (the node word at :143-145, the surface byte at
+    /// disasm 0x1ebf78-0x1ebf80, no query-flag gate on either). The surface byte's bit 0x80 does
+    /// NOT set it for the bullet queries: that OR is guarded by HITTEST+0x98 bit 0x1
+    /// (disasm 0x1ebf8c-0x1ebf94), which the 0x20a/0x208 bullet flags clear — their 50/50 stays
+    /// in the walk's roll (`Collide_Update` 0x1ea398:217-220, `Bullet_CollisionHandler` 0x12cfd0).
+    /// fix-foliage-bullets.
+    fn bullet_pass(&self, k: usize) -> bool { self.pass[k] || self.mats[k] & 0x40 != 0 }
 
     /// Split every object into runs of `n` consecutive triangles with their own bounds. Static geometry only: its
     /// objects carry no identity, so the queries (`near`, `segment_in`) return exactly the same hits, but a
@@ -266,16 +286,20 @@ impl CollisionWorld {
         let mut obj_cell: Vec<Option<u32>> = Vec::new();
         for inst in instances {
             let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
+            // The node's bullet-pass flag: the placement's glist flags bit 0x40 (cel+0x94 [M
+            // 0x1d1998:103]; Collide_Intersect 0x1ebaa8:143-145 turns every hit on the node into a
+            // pass, and the bit-0x8 bullet queries drop those hits — bullets fly through the node).
+            let node_pass = level.maps[inst.map].objects[inst.object].flags & 0x40 != 0;
             // The 0x1000-flagged objects (the player-missile cage) never block the actor capsule [M
             // Collide_Pick 0x1eb320 — the cel flags 0x1000 skip for queries with HITTEST+0x98 bit 0x20].
             if level.maps[inst.map].objects[inst.object].flags & 0x1000 != 0 {
-                missile.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
+                missile.push_flags(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)), node_pass);
                 continue;
             }
             if graph.is_some() {
                 obj_cell.push(Some(obj_cell.len() as u32));
             }
-            stat.push(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)));
+            stat.push_flags(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)), node_pass);
         }
         // Index collision shapes by hashcode, AND by (map,object) packed into a synthetic key for objects whose
         // hashcode is u32::MAX (anonymous objects — e.g. 4/5 doors on 07000001 have hashcode=MAX, so the hashcode
@@ -392,6 +416,16 @@ impl CollisionWorld {
         CollisionWorld { stat, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default(), scope: None }
     }
 
+    /// One object holding these world-space triangles with surface bytes and per-triangle
+    /// bullet-pass flags (tests; the live path derives the flag from the placement's glist flags).
+    pub fn from_triangles_flags(tris: Vec<([V3; 3], u8, bool)>) -> CollisionWorld {
+        let mut stat = Geo::default();
+        let pass = tris.iter().map(|(_, _, p)| *p).collect::<Vec<_>>();
+        stat.push_flags(tris.into_iter().map(|(t, m, _)| (t, m)), false);
+        for (k, p) in pass.into_iter().enumerate() { stat.pass[k] = p; }
+        CollisionWorld { stat, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default(), scope: None }
+    }
+
     /// Glist object `hash`'s collision triangles in object space.
     pub fn shape(&self, hash: u32) -> Option<&[[V3; 3]]> { self.shapes.get(&hash).map(Vec::as_slice) }
 
@@ -421,7 +455,8 @@ impl CollisionWorld {
         let d = self.dynamic.read().unwrap();
         let mut best: Option<(f32, usize)> = None;
         for (i, o) in d.geo.objects.iter().enumerate() {
-            let g = Geo { tris: d.geo.tris[o.tris.clone()].to_vec(), mats: d.geo.mats[o.tris.clone()].to_vec(), objects: vec![Object { lo: o.lo, hi: o.hi, tris: 0..o.tris.len() }], groups: Vec::new(), owners: Vec::new() };
+            let g = Geo { tris: d.geo.tris[o.tris.clone()].to_vec(), mats: d.geo.mats[o.tris.clone()].to_vec(), objects: vec![Object { lo: o.lo, hi: o.hi, tris: 0..o.tris.len() }], groups: Vec::new(), owners: Vec::new(),
+                pass: d.geo.pass[o.tris.clone()].to_vec(), };
             if let Some(t) = segment_in(&g, from, to) { if best.is_none_or(|b| t < b.0) { best = Some((t, i)); } }
         }
         let (t, i) = best?;
@@ -438,10 +473,18 @@ impl CollisionWorld {
     /// Every triangle of the objects whose box meets `lo`..`hi`, static first.
     /// Every triangle whose object's bounds the segment `from → to` passes through (`near` for segments).
     fn near_seg(&self, from: V3, to: V3, mut f: impl FnMut(&[V3; 3], u8)) {
+        self.near_seg_drop_pass(from, to, false, f)
+    }
+
+    /// `near_seg` with the bullet-family's pass-flag drop (HITTEST+0x98 bit 0x8 [M 0x1ebff0]).
+    fn near_seg_drop_pass(&self, from: V3, to: V3, drop_pass: bool, mut f: impl FnMut(&[V3; 3], u8)) {
         let dynamic = self.dynamic.read().unwrap();
         for g in [&self.stat, &self.missile, &dynamic.geo] {
             for o in along(g, from, to) {
-                for k in o.tris.clone() { f(&g.tris[k], g.mats[k]); }
+                for k in o.tris.clone() {
+                    if drop_pass && g.bullet_pass(k) { continue; }
+                    f(&g.tris[k], g.mats[k]);
+                }
             }
         }
     }
@@ -891,6 +934,18 @@ impl CollisionWorld {
         self.segment_in_sets(from, to, true)
     }
 
+    /// The bullet-family segment: `segment` MINUS every hit whose hit-data would carry the pass
+    /// flag (the glist node's flags bit 0x40 or the surface byte's bit 0x40). The game's bullet
+    /// queries run HITTEST+0x98 with bit 0x8 — the aim trace 0x20a/0x208 (`Player_WeaponInitBullet`
+    /// 0x1a4bf0:154-159 [M]) and `Bullet_homing`'s LOS 8 (0x12f358:92 [M]) — and
+    /// `Collide_Intersect` 0x1ebaa8 drops pass-flagged hits outright for them (fraction 1e8,
+    /// disasm 0x1ebff0-0x1ec010), so the trace's first report is the first NON-pass surface and
+    /// bullets fly through the flagged node (the 07000005 trees, glist flags 0x41 [D]).
+    /// fix-foliage-bullets.
+    pub fn segment_bullet(&self, from: V3, to: V3) -> Option<f32> {
+        self.segment_in_sets_drop_pass(from, to, true, true)
+    }
+
     /// The actor-class segment: static MINUS the 0x1000 missile cage, plus the dynamic set — the
     /// game's queries whose HITTEST+0x98 carries bit 0x20 skip the 0x1000-flagged nodes [M
     /// `Collide_Pick` 0x1eb320 disasm 0x1eb480-0x1eb49c, fix-objects2], and the take test's
@@ -902,6 +957,10 @@ impl CollisionWorld {
     }
 
     fn segment_in_sets(&self, from: V3, to: V3, with_missile: bool) -> Option<f32> {
+        self.segment_in_sets_drop_pass(from, to, with_missile, false)
+    }
+
+    fn segment_in_sets_drop_pass(&self, from: V3, to: V3, with_missile: bool, drop_pass: bool) -> Option<f32> {
         let d = sub(to, from);
         let (mut best, mut lo, mut hi) = (None::<f32>, [0f32; 3], [0f32; 3]);
         for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
@@ -911,6 +970,7 @@ impl CollisionWorld {
         for g in sets {
             for o in along(g, from, to) {
                 for k in o.tris.clone() {
+                    if drop_pass && g.bullet_pass(k) { continue; } // the pass-flagged hits the bit-0x8 queries drop [M 0x1ebff0]
                     let t = &g.tris[k];
                     let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
                     if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
@@ -983,10 +1043,63 @@ impl CollisionWorld {
     /// water-surface material (0xE) triangles for the player's grounding rays (the cel scoping — see
     /// `segment_hit`).
     pub fn segment_surface(&self, from: V3, to: V3, no_water: bool) -> Option<(f32, V3, u8)> {
+        self.segment_surface_impl(from, to, no_water, false)
+    }
+
+    /// The bullet-family `segment_surface`: pass-flagged triangles (the glist node's bit 0x40 or
+    /// the surface byte's bit 0x40) are dropped the way `Collide_Intersect` 0x1ebaa8 drops them
+    /// for the bit-0x8 queries (fraction 1e8, disasm 0x1ebff0-0x1ec010) — the walk's first hit is
+    /// the first non-pass surface. Used by the homing LOS (`Bullet_homing` 0x12f358:92, flags 8).
+    pub fn segment_surface_bullet(&self, from: V3, to: V3) -> Option<(f32, V3, u8)> {
+        self.segment_surface_impl(from, to, false, true)
+    }
+
+    /// The flight-trace hit WITH the hit's node pass flag (`HITDATA+0x51` bit 1's node source):
+    /// the flight trace keeps pass-flagged hits in its list (`Collide_Update` 0x1ea398 walks them,
+    /// `Bullet_CollisionHandler` 0x12ce80 sets state 1 past them), so the caller's walk needs to
+    /// know which hits to carry the round past. fix-foliage-bullets.
+    pub fn segment_surface_flags(&self, from: V3, to: V3, no_water: bool) -> Option<(f32, V3, u8, bool)> {
+        let d = sub(to, from);
+        let (mut best, mut lo, mut hi) = (None::<(f32, V3, u8, bool)>, [0f32; 3], [0f32; 3]);
+        for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
+        let _ = (lo, hi);
+        let dynamic = self.dynamic.read().unwrap();
+        for g in [&self.stat, &self.missile, &dynamic.geo] {
+            for o in along(g, from, to) {
+                for k in o.tris.clone() {
+                    let node_pass = g.pass[k];
+                    let mat = g.mats[k];
+                    if no_water && mat & 0x3f == 0xE { continue; }
+                    let t = &g.tris[k];
+                    let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
+                    let n = cross(e1, e2);
+                    if dot(n, d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]
+                    let p = cross(d, e2);
+                    let det = dot(e1, p);
+                    if det.abs() < 1e-12 { continue; }
+                    let inv = 1.0 / det;
+                    let s = sub(from, t[0]);
+                    let u = dot(s, p) * inv;
+                    if !(0.0..=1.0).contains(&u) { continue; }
+                    let q = cross(s, e1);
+                    let v = dot(d, q) * inv;
+                    if v < 0.0 || u + v > 1.0 { continue; }
+                    let tt = dot(e2, q) * inv;
+                    if (0.0..=1.0).contains(&tt) && best.is_none_or(|b| tt < b.0) {
+                        let l = dot(n, n).sqrt().max(1e-12);
+                        best = Some((tt, [n[0] / l, n[1] / l, n[2] / l], mat, node_pass));
+                    }
+                }
+            }
+        }
+        best
+    }
+
+    fn segment_surface_impl(&self, from: V3, to: V3, no_water: bool, drop_pass: bool) -> Option<(f32, V3, u8)> {
         let d = sub(to, from);
         let (mut best, mut lo, mut hi) = (None::<(f32, V3, u8)>, [0f32; 3], [0f32; 3]);
         for k in 0..3 { lo[k] = from[k].min(to[k]); hi[k] = from[k].max(to[k]); }
-        let _ = (lo, hi); self.near_seg(from, to, |t, mat| {
+        let _ = (lo, hi); self.near_seg_drop_pass(from, to, drop_pass, |t, mat| {
             if no_water && mat & 0x3f == 0xE { return; } // the water planes never ground the player
             let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
             let n = cross(e1, e2);
@@ -1168,7 +1281,8 @@ mod tests {
 
     fn world(tris: Vec<[V3; 3]>) -> CollisionWorld {
         let n = tris.len();
-        let stat = Geo { mats: vec![0; n], tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }], groups: Vec::new(), owners: Vec::new() };
+        let stat = Geo { mats: vec![0; n], tris, objects: vec![Object { lo: [-10.0; 3], hi: [10.0; 3], tris: 0..n }], groups: Vec::new(), owners: Vec::new(),
+            pass: vec![false; n] };
         CollisionWorld { stat, missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default(), scope: None }
     }
 
@@ -1208,7 +1322,7 @@ mod tests {
             }
         }
         let mk = |graph: ScopeGraph, cells: Vec<Vec<u32>>| CollisionWorld {
-            stat: Geo { tris: stat.tris.clone(), mats: stat.mats.clone(), objects: stat.objects.clone(), groups: Vec::new(), owners: Vec::new() },
+            stat: Geo { tris: stat.tris.clone(), mats: stat.mats.clone(), objects: stat.objects.clone(), groups: Vec::new(), owners: Vec::new(), pass: stat.pass.clone() },
             missile: Geo::default(), dynamic: Default::default(), shapes: Default::default(), shape_mats: Default::default(),
             scope: Some(ScopeData { graph, cells, always: always.clone() }),
         };
@@ -1241,6 +1355,47 @@ mod tests {
         assert!(w3.segment_actor([0.0, 0.5, 0.0], [0.0, 0.5, 4.0]).is_some(), "flat: the mat-0xd tri blocks");
         assert!(w3.segment_take_scoped(Some(0), [0.0, 0.5, 0.0], [0.0, 0.5, 4.0]).is_none(), "the take's 0x721 filter skips the mat-0xd tri");
         assert!(w3.segment_take_scoped(None, [0.0, 0.5, 0.0], [0.0, 0.5, 4.0]).is_some(), "unmapped cell: the flat fallback keeps the old behaviour");
+    }
+
+    /// fix-foliage-bullets: the bullet-family queries (`segment_bullet`, `segment_surface_bullet`)
+    /// drop every hit whose hit-data would carry the pass flag — the glist node's flags bit 0x40
+    /// (`cel+0x94` [M parsemap_block_map_data_static 0x1d1998:103]) or the surface byte's bit 0x40
+    /// (`Collide_Intersect` 0x1ebaa8 disasm 0x1ebf78-0x1ebf80 sets `HITDATA+0x51` bit 1 from
+    /// either; bit 0x8 of the query's flags — the aim trace 0x20a/0x208, `Bullet_homing`'s LOS 8 —
+    /// then drops the hit at disasm 0x1ebff0-0x1ec010) — while the flat queries still report them.
+    /// The surface byte's bit 0x80 does NOT drop: its trace-side OR is gated on HITTEST+0x98
+    /// bit 0x1 (disasm 0x1ebf8c-0x1ebf94), which the bullet flags clear — its 50/50 stays in the
+    /// walk's roll (`Collide_Update` 0x1ea398:217-220).
+    #[test]
+    fn bullet_queries_drop_the_pass_flagged_hits() {
+        // Rays fly +x. Three cards before a solid class-10 (0x0a) wall at x = 5:
+        // x = 1 a node-flagged leaf card (class 0), x = 2 a mat-0x40 card (no node flag),
+        // x = 3 a mat-0x80 card, all facing −x; the wall at x = 5 faces −x.
+        let face = |x: f32, m: u8, pass: bool| -> ([[f32; 3]; 3], u8, bool) { ([[x, 0.0, -1.0], [x, 2.0, 1.0], [x, 2.0, -1.0]], m, pass) };
+        let w = CollisionWorld::from_triangles_flags(vec![
+            face(1.0, 0x00, true),   // the 07000005 tree nodes: glist flags 0x41 [D]
+            face(2.0, 0x40, false),  // the leaf cards' material-level pass bit
+            face(3.0, 0x80, false),  // the random-pass material: NOT dropped by the trace
+            face(5.0, 0x0a, false),  // solid terrain
+        ]);
+        let from = [0.0f32, 1.0, 0.0];
+        let to = [8.0f32, 1.0, 0.0];
+        // The flat queries still see everything (sight, AI, the cage rays).
+        assert!((w.segment(from, to).unwrap() - 1.0 / 8.0).abs() < 1e-6, "flat: the node-flagged leaf blocks");
+        // The bullet trace reports only the mat-0x80 card at x = 3 (3/8 of the ray).
+        let tb = w.segment_bullet(from, to).unwrap();
+        assert!((tb - 3.0 / 8.0).abs() < 1e-6, "bullet: the node flag and the 0x40 byte drop, the 0x80 card is the first report (got t={tb})");
+        let (_, n, m) = w.segment_surface_bullet(from, to).unwrap();
+        assert_eq!(m, 0x80, "bullet surface: the first report is the 0x80 card");
+        assert!(n[0] < 0.0, "the reported normal faces the ray");
+        // Sister: remove the 0x80 card — the bullet trace reports the WALL behind the foliage.
+        let w2 = CollisionWorld::from_triangles_flags(vec![face(1.0, 0x00, true), face(2.0, 0x40, false), face(5.0, 0x0a, false)]);
+        let t2 = w2.segment_bullet(from, to).unwrap();
+        assert!((t2 - 5.0 / 8.0).abs() < 1e-6, "bullet: only the wall remains (got t={t2})");
+        let (_, _, m2) = w2.segment_surface_bullet(from, to).unwrap();
+        assert_eq!(m2, 0x0a, "the hit surface is the class-10 wall behind the tree");
+        // And the flat query still hits the leaf first there (the game's sight keeps the foliage).
+        assert!((w2.segment(from, to).unwrap() - 1.0 / 8.0).abs() < 1e-6, "flat: the leaf still blocks sight");
     }
 
     #[test]

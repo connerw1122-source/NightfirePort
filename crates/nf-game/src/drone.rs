@@ -6489,6 +6489,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 }
             }
             self.bullet_path_weapons.push(b.weapon);
+            // fix-foliage-bullets: the flight trace stays the plain first-hit ray. The game's
+            // pass machinery lives in the Collide_Update walk (0x1ea398:216-229) and the
+            // handler's per-hit state-1 arm (0x12ce80), but the bullets' own HITTEST stays
+            // inactive (+0x94 = 0 [M 0x12c668]) and the live-pinned guard cover trace
+            // (ai_live guard_takes_cover_like_the_game, UnderCoverAim 37) says the round stops
+            // on the flagged tree's first face — the pass does NOT lift the flight stop. The
+            // bit-0x8 drop is the AIM/LOS family's (segment_bullet): see the report.
             let tw = d.world.segment(b.pos, end);
             let mut best: Option<(usize, i16, f32)> = None;
             for (i, dr) in self.list.iter().enumerate() {
