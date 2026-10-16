@@ -5639,6 +5639,12 @@ pub struct Drones {
     /// aims (L1).
     pub player_bullets: Vec<PlayerBullet>,
     pub player_impacts: Vec<PlayerImpact>,
+    /// fix-gas-rng4 (111d3's deferral onto the G-041 walk): the world-hit draws' ride record — one
+    /// entry per player bullet whose flight segment ended on the world this tick, `(bullet index,
+    /// segment start, flight ray)`. The flush after the guard control loop (the game's collide-pass
+    /// slot) replays the HITDATA walk from it; `end = start + ray` recomputes the flight segment
+    /// bit-for-bit and the revive reuses the raw ray (the inline walk's `b.pos += ray`).
+    pub pending_world_impacts: Vec<(usize, V3, V3)>,
     pub last_flinch: Option<u32>,
     /// The level's `light_tag` records (`LightList` 0x2c74c0): level placements, ambient radiators,
     /// the searchlights' kind-2 beams and the muzzle flashes (fix-lighting).
@@ -5993,6 +5999,7 @@ impl Drones {
             worldobjs: Default::default(),
             // fix-world-fx: the presentation FX (fields on their own lines — merge lesson 4).
             fx: Default::default(),
+            pending_world_impacts: Vec::new(),
             effects: crate::effect::Effects::new(),
             casings: crate::casing::Casings::new(),
             // fix-progress: the tally/scoring layer and the runtime difficulty (fields on their
@@ -6365,7 +6372,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         for fb in &mut self.fuseboxes { fb.clear_hits(); }
         let frame = self.frame;
         let mut bullets = std::mem::take(&mut self.player_bullets);
-        for b in &mut bullets {
+        for (bi, b) in bullets.iter_mut().enumerate() {
             if b.dead { continue; }
             // rocket-sound-leak [M Bullet_update 0x12e7b0:98-108, the head of EVERY tick before the
             // state machine]: while BU+0xF0 is live the game moves the launch sound with the bullet
@@ -6544,123 +6551,27 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     }
                 }
                 (_, Some(w)) => {
-                    b.dead = true;
-                    // G-041: the whole per-hit stack (the World impact record, the accuracy log, the
-                    // laser/sound gates, the roll, the effects, the explode arms) now runs per HITDATA
-                    // in the walk below — the game processes every front-face hit of the segment.
+                    // fix-gas-rng4 (111d3's deferral ported onto the G-041 walk): the world hit's
+                    // RNG draws belong to the game's COLLIDE pass — `Bullet_CollisionHandler`
+                    // 0x12ce80 runs under `Collide_Update` 0x1ea398 [M control_movement_object_
+                    // handler 0x1336f8:238], after every guard's update-pass roll. The old inline
+                    // walk drew the penetration roll + the effect stack mid-update (before the
+                    // guards' AI rolls) and shifted the AI stream — the first gas-rng hold's
+                    // cover/fire-rate failures. Recorded here, replayed at the flush after the
+                    // guard control loop (`flush_world_impacts`, following the guard bullets' own
+                    // impacts — the game's newest-first list orders a guard's reply bullet ahead
+                    // of the player's older shot [M control_create_object 0x1344e0 — head insert]).
+                    // The record carries the bullet index + the flight segment (start, ray): the
+                    // walk's continuation keys on the penetration roll (deferred with everything
+                    // else), so the whole walk — the entry face, a PIERCE's exit-side hits, the
+                    // explode arms, the ricochet re-aim — replays in the flush, per hit in the
+                    // game's order: the roll [M 0x12cfd0..0x12cfe4] → `Effect_Create` 0x12d060's
+                    // draws → the explode arms (non-pierce) [M 0x12d068-0x12d188] → the ricochet
+                    // [M 0x12d6f8..0x12d7f0] → next HITDATA on pierce, a stop dies
+                    // [M 0x12d81c..0x12d82c]. The re-query is RNG-free and the static world cannot
+                    // change mid-tick, so the deferred walk is bit-identical to the inline one.
                     let _ = w;
-                    // `Bullet_CollisionHandler` 0x12ce80 → `Effect_Create` 0x1ce688 / `Effect_Bullet`
-                    // 0x1ce8a8 / `Effect_RicochetProb` 0x1cf290 (docs/atlas/effect.md). Bond is class 3,
-                    // so `Effect_Bullet` skips its `Rand_Rand(2)` [M 0x1ce94c]. A ricochet keeps the
-                    // bullet alive on the reflected direction [M 0x12d704].
-                    // G-041: the handler walks the trace's HITDATA LIST — every front-face hit along
-                    // this tick's segment takes the penetration roll (`Rand_Rand(0x3f)` when the
-                    // surface byte carries 0x80, forced on 0x40 [M 0x12cfd0..0x12cfe4]) + the full
-                    // effect stack; a PIERCE keeps the bullet alive and moves to the NEXT hit (the
-                    // exit-side effects), a stop dies [M 0x12d81c..0x12d82c]. The port retraces just
-                    // past each pierced surface (ε 0.01 [S] — the game's list is prebuilt).
-                    let mut ricochet: Option<(V3, V3)> = None;
-                    let mut cur = b.pos;
-                    let mut first_world = true;
-                    let mut pierced_last = false;
-                    for _ in 0..8 {
-                        let Some((t, n, m)) = d.world.segment_surface(cur, end, false) else { break };
-                        let seg = [end[0] - cur[0], end[1] - cur[1], end[2] - cur[2]];
-                        let hit = [cur[0] + seg[0] * t, cur[1] + seg[1] * t, cur[2] + seg[2] * t];
-                        // THE PENETRATION ROLL [M 0x12cfd0..0x12cfe4] — the game draws it here, before
-                        // any effect of this hit (the flags, `Effect_Create`, the explode arms).
-                        let pierce = crate::effect::penetration_roll(&mut self.rng, m, b.weapon);
-                        if first_world {
-                            self.player_impacts.push(PlayerImpact::World(hit));
-                            // `PlrStat_LogShotHitScenery(0)` 0x198408 (SP_Update 0x1dbda8:261; Destroy_Smash
-                            // 0x12bb60:55 — the port folds the breakables into this world-hit path): the
-                            // accuracy denominator nets to the enemy hits only (fix-progress).
-                            self.progress.log_shot_hit_scenery(self.mission.status());
-                            first_world = false;
-                        }
-                        // fix-laser-beam [M Bullet_CollisionHandler 0x12ce80:186-192]: weapon_data+0x6C &
-                        // 0x100 (the Laser 0x4E/0x4F, records +0x6C = 0x900 [L]) forces the effect kind
-                        // 0x10 → `Effect_Laser` 0x1cef38 — the burn puff, NO decal, NO impact sound (its
-                        // sound arm gates on effect flags 0x40, set only by weapon_data+0x70 & 2 — clear
-                        // on the Laser's +0x70 = 0x800 [L]) and NO ricochet (+0x70 & 0x10 clear). The old
-                        // path played the wall-impact sound + decal every held tick — the user's "rapid
-                        // fire of bullet impacts".
-                        let flags6c_w = d.weapons.records.get(b.weapon as usize)
-                            .map_or(0u32, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()));
-                        let laser_beam = flags6c_w & 0x100 != 0;
-                        // fix-wallhug-prompt: the sound rides the SAME gate as the effects [M
-                        // Bullet_CollisionHandler 0x12ce80:187-190 — effect flags |= 0x61 only with
-                        // weapon_data+0x70 & 2, and `Effect_Bullet` 0x1ce8a8:86-90 plays the
-                        // `EffectInfo+0x14` impact sound only on flags 0x40]. The Q-Claw bolt carries
-                        // +0x70 = 0x40 — the grapple bit, no effects bit [L ee_start_05.bin 0x2bf150 +
-                        // 0x50/0x51·0x10C] — so its world hit (the hook latch) is SILENT: the user's
-                        // "hook latched, pulled me in, but I also heard a bullet impact". The old
-                        // unconditional sound also voiced the stunner (0x800) and the gadgets.
-                        let flags70 = d.weapons.records.get(b.weapon as usize)
-                            .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
-                        if !laser_beam && flags70 & 2 != 0 {
-                            self.impact_sound(d, cur, end);
-                        }
-                        if laser_beam {
-                            // The `Effect_Laser` stand-in: Gas_Init(2.0, 3.0, …, kind 5, 0x7f7f64ff,
-                            // life) [M 0x1cef38:60-70] — the pool's puff without its per-surface mesh
-                            // (the EffectInfo+idx*0x88+0x10 field the port doesn't parse yet [S]; the
-                            // main agent's render check owns the look).
-                            self.gas.init(hit, 0.0, [0.0; 3], 2.0, 3.0, 5, [0x7f, 0x7f, 0x64, 0xff], 8.0);
-                        } else if let Some(dir) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, &mut self.fx, hit, n, m, b.dir, flags70, b.bounces, true, if pierce { 0 } else { 8 }) {
-                            ricochet = Some((hit, dir));
-                        }
-                        // fix-weapon-effects / fix-blast-scripts2: the impact explode arms run per
-                        // HITDATA, gated on this contact NOT being a pierce (`bnel $s4` reads bVar7
-                        // [M 0x12d068-0x12d188]) and not a ricochet re-entry (the port's bounces gate).
-                        let explode_here = flags70 & (0x4 | 0x10_0000 | 0x20_0000) != 0 && b.bounces == 0 && !pierce;
-                        if explode_here {
-                            let radius = d.weapons.records.get(b.weapon as usize)
-                                .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
-                            let damage = d.weapons.records.get(b.weapon as usize)
-                                .map_or(0.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
-                            let script = if flags70 & 4 != 0 { 0x0600_0052 } else { 0x0600_07c4 };
-                            // The scale is the game's f12: radius for the 0x4 arm, 1.0 for the bolt
-                            // arms [M 0x12d0ac / 0x12d0ec-0x12d0f0].
-                            let scale = if flags70 & 4 != 0 { radius } else { 1.0 };
-                            // Queued, not spawned: the grenade section's per-tick `explosions.clear()` runs
-                            // AFTER `update_player_bullets`, so a blast pushed here directly would be wiped
-                            // before the view sees it — the queue drains after that clear.
-                            self.pending_blasts.push((hit, radius, damage, usize::MAX, b.weapon, script, scale));
-                        }
-                        if ricochet.is_some() { pierced_last = false; break; }
-                        if !pierce { pierced_last = false; break; }
-                        // pierce: the bullet lives; the next HITDATA is just past this surface.
-                        pierced_last = true;
-                        let sl = (seg[0] * seg[0] + seg[1] * seg[1] + seg[2] * seg[2]).sqrt().max(1e-9);
-                        cur = [hit[0] + seg[0] / sl * 0.01, hit[1] + seg[1] / sl * 0.01, hit[2] + seg[2] / sl * 0.01];
-                        let remain = [end[0] - cur[0], end[1] - cur[1], end[2] - cur[2]];
-                        if remain[0] * seg[0] + remain[1] * seg[1] + remain[2] * seg[2] <= 0.0 { break; }
-                    }
-                    if pierced_last {
-                        // The game's bullet already flew the full step this tick (`Bullet_update`
-                        // 0x12e7b0 advances pos before the collide phase) and survives the pierce.
-                        b.dead = false;
-                        b.pos = [b.pos[0] + ray[0], b.pos[1] + ray[1], b.pos[2] + ray[2]];
-                        b.first = false;
-                    } else if let Some((p, dir)) = ricochet {
-                        if b.bounces < 3 {
-                            b.dead = false;
-                            b.pos = p;
-                            b.dir = dir;
-                            b.bounces += 1;
-                            b.first = false;
-                        }
-                    }
-                    // fix-weapon-effects / fix-blast-scripts2 (superseded shape): the explode arms and the
-                    // ricochet re-aim moved INTO the HITDATA walk above — the game runs both per hit
-                    // [M 0x12d068-0x12d188], the explode arms gated on the contact NOT being a pierce.
-                    // fix-blast-scripts2's note stands: cutscene-actors's separate direct `spawn_once`
-                    // of 0x06007c4 at the world hit is GONE — the queued blast's `spawn_blast` spawns
-                    // the same script player (at the game's f12 scale) through the ONE path above, so
-                    // the entities draw from the sweep scene.rs already pre-registers (0x12ce80's own
-                    // effect arm `Effect_Create` at 0x12d060 runs before all three explode arms and
-                    // stays the view-side hit effect).
+                    self.pending_world_impacts.push((bi, b.pos, ray));
                 }
                 _ => b.pos = [b.pos[0] + b.dir[0] * step, b.pos[1] + b.dir[1] * step, b.pos[2] + b.dir[2] * step],
             }
@@ -6718,17 +6629,158 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 }
             }
         }
+        // fix-gas-rng4: the dead-bullet retain moved to the impact flush (`flush_world_impacts`,
+        // the end of `tick`) — a deferred ricochet/pierce revives its bullet in place through
+        // `player_bullets[bi]`, and the flush replays the world-hit walk before the retain runs.
+        // rocket-sound-leak: the launch whoosh's `Sound_Stop` rides the REAL delete pass at the
+        // flush's retain (a revived bullet keeps its handle, as in the game — `Bullet_Delete`
+        // never ran for a bullet that lived on).
+        self.player_bullets = bullets;
+    }
+
+    /// fix-gas-rng4: the deferred player-bullet world impacts — 111d3's flush ported on top of the
+    /// G-041 walk. Runs at the game's collide-pass slot in `tick` (after the guard control loop and
+    /// the guard bullets' own impacts — the newest-first list puts a guard's reply bullet ahead of
+    /// the player's older shot [M control_create_object 0x1344e0]), and replays
+    /// `Bullet_CollisionHandler` 0x12ce80's HITDATA walk per recorded flight segment, in record
+    /// order. Per hit, the game's order: the penetration roll (0x12cfd0..0x12cfe4, drawn before any
+    /// effect of the hit), `Effect_Create` 0x12d060's draws (the debris/gas/decal stack, then the
+    /// ricochet roll `Effect_RicochetProb` with mask 0 on a pierce contact [M 0x12d6f8]), the
+    /// explode arms gated on the contact NOT being a pierce [M 0x12d068-0x12d188], else the
+    /// ricochet re-aim [M 0x12d6f8..0x12d7f0]; a pierce advances to the NEXT HITDATA — the
+    /// exit-side hit takes its own roll + effects in the same pass [M 0x12d81c..0x12d82c], so the
+    /// exit-side hits defer with the entry face. The bullet's death/revive lands here too, so the
+    /// dead-bullet retain moved from `update_player_bullets` (a deferred ricochet/pierce revives
+    /// its bullet in place through `player_bullets[bi]`; the list order — and with it the
+    /// per-bullet draw order — survives). The reflection reads the bullet's LIVE direction: the
+    /// game's collide pass sees the update pass's `Bullet_homing` steer (Bullet_homing 0x12f358
+    /// runs from Bullet_update 0x12e7b0:483, the update pass), while the flight segment itself is
+    /// the moved path (the pre-steer ray the bullet physically flew).
+    fn flush_world_impacts(&mut self, d: &Data) {
+        let pending = std::mem::take(&mut self.pending_world_impacts);
+        for (bi, start, ray) in pending {
+            if bi >= self.player_bullets.len() { continue; }
+            // The walk's per-hit state is local; the bullet is written back at the end (the
+            // game's handler reads the BU fields and writes them at the same two points).
+            let (weapon, dir, bounces) = {
+                let b = &mut self.player_bullets[bi];
+                b.dead = true; // a stop dies here, exactly as the inline arm's entry did
+                (b.weapon, b.dir, b.bounces)
+            };
+            let end = [start[0] + ray[0], start[1] + ray[1], start[2] + ray[2]];
+            let mut ricochet: Option<(V3, V3)> = None;
+            let mut cur = start;
+            let mut first_world = true;
+            let mut pierced_last = false;
+            for _ in 0..8 {
+                let Some((t, n, m)) = d.world.segment_surface(cur, end, false) else { break };
+                let seg = [end[0] - cur[0], end[1] - cur[1], end[2] - cur[2]];
+                let hit = [cur[0] + seg[0] * t, cur[1] + seg[1] * t, cur[2] + seg[2] * t];
+                // THE PENETRATION ROLL [M 0x12cfd0..0x12cfe4] — the game draws it here, before
+                // any effect of this hit (the flags, `Effect_Create`, the explode arms).
+                let pierce = crate::effect::penetration_roll(&mut self.rng, m, weapon);
+                if first_world {
+                    self.player_impacts.push(PlayerImpact::World(hit));
+                    // `PlrStat_LogShotHitScenery(0)` 0x198408 (SP_Update 0x1dbda8:261; Destroy_Smash
+                    // 0x12bb60:55 — the port folds the breakables into this world-hit path): the
+                    // accuracy denominator nets to the enemy hits only (fix-progress).
+                    self.progress.log_shot_hit_scenery(self.mission.status());
+                    first_world = false;
+                }
+                // fix-laser-beam [M Bullet_CollisionHandler 0x12ce80:186-192]: weapon_data+0x6C &
+                // 0x100 (the Laser 0x4E/0x4F, records +0x6C = 0x900 [L]) forces the effect kind
+                // 0x10 → `Effect_Laser` 0x1cef38 — the burn puff, NO decal, NO impact sound (its
+                // sound arm gates on effect flags 0x40, set only by weapon_data+0x70 & 2 — clear
+                // on the Laser's +0x70 = 0x800 [L]) and NO ricochet (+0x70 & 0x10 clear). The old
+                // path played the wall-impact sound + decal every held tick — the user's "rapid
+                // fire of bullet impacts".
+                let flags6c_w = d.weapons.records.get(weapon as usize)
+                    .map_or(0u32, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()));
+                let laser_beam = flags6c_w & 0x100 != 0;
+                // fix-wallhug-prompt: the sound rides the SAME gate as the effects [M
+                // Bullet_CollisionHandler 0x12ce80:187-190 — effect flags |= 0x61 only with
+                // weapon_data+0x70 & 2, and `Effect_Bullet` 0x1ce8a8:86-90 plays the
+                // `EffectInfo+0x14` impact sound only on flags 0x40]. The Q-Claw bolt carries
+                // +0x70 = 0x40 — the grapple bit, no effects bit [L ee_start_05.bin 0x2bf150 +
+                // 0x50/0x51·0x10C] — so its world hit (the hook latch) is SILENT: the user's
+                // "hook latched, pulled me in, but I also heard a bullet impact". The old
+                // unconditional sound also voiced the stunner (0x800) and the gadgets.
+                let flags70 = d.weapons.records.get(weapon as usize)
+                    .map_or(0u32, |r| u32::from_le_bytes(r[0x70..0x74].try_into().unwrap()));
+                if !laser_beam && flags70 & 2 != 0 {
+                    self.impact_sound(d, cur, end);
+                }
+                if laser_beam {
+                    // The `Effect_Laser` stand-in: Gas_Init(2.0, 3.0, …, kind 5, 0x7f7f64ff,
+                    // life) [M 0x1cef38:60-70] — the pool's puff without its per-surface mesh
+                    // (the EffectInfo+idx*0x88+0x10 field the port doesn't parse yet [S]; the
+                    // main agent's render check owns the look).
+                    self.gas.init(hit, 0.0, [0.0; 3], 2.0, 3.0, 5, [0x7f, 0x7f, 0x64, 0xff], 8.0);
+                } else if let Some(nd) = self.effects.bullet_impact(&mut self.rng, d.surfaces, &mut self.gas, &mut self.fx, hit, n, m, dir, flags70, bounces, true, if pierce { 0 } else { 8 }) {
+                    ricochet = Some((hit, nd));
+                }
+                // fix-weapon-effects / fix-blast-scripts2: the impact explode arms run per
+                // HITDATA, gated on this contact NOT being a pierce (`bnel $s4` reads bVar7
+                // [M 0x12d068-0x12d188]) and not a ricochet re-entry (the port's bounces gate).
+                let explode_here = flags70 & (0x4 | 0x10_0000 | 0x20_0000) != 0 && bounces == 0 && !pierce;
+                if explode_here {
+                    let radius = d.weapons.records.get(weapon as usize)
+                        .map_or(0.0, |r| f32::from_le_bytes(r[0x08..0x0c].try_into().unwrap()));
+                    let damage = d.weapons.records.get(weapon as usize)
+                        .map_or(0.0, |r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap()));
+                    let script = if flags70 & 4 != 0 { 0x0600_0052 } else { 0x0600_07c4 };
+                    // The scale is the game's f12: radius for the 0x4 arm, 1.0 for the bolt
+                    // arms [M 0x12d0ac / 0x12d0ec-0x12d0f0].
+                    let scale = if flags70 & 4 != 0 { radius } else { 1.0 };
+                    // Queued, not spawned: the grenade section's per-tick `explosions.clear()` runs
+                    // after the flush (before the queue's drain), so a blast spawned here directly
+                    // would be wiped before the view sees it — the queue drains after that clear.
+                    self.pending_blasts.push((hit, radius, damage, usize::MAX, weapon, script, scale));
+                }
+                if ricochet.is_some() { pierced_last = false; break; }
+                if !pierce { pierced_last = false; break; }
+                // pierce: the bullet lives; the next HITDATA is just past this surface.
+                pierced_last = true;
+                let sl = (seg[0] * seg[0] + seg[1] * seg[1] + seg[2] * seg[2]).sqrt().max(1e-9);
+                cur = [hit[0] + seg[0] / sl * 0.01, hit[1] + seg[1] / sl * 0.01, hit[2] + seg[2] / sl * 0.01];
+                let remain = [end[0] - cur[0], end[1] - cur[1], end[2] - cur[2]];
+                if remain[0] * seg[0] + remain[1] * seg[1] + remain[2] * seg[2] <= 0.0 { break; }
+            }
+            // fix-weapon-effects / fix-blast-scripts2: the explode arms and the ricochet re-aim sit
+            // IN the walk above — the game runs both per hit [M 0x12d068-0x12d188], the explode
+            // arms gated on the contact NOT being a pierce; cutscene-actors's separate direct
+            // `spawn_once` of 0x06007c4 at the world hit is GONE — the queued blast's `spawn_blast`
+            // spawns the same script player (at the game's f12 scale) through the ONE path above.
+            let b = &mut self.player_bullets[bi];
+            if pierced_last {
+                // The game's bullet already flew the full step this tick (`Bullet_update`
+                // 0x12e7b0 advances pos before the collide phase) and survives the pierce.
+                b.dead = false;
+                b.pos = [b.pos[0] + ray[0], b.pos[1] + ray[1], b.pos[2] + ray[2]];
+                b.first = false;
+            } else if let Some((p, nd)) = ricochet {
+                if b.bounces < 3 {
+                    b.dead = false;
+                    b.pos = p;
+                    b.dir = nd;
+                    b.bounces += 1;
+                    b.first = false;
+                }
+            }
+        }
         // rocket-sound-leak [M Bullet_Delete 0x12e660:13-16 — every bullet death funnels through
         // the object's delete pass]: `if (BU+0xF0 != 0) { Sound_Stop(BU+0xF0); BU+0xF0 = 0; }`
         // (disasm 0x12e680: `lw a0, 0xf0(s2)`; 0x12e68c: `jal Sound_Stop`; 0x12e694: `sw zero,
         // 0xf0(s2)`). The guided camera's restore rides the same function ([M :22-31 — BL+0x878 = 0,
-        // BL+0x944 = 0xf]), so the port's death paths (the world/actor impact, the range-out) own
-        // the stop; the pre-fix leak never ran it and the looped whoosh played forever.
-        for b in bullets.iter().filter(|b| b.dead) {
+        // BL+0x944 = 0xf]). The retain below IS the delete (fix-gas-rng4 moved it here from
+        // `update_player_bullets`): the bullets still flagged dead at this point are the removed
+        // ones — a pierce/ricochet revived its bullet above (dead = false, handle kept, the game's
+        // Bullet_Delete never ran for it); the pre-fix leak never stopped the looped whoosh at all
+        // (playtest 1015-1738).
+        for b in self.player_bullets.iter().filter(|b| b.dead) {
             if b.snd != 0 { self.audio.stop(b.snd); }
         }
-        bullets.retain(|b| !b.dead);
-        self.player_bullets = bullets;
+        self.player_bullets.retain(|b| !b.dead);
     }
 
     /// `Sound_Play3D` (0x1dd548) with the table's radii: the sound enters the hearing list for the next tick. Looped
@@ -8596,6 +8648,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
         }
         self.bullets.retain(|b| b.state < 2);
+        // fix-gas-rng4: the player bullets' impact draws at the game's collide pass — after the
+        // guards' update-pass rolls (the guard bullets' own impacts above already sit here). The
+        // flush replays `Bullet_CollisionHandler` 0x12ce80's HITDATA walk per deferred flight
+        // segment — the roll → the effects → the explode gate → else the ricochet re-aim, per hit
+        // in order, exit-side hits included — then retains the dead (a deferred revive lands first).
+        self.flush_world_impacts(d);
         // Grenades (`Bullet_update` + `Bullet_CollisionHandler`, WORKLOG 0080): move under gravity, bounce off the
         // world, explode after the fuse (`Bullet_handle_object_destruction` 0x12cd98: `+0x68 & 0x4000` and
         // `+0x70 & 0x80204`; a bounce NEVER explodes [M 0x12ce80]). fix-explosions: the blast is `Explode_Create`

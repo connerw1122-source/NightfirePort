@@ -4,6 +4,8 @@
 //! write-ups; `ai::SimCar` is the physics seam (506's `Car` plugs in — see `ai::AiDriver`).
 
 pub mod ai;
+// 647 drive-mission-scripts: the mission state machine (objectives, fails, timers, the PTP end).
+pub mod mission;
 pub mod physics;
 pub mod road;
 

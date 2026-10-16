@@ -223,6 +223,23 @@ impl<'a> Crp<'a> {
         Ok(None)
     }
 
+    /// A record's window (the table base + count records) as parsed records — the shape
+    /// `FUN_0022faf8` walks when it resolves the `Map ` pool record's children (Wmap, Rule,
+    /// MSet, Audi, Trgr, Envi) [M 0x22faf8:108-129].
+    pub fn record_window(&self, rec: &Record) -> Result<Vec<Record>> {
+        let t = rec.table(self.data)?;
+        self.window_records(t, t + rec.count as usize * 0x10)
+    }
+
+    /// Exact-tag find over the pool root — `Map ` and the article pool live here, not in the
+    /// chunk directory the root scan covers [M 0x22faf8's `FUN_002d51f0(pool, 'Map ')`].
+    pub fn pool_find(&self, tag: u32) -> Result<Option<Record>> {
+        for r in self.pool()? {
+            if r.tag == tag { return Ok(Some(r)); }
+        }
+        Ok(None)
+    }
+
     /// A record's payload: `size = flags >> 8` bytes at the resolved address [M 0x1a9600].
     pub fn payload(&self, rec: &Record) -> Result<&'a [u8]> {
         let at = rec.data_addr(self.data)?;

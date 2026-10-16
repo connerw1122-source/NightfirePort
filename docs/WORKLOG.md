@@ -14112,3 +14112,146 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
   delete]; audit other projectile/object loops (grenades rolling, MGL, thrown mines) for the same
   leak. Headless test: fire 3 guided rockets, let them die, assert no leftover live looping items
   in the driver.
+## fix-gas-rng4 (2026-10-15, branch s/fix-gas-rng4) — started 23:59 UTC
+
+Task: land 111d3's (s/fix-gas-rng3, tip fbf62779) deferred impact draws on top of master's
+G-041 HITDATA walk in Bullet_CollisionHandler. Both are about RNG draw ORDER: master walks the
+trace's HITDATA list inline (penetration roll Rand_Rand(0x3f) [M 0x12cfd0..0x12cfe4] per
+front-face hit, full effect stack, pierce retraces past the surface); 111d3 defers the shared-RNG
+impact draws to a flush after the guard control loop (Collide_Update 0x1ea398 [M
+control_movement_object_handler 0x1336f8:238]) via pending_world_impacts. A mechanical merge is
+wrong; porting the deferral onto the HITDATA walk, deciding from the disassembly where the
+penetration roll falls relative to the effect draws and whether a pierce's exit-side hits defer
+too, keeping the flush's per-hit order. Every G-041 test and every 111d3 test green; re-run the
+cover/fire-rate AI tests the first gas-rng hold broke.
+
+## fix-gas-rng4 (2026-10-15/16, branch s/fix-gas-rng4) — DONE 01:20 UTC
+
+- Ported 111d3's (s/fix-gas-rng3) deferred impact draws onto master's G-041 HITDATA walk; one
+  file: crates/nf-game/src/drone.rs (effect.rs/gas.rs untouched — the held merge's conflicts
+  there existed only for a mechanical merge of the 10-arg bullet_impact tests and init_effect_puff).
+- From the decompile (Bullet_CollisionHandler 0x12ce80): per HITDATA the penetration roll
+  (Rand_Rand(0x3f) [0x12cfd0..0x12cfe4]) precedes Effect_Create's draws [0x12d060]; the explode
+  arms [0x12d068..0x12d188] gate on non-pierce; the ricochet roll draws with mask 0 on a pierce;
+  the loop tail [0x12d81c] advances on pierce — so a pierce's EXIT-side hit takes its own roll +
+  effects in the same collide pass. Collide_Update 0x1ea398 runs at 0x1336f8:238, after the whole
+  update walk — every handler draw lands after every guard's update-pass roll.
+- The port: pending_world_impacts records (bullet index, segment start, flight ray) per world-hit
+  bullet; flush_world_impacts (called in tick after the guard bullets' retain — 111d3's slot)
+  replays the walk per record in order, bit-identical geometry (RNG-free re-query, end = start +
+  ray, the revive reuses the raw ray); the reflection reads the LIVE dir (the game's collide pass
+  sees Bullet_homing's update-pass steer — this also restores the game's homing-then-collide order
+  master's inline shape inverted); the dead-bullet retain moved to the flush (a deferred
+  ricochet/pierce revives in place; no mid-tick reader of player_bullets exists — checked).
+- Verified (release, --test-threads=1): nf-game lib 206/0; nf-game integration 375/0 (ai_live
+  35/35 incl. guard_takes_cover_like_the_game, grenade 2/2, cover_selection 2/2); nf-view direct:
+  fix_guard_weapons 3/0 (the fire-rate hold's test), models_misc 10/0, fire_modes3 5/0,
+  fix_weapon_effects 6/0, impact_remainder 3/0, fix_samurai_fire 3/0, weapon_fx_levels 2/0,
+  fix_handcannon 3/0; nf-view slices 506/0; nf-formats 110/3 (the 3 allowed slim-ISO disc_golden);
+  nf-audio 13/0. Total 1245/3/1 ignored (pre-existing). NO re-seeds needed anywhere.
+- Background jobs die between tool calls in this sandbox (the 23:59 suite.py start died, suite.out
+  empty) — the runner's per-binary/--test-threads=1 discipline ran as foreground slices instead;
+  the walkreal_* walkers (35 binaries, multi-minute live walks) window-cut as every session.
+- Out of scope (documented in the report): 111d2's item 2 — the muzzle latch + init_muzzle_smoke
+  (fix_gas_rng_live.rs); master keeps those sites at the counter hash until their re-base.
+- Report: docs/reports/fix-gas-rng4.md (the draw-order table site → draws → pass, before/after
+  tallies, one confirmatory live check for the main agent).
+## drive-keyboard-input (2026-10-16, branch s/drive-keyboard-input) — start
+- Task: PC keyboard/mouse mapping for the driving missions, onto the game's own driving actions
+  (steer with the game's ramp on a digital input, throttle W, brake/reverse S, handbrake Space,
+  fire LMB, cycle weapon wheel/Q, gadget RMB/E, camera C, look back Tab/mouse3 — every driving
+  action, holding the game's holds-vs-presses and repeat semantics). Data + state + getters for the
+  main agent's draw pass (no drawing), a PC_CONTROLS-style table next to the on-foot one in
+  crates/nf-view/src/menu.rs. Docs first, tests headless numbers-only. No pad work.
+- Branch created from origin/master (0f5f07f4), pushed. work/ + ISO + nf-queue from prior sessions
+  verified present. Next: docs/systems/driving-input.md re-read, decomp study of the pad->driving
+  ramp path, then the mapping.
+
+## drive-keyboard-input (2026-10-16, branch s/drive-keyboard-input) — close-out
+- The PC keyboard+mouse mapping for the driving missions, designed onto the game's own driving
+  actions and ported through the game's real path. Branch from origin/master 0f5f07f4, merged
+  origin/master 7ac86f13 (the drive-ai-traffic2 batch) — dc244da2, clean.
+- The ramp question settled: no input-layer ramp [M-negative driving-input.md §8] and NO d-pad
+  steer at all — STEERLEFT/RIGHT + all *DIGITAL (4/5/8/9/0xa/0xb) have no consumer in DRIVING.ELF
+  [M-negative; all seven queue drains enumerated]. Steering is only GAMEACTION_STEER (1) with a
+  signed float; the vehicle layer ramps it: the car's drain FUN_0018add8 0x18add8 tail chops the
+  raw steer at ±PAD_DEAD_ZONE 0.2 (DAT_00331988, the .tun key) write-back, then
+  `move_toward(+0x240, target, 0.25)` (FUN_002104a8) — digital full lock in 4 ticks (66.7 ms at
+  60 Hz), L↔R sweep 8. GAS carries a ×2-gain clamp min(2v,1) each tick; BRAKE raw (reverse is the
+  engine's ≈30-tick brake-at-standstill state, FUN_0018cef8 :184-208); the gas/brake totals
+  exclude each other (smaller zeroed, ties zero gas) and the handbrake (+0x259) zeroes both
+  pedals. All [M 0x18add8 :119-270, disasm-checked].
+- Consumer semantics pinned for every mapped action [M]: fire primary/secondary/gadget +
+  handbrake + look back (0x1d-0x25, 0x1b/0x1c, 0x29/0x2a) are HOLD pairs; weapon cycle
+  (0x21/0x22 next, 0x23 prev, WeaponMan 0x20c078) + CHANGECAMERA (0x26, MissionMan one-shot
+  request flag) + POVRELOAD (0x3f) are edges; CAMZOOMBUTTON (0x2b) is dead in DRIVING.ELF.
+- The mapping (docs/systems/driving-pc-input.md §3, all [S] — the shipped Master.def bindings are
+  unextractable): A/D + ←/→ → LX 0/255 → STEER ±1 (the ramp shapes the digital input exactly like
+  a stick); W → △ pressure → GAS; S → ✕ pressure → BRAKE (pedals as pressures so each is its own
+  value — a shared axis would send one action the other's sign); Space → ✕ bit → HANDBRAKE pair;
+  LMB → R1 bit → FIREPRIMARY pair; B → R2 bit → FIRESECONDARY pair (the port's on-foot Alt. Fire
+  key); RMB → ○ bit and E → L1 bit → FIREGADGET pair; Q → Select bit → TOGGLESECONDARY; wheel
+  up/down → L3/R3 bits → UP/DOWN; C → Start bit → CHANGECAMERA; Tab/MMB hold → □ bit → CAMLOOKBACK
+  pair; R → d-pad Up bit → POVRELOAD.
+- Port: `input::driving::{move_toward, CarInputStage (the drain's input block + tail as a
+  per-tick struct, car offsets in the field docs), KeyboardMouse + to_raw_pad, pc_key_pad,
+  pc_driving_bindings, PcDrivingInput::tick}` — the whole chain per 60 Hz step: keys → raw pad →
+  poll_device → the game's evaluator → messages → the stage. `PC_DRIVING_CONTROLS` (13 rows) in
+  nf-view/src/menu.rs next to PC_CONTROLS, labelled with the game's USATxt driving block (bank 0
+  0x30a-0x315 + 0x100032a; no secondary-fire/reload label exists — id-0 fallback rows).
+  No drawing delivered (the main agent draws). Also fixed a pre-existing master-side test-module
+  syntax error in input/driving.rs (`vec!sg(0)` → `vec![msg(0)…`, broken since G-004).
+- Tests (all headless, numbers-only, sisters throughout): nf-game lib 221/221 (ramp goldens 4/8
+  ticks, ±0.2 write-back, strict 0.9 full lock, gas ×2 clamp, tie exclusion, handbrake zeroing,
+  HUD gate, per-key action ids, hold-never-repeats, release ids, full chain W+D 5 ticks + release);
+  nf-game integration 407/0; driving_physics/ai_follow/ai_physics/input_ramp/input_styles 34/0;
+  nf-formats 79/0; nf-audio 9/0; nf-view lib 15/0; menus_flow 37/0; mp/dev menu flows + dossier +
+  campaign + fix_progress 29/0; driving_controls_live 1/1 (binds every PC_DRIVING_CONTROLS id
+  from the disc's USATxt.dat, sister negatives included). Foreground runs — the background
+  suite.py is reaped by this sandbox (died twice, empty suite.out); a third attempt runs while
+  this entry is written.
+## drive-hud-data (2026-10-16, branch s/drive-hud-data)
+- Branch created from origin/master (0f5f07f4). Task: port the driving-mission HUD's data model from DRIVING.ELF
+  as a per-frame snapshot (values + label/texture ids + positions as the game sets them), wired to 506's physics /
+  107's state where they exist; the main agent draws it. Tests: the snapshot follows the sim (numbers only).
+- Plan: read docs/atlas/driving-elf.md + the DRIVING.ELF decomp for the HUD writers (speed/gear, vehicle health,
+  weapon+ammo, minimap/radar, objective markers, timers); check how s/mp-hud-data wired its snapshot; implement
+  the snapshot in nf-game + numbers-only tests; run the crates my tests touch, then the full suite before push.
+- drive-hud-data close-out: the driving HUD's data model as a per-frame snapshot —
+  `crates/nf-game/src/driving_hud.rs` (`DriveHud` + `CarReadout`/`MissionTimer`/`Objective`/
+  `Beacon`/`WeaponReadout`), wired to 506's `Car` (speed |vel| 0x18aa88:26-29, gear +0x2d8,
+  rpm :62, pos/yaw) via `observe`; the mission groups at their proven E-command level
+  (dispatch table 0x36fda0: timer 507/509·381/383·357/359·309/311·315/317, objectives
+  225/226/227/228 with the {vt 0x370e70, p1..p4} record [M 00151510], beacon 321/323,
+  ESetVisualDamage's {vt 0x370558, p1..p5} [M 00159638]); the HUD render object RRenderHUDView
+  at manager+0x28 read per frame by 001c1ec0:80-81 → 001c1b18:118-144 (0xa8 element block,
+  label table DAT_0037d790); positions/sheet ids + the mission-state structs left open with
+  5 live-check asks (docs/reports/drive-hud-data.md). Tests: nf-game lib 213/213 (final tree),
+  drive_hud 6/6, drive_physics 13/13; fast-runner suite on the branch-point tree: 1577 passed,
+  7 failed (3 allowed disc_golden + the documented pylon Vulkan-ICD pair + the pre-existing
+  walkreal LEAD_HIDE flake), 66 ignored, 62 min.
+## drive-mission-scripts (2026-10-16, branch s/drive-mission-scripts) — start
+- Branch created from origin/master (0f5f07f4). Plan: decode driving-mission script data from the MIS*.VIV
+  archives (500 refpack), port the mission state machine (objectives/completion, fail states, timers, PTP
+  end status) into nf_game::driving, headless scripted-event tests.
+
+## drive-mission-scripts (2026-10-16, branch s/drive-mission-scripts) — close-out
+- The driving missions' script data decoded and the mission state machine ported headless.
+  Data: the `Map ` pool record's `Rule`/`MSet`/`Trgr` chunks in each track `.crp` [M 0x22faf8:108-129];
+  MIS01 = 114×0x20 Rule entries / 760 B MSet ("helicopter") / 754×0x40 Trgr records [D].
+  Rule entry = {type u32, flags bits 0-2, group i32, hash u32, payload 16 B} [M 0x205220+0x209318];
+  15 rule classes from RTTI [D 0x397c28..] with ctor sizes [M 0x209390]; MIS01 histogram
+  {Always 2, Damage 4, Death 14, Health 4, Prog 41, Speed 28, Timer 14, Collision 5, ProgCounter 2}.
+  Objectives: MSet enabled byte +0x2c+i, target +0x4c+i*4 (0x2711 gate), params +0xcc/+0x14c
+  [M 0x205498]; channels stride 0x54 [M 0x20d378]; active = first enabled non-zero [M 0x20d488];
+  MIS01 channels {2 target 30, 26 target 24} [D]. Damage/health thresholds + difficulty percents
+  [M 0x206ec0]. End: PTP mapping [M ptp.rs, 0x174bf0:315-323 + 0x1c8560].
+- Port: nf-game/src/driving/mission.rs (MissionSet/RuleEntry/RuleKind/Trigger/Mission with
+  step(dt, SimSnapshot), fire, fail, drive_return) + crp.rs pool_find/record_window (additive).
+  Per-type firing semantics are [S] — the descriptor fns FUN_0020b120..0020b3f8 are not
+  decomposed; all [S] boundaries in docs/systems/drive-mission-scripts.md §5.
+- Tests: nf-game lib driving::mission 9/9; driving_mission_live (NF_DRIVING-gated) 5/5 (MIS01
+  numbers pinned, all 8 archives parse, scripted complete/fail over the real rules, trigger
+  stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
+  the touched crates' tests ran instead; flagged in the report.
+- Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
