@@ -14879,3 +14879,16 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## menu-mouse-parity (2026-10-16, branch s/menu-mouse-parity)
+- Task: the mouse works everywhere the keyboard does. For every page: mouse_move over drawn rows
+  (list_rows_y, wheel geometry, tab strip) sets the same cursor arrows would; mouse_click on a row
+  does what Enter does; clicks outside rows do nothing; right-click = Back, wheel = Up/Down; no
+  click changes a value it shouldn't. Fuzz: 20 seeded runs of 5000 steps, moves+clicks+keys, task-669
+  invariants (no panic, cursor in range, Back leaves).
+- Rule: drive the FrontEnd ONLY through action(), mouse_*(), tick() and host-side window calls —
+  never assign page/cursor/state to get somewhere. Ticks between actions until !intro_playing &&
+  !attract_playing (bounded). Every test gets sister assertions.
+- Plan: map the fe input surface (mouse_* entry points, per-page hit tests) and the draw-code row
+  geometry (list_rows_y etc.), write parity tests per page, fuzz, fix hit-test disagreements against
+  the draw code (numbers only, draw source cited), run touched crates + full suite.
