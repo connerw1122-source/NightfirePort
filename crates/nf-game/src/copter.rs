@@ -53,26 +53,11 @@ pub struct Copter {
     pub flight_t: u32,
     pub flight_len: u32,
     pub done: bool,
-    /// `obj+0x68` = 299.0 x the difficulty multiplier [M `Copter_Create` 0x17d340:76-94]:
-    /// d1 x1.0 (the decomp's fall-through default), d2 x1.5, d3 x2.0, d4 x4.0.
-    pub hp: f32,
-}
-
-/// The per-difficulty health multiplier (`Copter_Create` 0x17d340:76-93): 2 -> 1.5, 3 -> 2.0,
-/// 4 -> 4.0, everything else (d1) -> 1.0 [M].
-pub fn copter_hp_mult(difficulty: u32) -> f32 {
-    match difficulty {
-        2 => 1.5,
-        3 => 2.0,
-        4 => 4.0,
-        _ => 1.0,
-    }
 }
 
 impl Copter {
-    /// `Copter_Create` over the main map's 0x2F placements. `difficulty` is the selected
-    /// difficulty (`GameState+0x28`, 0x2a3790) — the HP scales with it [M 0x17d340:76-94].
-    pub fn create(placements: &[Placement], difficulty: u32) -> Vec<Copter> {
+    /// `Copter_Create` over the main map's 0x2F placements.
+    pub fn create(placements: &[Placement]) -> Vec<Copter> {
         let mut out = Vec::new();
         for (i, p) in placements.iter().enumerate() {
             if p.flags & 0xff != 0x2f { continue; }
@@ -89,7 +74,6 @@ impl Copter {
                 flight_t: 0,
                 flight_len: 0,
                 done: false,
-                hp: copter_hp_mult(difficulty) * 299.0,
             });
         }
         out

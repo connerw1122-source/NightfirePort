@@ -9,11 +9,8 @@
 //! - `Lock_Create` (0x1ae1f8): `control_create_object(0x20, …)`, class 0x20; the record's u16 words
 //!   at +4/+6 from placement params 3/4 (0xffff here — the take/key channels), the burn timer base
 //!   `u16[+8] = (tag+2 == 0 ? 0 : tag+2 − 1)` scaled by `FRAME_RATE / u16[tag+4]`, flags2 |= 0x44,
-//!   and the framelist pose (Spline_Interp) when the key count is non-zero. The difficulty gate
-//!   (`0x1ae1f8:67-69`, GameState+0x40 DECIMAL = +0x28 hex = 0x2a3790): `level_tag+0x44` (param 6)
-//!   non-zero AND the selected difficulty == 1 (Operative) -> `Lock_Unlock(obj, 1)` at create,
-//!   which sets the lock's state word +0xf4 = 1 (unlocked) [M Lock_Unlock 0x1b0650:28-31] — the
-//!   tagged locks start open on Operative only (docs/systems/progress.md "doors auto-unlock").
+//!   and the framelist pose (Spline_Interp) when the key count is non-zero. `GameState+0x40 == 1`
+//!   (a loaded save) unlocks at once.
 //! - `Lock_Update` (0x1ae3d8) case 0 reads the ACTIVATING weapon off the hit: 0x4E/0x4F (the
 //!   Q-Decryptor, :57) or the laser family — the `− 0x56 < 2` band at :162 (0x56/0x57; the watch's
 //!   scoped laser 0x54 arrives through the same hit path) — and advances the burn; the open writes
@@ -55,17 +52,11 @@ pub struct Lock {
     /// level's data [M 0x1ae1f8: the tag+2 word is 0], so the first tick of burn completes it.
     pub burn: u32,
     pub burned: bool,
-    /// level_tag+0x44 (param 6): the "starts unlocked on Operative" tag [M 0x1ae1f8:67-69].
-    pub unlock_on_operative: bool,
-    /// The create-time unlock state (the game's lock state word +0xf4 = 1 via `Lock_Unlock`
-    /// 0x1b0650:28-31): true iff `unlock_on_operative` and the selected difficulty is 1 [M].
-    pub unlocked: bool,
 }
 
 impl Lock {
-    /// `Lock_Create` over the main map's 0x2E placements. `difficulty` is the selected difficulty
-    /// (`GameState+0x28`, 0x2a3790) — the param-6 tag auto-unlocks on Operative [M 0x1ae1f8:67-69].
-    pub fn create(placements: &[Placement], difficulty: u32, object: impl Fn(&Placement) -> Option<(V3, f32)>) -> Vec<Lock> {
+    /// `Lock_Create` over the main map's 0x2E placements.
+    pub fn create(placements: &[Placement], object: impl Fn(&Placement) -> Option<(V3, f32)>) -> Vec<Lock> {
         let mut out = Vec::new();
         for (i, p) in placements.iter().enumerate() {
             if p.flags & 0xff != 0x2e { continue; }
@@ -79,8 +70,6 @@ impl Lock {
                 key_channels: [param(3) as u16, param(4) as u16],
                 burn: 0,
                 burned: false,
-                unlock_on_operative: param(6) != 0,
-                unlocked: param(6) != 0 && difficulty == 1,
             });
         }
         out
@@ -90,7 +79,7 @@ impl Lock {
     /// ported; see the module doc). `Lock_Update` writes the out channel when the burn completes
     /// [M 0x1ae3d8:194-195]. Returns whether it completed this tick.
     pub fn burn(&mut self, ch: &mut Channels, frame: u32) -> bool {
-        if self.burned || self.unlocked { return false; }
+        if self.burned { return false; }
         self.burned = true; // the create-time burn base is 0 [M 0x1ae1f8]
         if self.out != 0 { ch.set(self.out as u32, 1, frame); }
         true

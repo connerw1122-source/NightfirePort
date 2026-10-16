@@ -101,10 +101,7 @@ fn clean_shot_probe(w: &mut Walker, di: usize, label: &str) {
 #[test]
 fn every_woken_and_spawned_guard_takes_damage() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    // difficulty-effects: the walkthrough targets spawner 2's template (a 0x0F placement tagged
-    // param2=2 — Agent/00 Agent only, `Drone_Create` 0x136be0:49). On Operative the gate holds it
-    // back (roster 16, not 32), so the scenario loads at 00 Agent where the full roster exists.
-    let scene = nf_view::load_with_carry_difficulty(&iso, "07000012.bin", false, None, 3).expect("load");
+    let scene = nf_view::load(&iso, "07000012.bin", false).expect("load");
     let mut w = Walker::new(scene);
     w.wait_enabled(3000, "the intro");
     w.wait(120);
@@ -146,10 +143,7 @@ fn every_woken_and_spawned_guard_takes_damage() {
 #[test]
 fn script_objects_after_the_intro() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    // difficulty-effects: the walkthrough targets spawner 2's template (a 0x0F placement tagged
-    // param2=2 — Agent/00 Agent only, `Drone_Create` 0x136be0:49). On Operative the gate holds it
-    // back (roster 16, not 32), so the scenario loads at 00 Agent where the full roster exists.
-    let scene = nf_view::load_with_carry_difficulty(&iso, "07000012.bin", false, None, 3).expect("load");
+    let scene = nf_view::load(&iso, "07000012.bin", false).expect("load");
     let mut w = Walker::new(scene);
     w.wait_enabled(3000, "the intro");
     w.wait(240);
