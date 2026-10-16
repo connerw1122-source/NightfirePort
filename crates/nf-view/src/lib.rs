@@ -3116,6 +3116,13 @@ impl ApplicationHandler for App {
                 // and ends; the frame the result arrives, `poll_async_load` swaps the scene in
                 // (the renderer's GPU rebuild stays on this thread) and the frame falls through
                 // to normal play.
+                // The online session keeps pumping through the loading screen: the frame returns
+                // early below, and a load longer than the session's 5 s timeout (a 5.2 s arena load
+                // on the user's PC) dropped the other player before tick 0. Its events wait in
+                // the core until the load ends and the normal drain below runs.
+                if self.async_load.is_some() {
+                    if let Some(session) = self.net.as_mut() { session.0.borrow_mut().poll(); }
+                }
                 if self.async_load.is_some() && !self.poll_async_load() { return; }
                 let dt = self.last.elapsed().as_secs_f32().min(0.1);
                 self.last = std::time::Instant::now();

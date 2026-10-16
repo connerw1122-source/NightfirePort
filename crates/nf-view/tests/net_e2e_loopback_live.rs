@@ -319,8 +319,20 @@ fn run_e2e(path: &str, fault: Option<(u64, u32, u32)>) {
     // ── both machines load the arena through the real load path and swap
     // THEIR slot's bond in as the local one ──
     let arena = format!("{ARENA:08x}.bin");
-    let mut hscene = nf_view::load_mp_carry(path, &arena, false, None, hs.clone()).expect("the host sim loads");
-    let mut cscene = nf_view::load_mp_carry(path, &arena, false, None, cs.clone()).expect("the client sim loads");
+    // The window loads on a worker while its frames keep pumping the session (lib.rs: the poll before
+    // the async-load early return) — a load longer than the 5 s session timeout must not drop the
+    // peer. The test does the same: both loads on threads, both sessions pumped meanwhile. (Loading
+    // them in line with no pump failed every run under CPU load: "tick 0: both inputs arrive".)
+    let (mut hscene, mut cscene) = std::thread::scope(|sc| {
+        let hj = sc.spawn(|| nf_view::load_mp_carry(path, &arena, false, None, hs.clone()).expect("the host sim loads"));
+        let cj = sc.spawn(|| nf_view::load_mp_carry(path, &arena, false, None, cs.clone()).expect("the client sim loads"));
+        while !(hj.is_finished() && cj.is_finished()) {
+            hp.0.borrow_mut().poll();
+            cp.0.borrow_mut().poll();
+            std::thread::sleep(Duration::from_millis(16));
+        }
+        (hj.join().unwrap(), cj.join().unwrap())
+    });
     hscene.sim.as_mut().expect("host sim").swap_local_slot(0);
     cscene.sim.as_mut().expect("client sim").swap_local_slot(1);
     assert!(hscene.sim.as_ref().unwrap().mp.as_ref().unwrap().settings.started, "the host's match started [M MP_Start 0x183a50:207]");
