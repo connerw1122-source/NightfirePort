@@ -23,3 +23,7 @@ exists — vgmstream is ISC). Golden: numbers and SHA-1s only. Update docs/forma
 
 ---
 claimed-by: sandbox5 at 2026-10-16T10:36Z
+
+---
+## Report (done, 2026-10-16T11:48Z)
+
