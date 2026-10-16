@@ -15182,11 +15182,32 @@ menu-audio-state (2026-10-16)
   cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
   (live checks 1-3).
 
-## guard-reaction-delay2 (2026-10-16, branch s/guard-reaction-delay2) — in progress
+## guard-reaction-delay2 (2026-10-16, branch s/guard-reaction-delay2) — landed (664's entry-tick block; B/C held with findings)
 - Task 664b: land 664 (s/guard-reaction-delay, reverted as held) without breaking the measured
   fix_guard_weapons_live 3x3 hit-rate/damage matrix. Plan: branch master + merge 664, reproduce the
   4/4 standalone failures, bisect which part of 664 shifts the fire streams (first-shot delay vs
   aim-raise gate vs RNG draw order), port it so the matrix stays green on origin/master + this branch.
+- Full 664 reproduced on the exact merged tree (origin/master e416e5f0 + 664): the 3x3 matrix fails
+  deterministically, same-process single-threaded. Bisected 664's three edits (A: the enter's
+  `+0x3b=0` after `DroneWeap_Fire(1)`; B: the not-seen UPDATE's `+0x3b=0`; C: the seen refresh
+  replacing `Fire(1)`), one variant per run on the same tree: pre-664 PASS (d3/0x12 127/200); A PASS
+  (141/200, 3 runs); B FAILS the damage pin (a <3.0 close pass the matrix model does not cover);
+  C alone byte-identical to pre-664; A+C FAILS byte-identical to full-664 (125/200) => B never fires
+  in the measured scenarios and the shift is the A×C seen-window draw order: with A clearing the
+  request on the enter, the port's next-tick seen `Fire(1)` re-schedules (NextBulletTime draws) where
+  the game's refresh arm sets `+0x3b` before its own Fire guard and never re-schedules
+  [M 0x164c08:63, 0x17a8c0:9-14].
+- LANDED: A only (drone.rs CombatNoRoute ENTER, `self.firing = false` after Fire(1) [M 0x164c08
+  case 1 last line]) — the user-visible entry-tick delay with the matrix green (d3/0x12 0.705 vs
+  model 0.750). B held pending the close pass being modelled/live-checked; C held pending the
+  `Drone+0x3d` burst-finished latch [M 0x171df8:160] + HandleFiring's request auto-clear
+  [M 0x17a180:37-45] so the seen-window draw order matches. No tolerance changes.
+- Verified: guard_reaction_live green (three sighting paths pinned); fast suite on the final tree
+  (HEAD contains origin/master e416e5f0): 408 binaries, 1804 passed, 7 failed, 72 ignored — the 7
+  all master-side/environmental (3 disc_golden slim-ISO allowance; fix_0c_pylon_live x2 +
+  probe_pylon_render no-GPU wgpu; driving_ai_follow mis01 rNgp on the slim ISO, master test merged
+  11:17 UTC today) — and both task binaries green (fix_guard_weapons_live 3/3, guard_reaction_live
+  1/1). Report: docs/reports/guard-reaction-delay2.md (3 live-check asks for the B/C follow-up).
 ## pickups-08 (2026-10-16, branch s/pickups-08) — start
 - Task: the briefcase and the rocket launcher in the 07000008 safe room refuse pickup in playtests
   1012-2337 / 1013-1758. Find why each refuses (placement types and pickup kinds [M Pickup_Create
