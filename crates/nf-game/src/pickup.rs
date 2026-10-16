@@ -306,8 +306,14 @@ impl Pickup {
         let c = self.centre();
         let r = self.bounds.radius + 1.1;
         let d2 = (c[0] - pos[0]).powi(2) + (c[1] - pos[1]).powi(2) + (c[2] - pos[2]).powi(2);
-        // The LOS ray from the player's world-sphere centre to the pickup's centre. A resting pickup whose
-        // model centre y ≈ 0 (live: the 07000001 guard drop of weapon 0xe rests with its centre ON the
+        // Distance FIRST, the LOS ray only on the distance pass — the game's own order:
+        // `Vec_SqDist3D(obj+0x80, player+0x30) < r² && (Collide_LineOfSight(...), != 0)` is a
+        // short-circuit `&&` in the decompile [M Pickup_Update 0x18e148:203-214 — the ray call
+        // sits INSIDE the `&&` chain]. The port computed the ray for EVERY pickup EVERY tick
+        // (a pure read, so results were right, but the probe's baseline put `phase: pickups` at
+        // 66% of the tick cost — the sim-tick-cost report's table).
+        if d2 >= r * r { return false; }
+        // A resting pickup whose model centre y ≈ 0 (live: the 07000001 guard drop of weapon 0xe rests with its centre ON the
         // floor [L, fix_player2_live take-test log]) ends the ray ON the floor triangle; the port's
         // `segment` counts t = 1.0 as a hit, which refused every such drop forever (the "some drops never
         // pick up" playtest symptom). The game takes floor-resting drops, so its `Collide_LineOfSight`
@@ -324,7 +330,7 @@ impl Pickup {
             eprintln!("[take-test] weapon {:#x} kind {} state {}: bond ({:.3}, {:.3}, {:.3}) centre ({:.3}, {:.3}, {:.3}) dist {:.3} vs r {:.3} los {}",
                 self.weapon, self.kind, self.state, pos[0], pos[1], pos[2], c[0], c[1], c[2], d2.sqrt(), r, los);
         }
-        d2 < r * r && los
+        los
     }
 }
 

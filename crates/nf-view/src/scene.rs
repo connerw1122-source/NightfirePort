@@ -2325,7 +2325,8 @@ impl Sim {
             if self.drones.health.health > 0.0 {
                 self.bond.pos[1] += self.drones.health.hit_push;
             }
-            self.bond.tick_ctx(&self.world, &ctx, &input);
+            { let _pphase = nf_game::prof::scope("phase: player move");
+            self.bond.tick_ctx(&self.world, &ctx, &input); }
             // audit-sound-calls: drain the jump launch / head-bump sounds into the Sim's sound
             // pool (`Player_HandleJump` 0x1916b0:184,195-198 via `Bond::sfx_out`).
             for (id, pos) in self.bond.sfx_out.drain(..) {
