@@ -13866,3 +13866,16 @@ Work Log (async-level-load):
   difficulty, continue health boosts (ContinueHealthBoost*). List each with its address and the
   port's status; implement the missing ones in the sim. Tests per effect (numbers only) with
   sister assertions. Doc: docs/reports/difficulty-effects.md at finish.
+
+## difficulty-effects (2026-10-16, branch s/difficulty-effects) — DONE 01:47 UTC
+- Audit complete: every GameState+40 DECIMAL (= +0x28 hex, 0x2a3790) read enumerated from the
+  decomp + full-ELF scan; 0x2a37a8 is the skip-Game_Draw byte (3 docs cited it wrong — fixed).
+- 13 effects already implemented/neutral in the port; 4 missing ones implemented: Drone_Create's
+  min-difficulty spawn gate (0x136be0:49), Lock_Create's Operative auto-unlock (0x1ae1f8:67),
+  Hint_Create's stage gate (0x1b3248:12-25), Copter_Create's HP (0x17d340:76-94), plus the
+  front-end pick wiring (menu confirm -> App -> load_with_carry_difficulty -> Scene::build).
+- Tests: difficulty_gates.rs (3, numbers), difficulty_spawn_gate_live.rs (07000011 rosters
+  20/33/37), difficulty_wiring_live.rs (menu->sim end-to-end); 07000012 walkthrough moved to a
+  d3 load (its reinforcement is param2=2 — the gate holds it on Operative).
+- Ran: nf-game + nf-view + nf-audio green, nf-formats only the 3 slim-ISO disc_golden failures.
+  Report: docs/reports/difficulty-effects.md.
