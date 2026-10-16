@@ -15582,3 +15582,11 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+
+## pistol-sound-12 (2026-10-16, branch s/pistol-sound-12) — started 14:25 UTC
+Playtest 1012-1723 (07000012): "the pistol you start with does not sound right". Plan: find 12's
+start loadout weapon (level kit [M Player_InitWeapon]) and its fire/reload sound ids [L
+weapon_data], which sound bank 12 loads, and check the port's driver resolves each id from the
+bank the GAME would use (fix-weapon-sounds' own-bank-first rule, the spare banks) plus that the
+effect record/sample is the same one. Test: fire the start pistol on 12, assert the played sample
+hash equals the owning bank's decode for each id; sister = a different weapon's id doesn't match.
