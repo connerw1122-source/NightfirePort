@@ -101,7 +101,9 @@ existing movie plane), per the task.
   `/home/z/my-project/suite.log`: 177 binary sections in when this report was written, with
   the only failures the 2 no-GPU `fix_0c_pylon_live` render tests (wgpu `request_adapter`
   panic — the same no-GPU environment failure the mp-match-rules task recorded, unrelated to
-  this task).
+  this task), plus `walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact`
+  (a drone-route walking assertion — the test file has no FrontEnd/menu/movie_tick reference;
+  outside this task's surface, left for the driver to rerun).
 
 ## What's left
 
