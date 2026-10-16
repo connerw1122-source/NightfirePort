@@ -1830,6 +1830,18 @@ impl App {
                 eprintln!("[ptp] return applied: MissionState {} (status byte {}), 12 slots carried", sim.drones.mission.status(), ret.status_byte);
             }
         }
+        // mission-unlock-flow: the game's sp_level+0x10 flags are ONE global that survives every
+        // map load; the port splits the store across the front end (FrontEnd::unlocked) and the
+        // per-level sim (Progress::nightfire_status), so each fresh sim is seeded from the live
+        // front end here — the results page's award (results_enter → set_level_bonus → the
+        // mirror) then accumulates on the session's bits instead of restarting from the boot 0x3
+        // [D ACTION.ELF .data 0x1d91e0]. Without a front end (headless loads, boot) the fresh
+        // boot value stands. [S the port's glue for the game's single store.]
+        if let Some(fe) = self.fe.as_ref() {
+            if let Some(sim) = self.scene.sim.as_mut() {
+                sim.drones.progress.nightfire_status = fe.packed_unlocks();
+            }
+        }
         // The renderer holds the old scene's GPU resources (textures, buffers): rebuild it
         // IN PLACE — the window and surface must survive the level change (the game's window
         // does not close). Dropping `Gfx` here closed the window and nothing recreated it

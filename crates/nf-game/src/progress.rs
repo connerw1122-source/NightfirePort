@@ -424,15 +424,18 @@ pub struct Progress {
 
 impl Default for Progress {
     /// A fresh profile: everything zero except the difficulty's boot default 2
-    /// [M bootup 0x1c7e78:25]. (`Menu_SetNightfireStatus` 0x2023a0 defaults the loaded status to
-    /// 0x3 when the save holds 0 — the LOAD path's default, applied in `load`, not here.)
+    /// [M bootup 0x1c7e78:25] and the unlock word's boot state 0x3 — the shipped sp_level
+    /// .data bytes hold rows 0 and 1's +0x10 = 1, rows 2-11 = 0 [D ACTION.ELF .data file
+    /// offset 0x1d91e0, byte-dumped; the same two rows the game's fresh-codename template
+    /// writes via Menu_SetNightfireStatus 0x2023a0's 0x3 default]. (The LOAD path's own
+    /// 0 → 0x3 default stays in `set_nightfire_status`.)
     fn default() -> Self {
         Progress {
             stats: [PlrMissionStats::default(); 8],
             bond_moments: [0; 10],
             table: SCORING_TABLE,
             bonus: [0; 21],
-            nightfire_status: 0,
+            nightfire_status: 0x3,
             game_complete: false,
             // Bootup 0x1c7e78:86 sets `NewScoresRef = &DAT_0031ca38` (the zeroed PTPDATA tail);
             // the NULL GetScore abort is dead code in the shipped game.
