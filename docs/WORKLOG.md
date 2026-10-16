@@ -14571,3 +14571,11 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
   the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
   docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
+
+## menu-graph-walk (2026-10-16, branch s/menu-graph-walk)
+- Branch created from origin/master (f42de6ff). Task: headless explorer that walks the whole reachable menu
+  graph from FrontEnd::new() by actions + ticks only (never direct field writes), with per-step invariants
+  (no panic, cursor < rows(), known page id, Back leaves within N steps, every page can reach Main,
+  requested_level never set twice per confirm, no dead-end pages), coverage print, plus a randomized
+  version (20 seeded runs x 5000 actions+ticks). Findings fix menu code where game evidence is clear [M],
+  else listed in the report.
