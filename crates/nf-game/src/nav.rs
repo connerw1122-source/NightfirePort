@@ -137,6 +137,22 @@ impl Network {
         self.bounds_test(a, b, near, want_hit)
     }
 
+    /// `DroneMove_ObjectMissionPathDistance`'s node qualification (0x153f50:100-121): 3D distance
+    /// ≤ 30 (DAT_002c7954 = 900.0, `Drone_PostLoad_Init` 0x136938:62), |dy| ≤ 4.0 (DAT_002c794c),
+    /// the slope band (DAT_002c7948 < |dy| ⇒ |atan2(dy, horiz)| ≤ DAT_002c7944 — the
+    /// PostLoad_Init 1.5·/2.0 + 0.7854/0.8727 pair this Network carries), then the BOUNDARY test
+    /// ONLY (`AINetwork_BoundsTest`, gated on the boundary count DAT_002c8774 = `self.bounds`) —
+    /// the game's scan has NO collision-world line of sight (furniture must not disqualify a
+    /// route node).
+    pub fn node_scan_ok(&self, feet: V3, np: V3) -> bool {
+        let dy = np[1] - feet[1];
+        let h2 = (np[0] - feet[0]).powi(2) + (np[2] - feet[2]).powi(2);
+        if h2 + dy * dy > 900.0 || dy.abs() > 4.0 { return false; }
+        if dy.abs() > self.slope_dy && dy.abs().atan2(h2.sqrt()) > self.max_slope { return false; }
+        if !self.bounds { return true; }
+        self.bounds_test(feet, np, false, false).0 == 1
+    }
+
     /// `AINetwork_BoundsTest` over every wall (one cel).
     pub fn bounds_test(&self, a: V3, b: V3, near: bool, want_hit: bool) -> (i32, Option<V3>) {
         let mut best: Option<(f32, V3)> = None;

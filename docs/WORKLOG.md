@@ -15353,3 +15353,31 @@ remote-mine-detonate (2026-10-16)
   the game's distance, the exit opens under the game's condition. `walkreal_07000001_live` stays green.
 - Branch s/escort-01 cut from origin/master (e416e5f0). Work starting: research nf_game escort /
   drone / LinkCreep (prior: s/fix-escort-01 ported the SqDist2D<1.0 creep rules for the 663 doors task).
+
+## escort-01 (2026-10-16, work entry)
+
+- Ported the escort's real follow/wait machinery over fix-actors' straight-line stand-ins:
+  `DroneMove_ObjectMissionPathDistance` 0x153f50 (the signed route distance from the lead's
+  current route node to the route node nearest Bond; the node scan ranks by squared 2D distance
+  — the first route node always a candidate, later strictly closer — and qualifies with
+  3D ≤ 30 (DAT_002c7954 = 900.0), |dy| ≤ 4.0 (DAT_002c794c), the slope band (DAT_002c7948/44,
+  Drone_PostLoad_Init 0x136938:53-62) and the BOUNDARY test only (DAT_002c8774 — no
+  collision-world LOS, the game's scan sees through furniture); sign per
+  `AINetwork_GetRouteDistanceBetweenNodes` 0x156160: to > from → +sum (Bond ahead), else −sum),
+  exposed as `Drone::mission_path_dist` (the game's SM+0x20).
+- AllyLead 0x15e698 case 3: the game's arm order (armed peer → route → the π/6 0x3f060a92
+  BondWithinAngle cone × 3.0 → PlayerInWay 0x154f98 → the path bands: < −9.0 → Wait;
+  == 0.0 with Bond ≥ 5.0 straight-line → Wait; the (15,25) Drone+0x9F8 band → BondCombat is
+  dead in the game — no decomp writer for +0x9F8 (docs/fields/hitdata-spawner-ally.md §3)).
+  AllyLeadWait 0x15eda8 case 3: armed peer → hide; resume Lead when path > −7.0 and not
+  (0.0 with Bond ≥ 5.0). PlayerInWay 0x15ea28 case 3: resume when Bond leaves the π/3
+  0x3f860a92 × 3.5 stay band. BondCombat 0x15f120 case 3: path < 0 stays, else Lead.
+- New test crates/nf-view/tests/escort_follow_07000001_live.rs: the walking-speed escort from
+  the meet-up to the exit — 6587 in-walk band checks (Lead ⇒ path ≥ −9.0, Wait ⇒ path ≤ −7.0
+  or 0.0), no violations, both bodies on the plate → ch 0x10 → level_exit 0x07000002. GREEN.
+- walkreal_07000001_live 2/2 green; nf-game --lib 237 green.
+- KNOWN follow-on: fix_mission_live::the_07000001_exit_works_end_to_end now deadlocks — its
+  Bond teleports only to E-open the courtyard door and otherwise stands near the spawn; under
+  the GAME'S own bands a still player parks the escort 9 route-units out forever (the playtest's
+  "follow properly" implies the player walks). The test needs the walking-speed follow the new
+  test models (its E-door patience and plate choreography reused as-is).
