@@ -3,6 +3,7 @@
 //! worker's channel was unbounded, so it decoded the whole movie into RAM ahead of playback. The worker
 //! must stop STREAM_AHEAD pictures ahead, and stopping it while it waits on a full channel must not
 //! deadlock. Needs a retail image with movie data (`NF_ISO`); silent.
+//! [S port engineering: a memory bound and a stop latency, no claim about the game.]
 
 #[cfg(feature = "movies")]
 #[test]
