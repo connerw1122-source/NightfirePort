@@ -16266,3 +16266,7 @@ between tool calls; a foreground 50-min run does not fit the window) — a foreg
 the 45 render/draw/palette/gas-adjacent nf-view binaries: 135 passed, 1 failed
 (probe_pylon_render::probe_render_pylon_only — pre-existing, fails in the prior session's chunk
 logs too), 2 ignored. The remaining binaries did not run — flagged in the report.
+SUITE ADDENDUM: wider foreground chunks after the close-out — 175 of 436 binaries total:
+577 passed, 5 failed/TIMEOUT (3 pre-existing: probe_pylon_render + fix_0c_pylon_live ×2;
+2 limit-timeouts: campaign_flow_live, fix_guard_weapons_live at limit 25 s vs the default
+600 s), 21 ignored. Details in docs/reports/blood-puff-render.md.
