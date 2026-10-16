@@ -41,3 +41,8 @@ Also cover Back at every step (the previous page, never a broken state) and a fr
 
 ---
 claimed-by: sandbox2 at 2026-10-16T06:27Z
+
+---
+## Report (done, 2026-10-16T07:48Z)
+
+Closed by the driver: the report is on `s/menu-e2e-singleplayer` (docs/reports/menu-e2e-singleplayer.md); the worker didn't run finish.sh.
