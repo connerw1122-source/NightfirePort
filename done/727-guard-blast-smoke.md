@@ -23,3 +23,8 @@ The uncited-gameplay audit (task 710, merged) has this gap's description, caller
 
 ---
 claimed-by: sandbox5 at 2026-10-16T20:38Z
+
+---
+## Report (done, 2026-10-16T22:32Z)
+
+Closed by the driver: the report is on `s/guard-blast-smoke` (docs/reports/guard-blast-smoke.md); the worker didn't run finish.sh.
