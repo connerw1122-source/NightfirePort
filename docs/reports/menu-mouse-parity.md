@@ -107,4 +107,4 @@ the already-parsed menu-def dumps cited in the code.
 
 ## ntfy
 
-(sent after the push; see the finish step's output — any failure text goes here.)
+Sent 2026-10-16 09:33 UTC via curl (id MR60OYk2aIjK) — first try, no fallback needed.
