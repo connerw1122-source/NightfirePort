@@ -23,7 +23,7 @@ use nf_formats::golden::diff_tsv;
 use nf_formats::iso9660::IsoImage;
 use nf_formats::mpeg2::picture_counts;
 use nf_formats::pss::{demux, Audio};
-use nf_formats::sha1::{hex, Sha1};
+use nf_formats::sha1::hex;
 
 /// The movies image: `NF_MOVIE_ISO` if set, else `NF_ISO`. None → skip.
 fn iso() -> Option<IsoImage> {
