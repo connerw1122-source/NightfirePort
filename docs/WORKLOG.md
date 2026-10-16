@@ -14604,3 +14604,30 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   fix_remote_mine_play 3/3, nf-game lib 236/236 — all on the merged tree (origin/master 6bab6409).
 - Report: docs/reports/satchel-stick2.md (live checks: the rebuilt-binary replay of the user's repro, the
   gdbwatch fallback, the obj+0x8C read; left: the frag family's 1 u look-ahead, the pierce roll, L-583).
+- flesh-hit-effects (s/flesh-hit-effects): started. Playtest 1015-1738: bullet hits on people show
+  "No red puffs". Plan: port the flesh-hit effect spawn — the material/effect lookup for a character
+  hit [M Effect_Create / Effect_Bullet on the flesh path, the EffectInfo row for flesh, its gas/
+  decal/debris entries] so a guard hit spawns the game's own blood puff into the existing gas/effect
+  pools (data only — the pools already draw). Test: shoot a guard on 07000005, assert the puff with
+  the right mesh/colour/life in the pool; sister: a world hit doesn't spawn it.
+
+- Task: flesh-hit-effects — "No red puffs" on bullet hits to people (playtest 1015-1738). Evidence
+  chain: a character hit carries HITDATA+0x50 = 0 [M Collide_Jointy 0x1ec180:125/173], so
+  Effect_Create 0x1ce688:63's material gate early-outs — there is NO EffectInfo row for flesh
+  (the 23-row table [L ACTION.ELF EffectInfo @0x3037c0] has no red row; Drone_CollisionHandler
+  0x140968 calls no effect) — the blood puff is the VICTIM's own: NDrone2_DealWithObjHit
+  0x13fff0's default arm Gas_Init(3.0, 6.0, obj+0x20, HITDATA+0x40, 0, 0, 0x20008bc, 5, 0xffffffff,
+  0xffffff00, life 0x3c) + the gas obj's +0xf0 |= 8 [M disasm 0x14047c site; the 0x32/0x33 bolt arm
+  0x140414 = 0x200026e at 1.0/16.0]. fix-flesh-impacts already spawns it into the pool (victim_puff
+  — pool data verified correct against the disasm). The actual gap was RENDER-side: the gas
+  draw-slot list (scene.rs) only knew the EffectInfo rows' gas meshes + SMOKE_QUAD — the blood mesh
+  0x0200_08bc had no slot, the puff sat in the pool invisible. Fix: gas::POOL_MESHES (the pool's own
+  spawn meshes: SMOKE_QUAD, the trail smoke 0x0200_001f [M Bullet_trail_effect_smoke 0x12cba8
+  disasm], the blood 0x0200_08bc, the bolt puff 0x0200_026e) extends the renderer's slot meshes.
+  Tests: fix_flesh_hit_effects_live — a real shot at a guard on 07000005 (load → settle → guard
+  moved ahead → aim at the live torso box → fire) asserts the puff's exact game data (mesh/kind 5/
+  scale 3.0/life 60/white rgba) near the guard + the guard takes damage + the scene has gas slots
+  for the three hardcoded-site meshes (a slot exists only when level.by_hash resolves the hash —
+  the draw proof); sister: a world hit never spawns the blood mesh. RED pre-fix at the slot
+  assertion, GREEN post-fix. Ran: the new test 2/2 green; nf-game + nf-view check clean; the full
+  suite on the final tree — see the report.

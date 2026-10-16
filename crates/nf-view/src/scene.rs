@@ -5276,7 +5276,12 @@ impl Scene {
                 // written with the gas system but no slot was ever created, so no puff ever drew — the user's
                 // "when you shoot the snow, there's no impact" (snow leaves no decal).
                 let mut gas_meshes: Vec<u32> = surf.effects.iter().flat_map(|r| r.gas.iter().map(|g| g.mesh)).filter(|m| *m != 0).collect();
-                gas_meshes.push(nf_game::gas::SMOKE_QUAD);
+                // flesh-hit-effects: the pool's OWN spawn meshes too — the blood puff 0x0200_08bc
+                // (`NDrone2_DealWithObjHit` 0x13fff0's flesh arm), the bolt puff 0x0200_026e and the
+                // trail smoke 0x0200_001f are hardcoded `Gas_Init` sites, not `EffectInfo` rows, and
+                // had no slot: the puff sat in the pool with nothing to draw it through (the user's
+                // "no red puffs", 1015-1738). The list lives with the spawners (`gas::POOL_MESHES`).
+                gas_meshes.extend_from_slice(nf_game::gas::POOL_MESHES);
                 gas_meshes.sort(); gas_meshes.dedup();
                 {
                     let gslot_placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
