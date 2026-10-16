@@ -40,7 +40,7 @@ fn timer_string_formats_mmss_like_the_game() {
 
 /// A known mission end, every cell asserted. The tally: 1 Bond moment, 2 dispatched, 1 subdued,
 /// 0 surrendered, never detected, 10/10 shots, full health, 01:19 elapsed, no bonus pickups;
-/// Agent (difficulty 1 → the ×0.0 multiplier [M 0x1984b0:294-300]).
+/// Operative (difficulty 1 [D difficulty 0x2df4c0 row 0: Txt 0x14d, +0xc = 1] → the ×0.0 multiplier [M 0x1984b0:294-300]).
 #[test]
 fn known_mission_end_produces_the_handlers_rows() {
     let mut p = Progress::default();
@@ -98,12 +98,12 @@ fn known_mission_end_produces_the_handlers_rows() {
     assert_eq!(cell(0x161).target, "7");
     assert_eq!(cell(0x161).total, "0");
     assert_eq!(cell(0x162).total, "332,555"); // Σ raw: 25000+3334+8334+0+25000+50000+50000+170887
-    assert_eq!(cell(0x164).total, "0"); // Agent: ×0.0 [M ScoringTableDifMul[0]]
+    assert_eq!(cell(0x164).total, "0"); // Operative: ×0.0 [M ScoringTableDifMul[0]]
     assert_eq!(cell(0x163).total, "332,555"); // base + bonus
 }
 
 /// The PCSX2 capture on 07000005 (the task's golden, numbers only): a clean 01:19 run —
-/// nothing killed, nothing collected, full health, perfect accuracy — at Agent. Every cell
+/// nothing killed, nothing collected, full health, perfect accuracy — at Operative (difficulty 1). Every cell
 /// matches the real page.
 #[test]
 fn the_pcsx2_capture_is_the_golden() {
@@ -137,7 +137,7 @@ fn the_pcsx2_capture_is_the_golden() {
     assert_eq!(cell(0x160).total, "170,887");
     assert_eq!(cell(0x161).total, "0");
     assert_eq!(cell(0x162).total, "295,887"); // the capture's Subtotal
-    assert_eq!(cell(0x164).total, "0"); // the capture's Difficulty Bonus at Agent
+    assert_eq!(cell(0x164).total, "0"); // the capture's Difficulty Bonus at Operative
     assert_eq!(cell(0x163).total, "295,887"); // the capture's TOTAL = Subtotal
 }
 

@@ -128,13 +128,16 @@ fn drive_end_to_map(fe: &mut FrontEnd) -> Option<u32> {
     panic!("the front-end load never finished");
 }
 
-/// Boot → title → (intro plays out) → Main.
+/// Boot → title → START → P_PARISENUM → P_ESTHERO (its 0x073B0048 plays out) → Main
+/// [M 0x20a648:43, 0x20a060:16-45].
 fn to_main(fe: &mut FrontEnd) {
     assert_eq!(fe.page, Page::Start, "the boot opens the title");
-    assert!(fe.action(Action::Confirm), "the title's Enter starts the intro");
-    assert!(fe.intro_playing, "the intro movies play after the title");
-    assert_eq!(fe.page, Page::Main, "the page flips at once behind the movie");
-    assert!(!fe.action(Action::Down), "the intro swallows other input");
+    assert!(fe.action(Action::Confirm), "the title's Enter starts the intro run");
+    assert!(fe.intro_playing, "the intro run follows the title");
+    assert_eq!(fe.page, Page::ParisEnum, "the up-page is P_PARISENUM, not Main [M 0x20a648]");
+    for _ in 0..3 { fe.tick(); }
+    assert_eq!(fe.page, Page::EstHero, "then P_ESTHERO while its movie plays [M 0x20a060:44-45]");
+    assert!(!fe.action(Action::Down), "the intro swallows other input [M 0x20a060:25 msg 0x68/1]");
     for _ in 0..5000 {
         if !fe.intro_playing && !fe.attract_playing {
             break;
@@ -152,16 +155,16 @@ fn to_codename(fe: &mut FrontEnd) {
     assert_eq!(fe.page, Page::Codename);
 }
 
-/// Codename page → Play without saving (two Confirms: the confirm box) → the default
-/// difficulty (the middle row) → the mission list.
+/// Codename page (opened from Main on row 1, Play without saving [M P_NFSELECT 0x20aec0:96-97]) →
+/// two Confirms (the confirm box) → the difficulty wheel's first row [M P_NFDFCTY 0x216bf8:10-12]
+/// → the mission list.
 fn to_missions(fe: &mut FrontEnd) {
     to_codename(fe);
-    assert!(act(fe, Action::Down));
-    assert_eq!(fe.cursor, 1, "Play without saving");
+    assert_eq!(fe.cursor, 1, "Play without saving [M 0x20aec0:96-97]");
     assert!(act(fe, Action::Confirm), "the confirm box opens");
     assert!(act(fe, Action::Confirm), "the box's yes");
     assert_eq!(fe.page, Page::Difficulty);
-    assert_eq!(fe.cursor, 1, "the wheel starts centred on Agent [M C_SBNFDFCTY]");
+    assert_eq!(fe.cursor, 0, "the wheel 0x100000bf opens on index 0 [M 0x216bf8:12]");
     assert!(act(fe, Action::Confirm), "the difficulty");
     assert_eq!(fe.page, Page::MissionSelect);
 }
@@ -170,7 +173,11 @@ fn to_missions(fe: &mut FrontEnd) {
 /// Returns the requested level (already taken, the host consumed it).
 fn fresh_profile_to_the_exchange(fe: &mut FrontEnd) -> u32 {
     to_missions(fe);
-    assert_eq!(fe.cursor, 0, "a fresh profile opens on Paris Prelude");
+    // The list opens on the HIGHEST unlocked row [M P_NFMAP 0x20b608:58-64]: rows 0-1 on a fresh
+    // profile [D sp_level .data] → The Exchange. Up reaches Paris Prelude.
+    assert_eq!(fe.cursor, 1, "a fresh profile opens on The Exchange [M 0x20b608:60-64]");
+    assert!(act(fe, Action::Up), "Up to Paris Prelude");
+    assert_eq!(fe.cursor, 0);
     assert!(act(fe, Action::Confirm), "Paris Prelude");
     assert!(fe.notice.is_some(), "the driving notice shows");
     assert_eq!(fe.requested_level, None, "a driving row requests nothing");
@@ -200,12 +207,16 @@ fn boot_reaches_main_through_the_intro_both_ways() {
     assert_eq!(fe.page, Page::Start);
     assert!(fe.action(Action::Confirm), "the title's Enter");
     assert!(fe.intro_playing);
-    // The grace: a press in the first 3 s is swallowed and the intro keeps playing [M Menu_StopMovie 0x215a50].
-    assert!(fe.action(Action::Confirm), "an early press is taken");
-    assert!(fe.intro_playing, "but the intro can't be skipped in its first 3 s");
-    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18]
+    for _ in 0..3 { fe.tick(); }
+    assert!(fe.intro_movie, "P_ESTHERO's 2nd 0x50 started the movie [M 0x20a060:16-24]");
+    // The grace: a press in the first 180 ticks is refused and the intro keeps playing
+    // [M 0x20a060:17 DAT_002e1c4c = 0xb4; Menu_StopMovie 0x215a50:6].
+    assert!(!fe.action(Action::Confirm), "an early press is refused");
+    assert!(fe.intro_movie, "the intro can't be skipped in its first 180 ticks");
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); }
     assert!(fe.action(Action::Confirm), "the skip press");
-    assert!(!fe.intro_playing, "Enter skips the intro");
+    fe.tick();
+    assert!(!fe.intro_playing, "Enter skipped the intro; the next 0x50 opened Main [M 0x20a060:28-45]");
     for _ in 0..60 {
         fe.tick();
     }
@@ -232,10 +243,11 @@ fn back_walks_every_single_player_step_to_the_title() {
     assert_eq!(fe.cursor, 0, "the Dossier wheel opens at Records [M 0x216de0:9-16]");
     assert!(act(&mut fe, Action::Back));
     assert_eq!(fe.page, Page::MissionSelect);
-    // Down the chain: list → difficulty → codename → main → title.
+    // Down the chain: list → difficulty → codename → main → title [S unverified — the △ pops are
+    // the page stack's; P_NFMAP's 99 arm sends Main (0x20b608:67-68), not checked in PCSX2].
     assert!(act(&mut fe, Action::Back));
     assert_eq!(fe.page, Page::Difficulty);
-    assert_eq!(fe.cursor, 1, "the wheel re-opens on the chosen difficulty");
+    assert_eq!(fe.cursor, 0, "the wheel re-opens on the chosen difficulty (Operative)");
     assert!(act(&mut fe, Action::Back));
     assert_eq!(fe.page, Page::Codename);
     assert_eq!(fe.cursor, 0);
@@ -257,15 +269,14 @@ fn select_codename_play_without_saving_asks_and_back_cancels() {
     let mut fe = FrontEnd::new();
     to_codename(&mut fe);
     assert_eq!(fe.rows(), 2, "no card rows without a card");
-    assert!(act(&mut fe, Action::Down));
-    assert_eq!(fe.cursor, 1, "Play without saving");
+    assert_eq!(fe.cursor, 1, "opened from Main on Play without saving [M P_NFSELECT 0x20aec0:96-97]");
     assert!(act(&mut fe, Action::Confirm), "the confirm box opens");
     assert!(act(&mut fe, Action::Back), "△ cancels the box");
     assert_eq!(fe.page, Page::Codename, "the cancel stays on the page");
     assert!(act(&mut fe, Action::Confirm), "the box opens again");
     assert!(act(&mut fe, Action::Confirm), "the box's yes");
     assert_eq!(fe.page, Page::Difficulty);
-    assert_eq!(fe.cursor, 1, "Agent, the middle row");
+    assert_eq!(fe.cursor, 0, "the first row, Operative [M P_NFDFCTY 0x216bf8:10-12]");
 }
 
 #[test]
@@ -274,7 +285,10 @@ fn select_codename_new_codename_validates_creates_saves_and_reloads() {
     let mut fe = FrontEnd::new();
     fe.set_profile_dir(dir.clone()); // [host] the card wiring before the menus run
     to_codename(&mut fe);
-    // Row 0 "New Codename" → the name grid: the game's proposal, the ✓ focused.
+    // Row 0 "New Codename" (the page opened on row 1 [M 0x20aec0:96-97]; Up reaches it) → the name
+    // grid: the game's proposal, the ✓ focused.
+    assert!(act(&mut fe, Action::Up));
+    assert_eq!(fe.cursor, 0);
     assert!(act(&mut fe, Action::Confirm), "New Codename");
     assert_eq!(fe.page, Page::CnName);
     assert_eq!(fe.cn_typed_name(), "BOND", "the game's proposal [L ee_snapshot 0x30d530]");
@@ -312,7 +326,7 @@ fn select_codename_new_codename_validates_creates_saves_and_reloads() {
     assert!(act(&mut fe, Action::Confirm), "NightFire");
     assert_eq!(fe.page, Page::Codename);
     assert_eq!(fe.rows(), 3, "the card's codename is listed [M Menu_EnumSaves]");
-    assert!(act(&mut fe, Action::Down));
+    assert_eq!(fe.cursor, 1, "opened from Main on row 1 [M 0x20aec0:96-97]");
     assert!(act(&mut fe, Action::Down));
     assert_eq!(fe.cursor, 2, "MONEYP's row");
     assert!(act(&mut fe, Action::Confirm), "the saved codename loads");
@@ -331,16 +345,18 @@ fn select_codename_new_codename_validates_creates_saves_and_reloads() {
 fn each_difficulty_reaches_the_mission_list() {
     let mut fe = FrontEnd::new();
     to_codename(&mut fe);
-    assert!(act(&mut fe, Action::Down));
     assert!(act(&mut fe, Action::Confirm), "the confirm box");
     assert!(act(&mut fe, Action::Confirm), "the box's yes");
     assert_eq!(fe.page, Page::Difficulty);
-    // The wheel CLAMPS, it never wraps [M 0x2221b20:186-210; C_SBNFDFCTY 0x216ca8:25-28 range 0..2]:
-    // Down runs to the bottom and is refused there.
+    // fe-audit: the wheel opens on 0 [M 0x216bf8:12] and WRAPS — Scroll_Init sets the wrap flag,
+    // only msg 0x69 clears it [M 0x2214f0:102-103, 0x221810:136-138; Scroll_Update 0x221b20:186-210;
+    // C_SBNFDFCTY 0x216ca8:25-28 range 0..2].
+    assert_eq!(fe.cursor, 0);
+    assert!(act(&mut fe, Action::Down));
     assert!(act(&mut fe, Action::Down));
     assert_eq!(fe.cursor, 2);
-    assert!(!act(&mut fe, Action::Down), "the wheel clamps at the bottom");
-    assert_eq!(fe.cursor, 2);
+    assert!(act(&mut fe, Action::Down), "Down at the bottom wraps");
+    assert_eq!(fe.cursor, 0, "back on Operative [M 0x221b20:186-194]");
     // Every row confirms into the mission list; Back re-opens the wheel on the chosen row.
     for d in [2usize, 1, 0] {
         while fe.cursor < d {
@@ -353,7 +369,7 @@ fn each_difficulty_reaches_the_mission_list() {
         assert!(act(&mut fe, Action::Confirm), "the difficulty row confirms");
         assert_eq!(fe.page, Page::MissionSelect);
         assert_eq!(fe.difficulty, d, "the choice rode the confirm");
-        assert_eq!(fe.cursor, 0, "the list opens on the first unlocked row");
+        assert_eq!(fe.cursor, 1, "the list opens on the highest unlocked row [M 0x20b608:60-64]");
         assert!(act(&mut fe, Action::Back));
         assert_eq!(fe.page, Page::Difficulty);
         assert_eq!(fe.cursor, d, "Back re-opens the wheel on the chosen row");
@@ -378,12 +394,11 @@ fn every_unlocked_row_requests_its_campaign_level() {
     let mut fe = FrontEnd::new();
     fe.unlock_all = true;
     to_missions(&mut fe);
-    assert_eq!(fe.cursor, 0);
+    assert_eq!(fe.cursor, 11, "every row unlocked: the list opens on row 11 [M 0x20b608:60-64]");
     for i in 0..CAMPAIGN.len() {
-        if i > 0 {
-            assert!(act(&mut fe, Action::Down), "Down to row {i}");
-            assert_eq!(fe.cursor, i, "the wheel walks one row");
-        }
+        // Down from row 11 wraps to row 0 (the port's list step wraps over the unlocked rows).
+        assert!(act(&mut fe, Action::Down), "Down to row {i}");
+        assert_eq!(fe.cursor, i, "the wheel walks one row");
         let level = CAMPAIGN[i].3;
         let driving = nf_game::ptp::is_driving_level(level);
         assert_eq!(driving, menu::is_driving_level(level), "row {i}: the driving set matches");
@@ -415,6 +430,7 @@ fn a_completed_mission_routes_the_results_save_and_the_next_row() {
     fe.set_profile_dir(dir.clone());
     // A saved codename first, through the real branches (the save prompt needs one).
     to_codename(&mut fe);
+    assert!(act(&mut fe, Action::Up), "the page opened on row 1 [M 0x20aec0:96-97]; Up to New Codename");
     assert!(act(&mut fe, Action::Confirm), "New Codename");
     assert_eq!(fe.page, Page::CnName);
     type_on_grid(&mut fe, "BOND007");
@@ -424,19 +440,21 @@ fn a_completed_mission_routes_the_results_save_and_the_next_row() {
     assert_eq!(fe.page, Page::CnSelect);
     assert!(act(&mut fe, Action::Back));
     assert_eq!(fe.page, Page::Main);
-    assert!(act(&mut fe, Action::Down), "Down wraps to NightFire");
+    assert!(act(&mut fe, Action::Down), "Down wraps to NightFire [S unverified — Main's wrap]");
     assert!(act(&mut fe, Action::Confirm), "NightFire");
-    assert!(act(&mut fe, Action::Down));
+    assert_eq!(fe.cursor, 1, "opened from Main on row 1 [M 0x20aec0:96-97]");
     assert!(act(&mut fe, Action::Down));
     assert_eq!(fe.cursor, 2, "BOND007's row");
     assert!(act(&mut fe, Action::Confirm), "the saved codename loads");
     assert_eq!(fe.page, Page::Difficulty);
-    assert!(act(&mut fe, Action::Confirm), "Agent");
+    assert!(act(&mut fe, Action::Confirm), "Operative (the wheel's first row [M 0x216bf8:12])");
     assert_eq!(fe.page, Page::MissionSelect);
+    assert_eq!(fe.cursor, 1, "the list opens on the highest unlocked row [M 0x20b608:60-64]");
 
     // Paris Prelude is the driving row: the notice, dismiss, The Exchange. The second Enter
     // is refused while the request stands — the playtest's "a second Enter started a second load".
     let level = {
+        assert!(act(&mut fe, Action::Up), "Up to Paris Prelude");
         assert!(act(&mut fe, Action::Confirm), "Paris Prelude");
         assert!(fe.notice.is_some());
         assert!(act(&mut fe, Action::Confirm), "dismiss");
@@ -531,16 +549,16 @@ fn a_failed_mission_restarts_and_quits_from_the_results_page() {
     fe.flow.stack = vec![menu::ST_RUNNER];
     fe.flow.current_level = level;
     fe.mission_ended(Outcome::Failed, Stats::default());
-    assert_eq!(fe.requested_level.take(), Some(menu::FRONTEND_LEVEL), "failures skip the outro");
+    // fe-audit: the fail menu 0x40000042 opens over the PAUSED mission and nothing loads [M
+    // Mission_Update 0x182c60:77-80]; REPLAY reads GameState+0xc (the mission) at answer time
+    // [M P_ENDMISSION 0x216618:19-21].
+    assert_eq!(fe.requested_level, None, "the failure requests no level [M 0x182c60:77-80]");
+    assert_eq!(fe.flow.current_level, level, "the mission stays loaded under the menu");
     assert_eq!(fe.page, Page::Results);
+    assert_eq!(fe.page_id(), menu::PAGE_FAIL_MENU);
     assert_eq!(fe.rows(), 2, "the fail menu's REPLAY / QUIT [L page 0x40000042]");
     assert_eq!(fe.cursor, 0);
-    // The menu answers BEFORE the armed front-end load lands: on the disc the mission-failed
-    // screen shows while 0x7000048 streams in, and REPLAY reads GameState+0x12 (still the
-    // mission) at answer time [M P_ENDMISSION 0x216618:19-21]. The port's headless load lands
-    // on the next ticks, so this leg feeds raw actions — the same one-frame window a player's
-    // press rides.
-    assert!(fe.action(Action::Back), "△ lands on the second row (the game's own arm)");
+    assert!(fe.action(Action::Back), "△ lands on the second row [S unverified — the option list's △]");
     assert_eq!(fe.cursor, 1);
     assert!(fe.action(Action::Up));
     assert_eq!(fe.cursor, 0);
@@ -558,12 +576,13 @@ fn a_failed_mission_restarts_and_quits_from_the_results_page() {
     fe2.flow.stack = vec![menu::ST_RUNNER];
     fe2.flow.current_level = level2;
     fe2.mission_ended(Outcome::Failed, Stats::default());
-    fe2.requested_level.take();
+    assert_eq!(fe2.requested_level, None);
     assert!(fe2.action(Action::Down));
     assert_eq!(fe2.cursor, 1, "the QUIT row");
     assert!(fe2.action(Action::Confirm), "QUIT");
     assert_eq!(fe2.requested_level, Some(menu::FRONTEND_LEVEL), "QUIT loads the front end");
-    assert_eq!(fe2.flow.page, menu::PAGE_RESULTS_QUIT_TARGET, "+0x28 = the mission list");
+    assert_eq!(fe2.flow.page, menu::PAGE_RESULTS_QUIT_TARGET, "+0x1c = the mission list [M 0x216618:25]");
+    assert_eq!(fe2.page, Page::MissionSelect, "the front end reopens on the mission list [M P_NFMAP 0x20b608:58-64]");
     for _ in 0..120 {
         fe2.tick();
     }
@@ -576,10 +595,7 @@ fn the_final_mission_routes_to_the_win_page_and_credits() {
     let mut fe = FrontEnd::new();
     fe.unlock_all = true; // [host --unlock-all] the only way to Equinox without the campaign
     to_missions(&mut fe);
-    for _ in 0..11 {
-        assert!(act(&mut fe, Action::Down), "Down the wheel");
-    }
-    assert_eq!(fe.cursor, 11, "Equinox");
+    assert_eq!(fe.cursor, 11, "Equinox — the highest unlocked row [M 0x20b608:60-64]");
     assert!(act(&mut fe, Action::Confirm), "Equinox starts");
     let level = fe.requested_level.take().expect("the request");
     assert_eq!(level, 0x0700_001b);
@@ -613,7 +629,10 @@ fn the_final_mission_routes_to_the_win_page_and_credits() {
     // just_completed → the win page [M 0x209670:46-57].
     assert_eq!(fe.page, Page::WinGame);
     assert_eq!(fe.flow.page, menu::PAGE_WIN_GAME);
-    assert!(!act(&mut fe, Action::Confirm), "the win page has no controls [M P_WINGAME]");
-    assert!(fe.win_movie_finished(), "[host] the background movie's end");
+    assert!(!act(&mut fe, Action::Up), "the win page takes no page input [M P_WINGAME 0x215100:21 msg 0x68/1]");
+    // The movie is skippable at once (c49 = 1, grace 0 [M 0x215100:13-15]); the skip's next 0x50
+    // opens the credits [M :23-48].
+    assert!(fe.action(Action::Confirm), "the skip");
     assert_eq!(fe.page, Page::Credits, "the credits open with the win source [M 0x215100:48]");
+    assert!(!fe.win_movie_finished(), "sister: the host's movie-end call is inert after the skip");
 }

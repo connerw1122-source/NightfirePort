@@ -18,13 +18,20 @@ fn tick_to_wheel(fe: &mut FrontEnd) {
         fe.tick();
         if fe.flow.get_state() == nf_view::menu::ST_RUNNER && fe.flow.current_level == nf_view::menu::FRONTEND_LEVEL { break; }
     }
-    fe.action(Action::Confirm); // Start → the intro movie state, page Main (the port's contract)
-    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18, Menu_StopMovie 0x215a50]
-    fe.action(Action::Confirm); // skips the movie [M GameFlow_Main case 6 pops on action 0x19]
+    // START → P_PARISENUM → P_ESTHERO, whose 2nd 0x50 starts 0x073B0048 [M 0x20a648:43,
+    // 0x20a060:16-24]; the skip is refused for the 0xb4 grace [M :17, Menu_StopMovie 0x215a50:6]
+    // and the stop opens Main on the next 0x50 [M :28-45].
+    fe.action(Action::Confirm);
+    for _ in 0..8 { if fe.intro_movie { break; } fe.tick(); }
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); }
+    fe.action(Action::Confirm);
+    fe.tick();
     assert_eq!(fe.page, Page::Main);
-    fe.cursor = 2;              // the Codenames row [M C_GOCODENAMES 0x216b38 → page 0x4000001b]
-    fe.action(Action::Confirm); // → the Edit Codename screen (cursor lands on "Default")
+    fe.cursor = 2;              // the Codenames row
+    fe.action(Action::Confirm); // → Edit Codename after the 0x13 delay [M C_GOCODENAMES 0x216b38:29-37]
+    for _ in 0..nf_view::menu::DELAYED_PAGE_TICKS + nf_view::menu::MAIN_OPEN_BLOCK { fe.tick(); }
     assert_eq!(fe.page, Page::CnSelect);
+    assert_eq!(fe.cursor, 1, "on Default [M P_CNSELECT 0x212ad0:94-95]");
     fe.action(Action::Confirm); // "Default" → the Edit wheel [M C_SBCNSELECT 0x212f58]
     assert_eq!(fe.page, Page::CnMenu);
 }

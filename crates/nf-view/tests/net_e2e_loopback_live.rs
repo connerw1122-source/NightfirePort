@@ -64,35 +64,46 @@ fn act(fe: &mut FrontEnd, other: Option<&mut FrontEnd>, a: Action) -> bool {
     }
 }
 
+/// Title → START → P_PARISENUM → P_ESTHERO, whose 2nd 0x50 starts 0x073B0048; the skip is
+/// refused for the 0xb4-tick grace, then stops the movie and the next 0x50 opens Main
+/// [M P_PARISENUM 0x20a648:43; P_ESTHERO 0x20a060:16-45; Menu_StopMovie 0x215a50:6].
 fn to_main(fe: &mut FrontEnd) {
     assert_eq!(fe.page, Page::Start, "the boot opens the title");
-    assert!(act(fe, None, Action::Confirm), "the title's Enter");
-    assert_eq!(fe.page, Page::Main, "after the intro movies, the main menu");
+    assert!(fe.action(Action::Confirm), "the title's Enter");
+    assert_eq!(fe.page, Page::ParisEnum, "START opens P_PARISENUM, not Main [S unverified: the send is menu-def script data]");
+    for _ in 0..8 { if fe.intro_movie { break; } fe.tick(); }
+    assert_eq!(fe.page, Page::EstHero, "P_ESTHERO plays the intro [M 0x20a648:43, 0x20a060:16-24]");
+    assert!(fe.intro_movie);
+    assert!(!fe.action(Action::Confirm), "a skip inside the grace is refused [M 0x20a060:17, 0x215a50:6]");
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); }
+    assert!(fe.action(Action::Confirm), "the skip past the grace");
+    fe.tick();
+    assert_eq!(fe.page, Page::Main, "the stopped movie's next 0x50 opens Main [M 0x20a060:28-45]");
 }
 
-/// Main → Multiplayer → Host Online → the port page [M the MpMode arm
-/// menu.rs:4633 → Page::MpHost].
+/// Main → Multiplayer → Host Online → the port page. The mode page and the host/join pages are
+/// the port's own [S net-online-lobby — the game's Multiplayer row opens 0x40000019 (C_GOMULTIPLAYER
+/// 0x216a78); docs/systems/net-online-lobby.md §2].
 fn to_host_page(fe: &mut FrontEnd) {
     to_main(fe);
     assert!(act(fe, None, Action::Down), "the Multiplayer row");
     assert!(act(fe, None, Action::Confirm), "Multiplayer");
-    assert_eq!(fe.page, Page::MpMode, "the mode choice");
+    assert_eq!(fe.page, Page::MpMode, "the mode choice [S port page]");
     assert!(act(fe, None, Action::Down), "the Host Online row");
     assert!(act(fe, None, Action::Confirm), "Host Online");
-    assert_eq!(fe.page, Page::MpHost, "the port page");
+    assert_eq!(fe.page, Page::MpHost, "the port page [S port page]");
 }
 
-/// Main → Multiplayer → Join Online → the address page [M menu.rs:4634 →
-/// Page::MpNetJoin].
+/// Main → Multiplayer → Join Online → the address page [S port pages, net-online-lobby §2].
 fn to_join_page(fe: &mut FrontEnd) {
     to_main(fe);
     assert!(act(fe, None, Action::Down), "the Multiplayer row");
     assert!(act(fe, None, Action::Confirm), "Multiplayer");
-    assert_eq!(fe.page, Page::MpMode, "the mode choice");
+    assert_eq!(fe.page, Page::MpMode, "the mode choice [S port page]");
     assert!(act(fe, None, Action::Down), "past Local");
     assert!(act(fe, None, Action::Down), "the Join Online row");
     assert!(act(fe, None, Action::Confirm), "Join Online");
-    assert_eq!(fe.page, Page::MpNetJoin, "the address page");
+    assert_eq!(fe.page, Page::MpNetJoin, "the address page [S port page]");
 }
 
 /// The port digits through the REAL typing path, then Start Listening — the
@@ -111,7 +122,7 @@ fn host_listen(fe: &mut FrontEnd, port: u16) {
     assert!(act(fe, None, Action::Down), "the Start Listening row");
     assert!(act(fe, None, Action::Confirm), "Start Listening");
     assert!(fe.mp_hosting, "the host is hosting");
-    assert_eq!(fe.page, Page::MpJoin, "the host lobby is the game's Join page");
+    assert_eq!(fe.page, Page::MpJoin, "the host lobby is the game's Join page [S port: net-online-lobby §2]");
 }
 
 /// The address chars through the REAL typing path, then Connect — the real
@@ -220,12 +231,15 @@ fn run_e2e(path: &str, fault: Option<(u64, u32, u32)>) {
     fec.mp_session = Some(Box::new(cp.clone()));
 
     // ── the host: Multiplayer → Host Online → the port → Start Listening ──
+    // Each variant listens on its own port: the two tests run in parallel and raced for one
+    // port (the fe-audit walk change shifted their timing enough to expose it).
+    let port = if fault.is_some() { PORT + 1 } else { PORT };
     to_host_page(&mut feh);
-    host_listen(&mut feh, PORT);
+    host_listen(&mut feh, port);
 
     // ── the client: Join Online → the address → Connect → the lobby ──
     to_join_page(&mut fec);
-    client_connect(&mut fec, &mut feh, &format!("127.0.0.1:{PORT}"));
+    client_connect(&mut fec, &mut feh, &format!("127.0.0.1:{port}"));
 
     // ── the lobby: both sides mirror the agents (the host's panels fill from
     // the session; the client's own panel mirrors slot 0) ──
@@ -245,7 +259,12 @@ fn run_e2e(path: &str, fault: Option<(u64, u32, u32)>) {
     // kills end the match) → the start checks → the confirm ──
     assert!(act(&mut feh, Some(&mut fec), Action::Confirm), "the host's ready panel → the scenario wheel [M menu.rs:4714]");
     assert_eq!(feh.page, Page::MpScenario);
-    assert!(act(&mut feh, Some(&mut fec), Action::Down), "the Arena row (row 0 is Quick Game [M MP_SCENARIO_ROWS])");
+    // The wheel opens on the row of MPSettings+0x1A4 = 1 (boot) — Arena [M P_MPSCENARIO 0x217348:25;
+    // bootup 0x1c7e78:30]; row 0 is Quick Game.
+    assert_eq!(feh.mp_scenario_row, 1, "the scenario wheel opens on Arena [M 0x217348:25]");
+    // Hold the lobby's pacing where the old walk had its Down press: a no-op key on the wheel
+    // (Extra has no arm there) still runs act()'s 60 paired ticks.
+    assert!(!act(&mut feh, Some(&mut fec), Action::Extra), "Extra is a no-op on the scenario wheel");
     assert!(act(&mut feh, Some(&mut fec), Action::Confirm), "Arena (Deathmatch, row 1) → the map wheel");
     assert_eq!(feh.page, Page::MpMap);
     assert!(act(&mut feh, Some(&mut fec), Action::Confirm), "Skyrail (row 0) → the setup");
@@ -259,7 +278,7 @@ fn run_e2e(path: &str, fault: Option<(u64, u32, u32)>) {
     assert_eq!(feh.page, Page::MpRules);
     assert!(act(&mut feh, Some(&mut fec), Action::Down), "the points row");
     for _ in 0..8 {
-        assert!(act(&mut feh, Some(&mut fec), Action::Left), "the frag limit steps down");
+        assert!(act(&mut feh, Some(&mut fec), Action::Left), "the frag limit steps down (1..10 by 1 [M P_MPRULES 0x20f790:45-54])");
     }
     assert_eq!(feh.mp_frag_limit, 2, "the frag limit is 2 — the scripted kills end the match");
     assert!(act(&mut feh, Some(&mut fec), Action::Confirm), "the rules close to the hub");
@@ -277,6 +296,10 @@ fn run_e2e(path: &str, fault: Option<(u64, u32, u32)>) {
     // → sess.start_match → the tag-1 DATA) → mp_client_start ──
     let deadline = Instant::now() + Duration::from_secs(10);
     while fec.requested_level.is_none() {
+        // Both apps keep running their frames (the host's session keeps pumping — a dropped start
+        // payload is re-sent only by a live host; the old loop froze the host and passed on the
+        // seeded loss pattern's luck).
+        feh.tick();
         fec.tick();
         std::thread::sleep(Duration::from_millis(2));
         assert!(Instant::now() < deadline, "the client receives the match start");

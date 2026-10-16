@@ -1,5 +1,10 @@
-//! The Mission Stats page's flow — the results page's side action opens 0x40000037, △ returns
+//! The Mission Stats page's flow — the results page's 0x5e opens 0x40000037, △ returns
 //! (docs/systems/mission-stats.md). Data + state only (no pixels asserted).
+//!
+//! fe-audit: P_NFRESULTS 0x208e78:222-230 sends 0x5d → 0x4000002b (Dossier) and 0x5e → 0x40000037
+//! (Stats); Button_Update sends 0x5d on action 0x20 and 0x5e on action 0x21 [M 0x1ef948:80-87,
+//! :115-125] — the hint "~X Stats ~Y Dossier". The port's Side (Tab/E, the ~Y keycap) is 0x5d; the
+//! port's key for 0x5e here is Extra (Q) [S unverified — the pad meaning of 0x20/0x21 is U-011].
 
 use nf_view::menu::{menu_overlay, Action, FrontEnd, Outcome, Page, PAGE_RESULTS, PAGE_STATS};
 
@@ -13,10 +18,10 @@ fn test_font() -> nf_formats::hud::Font {
     nf_formats::hud::Font { first: 33, last: 126, gap: 0.0, space: 3.0, glyphs: (33..=126).map(glyph).collect() }
 }
 
-/// Results (Complete) + the side action → Mission Stats; `stats_enter` fills the rows; △
-/// returns to the results page. [M P_NFRESULTS 0x208e78 case 0x5e → Manager 0x44 0x40000037]
+/// Results (Complete) + 0x5e (Extra) → Mission Stats; `stats_enter` fills the rows; △ returns to
+/// the results page. [M P_NFRESULTS 0x208e78:225-226 case 0x5e → Manager 0x44 0x40000037]
 #[test]
-fn the_side_action_opens_stats_and_back_returns() {
+fn the_0x5e_action_opens_stats_and_back_returns() {
     let font = test_font();
     let hfont = test_font();
     let textures: Vec<(u32, nf_view::scene::TextureImage)> =
@@ -26,8 +31,8 @@ fn the_side_action_opens_stats_and_back_returns() {
     fe.page = Page::Results;
     fe.flow.page = PAGE_RESULTS;
 
-    // The side action opens the stats page and the flow word follows [M 0x208e78:224-229].
-    assert!(fe.action(Action::Side), "the side action opens Mission Stats");
+    // 0x5e opens the stats page and the flow word follows [M 0x208e78:225-230].
+    assert!(fe.action(Action::Extra), "0x5e opens Mission Stats");
     assert_eq!(fe.page, Page::Stats);
     assert_eq!(fe.flow.page, PAGE_STATS);
     assert_eq!(fe.page_id(), PAGE_STATS);
@@ -78,15 +83,23 @@ fn stats_enter_fills_the_rows_and_the_draw_takes_them() {
     let _ = frame;
 }
 
-/// The results page's back goes to the Dossier [M 0x208e78 case 0x5d → 0x4000002b] — the arm
-/// this task added next to the side action.
+/// The results page's 0x5d (the port's Side, "~Y Dossier") goes to the Dossier [M 0x208e78:222-224
+/// case 0x5d → 0x4000002b]; △ is not the Dossier (the manager's 0x5f pop — the old test had the
+/// two swapped).
 #[test]
-fn the_results_back_opens_the_dossier() {
+fn the_results_side_opens_the_dossier() {
     let mut fe = FrontEnd::new();
     fe.outcome = Outcome::Complete;
     fe.page = Page::Results;
     fe.flow.page = PAGE_RESULTS;
-    assert!(fe.action(Action::Back));
+    assert!(fe.action(Action::Side));
     assert_eq!(fe.page, Page::Dossier);
     assert_eq!(fe.cursor, 0);
+    // Sister: △ does not open the Dossier [S unverified — the results page has no 0x5f arm; the
+    // pop target of a load-created manager is not checked in PCSX2].
+    let mut g = FrontEnd::new();
+    g.outcome = Outcome::Complete;
+    g.page = Page::Results;
+    let _ = g.action(Action::Back);
+    assert_ne!(g.page, Page::Dossier, "△ is not the 0x5d arm");
 }

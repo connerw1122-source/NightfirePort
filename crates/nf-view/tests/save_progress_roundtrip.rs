@@ -160,11 +160,11 @@ fn the_roundtrip_restores_the_progress() {
     fe2.set_profile_dir(dir.clone());
     assert_eq!(fe2.page, Page::Start, "the boot opens the title");
     assert!(act(&mut fe2, Action::Confirm), "the title's Enter");
-    assert_eq!(fe2.page, Page::Main, "after the intro movies, the main menu");
+    assert_eq!(fe2.page, Page::Main, "after P_ESTHERO's movie, the main menu [M 0x20a060:44-45]");
     assert!(act(&mut fe2, Action::Confirm), "Main row 0 → the codename page");
     assert_eq!(fe2.page, Page::Codename);
     assert_eq!(fe2.rows(), 3, "the two defaults + the saved codename [M 0x1f7b78]");
-    assert!(act(&mut fe2, Action::Down));
+    assert_eq!(fe2.cursor, 1, "opened from Main on row 1 [M P_NFSELECT 0x20aec0:96-97]");
     assert!(act(&mut fe2, Action::Down));
     assert!(act(&mut fe2, Action::Confirm), "the codename row loads [M C_SBNFCN 0x20b390]");
     assert_eq!(fe2.page, Page::Difficulty, "the load continues to the difficulty page");
@@ -225,7 +225,7 @@ fn the_roundtrip_restores_the_progress() {
     assert!(act(&mut fe3, Action::Confirm), "main → the codename page");
     assert_eq!(fe3.page, Page::Codename);
     assert_eq!(fe3.rows(), 3, "the card still lists the row [M MemCard_FILE_CORRUPT's flow]");
-    assert!(act(&mut fe3, Action::Down));
+    assert_eq!(fe3.cursor, 1, "opened from Main on row 1 [M P_NFSELECT 0x20aec0:96-97]");
     assert!(act(&mut fe3, Action::Down));
     assert!(act(&mut fe3, Action::Confirm), "the load attempt");
     assert_eq!(fe3.card_message(), Some((7, 0x273)), "Load failed! [M LOADERROR 0x10f138]");

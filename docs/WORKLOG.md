@@ -16706,3 +16706,24 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+
+## fe-audit (2026-10-16, branch mine/fe-audit) — 22:55 UTC
+
+The front-end audit (test-audit.md) fixed against the decompile, each item re-read first. Port:
+Page::Start re-keyed to the title 0x40000009 (P_LANGUAGE 0x40000034 split off) [M 0x2029e0:302/321];
+the intro run is a menu background movie with GameFlow in state 2 and its own pages (P_INTRO /
+P_PARISENUM / P_ESTHERO) — Main opens only when 0x073B0048 ends [M 0x20a060:16-45], the 180-tick
+grace now reaches the window (lib.rs's state-6 intercept no longer sees the intro), the boot logos
+are unskippable [M 0x209e88:41,55; 0x215a50:6]; NightFire/Codenames page changes are 0x13-tick
+delayed with input blocked, the destination blocks 0xf more [M 0x2169b8, 0x216b38, 0x20aec0:75-76];
+cursors: codename row 1 from Main [M 0x20aec0:96-97], difficulty index 0 [M 0x216bf8:12], mission
+list highest unlocked [M 0x20b608:58-64]; difficulty + dossier wheels wrap [M 0x2214f0:102,
+0x221810:136]; failed missions open the fail menu over the paused mission with no load [M
+0x182c60:77-80]; Pause Quit → mission list [M 0x204408:141-152]; Results 0x5d Dossier / 0x5e Stats
+[M 0x208e78:222-230]; the win movie skips at once [M 0x215100:13-15]; MP Points/Duration lists [M
+0x20f790:21-76], the scenario page re-selects +0x1A4's row (boot 1 = Arena) [M 0x217348:25,
+0x1c7e78:30], Quick Game Back pops to the scenario page; Main's mouse box ends at 354. The
+difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0xc = 1/2/3, all
+unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
+lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
+start payload for 120 polls (the client keeps the first). Gaps left: G-048.

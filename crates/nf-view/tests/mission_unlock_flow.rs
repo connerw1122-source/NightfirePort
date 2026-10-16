@@ -22,15 +22,18 @@ fn card_dir(tag: &str) -> std::path::PathBuf {
 /// Walks the front end to the Single Player list the way the game does: Start → Main →
 /// Codename row 1 ("Play without saving") → its confirm box → the difficulty page → the list.
 fn to_mission_select(fe: &mut FrontEnd) {
-    assert!(fe.action(Action::Confirm), "Start → the intro + Main");
-    if fe.intro_playing {
-        for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18, Menu_StopMovie 0x215a50]
-        assert!(fe.action(Action::Confirm), "the skip action ends the intro movie");
-    }
+    // START → P_PARISENUM → P_ESTHERO's 0x073B0048, skipped past its 0xb4 grace → Main on the next
+    // 0x50 [M 0x20a648:43, 0x20a060:16-45, Menu_StopMovie 0x215a50:6].
+    assert!(fe.action(Action::Confirm), "Start → the intro run");
+    for _ in 0..8 { if fe.intro_movie { break; } fe.tick(); }
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); }
+    assert!(fe.action(Action::Confirm), "the skip action ends the intro movie");
+    fe.tick();
     assert_eq!(fe.page, Page::Main);
-    assert!(fe.action(Action::Confirm), "Main row 0 → Codename");
+    assert!(fe.action(Action::Confirm), "Main row 0 → Codename after the 0x13 delay [M C_GONIGHTFIRE 0x2169b8:29-37]");
+    for _ in 0..nf_view::menu::DELAYED_PAGE_TICKS + nf_view::menu::MAIN_OPEN_BLOCK { fe.tick(); }
     assert_eq!(fe.page, Page::Codename);
-    assert!(fe.action(Action::Down), "cursor onto Play without saving");
+    assert_eq!(fe.cursor, 1, "opened from Main on Play without saving [M P_NFSELECT 0x20aec0:96-97]");
     assert!(fe.action(Action::Confirm), "pop the confirm box");
     assert!(fe.action(Action::Confirm), "confirm it → Difficulty");
     assert_eq!(fe.page, Page::Difficulty);
@@ -130,7 +133,8 @@ fn sp_confirm_splits_on_foot_from_driving() {
     assert!(fe.flow.load_tick(), "headless loads finish instantly");
     assert_eq!(fe.flow.get_state(), ST_RUNNER);
     to_mission_select(&mut fe);
-    assert_eq!(fe.cursor, 0, "the list opens on the first unlocked row = 0");
+    assert_eq!(fe.cursor, 1, "the list opens on the highest unlocked row = 1 [M P_NFMAP 0x20b608:60-64]");
+    fe.cursor = 0;
 
     // Row 0 is the DRIVING 0x09000001. The game hands over to DRIVING.ELF in GameFlow state 9 [M
     // 0x1d3800:105-108]; the port has no driving executable, and entering state 9 left the flow

@@ -42,7 +42,7 @@ fn act(fe: &mut FrontEnd, a: Action) -> bool {
 }
 
 /// lib.rs:2871-2887 — the window's Esc arm over a live mission: seed the front end, aim it at the
-/// live level (GameState+0x12), pick the campaign row from the mission's base map, ride the runner
+/// live level (GameState+0xc), pick the campaign row from the mission's base map, ride the runner
 /// state, and open the pause page. The grab toggle before it is window-only.
 fn esc_in_mission(fe: &mut Option<FrontEnd>, sim: &Sim) -> bool {
     if fe.is_none() { *fe = Some(FrontEnd::new()); }
@@ -258,7 +258,7 @@ fn pause_quit_returns_to_a_working_front_end() {
     assert!(esc_in_mission(&mut fe, scene.sim.as_ref().unwrap()));
     {
         let fe = fe.as_mut().unwrap();
-        // Down twice to QUIT; YES [M 0x204408:142-149 — +0x28 = 0x4000001c + ResetMap_LevelToLoad(0x7000048, 0, 0)].
+        // Down twice to QUIT; YES [M 0x204408:142-149 — +0x1c = 0x4000001c + ResetMap_LevelToLoad(0x7000048, 0, 0)].
         assert!(act(fe, Action::Down));
         assert!(act(fe, Action::Down));
         assert_eq!(fe.cursor, 2);
@@ -267,7 +267,7 @@ fn pause_quit_returns_to_a_working_front_end() {
         assert!(act(fe, Action::Up));
         assert!(act(fe, Action::Confirm));
         assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL), "Quit → the front-end map [M 0x204408:147]");
-        assert_eq!(fe.flow.page, menu::PAGE_RESULTS_QUIT_TARGET, "+0x28 = 0x4000001c [M 0x204408:144]");
+        assert_eq!(fe.flow.page, menu::PAGE_RESULTS_QUIT_TARGET, "+0x1c = 0x4000001c [M 0x204408:144]");
     }
     let pending = menu_after(fe.as_mut().unwrap(), scene.sim.as_mut().unwrap());
     assert_eq!(pending, Some(menu::FRONTEND_LEVEL), "the host loads the front-end map");
@@ -275,17 +275,22 @@ fn pause_quit_returns_to_a_working_front_end() {
     let _fe_map = load_level(&iso, "07000048.bin");
     // The load's own MenuManager_Create re-opens the queued page [M 0x1d6360:160-163] — the host's
     // swap branch calls reopen_queued_page for exactly this (lib.rs:2074).
+    // fe-audit: the quit arm already put the mission list up (the port's stand-in for the manager
+    // the load creates on +0x1c), so the re-open finds it in place.
     {
         let fe = fe.as_mut().unwrap();
-        assert!(fe.reopen_queued_page(), "the queued page re-opened [M 0x1d6360:160-163]");
+        let _ = fe.reopen_queued_page();
         assert_eq!(fe.flow.page, menu::PAGE_RESULTS_QUIT_TARGET);
-        assert_eq!(fe.page, Page::MissionSelect, "the queued mission list opened [M 0x1d6360:160-163]");
+        assert_eq!(fe.page, Page::MissionSelect, "the queued mission list is up [M 0x204408:141-152, 0x1d6360:160-163]");
+        assert_eq!(fe.cursor, 1, "on the highest unlocked row [M P_NFMAP 0x20b608:58-64]");
     }
-    // The list works: row 0 is the driving Paris Prelude (a notice, no request [M C_SBNFMAP
-    // 0x20b8d8:18-41]), the next row is The Exchange and it requests the level.
+    // The list works: row 0 is the driving Paris Prelude (a notice, no request — [S port substitute:
+    // the game sets level_chosen (C_SBNFMAP 0x20b8d8:24-40) and P_NFMAP hands over to DRIVING.ELF
+    // (0x20b608:15-27); the port has no driving engine]), the next row is The Exchange.
     {
         let fe = fe.as_mut().unwrap();
         assert!(fe.unlocked_row(1), "a fresh profile's unlocked rows");
+        assert!(act(fe, Action::Up), "Up to Paris Prelude");
         assert!(act(fe, Action::Confirm), "the driving row confirms");
         assert!(fe.notice.is_some(), "the driving notice shows");
         assert_eq!(fe.requested_level, None, "no level for a driving mission");
@@ -293,8 +298,8 @@ fn pause_quit_returns_to_a_working_front_end() {
         assert!(act(fe, Action::Down));
         assert!(act(fe, Action::Confirm), "The Exchange starts");
         assert_eq!(fe.requested_level, Some(0x0700_0005), "the mission start rides the request");
-        // A repeated press cannot double-request [M ResetMap_LevelToLoad 0x1d3800:11-17 ignores a
-        // re-request outside the menu states; the port's MissionSelect guard menu.rs:3977].
+        // A repeated press cannot double-request [M the pick deletes the manager — C_SBNFMAP
+        // 0x20b8d8:36-38 MenuManager_Delete; the port's MissionSelect guard].
         assert!(!fe.action(Action::Confirm), "a second Confirm is refused while a request stands");
         assert_eq!(fe.requested_level, Some(0x0700_0005), "still one request");
     }
@@ -345,17 +350,14 @@ fn dying_opens_the_fail_menu_and_restart_re_serves_the_entry_checkpoint() {
     {
         assert_eq!(fe.page, Page::Results);
         assert_eq!(fe.rows(), 2, "REPLAY / QUIT [L page 0x40000042: 0x5bc value 0, 0x16c value 2]");
-        assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL),
-            "failures go straight to the front end [M 0x182c60:45-57 case 2/3 arm]");
-        // The host takes the queued request (lib.rs:1822) — exactly once; the rows then answer.
-        assert_eq!(fe.requested_level.take(), Some(menu::FRONTEND_LEVEL));
+        // fe-audit: the failure loads nothing — the fail menu sits over the paused mission [M
+        // Mission_Update 0x182c60:77-80; cases 2/3 only set LevelToEndTo].
+        assert_eq!(fe.requested_level, None, "the failure requests no level [M 0x182c60:77-80]");
         // Row 0 (REPLAY) = the CURRENT level, WARM [M P_ENDMISSION_Handler 0x216618:19-21].
         assert!(fe.action(Action::Confirm));
         assert_eq!(fe.requested_level, Some(0x0700_0005), "row 0 → the current level");
         assert!(fe.flow.warm_reset, "row 0 is the warm arm [M 0x216618:20 — param 2 = 1]");
-        assert_eq!(fe.page, Page::Main, "the arm leaves the menu [M 0x216618:26 MenuManager_Delete]");
-        // The game's one-press rule: the manager is gone after the arm [M 0x216618:26] — the
-        // port's page move models it; the host takes the request the same frame either way.
+        assert!(fe.closed, "the arm deletes the manager [M 0x216618:30 MenuManager_Delete]");
     }
     // The sim answers Restart the same way (fix_restart_target's chain).
     {
@@ -407,12 +409,13 @@ fn the_fail_menu_quit_row_returns_to_the_front_end() {
     fe.flow.stack = vec![menu::ST_RUNNER];
     fe.flow.current_level = 0x0700_0005;
     fe.mission_ended(Outcome::Failed, Stats::default());
-    assert_eq!(fe.requested_level.take(), Some(menu::FRONTEND_LEVEL));
+    assert_eq!(fe.requested_level, None, "the failure requests no level [M 0x182c60:77-80]");
     assert!(act(&mut fe, Action::Down), "to the QUIT row");
     assert_eq!(fe.cursor, 1);
     assert!(act(&mut fe, Action::Confirm));
     assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL), "row 1 → the front end [M 0x216618:25]");
-    assert_eq!(fe.flow.page, menu::PAGE_RESULTS_QUIT_TARGET, "+0x28 = 0x4000001c [M 0x216618:24]");
+    assert_eq!(fe.flow.page, menu::PAGE_RESULTS_QUIT_TARGET, "+0x1c = 0x4000001c [M 0x216618:25]");
+    assert_eq!(fe.page, Page::MissionSelect, "the front end reopens on the mission list [M 0x20b608]");
     // The sim's own answer matches [M 0x216618:24-26]: the front end, COLD.
     {
         let sim = scene.sim.as_mut().unwrap();
@@ -457,7 +460,7 @@ fn completing_the_mission_reaches_the_results_and_the_next_pages() {
     assert_eq!(fe.requested_level.take(), Some(menu::outro_for(0x0700_0005)), "the end code rode the request");
     // The wrap: the plain front-end load completes in the model (no outro for 05 — no movie wrap,
     // [M 0x1d3800's switch has no 0x7000048]); the results page stays queued [M 0x182c60:72-74 set
-    // +0x28 = 0x40000036 before the load] and the load's own MenuManager_Create re-opens it
+    // +0x1c = 0x40000036 before the load] and the load's own MenuManager_Create re-opens it
     // [M 0x1d6360:160-163].
     let mut landed = false;
     for _ in 0..64 {
@@ -465,15 +468,16 @@ fn completing_the_mission_reaches_the_results_and_the_next_pages() {
         if fe.flow.get_state() == menu::ST_RUNNER && fe.flow.current_level == menu::FRONTEND_LEVEL { landed = true; break; }
     }
     assert!(landed, "the front-end map completed in the model");
-    assert_eq!(fe.flow.page, menu::PAGE_RESULTS, "+0x28 = 0x40000036 [M 0x1d6360]");
+    assert_eq!(fe.flow.page, menu::PAGE_RESULTS, "+0x1c = 0x40000036 [M 0x1d6360]");
     assert_eq!(fe.page, Page::Results, "the results page is up");
     assert!(fe.results_enter(&mut progress, 0x0700_0005, 6, difficulty, lang.as_ref()),
         "the results fields build [M P_NFRESULTS 0x208e78:77]");
     // The award [M Menu_SetLevelBonus 0x1ffa10:62-66]: the completed row stamps and the NEXT row unlocks.
     assert_eq!(progress.nightfire_status() & (1 << 2), 1 << 2, "Alpine Escape unlocks through The Exchange");
     assert!(fe.unlocked_row(2), "the list offers the next mission");
-    // The stats page rides Side [M 0x208e78:222-227 — 0x5e → 0x40000037] and △ comes back.
-    assert!(act(&mut fe, Action::Side), "Side opens the stats");
+    // fe-audit: 0x5e opens the stats [M 0x208e78:225-226 → 0x40000037]; the port's 0x5e key here is
+    // Extra [S unverified — U-011]; Side is 0x5d, the Dossier [M :222-224]. △ comes back.
+    assert!(act(&mut fe, Action::Extra), "0x5e opens the stats");
     assert_eq!(fe.page, Page::Stats);
     assert!(act(&mut fe, Action::Back), "△ returns to the results");
     assert_eq!(fe.page, Page::Results);
@@ -494,8 +498,8 @@ fn completing_the_mission_reaches_the_results_and_the_next_pages() {
     assert_eq!(fe.cursor, 1, "The Exchange's row");
     assert!(act(&mut fe, Action::Confirm), "The Exchange starts");
     assert_eq!(fe.requested_level, Some(0x0700_0005), "the mission start rides the request");
-    // A repeated press cannot double-request [M ResetMap_LevelToLoad 0x1d3800:11-17; the port's
-    // MissionSelect guard menu.rs:3977].
+    // A repeated press cannot double-request [M C_SBNFMAP 0x20b8d8:36-38 MenuManager_Delete;
+    // the port's MissionSelect guard].
     assert!(!fe.action(Action::Confirm), "a second Confirm is refused while a request stands");
     assert_eq!(fe.requested_level, Some(0x0700_0005), "still one request");
 }
@@ -511,13 +515,14 @@ fn the_loading_hold_window_and_the_double_press_guards() {
     // poll_async_load gate), keys return before the menu (lib.rs:2790) and the mouse arms are
     // gated on async_load.is_none() (lib.rs:2729/2737/2750) — input during the load is ignored.
     // The front-end half of that guard: the host takes a request exactly once (lib.rs:1822), so a
-    // repeated press cannot double-fire a load — here on the fail page:
+    // repeated press cannot double-fire a load — here on the fail page (which itself requests
+    // nothing [M 0x182c60:77-80]; its row does [M 0x216618:19-21]):
     let mut fe = FrontEnd::new();
     fe.flow.stack = vec![menu::ST_RUNNER];
     fe.flow.current_level = 0x0700_0005;
     fe.mission_ended(Outcome::Failed, Stats::default());
-    assert_eq!(fe.requested_level.take(), Some(menu::FRONTEND_LEVEL), "the host takes the queued request");
+    assert_eq!(fe.requested_level, None, "the fail menu opens with no request");
+    assert!(fe.action(Action::Confirm), "the row answers");
+    assert_eq!(fe.requested_level.take(), Some(0x0700_0005), "the host takes the row's request");
     assert_eq!(fe.requested_level.take(), None, "a second take gets nothing — one request, one load");
-    assert!(fe.action(Action::Confirm), "the row answers after the take");
-    assert_eq!(fe.requested_level, Some(0x0700_0005), "one row press, one request");
 }

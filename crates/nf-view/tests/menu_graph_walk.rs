@@ -6,7 +6,8 @@
 //! `take()` of `requested_level` when a requested level finishes loading). `page`/`cursor`/state
 //! fields are never assigned to get somewhere. Movies and the attract need ticks: after each
 //! action the driver ticks until `!intro_playing && !attract_playing` (and the movie/load/fade
-//! states popped), bounded (the intro budget is 850 ticks [M `INTRO_TICKS`]).
+//! states popped, the delayed page change landed), bounded by `SETTLE_BOUND` (START's P_ESTHERO
+//! movie is 3512 ticks [D `ESTHERO_TICKS`]).
 //!
 //! Breadth-first walk: a state is (page, cursor, the page's own sub-state), the edges are every
 //! [`Action`] plus the tick bursts, capped by a visited set plus a depth bound. Invariants at
@@ -42,10 +43,16 @@ use nf_view::menu::{
 
 // ── the walk's knobs ──────────────────────────────────────────────────────────────────────────
 
-/// The settle bound: the intro is 425 pictures × 2 ticks = 850 [M `INTRO_TICKS`], plus margin
-/// for the fade (60 frames [M Mission_Update 0x182c60:74]) and the outro movie. Below the
-/// 0xa8c = 2700 attract timeout [M `ATTRACT_FRAMES`], so settles never trip it by accident.
-const SETTLE_BOUND: u32 = 1100;
+/// The settle bound: START's intro is P_PARISENUM's 0x50 + P_ESTHERO's two 0x50s + 0x073B0048's
+/// 1756 pictures × 2 ticks = 3512 [D `ESTHERO_TICKS`; M 0x20a648:43, 0x20a060:16-45], plus margin
+/// for the fade (60 frames [M Mission_Update 0x182c60:74]) and the outro movie. (The old 1100 was
+/// sized on the boot P_INTRO logos' 850, which START never plays.) The bound is above the 0xa8c =
+/// 2700 attract timeout [M `ATTRACT_FRAMES`], which is safe: a settle stops at the first quiescent
+/// tick, the intro pages never check the count [M only P_START 0x20a408:45 / P_MAIN call
+/// `Menu_GetNoInputCount`], and Main's 0x4c resets it when the intro ends [M 0x20a7b0:37] — so a
+/// settle can only reach 2700 idle ticks on Start/Main if the state never quiesces, which the
+/// invariants already report.
+const SETTLE_BOUND: u32 = 3 + nf_view::menu::ESTHERO_TICKS + 200;
 /// The attract edge's tick count: the timeout fires at 0xa8c = 2700 no-input frames [M
 /// P_START 0x20a408 / P_MAIN 0x20a7b0 — `Menu_GetNoInputCount() == 0xa8c`], plus margin.
 const ATTRACT_TICKS: u32 = ATTRACT_FRAMES + 20;
@@ -92,8 +99,12 @@ enum Edge {
     Act(Action),
     /// `BURST_TICKS` raw ticks (no input).
     Burst,
-    /// boot-flow: the START intro's skip grace, `ESTHERO_GRACE` ticks (no input) [M P_ESTHERO 0x20a060:18].
+    /// boot-flow: the START intro's skip grace — tick until P_ESTHERO's movie is up (its 2nd 0x50
+    /// [M 0x20a060:16-24]), then `ESTHERO_GRACE` ticks (no input) [M 0x20a060:17, 0x215a50:6].
     Grace,
+    /// Tick out a delayed page change and the opened page's input block (no input) [M
+    /// C_GONIGHTFIRE 0x2169b8:29-37, P_NFSELECT 0x20aec0:75-76] (prologue-only).
+    Wait,
     /// The no-input timeout to the attract movie (only the title and the main menu check the
     /// count [M the only `Menu_GetNoInputCount` callers]).
     Attract,
@@ -123,6 +134,8 @@ enum Edge {
 fn quiescent(fe: &FrontEnd) -> bool {
     !fe.intro_playing
         && !fe.attract_playing
+        && fe.delayed_page.is_none()
+        && fe.input_block_ticks == 0
         && !matches!(fe.flow.get_state(), ST_MOVIE | ST_MAPLOAD | ST_FADE_HOLD)
 }
 
@@ -147,8 +160,10 @@ fn check_step(fe: &FrontEnd) -> Vec<String> {
             fe.page_id()
         ));
     }
-    // The flow's own page variable stays a known id while the menu is up.
-    if fe.flow.get_state() == ST_RUNNER && !known.contains(&fe.flow.page) {
+    // The flow's own page variable stays a known id while the menu is up — or the boot's
+    // P_LANGUAGE 0x40000034 [M bootup 0x1c7e78:24], which the port leaves in +0x1c until a page
+    // writes it (the port does not model P_LANGUAGE itself).
+    if fe.flow.get_state() == ST_RUNNER && !known.contains(&fe.flow.page) && fe.flow.page != nf_view::menu::PAGE_LANGUAGE {
         bad.push(format!("flow.page {:#x} is not a known page id", fe.flow.page));
     }
     bad
@@ -241,7 +256,7 @@ fn load_and_take(fe: &mut FrontEnd) {
 }
 
 /// The played mission's base map — sp_level[mission]+0xc [M 0x20b8d8:21], what the host passes
-/// results_enter/stats_enter as GameState+0x72.
+/// results_enter/stats_enter as GameState+0x48.
 fn mission_base(fe: &FrontEnd) -> u32 {
     CAMPAIGN.get(fe.mission).map_or(0, |c| c.3)
 }
@@ -254,9 +269,8 @@ fn apply(fe: &mut FrontEnd, e: Edge, armed: &mut Option<u32>, problems: &mut Vec
             fe.action(a);
             settle(fe, problems);
         }
-        Edge::Grace => {
-            for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); }
-        }
+        Edge::Grace => grace(fe),
+        Edge::Wait => wait(fe),
         Edge::Burst => {
             for _ in 0..BURST_TICKS {
                 fe.tick();
@@ -283,7 +297,7 @@ fn apply(fe: &mut FrontEnd, e: Edge, armed: &mut Option<u32>, problems: &mut Vec
         Edge::HostEnter => match fe.page {
             Page::Results => {
                 let mut progress = nf_game::progress::Progress::default();
-                // GameState+0x72 = Mission_BaseMapHCode — the played mission's own base map
+                // GameState+0x48 = Mission_BaseMapHCode — the played mission's own base map
                 // [M 0x208e78:14; sp_level record +0xc], not the flow's post-outro level.
                 let base = mission_base(fe);
                 fe.results_enter(&mut progress, base, 6, fe.difficulty as u32, None);
@@ -356,6 +370,17 @@ fn apply(fe: &mut FrontEnd, e: Edge, armed: &mut Option<u32>, problems: &mut Vec
         || (consumed && fe.flow.current_level != FRONTEND_LEVEL && fe.flow.current_level != 0)
 }
 
+/// `Edge::Grace`'s body: the movie start, then the grace [M 0x20a060:16-24, :17].
+fn grace(fe: &mut FrontEnd) {
+    for _ in 0..8 { if fe.intro_movie { break; } fe.tick(); }
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); }
+}
+
+/// `Edge::Wait`'s body: the delayed 0x44 and the opened page's 0x68/0 [M 0x2169b8:36-37, 0x20aec0:76].
+fn wait(fe: &mut FrontEnd) {
+    for _ in 0..64 { if fe.delayed_page.is_none() && fe.input_block_ticks == 0 { break; } fe.tick(); }
+}
+
 /// Prologue application: the edge, then one plain tick — no invariant sweeps (the prologue is
 /// asserted once, by hand, in the roots' constructors).
 fn apply_raw(fe: &mut FrontEnd, e: Edge) {
@@ -365,7 +390,8 @@ fn apply_raw(fe: &mut FrontEnd, e: Edge) {
             fe.tick();
         }
         Edge::Burst | Edge::Attract => {}
-        Edge::Grace => { for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } }
+        Edge::Grace => grace(fe),
+        Edge::Wait => wait(fe),
         Edge::OpenPause => {
             fe.open_pause();
             fe.tick();
@@ -578,7 +604,8 @@ impl Walk {
 
 // ── the roots ─────────────────────────────────────────────────────────────────────────────────
 
-/// Boot → (intro skipped by the second Confirm) → Main. Asserted once here, then used raw.
+/// Boot → START → P_PARISENUM → P_ESTHERO (its movie skipped past the grace by the second Confirm)
+/// → Main [M 0x20a648:43, 0x20a060:16-45, 0x215a50:6]. Asserted once here, then used raw.
 fn main_prologue() -> Vec<Edge> {
     let mut fe = FrontEnd::new();
     for _ in 0..8 {
@@ -588,12 +615,12 @@ fn main_prologue() -> Vec<Edge> {
         }
     }
     assert_eq!(fe.flow.get_state(), ST_RUNNER, "boot reaches the front-end map");
-    assert!(fe.action(Action::Confirm), "the title's Start starts the intro");
-    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18, Menu_StopMovie 0x215a50]
-    assert!(fe.action(Action::Confirm), "the skip action pops the intro [M 0x1c98c8 case 6]");
+    assert!(fe.action(Action::Confirm), "the title's Start starts the intro run");
+    grace(&mut fe);
+    assert!(fe.action(Action::Confirm), "the skip stops P_ESTHERO's movie past the grace [M 0x21c3d8:37-43, 0x215a50:6]");
     fe.tick();
-    assert_eq!(fe.page, Page::Main, "the prologue lands on the main menu by actions only");
-    // boot-flow: the START intro's 3 s grace (180 ticks) swallows an early skip.
+    assert_eq!(fe.page, Page::Main, "the prologue lands on the main menu by actions only [M 0x20a060:44-45]");
+    // The START intro's 180-tick grace swallows an early skip [M 0x20a060:17].
     vec![Edge::Boot, Edge::Act(Action::Confirm), Edge::Grace, Edge::Act(Action::Confirm)]
 }
 
@@ -603,13 +630,12 @@ fn main_prologue() -> Vec<Edge> {
 fn mission_prologue() -> Vec<Edge> {
     let mut path = main_prologue();
     path.extend([
-        Edge::Act(Action::Confirm), // NightFire → Select Codename
-        Edge::Act(Action::Down),    // row 1 = Play without saving
-        Edge::Act(Action::Confirm), // arm the confirm box
+        Edge::Act(Action::Confirm), // NightFire → Select Codename (0x13 ticks later [M 0x2169b8:36-37])
+        Edge::Wait,                 // the delay + P_NFSELECT's open block [M 0x20aec0:75-76]
+        Edge::Act(Action::Confirm), // row 1 = Play without saving [M 0x20aec0:96-97]: arm the box
         Edge::Act(Action::Confirm), // ✕ through it → Select Difficulty
-        Edge::Act(Action::Confirm), // the difficulty → Single Player
-        Edge::Act(Action::Down),    // row 0 is the driving mission — step to row 1
-        Edge::Act(Action::Confirm), // mission 1 (07000005) → the load arms
+        Edge::Act(Action::Confirm), // the difficulty (row 0 [M 0x216bf8:12]) → Single Player
+        Edge::Act(Action::Confirm), // the list opens on row 1, the highest unlocked [M 0x20b608:60-64]: 07000005
         Edge::LoadTake,             // the host pumps the load and takes the request
     ]);
     // The prologue road is RAW (one tick per action, no settles) — asserted here:
@@ -633,15 +659,14 @@ fn win_prologue() -> Vec<Edge> {
     let mut path = main_prologue();
     path.push(Edge::UnlockAll);
     path.extend([
-        Edge::Act(Action::Confirm), // NightFire → Select Codename
-        Edge::Act(Action::Down),    // Play without saving
-        Edge::Act(Action::Confirm), // through the box
+        Edge::Act(Action::Confirm), // NightFire → Select Codename (delayed [M 0x2169b8:36-37])
+        Edge::Wait,
+        Edge::Act(Action::Confirm), // Play without saving (the opened row [M 0x20aec0:96-97]): the box
         Edge::Act(Action::Confirm), // → Select Difficulty
         Edge::Act(Action::Confirm), // → Single Player
     ]);
-    for _ in 0..11 {
-        path.push(Edge::Act(Action::Down)); // row 11 = the final mission (all rows unlocked)
-    }
+    // The list opens on the highest unlocked row — row 11, the final mission, with every row
+    // unlocked [M 0x20b608:60-64].
     path.push(Edge::Act(Action::Confirm));
     path.push(Edge::LoadTake);
     let mut fe = FrontEnd::new();
@@ -663,7 +688,15 @@ fn win_prologue() -> Vec<Edge> {
 fn probe_back(name: &str, prologue: &[Edge], path: &[Edge], findings: &mut Vec<String>) {
     let (mut fe, _, _) = drive_path(prologue, path);
     let start = fe.page;
-    if matches!(start, Page::Start | Page::WinGame | Page::Credits) {
+    // The intro pages have no back either: P_PARISENUM / P_ESTHERO end on their own 0x50s
+    // [M 0x20a648:36-44, 0x20a060:28-45].
+    // The fail menu 0x40000042 is modal over the paused mission — its own manager, and
+    // P_ENDMISSION 0x216618 has no back arm (only its rows leave) [M Mission_Update 0x182c60:78].
+    // The completed results page: △ is the manager's 0x5f pop, and the page was opened by the
+    // load's MenuManager_Create with an empty stack [S unverified — P_NFRESULTS 0x208e78 has no
+    // 0x5f arm; its exits are ✕ / 0x5d / 0x5e (:28-53, :222-230)].
+    let fail_menu = start == Page::Results;
+    if fail_menu || matches!(start, Page::Start | Page::WinGame | Page::Credits | Page::Intro | Page::ParisEnum | Page::EstHero) {
         return;
     }
     for _ in 0..BACK_STEPS {
@@ -740,7 +773,7 @@ fn probe_home(name: &str, prologue: &[Edge], path: &[Edge], host_edges: bool, fi
 // ── the deterministic BFS test ────────────────────────────────────────────────────────────────
 
 /// Every ported page, for the coverage line and the known-id check.
-const ALL_PAGES: [Page; 42] = [
+const ALL_PAGES: [Page; 45] = [
     Page::Start, Page::Main, Page::Codename, Page::Difficulty, Page::MissionSelect, Page::Dossier,
     Page::Records, Page::Rewards, Page::Gadgets, Page::Weapons, Page::Options, Page::Pause,
     Page::Results, Page::Stats, Page::CnSelect, Page::CnMenu, Page::CnName, Page::CnAdvanced,
@@ -748,7 +781,7 @@ const ALL_PAGES: [Page; 42] = [
     Page::MpSetup, Page::MpOptions, Page::MpRules, Page::MpPlayerMods, Page::MpEnviroMods,
     Page::MpBots, Page::MpBotChoose, Page::MpBotSetup, Page::MpConfirm, Page::MpDebriefing,
     Page::MpMode, Page::MpHost, Page::MpNetJoin, Page::MpLobby, Page::Credits, Page::NfBonus,
-    Page::WinGame, Page::CheatMedal,
+    Page::WinGame, Page::CheatMedal, Page::Intro, Page::ParisEnum, Page::EstHero,
 ];
 
 #[test]

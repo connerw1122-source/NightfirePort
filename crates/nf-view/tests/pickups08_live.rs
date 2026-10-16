@@ -4,7 +4,7 @@
 //!
 //! Where the items come from: the SafePickUps script 0x060009E2 spawns both when ch 136 fires
 //! (fix-safe08) — the rocket (kind 0, id 0x2C, the level-conditional 4 rounds [M 0x18dda0:
-//! `GameState+0x12 == 0x7000008 && id == 0x2c` → rounds = 4]) at the lower-shelf key
+//! `GameState+0xc == 0x7000008 && id == 0x2c` → rounds = 4]) at the lower-shelf key
 //! (162.59, 42.75, −116.78), the briefcase (kind 4 LABEL, id 6, switch 74 = 0x4A) at the top
 //! shelf (162.70, 43.54, −116.22) [D the level-bin script]. The disc's parked 0xF0 placements
 //! (#290/#291) sit 10 x east, inside the wall — not takeable, and the disc flags probe below

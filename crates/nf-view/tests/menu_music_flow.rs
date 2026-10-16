@@ -22,7 +22,7 @@ fn expected_restart(id: u32) -> Vec<MusicCmd> { vec![MusicCmd::StopJingles, Musi
 #[test]
 fn the_fresh_front_end_state_matches_the_game() {
     let m = MenuMusic::new();
-    // `menu_movie` starts 0 (MenuManager_Create resets it [M 0x21b908:127]) and the boot's first
+    // `menu_movie` starts 0 (MenuManager_Create resets it [M 0x21b908:125]) and the boot's first
     // front end loads bank 0xc [M 0x1dceb8: DAT_002e1b11 starts 0 (.bss)].
     assert!(!m.jingles_up);
     assert!(!m.bank_flip);
@@ -88,8 +88,10 @@ fn the_bank_alternation_flips_the_jingle_id_every_front_end_load() {
 
 #[test]
 fn the_intro_movie_swap_stops_and_restarts_the_pair() {
+    // The BOOT P_INTRO pair (the EA then the MGM logo), which ends on the title 0x40000009
+    // [M P_INTRO_Handler 0x209e88:16-62].
     let mut m = MenuMusic::new();
-    m.page_enter(Page::Start); // the pair is up on the boot page
+    m.page_enter(Page::Start); // the pair is up
     assert!(m.take_cmds().len() == 2);
     // The intro's start arm [M 0x209e88:42-44]: remove both, menu_movie = 0 — the movie's own
     // audio (started with psiStartBackgroundMovie(…, SFXGetVolume())) replaces it.
@@ -99,13 +101,14 @@ fn the_intro_movie_swap_stops_and_restarts_the_pair() {
     // Between the two intro movies the finish arm restarts the pair [M 0x209e88:23-28].
     m.movie_finished();
     assert_eq!(m.take_cmds(), expected_restart(m.jingle_id()));
-    // The second movie's start removes it again; after the last movie it comes back and the
-    // Main page's enter (pair already up) sends nothing [M 0x20a7b0's `if menu_movie == 0`].
+    // The second movie's start removes it again [M 0x209e88:56-58]; after the last movie it comes
+    // back and the TITLE's enter (pair already up) sends nothing [M P_START 0x20a408:17-23's
+    // `if menu_movie == 0`; P_INTRO opens 0x40000009, 0x209e88:50].
     m.movie_started();
     assert_eq!(m.take_cmds(), vec![MusicCmd::StopJingles]);
     m.movie_finished();
     assert_eq!(m.take_cmds().len(), 2);
-    m.page_enter(Page::Main);
+    m.page_enter(Page::Start);
     assert!(m.take_cmds().is_empty(), "no double start when menu_movie is already 1");
 }
 
@@ -122,7 +125,7 @@ fn the_credits_swap_saves_volume_plays_track_0x27_and_restores() {
     m.music_slider(13);
     assert_eq!(m.take_cmds(), vec![MusicCmd::MusicVolume(65)]);
     assert_eq!(m.music_master, 65);
-    // Leave [M 0x2152b0:20-38]: SFXStopMusic, SFXMusicSetVolume(music_vol_524) — the ENTRY value,
+    // Leave [M 0x2152b0:54-65]: SFXStopMusic, SFXMusicSetVolume(music_vol_524) — the ENTRY value,
     // not the slider's last one — and the pair restarts.
     m.credits_leave();
     assert_eq!(m.take_cmds(), vec![MusicCmd::StopMusic, MusicCmd::MusicVolume(70), MusicCmd::StopJingles, MusicCmd::StartJingle(0x1d7)]);
@@ -181,7 +184,7 @@ fn a_full_walk_from_boot_to_mission_and_back_hands_over() {
     assert!(fe.music.take_cmds().is_empty());
     // The pick: the game's page change to the loading flow stops nothing by itself — the scene
     // reload (SFXReset) kills the items. The port's host resets `jingles_up` at the front-end
-    // load (MenuManager_Create's menu_movie = 0 [M 0x21b908:127]).
+    // load (MenuManager_Create's menu_movie = 0 [M 0x21b908:125]).
     fe.music.jingles_up = false;
     // The results page over the mission: the state machine queues the restart (the game does —
     // P_NFRESULTS 0x4c); the host's front-end gate mutes it because the mission bank lacks the id.
@@ -196,19 +199,23 @@ fn a_full_walk_from_boot_to_mission_and_back_hands_over() {
 
 #[test]
 fn the_front_end_action_walk_sound_tracks_the_page_changes() {
-    // Through the port's own input path: Start → (intro) → Main, the music following the pages.
+    // Through the port's own input path: START → P_PARISENUM → P_ESTHERO (one movie, 0x073B0048)
+    // → Main 0x40000002, the music following the pages [M 0x20a648:43, 0x20a060:16-45].
     let mut fe = FrontEnd::new();
     fe.music.page_enter(fe.page);
     assert_eq!(fe.music.take_cmds().as_slice(), &[MusicCmd::StopJingles, MusicCmd::StartJingle(0x1d7)]);
-    // The confirm starts the intro run [M 0x209e88]; the movie swap stops the pair.
+    // START, then P_ESTHERO's 2nd 0x50 starts the movie: the pair is removed [M 0x20a060:20-22].
     assert!(fe.action(Action::Confirm));
-    fe.music.movie_started();
-    assert_eq!(fe.music.take_cmds(), vec![MusicCmd::StopJingles]);
+    for _ in 0..3 { fe.tick(); }
+    assert!(fe.intro_movie);
+    assert!(fe.music.take_cmds().contains(&MusicCmd::StopJingles));
     assert!(!fe.music.jingles_up);
-    // Both movies done → the flow lands on Main (0x40000009); the pair is back up from the
-    // finish arm, so the page enter adds nothing.
-    fe.music.movie_finished();
-    assert_eq!(fe.music.take_cmds().len(), 2);
+    // The one movie done → its finish arm restarts the pair once [M :34-40] and opens Main.
+    fe.intro_movie_finished();
+    fe.tick();
+    assert_eq!(fe.page, Page::Main);
+    assert_eq!(fe.music.take_cmds().len(), 2, "one restart: remove + start");
+    // Sister: the page enter on the already-up pair adds nothing [M P_MAIN 0x20a7b0:36-47].
     fe.music.page_enter(Page::Main);
     assert!(fe.music.take_cmds().is_empty());
 }
