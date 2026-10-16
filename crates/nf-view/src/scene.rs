@@ -6808,14 +6808,15 @@ impl Scene {
             for (a, m) in &attach_mult { if let Some(c) = cols.get_mut((l.col_att + a) as usize) { *c = rgb(*m); } }
             for (pk, m) in &pickup_mult { if let Some(c) = cols.get_mut((l.col_pick + *pk as u32) as usize) { *c = rgb(*m); } }
         }
-        // Attachments without an entry fall back to their owner's multiplier, as `posed_vertices` does.
-        if has {
-            for (a, at) in self.attachments.iter().enumerate() {
-                if !attach_mult.contains_key(&(a as u32)) {
-                    cols[(l.col_att as usize) + a] = rgb(mults.get(at.character as usize).copied().unwrap_or([1.0; 3]));
-                }
-            }
-        }
+        // frame-cost-guard: the per-attachment fallback this comment used to describe ("attachments
+        // without an entry fall back to their owner's multiplier") was dead code. `colour_mults`
+        // inserts EVERY index `0..attachments.len()` into `attach_mult` whenever the sim is Some
+        // (scene.rs:6863's `for ai in 0..self.attachments.len()`), and this loop only ran under
+        // `has` — which is `!mults.is_empty()`, implying the sim is Some. So `contains_key` was
+        // always true and the body never executed; on 07000005 it still cost 8561 hash lookups
+        // per ticked frame. `colour_attach_map_covers_every_slot_on_the_lag_levels` pins the
+        // invariant (every slot present), so a change that would make the fallback reachable
+        // fails a test instead of silently changing the palette's colours.
         (p, cols)
     }
 
@@ -6835,8 +6836,11 @@ impl Scene {
             s.ambient_at([m4[3][0], m4[3][1], m4[3][2]]).map(mul_bytes).unwrap_or_else(one)
         };
         let tintable = |p: &nf_game::pickup::Pickup| p.kind != nf_game::pickup::kind::ARMOUR && p.kind != nf_game::pickup::kind::BOND_BONUS;
-        let mut pickup_mult: std::collections::HashMap<u16, [f32; 3]> = std::collections::HashMap::new();
-        let mut attach_mult: std::collections::HashMap<u32, [f32; 3]> = std::collections::HashMap::new();
+        // Preallocated to the loop bounds (frame-cost-guard): one entry per pickup and per
+        // attachment slot is inserted unconditionally below, so the maps can be sized up front
+        // instead of rehash-growing to 12k+ entries every ticked frame.
+        let mut pickup_mult: std::collections::HashMap<u16, [f32; 3]> = std::collections::HashMap::with_capacity(self.sim.as_ref().map_or(0, |s| s.drones.pickups.len()));
+        let mut attach_mult: std::collections::HashMap<u32, [f32; 3]> = std::collections::HashMap::with_capacity(self.attachments.len());
         // The lag fix (the user's "very laggy" playtest): the keys were collected by walking EVERY character
         // vertex — the effect pools (decal/casing/debris/gas/projectile slots, 8561 attachments on 07000005)
         // made that 34 ms of a 52 ms frame. The multiplier depends only on the key, so it is computed once per
