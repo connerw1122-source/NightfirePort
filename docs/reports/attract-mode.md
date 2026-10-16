@@ -131,4 +131,4 @@ existing movie plane), per the task.
 
 ## ntfy
 
-(none yet — see the final line if delivery failed)
+Delivered 2026-10-16 00:26 UTC (curl, first fallback; receipt id `OCuDu8YaEbB7`).
