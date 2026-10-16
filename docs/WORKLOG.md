@@ -15148,3 +15148,11 @@ menu-audio-state (2026-10-16)
   pump [M 0x182c60:78 + 0x1c9790:30-35]; results stats are Stats::default (host gap); Esc during a
   cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
   (live checks 1-3).
+
+## casings-persist (2026-10-16, branch s/casings-persist) — start
+- Task: queue 683 — port exactly what the game does after a casing lands (rest state, lifetime, fade, the
+  32-casing pool's recycling order [M Bullet_InitCasingLists 0x12fd48, casing update/deletion, nf_game::casing]),
+  then a PC-port option "Keep shell casings: N" (0, 32, 64, 128; default = game behaviour) keeping the newest N
+  resting casings, oldest-first recycling. Deterministic, no wall-clock. Tests: fire 40 rounds → game count +
+  lifetime by default; keep=64 holds resting casings, oldest-first; sister: in-flight casings still collide and
+  bounce the same. Branch from master aa3bc1f5; suite started in background.
