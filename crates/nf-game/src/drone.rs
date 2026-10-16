@@ -5919,6 +5919,11 @@ impl crate::nis::World for Data<'_> {
     fn glist_sphere(&self, hash: u32) -> Option<([f32; 3], f32)> {
         self.models.get(&hash).map(|m| (m.centre, m.radius))
     }
+    /// `Sound_IsLooping` (0x1de260) reads the SFX table's loop bit for the id. No table (a headless
+    /// run without the SFX data) reads as looping — the game's absent-handle case [M 0x1de260:5-7].
+    fn sfx_looped(&self, id: u32) -> bool {
+        self.sfx.is_none_or(|t| t.get(id).looped)
+    }
     fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<nf_formats::anim::Mat4> {
         self.discrete_parts(skin, script, frame).into_iter().next().map(|p| p.1)
     }
@@ -7100,6 +7105,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     if let Some(fb) = self.fuseboxes.iter_mut().find(|f| f.placement == player) {
                         fb.register_wire(obj, group);
                     }
+                }
+                // `Script_FFwd`'s `Music_Event(5, hash)` [M 0x1dac78:55] — the NIS-skipped pulse
+                // (the only `Request::Event` the script player pushes; other kinds ride this arm
+                // unused). `UpdateMusicalEvents` clears `NisPlaying` and arms `NisQuitten = 5`
+                // [M 0x114e70]; the IOP's `SFXUpdate` step 3 then FadeAndKills every sound that
+                // started while the NIS played — the mid-line dialogue dies inside the skip's fade
+                // window (playtest 1014-1725: "the dialogue still kept going") [M sound.md §6].
+                crate::nis::Request::Event { kind: 0x40, params } => {
+                    self.music.event(5, params.first().copied().unwrap_or(0));
                 }
                 _ => {}
             }
