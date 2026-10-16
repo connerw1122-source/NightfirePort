@@ -16,3 +16,8 @@ it.
 
 ---
 claimed-by: sandbox7 at 2026-10-16T03:57Z
+
+---
+## Report (done, 2026-10-16T05:18Z)
+
+Closed by the driver: the report is on `s/flesh-hit-effects` (docs/reports/flesh-hit-effects.md); the worker didn't run finish.sh.
