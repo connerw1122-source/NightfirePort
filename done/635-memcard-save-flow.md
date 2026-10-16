@@ -24,3 +24,8 @@ ISO-gated where they read the disc, each with a sister assertion that can fail).
 
 ---
 claimed-by: sandbox6 at 2026-10-16T00:57Z
+
+---
+## Report (done, 2026-10-16T02:06Z)
+
+Closed by the driver: the report is on `s/memcard-save-flow` (docs/reports/memcard-save-flow.md); the worker didn't run finish.sh.
