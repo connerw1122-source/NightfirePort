@@ -13965,3 +13965,48 @@ in the same state; a forced desync is detected. Branch s/net-match-host.
   net_state_hash every 15 ticks, the message-box + return-to-lobby failure path, --net-host /
   --net-join. Tests: net_session 5/0 (headless loopback), net_match_live 3/0 (two real sims,
   1000 ticks same state; forced desync; disconnect). Suite on the merged tree: see the report.
+
+## attract-mode (2026-10-15, branch s/attract-mode)
+Task 625-attract-mode: port the title screen's no-input attract sequence — `P_ATTRACT_Handler`
+0x20a1f0 and the no-input counter (`Menu_ResetNoInputCount`; `FrontEnd::no_input_frames` already
+counts): the timeout value, what plays (movie codes / demo data), how input interrupts it, and
+the return to the title. Flow + state on `FrontEnd` in crates/nf-view/src/menu.rs (no drawing —
+the main agent renders), the host starts the movie through the existing movie player. Tests: the
+timeout fires at the game's frame count; any input returns to the title. Docs first:
+docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
+
+## attract-mode (2026-10-15, branch s/attract-mode) — DONE 23:55 UTC
+- docs/systems/attract-mode.md first: the counter (frame_counter 0x30d164 +1 per menu tick
+  [M Menu_AlphaUpdate 0x1f3170] − last_action 0x30d168 [M Menu_InputAction 0x1f1f40's 12 stores,
+  machine-verified sw gp,-29960(gp)]), the timeout (`P_START` 0x20a408 / `P_MAIN` 0x20a7b0 0x50:
+  `Menu_GetNoInputCount() == 0xa8c` → 0x44/0x40000035), `P_ATTRACT_Handler` 0x20a1f0 (the
+  movie.291 0x30d368 toggle, the 0x073a0048/0x073b0048 pick — the opener id arrives as the 0x4c's
+  param_6 [M 0x21c858:345], so the title always plays A and the main menu alternates A,B,A —
+  the menu_movie 0x2e1c48 flag block, SFXRemove 0x1d7/0x470, psiStartBackgroundMovie non-looping,
+  0x68/1 input block), the interrupt (`MenuManager_Update` 0x21c3d8:40-43: action 0x19 while the
+  movie plays → Menu_StopMovie(0) 0x215a50 — the ONLY input that reaches anything; the 0x22
+  dispatcher is gated on manager+0x1d4; bSkipAttract 0x30d2a6 is read but never written — dead,
+  machine-verified 0 stores) and the return (0x50 finish → music back + 0x68/0 → 0x5f pop → the
+  opener's 0x4c resets the count).
+- Port: state + flow + getters on FrontEnd (attract_playing/attract_movie/attract_toggle/
+  attract_opener; ATTRACT_FRAMES/ATTRACT_MOVIE_A/B/PAGE_ATTRACT constants), no drawing (the
+  attract page has no controls — the draw side gets attract_playing+attract_movie for the
+  fullscreen movie plane). Host glue in lib.rs::movie_tick (Player::start on the one BGFMV slot,
+  the psiMovieFinished poll, declined-start closes at once) + the redraw's attract_up fullscreen
+  suppress. Count resets at every re-open stand-in: intro end (P_MAIN 0x4c), the credits' two
+  exits, the opener's return.
+- An independent audit (subagent) machine-verified every [M] claim against the decompile + raw
+  ELF scan and found 3 edge defects, all fixed: the missing !intro_playing fire guard (a long
+  intro would fire the attract mid-movies), the Player::start-Err hang (a missing PSS file left
+  the attract up forever with input blocked — now closes at once, the game's BGFMVPlaying==0),
+  and the missing count reset on the credits exits.
+- Tests: menus_flow.rs +5 (timeout at exactly 0xa8c + sister; the A/B/A alternation with the
+  intro-end reset pinned at 1; skip vs swallowed input; movie-end return + no-op sister; the
+  intro guard) — 42/42 green. Ran: nf-view menus_flow + movie_playback_flow + menu_movies +
+  menu_live + menu_backdrop_still + mp_menu_flow + dev_menu_flow + lib (51 tests, 0 failed);
+  nf-game + nf-formats + nf-audio 105 passed / 3 failed = the slim ISO's 3 disc_golden (allowed).
+  Full suite: tools/test/suite.py in the background — see the report for what completed in the
+  sandbox window.
+- Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
+  (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
+  attract page draws the movie fullscreen over black, no controls, no plate.

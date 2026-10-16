@@ -2012,6 +2012,31 @@ impl App {
                 fe.intro_index += 1;
                 if fe.intro_index >= menu::INTRO_MOVIES.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
             }
+        } else if fe.attract_playing {
+            // attract-mode: P_ATTRACT's 0x4c starts the attract movie on the ONE BGFMV slot
+            // [M psiStartBackgroundMovie 0x1081a8 — it replaces the playing backdrop; the page
+            // aux loop resumes on the pop — 0x21c858:338]. The host polls psiMovieFinished
+            // [M 0x21c3d8:37] and runs the 0x5f pop through `attract_movie_finished` when it
+            // fires; a declined start reports finished at once [M `BGFMVPlaying == 0` — the
+            // game's un-started movie — so the headless attract ends immediately].
+            let code = fe.attract_movie;
+            let wrong = match &self.movie { Some(p) => p.code() != code || p.is_looping(), None => true };
+            if wrong {
+                if let Some(p) = self.movie.take() { p.stop(); }
+                match movie::Player::start(&movie_iso, code) {
+                    Ok(p) => { self.movie = Some(p); eprintln!("movie: playing {code:08x} (attract)"); }
+                    Err(e) => {
+                        // A declined start = the game's un-started movie: BGFMVPlaying == 0, so
+                        // psiMovieFinished is true from tick one and the page closes at once
+                        // [M 0x1082e8 + the 0x50 finish path 0x20a1f0:39-65].
+                        eprintln!("movie: {code:08x} not started: {e:?} — the attract closes at once");
+                        fe.attract_movie_finished();
+                    }
+                }
+            }
+            if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {
+                fe.attract_movie_finished();
+            }
         } else if fe.flow.get_state() == menu::ST_MOVIE {
             match &mut self.movie {
                 Some(p) => {
@@ -2992,18 +3017,22 @@ impl ApplicationHandler for App {
                 // holds a borrow into `self.movie` until render() consumes it.
                 let state6 = self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() == menu::ST_MOVIE);
                 let intro_up = self.fe.as_ref().is_some_and(|fe| fe.intro_playing) && state6;
+                // attract-mode: the attract movie owns the screen like the intro does — the
+                // attract page has no controls [L the menu-def's 0x40000035 record], the movie
+                // plane IS the page [M P_ATTRACT_Handler 0x20a1f0's psiStartBackgroundMovie].
+                let attract_up = self.fe.as_ref().is_some_and(|fe| fe.attract_playing);
                 let flow_up = state6 && !intro_up && self.movie.is_some();
                 // The looping page player is the backdrop under the overlay; the early-started
                 // briefing player (non-looping, held through ST_MAPLOAD) is not.
                 let aux_up = self.movie.as_ref().is_some_and(|p| p.is_looping())
                     && !self.fe.as_ref().is_some_and(|fe| fe.flow.movie_pending);
-                let movie_up = intro_up || flow_up || aux_up;
+                let movie_up = intro_up || flow_up || aux_up || attract_up;
                 let movie_frame = if movie_up { self.movie.as_mut().and_then(|p| p.present()) } else { None };
                 let mut hud = if let Some(fe) = self.fe.as_mut() {
                     let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
                     fe.tick();
                     fe.backdrop_live = aux_up && movie_frame.is_some();
-                    if flow_up || (intro_up && movie_frame.is_some()) {
+                    if flow_up || (intro_up && movie_frame.is_some()) || (attract_up && movie_frame.is_some()) {
                         // The movie plane replaces the overlay: the state-6 briefing blits over the
                         // empty backdrop and the fog pass is suppressed while a movie plays [M
                         // DecodeBGFMVFrame 0x108550 + PS2UploadBGMImage 0x108740, psiDrawFogPass

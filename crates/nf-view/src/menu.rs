@@ -110,6 +110,24 @@ pub const PAGE_GADGETS: u32 = 0x4000_003c;
 pub const PAGE_WEAPONS: u32 = 0x4000_003d;
 /// The title layout the boot page leads to [M menu-def page 0x40000009: the art + Press START].
 pub const PAGE_TITLE_LAYOUT: u32 = 0x4000_0009;
+/// attract-mode: the attract page the no-input timeout opens [M menu-def page 0x40000035: aux 0;
+/// `P_START` 0x20a408 / `P_MAIN` 0x20a7b0 send 0x44 with this id at `Menu_GetNoInputCount() ==
+/// 0xa8c`; the handler is `P_ATTRACT_Handler` 0x20a1f0].
+pub const PAGE_ATTRACT: u32 = 0x4000_0035;
+/// attract-mode: the no-input timeout — 0xa8c = 2700 frames = 45 s at the fixed 60 Hz [M
+/// `P_START_Handler` 0x20a408 / `P_MAIN_Handler` 0x20a7b0's 0x50 branch:
+/// `Menu_GetNoInputCount() == 0xa8c`; the count is `frame_counter` 0x30d164 − `last_action`
+/// 0x30d168, incremented per menu tick by `Menu_AlphaUpdate` 0x1f3170].
+pub const ATTRACT_FRAMES: u32 = 0xa8c;
+/// attract-mode: the attract movie played when the opener is NOT the main menu (always, from the
+/// title) [M `P_ATTRACT_Handler` 0x20a1f0's 0x4c: `psiStartBackgroundMovie(0x73a0000|0x48, 0,
+/// SFXGetVolume())`; whitelisted by `UsingMovie` 0x107eb8 → 30_FPS/073A0048.PSS].
+pub const ATTRACT_MOVIE_A: u32 = 0x073a_0048;
+/// attract-mode: the attract movie the MAIN-menu timeouts alternate to [M 0x20a1f0's 0x4c else
+/// branch — the opener id 0x40000002 arrives as the 0x4c's param_6 [M `Manager_SendMessage`
+/// 0x21c858:345 passes the previous page's id] and the toggled `movie.291` 0x30d368 selects it;
+/// `UsingMovie` 0x107eb8 → 30_FPS/073B0048.PSS].
+pub const ATTRACT_MOVIE_B: u32 = 0x073b_0048;
 pub const PAGE_OPTIONS: u32 = 0x4000_0068;
 /// Codenames → "Edit Codename" [L 07000048 page 0x4000001b: header LBL 0x1f1, hint 0x20a; C_GOCODENAMES 0x216b38].
 pub const PAGE_CN_SELECT: u32 = 0x4000_001b;
@@ -1241,8 +1259,9 @@ pub struct FrontEnd {
     pub mission: usize,
     pub difficulty: usize,
     /// The attract timer: the game counts input-less frames and switches to attract at 0xa8c = 2700
-    /// [M 0x20a408/0x20a7b0 `Menu_GetNoInputCount() == 0xa8c`]. The port records it; switching to the
-    /// attract demo needs demo playback (not ported — reported).
+    /// [M 0x20a408/0x20a7b0 `Menu_GetNoInputCount() == 0xa8c`]. attract-mode: the timeout now fires
+    /// — see [`Self::attract_open`] / [`Self::attract_movie_finished`] and
+    /// docs/systems/attract-mode.md.
     pub no_input_frames: u32,
     pub press_start_on: bool,
     pub outcome: Outcome,
@@ -1516,6 +1535,25 @@ pub struct FrontEnd {
     pub mp_lobby_choices: Option<MpNetChoices>,
     /// The host's last published choices — the publish diff rides on it [S §2.1].
     pub mp_host_published: Option<MpNetChoices>,
+
+    // ── attract-mode (each new field on its own line [WORKLOG lesson 4]) ──
+    /// The attract sequence is up — the game's attract page 0x40000035 opened over the opener
+    /// [M the timeout's `Manager_SendMessage(…, 0x44, 0x40000035, 0)` 0x20a408/0x20a7b0]. While
+    /// it stands the draw code shows `attract_movie` fullscreen (the page has no controls) and
+    /// the input gate in [`FrontEnd::action`] swallows everything but the skip.
+    pub attract_playing: bool,
+    /// The background movie code this run plays — [`ATTRACT_MOVIE_A`] or [`ATTRACT_MOVIE_B`]
+    /// [M `P_ATTRACT_Handler` 0x20a1f0's 0x4c]. 0 while the attract is down.
+    pub attract_movie: u32,
+    /// The game's `movie.291` 0x30d368 — toggled on every attract open [M 0x20a1f0's 0x4c], it
+    /// alternates the main-menu timeouts between the two codes (the title's always take A:
+    /// the opener id != 0x40000002 short-circuits the pick).
+    pub attract_toggle: bool,
+    /// The page the attract opened over — the game's stacked page, which msg 0x5f re-opens on
+    /// the movie's end [M `Manager_SendMessage` 0x21c858 case 0x44 pushes the opener; case 0x5f
+    /// re-opens it]. Only the title and the main menu time out [M the only `Menu_GetNoInputCount`
+    /// callers], so this is always `Page::Start` or `Page::Main`.
+    pub attract_opener: Page,
 }
 
 impl FrontEnd {
@@ -1632,7 +1670,12 @@ impl FrontEnd {
             mp_net_timeout: 0,
             mp_session: None,
             mp_lobby_choices: None,
-            mp_host_published: None };
+            mp_host_published: None,
+            // attract-mode (each new field on its own line [WORKLOG lesson 4]).
+            attract_playing: false,
+            attract_movie: 0,
+            attract_toggle: false,
+            attract_opener: Page::Start };
         // The boot opens P_START: the pair plays with `menu_movie` clear [M P_START 0x20a408:12-22;
         // the game's boot path P_INTRO → P_START replays it the same way — the intro movie end
         // clears the static [M 0x209e88:44,58]].
@@ -2163,6 +2206,10 @@ impl FrontEnd {
             self.intro_playing = false;
             self.menu_movie = false; // the intro movie end clears menu_movie [M P_INTRO 0x209e88:44,58]
             self.intro_index = 0;
+            // attract-mode: the main menu's 0x4c resets the count here [M P_MAIN 0x20a7b0:37
+            // `Menu_ResetNoInputCount`] — the game's 45 s clock starts at the main menu's open,
+            // not at the START press.
+            self.no_input_frames = 0;
         }
         // credits-data: the credits page's 0x50 tick; the delayed 0x44/0x5f exit routes the page
         // [M P_CREDITS_Handler 0x2152b0:103-195 — ToMain = msg 0x44/0x40000002 after the win path,
@@ -2170,10 +2217,17 @@ impl FrontEnd {
         if self.page == Page::Credits {
             if let Some(exit) = self.credits.tick() {
                 match exit {
-                    crate::credits::CreditsExit::ToMain => { self.enter_page(Page::Main); self.cursor = 0; }
+                    crate::credits::CreditsExit::ToMain => {
+                        self.enter_page(Page::Main); self.cursor = 0;
+                        // attract-mode: the re-opened page's 0x4c resets the count [M the 0x44
+                        // open runs P_MAIN's 0x4c — 0x20a7b0:37 Menu_ResetNoInputCount].
+                        self.no_input_frames = 0;
+                    }
                     crate::credits::CreditsExit::PopBack(from) => {
                         self.page = Page::from_id(from).unwrap_or(Page::Main);
                         self.cursor = 0;
+                        // [M the 0x5f re-open rides 0x44 lparam 5 → the opener's 0x4c reset]
+                        self.no_input_frames = 0;
                     }
                 }
             }
@@ -2186,7 +2240,58 @@ impl FrontEnd {
         // choices when they change, the join side walks Connecting → lobby → match start [S
         // docs/systems/net-online-lobby.md §2-3].
         self.mp_net_poll();
+        // (the `!self.intro_playing` fire guard below: the port flips the page to Main before the
+        // intro plays, but the game's P_INTRO page is the up-page during the movies and never
+        // checks the count — the fire must wait for the real page's 0x4c, whose reset lands in
+        // the intro-cleanup block above.)
         self.no_input_frames = self.no_input_frames.saturating_add(1);
+        // attract-mode: the title's and main menu's no-input timeout fires on the tick the count
+        // reaches 0xa8c [M P_START 0x20a408 / P_MAIN 0x20a7b0 — `Menu_GetNoInputCount() == 0xa8c`
+        // sends 0x44/0x40000035; `Menu_AlphaUpdate` 0x1f3170 increments `frame_counter` before the
+        // pages' 0x50 run, so the fire tick reads exactly 0xa8c]. Only these two pages check
+        // [M the only `Menu_GetNoInputCount` callers], and the attract page itself never re-fires.
+        if !self.attract_playing
+            && !self.intro_playing
+            && matches!(self.page, Page::Start | Page::Main)
+            && self.no_input_frames == ATTRACT_FRAMES
+        {
+            self.attract_open();
+        }
+    }
+
+    /// attract-mode: the timeout's open — `Manager_SendMessage(own page, 0x44, 0x40000035, 0)`
+    /// [M P_START 0x20a408 / P_MAIN 0x20a7b0]. The manager pushes the opener [M 0x21c858 case
+    /// 0x44] and hands the attract page its 0x4c [M `P_ATTRACT_Handler` 0x20a1f0]: `movie.291`
+    /// 0x30d368 toggles, the movie code is picked (the opener id arrives as the 0x4c's param_6
+    /// [M 0x21c858:345]), the menu-music pair is removed and `psiStartBackgroundMovie(code, 0,
+    /// vol)` replaces the looping backdrop on the one BGFMV slot — the host does the movie and
+    /// the music through `movie::Player` / the sound layer, this only tracks the state.
+    fn attract_open(&mut self) {
+        self.attract_opener = self.page;
+        self.attract_toggle = !self.attract_toggle; // [M movie.291 0x30d368]
+        // [M 0x20a1f0's 0x4c pick: `(param_6 != 0x40000002) || movie_291` → A, else B]
+        self.attract_movie = if !matches!(self.attract_opener, Page::Main) || self.attract_toggle {
+            ATTRACT_MOVIE_A
+        } else {
+            ATTRACT_MOVIE_B
+        };
+        self.attract_playing = true;
+    }
+
+    /// attract-mode: the movie's end — `P_ATTRACT_Handler`'s 0x50 sees `psiMovieFinished` 0x1082e8
+    /// [M 0x20a1f0:39-54]: the menu-music pair restarts (`SFXStart(0x1d7,0)`/`SFXStart(0x470,0)`
+    /// — the host applies it when the menu music lands), the input block lifts (0x68/0), then
+    /// `Manager_SendMessage(own page, 0x5f, 0, 0)` re-opens the stacked opener [M 0x21c858 case
+    /// 0x5f], whose 0x4c resets the no-input count [M `Menu_ResetNoInputCount` at 0x20a408's
+    /// tail / 0x20a7b0:37]. The host calls this when its player finished; the skip funnels here
+    /// too (the game's StopMovie → the same 0x50 path on the next tick — the port collapses the
+    /// pair). A no-op when the attract is not up.
+    pub fn attract_movie_finished(&mut self) {
+        if !self.attract_playing { return; }
+        self.attract_playing = false;
+        self.attract_movie = 0;
+        self.page = self.attract_opener;
+        self.no_input_frames = 0; // [M the opener's 0x4c Menu_ResetNoInputCount]
     }
 
     /// The pause page opens over a running mission (the game's GS_PauseGame [M 0x17d178 pauses the
@@ -2727,6 +2832,21 @@ impl FrontEnd {
 
     /// One menu action. Returns true when the action changed the state.
     pub fn action(&mut self, a: Action) -> bool {
+        // attract-mode: while the attract movie plays the game blocks the page input — msg 0x68
+        // cleared the queued actions and the 0x22 dispatcher is gated on the manager's block byte
+        // [M 0x21c858 case 0x68 `Input_ClearAllActions`; 0x21c3d8:70] — and polls the skip action
+        // 0x19 directly [M 0x21c3d8:40-43 → `Menu_StopMovie(0)` 0x215a50]. The port's Confirm is
+        // the 0x19 stand-in (the intro's mapping): stopping the movie makes the page's next 0x50
+        // see `psiMovieFinished` and send 0x5f — the port collapses the pair into
+        // [`Self::attract_movie_finished`]. Other actions are swallowed and do NOT reach the
+        // counter (the game's `Menu_InputAction` never runs for them here).
+        if self.attract_playing {
+            if a == Action::Confirm {
+                self.attract_movie_finished();
+                return true;
+            }
+            return false;
+        }
         self.no_input_frames = 0; // [M Menu_ResetNoInputCount on every handled input]
         // The intro movie is up: action 0x19 (X/Start — Enter here) skips it [M GameFlow_Main
         // 0x1c98c8 case 6 pops the movie state on `Input_Action(-1, 0x19)`]; other input does
