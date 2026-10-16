@@ -15007,3 +15007,17 @@ menu-audio-state (2026-10-16)
   pump [M 0x182c60:78 + 0x1c9790:30-35]; results stats are Stats::default (host gap); Esc during a
   cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
   (live checks 1-3).
+
+---
+
+remote-mine-detonate (2026-10-16)
+- Task: the Remote Mine's detonator (alt-fire/mode action while the mine weapon is held vs a
+  separate detonator item [M Player_Weapon / the mine record +0x6C/+0x70, the detonate arm in
+  Bullet_update]) and the throw cadence (the throw -> release frame, the re-throw interval [M
+  the fire script, Player_WeaponFiring 0x1a5460]). Playtests: the detonator was set to the
+  watch, and a heavy delay between throws.
+- Plan: measure the frames from the fire script + the weapon record, port them, headless tests:
+  throw 3 mines at the game's cadence then detonate with the alt fire (all three explode);
+  sister: firing while no mine is out does nothing.
+- Branch s/remote-mine-detonate from origin/master (27e5d48a). Report will be at
+  docs/reports/remote-mine-detonate.md.
