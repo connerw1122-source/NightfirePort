@@ -421,6 +421,39 @@ pub struct MpMatch {
     pub assassin: Option<usize>,
     /// The target slot (global `Assasin`, scenario 0x400) [M 0x18b558:6].
     pub assassin_target: Option<usize>,
+    /// The bots (slots 4..4+bot_count). `MP_Start` 0x183a50:134-160 creates one bot per enabled
+    /// `MPBOTS` record — `BOT_init(slot, spawn pos, …, 0x2deeaa + i*0x12, 0)` — after every
+    /// human's `Player_Init`, in slot order [M]. mp-bots-in-match: the entities the sim drives
+    /// (the ported `BotBrain` = the game's BOT_update family); creation is the caller's
+    /// [`MpMatch::create_bots`] right after the humans' spawn picks, like the game's order.
+    pub bots: Vec<MpBot>,
+}
+
+/// One MP bot: the ported brain (`BOT_vars` stand-in) plus the per-slot bookkeeping the match
+/// reads. The game's bot is a drone-classed obj with a player slot (0x2a499c + slot·0x30); the
+/// port carries the slot state in `MpGame::slots[slot]` and the AI in `brain`.
+pub struct MpBot {
+    /// The player slot (4..8) [M 0x183a50:138 `iVar4 = uVar9 + 4`].
+    pub slot: usize,
+    /// The bot's team word (`MPSettings + slot·0x30 + 0x20` = the record's +0x0F byte) [M 0x183a50:143-145].
+    pub team: u16,
+    /// The brain: `BOT_init` 0x1249e8's port (`bots::BotBrain::bot_init`) — the 0xC3 chain into
+    /// state 0xF9, the stats copy from the record, the goal slots [M].
+    pub brain: crate::mp::bots::BotBrain,
+    /// The bot's health (`Drone+0xAC`; `BOT_SetHealth` 0x126758 clamps to the stats' max HP).
+    pub health: f32,
+    pub max_health: f32,
+    /// The bot's weapon id (the record's stats `+0x0A` weapon class maps to the match's weapon
+    /// — the Quick Start presets; the brain's firing interval/burst lift `weapon_data`).
+    pub weapon: u8,
+    /// Bookkeeping for the match table: shots fired, deaths, respawns.
+    pub shots: u32,
+    pub deaths: u32,
+    pub respawns: u32,
+    /// Dead flag + the tick the respawn may run (`BOT_respawn` 0x124e38 re-inits the obj at a
+    /// spawn point; the death handler's delay — the port stands in 180 ticks / 3 s [S]).
+    pub dead: bool,
+    pub respawn_at: u32,
 }
 
 fn sq_dist3d(a: [f32; 4], b: [f32; 3]) -> f32 {
@@ -455,7 +488,65 @@ impl MpMatch {
             objects_rt: MpObjectsRt::default(),
             assassin: None,
             assassin_target: None,
+            bots: Vec::new(),
         }
+    }
+
+    /// The bots' half of `MP_Start` 0x183a50:134-160: the count from the prepared records
+    /// (clamped ≤ 4 [M 0x183a50:138-140]), then per bot — the slot `4 + i`, the team byte from
+    /// the record's +0x0F into `MPSettings + slot·0x30 + 0x20` [M 0x183a50:143-145], a spawn
+    /// point pick for that team (`MP_GetSpawnPoint(team, 0)` [M 0x183a50:147-148]) and
+    /// `BOT_init(slot, pos, …, record, 0)` [M 0x183a50:156-160]. The port: the brains init from
+    /// the enabled records in order (the Quick Start's Drake/Kiko/Rook — the first `count`
+    /// records, the menu's compacted order [M Menu_PrepareBots 0x1f94a0]), the slot team words
+    /// ride the settings, and the caller re-picks the spawn through the port's
+    /// [`MpMatch::get_spawn_point`] (the same policy the humans use). Draw order: the game picks
+    /// the humans FIRST, then the bots — the caller keeps that order (create_bots runs after the
+    /// humans' picks in the load).
+    pub fn create_bots(&mut self, rng: &mut Rng) {
+        use crate::mp::bots::{BotRecord, INITIAL_BOT_RECORDS};
+        let count = (self.settings.bot_count as usize).min(4);
+        if count == 0 {
+            return;
+        }
+        // Menu_PrepareBots 0x1f94a0 compacts the enabled records (record+0x0E != 0) to the front
+        // [M] — the port's menu writes the count only, so the enabled set is the first `count`
+        // records here ([S]: the Quick Start's defaults are the disc's INITIAL records).
+        let records: Vec<BotRecord> = INITIAL_BOT_RECORDS.iter().take(count).cloned().collect();
+        for (i, rec) in records.iter().enumerate() {
+            let slot = 4 + i;
+            let team = rec.team() as u16; // +0x0F, the team byte [M 0x183a50:143-145]
+            self.settings.players[slot].team = team as u32;
+            let sp = self.get_spawn_point(team, slot, rng) as usize;
+            let p4 = self.spawns.points[sp].pos;
+            let pos = [p4[0], p4[1], p4[2]];
+            let yaw = self.spawns.points[sp].facing[1];
+            let max_hp = rec.max_hp() as f32;
+            let brain = crate::mp::bots::BotBrain::bot_init(rec, slot as u8, pos, yaw);
+            let weapon = rec.preferred_weapon_class();
+            self.game.slots[slot].pos = Some(pos);
+            self.bots.push(MpBot {
+                slot,
+                team,
+                brain,
+                health: max_hp,
+                max_health: max_hp,
+                weapon,
+                shots: 0,
+                deaths: 0,
+                respawns: 0,
+                dead: false,
+                respawn_at: 0,
+            });
+        }
+    }
+
+    /// The bot slots' shared view for the brain's `BotCtx` others table — the 8 player slots'
+    /// positions/teams/scores with the bots' own words filled from [`MpBot`] (the game reads
+    /// `MPGame + slot·0x30` and the objs [M 0x125390]) and the humans' from the slots the caller
+    /// keeps (the port's humans ride `slots[].pos`).
+    pub fn bot_slot_team(&self, slot: usize) -> u32 {
+        self.settings.players[slot].team
     }
 
     /// `MP_RegisterSpawnPoint` 0x184f20 (the placement 0x25 hook): the team gate, the FFA/team

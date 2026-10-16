@@ -1018,6 +1018,11 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                 }
             }
             let sp = first_spawn;
+            // The bots' half of `MP_Start` (0x183a50:134-160): after every human's create, one
+            // `BOT_init` per enabled record in slot order — the game's order is the humans FIRST,
+            // then the bots, so the spawn picks' RNG draws keep the game's sequence.
+            m.create_bots(&mut sim.drones.rng);
+            eprintln!("mp: bots created: {}", m.bots.len());
             sim.mp = Some(m);
             eprintln!("mp: arena {level_id:08x} — {spawn_count} spawn points registered, {humans} human(s), Bond at spawn {sp} ({:.2}, {:.2}, {:.2}) yaw {:.3}",
                 sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2], sim.bond.yaw);

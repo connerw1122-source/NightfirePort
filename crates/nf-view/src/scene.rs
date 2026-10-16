@@ -1855,6 +1855,10 @@ impl Sim {
             // the state-6 restart's site re-pick (MP_RestartScenario 0x183fc0)
             m.update(1.0 / 60.0, false, &mut self.drones.rng);
         }
+        // mp-bots-in-match: the bots' per-frame driver — the game's `BOT_update` 0x126448 family
+        // runs per frame inside the MP flow (the brains + the firing pipeline + respawn/score
+        // bookkeeping), exactly like the port's `MP_Update` block above.
+        self.step_mp_bots();
         // `Game_Run` 0x1c9790:33 runs `Light_Update` before the object movement each tick (fix-lighting):
         // lifetimes (the muzzle light of the previous tick dies here), the script-channel gate and the
         // flicker state machine. The flicker's RNG re-seeds ride the shared generator before this tick's draws.
@@ -7320,6 +7324,17 @@ impl Scene {
 // host's settings + seed and exchanges only each agent's per-tick input (deterministic lockstep,
 // `nf-net`, the one session layer). The shared state every machine must agree on is the bonds' poses, the MP match
 // state and the shared RNG stream — `net_state_hash` folds exactly that in a fixed slot order.
+/// mp-bots-in-match: the closest-approach parameter of the segment `a→b` to `center`, when the
+/// ray passes within `radius` (the bot shots' body hit — [S], see step_mp_bots).
+fn ray_body_hit(a: [f32; 3], b: [f32; 3], center: [f32; 3], radius: f32) -> Option<f32> {
+    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+    let dd = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
+    if dd < 1e-9 { return None; }
+    let t = (((center[0] - a[0]) * d[0] + (center[1] - a[1]) * d[1] + (center[2] - a[2]) * d[2]) / dd).clamp(0.0, 1.0);
+    let p = [a[0] + d[0] * t - center[0], a[1] + d[1] * t - center[1], a[2] + d[2] * t - center[2]];
+    (p[0] * p[0] + p[1] * p[1] + p[2] * p[2] <= radius * radius).then_some(t)
+}
+
 impl Sim {
     /// The load builds every human slot's bond in slot order (deterministic on every machine);
     /// slot 0's lands in `bond`. After the load, each machine moves ITS slot's bond into `bond`
@@ -7331,6 +7346,194 @@ impl Sim {
             self.mp_bonds[0] = Some(mine);
         }
     }
+
+    // ======================= mp-bots-in-match (704) =======================
+    // The bots' per-frame driver — the port's `BOT_update` 0x126448 site. The game's order per
+    // frame: `Drone_Control` runs the bot drone's `ControlSTANDARD` → the msg-3 state dispatch
+    // (the ported `BotBrain::step`) → `DroneWeap_HandleFiring`; death/respawn ride the drone
+    // damage path (`BOT_respawn` 0x124e38 re-inits at a spawn point), the frags credit
+    // `MPGame+slot·0x30+0x18`/`+0x04`/`+0x08` [M 0x188f70].
+
+    /// The 8-slot `others` view one brain reads (`BOT_setOtherPlayerInfo` 0x125390: the slot's
+    /// obj position, the alive gate, the team word, the score/health for the trait picks).
+    fn bot_others(&self) -> [nf_game::mp::bots::OtherPlayer; 8] {
+        let mut others: [nf_game::mp::bots::OtherPlayer; 8] = Default::default();
+        if let Some(m) = self.mp.as_ref() {
+            // The humans: slot 0 = the live `bond`, the rest the parked `mp_bonds` (a swapped
+            // local parks the old body at slot 0 — `swap_local_slot`).
+            let human_alive = self.drones.health.health > 0.0;
+            others[0] = nf_game::mp::bots::OtherPlayer {
+                pos: self.bond.pos,
+                alive: human_alive,
+                index: 0,
+                team: m.settings.players[0].team,
+                flags: 0,
+                dist2: 0.0,
+                health: self.drones.health.health,
+                score: m.game.slots[0].score,
+            };
+            for slot in 1..4 {
+                if let Some(b) = self.mp_bonds[slot].as_ref() {
+                    others[slot] = nf_game::mp::bots::OtherPlayer {
+                        pos: b.pos, alive: true, index: slot,
+                        team: m.settings.players[slot].team, flags: 0, dist2: 0.0,
+                        health: self.drones.health.health, score: m.game.slots[slot].score,
+                    };
+                }
+            }
+            // The bots (positions snapshotted this tick — the brain's own row is skipped by index).
+            for (i, b) in m.bots.iter().enumerate() {
+                let slot = 4 + i;
+                others[slot] = nf_game::mp::bots::OtherPlayer {
+                    pos: b.brain.pos,
+                    alive: !b.dead,
+                    index: slot,
+                    team: m.settings.players[slot].team,
+                    flags: 0,
+                    dist2: 0.0,
+                    health: if b.dead { 0.0 } else { b.health },
+                    score: m.game.slots[slot].score,
+                };
+            }
+        }
+        others
+    }
+
+    /// One bot frame: the brain's step, then the shot resolution, the death/respawn and the
+    /// score bookkeeping. Shot damage: the game's raw weapon damage is `weapon_data+0x0C`
+    /// (the same word the drone fire path reads [M drone.rs FireWeapon's port]); the hit model
+    /// here is a body-sphere sweep along the shot ray with the world's clear-line check — a
+    /// stand-in for the full `Collide` capsule walk ([S], the sim's bots are not drone objects
+    /// so the shared bullet system cannot hit them; see the report's left items).
+    pub fn step_mp_bots(&mut self) {
+        if self.mp.as_ref().map_or(true, |m| m.bots.is_empty()) { return; }
+        let others = self.bot_others(); // the immutable pass ends before the match is taken &mut
+        let Some(m) = self.mp.as_mut() else { return };
+        let frame = self.drones.frame;
+        let scenario = m.settings.scenario;
+        let world = &self.world;
+        let wdata = &self.weapons;
+        // The human's live state the bots read/fight (slot 0).
+        let human = others[0];
+
+        for i in 0..m.bots.len() {
+            let alive = !m.bots[i].dead;
+            if !alive {
+                // `BOT_respawn` 0x124e38: the death handler re-inits the bot at a spawn point
+                // after the delay. The port stands in 180 ticks (3 s) [S].
+                if frame >= m.bots[i].respawn_at {
+                    let slot = m.bots[i].slot;
+                    let team = m.bots[i].team;
+                    let rec = nf_game::mp::bots::INITIAL_BOT_RECORDS[i].clone();
+                    let sp = m.get_spawn_point(team, slot, &mut self.drones.rng) as usize;
+                    let p4 = m.spawns.points[sp].pos;
+                    let pos = [p4[0], p4[1], p4[2]];
+                    let yaw = m.spawns.points[sp].facing[1];
+                    m.bots[i].brain = nf_game::mp::bots::BotBrain::bot_init(&rec, slot as u8, pos, yaw);
+                    m.bots[i].health = m.bots[i].max_health;
+                    m.bots[i].dead = false;
+                    m.bots[i].respawns += 1;
+                    m.game.slots[slot].pos = Some(pos);
+                }
+                continue;
+            }
+            let health = m.bots[i].health;
+            let max_health = m.bots[i].max_health;
+            let my_team = m.settings.players[m.bots[i].slot].team;
+            let ctx = nf_game::mp::bots::BotCtx {
+                now: 0.0, // the brain's own tick counter is the clock (net-lockstep F4)
+                scenario,
+                my_index: m.bots[i].slot,
+                my_team,
+                pickups: &[],
+                others: &others,
+                world,
+                health,
+                max_health,
+                stationary: false,
+            };
+            let before = m.bots[i].brain.shots.len();
+            m.bots[i].brain.step(&ctx, &mut self.drones.rng, true);
+            if std::env::var_os("NF_BOTLOG").is_some() && frame % 600 == 0 {
+                eprintln!("[botlog] f{} bot{} state {:#x} pending {:?} opp {:?} goals {:?} pos {:.1?} trace {}",
+                    frame, i, m.bots[i].brain.state, m.bots[i].brain.trace.last(),
+                    m.bots[i].brain.vars.opponent,
+                    m.bots[i].brain.vars.goals.iter().map(|g| (g.active, g.goal_type, g.target)).collect::<Vec<_>>(),
+                    m.bots[i].brain.pos, m.bots[i].brain.trace.len());
+            }
+            let new_shots: Vec<nf_game::mp::bots::BotShot> =
+                m.bots[i].brain.shots[before..].to_vec();
+            m.bots[i].shots += new_shots.len() as u32;
+            m.bots[i].brain.shots.clear();
+            let bot_pos = m.bots[i].brain.pos;
+            m.game.slots[m.bots[i].slot].pos = Some(bot_pos);
+
+            // The shots: real bullets at the human (the shared pipeline damages him), and the
+            // body-sphere sweep at the other bots (the shared system cannot hit non-drones).
+            for shot in new_shots {
+                let w = shot.weapon as usize;
+                let Some(rec) = wdata.records.get(w) else { continue };
+                let dmg = f32::from_le_bytes(rec[0x0c..0x10].try_into().unwrap());
+                let range = f32::from_le_bytes(rec[0x1c..0x20].try_into().unwrap());
+                let end = [shot.pos[0] + shot.dir[0] * range,
+                           shot.pos[1] + shot.dir[1] * range,
+                           shot.pos[2] + shot.dir[2] * range];
+                // The other bots: nearest body (radius 0.6 [S]) the ray passes within, world-clear.
+                let clear = world.segment(shot.pos, end).is_none();
+                let mut best: Option<(usize, f32)> = None;
+                if clear {
+                    for (j, b) in m.bots.iter().enumerate() {
+                        if j == i || b.dead { continue; }
+                        if let Some(t) = ray_body_hit(shot.pos, end, b.brain.pos, 0.6) {
+                            if best.map_or(true, |(_, bt)| t < bt) { best = Some((j, t)); }
+                        }
+                    }
+                }
+                // The human: the game's damage is the bullet event chain (armour, flash, the
+                // death handler); the port applies the same raw `weapon_data+0x0C` word straight
+                // to the health block here — the bullet-spawn route (bots are not drone objects,
+                // the shared Bullet owners index the drones list) is the report's left item.
+                let hits_human = human.alive && ray_body_hit(shot.pos, end, human.pos, 0.6).is_some();
+                if hits_human {
+                    self.drones.health.health = (self.drones.health.health - dmg).max(0.0);
+                }
+                if let Some((j, _)) = best {
+                    m.bots[j].health -= dmg;
+                    if m.bots[j].health <= 0.0 {
+                        // The frag: the killer's score/kills, the victim's deaths [M 0x188f70].
+                        m.bots[j].health = 0.0;
+                        m.bots[j].dead = true;
+                        m.bots[j].deaths += 1;
+                        m.bots[j].respawn_at = frame + 180;
+                        m.game.slots[m.bots[j].slot].deaths += 1;
+                        m.game.slots[m.bots[i].slot].score += 1.0;
+                        m.game.slots[m.bots[i].slot].kills += 1;
+                    }
+                }
+            }
+        }
+    }
+
+    // The bots' observation API (the live tests read the per-bot table through these).
+    pub fn mp_bot_count(&self) -> usize {
+        self.mp.as_ref().map_or(0, |m| m.bots.len())
+    }
+    pub fn mp_bot_positions(&self) -> Vec<[f32; 3]> {
+        self.mp.as_ref().map_or(Vec::new(), |m| m.bots.iter().map(|b| b.brain.pos).collect())
+    }
+    pub fn mp_bot_shots(&self, i: usize) -> u32 {
+        self.mp.as_ref().map_or(0, |m| m.bots[i].shots)
+    }
+    pub fn mp_bot_deaths(&self, i: usize) -> u32 {
+        self.mp.as_ref().map_or(0, |m| m.bots[i].deaths)
+    }
+    pub fn mp_bot_respawns(&self, i: usize) -> u32 {
+        self.mp.as_ref().map_or(0, |m| m.bots[i].respawns)
+    }
+    pub fn mp_bot_score(&self, i: usize) -> i32 {
+        self.mp.as_ref().map_or(0, |m| m.game.slots[4 + i].score as i32)
+    }
+
 
     /// Tick the remote agents' movement with their session inputs (one fixed 60 Hz tick). The
     /// remote path is `Bond::tick_ctx` — the same movement core the local path runs (the local
