@@ -16729,3 +16729,11 @@ hit/death variants fire. Branch from origin/master 170bcf01.
   for the 23:20 sandbox), the Launch AIPath/FollowRoute route walking (the port treats the
   spawn-hold as the completed route — the game's AssignAIPath nodes sit within 0.3 of the posts
   [M 00154190:68-96]), and the HitMove bump-source branch (+0x470 has no port field).
+- astronaut-guards-1b suite + regression fix: the fast suite on the merged tree (origin/master
+  f09f3c6c) ran 1946 passed / 7 failed / 72 ignored in 48 min — 3 disc_golden + 3 pylon probes
+  allowed, 1 fix_actors flake (passes 4/4 twice with the suite's own invocation; master passes
+  the same binary). The suite caught the real Drake-defeat regression (the blast kill's bare
+  set_state was clobbered by the next UPDATE's strafe re-assert before it could apply): the kill
+  now routes through msg 9 in one delivery [M 0x146480:103-104], the pick guards health ≤ 0, and
+  AstronautDeath ENTER sets the port's corpse model (the game's 0x200 rides SetAsDead, uncalled
+  by 0xBF [M]). fix_finale 4/4 + astronaut 5/5 + fix_actors 4/4×2 green after the fix.

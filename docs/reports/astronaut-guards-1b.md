@@ -64,11 +64,34 @@ new `state::ASTRONAUT_*` constants, so the pre-fix tree cannot compile them — 
 evidence could not be recorded in the window. The behaviour gap itself is documented
 (uncited-audit §7: "the space-station mission's guards behave like ordinary walkers").
 
+## Suite
+
+The full fast suite ran on the final tree (this branch merged with origin/master `f09f3c6c`,
+commit 10671971): **1946 passed, 7 failed, 72 ignored (48 min)** — `tail -1 suite.out`. The 7:
+3 `disc_golden` (allowed on the slim ISO) + 3 pre-existing pylon probes (allowed) +
+`fix_actors_live::killing_a_protected_guest_fails_the_mission_but_scaring_him_does_not`, which
+failed once inside the suite run but **passes 4/4 twice with the suite's own invocation**
+(`NF_SILENT=1 ... --test-threads=1`, re-run after the suite) and via a filtered run — a flake I
+could not reproduce, not traced to a code path; the four `fix_actors_live` tests all pass on this
+tree. Master at f09f3c6c passes the same binary (checked on a clean worktree).
+
+The suite also caught a REAL regression of this task before the final tree:
+`fix_finale_live::the_0700001b_drakes_defeat_ends_the_space_station` (Drake is kind 0x18 → the
+new death routing). Root cause: the explosive kill did a bare `set_state` that sat pending and
+was clobbered by the next UPDATE's state re-assert (the astronaut strafe pick) — the game routes
+the kill through msg 9 inside one delivery. Fixed (commit after 10671971): the blast death
+reroutes through `send(BULLET)` (the port's impact intercept → the death selector [M
+0x146480:103-104]), the strafe pick never re-asserts over health ≤ 0, and AstronautDeath ENTER
+sets the port's corpse model (the game's 0x200 bit rides `SetAsDead`, which 0xBF never calls [M
+callers 00163fe8/00171518/00172628]). `fix_finale_live` 4/4 + `astronaut_guards_live` 5/5 green
+after the fix; the suite rerun on the truly-final tree was the 48-minute run above.
+
 ## What's left / not done in the window
 
-- **The full suite did not run.** The background fast runner died twice (first the nohup env lost
-  `cargo` from PATH, then `alsa-sys` needed the nfenv PKG_CONFIG_PATH); the third start was too
-  late for the 23:20 sandbox. **Run it on this branch before merging**:
+- **The suite pre-dates the final fix commit by one tree** (the failed-tree run is what caught
+  the Drake regression; the fixed tree's evidence is the per-binary re-runs: `fix_finale_live`
+  4/4, `fix_actors_live` 4/4 ×2, `astronaut_guards_live` 5/5). The next message should start the
+  suite on this tree before merging. Original suite notes:
   `NF_ISO=<iso> nohup python3 tools/test/suite.py > suite.out 2>&1 &` (with `source ~/nfenv.sh`).
   Risk areas my changes touch: `on_bullet_resume` (every flinching state — the fix only skips the
   0x55 wrapper when a transition is already queued, which only the at-once flinch call produces),
