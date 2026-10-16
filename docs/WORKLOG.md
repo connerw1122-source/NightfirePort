@@ -15872,3 +15872,39 @@ regressions from the cel-scoped hit-below fix.
   civilian takes the hit and dies → "Killed Civilians" (the game's traced behavior); the sister:
   a guard beside the civilian is shot (normal crosshair, damage) and the auto-aim locks the
   guard, never the civilian. Blast radius: fix_player2_live 5/5, fix_player3_live 6/6.
+
+## inert-guards-02 (2026-10-16, branch s/inert-guards-02) — STARTED 14:19 UTC
+Task 694: the invincible, AI-less guards on 07000002 (playtests 1010-2055 / 1011-1128: "there are
+npcs that shouldnt be able to be shot and some of the enemies are invincible with no AI"; "one
+specific guard … standing next to a civilian that won't move, no AI, doesn't do anything"). Plan:
+list every 07000002 drone with class/state/health/enabled+present at start and after 600 ticks;
+find the present-but-never-updating ones (a missing state handler, a disabled AI waiting on a
+channel nothing sets, a script actor left in the world) [M create flags + the waking channel's
+writers]; fix them to the game; tests: each guard either runs AI or is legitimately dormant (cite
+the channel), none invincible unless the game makes it so.
+
+## inert-guards-02 — the census verdict (14:42 UTC)
+The full 07000002 census (25 drones, `crates/nf-view/tests/inert_guards_02_live.rs`): 21 guards
+(kind 1, skins 0x36/0x38/0x39/0x3a), 3 kind-8 civilians (skin 0x34) and 1 kind-9 civilian (skin
+0x4f) — ALL present, damageable and health-10/20 at start. After the intro cut-scene's
+`Drone_EnableAll(0)`/(1) cycle everything except the kind-9 civilian sits in WAIT_SWITCH (0x01)
+with the AI off — that IS the game's gate: the switch channel (placement param 3, DCVars+0x134
+[M]) of each guard is off until its zone's Touch pad sets it, and the re-enable skips WaitSwitch
+drones [M 0x1383e8:14]. The wake chain works in the port (the test teleports Bond onto the pads):
+the bunker-exit pad (placement 341, out 21) wakes d00-d04 — d00 (placement 442, the guard beside
+the bunker exit) enters combat at alert 1.0; the terrace pad (placement 342, out 23) wakes the
+playtest's frozen pair — d05 (placement 447, the guard) + d23 (placement 465, the kind-8 civilian
+1.3 units away); a woken guard takes P2K bullet damage through the real player_bullets path (the
+port's `damageable` gate [M damage.rs + DefaultInit's skin-keyed +0x14: only 0x3b/0x3c/0x53 are
+exempt, none on 02]). NO library code changed — the port's mechanisms were already the game's; the
+deliverables are the census lock, the two zone-pad wake locks, the damage lock, and the dormancy
+finding: the far-garden pair (placements 461/462) waits on channel 8, which NO trigger, door,
+inverter or 0xE1 Destroy placement writes on this level [D the census dumps — the Destroy channels
+are 72/0/130]; the game's remaining writer is the script event command 0xd [M Script_EventHandler
+0x1d94c0:166] — legitimately dormant, live check listed. Tests: the 2 new live tests (green) +
+the census run that fed the report tables.
+
+INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 passed, 6 failed,
+72 ignored (46 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes (the
+07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
+and other merged tasks' new tests. The 2 new live tests are green in the totals.
