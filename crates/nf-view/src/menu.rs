@@ -676,9 +676,11 @@ impl Page {
 
 /// The menu's per-frame input, mapped from mouse + keyboard by the caller (lib.rs). The game's own
 /// engine routes cursor moves and confirms through `Menu_InputAction` / action 0x22 [M 0x1f1f40,
-/// 0x21c3d8] and skips movies through action 0x19 [M 0x1c98c8 case 6].
+/// 0x21c3d8] and skips movies through action 0x19 [M 0x1c98c8 case 6]. `Extra` is the pad's
+/// ~Y/Triangle (the debriefing hint's "~A Continue  ~Y Replay" — C_MPDBG's msg 0x5d arm [M
+/// 0x217860:12-16]); the PC stand-in key is Q [S docs/systems/input.md].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Action { Up, Down, Confirm, Back, Side, Left, Right }
+pub enum Action { Up, Down, Confirm, Back, Side, Left, Right, Extra }
 
 // ── menu-sfx: the front end's sounds ──────────────────────────────────────────────────────────
 // The engine plays every menu sound through `Menu_PlaySound(MENU_SOUND)` 0x1f3278, which maps the
@@ -1029,6 +1031,58 @@ pub const MP_HANDICAPS: [(i32, &str); 8] =
 /// 3 (character) binds 0x37d; USATxt "Choose Team"/"Choose Character"].
 pub const MP_SETUP_TEAM_PROMPT: u32 = 0x37c;
 pub const MP_SETUP_CHAR_PROMPT: u32 = 0x37d;
+
+/// `mp_characters_small` @0x2df8f8 — the 29 FFA-setup/debriefing portrait rows, (texture, name,
+/// desc, key) with key = the character id the hash lookup matches (+0x0C) [L the .data dump
+/// 2026-10-15, file offset 0x1d97f8; the debriefing's msg-0x24 portrait reads row+0x00 by the
+/// skin id — P_MPDEBRIEFING 0x212198:159-166 via Menu_GetItemFromHash(0x2df8f8, ·, 0x1d)].
+pub const MP_CHARACTERS_SMALL: [(u32, u32, u32, u32); 29] = [
+    (0x0300_0154, 0x21a, 0x0100_0038, 0),  // Bond
+    (0x0300_0159, 0x21b, 0x0100_0039, 1),  // Drake
+    (0x0300_0165, 0x21c, 0x0100_003a, 2),  // Rook
+    (0x0300_015e, 0x21d, 0x0100_003b, 3),  // Kiko
+    (0x0300_016b, 0x21e, 0x0100_003c, 4),  // Alura
+    (0x0300_0158, 0x21f, 0x0100_003d, 5),  // Dominique
+    (0x0300_0167, 0x220, 0x0100_003e, 6),  // Snow Guard
+    (0x0300_0153, 0x221, 0x0100_003f, 7),  // Black Ops
+    (0x0300_016a, 0x222, 0x0100_0040, 8),  // Yakuza
+    (0x0300_0157, 0x223, 0x0100_0041, 9),  // Phoenix Commando
+    (0x0300_019e, 0x224, 0x0100_0042, 10), // Phoenix Soldier
+    (0x0300_0162, 0x225, 0x0100_0043, 11), // Ninja
+    (0x0300_0155, 0x39f, 0x0100_01f2, 12), // Bond (tuxedo)
+    (0x0300_015a, 0x3a0, 0x0100_01f3, 13), // Drake (suit)
+    (0x0300_0195, 0x0100_01ee, 0x0100_01f0, 14), // Bond (space suit)
+    (0x0300_015c, 0x226, 0x0100_0044, 15), // Goldfinger
+    (0x0300_019f, 0x227, 0x0100_004e, 16), // Renard
+    (0x0300_0166, 0x228, 0x0100_0046, 17), // Scaramanga
+    (0x0300_0164, 0x229, 0x0100_0047, 18), // Pussy Galore
+    (0x0300_0156, 0x22a, 0x0100_004c, 19), // Christmas Jones
+    (0x0300_0168, 0x22b, 0x0100_01f4, 20), // Wai Lin
+    (0x0300_0169, 0x22c, 0x0100_0049, 21), // Xenia Onatopp
+    (0x0300_0160, 0x22d, 0x0100_004a, 22), // May Day
+    (0x0300_015b, 0x22e, 0x0100_004b, 23), // Elektra King
+    (0x0300_015d, 0x22f, 0x0100_0048, 24), // Jaws
+    (0x0300_0152, 0x230, 0x0100_004d, 25), // Baron Samedi
+    (0x0300_0163, 0x231, 0x0100_0045, 26), // Oddjob
+    (0x0300_0161, 0x2ff, 0x0100_01f5, 27), // Nick Nack
+    (0x0300_0197, 0x0100_01ef, 0x0100_01f1, 28), // Max Zorin
+];
+
+/// The debriefing page's static texts [L the menu-def page 0x40000033 (mp-debriefing.md §4):
+/// header (50,40) 0x151, hint (50,419) 0x2c1; the column titles x=52 at y 183/217/250/284/318].
+pub const MP_DEBRIEFING_HEADER: u32 = 0x151; // "Debriefing"
+pub const MP_DEBRIEFING_HINT: u32 = 0x2c1;   // "~A Continue  ~Y Replay"
+pub const MP_DEBRIEFING_COLS: [u32; 5] = [0x14e, 0x24c, 0x686, 0x2be, 0x163]; // Agent/Points/Victories/Deaths/TOTAL
+/// The debriefing widgets' control ids (the game's sends; the draw code binds by these).
+pub const MP_DEBRIEFING_PANEL: u32 = 0x1000_015d;
+pub const MP_DEBRIEFING_PORTRAIT: u32 = 0x1000_0157;
+pub const MP_DEBRIEFING_RANK: u32 = 0x1000_0156;
+pub const MP_DEBRIEFING_NAME: u32 = 0x1000_0158;
+pub const MP_DEBRIEFING_POINTS: u32 = 0x1000_0159;
+pub const MP_DEBRIEFING_VICTORIES: u32 = 0x1000_0240;
+pub const MP_DEBRIEFING_DEATHS: u32 = 0x1000_015a;
+pub const MP_DEBRIEFING_TOTAL: u32 = 0x1000_015c;
+pub const MP_DEBRIEFING_RESULT: u32 = 0x1000_023d;
 /// The Bot Setup page's row titles in its own y order [L the menu-def's msg-0x18 b fields on page
 /// 0x4000002c — see the row_label comment].
 pub const MP_BOT_SETUP_LABELS: [u32; 8] = [0x295, 0x247, 0x232, 0x246, 0x15e, 0x1c6, 0x23a, 0x249];
@@ -1767,6 +1821,10 @@ pub struct FrontEnd {
     /// The match config the confirm page hands the host — the port's `MpSettings` mirror of
     /// P_MPCONFIRM 0x20ec00:53-94's writes. None until the confirm's Confirm runs.
     pub mp_match_settings: Option<nf_game::mp::MpSettings>,
+    /// The debriefing board (mp-debriefing-data2) — `open_mp_debriefing` fills it from the
+    /// finished match; None until then. The draw code reads it through the `mp_debriefing_*`
+    /// getters [M P_MPDEBRIEFING 0x212198 msg 0x4c].
+    pub mp_debriefing: Option<nf_game::mp::debrief::MpDebriefing>,
     /// credits-data: the credits roll's state (crate::credits::CreditsRoll — the handler's own
     /// statics frame_518/name_520/index_519/fading_517/page_from_523/music_vol_524) [M
     /// P_CREDITS_Handler 0x2152b0]. The main agent draws `self.credits.visible()`.
@@ -1962,6 +2020,7 @@ impl FrontEnd {
             mp_envmods: [2, 0, 0, 0, 0],
             mp_error: 0,
             mp_match_settings: None,
+            mp_debriefing: None,
             // credits-data (each new field on its own line [WORKLOG lesson 4]): the credits roll's
             // state (crate::credits::CreditsRoll = the handler's own statics) and the opener.
             credits: crate::credits::CreditsRoll::new(crate::credits::PAGE_CN_AV, 100, false),
@@ -4210,6 +4269,7 @@ impl FrontEnd {
                 // and the wheel showed Weapons on screen — the playtest's "the port adds Weapons"].
                 Action::Side => { self.enter_page(Page::Dossier); self.cursor = 0; return true; }   // □ Dossier
                 Action::Back => { self.enter_page(Page::Difficulty); self.cursor = self.difficulty; return true; }
+                Action::Extra => {}
             },
             Page::Dossier => match a {
                 // The wheel CLAMPS, it never wraps [M Scroll_Update 0x2221b20:186-194 (Down at the
@@ -4243,6 +4303,7 @@ impl FrontEnd {
                 Action::Up => { self.cursor = (self.cursor + CAMPAIGN.len() - 1) % CAMPAIGN.len(); return self.focus_moved(); }
                 Action::Down => { self.cursor = (self.cursor + 1) % CAMPAIGN.len(); return self.focus_moved(); }
                 Action::Back | Action::Confirm | Action::Side => { self.enter_page(Page::Dossier); self.cursor = 0; return true; }
+                Action::Extra => {}
             },
             // The three pages the Dossier wheel's rows 1-3 open. Their scrolls are the game's own
             // M_SCROLLs: Up/Down step ±1 and CLAMP (the wrap flag +0x144 is set only by msg 0x69,
@@ -4258,6 +4319,7 @@ impl FrontEnd {
                 Action::Up | Action::Down => return false,   // clamped [M 0x2221b20:186-210]
                 Action::Back | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
                 Action::Confirm => return false,             // no select arm [M 0x20c248]
+                Action::Extra => {}
             },
             Page::Gadgets => match a {
                 Action::Left | Action::Right => {}
@@ -4266,6 +4328,7 @@ impl FrontEnd {
                 Action::Up | Action::Down => return false,
                 Action::Back | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
                 Action::Confirm => return false,
+                Action::Extra => {}
             },
             Page::Weapons => match a {
                 Action::Left | Action::Right => {}
@@ -4274,6 +4337,7 @@ impl FrontEnd {
                 Action::Up | Action::Down => return false,
                 Action::Back | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
                 Action::Confirm => return false,
+                Action::Extra => {}
             },
             Page::Options => match a {
                 Action::Up => { self.cursor = (self.cursor + 2) % 3; return true; }
@@ -4331,6 +4395,7 @@ impl FrontEnd {
                             return true;
                         }
                         Action::Side => return false,
+                        Action::Extra => {}
                     }
                 }
                 // objective-hints: the ✕ hint box is modal (option-box page 0x4000002f pushed
@@ -4403,6 +4468,7 @@ impl FrontEnd {
                             _ => {}
                         }
                     }
+                    Action::Extra => {}
                 }
             },
             Page::Results if self.outcome == Outcome::Complete => match a {
@@ -4473,6 +4539,7 @@ impl FrontEnd {
                     self.flow.page = PAGE_MISSION_SELECT;
                     return true;
                 }
+                Action::Extra => {}
             },
             Page::Results => match a {
                 Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
@@ -4514,6 +4581,7 @@ impl FrontEnd {
                     }
                 }
                 Action::Back => { self.cursor = 1; return self.focus_moved(); }
+                Action::Extra => {}
             },
             // Mission Stats 0x40000037 [M `Handler_HandleMessage` 0x2029e0:448 →
             // P_NFSTATS_Handler 0x209938]. The handler arms ONLY the 0x4c build [M 0x209938:31-124]
@@ -4528,6 +4596,7 @@ impl FrontEnd {
                     return true;
                 }
                 Action::Up | Action::Down | Action::Confirm | Action::Side | Action::Left | Action::Right => {}
+                Action::Extra => {}
             },
             // ── mp-menu-flow: the multiplayer front end ──
             // net-online-lobby: the port's mode choice [S docs/systems/net-online-lobby.md §2 —
@@ -4908,11 +4977,23 @@ impl FrontEnd {
                 if a == Action::Confirm { return self.mp_confirm_start(); }
                 if a == Action::Back { self.enter_page(Page::MpOptions); self.cursor = 0; return true; }
             }
-            // The debriefing [M P_MPDEBRIEFING 0x212198 + C_MPDBG 0x217860: Confirm restores the
-            // MPSettings backup and returns to the scenario page; the rematch arm (msg 0x5d)
-            // reloads the level — the port has no in-match host loop for it yet (reported)].
+            // The debriefing [M P_MPDEBRIEFING 0x212198 + C_MPDBG 0x217860 — exactly two arms
+            // (disasm 0xa8 bytes): Confirm (0x4b, ~A) restores the MPSettings backup and returns
+            // to the scenario page; Extra (0x5d, ~Y "Replay") reloads the level straight from
+            // MPSettings+0x1A8 (mp-debriefing.md §4). The port keeps the menu-side MP state —
+            // the game's restore exists because the match compacted MPSettings in place, which
+            // the port's copy never does.]
             Page::MpDebriefing => {
                 if a == Action::Confirm { self.enter_page(Page::MpScenario); self.mp_scenario_row = 0; return true; }
+                if a == Action::Extra {
+                    // C_MPDBG 0x217860:12-16: ResetMap_LevelToLoad(MPSettings+0x1A8) + the fade
+                    // push + MenuManager_Delete — the same match straight back on. The port
+                    // re-requests the arena and leaves `mp_match_settings` in place for the host.
+                    self.requested_level = Some(self.mp_level);
+                    self.flow.reset_map_level_to_load(self.mp_level, false, false);
+                    self.flow.push_state(ST_FADE_HOLD);
+                    return true;
+                }
             }
             // credits-data: the credits take no input — the handler has no input cases at all
             // (the roll cannot be skipped) [M P_CREDITS_Handler 0x2152b0's message cases].
@@ -4921,7 +5002,7 @@ impl FrontEnd {
             // arm is the hint's continue): the win page while the campaign just ended, else the
             // mission list [M 0x209670:46-57].
             Page::NfBonus => match a {
-                Action::Up | Action::Down | Action::Side | Action::Left | Action::Right => {}
+                Action::Up | Action::Down | Action::Side | Action::Left | Action::Right | Action::Extra => {}
                 Action::Confirm | Action::Back => {
                     if self.just_completed {
                         self.win_enter();
@@ -5366,7 +5447,7 @@ impl FrontEnd {
         s.team_game = (self.mp_scenario >> 29) & 1;   // [M MP_Init 0x183438:41 — the core re-derives]
         for (i, slot) in self.mp_join.iter().enumerate().take(4) {
             if !slot.joined { continue; }
-            s.players[i] = nf_game::mp::MpPlayer { team: slot.team, skin: slot.skin, armor_bonus: 0, radar_on: 1 };
+            s.players[i] = nf_game::mp::MpPlayer { team: slot.team, skin: slot.skin, armor_bonus: 0, radar_on: 1, codename: slot.codename.clone() };
         }
         self.mp_match_settings = Some(s.clone());
         // net-online-lobby: while hosting, the settings ride the session — the clients' poll
@@ -5386,7 +5467,72 @@ impl FrontEnd {
         true
     }
 
-    /// A summary line's value text for the confirm page [M P_MPDEBRIEFING — no: P_MPCONFIRM's
+    /// The match-end handover (mp-debriefing-data2) — the host calls this when the sim's MP
+    /// machine reaches state 4 (`MpGame::request_debriefing`): it mirrors `MP_Update`
+    /// 0x184bd0's case 4 navigation (`GameState+0x1C = 0x40000033` — disasm 0x184e80) by
+    /// opening the front end at the debriefing page with the board built from the match
+    /// [M P_MPDEBRIEFING 0x212198 msg 0x4c]. The level request itself stays the host's
+    /// (`ResetMap_LevelToLoad(0x7000048)` — the front-end map the host already manages).
+    pub fn open_mp_debriefing(&mut self, m: &nf_game::mp::MpMatch) {
+        self.enter_page(Page::MpDebriefing);
+        self.cursor = 0;
+        self.mp_debriefing = Some(m.debriefing());
+    }
+
+    /// The debriefing's rows (up to 4, display order) [M P_MPDEBRIEFING 0x212198:131-219].
+    /// Each entry: (rank label, name cell, portrait texture, points, victories, deaths, total).
+    /// The rank label is `nf_game::mp::debrief::RANK_LABELS[rank]`; a bot's name cell binds
+    /// `MpMatch::bot_short_name_label(character)` (None → the literal "Bot").
+    pub fn mp_debriefing_rows(
+        &self,
+    ) -> Vec<(u32, nf_game::mp::debrief::MpDebriefName, u32, i32, i32, i32, i32)> {
+        let empty = nf_game::mp::debrief::MpDebriefing {
+            rows: Vec::new(),
+            result: nf_game::mp::debrief::MpDebriefResult::Draw,
+        };
+        let board = self.mp_debriefing.as_ref().unwrap_or(&empty);
+        board
+            .rows
+            .iter()
+            .take(4)
+            .map(|row| {
+                (
+                    nf_game::mp::debrief::RANK_LABELS[(row.rank as usize).min(3)],
+                    row.name.clone(),
+                    self.mp_debriefing_portrait(row.character).unwrap_or(0),
+                    row.points,
+                    row.victories,
+                    row.deaths,
+                    row.total,
+                )
+            })
+            .collect()
+    }
+
+    /// The result line's data [M P_MPDEBRIEFING 0x212198:220-250]: (label id, the %s argument
+    /// — the codename for a non-team win, empty for a draw/team line where the label id names
+    /// the team).
+    pub fn mp_debriefing_result(&self) -> (u32, String) {
+        use nf_game::mp::debrief::MpDebriefResult as R;
+        let board = match self.mp_debriefing.as_ref() {
+            Some(b) => b,
+            None => return (nf_game::mp::debrief::RESULT_DRAW_LABEL, String::new()),
+        };
+        match &board.result {
+            R::Draw => (nf_game::mp::debrief::RESULT_DRAW_LABEL, String::new()),
+            R::Wins(name) => (nf_game::mp::debrief::RESULT_WINS_LABEL, name.clone()),
+            R::Team(label) => (*label, String::new()),
+        }
+    }
+
+    /// The debriefing portrait texture for a character id — `mp_characters_small` @0x2df8f8
+    /// row+0x00 by key [M P_MPDEBRIEFING 0x212198:159-166's Menu_GetItemFromHash lookup;
+    /// unknown ids send nothing, mirroring the game's null check].
+    pub fn mp_debriefing_portrait(&self, character: u32) -> Option<u32> {
+        MP_CHARACTERS_SMALL.iter().find(|r| r.3 == character).map(|r| r.0)
+    }
+
+    /// A summary line's value text for the confirm page [M P_MPCONFIRM's
     /// enter builds the lines with sprintf "%s : %s" @0x30d3e8: Map 0x3d4, Scenario 0x3d5,
     /// Weapon Set 0x24d, the limit line 0x3d8/0x3d7 (0x3ca Unlimited), Duration 0x3d6 (0x3ca),
     /// Friendly Fire 0x3da (0x1b7/0x1b6)].
@@ -7438,6 +7584,8 @@ pub fn key_action(key: winit::keyboard::KeyCode) -> Option<Action> {
         KeyCode::ArrowLeft | KeyCode::KeyA => Action::Left,
         KeyCode::Escape | KeyCode::Backspace => Action::Back,
         KeyCode::Tab | KeyCode::KeyE => Action::Side,
+        // ~Y/Triangle: the debriefing's Replay (C_MPDBG msg 0x5d) [M 0x217860:12-16]; a PC stand-in [S].
+        KeyCode::KeyQ => Action::Extra,
         _ => return None,
     })
 }

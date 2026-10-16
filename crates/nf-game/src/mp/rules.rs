@@ -13,7 +13,7 @@
 //! `MP_HitBy` 0x1830e0 overlap walk — the rules (team filters, state gates) are here, the spatial
 //! test is the caller's.
 
-use super::{scenario, MpMatch};
+use super::{scenario, MpEndStatus, MpMatch};
 use crate::drone::Rng;
 
 /// 60 Hz — the fixed tick (`FRAME_RATE_INT`; the game's timers count frames [M 0x1861a8:226-229]).
@@ -324,52 +324,75 @@ impl MpMatch {
 
     // --------------------------------------------------------------- who won / restart
 
-    /// `MP_SortOutWhoWon` 0x1848d0 — the decision only (state 3; texts skipped). 0x10: the unique
-    /// alive player with the fewest deaths, else a draw [M :21-54]; FFA: exactly one player
-    /// at/over the limit, else a draw [M :55-86]; team games never compare the scores here [M
-    /// :87-92].
+    /// `MP_SortOutWhoWon` 0x1848d0 — the decision (state 3) + the end status (`MpGame::end_status`,
+    /// the status sprite's text data [M :21-92]). 0x10: the fewest deaths among the live slots
+    /// under the lives limit, with the count/tie quirk [M :23-52]; FFA: exactly one slot at/over
+    /// the limit, else a draw [M :55-84]; team games always report the draw (the team winner is
+    /// the debriefing's line) [M :87-92]. The `Winner` return is the flow result (402's API); the
+    /// status carries the codename for the draw code.
     pub fn sort_out_who_won(&mut self) -> Winner {
         self.game.state = 3; // [M 0x1848d0:20]
         let limit = self.settings.frag_limit;
         if self.settings.scenario == scenario::DEATH_LIMIT_FFA {
-            let mut min = 30000i32;
-            let mut cand: Option<usize> = None;
-            let mut tie = false;
-            for i in 0..8 {
-                if self.game.slots[i].pos.is_none() {
-                    continue; // the obj != 0 gate [M :88]
+            // The survivor count increments BEFORE the min-compare and a tie at the running
+            // minimum zeroes it [M 0x1848d0:32-40] — so the draw fires only when the count is
+            // zero at the END, i.e. the LAST qualifier tied the minimum and nothing followed
+            // (a later qualifier re-increments: [3,3,1] crowns the 1). 402's tie-flag version
+            // missed the re-increment; mp-debriefing-data2 settled this from the decomp.
+            let mut count: i32 = 0; // iVar10 [M 0x1848d0:23-52]
+            let mut best = 30000i32; // iVar2's start [M :23]
+            let mut winner: Option<usize> = None;
+            for (i, slot) in self.game.slots.iter().enumerate() {
+                if slot.pos.is_none() {
+                    continue; // the obj gate [M :29]
                 }
-                let d = self.game.slots[i].deaths;
+                let d = slot.deaths;
                 if d >= limit {
-                    continue; // out — not "alive" [M :29-37]
+                    continue; // [M :31]
                 }
-                if d < min {
-                    min = d;
-                    cand = Some(i);
-                    tie = false;
-                } else if d == min {
-                    tie = true; // [M :38-40]
+                count += 1;
+                if d < best {
+                    best = d;
+                    winner = Some(i);
+                } else if d == best {
+                    count = 0; // the tie quirk [M :38-40]
                 }
             }
-            if cand.is_some() && !tie {
-                Winner::Slot(cand.unwrap())
-            } else {
-                Winner::Draw // [M :49-52]
+            self.game.end_status = match winner {
+                Some(w) if count != 0 => MpEndStatus::Won(self.settings.players[w].codename.clone()),
+                _ => MpEndStatus::Draw, // [M :49-52]
+            };
+            match winner {
+                Some(w) if count != 0 => Winner::Slot(w),
+                _ => Winner::Draw,
             }
         } else if self.settings.team_game == 0 {
-            let q: Vec<usize> = (0..8)
-                .filter(|i| {
-                    self.game.slots[*i].pos.is_some()
-                        && limit as f32 <= self.game.slots[*i].score
-                })
-                .collect();
-            if q.len() == 1 {
-                Winner::Slot(q[0]) // [M :72-78]
-            } else {
-                Winner::Draw // [M :79-84]
+            // NO obj gate — the game's FFA qualifier loop reads only the slot scores
+            // [M 0x1848d0:56-71; the decomp has no `obj != 0` test in this branch]. 402 filtered
+            // on `pos.is_some()`; mp-debriefing-data2 removed it (a qualifier needs only
+            // `frag_limit <= score`).
+            let f_limit = limit as f32;
+            let mut count = 0usize;
+            let mut winner: Option<usize> = None;
+            for (i, slot) in self.game.slots.iter().enumerate() {
+                if f_limit <= slot.score {
+                    count += 1; // [M :62-67]
+                    winner = Some(i);
+                }
+            }
+            self.game.end_status = match winner {
+                Some(w) if count == 1 => MpEndStatus::Won(self.settings.players[w].codename.clone()),
+                _ => MpEndStatus::Draw, // [M :79-84]
+            };
+            match winner {
+                Some(w) if count == 1 => Winner::Slot(w),
+                _ => Winner::Draw,
             }
         } else {
-            Winner::None // the team branch compares nothing [M :87-92]
+            // the team branch compares nothing — the status is the draw text (the team winner
+            // is announced on the debriefing) [M :87-92]; `Winner::None` keeps 402's flow result.
+            self.game.end_status = MpEndStatus::Draw;
+            Winner::None
         }
     }
 

@@ -223,6 +223,7 @@ fn every_objective_text_wraps_inside_the_banner_box() {
                         text: line, time: 300.0, status: 0x0200_0051, failed: false, life: 300.0, opened: true, second: true,
                         label: 0, // fix-context-hints added the provenance id (0 = pre-bound text)
                         script: false, // fix-ladder-water added the script-subtitle flag (this is an objective line, not a subtitle)
+                        sfx1: true, // objective-banner-timing: the case-3 chime already fired (second: true pairs with it)
                     });
                 }
                 let frame = nf_view::hud::overlay(&scene, aspect);

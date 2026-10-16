@@ -14479,6 +14479,39 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
 
+## guard-reaction-delay — guards don't fire the instant they see you (started 2026-10-16)
+Playtest: "guards shoot way too soon upon spotting you, at least give it half a second", "his gun's firing before it lowers at me" (07000006 wine cellar, searchlights, 07000005). Porting the game's sight-to-fire pipeline: noticed/alert latch timers, the aim-raise animation gate, the first-shot delay / reaction time (per difficulty if scaled), the searchlight-spot path. Branch s/guard-reaction-delay.
+
+### guard-reaction-delay progress (2026-10-16 ~07:50 UTC)
+
+- Verified the pending CombatNoRoute change against the decomp: [M 0x164c08:29-30] case 1 (ENTER) fires
+  `DroneWeap_Fire(1)` and then clears `+0x3b` on the same tick (the entry tick cannot release a bullet);
+  [M 0x164c08:41] case 3 not-seen clears `+0x3b` before ChooseCombatMove; [M 0x164c08:63] case 3 seen only
+  refreshes `+0x3b = (+0x1e == 0)` — no NextBulletTime (no writer of Drone+0x1e exists in the decompiles, so the
+  byte is 0 and the refresh is always 1). [M 0x17a8c0:9-14] DroneWeap_Fire gates NextBulletTime on `+0x3b` already
+  set in SP (`MPSettings._388_4_ == 0`) — the port's `fire()` guard matches.
+- New test crates/nf-game/tests/guard_reaction_live.rs measures the three sighting paths (07000005, the ai_live
+  notice spot, positions only):
+  - path1 fresh idle: sight ack 60 (live 61), ATTACK 60, first combat move 0x74 StepAimRight, first bullet 161.
+  - path2 alert-1.0 (alarm-raised): self-attacks during the warm-up (AlertSound 0x177800 forced-attack bits, no
+    sighting needed), sight ack tick 1 — the 59-tick floor is gone; first bullet 114 (a 100-frame step was in
+    flight when Bond appeared).
+  - path3 mid-combat re-sight: re-sight → COMBAT_NEW_SIGHTING → AimStandFire in 0-2 ticks (the entry fire
+    0x166328:59-61); at dist ≤ 4.0 CanBackoff routes AimBackoff first (0x166328:96-102), so no bullet until the
+    backoff ends.
+- KEY finding (anim call completion): a class-3 danim call (the step/strafe moves) never completes in the port —
+  guards sat in StepAimRight forever. The game's chain [M 0x13add0/0x13aee8]: when the transition danim of the
+  call's state starts, `+0x57b` (reached) is set and `ZeroAnimCall` clears the request record but the completion
+  action (+0x596 next AI state / +0x598 msg) SURVIVES; class 3 skips CallFullyComplete, so the call completes only
+  when the step's FOLLOW-ON danim (class 2) starts after the anim ends — reached is still set and the follow-on's
+  class 2 triggers `CallFullyComplete` → SetEndAIState(+0x596=0x68). The port's `call_handler` gate
+  `matches!(class, 2|9) || (class == 1 && !once)` blocks class 3 forever, and the step danim here is a 100-frame
+  one-shot (hash 100664390, anim set 5), so the guard steps the full 1.67 s, cannot fire during it
+  ([M 0x1676a0:16-18] the step enter clears `+0x3b`, no Fire in the step update, and steps do not abort on sight),
+  then AimStandFire releases. The port already mirrors this end-to-end (set_danim keeps the call + reached);
+  the 100-frame step play-out is game-exact behavior, not a stall — the earlier "stuck in 0x74" trace was the
+  test's 120-tick window, not a bug.
+
 ## stun-ai-recover (2026-10-16, branch s/stun-ai-recover) — the stunner's stunned drone state, started
 
 - Playtest 1015-1738: stunner guards "get stunned infinitely and don't complete the animation".
@@ -15179,6 +15212,32 @@ menu-audio-state (2026-10-16)
   cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
   (live checks 1-3).
 
+## guard-reaction-delay2 (2026-10-16, branch s/guard-reaction-delay2) — landed (664's entry-tick block; B/C held with findings)
+- Task 664b: land 664 (s/guard-reaction-delay, reverted as held) without breaking the measured
+  fix_guard_weapons_live 3x3 hit-rate/damage matrix. Plan: branch master + merge 664, reproduce the
+  4/4 standalone failures, bisect which part of 664 shifts the fire streams (first-shot delay vs
+  aim-raise gate vs RNG draw order), port it so the matrix stays green on origin/master + this branch.
+- Full 664 reproduced on the exact merged tree (origin/master e416e5f0 + 664): the 3x3 matrix fails
+  deterministically, same-process single-threaded. Bisected 664's three edits (A: the enter's
+  `+0x3b=0` after `DroneWeap_Fire(1)`; B: the not-seen UPDATE's `+0x3b=0`; C: the seen refresh
+  replacing `Fire(1)`), one variant per run on the same tree: pre-664 PASS (d3/0x12 127/200); A PASS
+  (141/200, 3 runs); B FAILS the damage pin (a <3.0 close pass the matrix model does not cover);
+  C alone byte-identical to pre-664; A+C FAILS byte-identical to full-664 (125/200) => B never fires
+  in the measured scenarios and the shift is the A×C seen-window draw order: with A clearing the
+  request on the enter, the port's next-tick seen `Fire(1)` re-schedules (NextBulletTime draws) where
+  the game's refresh arm sets `+0x3b` before its own Fire guard and never re-schedules
+  [M 0x164c08:63, 0x17a8c0:9-14].
+- LANDED: A only (drone.rs CombatNoRoute ENTER, `self.firing = false` after Fire(1) [M 0x164c08
+  case 1 last line]) — the user-visible entry-tick delay with the matrix green (d3/0x12 0.705 vs
+  model 0.750). B held pending the close pass being modelled/live-checked; C held pending the
+  `Drone+0x3d` burst-finished latch [M 0x171df8:160] + HandleFiring's request auto-clear
+  [M 0x17a180:37-45] so the seen-window draw order matches. No tolerance changes.
+- Verified: guard_reaction_live green (three sighting paths pinned); fast suite on the final tree
+  (HEAD contains origin/master e416e5f0): 408 binaries, 1804 passed, 7 failed, 72 ignored — the 7
+  all master-side/environmental (3 disc_golden slim-ISO allowance; fix_0c_pylon_live x2 +
+  probe_pylon_render no-GPU wgpu; driving_ai_follow mis01 rNgp on the slim ISO, master test merged
+  11:17 UTC today) — and both task binaries green (fix_guard_weapons_live 3/3, guard_reaction_live
+  1/1). Report: docs/reports/guard-reaction-delay2.md (3 live-check asks for the B/C follow-up).
 ## pickups-08 (2026-10-16, branch s/pickups-08) — start
 - Task: the briefcase and the rocket launcher in the 07000008 safe room refuse pickup in playtests
   1012-2337 / 1013-1758. Find why each refuses (placement types and pickup kinds [M Pickup_Create
@@ -15618,3 +15677,186 @@ must be faded/off those actors when it plays.
   measured live. LANDED: the dot-gated reflect [M 0x12d5f0-0x12d600], the 20-bounce cap on the
   reflect arm [M 0x12d578-0x12d57c], the park before the reflect. Tests green: grenade_rattle_live
   4/4, grenade_live 2/2, ai_live 35/35, fix_grenade_types_live 3+1 ignored.
+## mp-debriefing-data2 (2026-10-16, branch s/mp-debriefing-data2) — STARTED
+
+- Task: land 621's (s/mp-debriefing-data, HELD) debriefing on top of master's 402 (s/mp-match-rules)
+  match rules: keep 402's single MP_Update/MP_CheckForEndCondition state machine, port only what 621
+  adds on top (mp/debrief.rs board, end status + handover/debriefing/restart requests, Top Agent
+  elimination input, Action::Extra arms). Reconcile disagreements from the disassembly.
+- Reconciled 621 onto 402 (all from the decomp, `work/decomp/ACTION.ELF/`): (1) the demo/prot
+  arm enters state 6 WITHOUT latching switch_channels[0xfe] [M 0x184268:57-60] — 402 latched it
+  and returned early, skipping the shared frag latch + final dispatch (decomp lines 170-184 run
+  for demo/prot too; only 0x10 jumps past the latch); (2) the general 0xfe latch has no
+  `limit > 0` gate [M :142-143] — 621's `limit > 0.0 &&` was wrong (that gate is the demo/prot
+  state-6 arm's alone); (3) the state-6 restart fires at `5.0 < timer` STRICTLY [M 0x184bd0:85]
+  — 402's `>=` was wrong; (4) MP_SortOutWhoWon's 0x10 count re-increments after a tie-zero
+  [M 0x1848d0:32-40] — 402's tie-flag missed it ([3,3,1] crowns the 1, 402 drew); (5) the FFA
+  qualifier loop has NO obj gate [M :56-71] — 402's pos filter was wrong; (6) 621's caller-marked
+  `out` folded into 402's `death-path` dead flag (the state-byte stand-in; the 0x02 alive
+  exemption and the 0x02→0x11 flip are unobservable in the port); (7) MpGame gains
+  handover_flag/request_debriefing/restart_pending/end_status; 621's top_score = 402's high.
+- Added mp/debrief.rs (get_mp_score 0x203af8 + debriefing 0x212198), MpPlayer.codename (+0x00),
+  menu.rs: Action::Extra (KeyQ [S]) + arms, MP_CHARACTERS_SMALL [L 0x2df8f8], the page consts,
+  open_mp_debriefing + rows/result/portrait getters, the C_MPDBG 0x5d replay arm, the confirm's
+  codename handover. Tests: nf-game/tests/mp_debriefing.rs (10) + nf-view/tests/mp_debriefing_flow.rs
+  (6) adapted from 621; 402's mp_match_rules (14) all green on the merged machine.
+
+## mp-debriefing-data2 (2026-10-16, branch s/mp-debriefing-data2) — DONE
+
+- Merged origin/master mid-task (the driving batch + the online-MP chain): the mp/mod.rs conflict
+  was both sides' module declarations (debrief + hash + replay all kept); menu.rs auto-merged and
+  the new Rewards/Gadgets/Weapons pages got their idle Action::Extra arms; WORKLOG both kept.
+- Suite: foreground slices (the sandbox reaps background jobs) over all 364 binaries on the
+  branch tree: 1565 passed / 7 failed / 66 ignored — the 3 disc_golden (allowed on the slim ISO),
+  3 no-GPU wgpu probes (probe_pylon_render, fix_0c_pylon_live), 1 TIMEOUT at the 480 s cap on the
+  pre-existing walkreal_07000001_live full-level walk. On the final merged tree: nf-game FULL
+  452/1/2 (the 1 = driving_ai_follow's real-data walk, pre-existing on master's tip — driving/ is
+  byte-identical to origin/master on my branch) + the MP slice 87/0 + the nf-view menu-flow set
+  85/0. Details in docs/reports/mp-debriefing-data2.md.
+- Report: docs/reports/mp-debriefing-data2.md (the reconciliation table, the verification, 5
+  live-check asks); systems doc docs/systems/mp-debriefing.md.
+
+## cross-process-determinism (2026-10-16, branch s/cross-process-determinism) — start
+- Branch created from origin/master (e416e5f0). Task: the sim must give the same result in every
+  process — 664's guard-reaction matrix test measured different streams in different processes
+  (same cell 125/200 in a suite run, 153/200 standalone). Plan: reproduce (10 standalone runs of
+  that test binary, per-cell numbers), audit every HashMap/HashSet iteration that feeds sim state
+  / RNG draws / AI decisions in nf-game and nf-view's Sim glue (RandomState is per-process),
+  replace with BTreeMap/IndexMap or sorted iteration, add a two-process 600-tick 07000005 combat
+  guard test requiring bit-identical per-tick state hashes (mp/hash.rs), plus the sister toy-map
+  test that trips the guard.
+
+## cross-process-determinism (2026-10-16, branch s/cross-process-determinism) — close-out
+- THE REPRO (task step 1): `fix_guard_weapons_live`'s matrix test run 10× standalone
+  (NF_SILENT alternating), plus one whole-binary and one suite-context run, in the worker sandbox
+  on the slim ISO — all nine per-cell numbers identical to the digit every run (e.g. 0x0e/d1
+  82/200, 0x12/d1 88/200, 0x16/d3 190/200, same guards, same distances, same per-hit damages).
+  The 664 split does not reproduce on the current tree; the merged fix-guard-weapons3 gate-clean
+  filter (its own doc records the pre-fix re-rolled stream reading 0.52 vs model 0.975) explains
+  the original observation.
+- THE AUDIT (task step 2, subagent + hand verification): every HashMap/HashSet in
+  nf-game/nf-view/nf-formats/nf-net classified by what its iteration order feeds. Tick entity
+  lists are all Vecs; the shared Rng (drone.rs:387, seeded 0x1234_5678 in Scene::build) sees only
+  deterministic code. Six order-dependent sites fixed: physics.rs `Tuning::get` (HashMap prefix
+  tie-break → BTreeMap + (len,key)), scene.rs `by_hash` + `seqs` (skeleton-bucket last-wins over
+  HashMap order → ascending skeleton id), scene.rs `view_model_chars` (values() order → build-loop
+  order), weapon_assets.rs foreign-skins merge (HashMap order → ascending hashcode),
+  nf-net session.rs desync-compare order (→ ascending tick). The rest verified lookup-only or
+  order-insensitive (list in the report).
+- THE GUARD (task step 3): `crates/nf-view/tests/cross_process_determinism.rs` + the child runner
+  `crates/nf-view/src/bin/nf-cpd-child.rs` (via CARGO_BIN_EXE_, no libtest in the child). 600-tick
+  07000005 combat (Bond parked in a live guard's sight, NewSighting gate, real fire/cover draws)
+  fingerprinted per tick with mp::hash::Hasher (FNV-1a 64 over IEEE bits; frame → rng → bond →
+  drones → bullets → grenades → explosions). GREEN: two full sim builds — bit-identical for all
+  600 ticks (two builds ⇒ every std HashMap re-seeded ⇒ different iteration orders); the trip
+  sister — a 64-entry toy HashMap folded into a separate column diverges from tick 91
+  (4e3009c91fe1cc63 vs 27e7d6277a72cab3) while the state column stays bit-identical. The
+  two-process leg (child runner, NF_OUT file) SKIPs with evidence in this sandbox (see below) and
+  runs the honest cross-process comparison where process semantics are honest.
+- SANDBOX QUIRK (cost the bulk of the session, documented): a libtest parent's spawned
+  grandchildren misbehave here — Command::output()/status() return while the child still runs
+  (captured stdout ends mid-load), the child's own file creations stay invisible to the live
+  parent (they appear after the tool call), and the child's stderr only reaches the parent's
+  original stdio. A plain parent (shell or a standalone Rust spawner: spawn + file stdio + poll)
+  runs the same child perfectly in ~2 s. The child keeps both channels (NF_OUT file + stderr TICK
+  stream) so the cross-process leg works on honest machines.
+- Touched crates run before the push: nf-view guard suite 3/3 green (7.9 s); the full fast suite
+  on the final tree totals in the report. nf-net/nf-game/nf-audio results ride the suite's
+  per-binary lines.
+
+## objective-banner-timing (2026-10-16, branch s/objective-banner-timing) — start
+- Task: playtests 1012-1723 / 1012-2337 (07000007) — the objective banner (and its "new objective"
+  sound) plays DURING the Kimiko cut-scene; the game gates it until the scene hands back. Port the
+  gate: how Text_AddMsg / the objective-message queue hold while an NIS / script camera runs [M the
+  message update's NIS check, Mission_ObjectiveState], and when the "new objective" sound plays.
+- Tests on 07000007's Kimiko scene: banner + sound appear only after the scene hands back; sister:
+  outside a cut-scene the banner shows immediately.
+- Plan: find the objective banner path in the port (the HUD message queue + the sound trigger),
+  find the game's NIS/cut-scene hold in the message update (Text_AddMsg callers, the NIS check),
+  port it, test both sides (during-NIS held, non-NIS immediate).
+
+## objective-banner-timing (2026-10-16, branch s/objective-banner-timing) — close-out
+- Verified the 07000007 banner/sound gate end-to-end and closed the gaps the prior fix's tests
+  left. The gate itself was already on master (fix-objective-banner): `Text_UpdateMsg` 0x1b11d8:
+  16-18 returns 0 while the viewer's +0x2a HUD gate is off (set by `Script_CameraStart`
+  0x1d9140:41-49 — all 7 viewers disabled, the cinema viewer re-enabled at 4 — restored by
+  `Script_KillStream` 0x1d9860:71-72; `Camera_Enable` 0x1b9920 writes +0x29/+0x2a), so
+  `HUD_UpdateStatusPane` case 0 (0x19c310) can never open the pane mid-cut-scene; the port's
+  `hud_frozen` mirrors it and all four HUD panes skip while set. Mission_Update at the Drones::tick
+  top keeps the announce behind the scene's camera gate. All 13 prior banner/cutscene tests green
+  on the fresh master.
+- THE gap closed: the open chime's exact shape. The game's case 2 only SCHEDULES PlayMe1st/2nd
+  [M 0x19c310:148-164]; case 3 — the NEXT pane frame — fires PlayMe1st in the flash window
+  (remaining + 60 > life) ONLY while `ScriptCam == 0` [M 0x19c310:219-229]. The port played the
+  chime at open with no camera check, so a scene starting the tick after a banner's open chimed
+  during the cut-scene where the game holds it (the frozen timer keeps the flash window alive to
+  the hand-back). Ported: `Msg::sfx1` (new field, own line), case 2 = open only, case 3 = the
+  chime on the first unfrozen pane frame inside the flash window; 469 rides the steady branch
+  after the 1st [M 0x19c310:232-235]. mission.md's queue row refreshed.
+- Tests (crates/nf-view/tests/objective_banner_timing_live.rs, 3, all green): the sister —
+  outside a cut-scene the banner opens the tick it queues and 1532/469 play in the case-3 shape
+  (opened 1 → 1532@2 → 469@60, hud_frozen false throughout); the carry — the 06→07 carry with a
+  finished-06 mission snapshot (RamSave::with_mission) walks the real #412 trigger: no banner SFX
+  and no display from the trigger to the hand-back (+4326), then 468 at the hand-back, the Spy
+  announce opens at +177 with 1532@178/469@237; the flash-window hold — a banner opened at t=0
+  with the scene from t=1 keeps the pane open, holds the chime through the whole scene and fires
+  it at the hand-back (+0).
+- Probes (superseded by the tests): cold 07000007 has NO intro cut-scene (hud_frozen 0 ticks) —
+  the load announce shows at once, which IS the game's shape (no camera at the load); the carry
+  announces the carried COMPLETE at t=0 (468) and queues "Rendezvous…" at t=1, both with no
+  camera — the monitor's state-3 arm on the carried record [M 0x1827d8 case 3], the game's own
+  cold-load behaviour.
+
+## ladder-02 (2026-10-16, branch s/ladder-02) — STARTED 12:46 UTC
+Task 691: ladders on 07000002 (the bunker and the water) — playtests 1011-1732 / 1014-1725: no
+camera movement while on ladders; mounting unequips the weapon and dismounting never re-equips;
+infinite re-latch when climbing off the bottom into the water. Plan: port the ladder state
+machine's look limits, the weapon holster/redraw, and the dismount-at-bottom-into-water checks
+[M Ladder_* / the player's ladder state in Player_Update, the dismount checks]; headless tests on
+02's water ladder and the bunker ladder (look within the game's clamp, dismount top+bottom with no
+re-latch, weapon returns after dismount).
+
+## ladder-02 (2026-10-16, branch s/ladder-02) — 14:18 UTC
+Task 691: the 07000002 ladders (the bunker exit + the pond hut) — playtests 1011-1732 /
+1014-1725: no camera movement on ladders; the grab unequips the weapon and the dismount never
+re-equips; "I'm infinitely latching onto the ladder, and I can't get off of it" (climbing off
+into the water). State on master: fix-ladder2 already ported the climb look [M Player_Climb
+0x196310:18-33 + Player_Update 0x193600 + Player_Aiming 0x1a1d28 + ViewClamping 0x1a92e8], the
+weapon save/redraw [M Player_WeaponNone 0x1a9858 + the 0x196310:99-102 carry + SetWeaponAnimObj
+0x1a2e38:197-201] and fix-ladder-water(2) the swim reach + the walk-on grab; FRAME_RATE_DIV = 1.0
+[L 0x30d0d4] re-verified (the InWater regrab is (u8)(1.0·5.0) = 5 [M 0x195e50:27]). This task's
+work: (1) the lock on BOTH 02 ladders — crates/nf-view/tests/ladder_02_live.rs: the bunker ladder
+(walk-on grab → the snap centre+fwd·0.5 [M 0x196118:36-44] → hands 0x47 with the P2K saved → the
+turn/pitch look inside the eased ±90° window and ViewClamping ±1.0 → the top lunge dismount [M
+0x196310:54-62] → no re-latch on the roof → the P2K back through the draw cycle); the pond hut
+ladder (the swim grab → up → climb DOWN → the bottom-into-water dismount → the swim entry regrab →
+a continuous push-off swims free (300 ticks, no re-latch, out of the grab column) → the weapon
+returns after the bottom dismount); the sister: swimming back INTO the hut ladder still grabs and
+climbs. (2) THE FIX: the climb hit-below read [S stand-in for the CollisionHandler's climb scan]
+now uses the player's WATER-FILTERED world (segment_hit drops mat 0xE, like the grounding ray and
+the capsule [M 0x194188's cel scoping]): the climb-down over the pond no longer dismounts on the
+water bed mid-column (root 4.47 → the climb continues under the surface). KNOWN DIVERGENCE (the
+report's live checks): the deep pond bed (material 10, y≈2.09 under the hut ladder — NOT mat 0xE)
+still stops the hit-below ray 0.44 above the bottom threshold (2.83), so the flat-world dismount
+lands the swimmer at 3.27, inside the grab window AND inside the ladder's authored mesh (probed
+directly: the hut ladder's celglist resolves through the synthetic (map,object) key 0x8033012b —
+100 triangles — and its capsules HIT the settle spot); a NEUTRAL pause after the dismount
+re-latches once the 5-tick regrab expires. Whether the real game re-latches the neutral settle
+turns on the climber's cel (the game's cel-scoped climb scan vs the bed living in the water cel) —
+a live check is listed in the report. ADDENDUM (the fix's final form): the hit-below read is the CEL-SCOPED straddle ray
+(segment_hit_scoped(self.cel, …) — the game's own mechanism [M Player_FeetOnPoint 0x194188 →
+Collide_StraddleCels 0x1eac98]; the material filter was the interim form): with Bond in the garden
+cel the water cel's bed is outside the straddle set, the climb-down runs UNDER the surface to the
+bottom threshold, and the dismount lands at root 2.811 < bottom 2.830 (asserted) — below the grab
+window's strict lower bound. The residual neutral-settle re-latch is the pond bed's capsule-push
+equilibrium (the solid mat-10 bed at y≈2.09 pushes the swim spine up to a root of ≈3.20, inside
+the window and inside the ladder's authored mesh — the game's own collision settles him the same
+way); the test locks the natural get-off (the continuous push-off from the dismount tick: 300
+ticks free, out of the grab column) and lists the neutral settle as a live check.
+Tests run before push: ladder_02_live (3/3) + nf-game (49 binaries green) + the ladder/swim
+regression set (fix_ladder2_live, fix_ladder_water_live, fix_ladder_live, fix_swim_live,
+fix_swim_entry_live, fix_swim_vent_live, fix_swim_vent5_live, walkreal_07000005_live — all green).
+
+LADDER-02 FINAL SUITE (14:16 UTC): the final-tree fast-runner total `1808 passed, 6 failed,
+72 ignored (42 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes; no
+regressions from the cel-scoped hit-below fix.
