@@ -14578,3 +14578,20 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   the Door_Activate call, wait-for-open, locked/scripted refusal — then tests: Mayhew's escort route
   through its door, a 07000006 guard chasing Bond through a closed door, a locked door refusing drones,
   and sister assertions that a closed door still blocks a drone that doesn't open it.
+
+## npc-doors (2026-10-16, branch s/npc-doors) — close-out
+- Fixed the route follow's permanent block: `LinkCreep_Decrement` 0x15a148 at creep step 0 calls
+  `AINetwork_SetupNextNode(-1)` — the route steps back a node and re-creeps (the game never
+  hard-blocks there; the 9/0xc terminal codes come through the route+2 latch [M 0x15b110]). The
+  port returned BLOCKED forever, so every followed route (mission/patrol/chase/0x63) wedged the
+  first time its straight line grazed an AI wall end (repro: the 0x63 Mayhew wedge at
+  (2.4,4.3)→(4.8,5.8), 0.096 off the boundary corner at (3.88,5.75,5.11)).
+- Fail-first: the escort test without the fix parks Mayhew at (3.2,7.4) 4 short of the shoji for
+  60k ticks (the playtest's "escort stalls at doors"); with it: 0x81 at +3730, the shoji OPEN at
+  +3760 with Bond 9.5 away and no E, crossed at +3818. Green on the merged tree too.
+- Tests: crates/nf-view/tests/npc_doors_live.rs — the escort no-E shoji walk, the 05 locked-door
+  refusals + the closed-door-blocks sister, and the 05/06/07 census + 07 watch + wall probes.
+  nf-game lib 234/234 (both trees); branch-point suite 1700/6/66 (the allowed set); the final-tree
+  suite re-run started in the sandbox's last minutes (suite2.out — read `tail -1` next session).
+- Report: docs/reports/npc-doors.md; remaining: the 06 combat-chase variant, the 07 party girls'
+  missing AssignAIPath(8) routes (a route-assignment gap, not doors), the backward-creep half [S].
