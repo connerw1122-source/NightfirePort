@@ -6527,7 +6527,16 @@ fn results_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: 
                     tex_quad_or_plate(h, textures, rf.emblem, 135.0, 80.0, 370.0, 186.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
                     // The medal plate 0x100001d1 [M :159-161]: the medal name / no-medal line.
                     plate(h, 49.0, 264.0, 541.0, 37.0, gs(0x1e1210, 0x60));
-                    h.text(Anchor::Centre, font, -2, &rf.medal_text, mx(49.0 + 270.0), my(264.0 + 18.0), false, bright, false);
+                    // The bound text carries its own line break ("Congratulations!\nYou won a …");
+                    // each line centres in the plate (it drew left-aligned from the plate's centre
+                    // and ran off the screen on the live end sequence).
+                    let lines: Vec<&str> = rf.medal_text.lines().filter(|l| !l.trim().is_empty()).collect();
+                    let n = lines.len().max(1) as f32;
+                    let scale = if n > 1.0 { 0.8 } else { 1.0 };
+                    for (k, l) in lines.iter().enumerate() {
+                        let y = 264.0 + 18.5 + (k as f32 - (n - 1.0) / 2.0) * 16.0;
+                        centred(h, font, -2, l.trim(), mx(49.0 + 270.5), my(y), bright, false, scale);
+                    }
                     // "Total Score:" is the page's own static label [L]; the number 0x10000167 is
                     // SeparateNumber(+0x34) [M :96-97].
                     h.text(Anchor::Centre, font, -2, &lbl(0x2cb, "Total Score:"), mx(48.0 + 132.0), my(336.0 + 8.0), false, cream, false);

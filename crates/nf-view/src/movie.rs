@@ -214,6 +214,9 @@ impl Player {
 
     pub fn code(&self) -> u32 { self.code }
 
+    /// Seconds since the first frame was presented (0 before any frame showed).
+    pub fn shown_for(&self) -> f32 { self.started.map_or(0.0, |s| s.elapsed().as_secs_f32()) }
+
     /// True when this player loops its file (the front end's backdrop [M 0x21c858:338 loop = 1]);
     /// the mission-flow players never do.
     pub fn is_looping(&self) -> bool { self.looping }

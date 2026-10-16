@@ -1613,6 +1613,11 @@ struct App {
     frame_ticks: u32,
     /// The paused menus' 60 Hz accumulator (seconds) for the animations that run while the game is paused.
     menu_clock: f32,
+    /// The sim reported the mission's own end this frame (see `Drones::mission_end`).
+    pending_mission_end: bool,
+    /// Dev `--set-channel <ch>`: a switch channel raised 2 s into the level (channel 100 = mission
+    /// success — what scratchpad complete.py writes in PCSX2), for end-of-mission checks.
+    force_channel: Option<u8>,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -1712,7 +1717,10 @@ impl App {
         // up during a movie]. The port's Confirm keys (Enter/Space) stand in for
         // the pad's X/Start [S docs/systems/input.md §3].
         if fe.flow.get_state() == menu::ST_MOVIE {
-            if a == MA::Confirm { fe.flow.skip_movie(); }
+            // A movie can't be skipped in its first second on screen: the press that picked the
+            // mission (or a quick double-tap) used to skip its briefing before a frame showed.
+            let shown = self.movie.as_ref().map_or(f32::MAX, |p| p.shown_for());
+            if a == MA::Confirm && shown >= 1.0 { fe.flow.skip_movie(); }
             return;
         }
         if fe.page == menu::Page::Pause && a == MA::Back {
@@ -2061,12 +2069,14 @@ impl App {
         // :77 GetScore(0) + :169 Menu_SetLevelBonus] — the fields the overlay draws
         // (front-end-chain). GameState+0x72 is BaseMap [M 0x182c60:68-70's clamp].
         if complete {
-            let lang = self.lang.as_ref();
+            // The front end's language table isn't loaded while a mission runs — fall back to the
+            // level's own (the medal name drew as a raw "<0x2c7>" on the live end sequence).
+            let lang = self.lang.clone().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.clone()));
             if let Some(sim) = self.scene.sim.as_mut() {
                 let b = sim.drones.mission.base_map;
                 let base = if b == u32::MAX || b == 0 { self.level_code } else { b };
                 let diff = sim.drones.progress.difficulty;
-                fe.results_enter(&mut sim.drones.progress, base, 6, diff, lang);
+                fe.results_enter(&mut sim.drones.progress, base, 6, diff, lang.as_ref());
             }
         }
         self.fe = Some(fe);
@@ -2700,7 +2710,14 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
-                    if let Some(a) = menu::key_action(k) { self.menu_input(a); }
+                    // Windows key auto-repeat never confirms, backs out or skips: the game's actions
+                    // are edge-triggered [M Input_Action(.., 1)], and a held Enter's repeats skipped
+                    // the briefing the moment it started (playtest 1015-2231 "no intro"). Held
+                    // arrows still scroll.
+                    if let Some(a) = menu::key_action(k) {
+                        if event.repeat && matches!(a, menu::Action::Confirm | menu::Action::Back) { return; }
+                        self.menu_input(a);
+                    }
                     return;
                 }
                 // fix-ingame-dev-menu: while the dev menu is open, the keys drive the menu and never the game
@@ -3093,6 +3110,10 @@ impl ApplicationHandler for App {
                         // 0700004a's pack cut-scene → the 0x0720004a movie code) — resolve the movie/wrapper
                         // codes the way the game's load pipeline does [M 0x1d3800 + 0x1d6360 phase 2 +
                         // 0x1d3560; nf_game::triggers::resolve_exit_code].
+                        if let Some(end_to) = sim.drones.mission_end.take() {
+                            eprintln!("level: mission over (LevelToEndTo {end_to:08x}) — the outro + results");
+                            self.pending_mission_end = true;
+                        }
                         if let Some(next) = sim.drones.level_exit.take() {
                             let resolved = nf_game::triggers::resolve_exit_code(next);
                             if resolved != next { eprintln!("level: exit {next:08x} resolves to {resolved:08x} [M 0x1d3560]"); }
@@ -3141,6 +3162,14 @@ impl ApplicationHandler for App {
                     }
                     // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
                     if let Some(d) = self.dev.as_deref_mut() { d.after_tick(&mut self.scene); }
+                    // The mission's end sequence (`Mission_Update` case 4 → `ResetMap_LevelToLoad`
+                    // of the outro or the front end): the same front-end path the F8 hook drives.
+                    if let Some(ch) = self.force_channel {
+                        if let Some(sim) = self.scene.sim.as_mut() {
+                            if sim.drones.frame >= 120 { sim.drones.set_channel(ch); self.force_channel = None; eprintln!("[dev] channel {ch} raised"); }
+                        }
+                    }
+                    if std::mem::take(&mut self.pending_mission_end) { self.demo_results(true); }
                 }
                 let Some(g) = &mut self.gfx else { return };
                 if g.minimized {
@@ -3579,7 +3608,8 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let force_channel = if dev { args.iter().position(|a| a == "--set-channel").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u8>().ok()) } else { None };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, pending_mission_end: false, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
         net: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,
