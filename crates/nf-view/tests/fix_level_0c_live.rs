@@ -98,19 +98,48 @@ fn burning_the_four_hinges_opens_the_display_vent() {
         }
     }
     let burned = sim.drones.locks.iter().filter(|l| (14..=17).contains(&l.out) && l.burned).count();
-    // The playhead rate: #138 rate 50 over 5 key-units = 250 ticks; give 300.
-    for _ in 0..300 { sim.step_bond(Input::default(), false, false, false); }
+    // The sweep: #138 (6 keys, rate 50 [D]) takes ~50 ticks — SS_Create's ext+0x04 is
+    // (key count − 1)/rate per tick [M 0x1a9c58 + 0x1a9948:107]; #179 (2 keys, rate 10) ~10.
+    // The game's playhead WRAPS to 0 after passing the last key [M 0x1a9948:119-128], and with
+    // p1=1 [D #96/#114 params] the wrap disarms to state 0 — one sweep, then the object holds its
+    // end pose forever (states 0/0x40 never re-pose [M 0x1a9948:75-83]). The observable is the
+    // reached-last-key tick + the held pose, not a parked playhead (t == last was the old
+    // channel-seek model's invention).
+    let (t138_done, t179_done) = {
+        let sim = scene.sim.as_mut().unwrap();
+        let ss138 = sim.drones.sss.of_placement(138).expect("ventmesh-front SS exists [D #138]");
+        let ss179 = sim.drones.sss.of_placement(179).expect("VentBlockingPoly SS exists [D #179]");
+        let (mut d138, mut d179) = (None, None);
+        for tick in 1..=300u32 {
+            sim.step_bond(Input::default(), false, false, false);
+            let (t138, t179) = (sim.drones.sss.list[ss138].t, sim.drones.sss.list[ss179].t);
+            if d138.is_none() && t138 >= 5.0 { d138 = Some(tick); }
+            if d179.is_none() && t179 >= 1.0 { d179 = Some(tick); }
+            if d138.is_some() && d179.is_some() { break; }
+        }
+        // Settle past the wrap: t crosses (int)last only after the f32 accumulation carries it a
+        // full key-unit past (the port's `last as i32 < t as i32` trunc check [M 0x1a9bdc-0x1a9c10]).
+        let sim = scene.sim.as_mut().unwrap();
+        for _ in 0..30 { sim.step_bond(Input::default(), false, false, false); }
+        (d138, d179)
+    };
     let sim = scene.sim.as_ref().unwrap();
     let ss138 = sim.drones.sss.of_placement(138).expect("ventmesh-front SS exists [D #138]");
     let ss179 = sim.drones.sss.of_placement(179).expect("VentBlockingPoly SS exists [D #179]");
-    let t138 = sim.drones.sss.list[ss138].t;
-    let t179 = sim.drones.sss.list[ss179].t;
     let blocked = ray_hits(sim);
     let ch18 = sim.drones.channels.on(18);
     assert_eq!(burned, 4, "the aimed beam burns all four hinges [M 0x1ae3d8 case 0]");
     assert!(ch18, "the AND mux #505 raised ch 18 [D #505 list 14,15,16,17]");
-    assert!((t138 - 5.0).abs() < 0.01, "ventmesh-front played to its last key (t {t138:.2})");
-    assert!((t179 - 1.0).abs() < 0.01, "VentBlockingPoly played to its last key (t {t179:.2})");
+    assert!(t138_done.is_some_and(|d| d <= 55), "ventmesh-front (#138, rate 50) sweeps in ~50 ticks [M 0x1a9c58 + 0x1a9948:107], got {t138_done:?}");
+    assert!(t179_done.is_some_and(|d| d <= 13), "VentBlockingPoly (#179, rate 10) sweeps in ~10 ticks, got {t179_done:?}");
+    assert_eq!(sim.drones.sss.list[ss138].t, 0.0, "the playhead rests at 0 after the wrap [M 0x1a9948:120]");
+    // The end poses held: the hatch is OPEN and the blocker RISEN [M states 0/0x40 never re-pose].
+    let last138 = (sim.drones.sss.list[ss138].keys.len() - 1) as u16;
+    let last179 = (sim.drones.sss.list[ss179].keys.len() - 1) as u16;
+    let open138 = nf_game::door::interp(&sim.drones.sss.list[ss138].keys, 0, last138, last138 as f32, sim.drones.sss.list[ss138].spline).unwrap();
+    let risen179 = nf_game::door::interp(&sim.drones.sss.list[ss179].keys, 0, last179, last179 as f32, sim.drones.sss.list[ss179].spline).unwrap();
+    assert_eq!(sim.drones.sss.list[ss138].matrix, open138, "ventmesh-front holds the open pose [M 0x1a9948 wrap]");
+    assert_eq!(sim.drones.sss.list[ss179].matrix, risen179, "VentBlockingPoly holds the risen pose [M 0x1a9948 wrap]");
     assert!(!blocked, "the open vent lets the ray through — the soft lock is gone");
 }
 
@@ -127,18 +156,37 @@ fn three_hinges_are_not_enough() {
 
 /// The warehouse vent: the single `VentLatch` #182 burn (out 84 [D #182 param 5]) plays
 /// `ventmesh` #180 and clears `VentmeshBlockingPloy` #184 (both ch 84) — the second way down.
+/// Both carry p1=0 [D #115/#119 params]: the wrap RE-ARMS to 0x40 [M 0x1a9948:121-126], and ch 84
+/// stays latched (the lock's write [M 0x1ae3d8:194]; nothing clears it), so the sweeps RE-RUN —
+/// the playhead wraps back below the last key after each pass. The game's observable is the
+/// reached-last-key tick + the wrap, not a parked playhead (the old channel-seek invention).
 #[test]
 fn the_warehouse_vent_latch_opens_its_hatch() {
     let Some(_) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load();
-    let sim = scene.sim.as_mut().unwrap();
-    let k = sim.drones.locks.iter().position(|l| l.out == 84).expect("the VentLatch lock exists [D #182]");
-    sim.drones.locks[k].burn(&mut sim.drones.channels, 1);
-    for _ in 0..300 { sim.step_bond(Input::default(), false, false, false); }
+    let (t180_done, t184_done, wrapped_back) = {
+        let sim = scene.sim.as_mut().unwrap();
+        let k = sim.drones.locks.iter().position(|l| l.out == 84).expect("the VentLatch lock exists [D #182]");
+        sim.drones.locks[k].burn(&mut sim.drones.channels, 1);
+        let ss180 = sim.drones.sss.of_placement(180).expect("ventmesh SS [D #180]");
+        let ss184 = sim.drones.sss.of_placement(184).expect("VentmeshBlockingPloy SS [D #184]");
+        let (mut d180, mut d184, mut back) = (None, None, (false, false));
+        for tick in 1..=300u32 {
+            sim.step_bond(Input::default(), false, false, false);
+            let (t180, t184) = (sim.drones.sss.list[ss180].t, sim.drones.sss.list[ss184].t);
+            if d180.is_none() && t180 >= 5.0 { d180 = Some(tick); }
+            if d184.is_none() && t184 >= 1.0 { d184 = Some(tick); }
+            // The wrap fired: the playhead came back below the last key after reaching it
+            // [M 0x1a9948:119-128] — the sweep re-runs while ch 84 is latched (p1=0 re-arms).
+            if d180.is_some() && t180 < 5.0 { back.0 = true; }
+            if d184.is_some() && t184 < 1.0 { back.1 = true; }
+        }
+        (d180, d184, back)
+    };
     let sim = scene.sim.as_ref().unwrap();
     assert!(sim.drones.channels.on(84), "the latch burn wrote ch 84 [M 0x1ae3d8:194]");
-    let ss180 = sim.drones.sss.of_placement(180).expect("ventmesh SS [D #180]");
-    let ss184 = sim.drones.sss.of_placement(184).expect("VentmeshBlockingPloy SS [D #184]");
-    assert!((sim.drones.sss.list[ss180].t - 5.0).abs() < 0.01, "ventmesh played to its last key");
-    assert!((sim.drones.sss.list[ss184].t - 1.0).abs() < 0.01, "the blocker cleared");
+    assert!(t180_done.is_some_and(|d| d <= 55), "ventmesh (#180, rate 50) sweeps in ~50 ticks [M 0x1a9c58 + 0x1a9948:107], got {t180_done:?}");
+    assert!(t184_done.is_some_and(|d| d <= 13), "VentmeshBlockingPloy (#184, rate 10) sweeps in ~10 ticks, got {t184_done:?}");
+    assert!(wrapped_back.0, "ventmesh's playhead wrapped back below its last key — the sweep re-runs (p1=0 re-arms [M 0x1a9948:121-126])");
+    assert!(wrapped_back.1, "the blocker's playhead wrapped back below its last key — the sweep re-runs");
 }
