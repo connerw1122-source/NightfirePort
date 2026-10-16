@@ -16236,3 +16236,26 @@ EVERY sound the guided launch starts — launch sound, flight loop, camera-ride 
 game's stops/ownership ([M] the guided rocket's bullet update + the sound calls with handle
 storage), verify master already behaves like the game, pin with tests that fail on the old
 behaviour, and report.
+## guided-rocket-sound-stop (2026-10-16, branch s/guided-rocket-sound-stop) — DONE 19:28 UTC
+Playtest 1015-1738 (07000005) "when the rocket finishes, I can still hear a sound from where I was
+standing": swept the guided launch's WHOLE sound surface at the instruction level (jal into Sound_*
+in work/elf/ACTION.ELF) and master already behaves like the game — s/rocket-sound-leak's whoosh fix
+is the complete leak fix. FINDINGS [M]: the launch sound and the flight loop are ONE sound — the
+looped 0x10e whoosh (Bullet_init 0x12c5a0:277-282, handle BU+0xF0; moved with the rocket per tick
+Bullet_update 0x12e7b0:98-108; stopped at Bullet_Delete 0x12e660:13-16, disasm 0x12e680 lw a0,0xf0(s2)
+→ jal Sound_Stop 0x1de0a8 → sw zero,0xf0(s2)); the guided camera ride starts NOTHING (GT_TakeControl
+0x181740 / GT_LoseControl 0x181408: zero jal into any Sound_*); the ride's only sounds are GT_Update
+0x180498's action-9 submunition fire — 0x4e7/0x10a at :346/:518, both UNLOOPED ([L] SFXOutputData
+@0x2c94a0 looped byte 0; entry 0x10e is the only looped=1 of the sweep), one-shots that reap
+themselves (the port zeroes the ride input [M 0x193600 case 10], so it starts neither — a coverage
+gap, not a leak); the detonation one-shots (CollisionHandler 0x51c/0x13/0x15, Bullet_Delete's 0x28d
+grapple arm) are unlooped; Player_WeaponInitBullet 0x1a4bf0 (the fire path) has zero sound calls.
+PIN (no code change needed — master verified): crates/nf-view/tests/guided_rocket_sound_stop_live.rs,
+2 tests green, RED on the pre-fix behaviour (snd:0 fire-and-forget: the whoosh drifted 1.56 u² off
+the rocket / stayed live in the driver after the delete while the camera restore was counting):
+(1) the flight loop tracks the ROCKET not Bond (drift < 1.0 u² per tick, leaves the launch spot);
+(2) the voice dies AT THE DELETE, before the 15-tick hand-back completes, and after the hand-back a
+sweep over EVERY live driver item (any id, pre-fire ambient ids forgiven) finds no voice near the
+launch spot. Suite on the final tree (merged origin/master): 1878 passed / 6 failed / 72 ignored,
+434 binaries — the 6 are the allowed set (3 disc_golden + 3 pre-existing pylon probes). Report:
+docs/reports/guided-rocket-sound-stop.md.
