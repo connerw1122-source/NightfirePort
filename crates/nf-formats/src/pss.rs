@@ -23,7 +23,7 @@
 //!   * `SShd` type **1 = 16-bit little-endian PCM** (Nightfire: all 20 audio-bearing movies — kind 1, 48000 Hz,
 //!     2 channels, interleave 512; the body is exactly `seconds · rate · channels · 2` bytes, e.g. 07100001.PSS:
 //!     8,194,048 = 42.67 s × 48000 × 4). The `interleave` and the game's own volume path (`changeInputVolume`)
-//!     are unchanged; the samples are plain interleaved i16 LE pairs, not ADPCM frames.
+//!     are unchanged; the samples are i16 LE, BLOCK-interleaved by `interleave` bytes per channel (L block, R block, …) [D 2026-10-16], not ADPCM frames.
 
 use crate::buf::{invalid, Result};
 use crate::vag::{decode_frame, History, Variant, FRAME_BYTES, FRAME_SAMPLES};
@@ -279,17 +279,26 @@ impl<'a> Audio<'a> {
     /// Seconds at the header rate.
     pub fn seconds(&self) -> f64 { self.samples() as f64 / self.header.rate as f64 }
 
-    /// Decodes both channels (a mono stream is duplicated). PCM (kind 1): interleaved i16 LE pairs, in file
-    /// order. ADPCM (kind 0x10): the port's SPU ADPCM decoder ([`crate::vag::decode_frame`], rounded form), each
+    /// Decodes both channels (a mono stream is duplicated). PCM (kind 1): i16 LE, block-interleaved by `interleave`
+    /// bytes per channel. ADPCM (kind 0x10): the port's SPU ADPCM decoder ([`crate::vag::decode_frame`], rounded form), each
     /// channel one continuous stream from zero history, at the header rate. A trailing partial block is dropped.
     pub fn decode(&self) -> Vec<[i16; 2]> {
         if self.header.kind == AUDIO_TYPE_PCM {
+            // movie-audio: the PCM body is BLOCK-interleaved like the ADPCM one — `interleave` bytes of
+            // the left channel, then `interleave` bytes of the right, in turn [D measured 2026-10-16 on
+            // 073B0048: the block reading's mean |Δ| per sample is 350 vs 607 read sample-interleaved].
+            // Read as L R pairs, each channel got every OTHER sample of one channel (double speed, high
+            // pitched) with a channel swap at every 512-byte block (static) — the user's playtest.
             let ch = self.header.channels as usize;
+            let il = (self.header.interleave as usize).max(2);
+            let per_block = il / 2; // samples per channel per block
             let n = self.body.len() / (2 * ch);
             let mut out = vec![[0i16; 2]; n];
             for i in 0..n {
+                let (blk, off) = (i / per_block, i % per_block);
                 for c in 0..ch {
-                    let at = (i * ch + c) * 2;
+                    let at = blk * il * ch + c * il + off * 2;
+                    if at + 1 >= self.body.len() { break; }
                     let v = i16::from_le_bytes([self.body[at], self.body[at + 1]]);
                     out[i][c] = v;
                     if ch == 1 { out[i][1] = v; }
