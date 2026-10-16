@@ -16706,3 +16706,11 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+
+## tase-scream-broadcast (2026-10-16, branch s/tase-scream-broadcast) — start 23:10 UTC
+
+Task 736 (the uncited-gameplay audit runner-up): entering the tase state broadcasts
+`NDrone2_DroneAlertToPosition` 0x14a498 with prop 0x32 — the port screams only on bullets and
+punches (drone.rs handle_taser is cited as partial). Plan: read the audit entry
+(docs/systems/uncited-audit.md), port the tase arm from the decompile [M], add a fail-first test
+through the real input path + a sister, run the touched crates + the full suite.
