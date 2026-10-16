@@ -16706,3 +16706,13 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+
+## guard-barks-first-alert (2026-10-16, branch s/guard-barks-first-alert) — start 21:37 UTC
+
+Task 731: audit gap ⑨ — guard voice barks and FirstAlertState 0x39 aren't ported. Port the barks
+(spotting Bond, losing him, taking cover, reloading, dying; the voice-cooldown and selection rules;
+the sound ids [M + D: the voice banks]) and FirstAlertState 0x39 (the guard's first-alert reaction).
+Tests on 07000005: spotting Bond plays the game's bark once, within the cooldown rules; a guard's
+first alert goes through state 0x39 with the game's timing. Tests silent (NF_SILENT). Acceptance
+criteria in docs/systems/uncited-audit.md gap ⑨.
+- 2026-10-16 21:37 UTC: branch created from origin/master 65bf8a09; starting with the audit doc.
