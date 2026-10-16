@@ -86,9 +86,12 @@ buttons 0 / analog 0x7f for a dead pad]. The app logs `ClientLeft` instead of `n
   within one cadence; a disconnect is reported and the match continues on NEUTRAL. 3/3 PASS.
 - **The lobby tests** (`crates/nf-view/tests/mp_net_lobby.rs`, 052's suite): 9/9 PASS unchanged —
   the `MpSession` trait kept its shape, so the fake needed no edits.
-- **Crates run before pushing** (the task's requirement): `cargo test --offline --release -p
-  nf-net` (25 passed), `-p nf-game --lib` (234 passed), `-p nf-view --lib` (15 passed),
-  `-p nf-view --test net_match_live --test mp_net_lobby` (12 passed).
+- **Crates run before pushing** (the task's requirement), and re-run on the final tree:
+  `cargo test --offline --release -p nf-net --tests` (25 passed: lib 11, shim lockstep 8,
+  loopback_e2e 2, ported_session 4), `-p nf-game --lib` (234 passed), `-p nf-view --lib` (15
+  passed), `-p nf-view --test net_match_live --test mp_net_lobby` (12 passed). No failures
+  anywhere on the final tree; the 3 `disc_golden` slim-ISO allowances did not come into play
+  (they live in nf-formats/nf-view golden tests, which were not touched by this task's runs).
 
 ## The fast suite
 
