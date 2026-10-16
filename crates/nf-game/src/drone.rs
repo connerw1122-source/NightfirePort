@@ -1176,6 +1176,7 @@ impl Drone {
         self.alt_mode = if self.second_tag == 0 || self.second_tag == 0x65 { 0 }
             else if self.second_channel == 0 && self.alert_floor >= 1.0 { 0 }
             else { self.dtype_of(d, self.dtype, self.mode_alert) };
+        // `NDrone2_IsCivilian` (0x14aae0) in team form: team 3 = the civilian dtypes.
         self.team = match self.dtype { 10 | 11 | 0xd | 0xe => 3, 0xc => 2, _ => 1 };
         let row = |m: u8| d.props.types.get(m as usize);
         if row(self.mode).and_then(|t| t.init.as_deref()).is_some_and(|n| n.starts_with("NDrone2_initDTYPE_Sniper")) { self.stationary = true; }
@@ -1245,6 +1246,9 @@ impl Drone {
 
     /// `NDrone2_AssignAIPath(mask)`: the nearest node (2D, < 0.3) of a path with `kind & mask` → `InitAIPath`.
     /// *Deviation*: "in the drone's cel" is replaced by "within 2 units of the feet in height".
+    /// `NDrone2_ClosestAIPoint` (0x151b18) — the port has no typed AI-point registry, so any
+    /// "route to the closest point of type k" ask (e.g. `NDrone2_FindAlarmPoint` 0x153008's
+    /// type-8 alarm search) degrades to this generic path assignment [S deviation].
     fn assign_path(&mut self, d: &Data, mask: u32) -> bool {
         let feet = self.feet();
         let mut best: Option<(f32, usize, u16)> = None;
@@ -1262,6 +1266,7 @@ impl Drone {
     }
 
     /// `SetIdleTimeOut(base, n)`: msg 4 after (base + Rand n) seconds.
+    /// `NDrone2_SetIdleTimeOut` (0x14a3b8): the idle clock base+Rand(n), frames→seconds at 60 Hz.
     fn set_idle_timeout(&mut self, rng: &mut Rng, frame: u32, base: u32, n: u32) {
         self.idle_timeout = Some(frame + (base + rng.rand(n)) * 60);
     }
@@ -2166,6 +2171,8 @@ impl Drone {
     /// once-per-life bit, +0xc5 != 2): the hurt civilian SCREAMS — msg 0x12 broadcast with the
     /// victim as the alert source. The queue drains in the shared pass (the send needs the
     /// other drones, unreachable from inside this one's borrow).
+    /// The broadcast half is `NDrone2_DroneAlertToPosition` (0x14a498); the port keeps the
+    /// scream local [S].
     fn send_hurt_scream(&mut self, d: &Data) {
         if self.prop(d, 0x32) && !self.screamed {
             self.screamed = true;
@@ -2201,6 +2208,7 @@ impl Drone {
     /// 0x175ef0 sets it only past `DroneFunc_ReactionTime`) [0x178864]; and
     /// `DroneWeap_OpponentHasWeapon` 0x17a4b8 = `ObjectIsArmed` 0x178768 on Bond's class byte
     /// (`bond_armed`) [0x178874].
+    /// `NDrone2_NearDrone` (0x14a6e8): is an armed opponent/person within the radius.
     fn near_armed_person(&self, d: &Data) -> bool {
         self.kind != 0xd && self.prop(d, 0x3c) && self.seen && self.bond_armed
     }
@@ -2807,6 +2815,7 @@ impl Drone {
 
     /// AlertToPosition's move (`MoveToAlertPosition`): run when the route is 10 or longer, else the alert walk;
     /// arrived → the return state (SearchArea after Suspect); 6 → NoRoute; failure → back to `+0x5A0`.
+    /// `NDrone2_MoveToAlertPosition` (0x154ba8): walk the alert route toward the alert position.
     fn alert_to_position_update(&mut self, d: &Data) {
         match self.move_to_goal(d) {
             0..=2 => {
@@ -3041,6 +3050,12 @@ impl Drone {
 
     /// `NDrone2_MoveToGoalPosition(goal)` (0x1517d8): a route to the goal point (target nodes searched with r = 0),
     /// kept until invalidated; 3 within 2.0 of the route's end, else follow (0xC blocked, else 0).
+    /// The route lifecycle of `AINetwork_RouteIsValid` (0x15a7c0) / `AINetwork_InvalidateRoute`
+    /// (0x15a7e0) / `AINetwork_ValidateRoute` (0x15a800) is this `croute: Option<Route>` plus the
+    /// build-success gate; the arrival/waypoint tests map to `NDrone2_AtDest` (0x155050),
+    /// `NDrone2_MoveTarget_IsRouteNode` (0x1550c8), `NDrone2_CanReachGoalPosition` (0x155ad0) and
+    /// `NDrone2_GetAnglesToMoveTarget` (0x155db8); `NDrone2_SetRunToPosition` (0x155b30) and
+    /// `NDrone2_SetupAlertTarget` (0x155d48) are the goal-set forms.
     fn move_to_goal(&mut self, d: &Data) -> u8 {
         let Some(goal) = self.goal else { return 8 };
         let feet = self.feet();
@@ -3363,7 +3378,7 @@ impl Drone {
             (UNDER_COVER_FIRE, msg::EXPLOSIVE) => { self.take_explosive_msg(d, frame, UNDER_COVER_LEAVE_NOW); true }
             // `NDrone2_DSTATE_UnderCoverSniperFire` (0x16a610): fires on timer C (1 s), returns on timer D (6 s),
             // reloads (0x98) when the clip empties. `+0x2E` = the node is not low (corner); `OpponentIsAimingAtMe(7.5)`
-            // + `BondIsFacingMe(45)` + Rand(3) = 0 → duck back (0x99).
+            // + `NDrone2_BondIsFacingMe` (0x154f60) + Rand(3) = 0 → duck back (0x99).
             (UNDER_COVER_SNIPER_FIRE, msg::ENTER) => {
                 self.vision_on = true;
                 self.cover_claimed = false;
@@ -3560,6 +3575,9 @@ impl Drone {
     /// The taser family (109b): `DSTATE_Taser` 0x162b98, `DSTATE_Stunned` 0x162eb0,
     /// `DSTATE_Stunned_Recover` 0x1630b8. Bullets (msg 8/9 → 0x44) and the punches route through
     /// `on_impact`'s family arm before this sees them.
+    /// The game's tase ENTER also screams + broadcasts via `NDrone2_DroneAlertToPosition`
+    /// (0x14a498, prop 0x32) — the port only screams on bullet/punch (`send_hurt_scream`)
+    /// [S partial, see docs/systems/uncited-audit.md].
     fn handle_taser(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
         use state::*;
         if !matches!(s, TASER | STUNNED | STUNNED_RECOVER) { return None; }
@@ -4005,7 +4023,7 @@ impl Drone {
                 self.vision_on = true;
                 let back = if self.resume_state != 0 { self.resume_state } else { self.start_state(d) };
                 if self.stays(d) { self.call_anim_variant(d, anim_state::ALERT_LOOK, 1, back, 0); return true; }
-                // `SetSoundAlertRoute`: the goal becomes the sound (radius 2.0).
+                // `NDrone2_SetSoundAlertRoute` (0x154aa8): the goal becomes the sound (radius 2.0).
                 self.goal = Some(self.sound_pos);
                 self.croute = None;
                 if self.turned && self.prop(d, 0x21) { self.set_state(ALERT_TO_POSITION); return true; }
@@ -4133,6 +4151,7 @@ impl Drone {
                 self.set_state(if first != 0 { first } else if self.prop(d, 0x18) && self.dist < self.engage_range { AIM_STAND } else { COMBAT });
                 true
             }
+            // `NDrone2_DSTATE_Combat` (0x1731b8, state 0x58): alert 1.0 on entry.
             (COMBAT, msg::ENTER) => { self.alert = 1.0; true }
             (COMBAT_OUT_OF_RANGE | COMBAT_NO_SIGHT, msg::ENTER) => { self.alert = 1.0; self.vision_on = true; true }
             (COMBAT | COMBAT_OUT_OF_RANGE | COMBAT_NO_SIGHT | COMBAT_DRONE_AHEAD, msg::UPDATE) => {
@@ -4314,6 +4333,8 @@ impl Drone {
                 if fires { self.fire(d, rng, frame, true) } else { self.firing = false }
                 true
             }
+            // The aim-keep comes from `DroneWeap_AimTarget_IsOpponent` (0x178ae0); its ±0.9
+            // aim-cone re-check and strafe-position probe (CanMoveToRelativePos) are [S] not ported.
             (STRAFE_AIM_LEFT | STRAFE_AIM_RIGHT | STRAFE_DODGE_LEFT | STRAFE_DODGE_RIGHT, msg::UPDATE) => {
                 self.desired_yaw = self.yaw_to_opp;
                 let left = matches!(s, STRAFE_AIM_LEFT | STRAFE_DODGE_LEFT);
@@ -4876,6 +4897,9 @@ impl Drone {
             (crate::kiko::STAND_BLIND, msg::ENTER) => { self.call_anim(d, anim_state::STAND_IDLE, 0, 0); true }
             // RunToAlarm 0x89 (0x1736f8): no alarm point reachable on the ported paths → Idle (the
             // none-found arm; the port has no alarm-point registry [S]).
+            // RunToAlarm models only the none-found arm; the found arm routes to
+            // `NDrone2_FindAlarmPoint` (0x153008)'s type-8 point and returns into
+            // `NDrone2_DSTATE_PressAlarm` (0x168ea8, state 0x8A) — unported gap.
             (crate::kiko::RUN_TO_ALARM, msg::ENTER) => { self.vision_on = true; self.set_state(IDLE); true }
             // EnemyRunToPoint 0x85 (0x168910): the return state 0x56, on 11/12/13/41 with the player
             // not yet seen → 4/5; FindRunToPoint's none-found arm (no AI-point registry in the port,
@@ -4939,6 +4963,10 @@ impl Drone {
     /// The `NDrone2_Can*` tests: the point `local` (x = left, z = forward) from the feet must be reachable
     /// (`NDrone2_MoveTest`: |dy| ≤ 4 and not across a boundary). *Deviation*: the game tests AI-network boundaries;
     /// we require a floor there and no collision between at knee and chest height.
+    /// The shared spatial test behind `NDrone2_CanStrafeLeft` (0x14f9e8) / `NDrone2_CanStrafeRight`
+    /// (0x14fbe0) / `NDrone2_CanStepRight` (0x14f808) / `NDrone2_CanRollRight` (0x150500) — the
+    /// game's per-direction probes with the floor-vs-AI-boundary deviation documented in
+    /// docs/systems/drone-navigation.md; `NDrone2_EvasiveMove` (0x1506d8) picks among them.
     fn can_move(&self, d: &Data, x: f32, z: f32) -> bool {
         let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
         let feet = [self.pos[0], self.pos[1] - 1.0, self.pos[2]];
@@ -4952,6 +4980,8 @@ impl Drone {
 
     /// `NDrone2_ChooseCombatMove` (0x150c18): an option list (dodge, strafe, roll, step, crouch, stand) picked at
     /// random, each case falling through to the next when it fails; left/right order random.
+    /// `NDrone2_CanAimCrouch` (0x154960) is the crouch-roll option here (case 5); the pair()
+    /// rolls are the ChooseCombatMove (0x150c18) stand-in for `BOTSTATE_EvasiveMove` (0x129368).
     fn choose_combat_move(&mut self, d: &Data, rng: &mut Rng) -> u8 {
         use state::*;
         // 0x13cfb0:35-39 — `DroneAnim_SetCombatMoveAnim`'s FIRST check precedes every combat
@@ -5538,6 +5568,8 @@ impl Drone {
         } else { 10 }
     }
 
+    /// `NDrone2_GetHeadPos` (0x149aa8) at fixed +0.6 — the game's `DroneAnim_CurrentMoveState`
+    /// (0x13e378) move-state switch (crouch/aim heights) is not modelled [S].
     fn head(&self) -> V3 { [self.pos[0], self.pos[1] + 0.6, self.pos[2]] }
 }
 
@@ -7843,6 +7875,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // alerted, whose props accept the bits (0x10 always; 2 → 0x27, 4 → 0x4F, 1 → 0x28, 8 → 0x26/0x29), within
         // 50 units, in its view (±e4, ≤ e8, under 2 always) and with head-to-head line of sight. At most 4 per tick.
         let mut alerts = Vec::new();
+        // `DroneVision_DroneCanSeeDrone` (0x1760b0, via `DroneVision_ConsiderAlerted` 0x176250):
+        // can the watching idle/alert/patrol drone see the alerting one.
         'pairs: for (oi, o) in self.list.iter().enumerate() {
             if !o.watching || o.alerted_by_drone || !matches!(o.state, state::IDLE | state::ALERT | state::PATROL) { continue; }
             for (si, src) in self.list.iter().enumerate() {

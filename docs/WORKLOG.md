@@ -16445,3 +16445,43 @@ loads, the boot word stands; fixing the file behind the dialog → Retry loads).
 at 8 chars (the game's name buffer 0x2e1ae8). Menu-adjacent binaries all green on the merged tree
 (mp_defaults 10, menus_e2e_mp 5, memcard 7, fix_save_profile 4, mission_unlock 4, menus_flow 42,
 menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_parity 17).
+## uncited-gameplay-audit (710)
+- started 2026-10-16 17:50 UTC, branch s/uncited-gameplay-audit cut from master c10b530f.
+- Goal: audit the uncited ACTION.ELF gameplay groups (NDrone2 states, Script_*, camera_*,
+  C_NIS_Handler, MP objective helpers, BOTSTATE/BOTWEAP, Radio_*, Creature_*, TextBox_Update,
+  AINetwork helpers): (a) retail reachability, (b) port equivalents found and cited so the
+  coverage counts them, (c) missing behaviour. Deliverable docs/systems/uncited-audit.md ranked
+  by player impact, with ready-to-queue task descriptions for the top 10 gaps.
+
+## uncited-gameplay-audit (2026-10-16, branch s/uncited-gameplay-audit) — close-out 18:47 UTC
+- Inventory re-derived the coverage pass: 3038 fns; 1984 cited before this task. Two inventory
+  false positives documented (TextBox_Update / C_NIS_Handler were "cited" only via WORKLOG
+  mentions — coverage passes should exclude docs/WORKLOG.md from the corpus).
+- Citations commit b4df396a (comment-only, +79 coverage hits → 2063 cited / 975 uncited, 68%):
+  the NDrone2 helper/nav/vision/combat equivalents in drone.rs; the AINetwork route/emitter
+  family in nav.rs; DroneVision_CanSeePosition (cover.rs); NDrone2_FindCel (world.rs); the
+  MP_get*Obj getter family + initObjExt/PostLoad_Init/recalcObjExtPaths (mp/rules.rs);
+  MP_PlayerOrBotInd + assassin getters (mp/mod.rs); SetupGoalPositionToObj/gotoGoal/
+  getObjectTeam/hasWeapon/opponentIsMissile/WeaponHasAmmo partials (mp/bots.rs);
+  DroneData_GetAnimFuncInfo/GetDAStateFuncInfo (nf-formats/drone.rs); C_NIS_Handler route note,
+  Radio_* widget family, TextBox_Update, Script_RunFrame gap note (menu.rs); NIS event 9
+  cam2mode gap note (nis.rs).
+- Deliverable docs/systems/uncited-audit.md: per-group (a) reachability via decomp caller
+  chains, (b) port equivalents, (c) missing behaviour; 10 ready-to-queue tasks ranked by player
+  impact (① AI alarm-raising PressAlarm chain, ② blast stagger + smoke states, ③ Ninja melee,
+  ④ live MP host never runs the match logic, ⑤ bot objective-goal scan, ⑥ bot combat moves +
+  weapon switching incl. the Rand_Rand(5) stream divergence, ⑦ astronaut zero-G guards,
+  ⑧ frontend menu-def keyframe runtime = the uncited Script_* family, ⑨ guard barks +
+  FirstAlertState 0x39, ⑩ NIS event 9 + C_NIS_Handler route); runners-up; dormant/dead list
+  (camera_fixed/snake/chasecam dead — no SetCamMode writer for modes 4/5/6/0xa; Creature_*
+  ships on no audited level; Investigate 0x7E has no entry); 5 live checks for the main agent.
+- Verification: spot-checked the key decomp claims (PressAlarm anims 0x21/0x22, 0x3c→0x8b,
+  +0x594=0x32, fail reason 0x10; FindAlarmPoint ClosestAIPoint type 8). cargo build release for
+  nf-game/nf-view/nf-formats clean (diff is comment-only). Full suite on this branch
+  `1894 passed, 6 failed, 72 ignored (47 min)` — the 6 are the 3 allowed disc_golden + the 3
+  pre-existing pylon render probes (master baseline). Second suite run started 18:42 UTC on the
+  final tree (suite2.out; delta = this entry + the report, markdown only). origin/master
+  unchanged since the branch cut — no merge needed.
+- Report: docs/reports/uncited-gameplay-audit.md. Left: the 10 queued tasks (none started,
+  audit-only by design) + the live checks; gap ④/⑤ should rebase onto task 704's
+  s/mp-bots-in-match branch.

@@ -104,6 +104,8 @@ impl DroneAnimData {
         self.info.get(danim as usize).map(|i| u16::from_le_bytes([i[8], i[9]]))
     }
 
+    /// The table read is `DroneData_GetAnimFuncInfo` (0x13e4d8) / `DroneData_GetDAStateFuncInfo`
+    /// (0x13e520).
     /// `DroneAnim_SetDAnimInternal`: the script of `danim` for `anim_set` — the set's entry, or set 0's when the set has
     /// none. `None` = `0x06000000` (no script; the game ends the animation instead).
     pub fn script_for(&self, danim: u16, anim_set: u16) -> Option<u32> {

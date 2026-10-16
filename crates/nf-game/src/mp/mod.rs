@@ -308,7 +308,8 @@ pub struct MpSlot {
 /// `MP_Init`/`MP_Start`/`MP_Update`/`MP_CheckForEndCondition`].
 #[derive(Clone, Debug)]
 pub struct MpGame {
-    /// The 8 slots (0x30 stride; the port carries the fields the phase touches).
+    /// The 8 slots (0x30 stride; the port carries the fields the phase touches). Slot-vs-player
+    /// kind is implicit here — the game's `MP_PlayerOrBotInd` (0x18bf08).
     pub slots: [MpSlot; 8],
     /// +0x180 / +0x184: the team scores.
     pub team_scores: [f32; 2],
@@ -419,7 +420,10 @@ pub struct MpMatch {
     pub objects_rt: MpObjectsRt,
     /// The assassin slot (global `DAT_0030d774`, scenario 0x400) [M 0x18b538:6].
     pub assassin: Option<usize>,
-    /// The target slot (global `Assasin`, scenario 0x400) [M 0x18b558:6].
+    /// The target slot (global `Assasin`, scenario 0x400) [M 0x18b558:6] — `MP_getAssassinTarget`
+    /// (0x18bd78) reads it. `MP_changeAssassinOrTarget` (0x18bd80) is not needed here: it only
+    /// re-keys roles onto a bot's freshly-created obj at `BOT_respawn` 0x124e38:80; the port's
+    /// slot-keyed roles survive respawn [M].
     pub assassin_target: Option<usize>,
 }
 

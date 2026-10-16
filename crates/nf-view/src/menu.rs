@@ -156,6 +156,10 @@ pub const PAGE_CN_AV: u32 = 0x4000_0031;
 /// [L parsed 2026-10-14]), NOT the front-end 07000048 stream — the old 0x4000000c id was the NIS page
 /// (the handler table maps 0x4000000c → P_NIS_Handler [M Handler_HandleMessage 0x2029e0])]. Its main
 /// control is 0x10000028, handled by C_GCPAUSE_Handler 0x204408.
+/// The IN-GAME NIS page 0x1000003e is `C_NIS_Handler` (0x205f10) [M Handler_HandleMessage
+/// 0x2029e0:224]: msg 0x51 binds the level's cut-scene controls → script hashes, 0x4b (shown)
+/// boots the level cut-scene (LoadableLoad → Script_Load → Script_Play → Camera_Enable(7)) —
+/// unported; the port plays NIS via SP placements + loadable packs only.
 pub const PAGE_PAUSE: u32 = 0x4000_004b;
 /// The fail/death menu [M Mission_Update 0x182c60:78 — `MenuManager_Create(0x80000004, 0x40000042, …)`;
 /// handler P_ENDMISSION_Handler 0x216618; same mission menu def, PAGE record fh=0x80000004 [L]].
@@ -2752,6 +2756,11 @@ impl FrontEnd {
 
     /// Steps a List row to its next (or previous) item, or moves a slider by 10 within 0..=100 [M the list
     /// controls' f2 3 cycle; the sliders' d3 0x64 range].
+    /// The game's single-select ◀▶ option row is the M_RADIO widget, class 9: `Radio_Init`
+    /// (0x21f8e0) builds it from the page def, `Radio_SendMessage` (0x21fa50) pumps it
+    /// (0x10 add option, 0x1d/0x1e/0x49 select+notify), `Radio_GetIndex` (0x220130) /
+    /// `Radio_SetIndex` (0x220180) are the list-index helpers; the port hand-rolls the
+    /// behaviour per page [S — same behaviour, no widget layer].
     fn opt_step(&mut self, row: &OptRow, dir: i32) {
         let v = self.opt_value(row.ctrl);
         let nv = match row.kind {
@@ -3384,6 +3393,9 @@ impl FrontEnd {
     /// [L ee_snapshot] — P_CNNAME 0x213790:43-44 copies it over `buffer`) or empty for the cheat
     /// entry (DAT_0030d2d8 [L] :36); the ✓ cell holds the focus [M :47-48]; the first press clears
     /// (del_when_keypressed [M 0x213a98:18-27]).
+    /// The codename grid is the M_TEXTBOX component (`TextBox_Update` 0x2237c8, class 0xc,
+    /// called from Menu_Update 0x1f1dc0:47): grid cursor +0x1a..+0x1f, '+' appends (cap 0x13),
+    /// '-' backspaces, msg 0x4a notifies — the port's cn_* fields reimplement it.
     pub fn cn_open(&mut self, from: u32) {
         self.enter_page(Page::CnName);
         // The mode flag: PROFILE-name entry (from Select Codename / Edit Codename) runs the
@@ -4612,7 +4624,9 @@ impl FrontEnd {
             // — no key arms — so the port idles everything but the back action: the page's △
             // returns to the opener (the results page) [S — the game's △ plays the page's own
             // menu-def script (Page_SendMessage 0x21ec68 case 0x5d → Script_PlayDefault), whose
-            // target is in the unparsed front-end archive; live check in the report].
+            // target is in the unparsed front-end archive; live check in the report]. The
+            // page-open keyframe runtime itself (`Script_RunFrame` 0x220580 + splines 0x2208b8/
+            // 0x220bc8) is unported — menus render final states only (uncited-audit gap M1).
             Page::Stats => match a {
                 Action::Back => {
                     self.page = Page::Results;
