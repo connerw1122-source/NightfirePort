@@ -14571,6 +14571,15 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
   the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
   docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
+
+## menu-e2e-singleplayer (2026-10-16, branch s/menu-e2e-singleplayer)
+- Branch created from origin/master (f42de6ff). Task: every single-player path from boot to a level request, driven ONLY
+  through `action()`, `mouse_*()`, `tick()` and the host-side calls — never by assigning page/cursor/state fields.
+  Title → intro (skip and play out) → Main → NightFire; each Select Codename branch; each difficulty → the mission list
+  → every unlocked row; assert requested_level against CAMPAIGN and the sp_level table [M]; the driving-notice path
+  (mission_ended results/NfBonus routing, save prompt, next row unlocking, restart); Back at every step; fresh profile
+  vs unlock_all.
+- Started the fast suite in the background on the branch-point tree (baseline).
 ## microcam-wheel-zoom (2026-10-16, branch s/microcam-wheel-zoom) — start
 - Branch created from origin/master (6bab6409). Task: while right-click (aim) held, mouse wheel steps the
   zoom between the weapon's per-weapon min/max zoom range (Player_Weapon zoom input arm / weapon_data zoom
@@ -14902,3 +14911,19 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   (quit-during-MP-match only), MpLobby (needs a session; covered by mp_net_lobby), CheatMedal
   0x4000004c (opener unknown — unlock-popups2's open question). Win/credits take no input by design
   [M 0x215100/0x2152b0]. Report: docs/reports/menu-graph-walk.md (3 live-check asks).
+- menu-e2e-singleplayer close-out: crates/nf-view/tests/menu_sp_e2e.rs — 9 e2e tests driven only through
+  action()/tick()/the host-side calls (set_profile_dir, --unlock-all, requested_level/phase2_resolved takes,
+  the lib.rs demo_results flow prep before mission_ended, results_enter/bonus_enter/sync_profile_progress/
+  win_movie_finished, the card dialog answers); the name grid walked by d-pad BFS over CN_GRID (no other
+  window input path exists for it). Coverage: intro skip + playout; Back at every step to the title; all
+  three Select Codename branches (New Codename incl. the 0x3bc empty-name refusal + create + save + reload,
+  Play without saving's cancel/re-arm, an existing saved codename); the clamped difficulty wheel × all rows;
+  CAMPAIGN == SP_LEVEL_HASHES; all 12 rows' exact requested_level (driving rows → the notice, both
+  dismissals); the complete walk (results fields, the save prompt → ASK_OVERWRITE → the write → the NfBonus
+  hop → the list on the highest unlocked row → Double Cross through the chained driving rows → the file and
+  reload carry rows 0-2); the fail menu (REPLAY warm / QUIT); Equinox → the real 0x0730001b outro wrap →
+  just_completed → WinGame → Credits. Merged origin/master ad761677 mid-task (WORKLOG conflict resolved,
+  both entries kept). Findings: the fail-menu REPLAY sequencing (the headless front-end load clobbers
+  GameState+0x12 before the answer — the test answers in the disc's streaming window; live check asked) and
+  the per-leg phase2_resolved consume the walker mirrors from lib.rs 2326. Report:
+  docs/reports/menu-e2e-singleplayer.md (2 live checks).
