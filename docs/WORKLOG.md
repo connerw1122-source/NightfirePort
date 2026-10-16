@@ -15148,3 +15148,9 @@ menu-audio-state (2026-10-16)
   pump [M 0x182c60:78 + 0x1c9790:30-35]; results stats are Stats::default (host gap); Esc during a
   cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
   (live checks 1-3).
+
+## guard-reaction-delay2 (2026-10-16, branch s/guard-reaction-delay2) — in progress
+- Task 664b: land 664 (s/guard-reaction-delay, reverted as held) without breaking the measured
+  fix_guard_weapons_live 3x3 hit-rate/damage matrix. Plan: branch master + merge 664, reproduce the
+  4/4 standalone failures, bisect which part of 664 shifts the fire streams (first-shot delay vs
+  aim-raise gate vs RNG draw order), port it so the matrix stays green on origin/master + this branch.
