@@ -5837,6 +5837,12 @@ pub struct Drones {
     /// flag (event 7) [M]; a cut-scene WITHOUT event 5 keeps its guards live — the port's `Sim::disabled` must NOT
     /// touch this (core-loop port map §7 items 1-2).
     pub npc_enabled: bool,
+    /// Dev-only (`--hold-npcs`, the port's own; not a game field): every tick runs as if
+    /// `npc_enabled` were clear (the AI, movement and sight passes freeze where they stand) while
+    /// Bond's bullets still hit them, so a render check can aim at a guard that stays put.
+    pub hold_npcs: bool,
+    /// Set only for the duration of a held tick (keeps the bullets' drone test live).
+    hold_active: bool,
     /// `Drone_bDisableSystem` (0x30ca9e): `DroneSpawner_Control` returns while it is set
     /// (0x137e68:24-26), and `DroneSpawner_Create` never creates a spawner (0x1378d0:12). The
     /// writers are the options-menu "drones off" setting (`switch_NO_DRONES` 0x30ce2c —
@@ -6071,7 +6077,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         let mut drones = Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), player_pos: [0.0; 3], bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), shake: 0.0, health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, mission_end: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
-            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true,
+            pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, hold_npcs: false, hold_active: false,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
             // fix-06-alarm (fields on their own lines — merge lesson 4).
@@ -6602,7 +6608,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // `Drone_CollisionHandler` 0x140968:62 returns while `NPCGlobals == 0` (the NIS freeze:
                 // drones take no damage) and `Collide_PickObj` 0x1eae80:26-30 drops `obj+0xF0 & 0x20`
                 // objects (set by `NDrone2_Enable(0)`) — bullets pass through the frozen drones.
-                if !self.npc_enabled || !dr.present || !dr.enabled || dr.corpse { continue; }
+                if !(self.npc_enabled || self.hold_active) || !dr.present || !dr.enabled || dr.corpse { continue; }
                 let c = [dr.pos[0], dr.pos[1], dr.pos[2]];
                 if seg_point_dist2(b.pos, end, c) > 1.05 * 1.05 * 4.0 { continue; }
                 let fb = crate::damage::first_box_hit(b.pos, ray, &dr.hit_boxes(d));
@@ -7418,6 +7424,19 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
 
     /// One 60 Hz game tick: global vision (`DroneVision_ProcessDroneSight`), then each drone's control.
     pub fn tick(&mut self, d: &Data, player: &Player) {
+        if self.hold_npcs && self.npc_enabled {
+            self.npc_enabled = false;
+            self.hold_active = true;
+            self.tick_inner(d, player);
+            self.hold_active = false;
+            // Dev-only: a script's event 5 during a held tick is not kept (the hold already freezes them).
+            self.npc_enabled = true;
+            return;
+        }
+        self.tick_inner(d, player);
+    }
+
+    fn tick_inner(&mut self, d: &Data, player: &Player) {
         let _prof_all = crate::prof::scope("drones.tick (total)");
         let prof_pre = crate::prof::scope("drones: shared passes");
         self.frame += 1;

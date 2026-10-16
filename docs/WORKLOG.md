@@ -15508,6 +15508,19 @@ and SHA-1s only; (5) docs/formats + close G-008.
 - 5/5 g008 tests + 4/4 vag golden tests green on their images; sisters prove the goldens catch tampering.
 - Report: docs/reports/pss-vag-recheck.md (the full-suite status and what ran is in it).
 
+## cutscene-faces (2026-10-16, branch s/cutscene-faces)
+- Task: playtest 1015-1738 "mouths aren't moving in these cutscenes". fix-cutscenes2 ported the
+  22-channel face track (script_pose_together) but no face moves. Find why: the face track's
+  window start (opcode-0 windows, the face-track hash per actor); whether its channels reach the
+  face bones in the skin (the bone mapping); whether the game also uses morph targets (108c
+  gpu-facial-morphs was HELD — read s/fix-gpu-facial-morphs and docs/merge-log.md). Deliver the
+  sim/data side: per actor, per tick, the face bones' pose (+ morph weights if used) and a getter
+  the renderer reads. Tests on 07000002's intro and 07000007's Kimiko scene showing jaw/lip
+  channels change over the dialogue; sister: an actor with no face track keeps a neutral face.
+  The main agent wires the draw.
+- Plan: read s/fix-cutscenes2's face-track port + docs/fields/, find the per-actor face-track
+  binding and the window logic, trace channels → skin bones, port the missing pieces, tests on
+  the two scenes, run touched crates, then the full suite.
 ## grates-02b (2026-10-16, branch s/grates-02b) — start
 - Task: queue 677b — land s/grates-02 (677) without breaking the 0c vent latches: with the grates
   branch merged, fix_level_0c_live::burning_the_four_hinges_opens_the_display_vent and
@@ -15833,3 +15846,73 @@ hash, spawn/despawn ticks, script actor vs level drone) [M the script's entity c
 Script_AnimStart 0x1d8f40, the actor binding]; compare against the script data; fix the port's
 binding (wrong skin / level drone drawn instead of the script actor / missing despawn); tests:
 the actor set and skins per scene phase match the script, with no duplicates.
+## civilian-no-shoot (2026-10-16, branch s/civilian-no-shoot)
+- Task: playtest 1011-1419 (07000002) "The no shoot icon was there, but I was still able to
+  shoot at him". The game shows the red no-shoot crosshair over civilians AND refuses to fire
+  [M the crosshair's target class check in the player's weapon update and the trigger gate].
+  Port the trigger refusal: which targets, which weapons, whether a held trigger fires once the
+  aim leaves the civilian. Tests on 07000002: aim at a civilian and fire — no shot, no ammo
+  used; aim off — fires. Sister: a guard right next to the civilian can be shot. The main agent
+  wires nothing here unless the crosshair draw itself is wrong.
+- Plan: read the port's crosshair state (scene.rs cross_state) + the decomp's crosshair target
+  class check and the trigger gate (Player_WeaponFiring 0x1a5460 area), write the failing test
+  through the real fire path, port the gate, sister tests, run touched crates + the suite.
+
+## civilian-no-shoot (2026-10-16, branch s/civilian-no-shoot) — the premise was wrong; the real rule is ported
+- The task's premise ("the game refuses to fire under the red no-shoot crosshair") is contradicted
+  by the disc: the repo's own PCSX2 trace of this exact play (tests/traces/02-civilian.trace
+  [L], 2026-10-11) shows the P2K clip falling on EVERY trigger pull under the red mark, and the
+  decomp agrees — BLData+0x133's only reader is the HUD draw [M HUD_UpdateCrossHair 0x19e6d0:69];
+  the fire pipeline (Player_Update 0x193600 → Player_Weapon 0x1a24c8 → Player_WeaponFiring
+  0x1a5460 → Player_RoundToFire 0x1a18e0 → Player_WeaponInitBullet 0x1a4bf0 → Bullet_init
+  0x12c5a0) reads none of the mark's outputs (BLData+0x880 is read only by the gadget types
+  0x56-0x58 [M 0x1a5460:531-581]); the damage path has no team gate [M NDrone2_DealWithObjHit
+  0x13fff0 case 5 — a class-3 owner hits any team, verified in the disassembly 0x1402fc-31].
+- What the game actually gates, and the port state: (a) the ICON is keyed on the held weapon id
+  [M 0x1a7810:152-183: ids {1, 0x35, 0x36, 0x43, 0x44} — fists + the throw family — keep the
+  NORMAL crosshair; levels 0x7000005..0x7000008 never mark] — NOT ported before; ported now in
+  scene.rs's crosshair block; (b) the auto-aim lock skips non-enemies [M Check_AutoAim
+  0x1a73f8:83-87] — already ported (drone.rs auto_aim's team gate), now pinned on 07000002's
+  data; (c) killing the protected civilian fails the mission [M 0x13e560 → Mission_SetFailLabel
+  0x4000034] — already ported (fix_actors), pinned on 07000002 (fail_label 0x0400_0034).
+- Tests crates/nf-view/tests/civilian_no_shoot_live.rs (3, green): the icon keys on the weapon
+  (gun → 3, fists → 2, aim-off → 2); the trigger fires under the mark, ammo is spent, the
+  civilian takes the hit and dies → "Killed Civilians" (the game's traced behavior); the sister:
+  a guard beside the civilian is shot (normal crosshair, damage) and the auto-aim locks the
+  guard, never the civilian. Blast radius: fix_player2_live 5/5, fix_player3_live 6/6.
+
+## inert-guards-02 (2026-10-16, branch s/inert-guards-02) — STARTED 14:19 UTC
+Task 694: the invincible, AI-less guards on 07000002 (playtests 1010-2055 / 1011-1128: "there are
+npcs that shouldnt be able to be shot and some of the enemies are invincible with no AI"; "one
+specific guard … standing next to a civilian that won't move, no AI, doesn't do anything"). Plan:
+list every 07000002 drone with class/state/health/enabled+present at start and after 600 ticks;
+find the present-but-never-updating ones (a missing state handler, a disabled AI waiting on a
+channel nothing sets, a script actor left in the world) [M create flags + the waking channel's
+writers]; fix them to the game; tests: each guard either runs AI or is legitimately dormant (cite
+the channel), none invincible unless the game makes it so.
+
+## inert-guards-02 — the census verdict (14:42 UTC)
+The full 07000002 census (25 drones, `crates/nf-view/tests/inert_guards_02_live.rs`): 21 guards
+(kind 1, skins 0x36/0x38/0x39/0x3a), 3 kind-8 civilians (skin 0x34) and 1 kind-9 civilian (skin
+0x4f) — ALL present, damageable and health-10/20 at start. After the intro cut-scene's
+`Drone_EnableAll(0)`/(1) cycle everything except the kind-9 civilian sits in WAIT_SWITCH (0x01)
+with the AI off — that IS the game's gate: the switch channel (placement param 3, DCVars+0x134
+[M]) of each guard is off until its zone's Touch pad sets it, and the re-enable skips WaitSwitch
+drones [M 0x1383e8:14]. The wake chain works in the port (the test teleports Bond onto the pads):
+the bunker-exit pad (placement 341, out 21) wakes d00-d04 — d00 (placement 442, the guard beside
+the bunker exit) enters combat at alert 1.0; the terrace pad (placement 342, out 23) wakes the
+playtest's frozen pair — d05 (placement 447, the guard) + d23 (placement 465, the kind-8 civilian
+1.3 units away); a woken guard takes P2K bullet damage through the real player_bullets path (the
+port's `damageable` gate [M damage.rs + DefaultInit's skin-keyed +0x14: only 0x3b/0x3c/0x53 are
+exempt, none on 02]). NO library code changed — the port's mechanisms were already the game's; the
+deliverables are the census lock, the two zone-pad wake locks, the damage lock, and the dormancy
+finding: the far-garden pair (placements 461/462) waits on channel 8, which NO trigger, door,
+inverter or 0xE1 Destroy placement writes on this level [D the census dumps — the Destroy channels
+are 72/0/130]; the game's remaining writer is the script event command 0xd [M Script_EventHandler
+0x1d94c0:166] — legitimately dormant, live check listed. Tests: the 2 new live tests (green) +
+the census run that fed the report tables.
+
+INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 passed, 6 failed,
+72 ignored (46 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes (the
+07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
+and other merged tasks' new tests. The 2 new live tests are green in the totals.

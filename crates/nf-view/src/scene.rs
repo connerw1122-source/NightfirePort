@@ -3785,7 +3785,21 @@ impl Sim {
                     let vol = nf_game::bullet::PlayerVolume { feet: [dr.pos[0], dr.pos[1] - 1.0, dr.pos[2]], height: 1.8, radius: 0.4 };
                     nf_game::bullet::segment_cylinder(camera, far, &vol).filter(|&t| t < wall).map(|t| (i, t))
                 }).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i);
-            self.cross_state = match hit { Some(i) if self.drones.list[i].team != 1 => 3, _ => 2 };
+            self.cross_state = match hit {
+                Some(i) if self.drones.list[i].team != 1 => {
+                    // civilian-no-shoot [M 0x1a7810:152-183]: the no-shoot mark is ALSO keyed on the
+                    // held weapon id (animData+0x62) and the level. Weapon ids {1, 0x35, 0x36, 0x43,
+                    // 0x44} — the fists and the throw family (grenades 0x35/0x36; 0x43/0x44 the other
+                    // throwables) — keep the NORMAL crosshair over the same civilian (you may punch or
+                    // blast him; the damage path has no team gate either), and levels 0x7000005..0x7000008
+                    // (`0x7000008 < level || level < 0x7000005` guards the mark) never mark at all.
+                    // Everything else marks +0x132 = 1, +0x133 = 3.
+                    let w = self.gun.weapon;
+                    let level_exempt = (0x0700_0005..=0x0700_0008).contains(&self.level);
+                    if level_exempt || matches!(w, 1 | 0x35 | 0x36 | 0x43 | 0x44) { 2 } else { 3 }
+                }
+                _ => 2,
+            };
         }
         // The object handler (`control_movement_object_handler`) runs whenever `GS_IsPaused(-1) == 0` — ScriptCam
         // plays NO role [M Game_Run 0x1c9790:30-35]: `ScriptCam` only picks `Text_Update2Line` vs `Text_Update`
@@ -6818,8 +6832,18 @@ impl Scene {
             }
         };
         let script = s.scripts.get(&script_h)?;
+        // cutscene-faces: the face window is the game's own classifier — the SEQUENCE's flags bit
+        // 0x8 [M AnimProcessScriptCmds 0x1c1b38: `*(int *)(lVar6 + 0xc) >> 3 & 1` on the raw
+        // sequence record; a facial window plays in the script's +0x54 slot via AnimSeqSet
+        // 0x1c7460's param_7 slot pick], the same rule `script_pose_together` poses bones by. The
+        // old `channels.len() == count` probe was fix-facial2's stand-in; the two agree on EVERY
+        // sequence on the disc — the census: 18,244 kind-4 sequences, flags {0x00 × 17363,
+        // 0x01 × 10, 0x08 × 871} and every flags-0x08 one has exactly 22 channels (a body window
+        // is 3·bones + 3·popcount(mask) — always ≡ 0 mod 3, so 22 can never be one). The game
+        // reads the slot buffer as `skin.facial` floats whatever the track carries
+        // [M AnimFacialBlend 0x1be648's uVar9 loop], and `facial_weights` keeps that count guard.
         let win = script.sequences().filter(|(a, _, _)| (*a as f32) <= frame)
-            .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.channels.len() == count).map(|sq| (a, q)))
+            .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.flags & 0x8 != 0).map(|sq| (a, q)))
             .last()?;
         let seq = s.seqs.get(&win.1)?;
         let mut out = nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)?;
