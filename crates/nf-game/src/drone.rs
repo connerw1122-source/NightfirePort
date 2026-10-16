@@ -2212,12 +2212,17 @@ impl Drone {
     /// exists in the DSTATEs but `HandleImpact`'s 0x17 arm never reads it). States without a case
     /// 0x17 (the surrendered, the KO'd, WaitSwitch, …) drop it. No damage: the arm calls nothing
     /// but `SetState(0x7B, msg[6])` [M 0x1469b8:206-249].
-    fn on_smoke(&mut self, d: &Data, _rng: &mut Rng, _frame: u32, s: u8) -> bool {
+    fn on_smoke(&mut self, d: &Data, _rng: &mut Rng, frame: u32, s: u8) -> bool {
         use state::*;
         if self.prop(d, 0x36) || self.prop(d, 0x34) { return true; }
         if matches!(s, SMOKED_OUT | SMOKED_OUT_LOOP | SMOKED_OUT_RECOVER) {
-            // 0x7B / 0x7D have no 0x17 case (dropped); 0x7C re-arms (handled in the state match).
-            return s == SMOKED_OUT_LOOP;
+            // The family's own 0x17 arms [M 0x173c50 / 0x16b878 case 0x17 / 0x173d30]: 0x7B and
+            // 0x7D have no case — the game drops the msg (the GLOBAL fallback has none either),
+            // so this is HANDLED, not a fallback fallthrough (returning false here would re-smoke
+            // through the port's GLOBAL arm forever). 0x7C re-arms: `+0xCC4 = frame + 5`,
+            // `+0xCC8 = 0`, `+0xCC0 = 1` — the port's timer_c.
+            if s == SMOKED_OUT_LOOP { self.timer_c = Some(frame + 5); }
+            return true;
         }
         let Some((resume, _allow)) = Self::impact_args(s) else { return false };
         let u10 = if resume != 0 { resume } else { self.state };
@@ -6889,8 +6894,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
     /// [M 0x17cbd0:84-106] is the object's obj+0xE8 field, NOT the script scale; its own Sound(0x3E)
     /// is the blast sound [D script stream 36].
     fn spawn_blast(&mut self, d: &Data, pos: V3, radius: f32, damage: f32, owner: usize, weapon_type: u16, player_pos: V3, frame: u32, script: u32, scale: f32) {
+        // `Explode_Propagate`'s hit list is `Collide_SphereIntersect(pos, radius, cel, …)` — the
+        // collide engine, which drops `obj+0xF0 & 0x20` objects (the flag `NDrone2_Enable(0)`
+        // sets; the same drop the bullet pick makes [M 0x1eae80:26-30]) — so DISABLED drones
+        // (the WaitSwitch waiters, NIS-frozen actors) take no blast and no msg 9.
         let drones: Vec<(usize, V3, f32)> = self.list.iter().enumerate()
-            .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos, 0.4)).collect();
+            .filter(|(_, x)| x.present && !x.corpse && x.enabled).map(|(i, x)| (i, x.pos, 0.4)).collect();
         let hits = crate::explode::propagate(pos, radius, damage, owner,
             &crate::explode::Targets { drones: &drones, player: player_pos, breaks: &[], destroys: &[] });
         // Bond: `Player_Hurt` (the difficulty factor is applied in `explode_propagate`).
@@ -8323,13 +8332,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // per-tick collision scan (Drone_CollisionHandler 0x140968:85) walks the hit list and
         // `NDrone2_DealWithObjHit` case 0x2A sends msg 0x17 to the touched drone [M disasm
         // 0x1405a8]. The port stands the collide engine's sphere-vs-glist test in with a point
-        // test against the drone's 0.4 contact sphere (the blast sweep's radius) [S — the game's
-        // obj+0x80/0x8C stamp for the cloud is a live check in the report].
+        // test against the drone's 1.05 object-contact sphere [S — the game's obj+0x80/0x8C stamp
+        // for the cloud is a live check in the report].
         let mut smoke_touch: Vec<bool> = vec![false; self.list.len()];
         if let Some(model) = d.models.get(&crate::grenade::SMOKE_CLOUD_MESH) {
             for c in &self.smoke_clouds {
                 let centre = [c.pos[0] + model.centre[0], c.pos[1] + model.centre[1], c.pos[2] + model.centre[2]];
-                let r = model.radius + 0.4;
+                // The drone side is the port's 1.05 object-contact sphere (the same stand-in the
+                // hat's touch uses [M `Collide_PickObj`'s r obj+0x8C ≈ 1.05]; the cloud's own glist
+                // sphere is the mesh bounds above).
+                let r = model.radius + 1.05;
                 for (i, dr) in self.list.iter().enumerate() {
                     if !dr.present || !dr.enabled || dr.corpse { continue; }
                     let dx = dr.pos[0] - centre[0]; let dy = dr.pos[1] - centre[1]; let dz = dr.pos[2] - centre[2];
