@@ -76,7 +76,9 @@ fn win_movie_end_opens_credits_from_the_win_page() {
 
     f.win_enter();
     f.win_movie_vol = 700;
-    assert!(!f.action(Action::Confirm), "the win page consumes no input");
+    // Non-skip input reaches nothing [M P_WINGAME 0x215100 has only the 0x4c/0x50 cases; its
+    // 0x68/1 blocks the dispatcher, :21].
+    assert!(!f.action(Action::Up), "the win page takes no page input");
     assert_eq!(f.page, Page::WinGame);
 
     assert!(f.win_movie_finished());
@@ -84,6 +86,24 @@ fn win_movie_end_opens_credits_from_the_win_page() {
     assert_eq!(f.credits_from, Some(Page::WinGame));
     assert_eq!(f.credits.page_from, WIN_ID, "the roll's own from-page id");
     assert!(!f.win_movie_finished(), "a second call is inert (the movie flag is down)");
+}
+
+/// fe-audit: the win movie is skippable at once — P_WINGAME's 0x4c sets DAT_002e1c49 = 1 and the
+/// grace DAT_002e1c4c = 0 [M 0x215100:13-15], so the skip action 0x19 stops it (Menu_StopMovie
+/// 0x215a50:6 via MenuManager_Update 0x21c3d8:37-43) and the next 0x50 opens the credits [M :23-48].
+#[test]
+fn a_skip_ends_the_win_movie_and_opens_the_credits() {
+    let mut f = fe();
+    f.page = Page::WinGame;
+    f.win_enter();
+    assert!(f.action(Action::Confirm), "the skip stops the win movie");
+    assert_eq!(f.page, Page::Credits, "the next 0x50 opens the credits [M 0x215100:48]");
+    assert_eq!(f.credits_from, Some(Page::WinGame));
+    // Sister: before the movie ran (no win_enter) the skip does nothing.
+    let mut g = fe();
+    g.page = Page::WinGame;
+    assert!(!g.action(Action::Confirm), "no movie, no skip");
+    assert_eq!(g.page, Page::WinGame);
 }
 
 /// P_CHEATMEDAL case 0x4b [M 0x2086b0:21-45]: row 0 the fail-channel arm (no grant), rows 1..5

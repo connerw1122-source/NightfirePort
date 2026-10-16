@@ -7,9 +7,10 @@
 //!   64 u32 entries, wraps at 0x40). Push converts 7 → 8 (fade hold) and 0xb → 0xc (frame wait). States
 //!   {1, 3, 4, 5, 9} set GameState+0x40 = 1 (skip Game_Draw).
 //! - `bootup_bootup` 0x1c7e78 — boot zeroes GameState, sets +0x20 = 0x80000002 (the menu-def file
-//!   08000002), +0x28 = 0x40000034 (the P_START page), +0x24 = 1, +0x40 = 2.
+//!   08000002), +0x1c = 0x40000034 (P_LANGUAGE), +0x18 = 1, +0x28 = 2 [M :22-25, :68 — Ghidra's
+//!   `GameState._28_4_` etc. are DECIMAL offsets: _28_ = +0x1c, _24_ = +0x18, _40_ = +0x28].
 //! - `Reset_MapLoadSettings` 0x1d6958 / `ResetMap_LevelToLoad` 0x1d3800 / `ResetMap_Load` 0x1d6360 — the
-//!   loader (movie wrap for the 0x71/0x73 prefixes, GameState+0x12 = current level, `MenuManager_Create`
+//!   loader (movie wrap for the 0x71/0x73 prefixes, GameState+0xc (`_12_4_`) = current level, `MenuManager_Create`
 //!   on the front-end map).
 //! - `P_START_Handler` 0x20a408 — the title page: the legal line is `Txt_BindLabel(0x375)`, the "Press
 //!   the START button" label 0x10001eb flashing on a 0xf0 = 240-frame cycle, attract at 0xa8c frames.
@@ -25,8 +26,8 @@
 //!   Parsed 2026-10-13: 56 pages, 1003 controls, clean END — every layout constant below cites its page.
 //!   Coordinates are the game's 640 × 480 menu space; the overlay scales them onto the 512 × 448 screen.
 //! - Page ids (menu-def data + page table): 0x40000002 main menu, 0x40000025 select codename,
-//!   0x40000023 select difficulty, 0x4000001c single player, 0x4000002b dossier, 0x40000034 P_START
-//!   (the boot page — the language-flag page), 0x40000009 the title shown after boot, 0x4000003b
+//!   0x40000023 select difficulty, 0x4000001c single player, 0x4000002b dossier, 0x40000034 P_LANGUAGE
+//!   (the boot page — the language-flag page), 0x40000009 P_START, the title shown after boot, 0x4000003b
 //!   rewards, 0x40000047 difficulty wheel, 0x40000036 results, 0x40000038 stats, 0x4000000c pause.
 //! - The campaign is `sp_level` 0x2df2e0 — 12 × 0x18-byte records {u32, u32 name label, u32 description
 //!   label, u32 level, u8 unlocked, ...} [M C_SBNFMAP 0x20b8d8:21 reads +0xc/+0x10]. The records' name
@@ -36,8 +37,8 @@
 //!   only the first row unlocked [S: no writer of the other flags was found].
 //! - Difficulty confirm → the single player page (`C_SBNFDFCTY` 0x216ca8:10-17 `Menu_ChangePageCloseIris`
 //!   0x4000001c); mission confirm → `ResetMap_LevelToLoad(sp_level[i]+0xc, 0, 0)` + push fade + delete
-//!   the manager [M `C_SBNFMAP` 0x20b8d8:18-41]. Locked rows: `if (!menu_unlock_everything &&
-//!   !sp_level[i*0x18+0x10]) return` [M 0x20b8d8:18-20].
+//!   the manager [M `C_SBNFMAP` 0x20b8d8:18-41; the lock gate :21-23]. Locked rows: `if (!menu_unlock_everything &&
+//!   !sp_level[i*0x18+0x10]) return` [M 0x20b8d8:21-23].
 
 use crate::gpu::{HudFrame, HudVertex};
 use crate::hud::{Hud, Anchor};
@@ -64,7 +65,7 @@ fn gs(rgb: u32, a: u32) -> [f32; 4] {
 // ---------------------------------------------------------------------------
 
 pub const ST_BOOT: u8 = 1;
-/// Runs whatever GameState+0x12 holds: the front end map 0x7000048, or a mission [M 0x1d6360].
+/// Runs whatever GameState+0xc holds: the front end map 0x7000048, or a mission [M 0x1d6360].
 pub const ST_RUNNER: u8 = 2;
 pub const ST_MAPLOAD: u8 = 3;
 pub const ST_LOCKS: u8 = 4;
@@ -79,8 +80,21 @@ pub const ST_FADE_IN: u8 = 0xe;
 
 /// The front-end map — the menus run "on" this level [M 0x1d6360: `GameState._8_4_ != 0x7000048`].
 pub const FRONTEND_LEVEL: u32 = 0x0700_0048;
-/// The GameState fields the flow machine reads and writes [M addresses in the doc comment].
-pub const PAGE_START: u32 = 0x4000_0034;
+/// The title (P_START): page 0x40000009 [M Handler_HandleMessage 0x2029e0:321-323 → P_START_Handler
+/// 0x20a408], opened by P_INTRO when the boot logos end [M 0x209e88:50]. (fe-audit: the port used
+/// to key it as 0x40000034, which is P_LANGUAGE.)
+pub const PAGE_START: u32 = 0x4000_0009;
+/// P_LANGUAGE: the page `bootup` asks the first front-end manager for [M 0x1c7e78:24
+/// `GameState._28_4_ = 0x40000034` (decimal 28 = +0x1c); 0x2029e0:302-303 → P_LANGUAGE_Handler].
+/// The port does not model it (nor P_PS2MEMCARDINIT 0x40000048): `FrontEnd::new` opens the title.
+pub const PAGE_LANGUAGE: u32 = 0x4000_0034;
+/// P_INTRO, the boot EA/MGM logos [M 0x2029e0:427 → P_INTRO_Handler 0x209e88].
+pub const PAGE_INTRO: u32 = 0x4000_0032;
+/// P_PARISENUM, the memory-card check START opens [M 0x2029e0:531 → P_PARISENUM_Handler 0x20a648].
+pub const PAGE_PARISENUM: u32 = 0x4000_004a;
+/// P_ESTHERO, the START intro movie page [M 0x2029e0:492 → P_ESTHERO_Handler 0x20a060; opened by
+/// P_PARISENUM 0x20a648:43].
+pub const PAGE_ESTHERO: u32 = 0x4000_0043;
 /// The main menu [M menu-def page 0x40000002: rows NightFire/Multiplayer/Codenames].
 pub const PAGE_MAIN: u32 = 0x4000_0002;
 /// Select Codename [M menu-def page 0x40000025: header Txt 0x1f2].
@@ -108,8 +122,8 @@ pub const PAGE_REWARDS: u32 = 0x4000_003b;
 pub const PAGE_GADGETS: u32 = 0x4000_003c;
 /// The Dossier's Weapons page [M C_SBDOSSIER's row 3 → 0x4000003d; PAGE record aux 0x07350048 [D].]
 pub const PAGE_WEAPONS: u32 = 0x4000_003d;
-/// The title layout the boot page leads to [M menu-def page 0x40000009: the art + Press START].
-pub const PAGE_TITLE_LAYOUT: u32 = 0x4000_0009;
+/// The title layout — the same page as [`PAGE_START`] [M menu-def page 0x40000009: the art + Press START].
+pub const PAGE_TITLE_LAYOUT: u32 = PAGE_START;
 /// attract-mode: the attract page the no-input timeout opens [M menu-def page 0x40000035: aux 0;
 /// `P_START` 0x20a408 / `P_MAIN` 0x20a7b0 send 0x44 with this id at `Menu_GetNoInputCount() ==
 /// 0xa8c`; the handler is `P_ATTRACT_Handler` 0x20a1f0].
@@ -224,7 +238,7 @@ pub const PAGE_MP_BOTSETUP: u32 = 0x4000_002c;
 /// landing (C_SBMPSCEN disasm 0x20c978-0x20c984). P_MPCONFIRM 0x20ec00 starts the match.]
 pub const PAGE_MP_CONFIRM: u32 = 0x4000_0049;
 /// The post-match debriefing [M C_GCPAUSE 0x204408:146 — quitting a match (+0x180 != 0) sets
-/// GameState+0x28 = 0x40000033; P_MPDEBRIEFING 0x212198 / C_MPDBG 0x217860].
+/// GameState+0x1c = 0x40000033; P_MPDEBRIEFING 0x212198 / C_MPDBG 0x217860].
 pub const PAGE_MP_DEBRIEFING: u32 = 0x4000_0033;
 
 // ── net-online-lobby: the port-only online pages (docs/systems/net-online-lobby.md §2) ─────────
@@ -251,11 +265,11 @@ pub struct GameFlow {
     pub level_to_load: u32,
     /// GameState+0x10: the intro-movie code while a 0x71-wrapped level loads [M 0x1d6360].
     pub movie_code: u32,
-    /// GameState+0x12: the current level [M 0x1d6360 phase 2].
+    /// GameState+0xc: the current level [M 0x1d6360 phase 2].
     pub current_level: u32,
-    /// GameState+0x28: the page `MenuManager_Create` opens on the front-end map [M 0x1c7e78/0x1d6360/0x216618].
+    /// GameState+0x1c: the page `MenuManager_Create` opens on the front-end map [M 0x1c7e78/0x1d6360/0x216618].
     pub page: u32,
-    /// GameState+0x24: "a load is pending" — boot sets it to 1 [M 0x1c7e78:68], ResetMap_GameInit clears it.
+    /// GameState+0x18: "a load is pending" — boot sets it to 1 [M 0x1c7e78:68], ResetMap_GameInit clears it.
     pub load_pending: u32,
     /// GameState+0x40: skip Game_Draw this frame [M 0x1c98c8].
     pub skip_draw: bool,
@@ -286,11 +300,11 @@ pub struct GameFlow {
 }
 
 impl GameFlow {
-    /// Boot: stack = [ST_BOOT], the boot page 0x40000034 [M 0x1c7e78]. `Reset_MapLoadSettings`
+    /// Boot: stack = [ST_BOOT], the boot page 0x40000034 = P_LANGUAGE [M 0x1c7e78:24]. `Reset_MapLoadSettings`
     /// 0x1d6958 sets GameState+0x8 = 0x7000048 when it is 0 and calls `ResetMap_LevelToLoad(level, 0, 0)`
     /// — the boot load of the front-end map.
     pub fn boot() -> Self {
-        GameFlow { stack: vec![ST_BOOT], page: PAGE_START, level_to_load: FRONTEND_LEVEL, ..Default::default() }
+        GameFlow { stack: vec![ST_BOOT], page: PAGE_LANGUAGE, level_to_load: FRONTEND_LEVEL, ..Default::default() }
     }
 
     /// [M 0x1c9e80]
@@ -326,7 +340,7 @@ impl GameFlow {
             // Boot: Mem_Init, bootup (pushes 2), Boot_LoadPTPData, Reset_MapLoadSettings → the boot
             // load of the front-end map [M case 1 + 0x1d6958].
             ST_BOOT => { self.push_state(ST_RUNNER); self.reset_map_level_to_load(self.level_to_load, false, false); }
-            // Runner: when a load was requested (GameState+0x24 [M case 2]), push the loader.
+            // Runner: when a load was requested (GameState+0x18 [M case 2]), push the loader.
             ST_RUNNER if self.load_pending != 0 => { self.load_pending = 0; self.push_state(ST_MAPLOAD); }
             // Movie: pops when the movie finishes or the skip action fires [M case 6,
             // Input_Action(-1, 0x19, 1)]. With a real movie playing (BGFMVPlaying != 0) the state
@@ -368,7 +382,7 @@ impl GameFlow {
             };
             self.level_to_load = resolved;
             self.phase2_resolved = Some(resolved);
-            // Phase 2 sets +0x28 = 0x40000036 when the resolve lands on the map [M 0x1d6360:
+            // Phase 2 sets +0x1c = 0x40000036 when the resolve lands on the map [M 0x1d6360:
             // `if (uVar4 == 0x7000048) { GameState._28_4_ = 0x40000036; }`] — the results page the
             // outro returns to (Mission_Update 0x182c60 case 4 set it too).
             if resolved == FRONTEND_LEVEL { self.page = PAGE_RESULTS; }
@@ -382,7 +396,7 @@ impl GameFlow {
             self.push_state(ST_MOVIE);
             return false;
         }
-        self.current_level = level;      // [M phase 2: GameState+0x12]
+        self.current_level = level;      // [M phase 2: GameState+0xc]
         // Phase 3 done: pop 3, push 4 (Locks_Init pops itself) [M 0x1d6360 tail].
         self.pop_state();
         self.push_state(ST_LOCKS);
@@ -435,9 +449,9 @@ impl GameFlow {
         if self.get_state() == ST_MOVIE { self.pop_state(); true } else { false }
     }
 
-    /// A front-end movie run (the boot P_INTRO logos, or P_ESTHERO's intro after START — see
-    /// `ESTHERO_MOVIE`): the state machine with a frame countdown that stands in when no real player
-    /// runs (the trimmed ISO's zeroed PSS files); with a player the run ends on psiMovieFinished.
+    /// A GameFlow state-6 movie with a headless frame countdown (no real player). fe-audit: the
+    /// front-end intro run no longer uses this — P_INTRO/P_ESTHERO play menu background movies with
+    /// GameFlow in its runner state [M 0x209e88:62-63, 0x20a060:24-25]; see `FrontEnd::intro_tick`.
     pub fn play_movie(&mut self, frames: u32) {
         self.push_state(ST_MOVIE);
         self.movie_frames = frames;
@@ -555,17 +569,17 @@ pub fn weapon_suffix(object: u32, level: u32) -> Option<u32> {
 /// M_PAGE+0xC4 by `MenuManager_Create` 0x21b908:169-183 and played as a LOOPING background movie on
 /// page change by `Manager_SendMessage` 0x21c858:338 (`Menu_PlayMovie(aux, 0, 1, 0, 0, 0)` — loop = 1;
 /// `psiStopBackgroundMovie` when the new page's aux is 0)]. 0 = no movie. Parsed from the disc's
-/// menu-def (08000002 in 07000048.bin) 2026-10-13: the main menu carries 0x07330048; the boot page
-/// 0x40000034, every list page (codename 0x40000025, difficulty 0x40000023, missions 0x4000001c,
+/// menu-def (08000002 in 07000048.bin) 2026-10-13: the main menu carries 0x07330048; P_LANGUAGE
+/// 0x40000034 (the boot page, not the title), every list page (codename 0x40000025, difficulty 0x40000023, missions 0x4000001c,
 /// dossier 0x4000002b) and the results page 0x40000036 carry 0x07350048; P_INTRO 0x40000032, the
-/// title layout 0x40000009 and attract 0x40000035 carry 0 (P_INTRO plays 0x7370048/0x7380048 from
+/// title 0x40000009 (Page::Start) and attract 0x40000035 carry 0 (P_INTRO plays 0x7370048/0x7380048 from
 /// its handler [M 0x209e88]). The test
 /// `menu_movies::the_page_aux_movie_map_comes_from_the_page_data` re-parses the disc's PAGE records
 /// and pins this mapping to them.
 pub fn aux_movie_for(page_id: u32) -> u32 {
     match page_id {
         PAGE_MAIN => 0x0733_0048,
-        PAGE_START | PAGE_CODENAME | PAGE_DIFFICULTY | PAGE_MISSION_SELECT | PAGE_DOSSIER | PAGE_RESULTS
+        PAGE_LANGUAGE | PAGE_CODENAME | PAGE_DIFFICULTY | PAGE_MISSION_SELECT | PAGE_DOSSIER | PAGE_RESULTS
         | PAGE_CN_SELECT | PAGE_CN_MENU | PAGE_CN_ADVANCED | PAGE_CN_MP | PAGE_CN_AV => 0x0735_0048,
         // mp-menu-flow: every MP page's PAGE record carries the same list backdrop (the menu-def
         // dump 2026-10-15: all 13 MP pages aux 0x07350048 [L]).
@@ -619,6 +633,14 @@ pub const INTRO_MOVIES: [u32; 2] = [0x0737_0048, 0x0738_0048];
 /// 0x07380048 = 329 pictures (11 s) — 425 × 2 = 850 ticks. The test
 /// `menu_movies::the_intro_movie_counts_pin_the_tick_budget` re-measures the disc's files against it.
 pub const INTRO_TICKS: u32 = 850;
+/// The same budget per movie: 96 × 2 and 329 × 2 ticks [D the picture counts above].
+pub const INTRO_MOVIE_TICKS: [u32; 2] = [96 * 2, 329 * 2];
+/// The delay C_GONIGHTFIRE / C_GOCODENAMES put on their page change: `__Menu_SendDelayedMessage(0x13,
+/// …, 0x44, page, 0)` [M 0x2169b8:36-37, 0x216b38:36-37]. Input is blocked meanwhile (0x68/1, :30).
+pub const DELAYED_PAGE_TICKS: u32 = 0x13;
+/// The from-Main open's own block on P_NFSELECT / P_CNSELECT: 0x68/1 then a delayed 0x68/0 at 0xf
+/// [M 0x20aec0:75-76, 0x212ad0:73-74].
+pub const MAIN_OPEN_BLOCK: u32 = 0xf;
 
 /// boot-flow: the game's boot order [M]: `bootup` 0x1c7e78 opens P_LANGUAGE 0x40000034 →
 /// P_PS2MEMCARDINIT (0x218538:18 → 0x40000032) → **P_INTRO 0x40000032** plays [`INTRO_MOVIES`] (the EA
@@ -645,6 +667,8 @@ pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Recor
     MpJoin, MpScenario, MpMap, MpSetup, MpOptions, MpRules, MpPlayerMods, MpEnviroMods, MpBots, MpBotChoose, MpBotSetup, MpConfirm, MpDebriefing,
     // net-online-lobby: the port-only online pages (ids in the PAGE_MP_* constants below).
     MpMode, MpHost, MpNetJoin, MpLobby, Credits,
+    // fe-audit: the intro run's pages (ids in PAGE_INTRO / PAGE_PARISENUM / PAGE_ESTHERO).
+    Intro, ParisEnum, EstHero,
     // unlock-popups: the post-results pages (ids in PAGE_NF_BONUS / PAGE_WIN_GAME / PAGE_CHEAT_MEDAL).
     NfBonus, WinGame, CheatMedal }
 
@@ -667,6 +691,7 @@ impl Page {
             Page::MpMode => PAGE_MP_MODE, Page::MpHost => PAGE_MP_HOST,
             Page::MpNetJoin => PAGE_MP_NETJOIN, Page::MpLobby => PAGE_MP_LOBBY,
             Page::Credits => crate::credits::PAGE_CREDITS,
+            Page::Intro => PAGE_INTRO, Page::ParisEnum => PAGE_PARISENUM, Page::EstHero => PAGE_ESTHERO,
             Page::NfBonus => PAGE_NF_BONUS, Page::WinGame => PAGE_WIN_GAME, Page::CheatMedal => PAGE_CHEAT_MEDAL,
         }
     }
@@ -688,6 +713,7 @@ impl Page {
             PAGE_MP_MODE => Page::MpMode, PAGE_MP_HOST => Page::MpHost,
             PAGE_MP_NETJOIN => Page::MpNetJoin, PAGE_MP_LOBBY => Page::MpLobby,
             crate::credits::PAGE_CREDITS => Page::Credits,
+            PAGE_INTRO => Page::Intro, PAGE_PARISENUM => Page::ParisEnum, PAGE_ESTHERO => Page::EstHero,
             PAGE_NF_BONUS => Page::NfBonus, PAGE_WIN_GAME => Page::WinGame, PAGE_CHEAT_MEDAL => Page::CheatMedal,
             _ => return None,
         })
@@ -948,6 +974,11 @@ pub const MP_SCENARIO_ROWS: [(u32, u32, u32, u32, u32); 13] = [
 /// The locked row's description [L mp_scenario +0x14 = 0x010000ab on every row; USATxt "This
 /// scenario is locked."].
 pub const MP_LOCKED_SCENARIO_DESC: u32 = 0x0100_00ab;
+/// P_MPRULES's Duration item values in list order: 1..10, 15..60 step 5, then −1 = Unlimited
+/// (Txt 0x3ca) [M 0x20f790:21-42].
+pub const MP_RULES_DURATIONS: [i32; 21] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, -1];
+/// P_MPRULES's Points/Lives item values in list order: 1..10, then 15..120 step 5 [M 0x20f790:45-76].
+pub const MP_RULES_POINTS: [i32; 32] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 25, 30, 35, 40, 45, 50, 55, 60, 65, 70, 75, 80, 85, 90, 95, 100, 105, 110, 115, 120];
 /// `mp_level` @0x2df400 (file 0x1d9300), 8 × 0x18 — the Select Map wheel [M C_SBMPMAP 0x217538:34-36;
 /// symtab]. +0x0C is the arena's level code (MPSettings+0x1A8 gets it on Confirm [M disasm
 /// 0x217654/0x21765c]); every shipped +0x10 flag is 1 and every +0x14 locked-desc is 0 — no map is
@@ -1345,7 +1376,7 @@ impl MpBot {
 }
 
 
-/// The end-of-mission outcome the results page shows [M P_NFRESULTS is reached with +0x28 = 0x40000036
+/// The end-of-mission outcome the results page shows [M P_NFRESULTS is reached with +0x1c = 0x40000036
 /// from Mission_Update; P_ENDMISSION renders the stats pane 0x100001a4].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Outcome { Complete, Failed }
@@ -1358,7 +1389,7 @@ pub struct Stats { pub shots_fired: u32, pub shots_hit: u32, pub accuracy_pct: u
 /// The results page's fields, built on page enter from the live progress layer — P_NFRESULTS
 /// 0x208e78 case 0x4c: `PlrStat_GetScore(0)` (the commit), the medal compare of the last score
 /// (ScoringTable+0x34) against the thresholds (+0x4 bronze .. +0x10 platinum), `SeparateNumber`
-/// for the two numbers, and `Menu_SetLevelBonus(GameState+0x72, medal, 0)` [M :77-169].
+/// for the two numbers, and `Menu_SetLevelBonus(GameState+0x48, medal, 0)` [M :77-169].
 #[derive(Clone, Debug, Default)]
 pub struct ResultsFields {
     /// The score line's number: ScoringTable+0x34 (the last score) [M :96].
@@ -1396,11 +1427,11 @@ pub struct RewardLine {
 }
 
 /// The 007 Bonus page's fields [M P_NFBONUS_Handler 0x209670 case 0x4c]: the four tier lines of
-/// `Menu_GetLevelBonuses(GameState+0x72)` 0x1ffe98 and the page's composed text — line 1's label
+/// `Menu_GetLevelBonuses(GameState+0x48)` 0x1ffe98 and the page's composed text — line 1's label
 /// first, then tiers 4, 3, 2 appended with the separator between each [M 0x209670:22-41].
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct BonusFields {
-    /// The level the page reads (GameState+0x72 at the results [M 0x209670:14]).
+    /// The level the page reads (GameState+0x48 at the results [M 0x209670:14]).
     pub level: u32,
     /// The four tier lines, indexed `[tier - 1]` [M 0x1ffe98:20-29].
     pub lines: [RewardLine; 4],
@@ -1621,9 +1652,11 @@ pub struct FrontEnd {
     pub unlocked: [bool; 12],
     /// The pause page's resume choice: the host closes the menu when this is set.
     pub closed: bool,
-    /// The P_INTRO movie run started by the title's Start: true from the confirm until the last
-    /// intro movie finishes (or the skip action pops it) [M 0x209e88]. While it is up the overlay
-    /// draws the intro movie fullscreen (the intro page has no controls) and Confirm skips.
+    /// An intro run is up: the boot P_INTRO logos (`start_boot_intro`, until the title opens) or
+    /// START's P_PARISENUM → P_ESTHERO run (until Main opens) [M 0x209e88, 0x20a648, 0x20a060].
+    /// The page is the run's own page meanwhile, never Main. The overlay draws the movie
+    /// fullscreen (the intro pages have no controls); Confirm is the skip, honoured only past
+    /// P_ESTHERO's grace (`intro_skippable` / `intro_ticks`).
     pub intro_playing: bool,
     /// Which of [`INTRO_MOVIES`] is up [M 0x209e88's `movie_283` counter: 1 → 0x07370048,
     /// 2 → 0x07380048, then the page change].
@@ -1632,7 +1665,8 @@ pub struct FrontEnd {
     /// [`ESTHERO_MOVIE`] list after START (P_ESTHERO) — and the page the run's end lands on.
     pub intro_list: &'static [u32],
     pub intro_end: Page,
-    /// Ticks since the run started (P_ESTHERO's 3 s skip grace).
+    /// Ticks since the current intro movie started — the grace DAT_002e1c4c = 0xb4 counts down
+    /// per menu tick [M 0x20a060:17, Menu_UpdateMovieCounter 0x215970].
     pub intro_ticks: u32,
     /// fix-menu-movies2: the page's aux backdrop movie has a live frame on the ONE movie plane
     /// (fix-movie-playback's `movie_tex`) this frame — the overlay then draws no dark plate (the
@@ -1752,7 +1786,7 @@ pub struct FrontEnd {
     pub screen_av_saved_x: i32,
     pub screen_av_saved_y: i32,
     /// unlock-popups: the level the results page scored (`base_map` from [`FrontEnd::results_enter`]
-    /// — the game re-reads GameState+0x72 inside the bonus page's handler [M 0x209670:14]).
+    /// — the game re-reads GameState+0x48 inside the bonus page's handler [M 0x209670:14]).
     pub results_level: u32,
     // ── unlock-popups: the post-results pages (each new field on its own line [WORKLOG lesson 4]) ──
     /// The 007 Bonus page's fields, built by [`FrontEnd::bonus_enter`] (P_NFBONUS case 0x4c from
@@ -1779,8 +1813,8 @@ pub struct FrontEnd {
     /// 2-4 stay unjoined: the game joins them through their own pads (msg 0x6a) [M P_MPJOIN
     /// 0x20ca00], and the port has no pads (keyboard only, agent 1 — the task's scope).
     pub mp_join: [MpJoinAgent; 4],
-    /// MPSettings+0x1A4 — the selected scenario word (0 = none yet; Quick Game keeps 0 until its
-    /// own quick-start writes Deathmatch) [M C_SBMPSCEN's confirm store].
+    /// MPSettings+0x1A4 — the selected scenario word [M C_SBMPSCEN's confirm store]; boot sets it
+    /// to 1 (Deathmatch) [M bootup_bootup 0x1c7e78:30 `MPSettings._420_4_ = 1`, decimal 420 = 0x1a4].
     pub mp_scenario: u32,
     /// MPSettings+0x1A8 — the selected arena's level code [M C_SBMPMAP's confirm store].
     pub mp_level: u32,
@@ -1957,6 +1991,33 @@ pub struct FrontEnd {
     /// channel re-failed the mission the tick it came back, the 07000007 replay loop (playtest
     /// 1012-1723). The host consumes it with the level request.
     pub requested_restart: bool,
+    // fe-audit (each new field on its own line [WORKLOG lesson 4]).
+    /// The page that opened the MP summary — its Back is the manager's 0x5f pop [M P_MPCONFIRM
+    /// 0x20ec00 has no back arm; the Quick Game open pushes the scenario page (Menu_ChangePageCloseIris
+    /// 0x202190:8-9 with DAT_002e1adc = 0 → 0x21c858 case 0x44's push)].
+    pub mp_confirm_from: Page,
+    /// A delayed page change in flight: (ticks left, page, cursor on arrival) — the 0x44 that
+    /// C_GONIGHTFIRE 0x2169b8:36-37 / C_GOCODENAMES 0x216b38:36-37 queue 0x13 ticks out
+    /// (`__Menu_SendDelayedMessage`, run by `Menu_ProcessDelayedMessages` every menu tick).
+    pub delayed_page: Option<(u32, Page, usize)>,
+    /// The manager's input block (manager+0x1d4, msg 0x68 [M 0x21c858:612-613]; the 0x22
+    /// dispatcher skips while it is set [M 0x21c3d8:70]): ticks left until the delayed 0x68/0.
+    /// `u32::MAX` = held until a page lifts it.
+    pub input_block_ticks: u32,
+    /// boot-flow: the intro page's own 0x50 counter — P_INTRO's `movie_283` [M 0x209e88:13-37] /
+    /// P_ESTHERO's `frame_count_287` [M 0x20a060:12-27]; reset by the page's 0x4c.
+    pub intro_step: u32,
+    /// A movie of the intro run is on screen now (started by the page's 0x50 and not yet
+    /// finished or stopped) — `psiMovieFinished` 0x1082e8 is `!intro_movie`.
+    pub intro_movie: bool,
+    /// The headless countdown for the current intro movie (its picture count × 2 ticks); it only
+    /// runs while no real player decodes (`intro_live`).
+    pub intro_frames: u32,
+    /// The host's player is decoding the current intro movie (BGFMVPlaying [M 0x1082e8]).
+    pub intro_live: bool,
+    /// `DAT_002e1c49`: the playing movie accepts the skip [M Menu_StopMovie 0x215a50:6]. P_INTRO
+    /// clears it (0x209e88:41, 55 — the boot logos are unskippable), P_ESTHERO sets it (0x20a060:18).
+    pub intro_skippable: bool,
 }
 
 impl FrontEnd {
@@ -2028,7 +2089,7 @@ impl FrontEnd {
             win_movie_vol: 0,
             // mp-menu-flow (each new field on its own line [WORKLOG lesson 4]).
             mp_join: std::array::from_fn(|_| MpJoinAgent::default()),
-            mp_scenario: 0,
+            mp_scenario: 1,
             mp_level: 0,
             mp_scenario_row: 0,
             // menu-mouse-parity (each new field on its own line [WORKLOG lesson 4]).
@@ -2101,7 +2162,16 @@ impl FrontEnd {
             attract_toggle: false,
             attract_opener: Page::Start,
             // death-loop-07 (each new field on its own line [WORKLOG lesson 4]).
-            requested_restart: false };
+            requested_restart: false,
+            // fe-audit (each new field on its own line [WORKLOG lesson 4]).
+            mp_confirm_from: Page::MpOptions,
+            delayed_page: None,
+            input_block_ticks: 0,
+            intro_step: 0,
+            intro_movie: false,
+            intro_frames: 0,
+            intro_live: false,
+            intro_skippable: false };
         // The boot opens P_START: the pair plays with `menu_movie` clear [M P_START 0x20a408:12-22;
         // the game's boot path P_INTRO → P_START replays it the same way — the intro movie end
         // clears the static [M 0x209e88:44,58]].
@@ -2155,6 +2225,10 @@ impl FrontEnd {
             // [M P_MPSCENARIO_Handler 0x217348:23 — the page's 0x4c open runs
             // Menu_UnlockMPSettings 0x1ff698, re-deriving the reward gates from the bonus words.]
             self.unlock_mp_settings();
+            // fe-audit: the same 0x4c selects the row whose +0xc word is MPSettings+0x1A4
+            // [M 0x217348:24-25 Menu_SelectItemInControl(…, 0x2df508, 0xd, MPSettings._420_4_)] —
+            // boot's 1 and Quick Game's 1 both land on Arena (row 1).
+            if let Some(r) = MP_SCENARIO_ROWS.iter().position(|row| row.3 == self.mp_scenario) { self.mp_scenario_row = r; }
         }
     }
 
@@ -2261,6 +2335,7 @@ impl FrontEnd {
             // credits-data: the credits page has no wheel rows (the two list controls are the
             // roll itself) [M P_CREDITS_Handler 0x2152b0 has no cursor code].
             Page::Credits => 0,
+            Page::Intro | Page::ParisEnum | Page::EstHero => 0,
             // unlock-popups: the bonus/win pages have no wheel [M P_NFBONUS 0x209670 /
             // P_WINGAME 0x215100 have no cursor code]; the cheat-medal list has 6 rows
             // [M 0x2086b0's switch over the selection 0..5].
@@ -2343,6 +2418,7 @@ impl FrontEnd {
             Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().get(row).map_or(String::new(), |r| bind(r.label)),
             // credits-data: no rows — the roll's text lives in fe.credits.visible() [M].
             Page::Credits => String::new(),
+            Page::Intro | Page::ParisEnum | Page::EstHero => String::new(),
             // unlock-popups: the bonus page's text is `bonus.text_labels` (the composed chain,
             // not a wheel row); the win page has no rows [L its PAGE record]; the cheat-medal
             // list is not in the menu-def (no labels — the handler only reads the selection [M
@@ -2653,7 +2729,9 @@ impl FrontEnd {
         }
         match self.page {
             // Pages whose rows are hovered: only a click ON a row confirms.
-            Page::Main => if (167.0..473.0).contains(&x) && (262.0..358.0).contains(&y) { return self.action(Action::Confirm); },
+            // The three rows' controls (167, 262/294/326, 306×28) [L menu-def page 0x40000002]: the
+            // last row ends at 326 + 28 = 354.
+            Page::Main => if (167.0..473.0).contains(&x) && (262.0..354.0).contains(&y) { return self.action(Action::Confirm); },
             Page::Pause if self.confirming_restart || self.confirming_quit => if (238.0..403.0).contains(&x) && (220.0..288.0).contains(&y) { return self.action(Action::Confirm); },
             Page::Pause if self.pause_tab == 0 => if (153.0..487.0).contains(&x) && (192.0..293.0).contains(&y) { return self.action(Action::Confirm); },
             // The OBJECTIVES tab's rows: a click shows the hovered row's hint — the row's ✕ [M
@@ -2828,7 +2906,13 @@ impl FrontEnd {
     /// changed. pause-results-flows.
     pub fn reopen_queued_page(&mut self) -> bool {
         match Page::from_id(self.flow.page) {
-            Some(p) if self.page != p => { self.enter_page(p); self.cursor = 0; true }
+            Some(p) if self.page != p => {
+                self.enter_page(p);
+                // The page's own 0x4c row: the mission list opens on the highest unlocked row
+                // [M P_NFMAP 0x20b608:58-64]; the others on row 0.
+                self.cursor = if p == Page::MissionSelect { self.highest_unlocked() } else { 0 };
+                true
+            }
             _ => false,
         }
     }
@@ -2840,21 +2924,11 @@ impl FrontEnd {
         // memcard-save-flow: the card flow pumps per frame, the way HandlePS2CardState 0x110b98
         // runs from the game's page handlers [M P_CNMENU 0x213288:14-16's 0x50 pump].
         self.card_tick();
-        if self.intro_playing && self.flow.get_state() == ST_MOVIE { self.intro_ticks = self.intro_ticks.saturating_add(1); }
-        // The intro run ends when the movie state pops (its frames ran out or the host ended it
-        // after the second intro movie) [M 0x209e88: the page change follows the movies].
-        if self.intro_playing && self.flow.get_state() != ST_MOVIE {
-            self.intro_playing = false;
-            self.menu_movie = false; // the intro movie end clears menu_movie [M P_INTRO 0x209e88:44,58]
-            self.intro_index = 0;
-            // attract-mode: the main menu's 0x4c resets the count here [M P_MAIN 0x20a7b0:37
-            // `Menu_ResetNoInputCount`] — the game's 45 s clock starts at the main menu's open,
-            // not at the START press.
-            self.no_input_frames = 0;
-            // The movie-2 end restarts the pair [M 0x209e88:23-29 — remove, then SFXStart both,
-            // menu_movie=1]; the next page-open's 0x4c churn collapses into this one restart.
-            self.open_pair_sfx();
-        }
+        // fe-audit: the manager's delayed messages [M MenuManager_Update 0x21c3d8:36 →
+        // Menu_ProcessDelayedMessages; the 0x13/0xf delays count these 60 Hz ticks (the call runs
+        // twice per loop at PS2FramesToSkip == 2, 0x21c3d8:48-56)].
+        self.delayed_tick();
+        self.intro_tick();
         // credits-data: the credits page's 0x50 tick; the delayed 0x44/0x5f exit routes the page
         // [M P_CREDITS_Handler 0x2152b0:103-195 — ToMain = msg 0x44/0x40000002 after the win path,
         // PopBack = msg 0x5f back to the opener].
@@ -2884,10 +2958,8 @@ impl FrontEnd {
         // choices when they change, the join side walks Connecting → lobby → match start [S
         // docs/systems/net-online-lobby.md §2-3].
         self.mp_net_poll();
-        // (the `!self.intro_playing` fire guard below: the port flips the page to Main before the
-        // intro plays, but the game's P_INTRO page is the up-page during the movies and never
-        // checks the count — the fire must wait for the real page's 0x4c, whose reset lands in
-        // the intro-cleanup block above.)
+        // (the `!self.intro_playing` fire guard below: the intro pages never check the count [M
+        // only P_START/P_MAIN call Menu_GetNoInputCount]; Main's 0x4c reset lands in intro_tick.)
         self.no_input_frames = self.no_input_frames.saturating_add(1);
         // attract-mode: the title's and main menu's no-input timeout fires on the tick the count
         // reaches 0xa8c [M P_START 0x20a408 / P_MAIN 0x20a7b0 — `Menu_GetNoInputCount() == 0xa8c`
@@ -2901,6 +2973,114 @@ impl FrontEnd {
         {
             self.attract_open();
         }
+    }
+
+    /// fe-audit: the delayed 0x44 / 0x68 pair C_GONIGHTFIRE / C_GOCODENAMES queue, and the
+    /// destination page's own 0x4c block (P_NFSELECT 0x20aec0:75-76 / P_CNSELECT 0x212ad0:73-74:
+    /// opened from 0x40000002 they send 0x68/1 and a delayed 0x68/0 at 0xf).
+    fn delayed_tick(&mut self) {
+        if self.input_block_ticks > 0 && self.input_block_ticks != u32::MAX { self.input_block_ticks -= 1; }
+        let Some((n, page, cursor)) = self.delayed_page else { return };
+        if n > 1 { self.delayed_page = Some((n - 1, page, cursor)); return; }
+        self.delayed_page = None;
+        self.enter_page(page);
+        self.cursor = cursor;
+        // Both destinations are only queued from Main, so their 0x4c takes the from-Main arm.
+        self.input_block_ticks = MAIN_OPEN_BLOCK;
+    }
+
+    /// Queues a delayed page change: input blocked now (0x68/1), the page `DELAYED_PAGE_TICKS`
+    /// ticks later [M C_GONIGHTFIRE 0x2169b8:29-37, C_GOCODENAMES 0x216b38:29-37].
+    fn delay_page(&mut self, page: Page, cursor: usize) {
+        self.input_block_ticks = u32::MAX;
+        self.delayed_page = Some((DELAYED_PAGE_TICKS, page, cursor));
+    }
+
+    /// boot-flow / fe-audit: the intro pages' own 0x50 handlers, one per menu tick, plus the
+    /// manager's movie counter. P_INTRO (boot) plays [`INTRO_MOVIES`] then opens the title; START
+    /// → P_PARISENUM → P_ESTHERO plays [`ESTHERO_MOVIE`] then opens Main. GameFlow stays in its
+    /// runner state throughout — these are menu background movies (`psiStartBackgroundMovie` +
+    /// msg 0x68), not GameFlow state 6 [M 0x209e88:62-63, 0x20a060:24-25].
+    fn intro_tick(&mut self) {
+        if !self.intro_playing { return; }
+        // `Menu_UpdateMovieCounter` while the movie plays [M 0x21c3d8:37-39, 0x215970 — the grace
+        // byte DAT_002e1c4c counts down]; the headless countdown stands in for psiMovieFinished
+        // when no real player decodes.
+        if self.intro_movie {
+            self.intro_ticks = self.intro_ticks.saturating_add(1);
+            if !self.intro_live {
+                self.intro_frames = self.intro_frames.saturating_sub(1);
+                if self.intro_frames == 0 { self.intro_movie = false; }
+            }
+        }
+        match self.page {
+            // P_PARISENUM's 0x50: once the card check's box is done, 0x44 → 0x40000043 with
+            // lparam 1 [M 0x20a648:36-44]. The port has no card scan here, so the check is done on
+            // the first 0x50 [S unverified — the game's check takes as long as the card I/O].
+            Page::ParisEnum => {
+                self.enter_page(Page::EstHero);
+                self.intro_step = 0; // P_ESTHERO's 0x4c [M 0x20a060:12-13]
+            }
+            Page::EstHero => {
+                if self.intro_step == 1 {
+                    // [M 0x20a060:16-25]: grace 0xb4, skippable, the pair removed, menu_movie = 0,
+                    // psiStartBackgroundMovie(0x73b0048), input block 0x68/1.
+                    self.start_intro_movie(0, ESTHERO_TICKS, true);
+                }
+                self.intro_step += 1;
+                if self.intro_step > 1 && !self.intro_movie {
+                    // The finish arm [M 0x20a060:28-45]: the pair restarts while it is down, the
+                    // block lifts, 0x44 → Main 0x40000002 with lparam 1.
+                    self.open_pair_sfx();
+                    self.intro_playing = false;
+                    self.enter_page(Page::Main);
+                    self.cursor = 0;
+                    // attract-mode: Main's 0x4c resets the count [M P_MAIN 0x20a7b0:37].
+                    self.no_input_frames = 0;
+                }
+            }
+            Page::Intro => {
+                // [M 0x209e88:16-37]: while movie_283 is 1..3 the page waits on psiMovieFinished;
+                // the finish restarts the pair while it is down (c4a = 1).
+                if (1..=3).contains(&self.intro_step) {
+                    if self.intro_movie { return; }
+                    self.open_pair_sfx();
+                }
+                self.intro_step += 1;
+                match self.intro_step {
+                    // [M :38-47 / :53-62]: c4c = 0, c49 = 0 (unskippable), the pair removed, then
+                    // 0x7370048 / 0x7380048.
+                    1 | 2 => {
+                        let i = self.intro_step as usize - 1;
+                        self.start_intro_movie(i, INTRO_MOVIE_TICKS[i], false);
+                    }
+                    // [M :49-51]: 0x44 → the title 0x40000009 with lparam 1. menu_movie is 1 from
+                    // the finish arm, so the title's 0x4c restarts nothing [M 0x20a408:17-23].
+                    _ => {
+                        self.intro_playing = false;
+                        self.enter_page(Page::Start);
+                        self.cursor = 0;
+                        self.no_input_frames = 0; // P_START's 0x4c [M 0x20a408:43]
+                    }
+                }
+            }
+            // The run's page went away (a test set another page): the run is over.
+            _ => { self.intro_playing = false; self.intro_movie = false; }
+        }
+    }
+
+    /// One intro movie starts on the menu's background slot: `skippable` = DAT_002e1c49, the
+    /// grace counter restarts, the pair is removed and `menu_movie` cleared [M 0x209e88:39-47,
+    /// 0x20a060:17-24].
+    fn start_intro_movie(&mut self, index: usize, ticks: u32, skippable: bool) {
+        self.intro_index = index;
+        self.intro_frames = ticks;
+        self.intro_live = false;
+        self.intro_movie = true;
+        self.intro_ticks = 0;
+        self.intro_skippable = skippable;
+        self.remove_pair();
+        self.menu_movie = false;
     }
 
     /// attract-mode: the timeout's open — `Manager_SendMessage(own page, 0x44, 0x40000035, 0)`
@@ -2973,35 +3153,43 @@ impl FrontEnd {
         } else { false }
     }
 
-    /// A mission ended; the game records the results page and pushes the 60-frame fade [M 0x182c60:74
-    /// sets +0x28 = 0x40000036, `GameFlow_PushState(60.0, 7, …)`]. The unlock itself is NOT here:
-    /// Mission_Update's case 4 does no award — the results page's enter runs
-    /// `Menu_SetLevelBonus(GameState+0x72, medal, 0)` [M 0x208e78:169], which the port drives
-    /// through [`FrontEnd::results_enter`].
+    /// A mission ended [M Mission_Update 0x182c60]. Cases 2/3 (failed) and 6 (complete) only set
+    /// `LevelToEndTo` and count down; case 4 then splits on MissionState [M :65-81]:
+    /// - complete (MissionState 6): +0x1c = 0x40000036, `ResetMap_LevelToLoad(LevelToEndTo, 0, 0)`
+    ///   and `GameFlow_PushState(60.0, 7, …)` — the outro (or the front end) loads and the results
+    ///   page opens on the front-end map [M :66-75].
+    /// - failed: `MenuManager_Create(0x80000004, 0x40000042, …)` + `GS_PauseGame(1)` — the fail
+    ///   menu opens OVER THE PAUSED MISSION and nothing loads [M :77-80]. The load only comes from
+    ///   the fail menu's own row (P_ENDMISSION 0x216618:11-30).
+    /// The unlock is NOT here: the results page's enter runs `Menu_SetLevelBonus(GameState+0x48,
+    /// medal, 0)` [M 0x208e78:169], which the port drives through [`FrontEnd::results_enter`].
     pub fn mission_ended(&mut self, outcome: Outcome, stats: Stats) {
-        // The level the mission ended on, captured NOW: the front-end load the end arms can land
-        // before the player answers and overwrite `flow.current_level` (GameState+0x12) with
-        // 0x07000048 — REPLAY then reloaded the menu map instead of the mission
-        // (menu-e2e-singleplayer finding 1).
+        // The level the mission ended on, captured NOW: a later front-end load overwrites
+        // `flow.current_level` (GameState+0xc) with 0x07000048 — REPLAY then reloaded the menu
+        // map instead of the mission (menu-e2e-singleplayer finding 1).
         self.ended_level = Some(self.flow.current_level);
         self.outcome = outcome;
         self.stats = stats;
-        // death-loop-07: the end's own front-end load is not a REPLAY pick — the marker only
-        // rides the results page's REPLAY row (the player's answer).
+        // death-loop-07: the end's own load is not a REPLAY pick — the marker only rides the fail
+        // menu's REPLAY row (the player's answer).
         self.requested_restart = false;
+        if outcome == Outcome::Failed {
+            // [M 0x182c60:77-80] the fail menu 0x40000042 over the paused mission: no level
+            // request, no fade, the flow stays where the mission runs.
+            self.enter_page(Page::Results);
+            self.cursor = 0;
+            return;
+        }
         self.flow.page = PAGE_RESULTS;
-        // Mission_Update 0x182c60 case 6 sets `LevelToEndTo` from the finished level: the outro
-        // code 0x073000xx for the levels with an outro (compiled lui/ori switch at 0x182e60-0x182eb4
-        // [L ee_snapshot]; 0x7000016 → 0x7300017 is the one non-identity entry), the front-end map
-        // for the rest (no outro); failures go straight to the map [M cases 2/3]. Case 4 then runs
-        // `ResetMap_LevelToLoad(LevelToEndTo, 0, 0)` — the outro rides the briefing machinery, so
-        // the movie wrap plays it and phase 2 returns to the map with the results page
-        // [M 0x1d6360/0x1d3560; P_NFRESULTS 0x208e78 reopens 0x40000036 on it].
-        let end_to = if outcome == Outcome::Complete { outro_for(self.flow.current_level) } else { FRONTEND_LEVEL };
+        // Case 6's `LevelToEndTo`: the outro code 0x073000xx for the levels with an outro
+        // (compiled switch [M 0x182c60:89-116]; 0x7000016 → 0x7300017 is the one non-identity
+        // entry), the front-end map for the rest. Case 4 runs `ResetMap_LevelToLoad(LevelToEndTo,
+        // 0, 0)` — the outro rides the briefing machinery, so the movie wrap plays it and phase 2
+        // returns to the map with the results page [M 0x1d6360/0x1d3560; P_NFRESULTS 0x208e78].
+        let end_to = outro_for(self.flow.current_level);
         self.requested_level = Some(end_to);
         self.flow.reset_map_level_to_load(end_to, false, false);
-        // The game's order [M 0x182c60 case 4]: `ResetMap_LevelToLoad(LevelToEndTo, 0, 0)` pushes the load
-        // first, THEN `GameFlow_PushState(60.0, 7, …)` puts the fade on top, so the fade plays before the load.
+        // The game's order [M 0x182c60:73-74]: the load first, THEN the fade push on top.
         self.flow.push_state(ST_FADE_HOLD);
         self.enter_page(Page::Results);
         self.cursor = 0;
@@ -3009,9 +3197,9 @@ impl FrontEnd {
 
     /// P_NFRESULTS 0x208e78 case 0x4c against the LIVE progress layer — the results page's enter:
     /// `PlrStat_GetScore(0)` (the commit — the game's param 0 [M :77]) builds the page's fields,
-    /// then `Menu_SetLevelBonus(GameState+0x72, medal, 0)` writes the award — the level's
+    /// then `Menu_SetLevelBonus(GameState+0x48, medal, 0)` writes the award — the level's
     /// `sp_level+0x10` flag AND the next level's [M :169 → 0x1ffa10:62-66], which
-    /// `Menu_GetNightfireStatus` 0x202360 packs for the save. `base_map` = GameState+0x72
+    /// `Menu_GetNightfireStatus` 0x202360 packs for the save. `base_map` = GameState+0x48
     /// (`Mission_BaseMapHCode`), `status` = `Mission_Status()` (6 on this path), `difficulty` =
     /// GameState+0x40. The no-medal line composes Txt 0x10001fd with the codename (len > 1) or
     /// Txt 0x10001fe [M :144-154]. Returns whether the fields were built (the game's
@@ -3093,7 +3281,7 @@ impl FrontEnd {
     /// entry's label/texture pair [L REWARD_TEXT]), the page's texture is tier 1's [M 0x209670
     /// :22-26] and the text is the tier 1 → 4 → 3 → 2 label chain [M :22-41]. `has_text` = the
     /// game's `DAT_002e1c2c` gate [M :16-43] — the host passes `new_reward`'s value at the open.
-    /// `level` = GameState+0x72 at the results ([`FrontEnd::results_level`]).
+    /// `level` = GameState+0x48 at the results ([`FrontEnd::results_level`]).
     pub fn bonus_enter(&mut self, progress: &nf_game::progress::Progress, level: u32, has_text: bool) {
         let idx = nf_game::progress::REWARDS_TABLE.iter().position(|e| e.hash == level);
         let lines = [1u32, 2, 3, 4].map(|tier| {
@@ -3155,7 +3343,7 @@ impl FrontEnd {
     /// P_NFSTATS_Handler 0x209938's page enter — the Mission Stats rows against the LIVE progress
     /// layer. The game's 0x4c build runs `PlrStat_GetScore(0)` (the commit [M 0x209938:36-38])
     /// and adds the rows; the port mirrors it through `nf_game::stats::stats_rows` (order,
-    /// gating, formats — docs/systems/mission-stats.md). `base_map` = GameState+0x72,
+    /// gating, formats — docs/systems/mission-stats.md). `base_map` = GameState+0x48,
     /// `status` = `Mission_Status()` (6 on the results path), `difficulty` = GameState+0x40.
     /// Returns whether the rows were built (the game's `score_table != 0` arm).
     pub fn stats_enter(&mut self, progress: &mut nf_game::progress::Progress, base_map: u32, status: u32, difficulty: u32, lang: Option<&Lang>) -> bool {
@@ -3383,16 +3571,28 @@ impl FrontEnd {
     pub fn intro_movie_code(&self) -> u32 { self.intro_list[self.intro_index.min(self.intro_list.len() - 1)] }
 
     /// boot-flow: the boot P_INTRO run — the EA and MGM logos, then the title [M P_INTRO_Handler 0x209e88].
-    /// The window host calls this once when the boot front end opens; the page stays the title.
+    /// The window host calls this once when the boot front end opens: the up-page becomes P_INTRO
+    /// 0x40000032 (its 0x4c zeroes movie_283 [M :13-14]) and its 0x50s play the pair, unskippable
+    /// (DAT_002e1c49 = 0 [M :41, :55; Menu_StopMovie 0x215a50:6]), then open the title. The port
+    /// skips P_LANGUAGE / P_PS2MEMCARDINIT (not modelled).
     pub fn start_boot_intro(&mut self) {
-        self.flow.play_movie(INTRO_TICKS);
         self.intro_playing = true;
+        self.intro_step = 0;
+        self.intro_movie = false;
         self.intro_index = 0;
         self.intro_list = &INTRO_MOVIES;
         self.intro_end = Page::Start;
         self.intro_ticks = 0;
-        self.menu_movie = false;
-        self.remove_pair();
+        self.page = Page::Intro;
+        self.cursor = 0;
+    }
+
+    /// The host's psiMovieFinished feed for the intro run: the real player ended (or was never
+    /// started) — the page's next 0x50 takes the finish arm.
+    pub fn intro_movie_finished(&mut self) {
+        self.intro_live = false;
+        self.intro_movie = false;
+        self.intro_frames = 0;
     }
 
     // ── codename-entry: the name-entry page 0x40000020 (P_CNNAME_Handler 0x213790 + the grid's
@@ -3926,24 +4126,23 @@ impl FrontEnd {
             }
             return false;
         }
+        // fe-audit: the manager's input block (msg 0x68/1 — a delayed page change in flight, or a
+        // page's own open block): the 0x22 dispatcher skips [M 0x21c3d8:70 `puVar14[0x1d4] == 0`]
+        // and Menu_InputAction never runs, so the no-input count is not reset either.
+        if self.input_block_ticks > 0 && !self.intro_playing { return false; }
         self.no_input_frames = 0; // [M Menu_ResetNoInputCount on every handled input]
-        // The intro movie is up: action 0x19 (X/Start — Enter here) skips it [M GameFlow_Main
-        // 0x1c98c8 case 6 pops the movie state on `Input_Action(-1, 0x19)`]; other input does
-        // nothing while the movie owns the screen (the intro page has no controls).
-        if self.intro_playing && self.flow.get_state() == ST_MOVIE {
-            // boot-flow: P_ESTHERO's 3 s grace — Menu_StopMovie ignores the skip until it runs out [M 0x215a50].
-            if a == Action::Confirm && self.intro_end == Page::Main && self.intro_ticks < ESTHERO_GRACE { return true; }
-            if a == Action::Confirm {
-                self.flow.pop_state();
-                self.intro_playing = false;
-                self.menu_movie = false; // the intro movie end clears menu_movie [M P_INTRO 0x209e88:44,58]
-                self.intro_index = 0;
-                // The game's StopMovie makes the page's next 0x50 see psiMovieFinished, and the
-                // finish arm restarts the pair while it is down [M 0x209e88:23-28] — the skip
-                // collapses to the same restart (menu-audio-state: without it the main menu sat
-                // silent after a skipped intro; the window's own skip path funnels through the
-                // intro-end block in `tick`, which calls the same restart).
-                self.open_pair_sfx();
+        // The intro run is up (P_INTRO / P_PARISENUM / P_ESTHERO — no page controls; P_ESTHERO's
+        // 0x68/1 blocks the dispatcher [M 0x20a060:25]). The skip is MenuManager_Update's own poll:
+        // action 0x19 (the port's Confirm) → `Menu_StopMovie(0)`, which stops the movie only when
+        // DAT_002e1c49 is set and the grace DAT_002e1c4c has run out [M 0x21c3d8:37-43, 0x215a50:6].
+        // The stop makes the page's next 0x50 see psiMovieFinished and take its finish arm (the
+        // pair restart, then the next page) [M 0x20a060:28-45]. The boot logos clear c49: they
+        // are unskippable [M 0x209e88:41, :55].
+        if self.intro_playing {
+            if a == Action::Confirm && self.intro_movie && self.intro_skippable && self.intro_ticks >= ESTHERO_GRACE {
+                self.intro_movie = false;   // psiStopBackgroundMovie [M 0x215a50:11]
+                self.intro_live = false;
+                self.intro_frames = 0;
                 return true;
             }
             return false;
@@ -4195,42 +4394,41 @@ impl FrontEnd {
             }
             Page::Start => {
                 if a == Action::Confirm {
-                    // → the intro movie, then the main menu [M P_INTRO 0x209e88 plays 0x07370048
-                    // then 0x07380048 (non-looping) and only then opens the next page; the driver's
-                    // observed order Title → movie → Main]. The page flips at once (menus_flow's
-                    // contract); the overlay shows the movie fullscreen until the state pops.
-                    // boot-flow: START → P_ESTHERO's intro 0x073B0048, then the main menu [M 0x20a060].
-                    self.flow.play_movie(ESTHERO_TICKS);
+                    // START → P_PARISENUM 0x4000004a → P_ESTHERO 0x40000043, which plays 0x073B0048
+                    // and opens Main only when the movie finishes [M 0x20a648:43, 0x20a060:16-45].
+                    // The title's START send itself lives in the menu-def scripts, not in code [S
+                    // unverified — no code sender of 0x4000004a exists in ACTION.ELF; the chain is
+                    // the PCSX2 fresh boot of 2026-10-16]. The intro run (`intro_tick`) carries
+                    // the pages; the page is P_PARISENUM now, not Main.
                     self.intro_playing = true;
+                    self.intro_step = 0;
+                    self.intro_movie = false;
                     self.intro_index = 0;
                     self.intro_list = std::slice::from_ref(&ESTHERO_MOVIE);
                     self.intro_end = Page::Main;
                     self.intro_ticks = 0;
-                    // P_INTRO's 0x50 frame-1 removes the pair and clears the static before the
-                    // movies start [M 0x209e88:37-47] — the menu music is silent under the EA
-                    // logo (the playtest's leak); it restarts at the movie-2 end (the intro-end
-                    // arm in tick). The page flip keeps menus_flow's contract.
-                    self.page = Page::Main;
-                    self.menu_movie = false;
-                    self.remove_pair();
+                    self.enter_page(Page::ParisEnum);
                     self.cursor = 0;
                     return true;
                 }
             }
+            Page::Intro | Page::ParisEnum | Page::EstHero => {}
             Page::Main => match (a, self.cursor) {
                 (Action::Up, _) => { self.cursor = (self.cursor + self.rows() - 1) % self.rows(); return self.focus_moved(); }
                 (Action::Down, _) => { self.cursor = (self.cursor + 1) % self.rows(); return self.focus_moved(); }
-                // NightFire → Select Codename [M C_GONIGHTFIRE 0x2169b8:36-37 opens the next front-end
-                // page; the driver's observed order NightFire → Select Codename → Select Difficulty →
-                // Single Player].
-                (Action::Confirm, 0) => { self.enter_page(Page::Codename); self.cursor = 0; return true; }
+                // NightFire → Select Codename after 0x13 ticks with input blocked [M C_GONIGHTFIRE
+                // 0x2169b8:29-37]. Opened from Main, P_NFSELECT selects row 1 "Play without saving"
+                // [M 0x20aec0:83 select_def_codename = (opener == 0x40000002); :96-97 0x2e index 1].
+                (Action::Confirm, 0) => { self.delay_page(Page::Codename, 1); return true; }
                 // Multiplayer → the port's mode choice [S net-online-lobby — the game's own route
                 // C_GOMULTIPLAYER 0x216a78 sends the delayed msg 0x44 → 0x40000019 after 0x13
                 // frames; the port asks Local / Host Online / Join Online first and the Local row
                 // keeps the game's page].
                 (Action::Confirm, 1) => { self.enter_page(Page::MpMode); self.cursor = 0; return true; }
-                // Codenames → Edit Codename, on the Default row [M C_GOCODENAMES 0x216b38:37 → page 0x4000001b; L PCSX2 m29].
-                (Action::Confirm, 2) => { self.enter_page(Page::CnSelect); self.cursor = 1; return true; }
+                // Codenames → Edit Codename after 0x13 ticks with input blocked [M C_GOCODENAMES
+                // 0x216b38:29-37 → 0x4000001b], on the Default row [M P_CNSELECT 0x212ad0:81, :94-95
+                // — opened from Main it sends 0x2e index 1].
+                (Action::Confirm, 2) => { self.delay_page(Page::CnSelect, 1); return true; }
                 (Action::Back, _) => { self.enter_page(Page::Start); self.cursor = 0; return true; }
                 _ => {}
             },
@@ -4261,7 +4459,9 @@ impl FrontEnd {
                         } else {
                             self.confirming_default_profile = false;
                             self.enter_page(Page::Difficulty);
-                            self.cursor = 1; // Agent [M the game's default difficulty row is the middle one — the wheel starts centred]
+                            // Opened from the codename page, P_NFDFCTY sends 0x2e index 0 to the
+                            // wheel 0x100000bf [M 0x216bf8:10-12] — the first row (Operative).
+                            self.cursor = 0;
                         }
                         return true;
                     }
@@ -4274,23 +4474,23 @@ impl FrontEnd {
                 _ => {}
             },
             Page::Difficulty => match a {
-                // The difficulty wheel clamps too: the same Scroll_Update rule (0x2221b20:186-210,
-                // wrap only under msg 0x69 [M 0x222810:136-139]) governs every wheel scroll, and the
-                // front-end menu-def carries NO msg 0x69 on any control [L the tag-stream dump,
-                // 891 messages, zero 0x69]; C_SBNFDFCTY 0x216ca8:25-28 sets this wheel's range
-                // [0,2]. The port's old % wrap bounced Easy↔Little Leak on Up.
-                Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
-                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return self.focus_moved(); }
-                Action::Up | Action::Down => return false,
+                // fe-audit: the wheel WRAPS. Scroll_Init sets the wrap flag +0x144 = 1 on every
+                // normal init [M 0x2214f0:102-103]; msg 0x69 turns it OFF [M Scroll_SendMessage
+                // 0x221810:136-138], and Scroll_Update wraps while it is set [M 0x221b20:186-210].
+                // The front-end menu-def carries no msg 0x69 [L the tag-stream dump, 891 messages,
+                // zero 0x69], so nothing clears it here. (The old comment had the flag inverted.)
+                // C_SBNFDFCTY 0x216ca8:25-28 sets this wheel's range [0,2]. A fresh-boot PCSX2
+                // press is still owed to confirm the wheel is this scroll [S].
+                Action::Up => { let n = self.rows(); self.cursor = (self.cursor + n - 1) % n; return self.focus_moved(); }
+                Action::Down => { let n = self.rows(); self.cursor = (self.cursor + 1) % n; return self.focus_moved(); }
                 Action::Confirm => {
                     self.difficulty = self.cursor.min(DIFFICULTIES.len() - 1);
                     // difficulty-effects: the pick writes GameState+0x28 NOW (1-based: the
-                    // wheel's rows are values 1/2/3 = Operative/Agent/00 Agent) [M 0x216ca8:15].
+                    // wheel's rows are values 1/2/3 = Operative/Agent/00 Agent) [M 0x216ca8:15; D difficulty 0x2df4c0 +0xc = 1/2/3].
                     self.requested_difficulty = Some(self.difficulty as u32 + 1);
                     // → the Single Player list [M C_SBNFDFCTY 0x216ca8:10-17 Menu_ChangePageCloseIris
                     // 0x4000001c — the driver's observed order Select Difficulty → Single Player].
-                    self.enter_page(Page::MissionSelect);
-                    self.cursor = self.mission.min(self.first_unlocked());
+                    self.open_mission_list();
                     return true;
                 }
                 Action::Back => { self.enter_page(Page::Codename); self.cursor = 0; return true; }
@@ -4301,7 +4501,7 @@ impl FrontEnd {
                 Action::Up => { self.cursor = self.step(-1); return self.focus_moved(); }
                 Action::Down => { self.cursor = self.step(1); return self.focus_moved(); }
                 Action::Confirm => {
-                    // Locked rows can't be chosen [M C_SBNFMAP 0x20b8d8:18-20 `if
+                    // Locked rows can't be chosen [M C_SBNFMAP 0x20b8d8:21-23 `if
                     // (!menu_unlock_everything && !sp_level[i*0x18+0x10]) return`]. Starting:
                     // GameState+8 = sp_level[i]+0xc, then the split [M :29-40] — an on-foot hash
                     // runs ResetMap_LevelToLoad + the 60-frame fade push (0x42a00000 = 60.0f) and
@@ -4349,28 +4549,26 @@ impl FrontEnd {
                 // The Dossier opens with the wheel at row 0 [M P_DOSSIER_Handler 0x216de0:9-16 —
                 // the page msg 0x4c from 0x4000001c/36/38 sends msg 0x2e param 0 to the scroll
                 // 0x1000010c, which rejects out-of-range indices and redraws (Scroll_SendMessage
-                // 0x222810:98-106); without the reset the port entered with the missions cursor
+                // 0x221810:98-106); without the reset the port entered with the missions cursor
                 // and the wheel showed Weapons on screen — the playtest's "the port adds Weapons"].
                 Action::Side => { self.enter_page(Page::Dossier); self.cursor = 0; return true; }   // □ Dossier
                 Action::Back => { self.enter_page(Page::Difficulty); self.cursor = self.difficulty; return true; }
                 Action::Extra => {}
             },
             Page::Dossier => match a {
-                // The wheel CLAMPS, it never wraps [M Scroll_Update 0x2221b20:186-194 (Down at the
-                // max) / :202-210 (Up at the min) wrap only when the scroll's +0x144 flag is set,
-                // and that flag is set only by msg 0x69 (Scroll_SendMessage 0x222810:136-139), which
-                // nothing sends to 0x1000010c; msg 0x2e rejects out-of-range indices]. The port's
-                // old % wrap teleported Records → Weapons on Up.
-                Action::Up if self.cursor > 0 => { self.cursor -= 1; return self.focus_moved(); }
-                Action::Down if self.cursor + 1 < self.rows() => { self.cursor += 1; return self.focus_moved(); }
-                Action::Up | Action::Down => return false,
+                // fe-audit: the scroll 0x1000010c WRAPS — Scroll_Init sets +0x144 = 1 [M
+                // 0x2214f0:102-103], only msg 0x69 clears it [M 0x221810:136-138] and nothing sends
+                // 0x69 to it; Scroll_Update wraps at the ends while it is set [M 0x221b20:186-210].
+                // Up on Records lands on Weapons. (A fresh-boot PCSX2 press is still owed [S].)
+                Action::Up => { let n = self.rows(); self.cursor = (self.cursor + n - 1) % n; return self.focus_moved(); }
+                Action::Down => { let n = self.rows(); self.cursor = (self.cursor + 1) % n; return self.focus_moved(); }
                 Action::Confirm => {
                     // The wheel's row opens its page [M C_SBDOSSIER 0x216eb0:12-31 — index 0 →
                     // 0x4000003a Records, 1 → 0x4000003b Rewards, 2 → 0x4000003c Gadgets,
                     // 3 → 0x4000003d Weapons]. Every page's init resets its scroll to row 0
                     // [M the wheel controls' own MSG 0x2e (0,0) [D page data] + P_DSGADGETS
                     // 0x217190:10's explicit reset; P_DSREWARDS/P_DSRECORDS leave the list at
-                    // GameState+0x72's row — the port keeps the cursor at the mission].
+                    // GameState+0x48's row — the port keeps the cursor at the mission].
                     let to = Self::dossier_row_page(self.cursor);
                     self.enter_page(to);
                     self.cursor = if to == Page::Records { self.mission.min(CAMPAIGN.len() - 1) } else { 0 };
@@ -4390,9 +4588,9 @@ impl FrontEnd {
                 Action::Extra => {}
             },
             // The three pages the Dossier wheel's rows 1-3 open. Their scrolls are the game's own
-            // M_SCROLLs: Up/Down step ±1 and CLAMP (the wrap flag +0x144 is set only by msg 0x69,
-            // which no menu-def control carries [M Scroll_Update 0x2221b20:186-210,
-            // Scroll_SendMessage 0x222810:136-139]); every move notifies the owner (msg 0x49) which
+            // lists: Up/Down step ±1 and clamp [S unverified — fe-audit: if these are M_SCROLLs they
+            // wrap like the Dossier wheel (Scroll_Init 0x2214f0:102-103 sets the wrap flag; only msg
+            // 0x69, 0x221810:136-138, clears it); their control type is not checked yet]; every move notifies the owner (msg 0x49) which
             // rebinds; Confirm does nothing (no handler arm [M C_RBDSREWARDS 0x20c248, the wheel
             // handlers' 0x51 arm is the INIT]); Back/□ return to the Dossier (the Records page's
             // mapping; no handler overrides the manager's default back [S]).
@@ -4400,7 +4598,7 @@ impl FrontEnd {
                 Action::Left | Action::Right => {}
                 Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
                 Action::Down if self.cursor + 1 < CAMPAIGN.len() => { self.cursor += 1; return true; }
-                Action::Up | Action::Down => return false,   // clamped [M 0x2221b20:186-210]
+                Action::Up | Action::Down => return false,   // clamped [S unverified, see above]
                 Action::Back | Action::Side => { self.page = Page::Dossier; self.cursor = 0; return true; }
                 Action::Confirm => return false,             // no select arm [M 0x20c248]
                 Action::Extra => {}
@@ -4462,14 +4660,16 @@ impl FrontEnd {
                                 self.closed = true;
                                 return true;
                             }
-                            // YES on QUIT [M 0x204408:142-152 — +0x28 = 0x4000001c (the SP quit page),
+                            // YES on QUIT [M 0x204408:142-152 — +0x1c = 0x4000001c (the SP quit page),
                             // ResetMap_LevelToLoad(0x7000048, 0, 0), the fade push and the delete].
                             self.music.quit_fade(); // SFXFadeDown(1) before the push + delete [M 0x204408:150]
                             self.flow.page = PAGE_RESULTS_QUIT_TARGET;
                             self.requested_level = Some(FRONTEND_LEVEL);
                             self.flow.reset_map_level_to_load(FRONTEND_LEVEL, false, true);
-                            self.enter_page(Page::Main);
-                            self.cursor = 0;
+                            // fe-audit: the front end reopens on +0x1c's page, the mission list —
+                            // P_NFMAP's 0x4c [M 0x204408:141-152 sets 0x4000001c then
+                            // MenuManager_Delete; 0x20b608:31-64]. The port's old Main was wrong.
+                            self.open_mission_list();
                             return true;
                         }
                         Action::Back => {
@@ -4557,30 +4757,35 @@ impl FrontEnd {
             },
             Page::Results if self.outcome == Outcome::Complete => match a {
                 Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
-                // Case 0x5e — the side action opens Mission Stats [M 0x208e78:224-229
-                // `Manager_SendMessage(0x44, 0x40000037, 0)`]; the host calls `stats_enter`
-                // when the page comes up (the game's 0x4c build).
-                Action::Side => {
+                // fe-audit [M P_NFRESULTS 0x208e78:222-230]: msg 0x5d → 0x44 0x4000002b (the
+                // Dossier), msg 0x5e → 0x44 0x40000037 (Mission Stats). Button_Update sends 0x5d on
+                // action 0x20 and 0x5e on action 0x21 [M 0x1ef948:80-87, :115-125]; the port's Side
+                // is the 0x5d key (□ — MissionSelect's Dossier arm), and the 0x5e key here is Extra
+                // [S unverified — the pad meaning of actions 0x20/0x21 is U-011]. The host calls
+                // `stats_enter` when the Stats page comes up (the game's 0x4c build).
+                Action::Side if !self.results_box => {
+                    self.enter_page(Page::Dossier);
+                    self.flow.page = PAGE_DOSSIER;
+                    self.cursor = 0;
+                    return true;
+                }
+                Action::Extra if !self.results_box => {
                     self.page = Page::Stats;
                     self.flow.page = PAGE_STATS;
                     return true;
                 }
-                // Case 0x5d — back goes to the Dossier [M 0x208e78:216-220
-                // `Manager_SendMessage(0x44, 0x4000002b, 0)`]. With the save prompt up, Back is
-                // the box's NO [M 0x208e78:186-189 — only the completion flag stands, and the
-                // page routes on].
+                Action::Side | Action::Extra => return false,
+                // With the save prompt up, Back is the box's NO [M 0x208e78:186-189 — only the
+                // completion flag stands, and the page routes on].
                 Action::Back if self.results_box => {
                     self.results_box = false;
                     self.results_save_answer_no = true;
                     self.results_route_on();
                     return true;
                 }
-                Action::Back => {
-                    self.page = Page::Dossier;
-                    self.flow.page = PAGE_DOSSIER;
-                    self.cursor = 0;
-                    return true;
-                }
+                // △ is the manager's 0x5f pop; the page was opened by the load's MenuManager_Create,
+                // so there is nothing to pop to [S unverified — no PCSX2 check of △ on the results].
+                Action::Back => return false,
                 // P_NFRESULTS has no row list [L page 0x40000036's controls] — the wheel keys idle.
                 Action::Up | Action::Down => return false,
                 Action::Confirm => {
@@ -4623,7 +4828,6 @@ impl FrontEnd {
                     self.flow.page = PAGE_MISSION_SELECT;
                     return true;
                 }
-                Action::Extra => {}
             },
             Page::Results => match a {
                 Action::Left | Action::Right => {}   // remapped to Back / Confirm before the page match
@@ -4636,7 +4840,7 @@ impl FrontEnd {
                         // row 0 → `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)`
                         // — the CURRENT level, WARM, on the entry checkpoint (fix-restart-target; the old
                         // row 0 sent arm 1). Row 1 → `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)`
-                        // — BaseMap, COLD. Row 2 → `GameState+0x28 = 0x4000001c` + 0x7000048.
+                        // — BaseMap, COLD. Row 2 → `GameState+0x1c = 0x4000001c` + 0x7000048.
                         0 => {
                             let level = self.ended_level.unwrap_or(self.flow.current_level);
                             self.requested_level = Some(level);
@@ -4645,7 +4849,9 @@ impl FrontEnd {
                             // dying live capture (the carried fail channel was the loop).
                             self.requested_restart = true;
                             self.flow.reset_map_level_to_load(level, true, true);
-                            self.enter_page(Page::Main);
+                            // The row deletes the manager [M 0x216618:28-30 — SFXFadeDown, the fade
+                            // push, MenuManager_Delete]: play resumes on the reloaded map.
+                            self.closed = true;
                             return true;
                         }
                         1 => {
@@ -4654,15 +4860,16 @@ impl FrontEnd {
                             let level = CAMPAIGN[self.mission].3;
                             self.requested_level = Some(level);
                             self.flow.reset_map_level_to_load(level, false, true);
-                            self.enter_page(Page::Main);
+                            self.closed = true; // MenuManager_Delete [M 0x216618:30]
                             return true;
                         }
                         2 => {
-                            self.flow.page = PAGE_RESULTS_QUIT_TARGET;
+                            // [M 0x216618:24-26]: +0x1c = 0x4000001c, ResetMap_LevelToLoad(0x7000048,
+                            // 0, 0) — the front end reopens on the mission list (P_NFMAP's 0x4c).
                             self.requested_level = Some(FRONTEND_LEVEL);
-                            self.flow.reset_map_level_to_load(FRONTEND_LEVEL, false, true);
-                            self.enter_page(Page::Main);
-                            self.cursor = 0;
+                            self.flow.reset_map_level_to_load(FRONTEND_LEVEL, false, false);
+                            self.open_mission_list();
+                            self.flow.page = PAGE_RESULTS_QUIT_TARGET;
                             return true;
                         }
                         _ => {}
@@ -5065,7 +5272,9 @@ impl FrontEnd {
             // starts the match].
             Page::MpConfirm => {
                 if a == Action::Confirm { return self.mp_confirm_start(); }
-                if a == Action::Back { self.enter_page(Page::MpOptions); self.cursor = 0; return true; }
+                // No back arm: △ is the manager's 0x5f pop to the opener [M P_MPCONFIRM 0x20ec00;
+                // 0x21c858 case 0x5f] — MpOptions on the full walk, the scenario page for Quick Game.
+                if a == Action::Back { let to = self.mp_confirm_from; self.enter_page(to); if to != Page::MpScenario { self.cursor = 0; } return true; }
             }
             // The debriefing [M P_MPDEBRIEFING 0x212198 + C_MPDBG 0x217860 — exactly two arms
             // (disasm 0xa8 bytes): Confirm (0x4b, ~A) restores the MPSettings backup and returns
@@ -5074,7 +5283,9 @@ impl FrontEnd {
             // the game's restore exists because the match compacted MPSettings in place, which
             // the port's copy never does.]
             Page::MpDebriefing => {
-                if a == Action::Confirm { self.enter_page(Page::MpScenario); self.mp_scenario_row = 0; return true; }
+                // [M C_MPDBG 0x217860:9-10 → 0x44 0x4000001a; the page's 0x4c re-selects the row
+                // of MPSettings+0x1A4 (0x217348:25) — see enter_page.]
+                if a == Action::Confirm { self.enter_page(Page::MpScenario); return true; }
                 if a == Action::Extra {
                     // C_MPDBG 0x217860:12-16: ResetMap_LevelToLoad(MPSettings+0x1A8) + the fade
                     // push + MenuManager_Delete — the same match straight back on. The port
@@ -5108,7 +5319,12 @@ impl FrontEnd {
             }
             // P_WINGAME 0x215100 — the page has no controls [L its PAGE record] and no input
             // cases [M :12-51: only 0x4c/0x50]; the movie path is `win_movie_finished()`.
-            Page::WinGame => {}
+            // fe-audit: P_WINGAME's 0x4c sets DAT_002e1c49 = 1 and the grace DAT_002e1c4c = 0
+            // [M 0x215100:13-15], so the manager's skip poll (action 0x19 → Menu_StopMovie(0)
+            // [M 0x21c3d8:37-43, 0x215a50:6]) stops the movie at once, and the page's next 0x50
+            // sees psiMovieFinished and opens the credits [M 0x215100:23-48]. The port's Confirm
+            // is the 0x19 stand-in; the next-0x50 step collapses into `win_movie_finished`.
+            Page::WinGame => if a == Action::Confirm { return self.win_movie_finished(); },
             // P_CHEATMEDAL 0x2086b0 — the list is control 0x1000021c; Up/Down move the selection
             // (the list's msg-0x11 walk), Confirm is the handler's 0x4b case [M :19-45].
             Page::CheatMedal => match a {
@@ -5162,6 +5378,20 @@ impl FrontEnd {
     }
 
     /// The first unlocked row (the cursor's landing spot when the page opens).
+    /// P_NFMAP's 0x4c cursor rule: 0x2e index 0, then a scan of sp_level+0x10 from row 0xb
+    /// down — the list opens on the HIGHEST unlocked row [M 0x20b608:58-64]. (fe-audit: the port
+    /// opened on the first unlocked row.)
+    fn highest_unlocked(&self) -> usize {
+        (0..CAMPAIGN.len()).rev().find(|&i| self.unlocked_row(i)).unwrap_or(0)
+    }
+
+    /// Opens the mission list 0x4000001c on its 0x4c row [M 0x20b608:58-64].
+    fn open_mission_list(&mut self) {
+        self.enter_page(Page::MissionSelect);
+        self.flow.page = PAGE_MISSION_SELECT;
+        self.cursor = self.highest_unlocked();
+    }
+
     fn first_unlocked(&self) -> usize {
         (0..CAMPAIGN.len()).find(|&i| self.unlocked_row(i)).unwrap_or(0)
     }
@@ -5245,27 +5475,20 @@ impl FrontEnd {
     /// otherwise [M P_MPRULES 0x20f790:78-95].
     pub fn mp_rules_lives(&self) -> bool { self.mp_scenario == 0x10 }
 
-    /// P_MPRULES's Duration list: 1..10, 15, 20, 30, 45, 60 minutes then Unlimited (-1) [M
-    /// 0x20f790:20-42 — the static strings "1".."60" at 0x30d3f8, then 0x3ca "Unlimited" at
-    /// index -1]; the Points list goes to 120 [M :65-76]. Steps by `dir`.
+    /// P_MPRULES's two lists, steps by `dir`. Duration (control 0x10000008, MPSettings+0x1a0):
+    /// item values 1..10, then 15, 20 … 60 in steps of 5, then the 0x3ca "Unlimited" item with
+    /// value −1 [M 0x20f790:21-42]. Points/Lives (control 0x100000f6, MPSettings+0x19c): 1..10,
+    /// then 15 … 120 in steps of 5, no Unlimited [M 0x20f790:45-76]. Both clamp at the list
+    /// ends [S unverified — the list control's ◀▶ code is not exported].
     fn mp_rules_step(&mut self, dir: i32) {
-        const TIMES: [i32; 13] = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 15, 20, 30];
         if self.cursor.min(1) == 0 {
-            // Duration: the list walks 1..60 then Unlimited [M the strings' order].
-            let unlimited = self.mp_time_limit == -1;
-            let idx = TIMES.iter().position(|&t| t == self.mp_time_limit);
-            self.mp_time_limit = match (idx, dir) {
-                (None, -1) => 30,                       // from Unlimited back to 30
-                (None, _) => 1,                          // fresh: 1 minute
-                (Some(i), 1) if i + 1 < TIMES.len() => TIMES[i + 1],
-                (Some(12), 1) => -1,                     // 30 → 45 → 60 → Unlimited
-                (Some(i), -1) => TIMES[i.saturating_sub(1)],
-                (_, _) => self.mp_time_limit,
-            };
-            if unlimited && dir == -1 { self.mp_time_limit = 30; }
+            let times = MP_RULES_DURATIONS;
+            let idx = times.iter().position(|&t| t == self.mp_time_limit).unwrap_or(0) as i32;
+            self.mp_time_limit = times[(idx + dir).clamp(0, times.len() as i32 - 1) as usize];
         } else {
-            // Points/Lives: 1..120, no Unlimited [M :65-76].
-            self.mp_frag_limit = (self.mp_frag_limit + dir).clamp(1, 120);
+            let pts = MP_RULES_POINTS;
+            let idx = pts.iter().position(|&t| t == self.mp_frag_limit).unwrap_or(0) as i32;
+            self.mp_frag_limit = pts[(idx + dir).clamp(0, pts.len() as i32 - 1) as usize];
         }
     }
 
@@ -5439,6 +5662,7 @@ impl FrontEnd {
         }
         // At least two players overall [M the 0x39e arm].
         if humans + bots < 2 { self.mp_error = 0x39e; return false; }
+        self.mp_confirm_from = Page::MpOptions;
         self.enter_page(Page::MpConfirm);
         self.cursor = 0;
         true
@@ -5485,6 +5709,7 @@ impl FrontEnd {
             (b.skill, b.aim, b.hit_points, b.speed, b.recovery1, b.recovery2, b.trait_id) = (skill, aim, hp, speed, r1, r2, trait_id);
         }
         for b in self.mp_bots.iter_mut().skip(3) { b.enabled = false; }
+        self.mp_confirm_from = Page::MpScenario;   // the push [M 0x202190:8-9, DAT_002e1adc = 0]
         self.enter_page(Page::MpConfirm);          // [M 0x20c978-0x20c984 → 0x40000049]
         self.cursor = 0;
     }
@@ -5499,7 +5724,7 @@ impl FrontEnd {
     }
 
     /// The debriefing's re-entry [M C_GCPAUSE 0x204408:146 — quitting a match (the QUIT row's
-    /// msg-0xd arm) with `MPSettings+0x180 != 0` sets GameState+0x28 = 0x40000033 and reloads
+    /// msg-0xd arm) with `MPSettings+0x180 != 0` sets GameState+0x1c = 0x40000033 and reloads
     /// 0x0700048, so the front end re-opens on the debriefing page; P_MPDEBRIEFING 0x212198's
     /// enter builds it]. The host calls this when an MP match quit re-enters the front end (the
     /// port's in-match pause loop is not wired yet — the game's own handoff is this page id).
@@ -6764,6 +6989,8 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
         // credits-data: the main agent draws the roll from fe.credits.visible() (the game's
         // own line list + y positions) — nothing here yet.
         Page::Credits => {}
+        // The intro run draws only the plate (above); P_PARISENUM's card box is not drawn [S].
+        Page::Intro | Page::ParisEnum | Page::EstHero => {}
         // unlock-popups: the main agent draws these from the model — NFBONUS from fe.bonus
         // (the tier lines + the composed text; the page's own layout is header Txt 0x2c5, hint
         // 0x2d0, texture control 0x100001cf at (89,112,171×256), text list 0x100001d0 at

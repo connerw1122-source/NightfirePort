@@ -71,9 +71,11 @@ fn point_card_at_config(fe: &mut FrontEnd) {
 fn to_edit_wheel(fe: &mut FrontEnd) {
     assert_eq!(fe.page, Page::Start, "the boot opens the title");
     assert!(act(fe, Action::Confirm), "the title's Enter");
-    assert_eq!(fe.page, Page::Main, "after the intro movies, the main menu");
+    assert_eq!(fe.page, Page::Main, "after P_ESTHERO's movie, the main menu [M 0x20a060:44-45]");
     assert!(act(fe, Action::Confirm), "NightFire");
     assert_eq!(fe.page, Page::Codename);
+    // Opened from Main the page selects row 1 [M P_NFSELECT 0x20aec0:96-97]; Up reaches New Codename.
+    assert!(act(fe, Action::Up));
     assert!(act(fe, Action::Confirm), "New Codename");
     assert_eq!(fe.page, Page::CnName);
     // Type QWERTY over the BOND proposal (the grid tests' typing route); the ✓ holds the

@@ -12,7 +12,7 @@ fn drain(fe: &mut FrontEnd) -> Vec<MenuSfx> {
 
 /// `FrontEnd::new()` boots onto P_START: the handlers' msg-0x4c pair `SFXStart(0x1d7)+SFXStart(0x470)`
 /// plays with `menu_movie` clear [M P_START 0x20a408:12-22], and the static then blocks a replay
-/// until a movie-end clears it [M P_INTRO 0x209e88:44,58].
+/// until an intro movie's START clears it [M P_INTRO 0x209e88:44, :58; P_ESTHERO 0x20a060:22].
 #[test]
 fn boot_plays_the_open_pair_once() {
     let mut fe = FrontEnd::new();
@@ -25,7 +25,7 @@ fn boot_plays_the_open_pair_once() {
     assert!(fe.action(Action::Confirm), "Start confirms into the next page");
     assert_ne!(fe.page, menu::Page::Start, "the cursor left Start");
     assert!(drain(&mut fe).iter().all(|e| e.sound != MENU_SOUND_PAGE_OPEN),
-        "menu_movie blocks a second pair until an intro-movie end clears it");
+        "menu_movie blocks a second pair until an intro movie's start clears it");
 }
 
 /// MENU_SOUND 7 → 0x1da on every handled cursor move; the top row's Up moves nothing and the
@@ -184,7 +184,7 @@ fn credits_open_swaps_the_pair_for_the_credits_track() {
     let mut fe = FrontEnd::new();
     drain(&mut fe);
     fe.page = menu::Page::CnAv;
-    fe.menu_movie = false; // an intro/attract movie end cleared it [M 0x209e88:44,58]
+    fe.menu_movie = false; // an intro/attract movie START cleared it [M 0x209e88:44, :58; 0x20a1f0:20-22]
     assert!(fe.open_credits(nf_view::credits::PAGE_CN_AV, 100, false), "the credits open");
     // menu-audio-state (672): the credits' 0x4c is the music SWAP — the pair is removed,
     // `menu_movie = 0` and `SFXStartMusic(0x27, 0)` plays the credits track [M P_CREDITS
@@ -211,47 +211,52 @@ fn pair_opens_carry_remove_events_before_the_starts() {
     assert!(fe.menu_movie, "the static is set [M 0x20a408:22]");
 }
 
-/// The intro start removes the pair and starts nothing — the menu music is silent under the EA
-/// logo [M P_INTRO's 0x50 frame-1 0x209e88:37-47 removes the pair and clears the static; the
-/// restart only comes at the movie-2 end :23-29].
+/// START's intro start removes the pair and starts nothing — the menu music is silent under the
+/// 0x073B intro [M P_ESTHERO 0x20a060:16-24: its 2nd 0x50 removes the pair and clears the static
+/// before psiStartBackgroundMovie; the restart only comes at the movie's end :34-40].
 #[test]
 fn the_intro_start_silences_the_pair() {
     let mut fe = FrontEnd::new();
     let _ = drain(&mut fe);
     let _ = fe.drain_sfx_removes().collect::<Vec<u32>>();
-    assert!(fe.action(Action::Confirm), "Start confirms into the intro");
+    assert!(fe.action(Action::Confirm), "START confirms into the intro run");
+    for _ in 0..3 { fe.tick(); } // P_PARISENUM → P_ESTHERO, whose 2nd 0x50 starts the movie
+    assert!(fe.intro_movie);
     let rm: Vec<u32> = fe.drain_sfx_removes().collect();
     assert_eq!(rm, vec![SFX_MENU_OPEN_MOVE, SFX_MENU_OPEN_SELECT],
-        "P_INTRO's frame-1 removes the pair [M 0x209e88:38-39]");
-    assert!(!fe.menu_movie, "the static is cleared [M 0x209e88:44]");
+        "P_ESTHERO's movie start removes the pair [M 0x20a060:20-21]");
+    assert!(!fe.menu_movie, "the static is cleared [M 0x20a060:22]");
     assert!(drain(&mut fe).iter().all(|e| e.sound != MENU_SOUND_PAGE_OPEN),
-        "no pair restart under the movies [M — the restart rides the movie-2 end]");
-    assert_eq!(fe.page, menu::Page::Main, "the page flip keeps menus_flow's contract");
+        "no pair restart under the movie [M — the restart rides its end, 0x20a060:34-40]");
+    assert_eq!(fe.page, menu::Page::EstHero, "the up-page is P_ESTHERO during the movie [M 0x20a060:44-45]");
 }
 
-/// The movie-2 end restarts the pair [M 0x209e88:23-29]: remove, then SFXStart both.
+/// The intro movie's end restarts the pair [M P_ESTHERO 0x20a060:34-40]: remove, then SFXStart both,
+/// then Main opens.
 #[test]
 fn the_intro_end_restarts_the_pair_with_a_remove() {
     let mut fe = FrontEnd::new();
     let _ = drain(&mut fe);
     let _ = fe.drain_sfx_removes().collect::<Vec<u32>>();
     assert!(fe.action(Action::Confirm));
+    for _ in 0..3 { fe.tick(); }
     let _ = fe.drain_sfx_removes().collect::<Vec<u32>>();
-    let budget = fe.flow.movie_frames + 4;
+    let budget = fe.intro_frames + 4;
     for _ in 0..budget {
         fe.tick();
         if !fe.intro_playing { break; }
     }
-    assert!(!fe.intro_playing, "the intro popped within {} ticks", budget);
+    assert!(!fe.intro_playing, "the intro ended within {} ticks", budget);
+    assert_eq!(fe.page, menu::Page::Main);
     let rm: Vec<u32> = fe.drain_sfx_removes().collect();
     assert_eq!(rm, vec![SFX_MENU_OPEN_MOVE, SFX_MENU_OPEN_SELECT],
-        "the movie-2 end removes before it restarts [M 0x209e88:24-25]");
+        "the movie end removes before it restarts [M 0x20a060:35-36]");
     let opens: Vec<MenuSfx> = drain(&mut fe).into_iter().filter(|e| e.sound == MENU_SOUND_PAGE_OPEN).collect();
     assert_eq!(opens, vec![
         MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_MOVE },
         MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_SELECT },
-    ], "the pair restarts [M 0x209e88:26-27]");
-    assert!(fe.menu_movie, "the static stands again [M 0x209e88:28]");
+    ], "the pair restarts once [M 0x20a060:37-38]");
+    assert!(fe.menu_movie, "the static stands again [M 0x20a060:39]");
 }
 
 /// The attract movie end removes+restarts the pair [M P_ATTRACT 0x20a1f0:45-50].

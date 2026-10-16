@@ -5033,7 +5033,7 @@ impl Scene {
                     let param = |idx: u32| -> u32 { p.params.iter().find(|(i, _)| *i == idx).map(|(_, v)| *v).unwrap_or(0) };
                     let type_ = param(0) as u16;
                     let id = param(1) as u16;
-                    // `Pickup_Create`'s level-conditional rounds override [M 0x18dda0: GameState+0x12 ==
+                    // `Pickup_Create`'s level-conditional rounds override [M 0x18dda0: GameState+0xc ==
                     // 0x7000008 && id == 0x2c → rounds = 4]: the vault's rocket placement says 5 [D],
                     // the game creates 4.
                     let rounds = nf_game::pickup::Pickup::create_rounds_override(drones.map(|d| d.level_id).unwrap_or(0), id, param(2) as i16);
@@ -6221,7 +6221,7 @@ impl Scene {
                     let param = |idx: u32| -> u32 { p.params.iter().find(|(i, _)| *i == idx).map(|(_, v)| *v).unwrap_or(0) };
                     let type_ = param(0) as u16;
                     let id = param(1) as u16;
-                    // `Pickup_Create`'s level-conditional rounds override [M 0x18dda0: GameState+0x12 ==
+                    // `Pickup_Create`'s level-conditional rounds override [M 0x18dda0: GameState+0xc ==
                     // 0x7000008 && id == 0x2c → rounds = 4]: the vault's rocket placement says 5 [D],
                     // the game creates 4.
                     let rounds = nf_game::pickup::Pickup::create_rounds_override(d.level_id, id, param(2) as i16);

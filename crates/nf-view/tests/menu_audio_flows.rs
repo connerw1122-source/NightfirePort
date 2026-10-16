@@ -15,7 +15,7 @@
 //! came from, the gate over a mission).
 
 use nf_view::menu::{aux_movie_for, Action, FrontEnd, Outcome, Page, Stats, ATTRACT_MOVIE_A,
-                    ATTRACT_MOVIE_B, ATTRACT_FRAMES, INTRO_MOVIES, ST_MOVIE};
+                    ATTRACT_MOVIE_B, ATTRACT_FRAMES, INTRO_MOVIES, ESTHERO_GRACE, ESTHERO_MOVIE, ST_MOVIE};
 use nf_view::menu_music::{fe_music_step, MusicCmd};
 
 const FRONTEND_LEVEL: u32 = nf_view::menu::FRONTEND_LEVEL;
@@ -93,10 +93,14 @@ struct Host {
 }
 
 impl Host {
-    /// run()'s boot: the front end opens P_START, `Sound_Ready`'s case 0x7000048 consumes the
-    /// flip [M 0x1dceb8:94-101], then the first redraws run the music hook.
-    fn boot() -> Self {
+    /// run()'s boot: the window boot runs P_INTRO's logos first (`start_boot_intro`) — `boot_window`;
+    /// `boot` is the headless --page shape that opens on the title directly. `Sound_Ready`'s case
+    /// 0x7000048 consumes the flip [M 0x1dceb8:94-101], then the first redraws run the music hook.
+    fn boot() -> Self { Self::boot_with(false) }
+    fn boot_window() -> Self { Self::boot_with(true) }
+    fn boot_with(intro: bool) -> Self {
         let mut fe = FrontEnd::new();
+        if intro { fe.start_boot_intro(); }
         let hash = fe.music.front_end_sound_ready();
         let mut h = Host {
             fe: Some(fe),
@@ -137,33 +141,31 @@ impl Host {
             if let Some(code) = fe.requested_level.take() {
                 self.pending_level = Some(code);
             }
-            let intro_up = fe.intro_playing && fe.flow.get_state() == ST_MOVIE;
+            // fe-audit: the intro run is a menu background movie (P_INTRO / P_ESTHERO), not
+            // GameFlow state 6 [M 0x209e88:62-63, 0x20a060:24-25] — lib.rs movie_tick's intro arm.
+            let intro_up = fe.intro_playing;
             let attract_up = fe.attract_playing;
             let state6 = fe.flow.get_state() == ST_MOVIE;
             if intro_up {
                 let code = fe.intro_movie_code();
-                let wrong = match &player { Some(p) => p.code != code || p.looping, None => true };
-                if wrong {
-                    // [M movie_tick's intro start site: the movie replaces the one slot +
-                    // fe.music.movie_started() — the movie's own audio replaces the jingles]
-                    player = Some(Player { code, frames: MOVIE_FRAMES, looping: false, shown: 0 });
-                    fe.music.movie_started();
-                }
-                let mut finished = false;
-                if let Some(p) = player.as_mut() {
-                    if p.code == code {
-                        if p.frames == 0 { finished = true; } else { p.frames -= 1; p.shown += 1; }
+                if fe.intro_movie {
+                    let wrong = match &player { Some(p) => p.code != code || p.looping, None => true };
+                    if wrong {
+                        // [M movie_tick's intro start site: the movie replaces the one slot +
+                        // fe.music.movie_started() — the movie's own audio replaces the jingles]
+                        player = Some(Player { code, frames: MOVIE_FRAMES, looping: false, shown: 0 });
+                        fe.music.movie_started();
                     }
+                    // psiMovieFinished [M 0x1082e8]: the end feeds the page's next 0x50; the finish
+                    // arm's pair restart is the FrontEnd's own (open_pair_sfx).
+                    let p = player.as_mut().unwrap();
+                    if p.frames == 0 { fe.intro_movie_finished(); } else { p.frames -= 1; p.shown += 1; fe.intro_live = true; }
+                } else if player.as_ref().is_some_and(|p| !p.looping && p.code == code) {
+                    player = None; // the skip's psiStopBackgroundMovie, or the movie's end
+                } else if player.as_ref().is_some_and(|p| p.looping) {
+                    player = None; // the intro pages carry no aux backdrop
                 }
-                // [M the psiMovieFinished poll 0x1082e8: fe.music.movie_finished() restarts the
-                // pair while it is down; the pair advances]
-                if finished {
-                    fe.music.movie_finished();
-                    fe.intro_index += 1;
-                    if fe.intro_index >= INTRO_MOVIES.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
-                    player = None;
-                }
-                fe.flow.movie_playing = player.as_ref().is_some_and(|p| p.code == code && p.frames > 0);
+                fe.flow.movie_playing = false;
             } else if attract_up {
                 let code = fe.attract_movie;
                 let wrong = match &player { Some(p) => p.code != code || p.looping, None => true };
@@ -266,8 +268,9 @@ impl Host {
         }
     }
 
-    /// App::menu_action: the state-6 intercept (only the skip matters, a second into the movie),
-    /// then fe.action + menu_after (the sfx drain: removes BEFORE the same frame's starts [M
+    /// App::menu_action: the state-6 intercept for briefings/outros (only the skip matters, a
+    /// second into the movie [S port choice]; the intro run is NOT state 6 and reaches fe.action,
+    /// which honours the grace), then fe.action + menu_after (the sfx drain: removes BEFORE the same frame's starts [M
     /// 0x20a408:17-22]), the level request, the close. The pause's Back resumes.
     fn input(&mut self, a: Action) -> bool {
         let Some(fe) = self.fe.as_mut() else { return false };
@@ -321,7 +324,7 @@ impl Host {
     /// poll_async_load's swap: the scene lands and the sound stack is rebuilt fresh [M
     /// swap_in_scene's build_sound]. A level drops the manager (the SP pick's / the MP start's
     /// MenuManager_Delete); the front-end map keeps it with the bank flip [M 0x1dceb8 case
-    /// 0x7000048] and the page-enter re-run [M 0x21b908:127's menu_movie reset].
+    /// 0x7000048] and the page-enter re-run [M 0x21b908:125's menu_movie reset].
     fn load(&mut self, next: u32) {
         self.pending_level = None;
         self.front_end_loaded = next == FRONTEND_LEVEL || next == 0;
@@ -389,17 +392,19 @@ fn act(h: &mut Host, a: Action) -> bool {
     r
 }
 
+/// START → P_PARISENUM → P_ESTHERO's 0x073B0048 → Main when it ends [M 0x20a648:43, 0x20a060:16-45]
+/// (act runs the movie out).
 fn to_main(h: &mut Host) {
     assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Start));
     assert!(act(h, Action::Confirm), "the title's Enter");
-    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Main), "after the intro movies, the main menu");
+    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Main), "after P_ESTHERO's movie, the main menu [M 0x20a060:44-45]");
 }
 
 fn to_missions(h: &mut Host) {
     to_main(h);
     assert!(act(h, Action::Confirm), "NightFire");
-    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Codename));
-    assert!(act(h, Action::Down));
+    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Codename && fe.cursor == 1),
+        "the codename page opens on Play without saving [M 0x20aec0:96-97]");
     assert!(act(h, Action::Confirm), "Play without saving's confirm box");
     assert!(act(h, Action::Confirm), "the box's yes");
     assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Difficulty));
@@ -410,7 +415,8 @@ fn to_missions(h: &mut Host) {
 /// The Exchange from the mission list (row 0 is the driving Paris Prelude — menus_e2e), through
 /// the briefing to gameplay.
 fn start_exchange(h: &mut Host) {
-    assert!(act(h, Action::Down));
+    // The list opens on the highest unlocked row — The Exchange on a fresh profile [M 0x20b608:60-64].
+    assert!(h.fe.as_ref().is_some_and(|fe| fe.cursor == 1));
     assert!(act(h, Action::Confirm), "The Exchange starts");
     assert!(h.fe.as_ref().is_some_and(|fe| fe.requested_level.is_none()), "the request was consumed into the load");
     // The briefing movie wraps the load [M 0x1d3800's 0x71 wrap]; the pair must stay DOWN from
@@ -436,63 +442,64 @@ fn start_exchange(h: &mut Host) {
 
 // ── The flows ───────────────────────────────────────────────────────────────────────────────
 
+/// The window's fresh boot (`start_boot_intro`): P_INTRO plays the EA then the MGM logo with the
+/// pair removed under each, UNSKIPPABLE (DAT_002e1c49 = 0), the first movie's finish restarts the
+/// pair and the second movie's start removes it again on the same 0x50, and the second's finish
+/// restarts it for the title — whose own 0x4c then sends nothing [M P_INTRO_Handler 0x209e88:16-62;
+/// Menu_StopMovie 0x215a50:6; P_START 0x20a408:17-23].
 #[test]
-fn boot_with_the_full_intro_hands_the_music_to_the_main_menu() {
-    let mut h = Host::boot();
-    // The boot page's 0x4c restarts the pair, audibly, on the FIRST redraw — not at the first
-    // keypress [M P_START 0x20a408:17-22; the sfx channel drains only on input, the music
-    // channel on every redraw].
-    assert_eq!(h.jingles(), 1, "the boot jingle is up at frame 1");
-    assert_eq!(h.drv.jingles, vec![0x1d7], "bank 0xc's jingle, exactly one instance");
-    assert_eq!(h.drv.starts_of(0x470, 0), 0, "SB_0 misses the second jingle [D SB_0.SFX]");
-    // The title's Enter starts the intro: the pair goes silent under the movies [M 0x209e88:37-47]
-    // — watch the FIRST movie (act would run the whole intro).
-    assert!(h.input(Action::Confirm));
-    for _ in 0..90 { h.frame(); }
-    assert_eq!(h.jingles(), 0, "no menu music under the EA logo");
-    // Movie 1 ends: the pair restarts between the movies [M 0x209e88:23-28]…
-    for _ in 0..(MOVIE_FRAMES + 60) { h.frame(); if h.jingles() == 1 { break; } }
-    assert_eq!(h.jingles(), 1, "the between-movies restart");
-    // …movie 2 silences it again, and its end brings it back for Main [M 0x209e88:42-44,23-28].
-    for _ in 0..(MOVIE_FRAMES * 2 + 120) { h.frame(); if h.fe.as_ref().is_some_and(|fe| fe.page == Page::Main && !fe.intro_playing && h.jingles() == 1) { break; } }
-    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Main));
-    assert_eq!(h.jingles(), 1, "the main menu has its music after the full intro");
-    assert_eq!(h.drv.jingles, vec![0x1d7], "still bank 0xc's jingle — one front-end load so far");
-    // Sister: Main's 0x4c on the already-up pair sends nothing (no double start) [M 0x20a7b0's
-    // menu_movie gate].
+fn the_boot_logos_play_unskippable_and_hand_the_music_to_the_title() {
+    let mut h = Host::boot_window();
+    for _ in 0..10 { h.frame(); }
+    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Intro && fe.intro_movie));
+    assert_eq!(h.player.as_ref().map(|p| p.code), Some(INTRO_MOVIES[0]), "the EA logo first [M 0x209e88:46]");
+    assert_eq!(h.jingles(), 0, "no menu music under the EA logo [M 0x209e88:42-44]");
+    // Unskippable: Confirm past any grace does nothing [M 0x209e88:41; 0x215a50:6].
+    for _ in 0..ESTHERO_GRACE { h.frame(); }
+    assert!(!h.input(Action::Confirm), "the boot logos refuse the skip");
+    assert_eq!(h.player.as_ref().map(|p| p.code), Some(INTRO_MOVIES[0]), "sister: still the EA logo");
+    // The EA logo ends → MGM; the between-movies restart is removed by MGM's start on the same 0x50.
     let mark = h.drv.log.len();
-    h.frame();
-    assert_eq!(h.drv.starts_of(0x1d7, mark), 0, "no second jingle start on Main's enter");
+    for _ in 0..(MOVIE_FRAMES + 10) { h.frame(); if h.player.as_ref().is_some_and(|p| p.code == INTRO_MOVIES[1]) { break; } }
+    assert_eq!(h.player.as_ref().map(|p| p.code), Some(INTRO_MOVIES[1]), "MGM second [M 0x209e88:60]");
+    assert!(h.drv.starts_of(0x1d7, mark) >= 1, "the EA logo's finish restarted the pair [M 0x209e88:23-28]");
+    assert_eq!(h.jingles(), 0, "MGM's start removed it again [M 0x209e88:56-58]");
+    assert!(!h.input(Action::Confirm), "MGM is unskippable too [M 0x209e88:55]");
+    // MGM ends → the title, with the pair up.
+    for _ in 0..(MOVIE_FRAMES + 10) { h.frame(); if h.fe.as_ref().is_some_and(|fe| !fe.intro_playing) { break; } }
+    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Start), "the title 0x40000009 [M 0x209e88:50]");
+    assert_eq!(h.jingles(), 1, "the title has its music after the logos");
+    assert_eq!(h.drv.jingles, vec![0x1d7], "bank 0xc's jingle — the boot's one front-end load");
+    // Sister: the title's 0x4c on the already-up pair sends nothing (menu_movie is 1).
+    let mark = h.drv.log.len();
+    for _ in 0..3 { h.frame(); }
+    assert_eq!(h.drv.starts_of(0x1d7, mark), 0, "no second jingle start on the title's enter");
 }
 
+/// START's intro: P_ESTHERO's movie silences the pair [M 0x20a060:20-22] and its finish restarts it
+/// for Main [M :34-40]. The skip is refused through the 0xb4-tick grace [M :17; 0x215a50:6] — the
+/// window path reaches the same fe.action (lib.rs's state-6 intercept no longer swallows it).
 #[test]
 fn a_skipped_intro_still_leaves_the_main_menu_music_up() {
     let mut h = Host::boot();
+    assert_eq!(h.jingles(), 1, "the title's pair");
     assert!(h.input(Action::Confirm), "the title's Enter starts the intro");
-    assert_eq!(h.jingles(), 0);
-    // Watch the first movie for a second (the skip gate [M menu_action's shown >= 1 s]), then
-    // skip — the window's own path: flow.skip_movie, then the intro-end block in tick().
+    for _ in 0..3 { h.frame(); }
+    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::EstHero && fe.intro_movie));
+    assert_eq!(h.player.as_ref().map(|p| p.code), Some(ESTHERO_MOVIE));
+    assert_eq!(h.jingles(), 0, "no menu music under the 0x073B intro");
+    // 61 frames in (the old 1 s skip rule): the grace still holds — the skip is refused.
     for _ in 0..61 { h.frame(); }
-    assert!(h.input(Action::Confirm), "the skip");
-    for _ in 0..60 { h.frame(); }
+    assert!(!h.input(Action::Confirm), "a skip inside the 180-tick grace is refused [M 0x215a50:6]");
+    assert!(h.fe.as_ref().is_some_and(|fe| fe.intro_movie && fe.page == Page::EstHero), "the intro keeps playing");
+    // Past the grace the skip stops the movie; the page's next 0x50 takes the finish arm.
+    for _ in 0..ESTHERO_GRACE { h.frame(); }
+    assert!(h.input(Action::Confirm), "the skip past the grace");
+    for _ in 0..3 { h.frame(); }
     assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Main && !fe.intro_playing));
-    // The game's StopMovie makes the next 0x50 see psiMovieFinished and the finish arm restarts
-    // the pair [M 0x209e88:23-28] — the port collapses the skip to that restart.
-    assert_eq!(h.jingles(), 1, "the main menu is NOT silent after a skipped intro");
+    assert!(h.player.is_none() || h.player.as_ref().is_some_and(|p| p.looping), "the stopped intro left the slot");
+    assert_eq!(h.jingles(), 1, "the main menu is NOT silent after a skipped intro [M 0x20a060:34-40]");
     assert_eq!(h.drv.jingles, vec![0x1d7]);
-    // Sister: the headless fe.action() skip path (the menu.rs arm) restarts the same way.
-    let mut h2 = Host::boot();
-    assert!(h2.input(Action::Confirm));
-    for _ in 0..61 { h2.frame(); }
-    // The fe-level skip: the state-6 intercept owns the input in the window, but the front end's
-    // own arm must behave the same when it runs (the port's two collapse paths).
-    let fe_state_movie = h2.fe.as_ref().is_some_and(|fe| fe.flow.get_state() == ST_MOVIE);
-    if fe_state_movie {
-        assert!(h2.input(Action::Confirm));
-        for _ in 0..60 { h2.frame(); }
-    }
-    assert!(h2.fe.as_ref().is_some_and(|fe| fe.page == Page::Main));
-    assert_eq!(h2.jingles(), 1, "the pair is up on Main after the skip");
 }
 
 #[test]
@@ -562,7 +569,7 @@ fn the_credits_swap_to_track_0x27_and_back() {
     assert!(h.fe.as_ref().is_some_and(|fe| fe.music.credits_saved_vol == Some(saved)),
         "the entry volume is saved");
     // Sister: the leave restores the ENTRY volume (not the slider's last value) and restarts the
-    // pair [M 0x2152b0:20-38].
+    // pair [M 0x2152b0:54-65].
     {
         let fe = h.fe.as_mut().unwrap();
         fe.music.music_slider(3); // the AV slider mid-visit [M 0x214818's 0x50 arm]
@@ -587,14 +594,15 @@ fn an_sp_mission_start_stops_the_menu_music_for_the_level() {
     assert!(h.drv.jingles.is_empty() && h.drv.others.is_empty(), "the fresh sound stack carries nothing of the menus");
     // The results page over the STILL-LOADED mission: its 0x4c restart queues the restart [M
     // 0x208e78:60-65] and the gate mutes it — the mission bank resolves neither jingle
-    // [D SB_12].
+    // [D SB_12]. [S port: the game opens no page over the mission on completion — case 4 sets
+    // +0x1c = 0x40000036 and loads (0x182c60:72-75); the port shows the page during the load.]
     h.mission_end(true);
     assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Results));
     assert_eq!(h.jingles(), 0, "the results page's restart is silent over a mission");
     assert!(h.drv.log.iter().any(|l| l.starts_with("gated start")),
         "the command mirrors the game's call, the gate mutes it");
     // The mission end loads the front end (no outro for The Exchange): the bank flips [M
-    // 0x1dceb8] and the page re-enters with the OTHER jingle, audibly now [M 0x21b908:127].
+    // 0x1dceb8] and the page re-enters with the OTHER jingle, audibly now [M 0x21b908:125].
     let mut got_fe = false;
     for _ in 0..600 {
         if let Some(next) = h.pending_level.take() {
@@ -637,8 +645,9 @@ fn the_pause_holds_the_sound_and_never_touches_the_pair() {
     assert!(h.fe.is_none(), "the manager is deleted on the resume");
     assert_eq!(h.jingles(), 0, "no menu music returns on the resume");
     // Quit to the front end: the fade-down first [M C_GCPAUSE 0x204408:150], the SAME manager
-    // walks to Main, the load flips the bank, and Main's re-entered 0x4c restarts with the
-    // OTHER jingle [M 0x21b908:127's reset + 0x20a7b0's arm].
+    // walks to the mission list (+0x1c = 0x4000001c [M 0x204408:141-152]), the load flips the
+    // bank, and P_NFMAP's re-entered 0x4c restarts with the OTHER jingle [M 0x21b908:125's reset +
+    // 0x20b608:36-42].
     h.open_pause();
     let fades_before = h.drv.fades;
     assert!(h.input(Action::Down), "Resume → Restart");
@@ -647,7 +656,8 @@ fn the_pause_holds_the_sound_and_never_touches_the_pair() {
     assert!(h.input(Action::Up), "NO → YES [M 0x204408's 0 = YES]");
     assert!(h.input(Action::Confirm), "the quit's YES");
     assert!(h.drv.fades > fades_before, "the quit ran the fade-down [M 0x204408:150]");
-    // The front-end map loads over the SAME manager [M the quit arm's enter_page(Main)].
+    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::MissionSelect), "the quit reopens on the mission list [M 0x204408:141-152]");
+    // The front-end map loads over the SAME manager.
     let mut got_fe = false;
     for _ in 0..600 {
         if let Some(next) = h.pending_level.take() {
@@ -681,7 +691,9 @@ fn the_mp_setup_keeps_the_pair_and_the_gate_mutes_the_debriefing_over_the_arena(
     assert!(act(&mut h, Action::Confirm), "ready");
     assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::MpScenario));
     let starts_before = h.drv.starts_of(0x1d7, 0) + h.drv.starts_of(0x470, 0);
-    assert!(act(&mut h, Action::Down));
+    // The scenario page opens on the row of MPSettings+0x1A4 = 1 (boot) — Arena [M 0x217348:25;
+    // 0x1c7e78:30].
+    assert!(h.fe.as_ref().is_some_and(|fe| fe.mp_scenario_row == 1));
     assert!(act(&mut h, Action::Confirm), "the scenario");
     assert!(act(&mut h, Action::Confirm), "the map");
     assert!(act(&mut h, Action::Confirm), "the character");

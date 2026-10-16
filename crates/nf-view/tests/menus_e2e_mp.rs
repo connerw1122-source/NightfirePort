@@ -30,7 +30,7 @@ fn act(fe: &mut FrontEnd, a: Action) -> bool {
 fn to_main(fe: &mut FrontEnd) {
     assert_eq!(fe.page, Page::Start, "the boot opens the title");
     assert!(act(fe, Action::Confirm), "the title's Enter");
-    assert_eq!(fe.page, Page::Main, "after the intro movies, the main menu");
+    assert_eq!(fe.page, Page::Main, "after P_ESTHERO's 0x073B0048, the main menu [M 0x20a060:44-45]");
 }
 
 /// Main → Multiplayer → Local → join (codename, ready) → the scenario page [M P_MPJOIN
@@ -52,12 +52,12 @@ fn to_scenario(fe: &mut FrontEnd) {
     assert_eq!(fe.page, Page::MpScenario);
 }
 
-/// The scenario wheel opens on row 0: walk `row` Downs, then Confirm. Returns nothing — the
-/// caller asserts the landing (the page differs for Quick Game / locked rows / the map wheel).
+/// The scenario wheel opens on the row of MPSettings+0x1A4 — boot's 1 = Arena [M P_MPSCENARIO
+/// 0x217348:24-25; bootup 0x1c7e78:30]: walk Up/Down to `row`. Returns nothing — the caller asserts
+/// the landing (the page differs for Quick Game / locked rows / the map wheel).
 fn to_scenario_row(fe: &mut FrontEnd, row: usize) {
-    for _ in 0..row {
-        assert!(act(fe, Action::Down), "the scenario wheel scrolls to {row}");
-    }
+    while fe.mp_scenario_row > row { assert!(act(fe, Action::Up), "the scenario wheel scrolls up to {row}"); }
+    while fe.mp_scenario_row < row { assert!(act(fe, Action::Down), "the scenario wheel scrolls to {row}"); }
     assert_eq!(fe.mp_scenario_row, row);
 }
 
@@ -141,7 +141,7 @@ fn every_scenario_row_opens_the_map_or_refuses() {
             // Locked rows refuse Confirm and keep the wheel [M C_SBMPSCEN:40-42's +0x10 gate].
             assert!(!act(&mut fe, Action::Confirm), "scenario row {row} is locked and refuses");
             assert_eq!(fe.page, Page::MpScenario, "row {row}: the wheel stays");
-            assert_eq!(fe.mp_scenario, 0, "row {row}: nothing stored");
+            assert_eq!(fe.mp_scenario, 1, "row {row}: nothing stored — the boot word 1 stands [M 0x1c7e78:30]");
             assert!(fe.mp_row_locked(row), "row {row}: the draw's dimming flag");
             assert_eq!(fe.mp_row_desc(row), MP_LOCKED_SCENARIO_DESC, "row {row}: the locked description [M +0x14]");
             continue;
@@ -219,8 +219,8 @@ fn every_options_subpage_moves_its_values_and_rides_them() {
     assert!(act(&mut fe, Action::Confirm));
     to_map_row(&mut fe, 0, false); // Skyrail
     setup_through(&mut fe, false);
-    // Game Rules: Duration 10 → 20, Points 10 → 12 [M P_MPRULES 0x20f790 — the Duration list is
-    // 1..10, 15, 20, 30, Unlimited; the Points list steps by 1].
+    // Game Rules: Duration 10 → 20, Points 10 → 20 [M P_MPRULES 0x20f790:21-42 — the Duration list
+    // is 1..10, 15..60 by 5, then Unlimited; :45-76 — Points is 1..10, then 15..120 by 5].
     assert!(act(&mut fe, Action::Down));
     assert!(act(&mut fe, Action::Down));
     assert_eq!(fe.mp_options_row, 2);
@@ -232,8 +232,9 @@ fn every_options_subpage_moves_its_values_and_rides_them() {
     assert_eq!(fe.mp_time_limit, 20);
     assert!(act(&mut fe, Action::Down), "the Points row");
     assert!(act(&mut fe, Action::Right));
+    assert_eq!(fe.mp_frag_limit, 15, "10 → 15 [M 0x20f790:54-55]");
     assert!(act(&mut fe, Action::Right));
-    assert_eq!(fe.mp_frag_limit, 12);
+    assert_eq!(fe.mp_frag_limit, 20, "15 → 20 [M 0x20f790:55-56]");
     assert!(act(&mut fe, Action::Confirm), "the rules page closes to the hub [M Manager 0x5f]");
     assert_eq!(fe.page, Page::MpOptions);
     // The hub's row is where the Rules page was opened from — 2; Player Mods is the next row.
@@ -344,10 +345,10 @@ fn every_options_subpage_moves_its_values_and_rides_them() {
     let s = fe.mp_match_settings.as_ref().unwrap();
     assert_eq!(s.scenario, 1);
     assert_eq!(s.level_code, 0x0700_0024);
-    assert_eq!(s.frag_limit, 12, "the Points choice rides [M +0x412]");
+    assert_eq!(s.frag_limit, 20, "the Points choice rides [M MPSettings+0x19c (Ghidra _412_)]");
     assert_eq!(s.time_limit, 1200, "Duration minutes → seconds [M the ×0x3c]");
-    assert_eq!(s.weapon_set, 2, "the weapon-set choice rides [M +0x436]");
-    assert_eq!(s.radar, 0, "the radar choice rides [M +0x452]");
+    assert_eq!(s.weapon_set, 2, "the weapon-set choice rides [M MPSettings+0x1b4 (Ghidra _436_)]");
+    assert_eq!(s.radar, 0, "the radar choice rides [M MPSettings+0x1c4 (Ghidra _452_)]");
     assert_eq!(s.friendly_fire, 1, "the friendly-fire choice rides [M +0x198]");
     assert_eq!(s.bot_count, 2);
     assert_eq!(s.human_count, 1);
@@ -495,20 +496,22 @@ fn back_out_of_every_page_and_walk_forward_again_team() {
 }
 
 /// The post-match debriefing: the host-side re-entry (the game's quit handoff [M C_GCPAUSE
-/// 0x204408:146 — GameState+0x28 = 0x40000033]) lands the page, and its Confirm returns to the
-/// scenario page on row 0 [M C_MPDBG 0x217860's 0x4b arm → 0x4000001a].
+/// 0x204408:146 — GameState+0x1c = 0x40000033]) lands the page, and its Confirm returns to the
+/// scenario page, re-selecting the row of MPSettings+0x1A4 [M C_MPDBG 0x217860:9-10 → 0x4000001a;
+/// P_MPSCENARIO 0x217348:25]. Quick Game wrote +0x1A4 = 1 [M C_SBMPSCEN 0x20c600:54] → Arena.
 #[test]
 fn the_debriefing_returns_to_the_scenario_page() {
     let mut fe = FrontEnd::new();
     to_scenario(&mut fe);
+    to_scenario_row(&mut fe, 0);
     assert!(act(&mut fe, Action::Confirm), "Quick Game (row 0) straight to the summary");
     assert_eq!(fe.page, Page::MpConfirm);
     assert!(act(&mut fe, Action::Confirm), "the match starts");
     assert!(fe.requested_level.is_some(), "the quick game's request went out");
     fe.mp_debrief_enter();
     assert_eq!(fe.page, Page::MpDebriefing, "the quit handoff lands the debriefing");
-    assert_eq!(fe.page.id(), 0x4000_0033, "[M GameState+0x28 = 0x40000033]");
+    assert_eq!(fe.page.id(), 0x4000_0033, "[M GameState+0x1c = 0x40000033]");
     assert!(act(&mut fe, Action::Confirm), "the debriefing's ✕");
     assert_eq!(fe.page, Page::MpScenario, "the debriefing returns to the scenario wheel [M C_MPDBG]");
-    assert_eq!(fe.mp_scenario_row, 0, "the wheel re-opens on Quick Game [M C_MPDBG's 0x44 arg]");
+    assert_eq!(fe.mp_scenario_row, 1, "the wheel re-opens on Arena, the row of +0x1A4 = 1 [M 0x217348:25, 0x20c600:54]");
 }

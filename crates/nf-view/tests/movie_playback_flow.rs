@@ -81,13 +81,14 @@ fn the_outro_codes_match_mission_update_case6() {
 fn a_menu_started_mission_rides_state6_back_to_the_level_load() {
     let mut fe = FrontEnd::new();
     tick_to_title(&mut fe);
-    fe.action(Action::Confirm); // title → intro movie state (the countdown model)
-    // The intro runs its 450 frames (or the skip pops it) before the menu pages work — case 6
-    // holds the flow until the movie ends [M 0x1c98c8 case 6].
-    for _ in 0..fe.flow.movie_frames { fe.flow.main_tick(); }
-    assert_eq!(fe.flow.get_state(), ST_RUNNER, "the intro popped; state 2");
-    fe.action(Action::Confirm); // NightFire → Codename
-    fe.action(Action::Down);    // row 1 = Play without saving [M 0x1f79c0:15-23; fix-menus-real]
+    // START → P_PARISENUM → P_ESTHERO plays 0x073B0048 as a menu background movie — GameFlow stays
+    // in state 2, no state 6 [M 0x20a648:43, 0x20a060:16-25] — and Main opens when it ends (:28-45).
+    fe.action(Action::Confirm);
+    for _ in 0..3 + menu::ESTHERO_TICKS { fe.tick(); assert_eq!(fe.flow.get_state(), ST_RUNNER, "no GameFlow movie state during the intro"); }
+    assert_eq!(fe.page, Page::Main, "the intro ran out; Main is up");
+    fe.action(Action::Confirm); // NightFire → Codename after the 0x13 delay [M C_GONIGHTFIRE 0x2169b8:29-37]
+    for _ in 0..menu::DELAYED_PAGE_TICKS + menu::MAIN_OPEN_BLOCK { fe.tick(); }
+    assert_eq!(fe.cursor, 1, "row 1 = Play without saving [M P_NFSELECT 0x20aec0:96-97]");
     fe.action(Action::Confirm); // Codename → the confirm box armed
     fe.action(Action::Confirm); // the box → Select Difficulty
     fe.action(Action::Confirm); // Difficulty → Single Player
@@ -160,24 +161,27 @@ fn a_completed_mission_plays_the_outro_and_returns_to_the_map() {
     fe.flow.main_tick(); // the countdown model pops (or the skip/end does with a real movie)
     assert!(!fe.flow.load_tick(), "phase 2");
     assert_eq!(fe.flow.phase2_resolved, Some(menu::FRONTEND_LEVEL), "every outro routes to the map [M 0x1d3560]");
-    assert_eq!(fe.flow.page, menu::PAGE_RESULTS, "phase 2 sets +0x28 = 0x40000036 on the map [M 0x1d6360]");
+    assert_eq!(fe.flow.page, menu::PAGE_RESULTS, "phase 2 sets +0x1c = 0x40000036 on the map [M 0x1d6360]");
 }
 
-/// A failed mission goes straight to the map — Mission_Update cases 2/3 set LevelToEndTo = 0x7000048
-/// with no movie [M 0x182c60].
+/// fe-audit: a failed mission loads NOTHING by itself — Mission_Update case 4's fail arm opens the
+/// fail menu 0x40000042 over the paused mission [M 0x182c60:77-80; cases 2/3 :45-64 only set
+/// LevelToEndTo]. The front-end load comes from the menu's QUIT row, plain (no movie wrap) [M
+/// P_ENDMISSION 0x216618:24-26 `ResetMap_LevelToLoad(0x7000048, 0, 0)`].
 #[test]
 fn a_failed_mission_returns_to_the_map_without_a_movie() {
     let mut fe = FrontEnd::new();
     fe.flow.stack = vec![ST_RUNNER];
     fe.flow.current_level = 0x0700_0004;
     fe.mission_ended(Outcome::Failed, Stats::default());
-    // Mission_Update 0x182c60 case 4 pushes the load and THEN the 60-frame fade on top [M]: the fade plays out
-    // first (GameFlow_Main state 8 pops when its frames run out), then the load runs.
-    while fe.flow.get_state() == menu::ST_FADE_HOLD { fe.flow.main_tick(); }
-    assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL), "failures skip the outro [M cases 2/3]");
+    assert_eq!(fe.requested_level, None, "the failure itself requests nothing [M 0x182c60:77-80]");
+    assert_eq!(fe.flow.get_state(), ST_RUNNER, "no fade, no load — the mission is paused under the menu");
+    assert_eq!(fe.page_id(), menu::PAGE_FAIL_MENU);
+    // QUIT (the second row, value 2 [L page 0x40000042]).
+    fe.cursor = 1;
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL), "QUIT loads the front end [M 0x216618:26]");
     assert!(!fe.flow.movie_pending, "a plain load, no wrap");
-    // The 8-frame fade holds on top of the load [M 0x182c60 case 4's order; 568a6e8] — run it out.
-    for _ in 0..8 { fe.flow.main_tick(); }
     assert_eq!(fe.flow.get_state(), ST_MAPLOAD, "the load is on its way");
     assert!(fe.flow.load_tick(), "no movie phase — one tick loads");
 }

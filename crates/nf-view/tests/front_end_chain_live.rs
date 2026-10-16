@@ -35,7 +35,9 @@ fn the_failed_page_keeps_the_fail_menu_arms() {
     fe.mission_ended(Outcome::Failed, Stats::default());
     assert_eq!(fe.page, Page::Results);
     assert_eq!(fe.rows(), 2, "the fail menu's REPLAY/QUIT rows [L page 0x40000042: items 0x5bc (value 0) and 0x16c (value 2)]");
-    assert_eq!(fe.requested_level.take(), Some(0x0700_0048), "failures go straight to the front end [M 0x182c60:45-57]");
+    // fe-audit: a failure loads nothing — the fail menu opens over the paused mission [M Mission_Update
+    // 0x182c60:77-80; cases 2/3 (:45-64) only set LevelToEndTo]. The load comes from the row.
+    assert_eq!(fe.requested_level, None, "the failure itself requests no level [M 0x182c60:77-80]");
     fe.cursor = 0;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0004), "row 0 = the current level [M 0x216618:19-21]");

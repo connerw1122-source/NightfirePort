@@ -596,7 +596,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     // level's archive — 33 of them on 2 levels [D scan]. TWO mechanisms, read off the decompile:
     //
     // 1. `AnimObjectNew` (0x1be910 disasm 0x1be958-0x1be9b0) SUBSTITUTES 0x05000090 before the
-    //    hashtable get: on GameState+0x12 == 0x0700000c → 0x05000087 (0700000c's own skin), on
+    //    hashtable get: on GameState+0xc == 0x0700000c → 0x05000087 (0700000c's own skin), on
     //    0x07000014 → 0x05000093 (07000014's own). The port mirrors it at load: the placement hash
     //    0x05000090 resolves to the substitute skin's data — exactly the object the game builds.
     // 2. 07000014's 0x050000b1 (11 placements) has NO substitution (the disassembly covers only
@@ -1797,13 +1797,17 @@ impl App {
         if self.fe.is_none() { return; }
         use menu::Action as MA;
         let fe = self.fe.as_mut().unwrap();
-        // State 6: only the skip action matters [M GameFlow_Main 0x1c98c8 case 6
-        // reads Input_Action(-1, 0x19, 1) and nothing else — the menu pages are not
+        // State 6 (the briefings/outros): only the skip action matters [M GameFlow_Main 0x1c98c8
+        // case 6 reads Input_Action(-1, 0x19, 1) and nothing else — the menu pages are not
         // up during a movie]. The port's Confirm keys (Enter/Space) stand in for
-        // the pad's X/Start [S docs/systems/input.md §3].
+        // the pad's X/Start [S docs/systems/input.md §3]. The front-end intro run is NOT state 6:
+        // it reaches `fe.action`, which honours P_ESTHERO's 180-tick grace and the boot logos'
+        // no-skip [M 0x215a50:6] (fe-audit: this intercept used to swallow the intro's skip).
         if fe.flow.get_state() == menu::ST_MOVIE {
             // A movie can't be skipped in its first second on screen: the press that picked the
-            // mission (or a quick double-tap) used to skip its briefing before a frame showed.
+            // mission (or a quick double-tap) used to skip its briefing before a frame showed
+            // [S — a port choice from the playtest; GameFlow case 6 itself skips at once,
+            // 0x1c98c8:146-150].
             let shown = self.movie.as_ref().map_or(f32::MAX, |p| p.shown_for());
             if a == MA::Confirm && shown >= 1.0 { fe.flow.skip_movie(); }
             return;
@@ -2143,7 +2147,7 @@ impl App {
                 // frontend-music: `Sound_Ready`'s front-end case [M 0x1dceb8 case 0x7000048] — the
                 // load alternates bank 0xc (SBI slot 0 = SB_0, jingle 0x1d7) and 0x38 (slot 1 =
                 // SB_1, jingle 0x470) through DAT_002e1b11, then `MenuManager_Create` resets
-                // `menu_movie` [M 0x21b908:127] so the first page enter restarts the pair. The
+                // `menu_movie` [M 0x21b908:125] so the first page enter restarts the pair. The
                 // port keeps every bank resident, so the flip re-points the driver's primary slot.
                 if load.next == menu::FRONTEND_LEVEL {
                     if let Some(fe) = self.fe.as_mut() {
@@ -2151,7 +2155,7 @@ impl App {
                         fe.music.jingles_up = false;
                         if let Some(s) = self.sound.as_mut() { s.driver.set_primary(if hash == 0x38 { 1 } else { 0 }); }
                     }
-                    self.fe_music_page = None; // the manager re-create re-runs the page's 0x4c [M 0x21b908:127]
+                    self.fe_music_page = None; // the manager re-create re-runs the page's 0x4c [M 0x21b908:125]
                     // The load's own MenuManager_Create re-opens the queued page [M 0x1d6360:160-163]:
                     // the quit arms' 0x4000001c lands on the mission list, not the placeholder page
                     // they left up during the load (pause-results-flows).
@@ -2296,7 +2300,7 @@ impl App {
         fe.mission_ended(if complete { menu::Outcome::Complete } else { menu::Outcome::Failed }, menu::Stats::default());
         // The completed page's enter runs against the live progress layer [M P_NFRESULTS 0x208e78
         // :77 GetScore(0) + :169 Menu_SetLevelBonus] — the fields the overlay draws
-        // (front-end-chain). GameState+0x72 is BaseMap [M 0x182c60:68-70's clamp].
+        // (front-end-chain). GameState+0x48 is BaseMap [M 0x182c60:68-70's clamp].
         if complete {
             // The front end's language table isn't loaded while a mission runs — fall back to the
             // level's own (the medal name drew as a raw "<0x2c7>" on the live end sequence).
@@ -2395,40 +2399,43 @@ impl App {
             // net-match-host: the settings ride with the level (same as menu_after).
             if let Some(st) = fe.mp_match_settings.take() { self.pending_mp_settings = Some(st); }
         }
-        let intro_up = fe.intro_playing && fe.flow.get_state() == menu::ST_MOVIE;
-        if intro_up {
-            // The intro owns the screen; the game stops any playing movie before starting the
-            // next [M psiStartBackgroundMovie 0x001081a8 restarts the single BGFMV slot].
+        if fe.intro_playing {
+            // The intro run (P_INTRO's boot logos / P_ESTHERO's START movie) owns the screen; its
+            // movies are menu background movies on the ONE BGFMV slot [M psiStartBackgroundMovie
+            // 0x1081a8 restarts the slot; 0x209e88:62, 0x20a060:24]. The page's 0x50 decides when
+            // one starts (`fe.intro_movie`); the host plays it and feeds psiMovieFinished back.
             let code = fe.intro_movie_code();
-            let wrong = match &self.movie { Some(p) => p.code() != code || p.is_looping(), None => true };
-            if wrong {
-                if let Some(p) = self.movie.take() { p.stop(); }
-                match movie::Player::start(&movie_iso, code) {
-                    Ok(p) => {
-                        self.movie = Some(p); eprintln!("movie: playing {code:08x} (intro)");
-                        // frontend-music: the intro's 0x4c-equivalent removes the pair before the
-                        // movie (menu_movie = 0) [M P_INTRO 0x209e88:42-44]; the movie's own audio
-                        // replaces it.
-                        fe.music.movie_started();
+            if fe.intro_movie {
+                let wrong = match &self.movie { Some(p) => p.code() != code || p.is_looping(), None => true };
+                if wrong {
+                    if let Some(p) = self.movie.take() { p.stop(); }
+                    match movie::Player::start(&movie_iso, code) {
+                        Ok(p) => {
+                            self.movie = Some(p); eprintln!("movie: playing {code:08x} (intro)");
+                            // frontend-music: the page's movie start removed the pair (menu_movie
+                            // = 0) [M 0x209e88:42-44, 0x20a060:20-22]; the movie's own audio
+                            // replaces it.
+                            fe.music.movie_started();
+                        }
+                        Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown carries the intro"),
                     }
-                    Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown carries the intro"),
                 }
-            }
-            // psiMovieFinished [M 0x1082e8 polled at 0x209e88]: the pair advances; after the
-            // second movie the host shortens the headless countdown so the state pops at the real
-            // end (the slim ISO's zeroed PSS files [L] leave the countdown alone to carry it).
-            // boot-flow: the run ends on psiMovieFinished, never on the headless budget while the real
-            // movie still plays [M P_INTRO 0x209e88 / P_ESTHERO 0x20a060 poll psiMovieFinished only] — the
-            // budget cut 0x073B0048 at the rockets. The budget stays the stand-in when no player runs.
-            if self.movie.as_ref().is_some_and(|p| p.code() == code && !p.finished()) {
-                fe.flow.movie_frames = fe.flow.movie_frames.max(2);
-            }
-            if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {
-                // frontend-music: each finished intro movie restarts the pair while it is down
-                // [M 0x209e88:23-28 — the psiMovieFinished arm].
-                fe.music.movie_finished();
-                fe.intro_index += 1;
-                if fe.intro_index >= fe.intro_list.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
+                // psiMovieFinished [M 0x1082e8, polled by the page's 0x50]: while the real movie
+                // decodes the headless budget is held; its end is the finish.
+                match &self.movie {
+                    Some(p) if p.code() == code && !p.is_looping() => {
+                        if p.finished() { fe.intro_movie_finished(); } else { fe.intro_live = true; }
+                    }
+                    _ => {}
+                }
+            } else if self.movie.as_ref().is_some_and(|p| !p.is_looping() && p.code() == code) {
+                // The movie was skipped (Menu_StopMovie → psiStopBackgroundMovie [M 0x215a50:11])
+                // or it ended: free the slot.
+                if let Some(p) = self.movie.take() { p.stop(); }
+            } else if self.movie.as_ref().is_some_and(|p| p.is_looping()) {
+                // The title's / a page's looping backdrop yields to the run (P_INTRO / P_PARISENUM /
+                // P_ESTHERO carry no aux [M 0x21c858:334-338 stops it on the page change]).
+                if let Some(p) = self.movie.take() { p.stop(); }
             }
         } else if fe.attract_playing {
             // attract-mode: P_ATTRACT's 0x4c starts the attract movie on the ONE BGFMV slot
@@ -3548,7 +3555,8 @@ impl ApplicationHandler for App {
                 // The borrow rules: read the state first, then pull the frame — `movie_frame`
                 // holds a borrow into `self.movie` until render() consumes it.
                 let state6 = self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() == menu::ST_MOVIE);
-                let intro_up = self.fe.as_ref().is_some_and(|fe| fe.intro_playing) && state6;
+                // fe-audit: the intro run is a menu background movie, not GameFlow state 6.
+                let intro_up = self.fe.as_ref().is_some_and(|fe| fe.intro_playing);
                 // attract-mode: the attract movie owns the screen like the intro does — the
                 // attract page has no controls [L the menu-def's 0x40000035 record], the movie
                 // plane IS the page [M P_ATTRACT_Handler 0x20a1f0's psiStartBackgroundMovie].
@@ -3997,7 +4005,7 @@ pub fn run() -> Result<()> {
             },
             None => eprintln!("no USATxt.dat in FILES.BIN — menu labels show their label ids"),
         }
-        eprintln!("[front end] title screen (P_START 0x40000034); Enter/click = start, arrows = move, Esc = back");
+        eprintln!("[front end] title screen (P_START 0x40000009); Enter/click = start, arrows = move, Esc = back");
     } else {
         // options-persist-roundtrip: a mission started straight from the command line boots
         // the persisted volumes too — the game's boot applies them before any menu exists

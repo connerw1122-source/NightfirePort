@@ -47,9 +47,10 @@ fn main_to_join_to_scenario_flows() {
     join_agent1(&mut fe);
     assert_eq!(fe.page, Page::MpScenario, "the ready arm reaches the scenario page [M → 0x4000001a]");
     assert_eq!(fe.page.id(), 0x4000_001a);
-    // Sister: the scenario wheel opens on the row matching MPSettings+0x1A4 — fresh 0 = Quick
-    // Game [M Menu_SelectItemInControl's fallback row 0].
-    assert_eq!(fe.mp_scenario_row, 0, "a fresh profile's scenario cursor is Quick Game");
+    // Sister: the scenario wheel opens on the row whose +0xc word is MPSettings+0x1A4 [M
+    // P_MPSCENARIO 0x217348:24-25]; boot sets +0x1A4 = 1 [M bootup 0x1c7e78:30] — row 1, Arena.
+    assert_eq!(fe.mp_scenario, 1, "the boot scenario word [M 0x1c7e78:30]");
+    assert_eq!(fe.mp_scenario_row, 1, "a fresh boot's scenario cursor is Arena [M 0x217348:25]");
 }
 
 #[test]
@@ -105,7 +106,8 @@ fn setup_ffa_then_options_then_rules_back_out() {
     assert_ne!(fe.mp_time_limit, t0, "the duration list moved");
     assert!(fe.action(Action::Down));
     assert!(fe.action(Action::Right));
-    assert_eq!(fe.mp_frag_limit, f0 + 1, "the points list stepped");
+    assert_eq!(f0, 10, "the boot Points value [M bootup 0x1c7e78:29 MPSettings+0x19c = 10]");
+    assert_eq!(fe.mp_frag_limit, 15, "the points list steps 10 → 15 [M P_MPRULES 0x20f790:54-55]");
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.page, Page::MpOptions, "the rules page closes to the hub [M Manager 0x5f]");
     // Sister: Player Mods and Enviro-Mods close the same way.
