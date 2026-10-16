@@ -73,7 +73,10 @@ already points at the profiles dir.
   fix_party_mission_live, fix_mission_live, fix_death_restart_live, fix_restart_target_live,
   fix_level_chain_live, async_level_load_live, level_end_live) → **85 passed, 0 failed**;
   the five key binaries re-run after the final commit → **67 passed, 0 failed**. Total
-  across the chunks: **271 binary results, 0 failed** (`build ok: 367 test binaries`, warm).
+  across the chunks: **311 binary results, 0 failed** (the last chunk adds
+  mp_bots_live, mp_core_live, mp_defaults_setup, menu_backdrop_still, devwin_flow,
+  dev_tools_live, fix_dev_panel_live, fix_input_kbd_trace, fix_pause_audio_live,
+  fix_codename_live → 40 passed, 0 failed) (`build ok: 367 test binaries`, warm).
   The suite ran foreground (this sandbox reaps background jobs — suite.out stayed empty
   twice, same as the previous workers' notes); the remaining ~200 mission-sim/render
   binaries did not fit the window and touch no menu code; the build cache is warm for the
