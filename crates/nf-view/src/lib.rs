@@ -2347,6 +2347,26 @@ impl ApplicationHandler for App {
                     return;
                 }
                 if event.state == ElementState::Pressed && self.fe.is_some() {
+                    // net-online-lobby: the join address page takes the raw keys FIRST — digits,
+                    // dots and the colon type, Backspace deletes, Ctrl+C/Ctrl+V work the page's
+                    // own clipboard — and every other press is swallowed, so the letter rows
+                    // (W/A/S/D are the menu's own keys) never fire while an address is typed
+                    // [S docs/systems/net-online-lobby.md §2.2]. Enter/Escape still confirm and
+                    // back out below for the non-typing keys.
+                    let ctrl = self.keys.contains(&KeyCode::ControlLeft) || self.keys.contains(&KeyCode::ControlRight);
+                    let typing = self.fe.as_ref().is_some_and(|fe| fe.page == menu::Page::MpNetJoin);
+                    if typing {
+                        let fe = self.fe.as_mut().unwrap();
+                        match k {
+                            KeyCode::Backspace => { fe.mp_net_backspace(); }
+                            KeyCode::KeyV if ctrl => { let clip = fe.mp_net_clip.clone(); fe.mp_net_paste(&clip); }
+                            KeyCode::KeyC if ctrl => { fe.mp_net_copy(); }
+                            KeyCode::Enter | KeyCode::Space => { if fe.action(menu::Action::Confirm) { self.menu_after(); } }
+                            KeyCode::Escape => { if fe.action(menu::Action::Back) { self.menu_after(); } }
+                            _ => if let Some(c) = menu::net_char_key(k) { fe.mp_net_type(c); }
+                        }
+                        return;
+                    }
                     if let Some(a) = menu::key_action(k) { self.menu_input(a); }
                     return;
                 }

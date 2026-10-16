@@ -186,6 +186,21 @@ pub const PAGE_MP_CONFIRM: u32 = 0x4000_0049;
 /// GameState+0x28 = 0x40000033; P_MPDEBRIEFING 0x212198 / C_MPDBG 0x217860].
 pub const PAGE_MP_DEBRIEFING: u32 = 0x4000_0033;
 
+// ── net-online-lobby: the port-only online pages (docs/systems/net-online-lobby.md §2) ─────────
+// The PS2 game has no online mode — the menu-def (08000002 of 07000048.bin, parsed 2026-10-15)
+// has no network page, and the couch route joins through per-pad messages [D; M P_MPJOIN 0x20ca00
+// msg 0x6a] — so these ids are the port's own, in a spare 0x5000_0000 block that can never
+// collide with the game's 0x4000_00xx pages [S].
+/// The Multiplayer mode choice: Local / Host Online / Join Online [S — the game's Multiplayer
+/// row lands straight on 0x40000019; the port asks first].
+pub const PAGE_MP_MODE: u32 = 0x5000_0001;
+/// The host setup page: the port number + Start Listening [S §2.1].
+pub const PAGE_MP_HOST: u32 = 0x5000_0002;
+/// The join address page: the typed IP:PORT + Connect [S §2.2].
+pub const PAGE_MP_NETJOIN: u32 = 0x5000_0003;
+/// The client's lobby: the host's choices mirrored read-only until the match starts [S §2.2].
+pub const PAGE_MP_LOBBY: u32 = 0x5000_0004;
+
 /// The GameState stack machine's fields [M addresses in the doc comment].
 #[derive(Clone, Debug, Default)]
 pub struct GameFlow {
@@ -546,7 +561,9 @@ pub const INTRO_TICKS: u32 = 850;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page { Start, Main, Codename, Difficulty, MissionSelect, Dossier, Records, Rewards, Gadgets, Weapons, Options, Pause, Results, Stats, CnSelect, CnMenu, CnName, CnAdvanced, CnMp, CnAv, ScreenAdjust,
     // mp-menu-flow: the multiplayer front end (page ids in the PAGE_MP_* constants below).
-    MpJoin, MpScenario, MpMap, MpSetup, MpOptions, MpRules, MpPlayerMods, MpEnviroMods, MpBots, MpBotChoose, MpBotSetup, MpConfirm, MpDebriefing, Credits }
+    MpJoin, MpScenario, MpMap, MpSetup, MpOptions, MpRules, MpPlayerMods, MpEnviroMods, MpBots, MpBotChoose, MpBotSetup, MpConfirm, MpDebriefing,
+    // net-online-lobby: the port-only online pages (ids in the PAGE_MP_* constants below).
+    MpMode, MpHost, MpNetJoin, MpLobby, Credits }
 
 impl Page {
     pub fn id(self) -> u32 {
@@ -564,6 +581,8 @@ impl Page {
             Page::MpPlayerMods => PAGE_MP_PLAYERMODS, Page::MpEnviroMods => PAGE_MP_ENVIROMODS,
             Page::MpBots => PAGE_MP_BOTS, Page::MpBotChoose => PAGE_MP_BOTCHOOSE, Page::MpBotSetup => PAGE_MP_BOTSETUP,
             Page::MpConfirm => PAGE_MP_CONFIRM, Page::MpDebriefing => PAGE_MP_DEBRIEFING,
+            Page::MpMode => PAGE_MP_MODE, Page::MpHost => PAGE_MP_HOST,
+            Page::MpNetJoin => PAGE_MP_NETJOIN, Page::MpLobby => PAGE_MP_LOBBY,
             Page::Credits => crate::credits::PAGE_CREDITS,
         }
     }
@@ -582,6 +601,8 @@ impl Page {
             PAGE_MP_PLAYERMODS => Page::MpPlayerMods, PAGE_MP_ENVIROMODS => Page::MpEnviroMods,
             PAGE_MP_BOTS => Page::MpBots, PAGE_MP_BOTCHOOSE => Page::MpBotChoose, PAGE_MP_BOTSETUP => Page::MpBotSetup,
             PAGE_MP_CONFIRM => Page::MpConfirm, PAGE_MP_DEBRIEFING => Page::MpDebriefing,
+            PAGE_MP_MODE => Page::MpMode, PAGE_MP_HOST => Page::MpHost,
+            PAGE_MP_NETJOIN => Page::MpNetJoin, PAGE_MP_LOBBY => Page::MpLobby,
             crate::credits::PAGE_CREDITS => Page::Credits,
             _ => return None,
         })
@@ -986,6 +1007,108 @@ impl Default for MpJoinAgent {
     fn default() -> Self { MpJoinAgent { state: 0, joined: false, ready: false, team: 0, skin: 0, codename_row: 0, codename: String::new() } }
 }
 
+// ── net-online-lobby: the online session surface (docs/systems/net-online-lobby.md §3) ─────────
+// The PS2 game has no online mode — the menu-def holds no network page and the couch route joins
+// through per-pad messages [D; M P_MPJOIN 0x20ca00 msg 0x6a] — so this surface is port-only [S].
+// The front end needs exactly this from the transport: 051's deterministic UDP lockstep session
+// (std::net::UdpSocket, no crate downloads) implements the trait; the tests run a fake.
+
+/// The link state the join flow reads off the session [S §3].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MpNetLink { Idle, Listening, Dialing, Connected, Refused, TimedOut, Lost }
+
+/// Why a listen / connect refused [S §3].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MpNetError { BadAddress, Busy, Denied }
+
+/// The join side's page state — what PAGE_MP_NETJOIN and PAGE_MP_LOBBY draw [S §2.2].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MpNetState { Idle, Dialing, Refused, TimedOut, InLobby }
+
+/// One lobby agent as the session reports it: slot 0 = this machine's agent, slots 1..3 = the
+/// remote panels 2-4 [S §3].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct MpNetAgent {
+    /// The lobby slot (0 = this machine's agent).
+    pub slot: usize,
+    /// The agent's lobby codename.
+    pub codename: String,
+    /// The agent's ready flag (the mirror shows 0x39c "Player Ready" / 0x1e9 [M mpjoin+0x01]).
+    pub ready: bool,
+}
+
+/// The host's lobby choices as published — the words the mirror page shows [S §3]. The names
+/// ride the shared tables (MP_SCENARIO_ROWS / MP_MAP_ROWS / MP_WEAPON_SETS), so only the words
+/// cross the wire.
+#[derive(Clone, Debug, PartialEq, Eq, Default)]
+pub struct MpNetChoices {
+    /// MPSettings+0x1A4 — the scenario word [M C_SBMPSCEN's confirm store].
+    pub scenario: u32,
+    /// MPSettings+0x1A8 — the arena's level code [M C_SBMPMAP's confirm store].
+    pub level: u32,
+    /// MPSettings+0x1B4 — the weapon set 0..10 [M P_MPPLAYERMODS 0x2104d0:13].
+    pub weapon_set: u32,
+    /// MPSettings+0x1C4 — radar [M P_MPPLAYERMODS 0x2104d0:16].
+    pub radar: u32,
+    /// MPSettings+0x198 — friendly fire [M P_MPPLAYERMODS 0x2104d0:12].
+    pub friendly_fire: u32,
+    /// MPSettings+0x19C — the frag/points/lives limit [M P_MPRULES 0x20f790:13].
+    pub frag_limit: i32,
+    /// MPSettings+0x1A0 — the time limit in minutes, -1 = Unlimited [M P_MPRULES 0x20f790:12].
+    pub time_limit: i32,
+    /// The Player-Mods toggles (+0x1BC, +0x1C8) [M P_MPPLAYERMODS 0x2104d0:14-15].
+    pub player_mods: [u32; 2],
+    /// The Enviro-Mods rows (+0x1C0, +0x1B8, +0x1D4, +0x1D0, +0x1CC) [M P_MPENVIROMODS 0x210030].
+    pub envmods: [u32; 5],
+}
+
+/// The online session the online front end drives. The front end holds any `Box<dyn MpSession>`
+/// in [`FrontEnd::mp_session`] and never touches a socket; the real transport (051's
+/// deterministic lockstep over `std::net::UdpSocket`) implements this [S §3].
+pub trait MpSession {
+    /// Drive the transport once per menu tick (sockets, handshakes, keepalives).
+    fn poll(&mut self);
+    /// The link state the join flow reads.
+    fn link(&self) -> MpNetLink;
+    /// Host: bind the UDP port. `Err(Busy)` = the port could not be taken.
+    fn listen(&mut self, port: u16) -> Result<(), MpNetError>;
+    /// Client: begin the handshake to "host:port" — the poll turns it into
+    /// Connected / Refused / TimedOut.
+    fn connect(&mut self, addr: &str) -> Result<(), MpNetError>;
+    /// The lobby's agents: slot 0 = this machine's agent, slots 1..3 = the remote panels.
+    /// Owned — the lobby is at most four entries (the fake's RefCell cannot hand out a slice).
+    fn agents(&self) -> Vec<MpNetAgent>;
+    /// The host's last published choices (None until one arrives).
+    fn host_choices(&self) -> Option<MpNetChoices>;
+    /// Host: push the current choices (the mirror reads them through [`MpSession::host_choices`]).
+    fn publish_choices(&mut self, c: &MpNetChoices);
+    /// Host: start the match with these settings (clients see it through
+    /// [`MpSession::match_started`]).
+    fn start_match(&mut self, s: &nf_game::mp::MpSettings);
+    /// The match-start settings once the host started (both roles read this).
+    fn match_started(&self) -> Option<nf_game::mp::MpSettings>;
+    /// Tell the session this machine's lobby codename.
+    fn set_codename(&mut self, name: &str);
+    /// Close cleanly (Back / cancel / the match handover's end).
+    fn close(&mut self);
+}
+
+/// The join timeout: 600 menu ticks = 10 s at the fixed 60 Hz [S §2.2].
+pub const MP_NET_TIMEOUT_TICKS: u32 = 600;
+
+/// The address gate: "host:port" with host = 1-4 dot-separated digit parts each ≤ 255 and port =
+/// 1..65535 [S §2.2 — the typed set is digits, dots, colon (the task's own list); no hostnames].
+pub fn mp_net_addr_ok(addr: &str) -> bool {
+    let Some((host, port)) = addr.split_once(':') else { return false; };
+    if host.is_empty() || port.is_empty() { return false; }
+    let parts: Vec<&str> = host.split('.').collect();
+    if parts.len() > 4 { return false; }
+    parts.iter().all(|p| !p.is_empty() && p.len() <= 3 && p.chars().all(|c| c.is_ascii_digit())
+        && p.parse::<u16>().map_or(false, |v| v <= 255))
+        && port.chars().all(|c| c.is_ascii_digit())
+        && port.parse::<u32>().map_or(false, |v| (1..=65535).contains(&v))
+}
+
 /// One bot's 0x12-byte config record — `mpbots` 0x2deea8's records at +2+slot·0x12 (= 0x2DEEAA in
 /// the game) [M the record layout from mp-bots-data: +0x0E enabled, +0x0F team, +0x10 character,
 /// +0x11 dirty; the stats the Bot Setup page edits are the record's +0x00..0xC view of
@@ -1361,6 +1484,34 @@ pub struct FrontEnd {
     /// The handlers' `menu_movie` static: set once the page-open pair has played, cleared by the
     /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
     pub menu_movie: bool,
+
+    // ── net-online-lobby: the online Host / Join flow (each field on its own line [WORKLOG
+    // lesson 4]; docs/systems/net-online-lobby.md) ──
+    /// The host page's UDP port — the default is the plan's 27420 [S §2.1; ◀ ▶ steps it on
+    /// PAGE_MP_HOST, clamped 1024..65535].
+    pub mp_net_port: u32,
+    /// Host mode is armed: Start Listening ran and the game's Join Game page doubles as the host
+    /// lobby (the host's own panel 0 joined, remote agents in panels 2-4) [S §2.1].
+    pub mp_hosting: bool,
+    /// The join page's typed address [S §2.2 — digits, dots, colon; the 22-char cap fits
+    /// "255.255.255.255:65535"].
+    pub mp_net_addr: String,
+    /// The address page's own clipboard — Ctrl+C copies, Ctrl+V pastes [S §2.2; the system
+    /// clipboard needs a crate, see the report].
+    pub mp_net_clip: String,
+    /// The join side's page state [S §2.2].
+    pub mp_net_state: MpNetState,
+    /// The last listen/connect error the status line reports (None = nothing to say) [S].
+    pub mp_net_error: Option<MpNetError>,
+    /// The Dialing countdown in menu ticks; 0 → TimedOut [S §2.2 — MP_NET_TIMEOUT_TICKS = 10 s].
+    pub mp_net_timeout: u32,
+    /// The online session behind the flow — None = offline (the host wires 051's real session,
+    /// the tests a fake) [S §3].
+    pub mp_session: Option<Box<dyn MpSession>>,
+    /// The client's mirror of the host's published choices (None until the first publish) [S §2.2].
+    pub mp_lobby_choices: Option<MpNetChoices>,
+    /// The host's last published choices — the publish diff rides on it [S §2.1].
+    pub mp_host_published: Option<MpNetChoices>,
 }
 
 impl FrontEnd {
@@ -1465,7 +1616,18 @@ impl FrontEnd {
             enabled_sound_flags: 0x0b,
             /// The handlers' `menu_movie` static: set once the open pair has played, reset by the
             /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
-            menu_movie: false };
+            menu_movie: false,
+            // net-online-lobby (each new field on its own line [WORKLOG lesson 4]).
+            mp_net_port: 27420,
+            mp_hosting: false,
+            mp_net_addr: String::new(),
+            mp_net_clip: String::new(),
+            mp_net_state: MpNetState::Idle,
+            mp_net_error: None,
+            mp_net_timeout: 0,
+            mp_session: None,
+            mp_lobby_choices: None,
+            mp_host_published: None };
         // The boot opens P_START: the pair plays with `menu_movie` clear [M P_START 0x20a408:12-22;
         // the game's boot path P_INTRO → P_START replays it the same way — the intro movie end
         // clears the static [M 0x209e88:44,58]].
@@ -1596,6 +1758,13 @@ impl FrontEnd {
             // The four Join panels — the cursor walks the agents; agents 2-4 stay unjoined (no
             // pads in the port; the game joins them through their own controllers [M msg 0x6a]).
             Page::MpJoin => 4,
+            // net-online-lobby: the mode choice's three rows; the host page's Port + Start
+            // Listening; the join page's one address row; the lobby mirror has no wheel rows
+            // (the lines draw through mp_lobby_lines) [S §2].
+            Page::MpMode => 3,
+            Page::MpHost => 2,
+            Page::MpNetJoin => 1,
+            Page::MpLobby => 1,
             Page::MpScenario => MP_SCENARIO_ROWS.len(),
             Page::MpMap => MP_MAP_ROWS.len(),
             // The setup page drives agent 1's single pick row (the game's per-agent lists live on
@@ -1681,6 +1850,12 @@ impl FrontEnd {
                 5 => if self.mp_join[row.min(3)].ready { bind(0x39c) } else { bind(0x1e9) },
                 _ => bind(0x1e8),
             },
+            // net-online-lobby: the port-only pages' own literals [S §2 — the game has no labels
+            // for pages it never had; the draw code composes them with the status line].
+            Page::MpMode => ["Local", "Host Online", "Join Online"][row.min(2)].into(),
+            Page::MpHost => ["Port", "Start Listening"][row.min(1)].into(),
+            Page::MpNetJoin => String::new(),   // the address row draws its own text (mp_net_addr)
+            Page::MpLobby => String::new(),     // the mirror draws through mp_lobby_lines
             Page::MpScenario => {
                 let r = row.min(MP_SCENARIO_ROWS.len() - 1);
                 if self.mp_scenario_locked(r) { bind(MP_LOCKED_SCENARIO_DESC) } else { bind(MP_SCENARIO_ROWS[r].1) }
@@ -1755,6 +1930,12 @@ impl FrontEnd {
             Page::MpPlayerMods => vec![143.0, 175.0, 207.0, 239.0, 271.0],
             Page::MpEnviroMods => vec![143.0, 177.0, 209.0, 241.0, 273.0],
             Page::MpBotSetup => (0..8).map(|i| 85.0 + 32.0 * i as f32).collect(),
+            // net-online-lobby: the port-only pages' hit rows (the draw contract's y's, 640
+            // space) [S §4 — the y's live here AND in the doc, so the draw code and the mouse
+            // cannot drift apart].
+            Page::MpMode => vec![143.0, 175.0, 207.0],
+            Page::MpHost => vec![143.0, 175.0],
+            Page::MpNetJoin => vec![160.0],
             _ => return None,
         })
     }
@@ -1826,8 +2007,15 @@ impl FrontEnd {
         // Value rows: the ◀ / ▶ columns step the value; the rest of an action row confirms.
         if let Some(ys) = self.list_rows_y() {
             if !ys.iter().any(|&y0| y >= y0 - 6.0 && y < y0 + 22.0) { return false; }
-            let is_action = matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv)
-                && self.opt_rows().get(self.cursor).is_some_and(|r| r.kind == OptKind::Action);
+            let is_action = match self.page {
+                Page::CnAdvanced | Page::CnMp | Page::CnAv => self.opt_rows().get(self.cursor).is_some_and(|r| r.kind == OptKind::Action),
+                // net-online-lobby: the mode page's rows, the host Start row and the join address
+                // row are actions (a click confirms); the host's port row keeps the value columns
+                // [S §4].
+                Page::MpMode | Page::MpNetJoin => true,
+                Page::MpHost => self.cursor == 1,
+                _ => false,
+            };
             if is_action { return self.action(Action::Confirm); }
             if (340.0..400.0).contains(&x) { return self.action(Action::Left); }
             if (400.0..600.0).contains(&x) { return self.action(Action::Right); }
@@ -1989,6 +2177,10 @@ impl FrontEnd {
         if matches!(self.page, Page::Start | Page::Main) {
             self.press_start_on = self.flow.ticks % 240 < 120;
         }
+        // net-online-lobby: drive the online session once per menu tick — the host publishes its
+        // choices when they change, the join side walks Connecting → lobby → match start [S
+        // docs/systems/net-online-lobby.md §2-3].
+        self.mp_net_poll();
         self.no_input_frames = self.no_input_frames.saturating_add(1);
     }
 
@@ -2548,7 +2740,7 @@ impl FrontEnd {
         // grid cursor; elsewhere they keep the old Back / Confirm meaning. The MP wheels
         // (scenario/map/options/bots) keep the remap.
         let a = match (a, matches!(self.page, Page::CnAdvanced | Page::CnMp | Page::CnAv | Page::CnName
-            | Page::MpJoin | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup | Page::ScreenAdjust | Page::Pause)) {
+            | Page::MpJoin | Page::MpHost | Page::MpSetup | Page::MpRules | Page::MpPlayerMods | Page::MpEnviroMods | Page::MpBotSetup | Page::ScreenAdjust | Page::Pause)) {
             (Action::Left, false) => Action::Back,
             (Action::Right, false) => Action::Confirm,
             (a, _) => a,
@@ -2789,10 +2981,11 @@ impl FrontEnd {
                 // page; the driver's observed order NightFire → Select Codename → Select Difficulty →
                 // Single Player].
                 (Action::Confirm, 0) => { self.enter_page(Page::Codename); self.cursor = 0; return true; }
-                // Multiplayer → the Join page [M C_GOMULTIPLAYER 0x216a78 sends the delayed
-                // msg 0x44 → 0x40000019 after 0x13 frames; the port flips at once like the other
-                // page changes].
-                (Action::Confirm, 1) => { self.enter_page(Page::MpJoin); self.cursor = 0; return true; }
+                // Multiplayer → the port's mode choice [S net-online-lobby — the game's own route
+                // C_GOMULTIPLAYER 0x216a78 sends the delayed msg 0x44 → 0x40000019 after 0x13
+                // frames; the port asks Local / Host Online / Join Online first and the Local row
+                // keeps the game's page].
+                (Action::Confirm, 1) => { self.enter_page(Page::MpMode); self.cursor = 0; return true; }
                 // Codenames → Edit Codename, on the Default row [M C_GOCODENAMES 0x216b38:37 → page 0x4000001b; L PCSX2 m29].
                 (Action::Confirm, 2) => { self.enter_page(Page::CnSelect); self.cursor = 1; return true; }
                 (Action::Back, _) => { self.enter_page(Page::Start); self.cursor = 0; return true; }
@@ -3162,6 +3355,54 @@ impl FrontEnd {
                 Action::Up | Action::Down | Action::Confirm | Action::Side | Action::Left | Action::Right => {}
             },
             // ── mp-menu-flow: the multiplayer front end ──
+            // net-online-lobby: the port's mode choice [S docs/systems/net-online-lobby.md §2 —
+            // the game's Multiplayer row lands straight on 0x40000019; the port asks Local /
+            // Host Online / Join Online first, and row 0 keeps the game's own page].
+            Page::MpMode => {
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < 3 => { self.cursor += 1; return true; }
+                    Action::Confirm => {
+                        match self.cursor.min(2) {
+                            // Local: the game's own couch flow, from the top [M the pre-port
+                            // route C_GOMULTIPLAYER 0x216a78 → 0x40000019].
+                            0 => { self.page = Page::MpJoin; self.cursor = 0; return true; }
+                            1 => { self.mp_net_state = MpNetState::Idle; self.mp_net_error = None; self.page = Page::MpHost; self.cursor = 0; return true; }
+                            _ => { self.mp_net_state = MpNetState::Idle; self.mp_net_error = None; self.page = Page::MpNetJoin; self.cursor = 0; return true; }
+                        }
+                    }
+                    Action::Back => { self.page = Page::Main; self.cursor = 1; return true; }
+                    _ => {}
+                }
+            }
+            // The host setup: the port number + Start Listening [S §2.1].
+            Page::MpHost => {
+                match a {
+                    Action::Up if self.cursor > 0 => { self.cursor -= 1; return true; }
+                    Action::Down if self.cursor + 1 < 2 => { self.cursor += 1; return true; }
+                    // ◀ ▶ step the port ±1, clamped to the legal UDP range [S — a free number,
+                    // not the game's list values].
+                    Action::Left if self.cursor == 0 => { self.mp_net_port = self.mp_net_port.saturating_sub(1).max(1024); return true; }
+                    Action::Right if self.cursor == 0 => { self.mp_net_port = (self.mp_net_port + 1).min(65535); return true; }
+                    Action::Confirm if self.cursor == 1 => { return self.mp_host_begin(); }
+                    Action::Confirm => {}   // the port row's ✕ does nothing
+                    Action::Back => { self.mp_net_cancel(); self.page = Page::MpMode; self.cursor = 1; return true; }
+                    _ => {}
+                }
+            }
+            // The join address page: the typing rides mp_net_type / mp_net_backspace /
+            // mp_net_paste (the keyboard layer routes around action()), ✕ = Connect [S §2.2].
+            Page::MpNetJoin => {
+                match a {
+                    Action::Confirm => { return self.mp_net_dial(); }
+                    Action::Back => { self.mp_net_cancel(); self.page = Page::MpMode; self.cursor = 2; return true; }
+                    _ => {}
+                }
+            }
+            // The client's lobby: read-only — the mirror updates in the tick, Back leaves [S §2.2].
+            Page::MpLobby => {
+                if a == Action::Back { self.mp_net_cancel(); self.page = Page::MpMode; self.cursor = 2; return true; }
+            }
             // Join Game [M P_MPJOIN 0x20ca00 + C_RBMPSTART 0x20d048 + C_RBMPCNAME 0x20d448].
             // Keyboard = agent 1 only: the game joins agents 2-4 through their own pads (msg 0x6a
             // with the controller id), which the port has none of. The panel cursor picks the
@@ -3205,13 +3446,34 @@ impl FrontEnd {
                             // mpjoin+1 = 1 and fades; P_MPJOIN's msg-0x50 arm checks
                             // Menu_MPAreWeReady → page 0x4000001a].
                             5 if !self.mp_join[0].ready => { self.mp_join[0].ready = true; self.enter_page(Page::MpScenario); self.cursor = 0; return true; }
+                            // net-online-lobby: while hosting, the host's own panel is ready by
+                            // definition (mp_host_begin set it) — ✕ walks to the scenario page
+                            // [S §2.1; the game's ready gate is the arm above].
+                            5 if self.mp_hosting => { self.enter_page(Page::MpScenario); self.cursor = 0; return true; }
                             _ => {}
                         }
+                    }
+                    // net-online-lobby: while hosting, △ leaves the host lobby and cancels the
+                    // session cleanly [S §2.1 — the local △ arm below is the couch un-join].
+                    Action::Back if self.mp_hosting => {
+                        self.mp_net_cancel();
+                        self.page = Page::MpMode;
+                        self.cursor = 1;
+                        return true;
                     }
                     // △ leaves [M C_RBMPSTART's 0x6b arm un-joins state-1 agents; C_RBMPCNAME's
                     // 0x6b un-chooses codenames].
                     Action::Back if can_join && self.mp_join[0].state != 0 => {
                         self.mp_join[0] = MpJoinAgent::default();
+                        return true;
+                    }
+                    // net-online-lobby: △ with nothing joined pops the page — the game's msg-0x6b
+                    // close sends the delayed Manager 0x5f pop, so the under-page shows [M
+                    // 0x20ca00's 0x6b arm → 0x5f(1); in the port's stack that under-page is the
+                    // mode choice (S — the game's own under-page is Main)].
+                    Action::Back if can_join => {
+                        self.page = Page::MpMode;
+                        self.cursor = 0;
                         return true;
                     }
                     _ => {}
@@ -3835,7 +4097,12 @@ impl FrontEnd {
             if !slot.joined { continue; }
             s.players[i] = nf_game::mp::MpPlayer { team: slot.team, skin: slot.skin, armor_bonus: 0 };
         }
-        self.mp_match_settings = Some(s);
+        self.mp_match_settings = Some(s.clone());
+        // net-online-lobby: while hosting, the settings ride the session — the clients' poll
+        // turns them into their own handover [S docs/systems/net-online-lobby.md §2.1].
+        if self.mp_hosting {
+            if let Some(sess) = self.mp_session.as_mut() { sess.start_match(&s.clone()); }
+        }
         // [M the match-start calls] — the level request + the fade push; MenuManager_Delete is
         // the host closing the overlay once the load leaves the front-end map.
         self.requested_level = Some(self.mp_level);
@@ -3901,6 +4168,290 @@ impl FrontEnd {
             Page::MpBotChoose => self.mp_character_locked(row),
             _ => false,
         }
+    }
+
+    // ── net-online-lobby: the online Host / Join flow (docs/systems/net-online-lobby.md) ──────
+
+    /// The lobby codename this machine shows in its own panel: the active profile's codename,
+    /// else the game's template "Player 1" [M C_RBMPCNAME 0x20d448's default row — Txt 0x1c3 +
+    /// sprintf "%s %d" @0x30d388 with slot+1].
+    fn mp_net_codename(&self) -> String {
+        self.active_profile.clone().unwrap_or_else(|| "Player 1".into())
+    }
+
+    /// Host: the Start Listening row [S §2.1]. Arms host mode: the session binds the port, the
+    /// host's own panel (slot 0) joins with the lobby codename (state 5, ready — the game's own
+    /// join is pad-side and the host needs no pick to run the flow), and the page becomes the
+    /// game's own Join Game page. Without a session the page stays and reports it (the status
+    /// line reads mp_net_error).
+    pub fn mp_host_begin(&mut self) -> bool {
+        self.mp_net_error = None;
+        let codename = self.mp_net_codename();
+        let Some(sess) = self.mp_session.as_mut() else {
+            self.mp_net_error = Some(MpNetError::Denied);
+            return false;
+        };
+        sess.set_codename(&codename);
+        match sess.listen(self.mp_net_port.min(65535) as u16) {
+            Ok(()) => {
+                self.mp_hosting = true;
+                self.mp_host_published = None;
+                self.mp_join[0] = MpJoinAgent {
+                    state: 5, joined: true, ready: true, team: 0, skin: 0,
+                    codename_row: 0, codename: codename.clone(),
+                };
+                self.page = Page::MpJoin;
+                self.cursor = 0;
+                true
+            }
+            Err(e) => { self.mp_net_error = Some(e); false }
+        }
+    }
+
+    /// Back / cancel on any online page: the session closes, host mode drops, the panels and
+    /// the mirror reset [S §2 — "Back cancels cleanly"]. The local flow never calls this.
+    pub fn mp_net_cancel(&mut self) {
+        if let Some(sess) = self.mp_session.as_mut() { sess.close(); }
+        self.mp_hosting = false;
+        self.mp_net_state = MpNetState::Idle;
+        self.mp_net_error = None;
+        self.mp_net_timeout = 0;
+        self.mp_lobby_choices = None;
+        self.mp_host_published = None;
+        self.mp_join = std::array::from_fn(|_| MpJoinAgent::default());
+    }
+
+    /// Join: the Connect action [S §2.2]. A usable address (mp_net_addr_ok) starts the
+    /// handshake and the page shows Connecting… (the tick's countdown makes it TimedOut at
+    /// MP_NET_TIMEOUT_TICKS); anything else keeps the page and reports it.
+    pub fn mp_net_dial(&mut self) -> bool {
+        self.mp_net_error = None;
+        let addr = self.mp_net_addr.trim().to_string();
+        if !mp_net_addr_ok(&addr) {
+            self.mp_net_error = Some(MpNetError::BadAddress);
+            return false;
+        }
+        let codename = self.mp_net_codename();
+        let Some(sess) = self.mp_session.as_mut() else {
+            self.mp_net_error = Some(MpNetError::Denied);
+            return false;
+        };
+        sess.set_codename(&codename);
+        match sess.connect(&addr) {
+            Ok(()) => {
+                self.mp_net_state = MpNetState::Dialing;
+                self.mp_net_timeout = MP_NET_TIMEOUT_TICKS;
+                true
+            }
+            Err(e) => { self.mp_net_error = Some(e); false }
+        }
+    }
+
+    /// The per-tick session drive [S §2-3]: the host keeps the transport fed and republishes
+    /// its choices when they changed; the join side walks Dialing → (Connected → the lobby) /
+    /// Refused / TimedOut, mirrors the lobby and hands the match over when the host starts it.
+    /// The fake (tests) and the real session (051) both ride this.
+    pub fn mp_net_poll(&mut self) {
+        if self.mp_session.is_none() { return; }
+        if self.mp_hosting {
+            self.mp_session.as_mut().unwrap().poll();
+            let c = self.mp_net_choices();
+            if self.mp_host_published.as_ref() != Some(&c) {
+                self.mp_session.as_mut().unwrap().publish_choices(&c);
+                self.mp_host_published = Some(c);
+            }
+            self.mp_net_mirror_agents();
+        }
+        match self.mp_net_state {
+            MpNetState::Dialing => {
+                self.mp_net_timeout = self.mp_net_timeout.saturating_sub(1);
+                self.mp_session.as_mut().unwrap().poll();
+                let link = self.mp_session.as_ref().unwrap().link();
+                match link {
+                    MpNetLink::Connected => {
+                        self.mp_net_state = MpNetState::InLobby;
+                        self.page = Page::MpLobby;
+                        self.cursor = 0;
+                        // The mirror is current the moment the lobby opens (the next tick
+                        // keeps it live in the InLobby arm below).
+                        self.mp_net_mirror_agents();
+                        self.mp_lobby_choices = self.mp_session.as_ref().unwrap().host_choices();
+                    }
+                    MpNetLink::Refused => {
+                        self.mp_net_state = MpNetState::Refused;
+                        self.mp_session.as_mut().unwrap().close();
+                    }
+                    MpNetLink::TimedOut => {
+                        self.mp_net_state = MpNetState::TimedOut;
+                        self.mp_session.as_mut().unwrap().close();
+                    }
+                    _ if self.mp_net_timeout == 0 => {
+                        self.mp_net_state = MpNetState::TimedOut;
+                        self.mp_session.as_mut().unwrap().close();
+                    }
+                    _ => {}
+                }
+            }
+            MpNetState::InLobby => {
+                self.mp_session.as_mut().unwrap().poll();
+                // The host went away: back to the address page cleanly [S §2.2].
+                if self.mp_session.as_ref().unwrap().link() == MpNetLink::Lost {
+                    self.mp_net_cancel();
+                    self.page = Page::MpNetJoin;
+                    return;
+                }
+                self.mp_net_mirror_agents();
+                self.mp_lobby_choices = self.mp_session.as_ref().unwrap().host_choices();
+                // The match start: the same handover the host's confirm page runs [M
+                // mp_confirm_start's tail — P_MPCONFIRM 0x20ec00:53-94].
+                if let Some(s) = self.mp_session.as_ref().unwrap().match_started() {
+                    self.mp_client_start(s.clone());
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// The session's agents mirrored into the game's own mp_join panels [S §3 — the existing
+    /// panel getters, the start checks (C_SBMPOPTIONS 0x20e818:50-130) and the confirm lines all
+    /// read mp_join, so network agents need nothing new]. Slots 1..3 = panels 2-4; slot 0 is
+    /// this machine's agent (the host joined it at mp_host_begin; the client mirrors it).
+    fn mp_net_mirror_agents(&mut self) {
+        let agents: Vec<MpNetAgent> = self.mp_session.as_ref().unwrap().agents();
+        if !self.mp_hosting && self.mp_net_state != MpNetState::InLobby { return; }
+        if !self.mp_hosting {
+            if let Some(me) = agents.iter().find(|a| a.slot == 0) {
+                if !self.mp_join[0].joined {
+                    self.mp_join[0] = MpJoinAgent {
+                        state: 5, joined: true, ready: true, team: 0, skin: 0,
+                        codename_row: 0, codename: me.codename.clone(),
+                    };
+                }
+            }
+        }
+        // The remote agents land in panels 2-4, joined and ready on arrival [S §2.1]; an agent
+        // the session no longer reports un-joins its panel.
+        for slot in 1..4usize {
+            match agents.iter().find(|a| a.slot == slot) {
+                Some(ag) => {
+                    let j = &mut self.mp_join[slot];
+                    if !j.joined || j.codename != ag.codename {
+                        *j = MpJoinAgent {
+                            state: 5, joined: true, ready: ag.ready, team: 0, skin: 0,
+                            codename_row: 0, codename: ag.codename.clone(),
+                        };
+                    }
+                }
+                None => { if self.mp_join[slot].joined { self.mp_join[slot] = MpJoinAgent::default(); } }
+            }
+        }
+    }
+
+    /// The host's current lobby choices as the publishable struct [S §3 — the words the mirror
+    /// page shows; the names ride the shared tables on every machine].
+    pub fn mp_net_choices(&self) -> MpNetChoices {
+        MpNetChoices {
+            scenario: self.mp_scenario,
+            level: self.mp_level,
+            weapon_set: self.mp_weapon_set,
+            radar: self.mp_radar,
+            friendly_fire: self.mp_friendly_fire,
+            frag_limit: self.mp_frag_limit,
+            time_limit: self.mp_time_limit,
+            player_mods: self.mp_player_mods,
+            envmods: self.mp_envmods,
+        }
+    }
+
+    /// The client's match handover — the host's confirm-page tail [M mp_confirm_start's
+    /// handover] with the settings as the host published them [S §2.2].
+    fn mp_client_start(&mut self, s: nf_game::mp::MpSettings) {
+        self.mp_match_settings = Some(s.clone());
+        self.requested_level = Some(s.level_code);
+        self.flow.reset_map_level_to_load(s.level_code, false, false);
+        self.flow.push_state(ST_FADE_HOLD);
+        self.mp_net_state = MpNetState::Idle;
+        self.mp_hosting = false;
+    }
+
+    /// The lobby mirror's lines for the draw code — the confirm page's own pairs (Map 0x3d4,
+    /// Scenario 0x3d5, Weapon Set 0x24d, the limit line 0x3d8/0x3d7, Duration 0x3d6, Friendly
+    /// Fire 0x3da [M P_MPCONFIRM's enter builds the same pairs]) built from the host's last
+    /// published choices. Empty strings until the first publish arrives.
+    pub fn mp_lobby_lines(&self, lang: Option<&Lang>) -> [(u32, String); 6] {
+        let bind = |id: u32| lang.and_then(|l| l.bind(id)).map(str::to_string).unwrap_or_else(|| format!("<{id:#x}>"));
+        let c = self.mp_lobby_choices.clone().unwrap_or_default();
+        let map_row = MP_MAP_ROWS.iter().find(|r| r.3 == c.level);
+        let scen_row = MP_SCENARIO_ROWS.iter().find(|r| r.3 == c.scenario);
+        let limit = if c.scenario == 0x10 { 0x3d7 } else { 0x3d8 };
+        [
+            (0x3d4, map_row.map_or(String::new(), |r| bind(r.1))),
+            (0x3d5, scen_row.map_or(String::new(), |r| bind(r.1))),
+            (0x24d, bind(MP_WEAPON_SETS[c.weapon_set.min(10) as usize])),
+            (limit, if c.frag_limit >= 0 { c.frag_limit.to_string() } else { bind(0x3ca) }),
+            (0x3d6, if c.time_limit == -1 { bind(0x3ca) } else { c.time_limit.to_string() }),
+            (0x3da, bind(if c.friendly_fire != 0 { 0x1b7 } else { 0x1b6 })),
+        ]
+    }
+
+    /// The online pages' status line for the draw code, None = nothing to say [S §2 — port-only
+    /// pages, so the strings are the port's own literals].
+    pub fn mp_net_status(&self) -> Option<&'static str> {
+        let err = match self.mp_net_error {
+            Some(MpNetError::BadAddress) => Some("Enter an address as IP:PORT"),
+            Some(MpNetError::Busy) => Some("Port already in use"),
+            Some(MpNetError::Denied) => Some("No network session is wired"),
+            None => None,
+        };
+        match self.page {
+            Page::MpHost => err.or(if self.mp_hosting { Some("Listening") } else { None }),
+            Page::MpNetJoin => match self.mp_net_state {
+                MpNetState::Dialing => Some("Connecting..."),
+                MpNetState::Refused => Some("Connection refused"),
+                MpNetState::TimedOut => Some("Connection timed out"),
+                _ => err,
+            },
+            Page::MpLobby => if self.mp_lobby_choices.is_none() { Some("Waiting for the host...") } else { None },
+            _ => None,
+        }
+    }
+
+    /// The address page's typing: digits, dots, the colon, capped at 22 chars [S §2.2]. Returns
+    /// whether the character landed (the page is the join address page and the set fits).
+    pub fn mp_net_type(&mut self, c: char) -> bool {
+        if self.page != Page::MpNetJoin { return false; }
+        if !(c.is_ascii_digit() || c == '.' || c == ':') { return false; }
+        if self.mp_net_addr.chars().count() >= 22 { return false; }
+        self.mp_net_addr.push(c);
+        true
+    }
+
+    /// The address page's Backspace — the keyboard layer routes it BEFORE the menu's Back
+    /// (key_action maps the physical key to Back) [S §2.2].
+    pub fn mp_net_backspace(&mut self) -> bool {
+        if self.page != Page::MpNetJoin { return false; }
+        self.mp_net_addr.pop();
+        true
+    }
+
+    /// Ctrl+C: copy the typed address into the page's own clipboard [S §2.2 — the system
+    /// clipboard needs a crate; see the report].
+    pub fn mp_net_copy(&mut self) -> bool {
+        if self.page != Page::MpNetJoin { return false; }
+        self.mp_net_clip = self.mp_net_addr.clone();
+        true
+    }
+
+    /// Ctrl+V: paste a "simple" string — anything that is not a digit, dot or colon is dropped,
+    /// then the 22-char cap applies [S §2.2]. Returns whether anything landed.
+    pub fn mp_net_paste(&mut self, s: &str) -> bool {
+        if self.page != Page::MpNetJoin { return false; }
+        let room = 22usize.saturating_sub(self.mp_net_addr.chars().count());
+        if room == 0 { return false; }
+        let take: String = s.chars().filter(|c| c.is_ascii_digit() || *c == '.' || *c == ':').take(room).collect();
+        if take.is_empty() { return false; }
+        self.mp_net_addr.push_str(&take);
+        true
     }
 }
 
@@ -4437,6 +4988,32 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             logo_stamp(&mut h);
         }
         Page::Options => { page_rows(&mut h, fe, font, "OPTIONS", dim, bright); }
+        // net-online-lobby: the port-only online pages — the stand-in draw below is NOT the
+        // task's layout (no drawing in this task's scope): it lists the same getters the draw
+        // code replaces, so the pages are never blank [S docs/systems/net-online-lobby.md §2].
+        Page::MpMode => { page_rows(&mut h, fe, font, "MULTIPLAYER", dim, bright); }
+        Page::MpHost | Page::MpNetJoin | Page::MpLobby => {
+            page_rows(&mut h, fe, font, match fe.page { Page::MpHost => "HOST ONLINE", Page::MpNetJoin => "JOIN ONLINE", _ => "LOBBY" }, dim, bright);
+            let mut y = 250.0f32;
+            match fe.page {
+                Page::MpHost => label(&mut h, font, &format!("Port  {}", fe.mp_net_port), 200.0, y, 240.0, 18.0, bright, true, 1.0),
+                Page::MpNetJoin => {
+                    let shown = if fe.mp_net_addr.is_empty() { "IP:PORT" } else { &fe.mp_net_addr };
+                    label(&mut h, font, shown, 200.0, y, 240.0, 18.0, bright, true, 1.0);
+                }
+                _ => {
+                    for (i, a) in fe.mp_join.iter().enumerate() {
+                        if a.joined { label(&mut h, font, &format!("{}  {}", i + 1, a.codename), 200.0, y, 280.0, 16.0, bright, true, 1.0); y += 16.0; }
+                    }
+                    for (lbl, val) in fe.mp_lobby_lines(lang) {
+                        if val.is_empty() { continue; }
+                        label(&mut h, font, &format!("{}  {}", bind(lbl), val), 200.0, y, 300.0, 16.0, bright, true, 1.0); y += 16.0;
+                    }
+                }
+            }
+            if let Some(s) = fe.mp_net_status() { label(&mut h, font, s, 200.0, 388.0, 240.0, 16.0, dim, true, 1.0); }
+            hint_bar(&mut h, font, &hint(0x218, "~A Select  ~B Back"), 50.0, 419.0, cream);
+        }
         Page::CnSelect => {
             // Edit Codename [L page 0x4000001b: header LBL 0x1f1, the codename wheel 0x100000ec, the emblem
             // 0x100001cd (preview) under 0x10000108 (ring), hint 0x20a; PCSX2 m29].
@@ -5487,6 +6064,29 @@ pub fn key_action(key: winit::keyboard::KeyCode) -> Option<Action> {
         KeyCode::ArrowLeft | KeyCode::KeyA => Action::Left,
         KeyCode::Escape | KeyCode::Backspace => Action::Back,
         KeyCode::Tab | KeyCode::KeyE => Action::Side,
+        _ => return None,
+    })
+}
+
+/// net-online-lobby: the join address page's typing keys — the digits, the dot and the colon
+/// (a colon is Shift+Semicolon on the US layout, and the physical key is what arrives) [S §2.2;
+/// the task's typed set is digits, dots, colon]. Numpad digits and the numpad decimal point
+/// count too.
+pub fn net_char_key(key: winit::keyboard::KeyCode) -> Option<char> {
+    use winit::keyboard::KeyCode;
+    Some(match key {
+        KeyCode::Digit0 | KeyCode::Numpad0 => '0',
+        KeyCode::Digit1 | KeyCode::Numpad1 => '1',
+        KeyCode::Digit2 | KeyCode::Numpad2 => '2',
+        KeyCode::Digit3 | KeyCode::Numpad3 => '3',
+        KeyCode::Digit4 | KeyCode::Numpad4 => '4',
+        KeyCode::Digit5 | KeyCode::Numpad5 => '5',
+        KeyCode::Digit6 | KeyCode::Numpad6 => '6',
+        KeyCode::Digit7 | KeyCode::Numpad7 => '7',
+        KeyCode::Digit8 | KeyCode::Numpad8 => '8',
+        KeyCode::Digit9 | KeyCode::Numpad9 => '9',
+        KeyCode::Period | KeyCode::NumpadDecimal => '.',
+        KeyCode::Semicolon => ':',
         _ => return None,
     })
 }
