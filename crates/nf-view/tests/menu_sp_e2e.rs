@@ -200,6 +200,10 @@ fn boot_reaches_main_through_the_intro_both_ways() {
     assert_eq!(fe.page, Page::Start);
     assert!(fe.action(Action::Confirm), "the title's Enter");
     assert!(fe.intro_playing);
+    // The grace: a press in the first 3 s is swallowed and the intro keeps playing [M Menu_StopMovie 0x215a50].
+    assert!(fe.action(Action::Confirm), "an early press is taken");
+    assert!(fe.intro_playing, "but the intro can't be skipped in its first 3 s");
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18]
     assert!(fe.action(Action::Confirm), "the skip press");
     assert!(!fe.intro_playing, "Enter skips the intro");
     for _ in 0..60 {

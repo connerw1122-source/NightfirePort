@@ -294,29 +294,42 @@ fn open_pcm_out(pcm: &[i16], rate: f64) -> (std::sync::Arc<std::sync::Mutex<std:
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     use std::collections::VecDeque;
     use std::sync::{Arc, Mutex};
-    let ring: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(pcm.iter().take(24_000).copied().collect()));
+    // movie-audio: the ring starts EMPTY — `present` pushes each picture's slice from sample 0 (the old
+    // pre-fill of the first 24,000 samples played the opening quarter-second twice).
+    let _ = pcm;
+    let ring: Arc<Mutex<VecDeque<i16>>> = Arc::new(Mutex::new(VecDeque::with_capacity(48_000)));
     if nf_audio::silent() { return (ring, None); }
     let Some(device) = cpal::default_host().default_output_device() else { eprintln!("movie: no output device; running silent"); return (ring, None) };
     let Ok(cfg) = device.default_output_config() else { eprintln!("movie: no output config; running silent"); return (ring, None) };
     let dr = ring.clone();
     let dev_rate = cfg.sample_rate() as f64;
     let ch = cfg.channels() as usize;
-    let pos = Arc::new(Mutex::new(0.0f64));
-    let pos_cb = pos.clone();
+    // movie-audio: a FIFO drain. Each device frame takes the current source stereo pair; the source
+    // advances rate/dev_rate pairs per device frame (48 kHz → the device rate), popping consumed pairs.
+    // An empty ring (the picture fell behind) outputs silence instead of repeating old samples. The old
+    // callback indexed the ring by an ever-growing position modulo its length (a scramble) and the
+    // stream was never `play()`ed — WASAPI streams stay paused until then, so movies were silent.
+    let mut frac = 0.0f64;
+    let step = rate / dev_rate;
     let err = |e: cpal::Error| eprintln!("movie audio: {e}");
     let stream = match cfg.sample_format() {
         cpal::SampleFormat::F32 => device.build_output_stream(cpal::StreamConfig::from(cfg.config()), move |d: &mut [f32], _| {
-            let mut p = pos_cb.lock().unwrap();
-            for out in d.iter_mut() {
-                let step = dev_rate / rate / ch.max(1) as f64;
-                let src = (*p * rate as f64) as usize / 2 * 2; // stay on a stereo pair
-                let s = if let Ok(q) = dr.lock() { q.get(src % q.len().max(1)).copied().unwrap_or(0) } else { 0 };
-                *out = s as f32 / 32768.0;
-                *p += step;
+            let Ok(mut q) = dr.lock() else { d.fill(0.0); return };
+            for frame in d.chunks_mut(ch.max(1)) {
+                let (l, r) = if q.len() >= 2 { (q[0], q[1]) } else { (0, 0) };
+                for (k, out) in frame.iter_mut().enumerate() {
+                    *out = if k % 2 == 0 { l } else { r } as f32 / 32768.0;
+                }
+                frac += step;
+                while frac >= 1.0 {
+                    frac -= 1.0;
+                    if q.len() >= 2 { q.pop_front(); q.pop_front(); }
+                }
             }
         }, err, None).ok(),
         _ => { eprintln!("movie audio: unsupported sample format; running silent"); None }
     };
+    if let Some(s) = &stream { if let Err(e) = s.play() { eprintln!("movie audio: {e}"); } }
     (ring.clone(), stream.map(move |s| PcmOut { _stream: s, ring }))
 }
 
@@ -446,12 +459,64 @@ fn gop_chunks(es: &[u8]) -> (Vec<(usize, usize)>, usize) {
     (chunks, head_end)
 }
 
+/// boot-flow: the streaming worker's decode units — one per GOP, so the first picture arrives after
+/// one GOP's decode instead of a whole closed-GOP chunk (0x073B0048's first closed chunk held most of
+/// the movie: the P_ESTHERO intro sat black ~20 s, then joined mid-way). Each unit is (decode from,
+/// decode to, keep the last N frames): a closed GOP decodes alone (keep all); an OPEN GOP's leading
+/// B pictures reference the previous GOP's last anchor [ISO 13818-2 §6.3.8 closed_gop], so it decodes
+/// with the previous GOP in front and keeps only its own pictures (the last N of the output — robust
+/// whether the decoder emits or drops the prefix's own unreferenced B pictures).
+#[cfg(feature = "movies")]
+fn gop_units(es: &[u8]) -> (Vec<(Option<(usize, usize)>, usize, usize, usize)>, usize) {
+    let mut gops: Vec<(usize, bool)> = Vec::new();
+    let mut i = 0usize;
+    while i + 8 <= es.len() {
+        let Some(at) = es[i..].windows(4).position(|w| w == [0, 0, 1, 0xb8]) else { break };
+        let at = i + at;
+        if at + 8 > es.len() { break; }
+        gops.push((at, (es[at + 7] >> 6) & 1 == 1));
+        i = at + 4;
+    }
+    let head_end = gops.first().map(|(at, _)| *at).unwrap_or(es.len());
+    let pics = |a: usize, b: usize| es[a..b].windows(4).filter(|w| *w == [0, 0, 1, 0]).count();
+    let mut units = Vec::new();
+    for k in 0..gops.len() {
+        let (at, closed) = gops[k];
+        let end = gops.get(k + 1).map_or(es.len(), |g| g.0);
+        let n = pics(at, end);
+        if n == 0 { continue; }
+        let prefix = if closed || k == 0 { None } else { Some((gops[k - 1].0, at)) };
+        units.push((prefix, at, end, n));
+    }
+    (units, head_end)
+}
+
+/// boot-flow: a reference GOP without its own leading B pictures. An open GOP's leading Bs (coded right
+/// after its I, before the next anchor) reference the GOP before it; as a prefix they have nothing in
+/// front, and the decoder rejects them ("B-picture before two I/P anchors"). Their frames are dropped
+/// anyway — only the prefix's anchors matter as references for the unit.
+#[cfg(feature = "movies")]
+fn strip_leading_b(gop: &[u8]) -> Vec<u8> {
+    let starts: Vec<usize> = gop.windows(4).enumerate().filter(|(_, w)| *w == [0, 0, 1, 0]).map(|(i, _)| i).collect();
+    let mut out = Vec::with_capacity(gop.len());
+    out.extend_from_slice(&gop[..starts.first().copied().unwrap_or(gop.len())]);
+    let mut seen_anchor = 0;
+    for (k, &st) in starts.iter().enumerate() {
+        let en = starts.get(k + 1).copied().unwrap_or(gop.len());
+        let kind = gop.get(st + 5).map_or(0, |b| (b >> 3) & 7);
+        if kind == 3 && seen_anchor < 2 { continue; } // a leading B (before the second anchor)
+        if kind == 1 || kind == 2 { seen_anchor += 1; }
+        out.extend_from_slice(&gop[st..en]);
+    }
+    out
+}
+
 #[cfg(feature = "movies")]
 impl MovieStream {
-    /// Starts the worker: decode chunk by chunk ahead of playback. `looping` restarts from the
-    /// first chunk when the ES ends (the game's looping background movies).
+    /// Starts the worker: decode GOP by GOP ahead of playback (`gop_units`). `looping` restarts from the
+    /// first unit when the ES ends (the game's looping background movies).
     pub fn start(movie: &Movie, looping: bool) -> Result<MovieStream> {
-        let (chunks, head_end) = gop_chunks(&movie.demuxed.video);
+        let (chunks, head_end) = gop_units(&movie.demuxed.video);
         anyhow::ensure!(!chunks.is_empty(), "no decodable GOP chunks in {}", movie.name);
         let head = movie.demuxed.video[..head_end].to_vec();
         let es = movie.demuxed.video.clone();
@@ -462,14 +527,15 @@ impl MovieStream {
         let code = movie.code;
         let handle = std::thread::Builder::new().name(format!("movie-{code:08x}")).spawn(move || {
             'movie: loop {
-                for &(a, b) in &chunks {
+                for &(prefix, a, b, keep) in &chunks {
                     if stop2.load(std::sync::atomic::Ordering::Relaxed) { break 'movie; }
-                    // The chunk's own sequence header + its GOPs: a closed-GOP-aligned slice is
-                    // self-contained, so `decode_video` on it equals the whole-stream decode's
-                    // frames for the same pictures.
+                    // The unit's own sequence header + its GOP (an open GOP with its predecessor in
+                    // front as the reference); only the unit's own pictures go out.
                     let mut part = head.clone();
+                    if let Some((pa, pb)) = prefix { part.extend_from_slice(&strip_leading_b(&es[pa..pb])); }
                     part.extend_from_slice(&es[a..b]);
-                    let Ok(frames) = nf_formats::mpeg2::decode_video(&part) else { break 'movie };
+                    let Ok(mut frames) = nf_formats::mpeg2::decode_video(&part) else { break 'movie };
+                    if frames.len() > keep { frames.drain(..frames.len() - keep); }
                     for f in frames {
                         if stop2.load(std::sync::atomic::Ordering::Relaxed) { break 'movie; }
                         if tx.send(WorkerMsg::Frame(f)).is_err() { break 'movie; }

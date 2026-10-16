@@ -1672,6 +1672,8 @@ struct App {
     frame_ticks: u32,
     /// The paused menus' 60 Hz accumulator (seconds) for the animations that run while the game is paused.
     menu_clock: f32,
+    /// fe-60hz: the front end's own 60 Hz tick accumulator (seconds).
+    fe_clock: f32,
     /// The sim reported the mission's own end this frame (see `Drones::mission_end`).
     pending_mission_end: bool,
     /// mp-match-end: the sim's MP machine reached the debriefing handover (`MP_Update` 0x184bd0
@@ -1846,7 +1848,7 @@ impl App {
                     // The 0x4c order: the removes land before the same frame's starts [M
                     // 0x20a408:17-22] — the restart replaces the loop instead of stacking it.
                     for id in &menu_rm { drv.remove(0, Some(*id)); }
-                    for ev in &menu_sfx { drv.start(out, ev.id, None, 0, None); }
+                    for ev in &menu_sfx { if menu_music::menu_sfx_reaches_driver(ev.id) { drv.start(out, ev.id, None, 0, None); } }
                 });
             }
         }
@@ -2415,12 +2417,18 @@ impl App {
             // psiMovieFinished [M 0x1082e8 polled at 0x209e88]: the pair advances; after the
             // second movie the host shortens the headless countdown so the state pops at the real
             // end (the slim ISO's zeroed PSS files [L] leave the countdown alone to carry it).
+            // boot-flow: the run ends on psiMovieFinished, never on the headless budget while the real
+            // movie still plays [M P_INTRO 0x209e88 / P_ESTHERO 0x20a060 poll psiMovieFinished only] — the
+            // budget cut 0x073B0048 at the rockets. The budget stays the stand-in when no player runs.
+            if self.movie.as_ref().is_some_and(|p| p.code() == code && !p.finished()) {
+                fe.flow.movie_frames = fe.flow.movie_frames.max(2);
+            }
             if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {
                 // frontend-music: each finished intro movie restarts the pair while it is down
                 // [M 0x209e88:23-28 — the psiMovieFinished arm].
                 fe.music.movie_finished();
                 fe.intro_index += 1;
-                if fe.intro_index >= menu::INTRO_MOVIES.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
+                if fe.intro_index >= fe.intro_list.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
             }
         } else if fe.attract_playing {
             // attract-mode: P_ATTRACT's 0x4c starts the attract movie on the ONE BGFMV slot
@@ -3554,7 +3562,15 @@ impl ApplicationHandler for App {
                 let movie_frame = if movie_up { self.movie.as_mut().and_then(|p| p.present()) } else { None };
                 let mut hud = if let Some(fe) = self.fe.as_mut() {
                     let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
-                    fe.tick();
+                    // fe-60hz: the front end is the game's 60 Hz menu tick (`MenuManager_Update` 0x21c3d8 runs once
+                    // per game frame, NTSC 60 Hz [M main 0x109080's vblank pacing]). Ticking it once per RENDERED
+                    // frame ran every menu timer — the 2700-tick attract countdown, the P_INTRO/P_ESTHERO movie
+                    // budgets, the Press START flash — 2.4× fast on the user's 144 Hz display (attract after
+                    // ~19 s instead of 45; the boot intro cut short). Its own clock, at most 8 ticks per frame.
+                    self.fe_clock += dt;
+                    let fe_n = (self.fe_clock * 60.0) as u32;
+                    self.fe_clock -= fe_n as f32 / 60.0;
+                    for _ in 0..fe_n.min(8) { fe.tick(); }
                     fe.backdrop_live = aux_up && movie_frame.is_some();
                     if flow_up || (intro_up && movie_frame.is_some()) || (attract_up && movie_frame.is_some()) {
                         // The movie plane replaces the overlay: the state-6 briefing blits over the
@@ -3913,7 +3929,7 @@ pub fn run() -> Result<()> {
     // `--hold-npcs` (dev): the window run holds every guard in place, still shootable.
     if dev && args.iter().any(|a| a == "--hold-npcs") { if let Some(sim) = scene.sim.as_mut() { sim.drones.hold_npcs = true; } }
     let force_channel = if dev { args.iter().position(|a| a == "--set-channel").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u8>().ok()) } else { None };
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, pending_mp_debrief: None, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, fe_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, pending_mp_debrief: None, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
         net: None, net_lobby: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,
@@ -3948,6 +3964,9 @@ pub fn run() -> Result<()> {
     app.level_code = u32::from_str_radix(level.trim_end_matches(".bin"), 16).unwrap_or(0);
     if front_end {
         app.fe = Some(menu::FrontEnd::new());
+        // boot-flow: the window boot runs P_INTRO's EA + MGM logos before the title [M 0x209e88];
+        // the headless --shot/--page paths build their own FrontEnd and stay on the page they ask for.
+        if let Some(fe) = app.fe.as_mut() { fe.start_boot_intro(); }
         // frontend-music: the boot front end's own `Sound_Ready` case 0x7000048 consumes the
         // flip [M 0x1dceb8:94-101 — DAT_002e1b11 (.bss) = 0 → bank 0xc resident, DAT → 1;
         // P_START's once arm pins it right after, 0x20a408:31]. The port consumes it here so

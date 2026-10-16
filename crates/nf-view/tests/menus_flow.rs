@@ -104,6 +104,7 @@ fn locked_missions_cannot_be_scrolled_to_or_picked() {
     let mut fe = FrontEnd::new();
     tick_to_title(&mut fe);
     fe.action(Action::Confirm); // Start → the intro movie [M P_INTRO 0x209e88]
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18]
     fe.action(Action::Confirm); // Confirm = action 0x19: the skip [M GameFlow_Main 0x1c98c8 case 6]
     fe.action(Action::Confirm); // NightFire
     fe.action(Action::Down);    // row 1 = Play without saving [M 0x1f79c0:15-23]
@@ -254,6 +255,7 @@ fn cursors_wrap_and_back_walks_up_the_pages() {
     fe.unlock_all = true; // the walk visits the mission list freely
     fe.action(Action::Confirm); // Start → the intro movie [M P_INTRO 0x209e88]
     assert_eq!(fe.page, Page::Main);
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18]
     fe.action(Action::Confirm); // Confirm = action 0x19: the skip [M GameFlow_Main 0x1c98c8 case 6]
     fe.action(Action::Up);
     assert_eq!(fe.cursor, 2, "up wraps from row 0 to the last row");
@@ -263,6 +265,7 @@ fn cursors_wrap_and_back_walks_up_the_pages() {
     assert!(fe.action(Action::Back));
     assert_eq!(fe.page, Page::Start);
     fe.action(Action::Confirm);
+    for _ in 0..nf_view::menu::ESTHERO_GRACE { fe.tick(); } // boot-flow: P_ESTHERO's 3 s skip grace [M 0x20a060:18]
     fe.action(Action::Confirm); // the skip — the intro replays after Back to the title
     fe.action(Action::Confirm);
     assert_eq!(fe.page, Page::Codename);
