@@ -16493,3 +16493,223 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
   missing event type, or unresolved placement). Test via the real path; pin with a test.
 - Setup reused from prior session: repo, work/ (decomp, symtab, EE snapshots), ISO all present.
   Branch cut from origin/master @ c8186aa1.
+## fix-space-pane (2026-10-16, branch mine/space-panels)
+
+Two 0700001b gaps against a PCSX2 gameplay-start capture.
+- **The white "T" (top right) — fixed.** It is pane 20, `SpacePane` 0x2be598 → `HUD_UpdateSpacePane`
+  0x19d3b8 over `SpaceSprInfo` 0x2be3b0 (11 sprites: T 0x03000179 at (342,48), 8 missile lamps
+  0x03000178, 2 boxes 0x0300017B) [M/L]; the pane self-enables only on level 0x0700001b. It is the
+  missile-status indicator (lamps by `MissileDeploy[k]` + channel k; T flashes on ch 9, boxes on
+  ch 0x18/0x1C), not a stabiliser HUD. The port had no pane 20. Added `HudTables::space`,
+  `nf_view::hud::space_pane` + its draw, the five textures in `hud::TEXTURES`. `MissileDeploy`
+  (written by SpaceMissile_Update's undecompiled jump-table states) is not modelled — 0 [S].
+  Test: `fix_space_pane_live` (the draw test fails with the level gate forced off).
+- **The purple solar-panel gratings — not fixed, GAPS G-047.** The 16 ScriptPlayer_SolarPanel SPs'
+  script 0x06000832 pauses on Event 3 p0 0 at t0 with the whole panel shown; the port's
+  `Script::update` treats a negative delay as 0 (contradicting 0x1da9c4-0x1da9d0), so the panels
+  shatter at t5. A local experiment (negative delay holds) brought a grating back but showed one
+  panel, not 16 (held entities keep IDENT; likely all at the origin [S]) — the fix also needs SP hit
+  damage unpause and a cross-level re-check of every Event-3-p0-0 script (the 0700004a lift).
+options-persist-roundtrip (started 17:44 UTC): task 708 — prove 651 (settings-persist) end to end
+through the real input path. Plan: (1) branch s/options-persist-roundtrip from origin/master
+(e05a8370); (2) map the config file code from 651 and the FrontEnd options pages (Advanced /
+Multiplayer / AV): the Left/Right row change path, Confirm, and Back (throw away); (3) tests: a
+full roundtrip — change every Advanced / Multiplayer / AV row through Left/Right + Confirm, drop
+the FrontEnd, a fresh FrontEnd on the same NF_CONFIG_DIR temp dir shows the same values; the AV
+volume rows reach the sound layer's volumes at boot; Back discards edits (file unchanged); unknown
+keys and out-of-range values tolerated (clamped); (4) fix whatever the roundtrip exposes, each fix
+citing the game address; (5) run the crates the tests touch, then the full fast suite (background
+start per the task message), report.
+
+## settings-persist (2026-10-16, branch s/settings-persist) — in progress 03:10 UTC
+- The option pages' values survive launches: `crates/nf-view/src/settings.rs` —
+  `settings.toml` in the user's config dir (NF_CONFIG_DIR override → %APPDATA%\NightfirePort /
+  XDG+~/.config + NightfirePort; std only, no dirs crate). Keys are the rows' game LABEL ids
+  per page section ([adv]/[mp]/[av]) — the game reads the rows back by label (msg 0x35 [M
+  P_CNOPTIONS 0x213f08:24-71]), so a reorder can't scramble anything; the ADV/MP Auto Aim
+  label 0x197 collision is split by section (ctrls 0x1000_011b / 0x1000_0129). Unknown
+  keys AND unknown sections (a newer port's) are ignored, not corrupt; out-of-range values
+  snap to the nearest legal item (sliders 0..=100 like opt_step's clamp); missing/corrupt
+  file → default_opts() + a stderr warning.
+- Model/host split as the repo's own pattern: `FrontEnd::settings_save_pending` raised by
+  CnAdvanced/CnMp/CnAv Confirm and Back (Back saves the RESTORED values), the host drains it
+  in `menu_after` → `settings::save_opts`; the three windowed fe boots (title, Esc-pause,
+  net_fail) apply the file over the defaults; the headless --fe render path deliberately
+  does NOT load (renders stay independent of the user's config, WORKLOG lesson 6).
+- Progress/settings split recorded in docs/systems/settings-persist.md: game progress stays
+  in the 635-memcard-save-flow Profile model; this file is settings only (the game's own
+  split: the global-settings blob [M LS_MakeGlobalSettings 0x1cd9d0] vs the save-game
+  records [M Menu_EnumSaves 0x1f7b78]).
+- Window settings: the port has NO size/fullscreen state (winit default attributes) —
+  nothing to persist; the [window] section name is reserved (unknown sections already
+  parse-skip, so a future port's file won't reset an older port's settings).
+- Tests: crates/nf-view/tests/settings_persist.rs — 11 green (real-input-path round trip,
+  missing, corrupt ×3 shapes, unknown keys/sections, reordered rows, the changed-value
+  sister, clamping, back-out, the 0x197 split, mkdir, NF_CONFIG_DIR); menus_flow 42 +
+  mp_menu_flow 9 + codename_entry 14 + screen_adjust 9 + mission_stats_flow 3 +
+  front_end_chain_live 2 — 0 failed. Full suite: tools/test/suite.py running on the final
+  tree — see docs/reports/settings-persist.md for the total.
+- Live checks for the main agent: none needed — this task has no visual surface (the file
+  format, the boot load and the page-exit save are all headless-verified; the pages render
+  exactly as before, the only delta is which values they show).
+- settings-persist ADDENDUM 04:08 UTC: the suite finished in foreground chunks (the sandbox
+  kills background jobs between tool calls — verified with a canary sleep). Final tree:
+  180/372 binaries (all nf-game/nf-formats/nf-audio + 125 nf-view incl. every menu/save/flow
+  binary) — 1087 passed, 6 failed, 38 ignored; the 6 = the 3 allowed disc_golden + the 3
+  known no-GPU pylon environmental failures (same trio prior tasks recorded). Audit found
+  and I fixed: a net_notice line my edit had dropped, an i64 overflow edge in the clamp,
+  and a missing settings load on the F8/F9 demo-results fe. See docs/reports/settings-persist.md.
+
+OPTIONS-PERSIST-ROUNDTRIP CLOSE-OUT (19:15 UTC): 651 was NOT on master — merged
+origin/s/settings-persist (601733f0, both sides kept in lib.rs's three conflicts), then proved
+the file end to end by the real input path: actions+ticks only from the boot through the card
+flow into the Edit wheel, every ADV/MP/AV value row changed through Left (+ the page Confirm;
+sliders twice so the music edit can't land on the driver's boot 70), host drain via the
+menu_after replica, drop → fresh FrontEnd on the same NF_CONFIG_DIR shows the same values, Back
+restores the snapshot and re-saves the RESTORED values (edits gone from map AND file), unknown
+keys/out-of-range values tolerated and clamped. The MISSING half — the AV volume rows reaching
+the sound layer — landed as nf_view::apply_av_volumes (driver.music_master/master + the
+menu-music model) called at the --fe boot and the CLI-mission boot [M LS_LoadGlobalSettings
+0x1cdbc8:69-70; Boot_LoadPTPData 0x1c8560:81-82; ES_CombineVolumes 0x1300 scales by the
+statics]. Tests: 3 new in options_persist_roundtrip.rs (env-serialized) + 651's 13. Touched
+crates before pushing: 12 nf-view menu-cluster binaries 143/0. Final-tree suite (merged
+origin/master c10b530f, six foreground chunks): 1908 passed, 7 failed, 72 ignored over 436/437
+binaries — the 7 exactly the known environmental set (3 disc_golden, driving_ai_follow, 3
+no-GPU pylon probes); no TIMEOUT/CRASH. Report: docs/reports/options-persist-roundtrip.md
+---
+
+script-census STARTED (18:16 UTC 10-16). Task: census every 0x07 level archive on the disc
+(front end included) — every script (players/NIS/SimpleScripts) and its opcode/event types with
+counts, every trigger placement type + action codes, every placement type the level parse sees;
+classify handled ([M] port handler) vs unhandled ([M] game handler) into
+docs/systems/script-census.md + a test pinning the handled set (numbers only). Branch
+s/script-census off master c10b530f.
+
+---
+
+script-census PROGRESS (19:25 UTC 10-16). Census complete over every 07* archive on the disc
+(34 level + 27 pack + 38 anim): 468 NIS scripts / 5,263 streams / 227,544 commands — all 20
+opcodes on the disc are handled by the port (matches nis.rs's own 5,263-stream census);
+851 NIS events across 14 kinds, 3 on kinds the port drops (0x08 coder drone, 0x09 cam mode,
+0x0a break — all in script 0600005b of 07000001, one command each); 676 trigger placements
+over 8 action codes (port lacks only 0xd movie: 1 record, 07000041); 7,372 dynamic placements
+across 62 types — 1,399 records on 14 types the game handles and the port does not (cover
+nodes 0xe5/0xe6 = 968, AI points 0xe9 = 162, hurt 0xe4 = 64, sensor 0x28 = 62, start-slot-0
+0x2d = 51, GT 0x27 = 41, music trigger 0xfb = 15, lightning 0x2c = 15, plus 8 single-digit
+types); 138 records on 4 marker types the game ignores too (0xdd/0xf6/0xf7 one per level,
+0xff) + 165 flags-0xffffffff records skipped by both; entry kinds: 13 seen, port src lacks
+runtime kind 8 (34 menu defs) and kind 15 (1 memcard icon); anim scripts (kind 5): 18,231
+scripts / 50,279 commands, ops 0/1/4 all handled, op-4 kinds 1/2/3/7 (13,056 commands) not
+replayed — kind 2 dispatches through animobj+0x70 which is zeroed for player scripts
+[M 0x1c1600:51]. Deliverables: docs/systems/script-census.md (per-level tables, unhandled
+ranked, top-10 queue-ready tasks, live checks) + crates/nf-formats/tests/script_census.rs
+(6 tests, pins handled sets 20/14/7/56 + all histograms; green). Parse integrity cross-checked
+against three golden totals (5,263 streams, 23,329 placements, 2,230 maps); zero truncations /
+unknown ops. Fast-runner suite started 18:16 UTC on the pre-census tree; final-tree delta is
+docs + the new test only.
+
+---
+
+script-census DONE (19:41 UTC 10-16). Suite on merged base: 1894 passed, 6 failed, 72 ignored
+(46 min; the 3 allowed disc_golden + 3 pre-existing pylon render probes). Final tree delta =
+docs + the pinning test only; script_census 6/6 green on it. Report:
+docs/reports/script-census.md. finish.sh + ntfy follow.
+## blood-puff-render (2026-10-16, branch s/blood-puff-render) — start 17:50 UTC
+
+Task 711: the blood puff (mesh 0x0200_08bc) sits in drones.gas.puffs (pool idx 1: pos
+99.13,16.96,101.65, scale 3.0→3.2, rgba 255→238, life 60, kind 5) and the scene-matrix gas
+branch runs for it, but nothing red draws in the render (master a4156da0 --shot repro). Plan:
+resolve level.by_hash[0x0200_08bc] (geometry/material/texture), check add_instance into
+groups/Layer::Effect with cel args (&room_cels, u32::MAX, u32::MAX) — cel/portal/layer filter?,
+gas_rgba/blend zeroing alpha?, and whether the sibling pool meshes (SMOKE_QUAD 0x0200_0039,
+0x0200_001f, 0x0200_026e) draw either. Fix per [M View_DrawObjectGlist 0x1e6780 obj+0xF0 & 8
+billboard + gas colour bytes]; add a render-side assertion (vertices/pixels at the puff pos),
+not just a pool check.
+
+## blood-puff-render (2026-10-16, branch s/blood-puff-render) — close-out 19:10 UTC
+
+DONE (commit 87ff6158): the blood puff's draw chain measured end to end on 07000005 [D map 10
+obj 41 "BodyHit": 8 verts/6 tris, radius 0.032, texture map-10 #21 (32×32 GREY smoke — the disc's
+blood puff is NOT red; brightest palette entry 213,214,214), GS 0x7f00000048/0x5001b/0x131000000
+= additive, atest GEQUAL 1, no z-write] — slots, group material (Effect pass 5, 1152 indices =
+64×6 tris), skin attrs (a = attach_base + ai), the palette billboard at the puff (verified with
+the shot's camera axes), the CPU posed verts 0.1 from the puff, the pipeline and the draw
+submission all check out. TWO DEFECTS FIXED: (1) the frustum cull — `Layer::frustum_cullable`
+(gpu.rs): the Effect pools never cull now, NF_CULL or not; their build-time sphere is the
+IDENTITY-matrix centre (obj.centre ≈ the world origin, r 0.032) while the verts pose per frame —
+the game culls these objects per frame at the LIVE matrix [M View_AddObjects 0x1e62d8 →
+Vision_InView 0x1e89e0 on obj+0x8c/obj+0x80]; culling on the build sphere drops every puff the
+moment the origin leaves the frustum, wherever the puffs are posed — the exact shape of A-11's
+truck vanish, and the only mechanism that survives the driver's "even with the matrix forced in
+front of the camera" test. (2) skin_palette's gas colour slots now carry the pool's live
+rgba/255 — the game's obj+0x103..0x106 TAmbient tint, alpha (fade) included [M
+View_SetupRenderModes_Tweak 0x1e5888:46-49 + psiSetTweakARGB 0x124770; gases_smoke 0x1ab2d0's
+tail rewrites the bytes each tick; Gas_Init 0x1aacc8:56-59 seeds them] — the GPU path (the one
+that draws) never faded the puff. Tests: crates/nf-view/tests/blood_puff_render_live.rs (2, the
+draw chain + the cull rule), green; gpu_skin/frame_cost/searchlight-remainder/flesh pairs green.
+Suite: the fast runner could NOT run to completion in this sandbox (background jobs are killed
+between tool calls; a foreground 50-min run does not fit the window) — a foreground chunk over
+the 45 render/draw/palette/gas-adjacent nf-view binaries: 135 passed, 1 failed
+(probe_pylon_render::probe_render_pylon_only — pre-existing, fails in the prior session's chunk
+logs too), 2 ignored. The remaining binaries did not run — flagged in the report.
+SUITE ADDENDUM: wider foreground chunks after the close-out — 175 of 436 binaries total:
+577 passed, 5 failed/TIMEOUT (3 pre-existing: probe_pylon_render + fix_0c_pylon_live ×2;
+2 limit-timeouts: campaign_flow_live, fix_guard_weapons_live at limit 25 s vs the default
+600 s), 21 ignored. Details in docs/reports/blood-puff-render.md.
+## guided-rocket-sound-stop (2026-10-16, branch s/guided-rocket-sound-stop) — started 18:05 UTC
+Playtest 1015-1738 (07000005, the Sentinel's guided rocket): "when the rocket finishes, I can still
+hear a sound being played from where I was standing". The launch whoosh 0x10e (looped, handle
+BU+0xF0, moved with the rocket per tick, stopped at Bullet_Delete 0x12e660) is already fixed on
+master by s/rocket-sound-leak with the live test fix_rocket_sound_leak_live.rs. This task: sweep
+EVERY sound the guided launch starts — launch sound, flight loop, camera-ride sounds — against the
+game's stops/ownership ([M] the guided rocket's bullet update + the sound calls with handle
+storage), verify master already behaves like the game, pin with tests that fail on the old
+behaviour, and report.
+## guided-rocket-sound-stop (2026-10-16, branch s/guided-rocket-sound-stop) — DONE 19:28 UTC
+Playtest 1015-1738 (07000005) "when the rocket finishes, I can still hear a sound from where I was
+standing": swept the guided launch's WHOLE sound surface at the instruction level (jal into Sound_*
+in work/elf/ACTION.ELF) and master already behaves like the game — s/rocket-sound-leak's whoosh fix
+is the complete leak fix. FINDINGS [M]: the launch sound and the flight loop are ONE sound — the
+looped 0x10e whoosh (Bullet_init 0x12c5a0:277-282, handle BU+0xF0; moved with the rocket per tick
+Bullet_update 0x12e7b0:98-108; stopped at Bullet_Delete 0x12e660:13-16, disasm 0x12e680 lw a0,0xf0(s2)
+→ jal Sound_Stop 0x1de0a8 → sw zero,0xf0(s2)); the guided camera ride starts NOTHING (GT_TakeControl
+0x181740 / GT_LoseControl 0x181408: zero jal into any Sound_*); the ride's only sounds are GT_Update
+0x180498's action-9 submunition fire — 0x4e7/0x10a at :346/:518, both UNLOOPED ([L] SFXOutputData
+@0x2c94a0 looped byte 0; entry 0x10e is the only looped=1 of the sweep), one-shots that reap
+themselves (the port zeroes the ride input [M 0x193600 case 10], so it starts neither — a coverage
+gap, not a leak); the detonation one-shots (CollisionHandler 0x51c/0x13/0x15, Bullet_Delete's 0x28d
+grapple arm) are unlooped; Player_WeaponInitBullet 0x1a4bf0 (the fire path) has zero sound calls.
+PIN (no code change needed — master verified): crates/nf-view/tests/guided_rocket_sound_stop_live.rs,
+2 tests green, RED on the pre-fix behaviour (snd:0 fire-and-forget: the whoosh drifted 1.56 u² off
+the rocket / stayed live in the driver after the delete while the camera restore was counting):
+(1) the flight loop tracks the ROCKET not Bond (drift < 1.0 u² per tick, leaves the launch spot);
+(2) the voice dies AT THE DELETE, before the 15-tick hand-back completes, and after the hand-back a
+sweep over EVERY live driver item (any id, pre-fire ambient ids forgiven) finds no voice near the
+launch spot. Suite on the final tree (merged origin/master): 1878 passed / 6 failed / 72 ignored,
+434 binaries — the 6 are the allowed set (3 disc_golden + 3 pre-existing pylon probes). Report:
+docs/reports/guided-rocket-sound-stop.md.
+## stun-recovery (2026-10-16, branch s/stun-recovery) — start 19:02 UTC
+
+Task 713: stunned guards stay stunned forever (playtest 1015-1738, 07000005, the stunner) — port
+the stunned guard's whole timeline: the stun state + timer, the animation and how the state ends,
+the re-stun rule, the recovery to normal AI [M the drone's stun/taser state handler 0x4a/0x4b/
+0x4c, the stunner hit path weapons 0x4A/0x4C]. First check whether master already behaves like the
+game; if it does, pin it and say so. Plan: the stun-ai-recover task already ported the family —
+verify its timeline against the decompile, pin the correct behaviour with a test that fails on the
+old behaviour, fix any constant that diverges (the TASER fall timer), run the touched crates + the
+suite.
+- 2026-10-16 s/death-animation-sp (task 714): Bond's death has no death animation
+  (playtest 1015-0046). Plan: trace game's death sequence (Player_HandleDeath
+  0x190bb0, Player_ChangeSubState case 0xd/0xe, death camera script 0x6000151 /
+  0x60008e0 zero-g), compare with the port's sim/flow, fix what's missing, test
+  on 05 that the death script runs the game's tick count before the failed page.
+  Branch created from origin/master c10b530f.
+- death-animation-sp: traced the game's death camera/anim flow — dead branch of Player_Update
+  0x193600:316-319 runs ONLY AnimObjectUpdate + Player_HandleDeath (no movement: the eye
+  obj+0x30 freezes; Player_PositionCamera 0x18f5d8 case 0 → Camera_SetToPlayer 0x1bc048 →
+  Player_GetHeadPos 0x195aa0 = obj+0x30 + BL+0x908 − BL+0x90c, dead zeroes 0x90c). The port kept
+  ticking walk physics while dead — an airborne death fell 3.06 units (probe). Fix: gate
+  bond.tick_ctx on !death.active (scene.rs). Pinned death_anim_sp_live: the death script
+  0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
+  fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
+  recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
