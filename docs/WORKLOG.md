@@ -15582,3 +15582,14 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+
+## grenade-rattle (2026-10-16, branch s/grenade-rattle) — start
+- Task 693: a grenade resting on the ground stops making bounce sounds (playtests 1013-1825
+  "once it kind of settles, it's rapidly ... contacting the ground", 1013-2313 "when a grenade is
+  on the ground it makes rapid bouncing sounds"). Port the grenade's rest detection and the
+  bounce-sound gate: the speed/impulse threshold for the bounce sound, the settled state that stops
+  collision responses [M Bullet_update's grenade arm, the bounce sound call and its conditions].
+  Test: drop a frag on flat ground on 07000005, count the bounce sounds over its life (the game's
+  count, a few at most), none once it rests; sister: a grenade thrown at a wall still sounds on
+  impact.
+- Started: branch created from origin/master (22be196b); fast suite launching in the background.
