@@ -14230,3 +14230,20 @@ Stage Summary:
   between tool calls again (empty suite.out, 0 processes) — the foreground four-crate command is
   the substitute, as in the three previous tasks. Crates the tests touch (nf-view, nf-audio)
   ran 145/0 pre-merge and 14+37 flow tests post-merge, all green.
+## mission-unlock-flow (2026-10-16, branch s/mission-unlock-flow) — started 00:32 UTC
+- Sandbox reset then repo recovered at /home/z/my-project/NightfirePort (work/, ISO, target/ cache intact).
+- Branch created from origin/master (0f5f07f4). Plan: docs/systems first (P_NFRESULTS_Handler 0x208e78 commit →
+  sp_level[i]+0x10 unlock → codename save → restart persistence; driving rows 0x0900000x / PTP handover / 502),
+  then flow+state in FrontEnd/progress with tests.
+- mission-unlock-flow close-out: the chain verified end to end + three fixes — the boot unlock
+  word 0 → the disc's 0x3 [D ACTION.ELF .data 0x1d91e0] (the old default dropped row 0 on the
+  first award's mirror), the host seeds each fresh sim's Progress.nightfire_status from the live
+  FrontEnd at the scene swap (the game's one sp_level global; the port splits it), and the SP
+  confirm now splits on-foot/driving [M 0x20b8d8:29-40]: driving rows land in GameFlow state 9
+  (the DRIVING.ELF handover, 0x1d3800:104-108, gate 0x202750) with no bogus level load; getters
+  packed_unlocks/launching_driving/is_driving_level. Driving rows + PTP handover documented in
+  docs/systems/mission-unlock-flow.md; "502" unresolved (zero decomp hits). Tests: mission_unlock_flow
+  4/4 (the headless 3-mission chain + save/load round trip + session-only + state-9 split), nf-game
+  lib 212/212 (2 secret_codes expectations updated to the booted base), menus_flow 37/37,
+  codename_entry 14/14, fix_save_profile_live 4/4, campaign_flow_live 5/5. Report:
+  docs/reports/mission-unlock-flow.md.

@@ -387,12 +387,23 @@ impl GameFlow {
     }
 
     /// [M 0x1d3800] — a menu asked for a level. `no_intro` = the game's third arg (1 keeps the code as
-    /// is; 0 maps story codes to their 0x71 intro wrappers). Driving levels push 9 — none are in
-    /// the campaign rows here, so we only model the on-foot branch.
+    /// is; 0 maps story codes to their 0x71 intro wrappers). A DRIVING hash (`Menu_IsDrivingLevel`
+    /// 0x202750 — five campaign rows are one, [D] sp_level .data) pushes GameFlow state 9 — the
+    /// DRIVING.ELF handover, which the port does not model (nf-game/src/ptp.rs) — so the flow holds
+    /// there (states {1,3,4,5,9} skip the draw [M 0x1c98c8]) and the host reports it through
+    /// [`FrontEnd::launching_driving`]; no story-code wrap, no on-foot loader (docs/systems/
+    /// mission-unlock-flow.md §driving rows).
     pub fn reset_map_level_to_load(&mut self, level: u32, warm: bool, no_intro: bool) {
         self.warm_reset = warm;
         if !matches!(self.get_state(), ST_RUNNER | 7 | ST_FADE_HOLD | 0xd | ST_FADE_IN) { return; }
         self.skip_draw = true; // [M: GameState[0x40] = 1 in the menu states]
+        // The driving branch comes FIRST — the game's 0x71 wrap switch is inside the on-foot arm
+        // only [M 0x1d3800:104-108: PushState(9) + GameState+8 = the hash, nothing else].
+        if nf_game::ptp::is_driving_level(level) {
+            self.push_state(ST_LAUNCH_DRIVING);
+            self.level_to_load = level;   // GameState+8 [M :108]
+            return;
+        }
         // [M 0x1d3800's switch wraps exactly these story codes when param_3 == 0; 0x7000048 and the
         // other wrapper/multiplayer codes are not in the switch and pass through. The switch is
         // compiled code — 22 `lui rt,0x710` words at 0x1d392c-0x1d3a40, no jump table [L] — with
@@ -3351,12 +3362,27 @@ impl FrontEnd {
                 Action::Confirm => {
                     // Locked rows can't be chosen [M C_SBNFMAP 0x20b8d8:18-20 `if
                     // (!menu_unlock_everything && !sp_level[i*0x18+0x10]) return`]. Starting:
-                    // ResetMap_LevelToLoad(sp_level[i]+0xc, 0, 0) + a fade push [M :24-41].
+                    // GameState+8 = sp_level[i]+0xc, then the split [M :29-40] — an on-foot hash
+                    // runs ResetMap_LevelToLoad + the 60-frame fade push (0x42a00000 = 60.0f) and
+                    // deletes the menu manager; a DRIVING hash only sets level_chosen (P_NFMAP
+                    // 0x20b608 walks the iris first — the port runs it at once) and lands in
+                    // GameFlow state 9, the DRIVING.ELF handover the port does not model: the flow
+                    // holds there and no `requested_level` goes out (a 0x09 hash has no level
+                    // archive on the ISO [D] — the old path failed the load).
                     if !self.unlocked_row(self.cursor) { return false; }
                     self.mission = self.cursor.min(CAMPAIGN.len() - 1);
                     let level = CAMPAIGN[self.mission].3;   // +0x0c [M 0x20b8d8:21]
-                    self.requested_level = Some(level);
                     self.flow.reset_map_level_to_load(level, false, false);
+                    if self.flow.get_state() == ST_LAUNCH_DRIVING {
+                        eprintln!(
+                            "sp list: driving level {level:08x} — the game launches DRIVING.ELF here \
+                             (GameFlow state 9 → Boot_GetPTPData 0x1c8198: PTP+0x14c = hash, \
+                             PTP+0x974 = index {}; psiLaunchDriving 0x120af0) — not ported",
+                            nf_game::ptp::driving_index(level)
+                        );
+                    } else {
+                        self.requested_level = Some(level);
+                    }
                     return true;
                 }
                 // The Dossier opens with the wheel at row 0 [M P_DOSSIER_Handler 0x216de0:9-16 —
@@ -4129,6 +4155,31 @@ impl FrontEnd {
     pub fn unlocked_row(&self, i: usize) -> bool {
         self.unlock_all || self.unlocked.get(i).copied().unwrap_or(false)
     }
+
+    /// The unlock flags packed the game's way — bit i = `sp_level[i]+0x10`
+    /// [M `Menu_GetNightfireStatus` 0x202360's OR loop]. `save_profile` writes this into the
+    /// MSSN block and the host seeds a fresh sim's `Progress::nightfire_status` from it at the
+    /// scene swap (the game keeps ONE sp_level global; the port splits it across the view and
+    /// the sim — docs/systems/mission-unlock-flow.md). The `unlock_all` cheat is NOT packed:
+    /// `menu_unlock_everything` is its own flag in the game, never an sp_level byte.
+    pub fn packed_unlocks(&self) -> u32 {
+        let mut bits = 0u32;
+        for (i, &u) in self.unlocked.iter().enumerate() {
+            if u { bits |= 1 << i; }
+        }
+        bits
+    }
+
+    /// The SP list's driving handover [M `C_SBNFMAP` 0x20b8d8 case 0x4b → `ResetMap_LevelToLoad`
+    /// 0x1d3800:104-108]: Some(hash) while the flow sits at GameFlow state 9 — the state whose
+    /// game handler launches DRIVING.ELF (`Boot_GetPTPData` 0x1c8198 → `psiLaunchDriving`
+    /// 0x120af0). The port has no driving program, so the state holds (the draw is skipped) and
+    /// the host/draw code calls this to report the attempt; it clears when the flow leaves the
+    /// state. The hash is the confirmed row's `sp_level[i]+0x0c`.
+    pub fn launching_driving(&self) -> Option<u32> {
+        if self.flow.get_state() == ST_LAUNCH_DRIVING { Some(self.flow.level_to_load) } else { None }
+    }
+
 
     /// Scroll one row, skipping locked rows [M the driver: locked missions "can't be scrolled to"].
     fn step(&self, dir: i32) -> usize {
