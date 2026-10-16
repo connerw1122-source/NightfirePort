@@ -14148,3 +14148,57 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   (fix_gas_rng_live.rs); master keeps those sites at the counter hash until their re-base.
 - Report: docs/reports/fix-gas-rng4.md (the draw-order table site → draws → pass, before/after
   tallies, one confirmatory live check for the main agent).
+## drive-keyboard-input (2026-10-16, branch s/drive-keyboard-input) — start
+- Task: PC keyboard/mouse mapping for the driving missions, onto the game's own driving actions
+  (steer with the game's ramp on a digital input, throttle W, brake/reverse S, handbrake Space,
+  fire LMB, cycle weapon wheel/Q, gadget RMB/E, camera C, look back Tab/mouse3 — every driving
+  action, holding the game's holds-vs-presses and repeat semantics). Data + state + getters for the
+  main agent's draw pass (no drawing), a PC_CONTROLS-style table next to the on-foot one in
+  crates/nf-view/src/menu.rs. Docs first, tests headless numbers-only. No pad work.
+- Branch created from origin/master (0f5f07f4), pushed. work/ + ISO + nf-queue from prior sessions
+  verified present. Next: docs/systems/driving-input.md re-read, decomp study of the pad->driving
+  ramp path, then the mapping.
+
+## drive-keyboard-input (2026-10-16, branch s/drive-keyboard-input) — close-out
+- The PC keyboard+mouse mapping for the driving missions, designed onto the game's own driving
+  actions and ported through the game's real path. Branch from origin/master 0f5f07f4, merged
+  origin/master 7ac86f13 (the drive-ai-traffic2 batch) — dc244da2, clean.
+- The ramp question settled: no input-layer ramp [M-negative driving-input.md §8] and NO d-pad
+  steer at all — STEERLEFT/RIGHT + all *DIGITAL (4/5/8/9/0xa/0xb) have no consumer in DRIVING.ELF
+  [M-negative; all seven queue drains enumerated]. Steering is only GAMEACTION_STEER (1) with a
+  signed float; the vehicle layer ramps it: the car's drain FUN_0018add8 0x18add8 tail chops the
+  raw steer at ±PAD_DEAD_ZONE 0.2 (DAT_00331988, the .tun key) write-back, then
+  `move_toward(+0x240, target, 0.25)` (FUN_002104a8) — digital full lock in 4 ticks (66.7 ms at
+  60 Hz), L↔R sweep 8. GAS carries a ×2-gain clamp min(2v,1) each tick; BRAKE raw (reverse is the
+  engine's ≈30-tick brake-at-standstill state, FUN_0018cef8 :184-208); the gas/brake totals
+  exclude each other (smaller zeroed, ties zero gas) and the handbrake (+0x259) zeroes both
+  pedals. All [M 0x18add8 :119-270, disasm-checked].
+- Consumer semantics pinned for every mapped action [M]: fire primary/secondary/gadget +
+  handbrake + look back (0x1d-0x25, 0x1b/0x1c, 0x29/0x2a) are HOLD pairs; weapon cycle
+  (0x21/0x22 next, 0x23 prev, WeaponMan 0x20c078) + CHANGECAMERA (0x26, MissionMan one-shot
+  request flag) + POVRELOAD (0x3f) are edges; CAMZOOMBUTTON (0x2b) is dead in DRIVING.ELF.
+- The mapping (docs/systems/driving-pc-input.md §3, all [S] — the shipped Master.def bindings are
+  unextractable): A/D + ←/→ → LX 0/255 → STEER ±1 (the ramp shapes the digital input exactly like
+  a stick); W → △ pressure → GAS; S → ✕ pressure → BRAKE (pedals as pressures so each is its own
+  value — a shared axis would send one action the other's sign); Space → ✕ bit → HANDBRAKE pair;
+  LMB → R1 bit → FIREPRIMARY pair; B → R2 bit → FIRESECONDARY pair (the port's on-foot Alt. Fire
+  key); RMB → ○ bit and E → L1 bit → FIREGADGET pair; Q → Select bit → TOGGLESECONDARY; wheel
+  up/down → L3/R3 bits → UP/DOWN; C → Start bit → CHANGECAMERA; Tab/MMB hold → □ bit → CAMLOOKBACK
+  pair; R → d-pad Up bit → POVRELOAD.
+- Port: `input::driving::{move_toward, CarInputStage (the drain's input block + tail as a
+  per-tick struct, car offsets in the field docs), KeyboardMouse + to_raw_pad, pc_key_pad,
+  pc_driving_bindings, PcDrivingInput::tick}` — the whole chain per 60 Hz step: keys → raw pad →
+  poll_device → the game's evaluator → messages → the stage. `PC_DRIVING_CONTROLS` (13 rows) in
+  nf-view/src/menu.rs next to PC_CONTROLS, labelled with the game's USATxt driving block (bank 0
+  0x30a-0x315 + 0x100032a; no secondary-fire/reload label exists — id-0 fallback rows).
+  No drawing delivered (the main agent draws). Also fixed a pre-existing master-side test-module
+  syntax error in input/driving.rs (`vec!sg(0)` → `vec![msg(0)…`, broken since G-004).
+- Tests (all headless, numbers-only, sisters throughout): nf-game lib 221/221 (ramp goldens 4/8
+  ticks, ±0.2 write-back, strict 0.9 full lock, gas ×2 clamp, tie exclusion, handbrake zeroing,
+  HUD gate, per-key action ids, hold-never-repeats, release ids, full chain W+D 5 ticks + release);
+  nf-game integration 407/0; driving_physics/ai_follow/ai_physics/input_ramp/input_styles 34/0;
+  nf-formats 79/0; nf-audio 9/0; nf-view lib 15/0; menus_flow 37/0; mp/dev menu flows + dossier +
+  campaign + fix_progress 29/0; driving_controls_live 1/1 (binds every PC_DRIVING_CONTROLS id
+  from the disc's USATxt.dat, sister negatives included). Foreground runs — the background
+  suite.py is reaped by this sandbox (died twice, empty suite.out); a third attempt runs while
+  this entry is written.
