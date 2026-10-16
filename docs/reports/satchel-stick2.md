@@ -69,8 +69,10 @@ phase carries `last_qs`/`digits` from the flight phase.
 - The stick family around it: fix_satchel_tripbomb_live 5/5, fix_grenade_release_live 4/4,
   fix_grenade_throw_live 4/4, fix_grenade_types_live 3/3 (+1 ignored), fix_remote_mine_play 3/3,
   nf-game lib 236/236 — all on the merged tree.
-- Full suite (`tools/test/suite.py`, merged tree): see the WORKLOG close-out for the total line that fit the
-  window.
+- Full suite (`tools/test/suite.py`, merged tree 87cb71f2): the 2-hour window did not fit all binaries —
+  **89 completed, 88 passed, 1 failed** (`probe_pylon_render` — the sandbox's missing Vulkan ICD, the known
+  environmental failure from previous sessions), 0 TIMEOUT/CRASH. The rebuild alone took ~6 min; the next
+  window should run the suite to completion.
 
 ## What's left / candidates
 
