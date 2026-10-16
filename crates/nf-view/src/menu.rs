@@ -453,6 +453,16 @@ impl GameFlow {
 /// mission."]); the record bytes read back from the EE snapshot at 0x2df2e0 [L work/ee_snapshot.bin].
 /// The port keeps the game's level codes verbatim — the 0x09xxxxxx rows are the driving maps
 /// (`C_SBNFMAP` passes them straight to `ResetMap_LevelToLoad` [M 0x20b8d8:21-24]).
+/// A DRIVING.ELF mission hash (0x09xxxxxx) — no level archive on the disc; the game hands over to
+/// the driving executable [M GameFlow state 9, psiLaunchDriving 0x120af0].
+pub fn is_driving_level(level: u32) -> bool { level >> 24 == 0x09 }
+
+/// The campaign rows' names for port-only messages (the game's own names are Txt labels; these
+/// mirror USATxt 0x03000001.. for the notice text) [L the comments on CAMPAIGN].
+pub const CAMPAIGN_NAMES: [&str; 12] = ["Paris Prelude", "The Exchange", "Alpine Escape", "Enemies Vanquished",
+    "Double Cross", "Night Shift", "Chain Reaction", "Phoenix Fire", "Deep Descent", "Island Infiltration",
+    "Countdown", "Equinox"];
+
 pub const CAMPAIGN: [(u32, u32, u32, u32); 12] = [
     // (ring-preview texture, name label, description label, level) = sp_level[i] +0x00/+0x04/+0x08/+0x0c
     (0x0300_0085, 0x0300_0001, 0x0300_0013, 0x0900_0001), // Paris Prelude
@@ -1759,6 +1769,10 @@ pub struct FrontEnd {
     /// the game's Menu_CreateOptionBox error box with a port-only string (no label id exists for
     /// it [S]); the page under it returns to the MP lobby (MpJoin). None = no notice.
     pub net_notice: Option<String>,
+    /// The port's message box over any page (a port-only string, the game's option-box look): set
+    /// for things the port can't do yet (a driving mission) and for the online session's failures.
+    /// Confirm or Back dismisses it; every other action is swallowed while it stands.
+    pub notice: Option<String>,
 
     // menu-sfx (each new field on its own line [WORKLOG lesson 4]).
     /// The sounds this frame's input/page changes started — the host drains (`drain_sfx`) and
@@ -1951,6 +1965,7 @@ impl FrontEnd {
             /// The handlers' `menu_movie` static: set once the open pair has played, reset by the
             /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
             net_notice: None,
+            notice: None,
             menu_movie: false,
             // net-online-lobby (each new field on its own line [WORKLOG lesson 4]).
             mp_net_port: 27420,
@@ -3515,6 +3530,19 @@ impl FrontEnd {
 
     /// One menu action. Returns true when the action changed the state.
     pub fn action(&mut self, a: Action) -> bool {
+        // The MP start checks' refusal is the game's option box too (Menu_CreateOptionBox with the
+        // error label [M C_SBMPOPTIONS 0x20e818:50-130]); it was never drawn, so Continue just did
+        // nothing (playtest 1015-2231 "cant get into a match").
+        if self.notice.is_some() || self.net_notice.is_some() || self.mp_error != 0 {
+            if matches!(a, Action::Confirm | Action::Back) {
+                self.notice = None;
+                self.net_notice = None;
+                self.mp_error = 0;
+                self.sfx(MENU_SOUND_SELECT, SFX_MENU_TICK);
+                return true;
+            }
+            return false;
+        }
         // attract-mode: while the attract movie plays the game blocks the page input — msg 0x68
         // cleared the queued actions and the 0x22 dispatcher is gated on the manager's block byte
         // [M 0x21c858 case 0x68 `Input_ClearAllActions`; 0x21c3d8:70] — and polls the skip action
@@ -3889,8 +3917,21 @@ impl FrontEnd {
                     // holds there and no `requested_level` goes out (a 0x09 hash has no level
                     // archive on the ISO [D] — the old path failed the load).
                     if !self.unlocked_row(self.cursor) { return false; }
+                    // One request per pick: the game deletes the menu manager with it [M the
+                    // ResetMap_LevelToLoad + MenuManager_Delete pair]; the port's overlay stays up
+                    // until the host takes the request.
+                    if self.requested_level.is_some() { return false; }
                     self.mission = self.cursor.min(CAMPAIGN.len() - 1);
                     let level = CAMPAIGN[self.mission].3;   // +0x0c [M 0x20b8d8:21]
+                    // The port has no DRIVING.ELF: entering GameFlow state 9 left the flow stuck there
+                    // for good (playtest 1015-2231 "can't start any sp levels" — Paris Prelude, the
+                    // only row a fresh profile opens, is a driving mission). The row says so instead,
+                    // and `unlocked_row` lets the next on-foot row open through it [S port choice].
+                    if is_driving_level(level) {
+                        self.notice = Some(format!("{} is a driving mission.\nDriving isn't in the PC port yet -\nthe next mission is unlocked.",
+                            CAMPAIGN_NAMES.get(self.mission).copied().unwrap_or("This")));
+                        return true;
+                    }
                     self.flow.reset_map_level_to_load(level, false, false);
                     if self.flow.get_state() == ST_LAUNCH_DRIVING {
                         eprintln!(
@@ -4391,10 +4432,7 @@ impl FrontEnd {
                         // [M disasm 0x217654/0x21765c] and opens the setup page [M
                         // 0x217638-0x217644 → 0x40000051].
                         self.mp_level = MP_MAP_ROWS[row].3;
-                        self.enter_page(Page::MpSetup);
-                        // P_MPSETUP picks the prompt from the scenario's team bit [M 0x20d7a8].
-                        self.mp_setup_state = if self.mp_scenario & 0x2000_0000 != 0 { 2 } else { 3 };
-                        self.mp_setup_sel = 0;
+                        self.enter_mp_setup();
                         return true;
                     }
                     _ => {}
@@ -4472,7 +4510,10 @@ impl FrontEnd {
                 match a {
                     Action::Up if self.mp_options_row > 0 => { self.mp_options_row -= 1; return true; }
                     Action::Down if self.mp_options_row + 1 < MP_OPTIONS_ROWS.len() => { self.mp_options_row += 1; return true; }
-                    Action::Back => { self.enter_page(Page::MpSetup); return true; }
+                    // Back to the setup page re-runs its 0x4c: the prompt from the scenario's team
+                    // bit [M P_MPSETUP 0x20d7a8] — the stale state left a free-for-all on the team
+                    // prompt after backing out (playtest 1015-2231).
+                    Action::Back => { self.enter_mp_setup(); return true; }
                     Action::Confirm => {
                         let row = self.mp_options_row.min(MP_OPTIONS_ROWS.len() - 1);
                         // AI Bots is locked on Ravine [M P_MPOPTIONS 0x217678:20-25].
@@ -4694,7 +4735,10 @@ impl FrontEnd {
 
     /// sp_level[i]+0x10, with `menu_unlock_everything` [M 0x20b8d8:18].
     pub fn unlocked_row(&self, i: usize) -> bool {
-        self.unlock_all || self.unlocked.get(i).copied().unwrap_or(false)
+        if self.unlock_all || self.unlocked.get(i).copied().unwrap_or(false) { return true; }
+        // A row after an unlocked DRIVING row opens through it (the port can't play driving yet, so
+        // the campaign would otherwise stop at Paris Prelude) [S port choice].
+        i > 0 && i < CAMPAIGN.len() && is_driving_level(CAMPAIGN[i - 1].3) && self.unlocked_row(i - 1)
     }
 
     /// The unlock flags packed the game's way — bit i = `sp_level[i]+0x10`
@@ -5000,7 +5044,24 @@ impl FrontEnd {
     /// `GameFlow_PushState(80.0f, 7, 0xff)` + `SFXFadeDown` + `MenuManager_Delete`. The port's
     /// handover: the level request rides the existing `requested_level`/load machinery, the
     /// match config lands in `mp_match_settings` for the host's MP core.
+    /// P_MPSETUP's page enter [M 0x20d7a8]: the prompt from the scenario's team bit (team pick for a
+    /// team game, else the character), the pick on the agent's stored value.
+    fn enter_mp_setup(&mut self) {
+        self.enter_page(Page::MpSetup);
+        if self.mp_scenario & 0x2000_0000 != 0 {
+            self.mp_setup_state = 2;
+            self.mp_setup_sel = self.mp_join[0].team as usize;
+        } else {
+            self.mp_setup_state = 3;
+            self.mp_setup_sel = self.mp_join[0].skin as usize;
+        }
+    }
+
     pub fn mp_confirm_start(&mut self) -> bool {
+        // One start per confirm: the game deletes the menu manager with the request, so a second
+        // press never reaches the page [M P_MPCONFIRM's MenuManager_Delete]. The port's overlay
+        // stays up until the host takes the request — refuse while one is pending.
+        if self.requested_level.is_some() { return false; }
         let humans = self.mp_human_count();
         if humans == 0 { return false; }
         let time = if self.mp_time_limit == -1 { -1 } else { self.mp_time_limit * 60 };   // [M the ×0x3c]
@@ -5579,18 +5640,8 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             }
             hint_bar(&mut h, font, &hint(0x49b, "~A Confirm  ~V Change  ~B Back"), 50.0, 419.0, cream);
             quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
-            // net-match-host: the session's message box (the game's Menu_CreateOptionBox error
-            // box [M mp-menus]; the port-only texts have no label ids, so the string draws raw
-            // [S]). The page under it is the lobby (MpJoin) — the failure path set it.
-            if let Some(t) = &fe.net_notice {
-                quad640(&mut h, 0x0300_0199, 120.0, 196.0, 400.0, 88.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
-                let lines: Vec<String> = t.split('\n').flat_map(|p| wrap_px(p, font, mx(360.0))).collect();
-                let n = lines.len().min(3) as f32;
-                for (k, l) in lines.iter().take(3).enumerate() {
-                    let mid = 240.0 + (k as f32 - (n - 1.0) / 2.0) * 22.0;
-                    centred(&mut h, font, -2, l, mx(320.0), my(mid), cream, true, 1.0);
-                }
-            }
+            // net-match-host's message box now draws with the general notice at the end of the
+            // overlay (fe.net_notice) — dismissable with Enter/Esc on any page.
         }
         // The MP wheels with the codename wheel's layout [L pages 0x40000012 (header 0x2c4 Scenario Options),
         // 0x40000027 / 0x4000003f (header 0x294 Multiplayer Bot Setup); hint 0x218; PCSX2 m55, m56, m57, m61, m63].
@@ -6080,6 +6131,43 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
         // (268,94,284×292) [L the menu-def dump]), WINGAME is the movie page only, CHEATMEDAL
         // has no page data (nothing static to draw).
         Page::NfBonus | Page::WinGame | Page::CheatMedal => {}
+    }
+    // The port's message box over whatever page is up (the option-box plate the MP pages use).
+    // The MP start checks' refusal [M C_SBMPOPTIONS 0x20e818:50-130]: the game's label, with a
+    // plain fallback when the language file doesn't resolve it.
+    let mp_err = (fe.mp_error != 0).then(|| {
+        let s = bind(fe.mp_error);
+        if !s.is_empty() { s } else {
+            match fe.mp_error {
+                0x39e => "A match needs at least two players.\nAdd bots on the Options page.".to_string(),
+                0x389 => "Both teams need at least one player.".to_string(),
+                _ => "Only one MI6 player is allowed in a free-for-all.".to_string(),
+            }
+        }
+    });
+    if let Some(t) = fe.notice.as_ref().or(fe.net_notice.as_ref()).or(mp_err.as_ref()) {
+        // The page under a message box dims so the box reads on its own (it sat on the list rows'
+        // text in the live check).
+        // In FRONT of every page layer (the HUD sorts higher layers to the back; the page rows draw
+        // at -2/-3, so the box takes -9..-12): the dim, the box fill, its frame, then the text.
+        // Solid fills through the renderer's white texture — the font-atlas plates draw nothing
+        // on pages without that atlas.
+        let solid = |h: &mut Hud, layer: i32, x: f32, y: f32, w: f32, hh: f32, c: [f32; 4]| {
+            let (a, b) = (h.ndc(Anchor::Centre, mx(x), my(y)), h.ndc(Anchor::Centre, mx(x + w), my(y + hh)));
+            let p = |q: [f32; 2]| HudVertex { p: q, uv: [0.0, 0.0], c };
+            h.ndc_solid(layer, [p([a[0], a[1]]), p([b[0], a[1]]), p([b[0], b[1]]), p([a[0], a[1]]), p([b[0], b[1]]), p([a[0], b[1]])], c);
+        };
+        solid(&mut h, -9, 0.0, 0.0, MW, MH, gs(0x000000, 0x90));
+        solid(&mut h, -10, 100.0, 180.0, 440.0, 120.0, gs(0x180c08, 0xf0));
+        solid(&mut h, -11, 100.0, 180.0, 440.0, 2.0, gs(CREAM, 0xc0));
+        solid(&mut h, -11, 100.0, 298.0, 440.0, 2.0, gs(CREAM, 0xc0));
+        let lines: Vec<String> = t.split('\n').flat_map(|p| wrap_px(p, font, mx(400.0))).collect();
+        let n = lines.len().min(3) as f32;
+        for (k, l) in lines.iter().take(3).enumerate() {
+            let mid = 230.0 + (k as f32 - (n - 1.0) / 2.0) * 22.0;
+            centred(&mut h, font, -12, l, mx(320.0), my(mid), cream, true, 1.0);
+        }
+        centred(&mut h, font, -12, "Press Enter", mx(320.0), my(282.0), dim, true, 1.0);
     }
     h.finish()
 }
