@@ -87,9 +87,12 @@ Task 732, branch `s/script-negative-delay` (from `origin/master` 65bf8a09).
 - `fix_finale_live` 4/4 (the 4a lift ride, the 1b Drake defeat, the 16 chasers, the start states);
   `walkreal_0700004a_live` is pre-parked/`#[ignore]` (fix-final-blockers2's marker question, not
   touched here).
-- Full suite (`tools/test/suite.py`, NF_ISO set) on the final tree: see the total line in the
-  WORKLOG/day log — 3 `disc_golden` failures allowed on the slim ISO; any other failure is listed in
-  the report tail below.
+- Full suite (`tools/test/suite.py`, NF_ISO set) on the final tree (merged with `origin/master`
+  f09f3c6c, merge d5061cfe): **1946 passed, 6 failed, 72 ignored (49 min)** — the 6 are the known
+  allowed set: 3 `disc_golden` (the slim ISO's) + the 3 pre-existing 0c-pylon probes
+  (`fix_0c_pylon_live` ×2, `probe_pylon_render`) recorded in the WORKLOG's earlier entries. No
+  other failure. The targeted runs before it: `solar_panels_live` 2/2, `fix_finale_live` 4/4, the
+  `nis` unit test 1/1.
 
 ## What's left / open questions
 
