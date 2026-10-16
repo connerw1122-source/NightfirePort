@@ -1181,14 +1181,21 @@ impl<T: Transport> Session<T> {
                 .unwrap_or_default(),
         };
         for remote in peers_hashes {
-            for (tick, rhash) in remote.iter() {
-                if self.compared.contains(tick) {
+            // cross-process-determinism: the ticks are compared in ascending order, not the
+            // HashMap's per-process random order — the sim state is untouched, but WHICH desync
+            // tick gets reported first (the diagnostic the user sees) must not depend on the
+            // process's RandomState.
+            let mut ticks: Vec<u32> = remote.keys().copied().collect();
+            ticks.sort_unstable();
+            for tick in ticks {
+                let rhash = remote[&tick];
+                if self.compared.contains(&tick) {
                     continue;
                 }
-                if let Some(lhash) = self.local_hashes.get(tick) {
-                    self.compared.insert(*tick);
-                    if lhash != rhash {
-                        events.push(Event::Desync { tick: *tick, local: *lhash, remote: *rhash });
+                if let Some(lhash) = self.local_hashes.get(&tick) {
+                    self.compared.insert(tick);
+                    if *lhash != rhash {
+                        events.push(Event::Desync { tick, local: *lhash, remote: rhash });
                     }
                 }
             }

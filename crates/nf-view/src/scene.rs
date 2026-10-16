@@ -537,11 +537,17 @@ pub struct Msg {
     /// 0x1b15c8 deletes types 4/5 only, so the skip's flush drops these and nothing else
     /// (fix-ladder-water).
     pub script: bool,
+    /// The pane's case-3 open chime (PlayMe1st: 1532 new / 468 complete) has fired — the game
+    /// plays it one pane frame AFTER case 2's open and only while `ScriptCam == 0` [M
+    /// 0x19c310:219-229], so a cut-scene starting in the banner's flash window holds the chime
+    /// until the hand-back (objective-banner-timing).
+    pub sfx1: bool,
 }
 
 impl Msg {
     pub fn new(text: String, time: f32) -> Msg {
-        Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false, label: 0, script: false }
+        Msg { text, time, status: 0, failed: false, life: time, opened: false, second: false, label: 0, script: false,
+            sfx1: false }
     }
 }
 
@@ -3779,7 +3785,21 @@ impl Sim {
                     let vol = nf_game::bullet::PlayerVolume { feet: [dr.pos[0], dr.pos[1] - 1.0, dr.pos[2]], height: 1.8, radius: 0.4 };
                     nf_game::bullet::segment_cylinder(camera, far, &vol).filter(|&t| t < wall).map(|t| (i, t))
                 }).min_by(|a, b| a.1.total_cmp(&b.1)).map(|(i, _)| i);
-            self.cross_state = match hit { Some(i) if self.drones.list[i].team != 1 => 3, _ => 2 };
+            self.cross_state = match hit {
+                Some(i) if self.drones.list[i].team != 1 => {
+                    // civilian-no-shoot [M 0x1a7810:152-183]: the no-shoot mark is ALSO keyed on the
+                    // held weapon id (animData+0x62) and the level. Weapon ids {1, 0x35, 0x36, 0x43,
+                    // 0x44} — the fists and the throw family (grenades 0x35/0x36; 0x43/0x44 the other
+                    // throwables) — keep the NORMAL crosshair over the same civilian (you may punch or
+                    // blast him; the damage path has no team gate either), and levels 0x7000005..0x7000008
+                    // (`0x7000008 < level || level < 0x7000005` guards the mark) never mark at all.
+                    // Everything else marks +0x132 = 1, +0x133 = 3.
+                    let w = self.gun.weapon;
+                    let level_exempt = (0x0700_0005..=0x0700_0008).contains(&self.level);
+                    if level_exempt || matches!(w, 1 | 0x35 | 0x36 | 0x43 | 0x44) { 2 } else { 3 }
+                }
+                _ => 2,
+            };
         }
         // The object handler (`control_movement_object_handler`) runs whenever `GS_IsPaused(-1) == 0` — ScriptCam
         // plays NO role [M Game_Run 0x1c9790:30-35]: `ScriptCam` only picks `Text_Update2Line` vs `Text_Update`
@@ -3983,7 +4003,8 @@ impl Sim {
                     // scales the life by the wrapped/orig length [M 0x1b0c30's +0x18 store]. The
                     // port wraps at draw time — the font lives in the scene's HudTables, which the
                     // Sim-side drain doesn't hold; the life scaling is not ported, see the report.)
-                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false, label: 0, script: false });
+                    self.hud.objective_msgs.push_back(Msg { text, time: ticks as f32, status, failed, life: ticks as f32, opened: false, second: false, label: 0, script: false,
+                        sfx1: false });
                 }
                 nf_game::mission::Event::FailLabel(l) => {
                     self.hud.fail_label = l;
@@ -4084,18 +4105,32 @@ impl Sim {
         }
         // The banner SFX, where the game plays them: the pane update. Case 2 schedules the pair per
         // display (new objective: PlayMe1st 1532, PlayMe2nd 469; "OBJECTIVE COMPLETE": PlayMe1st 468
-        // and ObjectiveSFXTriggered2 preset so the 2nd never plays) [M 0x19c310:148-164]; case 3
-        // fires PlayMe1st in the message's first 60 ticks — only while `ScriptCam == 0` (a cut-scene
-        // holds it) [M 0x19c310:219-229] — and PlayMe2nd once the steady phase begins (remaining + 60
-        // ≤ life) [M 0x19c310:232-235]. The port's pane cannot open while `hud_frozen` (the
-        // viewer+0x2a gate above), so at this point the ScriptCam gate has already cleared.
+        // and ObjectiveSFXTriggered2 preset so the 2nd never plays) [M 0x19c310:148-164] but plays
+        // NOTHING itself; case 3 — the NEXT pane frame — fires PlayMe1st while the message is in its
+        // flash window (remaining + 60 > life), ONLY while `ScriptCam == 0` [M 0x19c310:219-229], and
+        // PlayMe2nd (469) once the steady phase begins (remaining + 60 ≤ life; no camera check — the
+        // frozen timer cannot newly reach it mid-scene) [M 0x19c310:232-235]. The port's pane cannot
+        // OPEN while `hud_frozen` (the viewer+0x2a gate above [M 0x1b11d8:16-18]) — the same window a
+        // script camera holds `ScriptCam != 0` [M 0x1d9140:6 sets it, 0x1d9860 clears it] — so a
+        // banner queued mid-scene opens after the hand-back and its chime fires then; and a banner
+        // that opened the tick before a scene starts waits in its frozen flash window with the chime
+        // unplayed, exactly the game's held Triggered1 (objective-banner-timing).
         if let Some(m) = self.hud.objective_msgs.front_mut() {
             let cam = self.bond.head();
             if !m.opened {
+                // Case 2: the open — bind the header, schedule the pair, no sound yet [M 0x19c310:126-176].
                 m.opened = true;
+            } else if !m.sfx1 && m.time + 60.0 > m.life {
+                // Case 3's flash branch: PlayMe1st once (1532 new / 468 complete) [M 0x19c310:219-229].
+                m.sfx1 = true;
                 let id = if m.status == 0x0200_0053 { 468 } else { 1532 };
                 self.drones.audio.play3d(id, cam, None);
-            } else if !m.second && m.status != 0x0200_0053 && m.time <= m.life - 60.0 {
+            }
+            if m.sfx1 && !m.second && m.status != 0x0200_0053 && m.time <= m.life - 60.0 {
+                // The steady branch: PlayMe2nd (469) once [M 0x19c310:232-235] — only after the
+                // 1st fired (the game's Triggered2 arm sits in the steady branch, which the flash
+                // branch's ScriptCam hold can delay the 1st past; the timer freeze keeps the
+                // ordering 1532 then 469 exactly as the pane plays them).
                 m.second = true;
                 self.drones.audio.play3d(469, cam, None);
             }
@@ -4780,6 +4815,21 @@ fn casing_matrix(c: &nf_game::casing::Casing) -> Mat4 {
 
 /// Tracer slots (bullets drawn at once).
 const TRACER_SLOTS: usize = 32;
+
+/// A unit-axis matrix (rows = axes) whose z row points along `dir` at `pos`, x kept horizontal
+/// (up × z; world x when `dir` is vertical). sg5-laser-draw: the yaw/pitch euler the tripbomb beam
+/// uses is only right for level beams — `object_matrix`'s z row is (sin ry, −sin rx·cos ry,
+/// cos rx·cos ry), so an atan2 yaw with a tilted beam pointed it off its end.
+fn z_basis(dir: [f32; 3], pos: [f32; 3]) -> [[f32; 4]; 4] {
+    let l = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt().max(1e-9);
+    let z = [dir[0] / l, dir[1] / l, dir[2] / l];
+    // up × z = (z.z, 0, −z.x)
+    let (hx, hz) = (z[2], -z[0]);
+    let hl = (hx * hx + hz * hz).sqrt();
+    let x = if hl < 1e-6 { [1.0, 0.0, 0.0] } else { [hx / hl, 0.0, hz / hl] };
+    let y = [z[1] * x[2] - z[2] * x[1], z[2] * x[0] - z[0] * x[2], z[0] * x[1] - z[1] * x[0]];
+    [[x[0], x[1], x[2], 0.0], [y[0], y[1], y[2], 0.0], [z[0], z[1], z[2], 0.0], [pos[0], pos[1], pos[2], 1.0]]
+}
 /// Projectile mesh slots (`models-weapons-items`): 0..GRENADE_SLOTS are the simulation's grenades
 /// (`Sim::drones.grenades`), GRENADE_SLOTS..+TRACER_SLOTS the drone bullets (`Sim::drones.bullets`, the same
 /// indices the tracer attachments use), and the last PLAYER_BULLET_SLOTS Bond's (`Sim::drones.player_bullets`).
@@ -4830,8 +4880,16 @@ impl Scene {
 
     /// `skeletons`: every skeleton on the disc by id; `sequences`: the level's animation archive, grouped by skeleton.
     pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>, difficulty: u32) -> Scene {
-        let by_hash: HashMap<u32, (u8, usize)> = sequences.iter()
-            .flat_map(|(&sk, v)| v.iter().enumerate().map(move |(i, s)| (s.hashcode, (sk, i)))).collect();
+        // cross-process-determinism: the buckets are walked in ASCENDING skeleton id, not HashMap
+        // order — a hashcode present under two buckets resolves to the highest-id bucket's entry
+        // in every process (a std HashMap's order is per-process random; last-wins over it is a
+        // latent cross-process divergence that reaches anim/root-motion resolution). Disc scan:
+        // no cross-bucket duplicate hashcode on any shipped archive today, so this only pins the
+        // resolution rule.
+        let mut sk_keys: Vec<u8> = sequences.keys().copied().collect();
+        sk_keys.sort_unstable();
+        let by_hash: HashMap<u32, (u8, usize)> = sk_keys.iter()
+            .flat_map(|&sk| sequences[&sk].iter().enumerate().map(move |(i, s)| (s.hashcode, (sk, i)))).collect();
         let (mut instances, missing) = level.scene_instances(cels_only);
         // Sky objects are drawn by the sky pass only (with --all they would also appear as dynamic entities).
         // Ladders (0x22) are dynamic objects too (`parsemap_create_dynamic_objects` 0x1d04f0 case 0x22):
@@ -5353,7 +5411,11 @@ impl Scene {
                 // beam object with `hashtable_set_object_to_entity_gfx(uVar9, 0x2000133)` [M
                 // `Bullet_update` case 3, the +0x70 & 0x80000 arm 0x12ee30-0x12ee50]; two slots
                 // (the 6-placed cap keeps placed tripbombs bounded; the port draws the first two).
-                (TRACER_SLOTS + 3, 0x0200_0133), (TRACER_SLOTS + 4, 0x0200_0133)] {
+                (TRACER_SLOTS + 3, 0x0200_0133), (TRACER_SLOTS + 4, 0x0200_0133),
+                // sg5-laser-draw: the weapon laser sight (`Player_LaserPointer` 0x1a65d8) — the beam
+                // sprite 0x2000133 and the red dot 0x2000132 [M ll. 189-205, the `Player_InitWeapon`
+                // 0x1a7ef8 objects]; both follow `Sim::laser_sight`.
+                (TRACER_SLOTS + 5, 0x0200_0133), (TRACER_SLOTS + 6, 0x0200_0132)] {
                 if drones.is_some() {
                     if let Some(&(bmap, bobj)) = level.by_hash.get(&hash) {
                         let binst = Instance { map: bmap, object: bobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
@@ -5889,7 +5951,9 @@ impl Scene {
         let stats = format!("{stats}; {started}/{} characters with their start animation; {} weapons held ({weapons_missing} without mesh or datum), {flashes} with a muzzle flash; {held_back} character meshes held back by spawners (R shows them); {script_objects} script objects", characters.len(), attachments.iter().filter(|a| a.script.is_none() && a.flash.is_none() && a.tracer.is_none()).count());
         // The guard AI: one drone per main-map drone placement present at level start; characters map to it by
         // placement translation.
-        let seqs: HashMap<u32, Sequence> = sequences.values().flatten().map(|s| (s.hashcode, s.clone())).collect();
+        // cross-process-determinism: same resolution rule as `by_hash` above — ascending skeleton
+        // id, so a duplicate hashcode resolves identically in every process.
+        let seqs: HashMap<u32, Sequence> = sk_keys.iter().flat_map(|&sk| sequences[&sk].iter().map(|s| (s.hashcode, s.clone()))).collect();
         let mut sim = drones.and_then(|d| Some((d, d.props.clone()?, d.weapons.clone()?))).and_then(|(d, props, weapons)| {
             let m = level.main_map()?;
             // Breakables (type 0x20) are drawn but not solid yet: their collision rules (glass that sight and bullets
@@ -6138,8 +6202,11 @@ impl Scene {
         // Populate the Sim's view_model_ids from the view_models map (D-003).
         if let Some(sim) = sim.as_mut() {
             sim.view_model_ids = view_models.keys().copied().collect();
-            // The view-model characters follow Bond's cel for their ambient ramp.
-            sim.view_model_chars = view_models.values().copied().collect();
+            // cross-process-determinism: collected in the build loop's ascending-wid order, not
+            // `view_models.values()`'s per-process random order — today the only consumer is
+            // `contains` (order-insensitive), but a hash-ordered Vec sitting in the Sim is one
+            // index-pairing away from a real divergence.
+            sim.view_model_chars = (1..=0x72u8).filter_map(|wid| view_models.get(&wid).copied()).collect();
         }
         let models_0x800: HashMap<u32, bool> = level.maps.iter()
             .flat_map(|m| m.objects.iter().map(|o| (o.hashcode, o.flags & 0x800 != 0))).collect();
@@ -6283,6 +6350,31 @@ impl Scene {
                 // and 0x200026d "taser" [M 0x1a46a8]), and `Draw_LaserBeam`'s stretch is the beam
                 // object's own scale (obj+0xE8 = the muzzle→hit distance) with the yaw/pitch of
                 // muzzle→hit in obj+0x50 (the negated-yaw euler) [M 0x1a4560:44-62].
+                if slot as usize >= TRACER_SLOTS + 5 {
+                    // sg5-laser-draw: the laser sight [M Player_LaserPointer 0x1a65d8]. Slot +5 the
+                    // beam, datum → end, stretched like the tripbomb beam below (the same −z mesh);
+                    // view-only in first person [M: `BLData+0x950 == 0`]. Slot +6 the dot at
+                    // hit + normal·0.01, its z on the normal, scale 1 + d²/MAX_VIEW_CONE (2000) capped
+                    // at 4 with d = datum → end [M ll. 189-205; L 0x30d0fc]. The flicker (Rand_FRand
+                    // on the size byte) and the night-sight sprite 0x2000131 are not drawn yet.
+                    let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
+                    let Some(s) = self.sim.as_ref() else { return far };
+                    let Some((a, b, dot)) = s.laser_sight else { return far };
+                    let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
+                    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if slot as usize == TRACER_SLOTS + 5 {
+                        if !s.first_person || len < 1e-4 { return far; }
+                        // The mesh's −z runs start→end (the +z-backward convention below), so z = a − b.
+                        let mut m = z_basis([a[0] - b[0], a[1] - b[1], a[2] - b[2]], a);
+                        for k in 0..3 { m[2][k] *= len; }
+                        return m;
+                    }
+                    let Some((p, n)) = dot else { return far };
+                    let sc = (1.0 + len * len / 2000.0).min(4.0);
+                    let mut m = z_basis(n, [p[0] + n[0] * 0.01, p[1] + n[1] * 0.01, p[2] + n[2] * 0.01]);
+                    for r in 0..3 { for k in 0..3 { m[r][k] *= sc; } }
+                    return m;
+                }
                 if slot as usize >= TRACER_SLOTS + 3 {
                     // fix-satchel-tripbomb: the tripbomb's laser beam (mesh 0x2000133 [M the beam
                     // create]) — the sim rebuilds `tripbomb_beams` (start, end) every tick [M the
@@ -6299,10 +6391,9 @@ impl Scene {
                     // with the elevation negated — the same +z-backward convention as Draw_LaserBeam
                     // [M 0x1a9400 tail], whose −z geometry [D the "watch_lazer" mesh 0x2000133:
                     // z ∈ [−1.0, 0]] flows start→end. The old +z pointed start→end.
-                    let v = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
-                    let yaw = v[0].atan2(v[2]);
-                    let pitch = -v[1].atan2((v[0] * v[0] + v[2] * v[2]).sqrt());
-                    let mut m = nf_formats::placement::object_matrix([pitch, yaw, 0.0], a);
+                    // sg5-laser-draw: built from the direction (`z_basis`) — the atan2 euler missed a
+                    // tilted beam's end; level beams are unchanged.
+                    let mut m = z_basis([a[0] - b[0], a[1] - b[1], a[2] - b[2]], a);
                     for k in 0..3 { m[2][k] *= len; }
                     return m;
                 }
@@ -6716,8 +6807,18 @@ impl Scene {
             }
         };
         let script = s.scripts.get(&script_h)?;
+        // cutscene-faces: the face window is the game's own classifier — the SEQUENCE's flags bit
+        // 0x8 [M AnimProcessScriptCmds 0x1c1b38: `*(int *)(lVar6 + 0xc) >> 3 & 1` on the raw
+        // sequence record; a facial window plays in the script's +0x54 slot via AnimSeqSet
+        // 0x1c7460's param_7 slot pick], the same rule `script_pose_together` poses bones by. The
+        // old `channels.len() == count` probe was fix-facial2's stand-in; the two agree on EVERY
+        // sequence on the disc — the census: 18,244 kind-4 sequences, flags {0x00 × 17363,
+        // 0x01 × 10, 0x08 × 871} and every flags-0x08 one has exactly 22 channels (a body window
+        // is 3·bones + 3·popcount(mask) — always ≡ 0 mod 3, so 22 can never be one). The game
+        // reads the slot buffer as `skin.facial` floats whatever the track carries
+        // [M AnimFacialBlend 0x1be648's uVar9 loop], and `facial_weights` keeps that count guard.
         let win = script.sequences().filter(|(a, _, _)| (*a as f32) <= frame)
-            .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.channels.len() == count).map(|sq| (a, q)))
+            .filter_map(|(a, _, q)| s.seqs.get(&q).filter(|sq| sq.flags & 0x8 != 0).map(|sq| (a, q)))
             .last()?;
         let seq = s.seqs.get(&win.1)?;
         let mut out = nf_game::anim::facial_weights(seq, (frame - win.0 as f32 + 1.0).max(1.0), count)?;
@@ -7288,5 +7389,29 @@ mod tests {
         assert_eq!([12, 17, 30, 0, 60, 255].map(ticks_per_frame), [5, 3, 2, 1, 1, 1]);
         // Sister: the old reading (the byte as ticks) disagrees.
         assert_ne!(ticks_per_frame(12), 12);
+    }
+
+    /// sg5-laser-draw: the beam mesh's local (0, 0, −len) (its far end, the −z geometry) lands on
+    /// the beam's end for a TILTED beam, and the axes stay orthonormal.
+    #[test]
+    fn z_basis_puts_the_beam_end_on_the_end() {
+        let (a, b) = ([107.3f32, 25.04, 109.91], [108.84f32, 24.75, 109.10]);
+        let v = [a[0] - b[0], a[1] - b[1], a[2] - b[2]];
+        let len = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+        let mut m = z_basis(v, a);
+        for k in 0..3 { m[2][k] *= len; }
+        let far = nf_formats::placement::transform(&m, [0.0, 0.0, -1.0]);
+        for k in 0..3 { assert!((far[k] - b[k]).abs() < 1e-4, "end {far:?} vs {b:?}"); }
+        let m1 = z_basis(v, a);
+        let dot = |i: usize, j: usize| (0..3).map(|k| m1[i][k] * m1[j][k]).sum::<f32>();
+        for (i, j) in [(0, 1), (0, 2), (1, 2)] { assert!(dot(i, j).abs() < 1e-5); }
+        assert!(m1[0][1].abs() < 1e-6, "x stays horizontal");
+        // Sister: the tripbomb's atan2 yaw/pitch euler misses the end of the same tilted beam.
+        let yaw = v[0].atan2(v[2]);
+        let pitch = -v[1].atan2((v[0] * v[0] + v[2] * v[2]).sqrt());
+        let mut e = nf_formats::placement::object_matrix([pitch, yaw, 0.0], a);
+        for k in 0..3 { e[2][k] *= len; }
+        let efar = nf_formats::placement::transform(&e, [0.0, 0.0, -1.0]);
+        assert!((0..3).any(|k| (efar[k] - b[k]).abs() > 0.05), "the euler build should miss: {efar:?}");
     }
 }

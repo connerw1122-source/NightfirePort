@@ -67,7 +67,7 @@ pub fn mp_to_match(s: &MpSettings) -> MatchSettings {
 pub fn match_to_mp(m: &MatchSettings, seed: u32) -> MpSettings {
     MpSettings {
         players: m.players.map(|(team, skin, armor_bonus, radar_on)| MpPlayer {
-            team, skin, armor_bonus, radar_on,
+            team, skin, armor_bonus, radar_on, codename: String::new(),
         }),
         started: m.started != 0,
         gametype_mask: m.gametype_mask,

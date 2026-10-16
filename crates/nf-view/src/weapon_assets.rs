@@ -312,8 +312,13 @@ pub fn merge_weapon_assets<R: std::io::Read + std::io::Seek>(
         let fd = match read(archive_name)? { Some(d) => d, None => continue };
         let Ok(foreign) = Level::parse(&fd) else { continue };
         // The skins the level lacks join the accumulating table ([M AnimLoadFile 0x1d8248]).
+        // cross-process-determinism: walked in ascending hashcode, not the HashMap's per-process
+        // random order — `new_skins`' order feeds the load pipeline's mesh/lend bookkeeping, and
+        // the skins list is documented order-sensitive gameplay data.
         let mut new_skins: Vec<u32> = Vec::new();
-        for (h, sk) in foreign.skins.clone() {
+        let mut foreign_skins: Vec<(u32, _)> = foreign.skins.clone().into_iter().collect();
+        foreign_skins.sort_by_key(|&(h, _)| h);
+        for (h, sk) in foreign_skins {
             if level.skins.contains_key(&h) || !lend(h) { continue; }
             level.skins.insert(h, sk);
             new_skins.push(h);
