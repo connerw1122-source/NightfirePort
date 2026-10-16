@@ -258,6 +258,27 @@ pub static REWARDS_TABLE: [RewardEntry; 12] = [
     reward(0x0700_001B, [(0, 0, 0x25), (37, 0, 0x2003d), (61, 2, 0x40009), (9, 4, 0x10037), (55, 1, 0)]),
 ];
 
+/// The reward-text half of each `RewardsTable` entry — what `Menu_GetLevelBonuses` 0x1ffe98:21-31
+/// reads for the bonus page 0x40000038: per tier N (1..4) the entry's label at +0x18+4·N and the
+/// texture hash at +0x2c+4·N [L ee_start_05.bin 0x2bc920; the labels are `Txt_BindLabel` ids
+/// (`bank<<24|index` [M 0x1cad60:13]), the textures the 0x03xxxxxx sprite hashes the handler
+/// forwards with msg 0x24 to control 0x100001cf [M 0x209670:23]]. Indexed like
+/// [`REWARDS_TABLE`] (the same table order); `[tier - 1]` = (label, texture).
+pub static REWARD_TEXT: [[(u32, u32); 4]; 12] = [
+    [(0x2d6, 0x0300_012c), (0x2ec, 0x0300_0111), (0x0100_01f9, 0x0300_0102), (0x2f2, 0x0300_0118)], // 0x09000001
+    [(0x2d2, 0x0300_0134), (0x2e9, 0x0300_0116), (0x3a5, 0x0300_00f3), (0x2f1, 0x0300_0108)], // 0x07000005
+    [(0x2d3, 0x0300_0131), (0x2de, 0x0300_00a1), (0x2df, 0x0300_00e2), (0x0100_01fc, 0x0300_0196)], // 0x09000005
+    [(0x2d4, 0x0300_0133), (0x2ea, 0x0300_011a), (0x3a6, 0x0300_00df), (0x2ee, 0x0300_0113)], // 0x09000006
+    [(0x2d5, 0x0300_012f), (0x2e0, 0x0300_00a4), (0x3a7, 0x0300_00fa), (0x2ed, 0x0300_011d)], // 0x07000001
+    [(0x2db, 0x0300_012e), (0x2e1, 0x0300_00a3), (0x3a5, 0x0300_00f3), (0x2f0, 0x0300_010b)], // 0x07000009
+    [(0x2d7, 0x0300_0130), (0x3a3, 0x0300_011c), (0x3a8, 0x0300_00e0), (0x2e8, 0x0300_0110)], // 0x0700000c
+    [(0x2d8, 0x0300_012a), (0x2e3, 0x0300_009d), (0x3a5, 0x0300_00f3), (0x3a2, 0x0300_0148)], // 0x07000011
+    [(0x2d9, 0x0300_0198), (0x3a4, 0x0300_0114), (0x3a9, 0x0300_00e1), (0x2ef, 0x0300_010f)], // 0x09000002
+    [(0x2da, 0x0300_0132), (0x2e5, 0x0300_009e), (0x3aa, 0x0300_00e6), (0x3a1, 0x0300_010a)], // 0x09000003
+    [(0x2dc, 0x0300_012d), (0x2e6, 0x0300_00c4), (0x3ab, 0x0300_00c4), (0x2eb, 0x0300_0117)], // 0x07000014
+    [(0x0100_01ff, 0x0300_012b), (0x2e7, 0x0300_00a0), (0x3a7, 0x0300_00fa), (0x0100_01fb, 0x0300_0194)], // 0x0700001b
+];
+
 /// `ScoringTableDifMul` 0x2bc910 ([L]: [0.0, 1.0, 2.0]) — the difficulty bonus multiplier
 /// (difficulty 1 → [0], 2 → [1], anything else → [2] [M `PlrStat_GetScore` 0x1984b0:294-300]).
 pub static SCORING_DIF_MUL: [f32; 3] = [0.0, 1.0, 2.0];
@@ -424,15 +445,18 @@ pub struct Progress {
 
 impl Default for Progress {
     /// A fresh profile: everything zero except the difficulty's boot default 2
-    /// [M bootup 0x1c7e78:25]. (`Menu_SetNightfireStatus` 0x2023a0 defaults the loaded status to
-    /// 0x3 when the save holds 0 — the LOAD path's default, applied in `load`, not here.)
+    /// [M bootup 0x1c7e78:25] and the unlock word's boot state 0x3 — the shipped sp_level
+    /// .data bytes hold rows 0 and 1's +0x10 = 1, rows 2-11 = 0 [D ACTION.ELF .data file
+    /// offset 0x1d91e0, byte-dumped; the same two rows the game's fresh-codename template
+    /// writes via Menu_SetNightfireStatus 0x2023a0's 0x3 default]. (The LOAD path's own
+    /// 0 → 0x3 default stays in `set_nightfire_status`.)
     fn default() -> Self {
         Progress {
             stats: [PlrMissionStats::default(); 8],
             bond_moments: [0; 10],
             table: SCORING_TABLE,
             bonus: [0; 21],
-            nightfire_status: 0,
+            nightfire_status: 0x3,
             game_complete: false,
             // Bootup 0x1c7e78:86 sets `NewScoresRef = &DAT_0031ca38` (the zeroed PTPDATA tail);
             // the NULL GetScore abort is dead code in the shipped game.

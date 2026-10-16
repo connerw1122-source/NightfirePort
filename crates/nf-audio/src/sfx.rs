@@ -216,6 +216,13 @@ impl Driver {
     /// limits are the owning bank's, never the level's [S — the game loads one bank; the port extends].
     pub fn load_spare_bank(&mut self, slot: usize, bank: Bank, sbf: Vec<u8>) { self.slots.insert(slot, Slot { bank, sbf, pcm: HashMap::new() }); }
 
+    /// frontend-music: `Sound_Ready`'s front-end case re-points the primary bank on every
+    /// front-end load [M 0x1dceb8 case 0x7000048: bank 0xc / 0x38 by `DAT_002e1b11`, so the
+    /// jingle pair resolves only its id]. The port keeps the banks resident (the spare-bank
+    /// extension above), so the flip just re-points the first lookup. A no-op when the slot is
+    /// not resident.
+    pub fn set_primary(&mut self, slot: usize) { if self.slots.contains_key(&slot) { self.primary = Some(slot); } }
+
     /// `SFXSetupListener` (one listener): eye position and the camera's forward and left axes, all × 1000 as the EE
     /// packs them. `Norm` is the camera matrix's row 0, which points to the screen left.
     pub fn set_listener(&mut self, pos: [f32; 3], dir: [f32; 3], left: [f32; 3]) {
@@ -266,7 +273,14 @@ impl Driver {
             sample_hash: 0,
         };
         self.items.insert(0, item);
-        if self.setup(out, 0) { 0 } else { 1 }
+        if self.setup(out, 0) { return 0; }
+        // A start `SFXSetup` rejected (the distance/budget reject, `max_reject`, or the per-id
+        // `max_voices` limit) never keyed a voice and never cued a sample: it goes now, and the
+        // start reports the failure. Left in the list it reached the next `update` before the kill
+        // pass, and the polyphonic arm indexed its empty `cued` — the playtest crash (1015-2142,
+        // sfx.rs `fx.subs[cued[k]]`) when the front end restarted its music pair over the live one.
+        if self.items[0].delete { self.items.remove(0); }
+        1
     }
 
     /// `ES_GetDist`: world units (`√(min Σ(Δ/100)²) / 10`).

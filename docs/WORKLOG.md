@@ -13500,6 +13500,24 @@ Work Log (credits-data):
 - (19:50-19:56) Tests crates/nf-view/tests/credits_data.rs (11, all green): count 0x242 + order pins (entries 0/1/2 = labels 0x10002a5/a6/a7 wide; 361 = 0x1000264 kind 2; 565 = 0x10002a1; 577 = a wide gap) + the slot accounting (209/504/241/202) + scroll rate (510 on entry, −2/frame exact) + the 14-frame period/mod-26 slots + the music fade window (686@vol700 → 0 at 578×14) + the exit/return pages (AV → CnAv, win → Main, no early fire) + the AV row opens the page + the NF_ISO pin: USATxt 0x198 binds "Credits", neighbour 0x197 does not. Fail-first evidence: the order pins caught the wrong tail index (553 vs the real 565) and a reversed sign in the scroll assert before the fixes.
 - (19:56) Run on this tree: nf-view lib 9/9, credits_data 11/11, menus_flow 36/36 (the file menu.rs touches); nf-view release build clean. The full suite didn't fit the window's tail (suite.py not on master; background jobs get reaped here) — the affected crates are nf-view only (no nf-game/nf-formats/nf-audio code changed).
 - (19:25) Extended verification on the final tree: campaign_flow_live 5/5, dev_menu_flow 5/5, fix_weapon_modes_live 6/6 (all the menu-driven nf-view suites) — 72 nf-view tests green total on this branch; no nf-game/nf-formats/nf-audio code touched. Finish steps ran (queue: done/613-credits-data.md carries the report); ntfy quota-429 on all three fallbacks, recorded in the report.
+
+## unlock-popups (2026-10-15, branch s/unlock-popups) — started 20:44 UTC
+Task: the unlock pages after a mission's results — P_NFBONUS_Handler 0x209670 (007 Bonus earned), P_CHEATMEDAL_Handler 0x2086b0 (cheat/medal unlock), P_WINGAME_Handler 0x215100 (campaign end). Port when each appears (medal tiers, the 007 Bonus, which unlocks — missions, MP maps/characters/scenarios, cheats — from which progress fields), what each shows (label ids, textures), the order, and where each returns. State + flow on FrontEnd after results_enter; getters for the draw code. No drawing.
+
+Work Log (unlock-popups):
+- (20:44) Sandbox reused: repo present but on stale branch; work/ + ISO + target/ salvaged from the previous sandbox's repo copy (no downloads needed). Branch s/unlock-popups created from origin/master @ 1d1b98dc, pushed with this entry. Full suite starting in background next.
+
+Work Log (unlock-popups):
+- (20:44-21:05) Setup: repo salvaged from the previous sandbox copy (work/ + ISO + target/, no downloads); branch s/unlock-popups from origin/master 1d1b98dc. Background processes get reaped here, so the suite ran as foreground per-crate chunks instead.
+- (21:05-21:30) Research [M 0x2029e0 the page table]: results 0x40000036 → NFBONUS 0x40000038 → (just_completed) WINGAME 0x40000053 → 0x40000030 credits; else NFMAP 0x4000001c. The trigger flag DAT_002e1c2c is set inside Menu_SetLevelBonus 0x1ffa10's reward loop (a tier's bit not yet standing); just_completed = level==0x0700001b. NFBONUS 0x209670:13-43 builds its text from Menu_GetLevelBonuses 0x1ffe98 — per tier Menu_HasMedal(level,N,0) + entry labels at +0x1c..+0x28 and textures at +0x30..+0x3c, concatenated tier 1→4→3→2.
+- (21:30-21:40) [L] dumps: RewardsTable from ee_start_05.bin 0x2bc920 (real layout: five 4-byte descriptors + 4 labels + 4 textures — the port's {bit,kind} fields were right, labels/textures unmodeled → new REWARD_TEXT static); the three pages walked from the disc's menu-def (08000002): NFBONUS full layout (header 0x2c5, hint 0x2d0, 0x100001cf texture, 0x100001d0 text list), WINGAME a bare root-only record, CHEATMEDAL 0x4000004c NOT in the def and no code/data route into it (open question; its rows grant medal_from_cheat 0x30cc74 = 999/1/2/3/4 and poke the mission-end channels 99/100).
+- (21:40-22:05) The port: menu.rs PAGE_NF_BONUS/PAGE_WIN_GAME/PAGE_CHEAT_MEDAL + Page variants, BonusFields/RewardLine, bonus_enter/win_enter/win_movie_finished/cheat_medal_confirm, the Results-Confirm three-way route, results_level; progress.rs REWARD_TEXT. Tests: unlock_popups.rs 12 headless + unlock_popups_live.rs ISO-gated pins. Fail-first caught: the win-page "no controls" pin was wrong (the root control counts) before the fix.
+- (22:05-22:20) Ran: nf-view + nf-game full test sets green (205+35+... all ok; unlock_popups 12/12, unlock_popups_live 1/1). Doc docs/systems/unlock-popups.md; report docs/reports/unlock-popups.md.
+
+## unlock-popups2 (2026-10-15, branch s/unlock-popups2) — started 23:40 UTC
+
+Work Log (unlock-popups2):
+- (23:40) Branch created from origin/s/unlock-popups @ b1432898 (the HELD 619: post-results bonus / cheat-medal / win pages; 1540/1 on master+619 with campaign_flow_live's front_end_chain_01_to_05 expecting Page::MissionSelect after the results Confirm but getting Page::NfBonus). Next: merge origin/master, reproduce, decide from the game's own flow which is right, fix code or test with that evidence.
 ## drive-physics (2026-10-15, branch s/drive-physics) — started 20:21 UTC
 - Task: the driving missions' car physics. Port the player car's physics step from DRIVING.ELF: the tuning
   parameters (parse data\tuning\Physics\*.tun from the VIV archives), the integration (engine/gear/brake/
@@ -13680,6 +13698,56 @@ Work Log (drive-ai-traffic2):
   predicate, the turn-rate pair, the −13 gravity on camera, the Friction tun's dead keys) and the ntfy
   429 record. What's left for the next message: the VU0 macro (.vutext 0x324800), car↔world collision
   vs the track quads, suspension/world colliders, handbrake in the step, the Friction name normalizer.
+
+## frontend-music (2026-10-15, branch s/frontend-music) — started 21:55 UTC
+- Task: port the front end's music — track ids, start/stop/crossfade over page changes (title, main menu, list
+  pages, results, MP setup), the pause page music, movie backdrops' own audio vs the music, and the mission-end →
+  front-end handover. Data + state + flow + getters (no drawing), in nf-view/menu.rs or nf_game. Tests: numbers only.
+- Status: branch created from origin/master (65528c8f), WORKLOG entry pushed. Research phase next.
+
+### frontend-music — session result (2026-10-16, ~00:25 UTC)
+
+- Ported the front end's music (no drawing): `crates/nf-view/src/menu_music.rs` — `MenuMusic`
+  (the state: `jingles_up` = `menu_movie` 0x2e1c48, `bank_flip` = `DAT_002e1b11`, `loaded_bank`
+  = the resident bank hash, `credits_saved_vol` = `music_vol_524`, `music_master` =
+  `MusicMasterVolume` @ 0x30c958, init 70 [L]) + `MusicCmd` (StopJingles / StartJingle /
+  StartMusic / StopMusic / MusicVolume / FadeDownMusic), and the transitions: the five restart
+  pages (P_START 0x20a408:17-22, P_MAIN 0x20a7b0:42-47, P_NFMAP 0x20b608:36-41, P_NFRESULTS
+  0x208e78:60-65, P_MPDEBRIEFING 0x212198:85-90 — `if menu_movie == 0 { SFXRemove 0x1d7+0x470;
+  SFXStart both; menu_movie = 1 }`), the no-op list pages + MP setup chain (pair continues),
+  the credits swap (enter 0x2152b0:89-93: save vol, remove pair, `SFXStartMusic(0x27,0)`; leave
+  :56-63: `SFXStopMusic`, restore the ENTRY volume, pair back), the movie pages (Menu_PlayMovie
+  0x215990:14-15 removes the pair, `psiStartBackgroundMovie(…, SFXGetVolume())` replaces it;
+  the finish arms 0x209e88:23-28 et al. restart it), the pause hold (MenuManager_Create
+  0x21b908:121-124 SFXPause+SFXPauseAllStreams / Delete 0x21c2b0:11-15), the quit fade
+  (SFXFadeDown(1) at 0x204408:150 / 0x216618:28 / 0x20ec00:155), the AV music slider (×5,
+  0x214818:72/80) and the cheats MUSIC toggle (0/100, 0x215bf0). The bank alternation
+  (Sound_Ready 0x1dceb8 case 0x7000048: hash 0xc/0x38 by DAT_002e1b11, flip after) is verified
+  against the disc: SBINFO slot 0 = 0xc = SB_0 carries jingle 0x1d7, slot 1 = 0x38 = SB_1
+  carries 0x470, mission banks (SB_12) carry neither — the port issues the resident bank's id.
+- Host wiring: `App::menu_music_tick` per redraw (page-change transitions + command drain +
+  the per-frame pump), the front-end load hook (`front_end_sound_ready` →
+  `Driver::set_primary` → `jingles_up = false` → `fe_music_page = None`), the menu hold
+  narrowed to the pause page only (the front end's own pages never pause sound), the intro
+  movie glue calls `movie_started`/`movie_finished`. Silent under NF_SILENT (no output → the
+  commands only bookkeep). `FrontEnd` gains the `music` field (own lines).
+- Doc: docs/systems/frontend-music.md (§1 no MapMusic for 0x7000048 — UpdateMusicalEvents
+  0x114e70:17 skips it; §2 the pair + banks; §3 the page table; §4 credits; §5 movies;
+  §6 pause; §7 mission-end handover; §8 volume knobs; §9 the port; §10 tests).
+- Tests: crates/nf-view/tests/menu_music_flow.rs — 14 (10 headless numbers-only + 4 NF_ISO
+  sisters with tamper-proofing sisters of their own kind: fresh-state discriminators, SBINFO
+  slots, SB_0/SB_1 jingle exclusivity, a mission bank lacking both jingles, the credits track
+  0x27 through MFXINFO.MXI). Two real bugs the first run caught and the decomp settled:
+  `jingle_id` must read the RESIDENT bank (added `loaded_bank`, init 0xc — the boot's own
+  Sound_Ready consumes DAT=0), and the full-walk test now runs the boot's own flip; the ISO
+  sisters read banks through `soundbank::bank_path` (PS2/ENGLISH/SB_<s>>3>/SB_<s>.<ext>).
+- Run before push: `cargo test --offline --release -j2 -p nf-view -p nf-audio` → 145 passed /
+  0 failed (includes menu_music_flow 14/14, menus_flow 36/36 unchanged, nf-audio bank/sfx
+  suites). Crates touched: nf-view, nf-audio.
+- Left: the merge with origin/master (it moved to 24b1f4dd) + the full four-crate suite on the
+  final tree, the PTP-persisted DAT restore nuance ([S] noted in the doc), the main agent's
+  audible/visual pass (menus must SOUND — no render checks apply; live checks listed in the
+  report if wanted).
 ## drive-track-mesh (2026-10-15, branch s/drive-track-mesh)
 - Started: decode CRP track geometry into meshes (verts/indices/UVs/texture refs per section, collision/road surface if separable). Plan: read docs/formats/crp.md + the 503 parser, map the track-mesh chunks, add nf-formats mesh decode + `crp-mesh` OBJ export in nf-extract, goldens of per-section counts + SHA-1s of decoded buffers. In progress.
 
@@ -14104,6 +14172,153 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
 - Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
   (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
   attract page draws the movie fullscreen over black, no controls, no plate.
+## unlock-popups2 (2026-10-15, branch s/unlock-popups2) — DONE 01:10 UTC
+
+Work Log (unlock-popups2):
+- (23:38-23:45) Branch from origin/s/unlock-popups @ b1432898, pushed with the start entry; merged
+  origin/master. menu.rs had 4 conflict blocks — all "both sides" (619's fields/methods/wheel arms
+  beside codename-entry/nfstats-model/secret-codes/screen-adjust); `secret: SecretEntry` was on both
+  sides, kept once. Two merge slips fixed right after: stats_enter was nested inside
+  cheat_medal_confirm (unclosed delimiter) and the master-side constructor inits were missing
+  (E0063) — the merge commit + the fix commit are separate on the branch.
+- (23:47-23:49) Reproduced: front_end_chain_01_to_05 FAILED at :751 (expected MissionSelect after
+  the results Confirm, got NfBonus) — same as the hold record.
+- (23:50-00:00) The evidence: P_NFRESULTS case 0x4b routes on DAT_002e1c2c — set inside
+  Menu_SetLevelBonus 0x1ffa10's tier loop (medal 4..1, ProcessRewardCounter's "not already
+  standing" arm [M 0x1ffa10:71-82]) — to the 007 Bonus page 0x40000038 [M 0x208e78:48-53]; only
+  with no new reward does Confirm go straight to the mission list [M :39-44]. P_NFBONUS's own 0x4b
+  lands on 0x4000001c while !just_completed [M 0x209670:50-53]. A probe of the failing leg:
+  mission 01 scores 24150000 → medal 4 (platinum) → on a fresh profile every tier 1-4 is newly
+  granted → the game DOES show P_NFBONUS. The port's new_reward mirrors the same gate
+  (results_enter → set_level_bonus → progress.new_reward). VERDICT: the code is right, the test
+  was wrong — fixed by Confirming through the bonus page when it shows (with sister asserts: the
+  hop implies new_reward, the host's bonus_enter runs on the page enter, the second Confirm).
+  front_end_chain_live's single-Confirm test is untouched (its mission_ended path never sets
+  new_reward — matches the 1540/1 record).
+- (00:00-01:08) The suite on the final merged tree (background suite.py starts kept dying — the
+  cargo-lock race + this sandbox reaping detached processes; foreground slices + a direct sweep):
+  nf-game FULL 41 binaries 375 passed / 0 failed. nf-formats + nf-audio FULL 105 passed / 3 failed
+  = exactly the 3 disc_golden slim-ISO tests (allowed). nf-view: all 304 test binaries executed
+  (a -P 2 direct sweep, 90 s caps) — the ONLY real failure is the known no-GPU fix_0c_pylon_live
+  pair (2 tests); campaign_flow_live 5/5 (99 s), fix_guard_weapons_live 3/3 (164 s),
+  fix_party_mission_live 15/15 (74 s), fix_death_restart_live 8/8 (13 s) all pass with serial
+  re-runs — their sweep failures were the 90 s cap (124) or the parallel kill (137), not real.
+
+Stage Summary:
+- 619 landed: the held suite failure is fixed by the test change the evidence demanded (the game's
+  own post-results hop through P_NFBONUS on a new reward), the code needed nothing.
+- Branch s/unlock-popups2: merge 7f715272 + fix b1f7b487 + test fix eea62bcc + report.
+- Left: the pylon pair needs the main agent's GPU render check (as recorded by 507/drive-ptp);
+  P_NFBONUS's page-enter build is host-driven (bonus_enter) — a host integration may want to call
+  it automatically on the page switch.
+### frontend-music — merge + final-suite note (2026-10-16, ~01:10 UTC)
+
+- Merged origin/master (24b1f4dd): master's async-level-load moved the scene load onto a worker
+  (`start_async_load`/`poll_async_load`/`swap_in_scene`) — the front-end music hook re-homed to
+  `poll_async_load`'s Ok arm right after `swap_in_scene` (which owns `build_sound` now), keyed
+  on `load.next == FRONTEND_LEVEL`. WORKLOG both kept. Two integration gaps fixed while merging:
+  the boot's own flip was never consumed (run()'s `if front_end` now calls
+  `front_end_sound_ready()` + `set_primary`, so the first mission-return flips to 0x38 like the
+  game's), and `demo_results`' fresh FrontEnd lost the global `DAT_002e1b11`/volume state
+  (it now inherits `bank_flip`/`loaded_bank`/`music_master`).
+- Final tree (merged, 80cfabfb+): full four-crate suite `cargo test --offline --release -j2
+  --no-fail-fast -p nf-game -p nf-formats -p nf-audio -p nf-view -- --test-threads=1` — every
+  binary green except the 3 slim-ISO `disc_golden` (the allowed trio) and `fix_0c_pylon_live` ×2
+  (the documented no-GPU environmental set, wgpu "adapter: NotFound"). A capture run reached
+  766 passed / 5 failed before a tool timeout killed it mid `fix_guard_weapons_live`; that
+  binary re-ran clean (3/3). The fast runner (tools/test/suite.py) was started detached and died
+  between tool calls again (empty suite.out, 0 processes) — the foreground four-crate command is
+  the substitute, as in the three previous tasks. Crates the tests touch (nf-view, nf-audio)
+  ran 145/0 pre-merge and 14+37 flow tests post-merge, all green.
+## mission-unlock-flow (2026-10-16, branch s/mission-unlock-flow) — started 00:32 UTC
+- Sandbox reset then repo recovered at /home/z/my-project/NightfirePort (work/, ISO, target/ cache intact).
+- Branch created from origin/master (0f5f07f4). Plan: docs/systems first (P_NFRESULTS_Handler 0x208e78 commit →
+  sp_level[i]+0x10 unlock → codename save → restart persistence; driving rows 0x0900000x / PTP handover / 502),
+  then flow+state in FrontEnd/progress with tests.
+- mission-unlock-flow close-out: the chain verified end to end + three fixes — the boot unlock
+  word 0 → the disc's 0x3 [D ACTION.ELF .data 0x1d91e0] (the old default dropped row 0 on the
+  first award's mirror), the host seeds each fresh sim's Progress.nightfire_status from the live
+  FrontEnd at the scene swap (the game's one sp_level global; the port splits it), and the SP
+  confirm now splits on-foot/driving [M 0x20b8d8:29-40]: driving rows land in GameFlow state 9
+  (the DRIVING.ELF handover, 0x1d3800:104-108, gate 0x202750) with no bogus level load; getters
+  packed_unlocks/launching_driving/is_driving_level. Driving rows + PTP handover documented in
+  docs/systems/mission-unlock-flow.md; "502" unresolved (zero decomp hits). Tests: mission_unlock_flow
+  4/4 (the headless 3-mission chain + save/load round trip + session-only + state-9 split), nf-game
+  lib 212/212 (2 secret_codes expectations updated to the booted base), menus_flow 37/37,
+  codename_entry 14/14, fix_save_profile_live 4/4, campaign_flow_live 5/5. Report:
+  docs/reports/mission-unlock-flow.md.
+## memcard-save-flow (2026-10-16, branch s/memcard-save-flow) — started
+- Task: port the save flow around the profile — when the game saves (LS_Save callers, P_PS2MEMCARDINIT_Handler
+  0x218538, C_LBERROPTIONS_Handler 0x2185e8, Menu_UpdateMessageBox 0x1f7de8's cases), the messages it shows
+  ("Saving…", card-full / no-card errors), autosave behaviour; map card states to the port's file save honestly
+  (no fake card errors). State + messages on FrontEnd, host writes the file.
+
+---
+## memcard-save-flow (2026-10-16, branch s/memcard-save-flow) — close-out
+- Doc: docs/systems/memcard-save-flow.md — the triggers (results commit P_NFRESULTS 0x208e78 /
+  codename create C_KEYBOARD 0x213a98 + P_CNNAME 0x213790 / the wheel's Save Codename row
+  C_SBCNOPTIONS 0x213528 case 6 / the delete C_SBCNSELECT 0x212f58), the LS_*/psi numbers,
+  HandlePS2CardState 0x110b98's CardState table, PS2_DoCardFlow 0x217bd8's full message →
+  Txt-label → buttons table with the USATxt.dat strings [D FILES.BIN → USATxt.dat], the
+  MENU_LS 0x2e1ad0 layout, and the autosave finding (xbox_save_flag never set, Txt 0x26f
+  "Autosaving data…" unbound — the prompted results save IS the automatic one).
+- Code: CardFlow on FrontEnd (menu.rs) — CardMsg id/label/buttons tables, request_save/create/
+  delete, card_tick (the port's HandlePS2CardState pump inside tick()), card_answer (the
+  answer value = the button bit), card_message() for the draw code; every save to an existing
+  codename asks ASK_OVERWRITE [M 0x10fa08 sub-7]; a confirmed overwrite-create writes the
+  fresh template [M Menu_MapDefaultCodename 0x1f7fa8]; write failures surface "Save failed!"
+  (StorageFull → the honest card-full msg 3); corrupt/missing profile loads surface
+  "Load failed!" with a working Retry — fix-save-profile's leftover overwrite flow done.
+  Results save moved behind the game's 0x1000206 prompt (Confirm opens, Yes saves, No routes,
+  a failure re-asks [M 0x208e78:196-201]).
+- Tests: memcard_save_flow.rs 7/7 (tables numbers-only, USATxt strings ISO-gated incl. the
+  never-shown card set, results commit writes once w/ the synced contents, the No path, the
+  failure loop + re-ask, the corrupt-load retry, enums never write); codename_entry 14/14 and
+  campaign_flow_live 5/5 moved to the flow model. Ran on the final tree (master 0f5f07f4, a
+  no-op merge): nf-game lib 212/212, nf-formats 79/79, nf-audio 9/9, nf-view lib 15/15;
+  suite.py --only 16 touched/neighbour binaries → 119 passed / 0 failed (build ok: 367).
+  Foreground only — this sandbox reaps background jobs (suite.out stayed empty twice).
+- Left: the draw pass for the prompt + the card dialogs (the state is all on FrontEnd); the
+  ENOSPC→card-full arm is untested end-to-end; the MP-join mode-5 oddity documented; live
+  checks listed in docs/reports/memcard-save-flow.md (the every-save overwrite question and
+  the options-don't-save reading).
+## difficulty-effects (2026-10-16, branch s/difficulty-effects) — difficulty audit, started
+- Task: audit everything the selected difficulty changes in the game (GameState+0x40 from the
+  difficulty table 0x2df4c0+0x0c; find every read): enemy damage/accuracy/reaction/health, Bond's
+  damage taken, armour, ammo, hints on/off, the score's difficulty bonus, objectives per
+  difficulty, continue health boosts (ContinueHealthBoost*). List each with its address and the
+  port's status; implement the missing ones in the sim. Tests per effect (numbers only) with
+  sister assertions. Doc: docs/reports/difficulty-effects.md at finish.
+
+## difficulty-effects (2026-10-16, branch s/difficulty-effects) — DONE 01:47 UTC
+- Audit complete: every GameState+40 DECIMAL (= +0x28 hex, 0x2a3790) read enumerated from the
+  decomp + full-ELF scan; 0x2a37a8 is the skip-Game_Draw byte (3 docs cited it wrong — fixed).
+- 13 effects already implemented/neutral in the port; 4 missing ones implemented: Drone_Create's
+  min-difficulty spawn gate (0x136be0:49), Lock_Create's Operative auto-unlock (0x1ae1f8:67),
+  Hint_Create's stage gate (0x1b3248:12-25), Copter_Create's HP (0x17d340:76-94), plus the
+  front-end pick wiring (menu confirm -> App -> load_with_carry_difficulty -> Scene::build).
+- Tests: difficulty_gates.rs (3, numbers), difficulty_spawn_gate_live.rs (07000011 rosters
+  20/33/37), difficulty_wiring_live.rs (menu->sim end-to-end); 07000012 walkthrough moved to a
+  d3 load (its reinforcement is param2=2 — the gate holds it on Operative).
+- Ran: nf-game + nf-view + nf-audio green, nf-formats only the 3 slim-ISO disc_golden failures.
+  Report: docs/reports/difficulty-effects.md.
+## mp-hud-data (sandbox7, started 2026-10-16T00:55Z)
+
+Task 632: the MP HUD's data model — what the in-match HUD reads (per-agent score/frags, the match
+timer, the scenario's objective status — flags held, uplink progress, the Top Agent target, the
+radar's blips) as a per-frame snapshot struct with getters (scores sorted the game's way, timer
+mm:ss, objective markers in world space, radar blips relative to the viewer). No drawing — the
+main agent draws it. Tests: a headless match's snapshot matches the sim state. Branch s/mp-hud-data.
+
+### mp-hud-data progress (sandbox7, 2026-10-16T00:55Z–)
+
+- nf_game::mp::hud: MpHudSnapshot::build(&MpMatch, viewer_slot, viewer_radar_on) — rows (slot
+  order; sorted_rows = the debrief's descending Menu_GetMPScore order), time_left + timer_string
+  (Timer_Seconds2String mode 2), team_scores, flag carriers (MP_HasTeamFlag's carrier-pointer
+  datum), uplink owner/controller/RGB, assassin/target (the globals' inverted names pinned),
+  names_on_radar gate, radar blips (MP_GetRadarObjects: viewer excluded, dead dropped, team
+  colors, the per-scenario markers, the +0x28 radar toggle gate — new MpPlayer::radar_on).
+  Feeds nf_view::hud::radar_project (already ported). Tests mp_hud_data 4/0 headless.
 ## fix-gas-rng4 (2026-10-15, branch s/fix-gas-rng4) — started 23:59 UTC
 
 Task: land 111d3's (s/fix-gas-rng3, tip fbf62779) deferred impact draws on top of master's

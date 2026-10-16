@@ -249,16 +249,17 @@ mod tests {
 
     #[test]
     fn valid_code_sets_its_unlock_and_invalid_sets_nothing() {
-        // A fresh profile: bonus[0] = 0, nightfire_status = 0.
+        // A fresh profile: bonus[0] = 0, nightfire_status = the boot word 0x3
+        // [D ACTION.ELF .data 0x1d91e0: rows 0-1's +0x10 = 1].
         let mut p = Progress::default();
         // The miss path: nothing changes (the game returns without feedback [M 0x213a98:68-70]).
         assert!(!submit(&mut p, "NOTACODE"));
         assert_eq!(p.bonus[0], 0);
-        assert_eq!(p.nightfire_status, 0);
+        assert_eq!(p.nightfire_status, 0x3);
         // BOWLER sets exactly bit 38.
         assert!(submit(&mut p, "BOWLER"));
         assert_eq!(p.bonus[0], 1 << 38);
-        assert_eq!(p.nightfire_status, 0);
+        assert_eq!(p.nightfire_status, 0x3, "the boot flags ride untouched");
         // A second code ORs on top (Menu_SetBonus's OR arm [M 0x1ff898:79-84]).
         assert!(submit(&mut p, "GAMEROOM"));
         assert_eq!(p.bonus[0], (1 << 38) | 0x3f00_0000_0000_0000);
@@ -282,15 +283,16 @@ mod tests {
     #[test]
     fn mission_codes_toggle_one_level_flag_each() {
         let mut p = Progress::default();
-        // POWDER toggles flag 2 [M the ^4 store at 0x2007c8].
+        // POWDER toggles flag 2 on top of the boot word [M the ^4 store at 0x2007c8; the boot
+        // rows 0-1 stand, D .data 0x1d91e0].
         assert!(submit(&mut p, "POWDER"));
-        assert_eq!(p.nightfire_status, 1 << 2);
+        assert_eq!(p.nightfire_status, 0x3 | (1 << 2));
         assert!(submit(&mut p, "POWDER"));
-        assert_eq!(p.nightfire_status, 0);
+        assert_eq!(p.nightfire_status, 0x3);
         // VACUUM toggles flag 11 [M the ^0x800 store at 0x200a9c] and leaves the others.
         assert!(submit(&mut p, "POWDER"));
         assert!(submit(&mut p, "VACUUM"));
-        assert_eq!(p.nightfire_status, (1 << 2) | (1 << 11));
+        assert_eq!(p.nightfire_status, 0x3 | (1 << 2) | (1 << 11));
     }
 
     #[test]

@@ -115,10 +115,19 @@ fn host_and_client_lockstep_1000_ticks() {
     for t in 0..1000u32 {
         host.local_input(t, scripted_input(t, 0));
         client.local_input(t, scripted_input(t, 1));
-        let _ = host.poll();
-        let _ = client.poll();
-        let hi = host.ready_inputs(t).expect("host ready");
-        let ci = client.ready_inputs(t).expect("client ready");
+        // A missing input is a stall, never a guess (the session contract): the app's frame waits
+        // and polls again. Loopback UDP can land a few hundred microseconds after the send, so the
+        // test pumps until both sides hold tick `t` (bounded at 1 s) instead of demanding the packet
+        // arrive by the very next poll — that assumption made the test flaky (1-3 in 6 runs).
+        let deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let (hi, ci) = loop {
+            let _ = host.poll();
+            let _ = client.poll();
+            if let (Some(h), Some(c)) = (host.ready_inputs(t), client.ready_inputs(t)) { break (h, c); }
+            assert!(std::time::Instant::now() < deadline, "tick {t}: both inputs arrive within 1 s (host {:?}, client {:?})",
+                host.ready_inputs(t).is_some(), client.ready_inputs(t).is_some());
+            std::thread::sleep(Duration::from_micros(200));
+        };
         assert_eq!(hi[0].forward.to_bits(), ci[0].forward.to_bits(), "tick {t} slot 0");
         assert_eq!(hi[1].forward.to_bits(), ci[1].forward.to_bits(), "tick {t} slot 1");
         assert_eq!(hi[1].fire, scripted_input(t, 1).fire, "tick {t} slot 1 fire");
