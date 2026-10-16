@@ -19,3 +19,7 @@ Tests for each rule on a real level. Update GAPS.md with what is closed.
 
 ---
 claimed-by: sandbox6 at 2026-10-16T20:08Z
+
+---
+## Report (done, 2026-10-16T20:58Z)
+
