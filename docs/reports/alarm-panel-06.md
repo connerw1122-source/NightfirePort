@@ -78,7 +78,9 @@ probe (the test-facing read of the private handles).
    stays low and the siren never starts.
 
 Crates run before push: `nf-game --lib` (234 passed), `nf-view --lib` (15),
-`alarm_panel_06_live` (2), `sound_coverage_live` (4) — all green.
+`alarm_panel_06_live` (2), `sound_coverage_live` (4), and after the code change the level's own
+walkthrough plus the guard systems: `walk_07000006_live` (2), `ai_live` (35), `spawner_kill` (9) —
+all green.
 
 ## Full suite
 
