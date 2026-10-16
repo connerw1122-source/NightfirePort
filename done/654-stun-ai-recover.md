@@ -15,3 +15,7 @@ behaves like the game. Tests on 07000005 with the Stunner (0x4a/0x4c) on a guard
 
 ---
 claimed-by: sandbox6 at 2026-10-16T03:10Z
+
+---
+## Report (done, 2026-10-16T04:40Z)
+
