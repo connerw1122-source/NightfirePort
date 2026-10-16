@@ -85,12 +85,15 @@ All headless, numbers-only, each with a sister assertion that can fail (docs/sys
   an alignment check via 0x30b = "Brake".
 - The branch is merged with origin/master (7ac86f13, the drive-ai-traffic2 batch — clean, no
   conflicts) and all the above ran on the merged tree.
-- **Suite**: the background `suite.py` is reaped by this sandbox between tool calls — it died
-  twice with an empty `suite.out` (documented the same way by the subtitle and dossier tasks
-  before). A third attempt runs while this report is written; its total line is appended below if
-  it survives. What the foreground covered is the list above: nf-game whole (221 + 407),
-  nf-formats, nf-audio, nf-view's lib + menu flows + the disc label test — everything my diff can
-  reach, plus the four-crate lib spread of rule 5.
+- **Suite** (`tools/test/suite.py`): the background runner is reaped by this sandbox between tool
+  calls (it died three times with an empty `suite.out` — the same thing the subtitle and dossier
+  tasks documented). Foreground runs covered everything the diff can reach (the list above: the
+  whole nf-game crate lib + integration, nf-formats, nf-audio, nf-view's lib + menu flows + the
+  disc label test). One timed foreground suite attempt on the merged tree: build ok (369 test
+  binaries, 338 s), then it completed **15 binaries / 110 passed / 0 failed / 0 TIMEOUT** before
+  the tool-call time limit killed it (the remaining ~354 are the long nf-view `_live` render sets
+  that have not fit any worker window here — flagged for the next window, as in previous
+  reports).
 
 ## What's left
 
@@ -121,6 +124,6 @@ These settle what the sandbox cannot (addresses from the research; car pointer a
    frame). Expected: 0.25-steps toward −1.0 over 4 frames, back to 0 over 4 — the exact shape the
    port's `CarInputStage` reproduces for the A/D keys.
 
-## ntfy failed
+## ntfy
 
-(none — the notification step runs after this report is pushed; see the queue status.)
+(the notification is sent after this push; any failure's exact error would be recorded here.)
