@@ -23,3 +23,8 @@ Tests: the cut-scene runs to completion headless, and the flagged entities' matr
 
 ---
 claimed-by: sandbox6 at 2026-10-16T05:57Z
+
+---
+## Report (done, 2026-10-16T07:09Z)
+
+Closed by the driver: the report is on `s/drake-cutscene-06` (docs/reports/drake-cutscene-06.md); the worker didn't run finish.sh.
