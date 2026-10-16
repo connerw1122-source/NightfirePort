@@ -8,7 +8,7 @@ The game's rule [M 0x1957a8:21-34], with the fail/death menu's Restart passing b
 (`P_ENDMISSION_Handler` 0x216618:19-21): the saved health — the float at **RamSave+0x5FC** — is
 floored at the difficulty's `ContinueHealthBoost*`:
 
-- **The pick**: the difficulty global **`GameState+0x40`** (0x2a37a8) — 1 →
+- **The pick**: the difficulty global **`GameState+0x40`** (Ghidra DECIMAL 40 = hex +0x28 = 0x2a3790) — 1 →
   `ContinueHealthBoostEasy` (0x30cc34), 2 → `ContinueHealthBoostMedium` (0x30cc38), anything else
   (0/3/4) → `ContinueHealthBoostHard` (0x30cc3c). All three are **50.0** on the retail build
   [L ee_start_05.bin 0x30cc34..3c].

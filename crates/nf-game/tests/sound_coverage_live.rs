@@ -160,7 +160,7 @@ fn lock_burn_through_plays_0x249_and_0x5dd() {
     let mut sim = l.sim();
     // A lock on the bullet's path: the watch shot flies -x from Bond's head.
     let lock_pos = [10.0, 1.5, 10.0];
-    sim.locks.push(nf_game::lock::Lock { placement: 0, pos: lock_pos, radius: 1.0, out: 0, key_channels: [0xffff; 2], burn: 0, burned: false });
+    sim.locks.push(nf_game::lock::Lock { placement: 0, pos: lock_pos, radius: 1.0, out: 0, key_channels: [0xffff; 2], burn: 0, burned: false, unlock_on_operative: false, unlocked: false });
     let hearing = nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false };
     sim.fire_player(&d, [14.0, 1.5, 10.0], [-1.0, 0.0, 0.0], 0x4f, hearing);
     let bond = bond_at([14.0, 1.0, 10.0]);

@@ -4694,7 +4694,7 @@ impl Scene {
     }
 
     /// `skeletons`: every skeleton on the disc by id; `sequences`: the level's animation archive, grouped by skeleton.
-    pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>) -> Scene {
+    pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>, difficulty: u32) -> Scene {
         let by_hash: HashMap<u32, (u8, usize)> = sequences.iter()
             .flat_map(|(&sk, v)| v.iter().enumerate().map(move |(i, s)| (s.hashcode, (sk, i)))).collect();
         let (mut instances, missing) = level.scene_instances(cels_only);
@@ -5815,6 +5815,12 @@ impl Scene {
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.lights = lights;
+            // The selected difficulty BEFORE the creates: every create-time gate reads it
+            // (captain_setup 0x14b300:504-535, Drone_Create's min-difficulty tag 0x136be0:49,
+            // Lock_Create's Operative auto-unlock 0x1ae1f8:67, Copter_Create's HP 0x17d340:76,
+            // Hint_Create's stage gate 0x1b3248) — the game loads with GameState+0x28 already
+            // holding the menu's pick [M C_SBNFDFCTY 0x216ca8:15].
+            drones.set_difficulty(difficulty);
             drones.attach_level(level);
             // fix-door-portal-links (G-035): `build_LinkDoors2Portals` (0x1c8ac8) runs at load — each
             // portal-linked door (placement param 4) takes the portal quad it sits in; the vision
@@ -5854,7 +5860,7 @@ impl Scene {
             // obj+0xD0 chain is filled by the player's pick through it [M Collide_Update
             // 0x1ea398:160-233 + the reciprocal node append]). `Hint_Update` fires once when the
             // player's cel is in the set with the marker's channels satisfied.
-            let hints = nf_game::player::hints(level);
+            let hints = nf_game::player::hints(level, drones.difficulty);
             let hint_cels = hints.iter().map(|h| match find_cell_raycast(&cel_graph, h.centre, Some(&world)) {
                 Some(c) => icon_straddle_cels(&cel_graph, c, h.centre, h.radius),
                 None => Vec::new(),
@@ -5920,12 +5926,9 @@ impl Scene {
             drones.pickups.extend(placed_pickups);
             drones.pickups.extend(reserved);
             drones.script_pickup_slots = sim_slots.into_iter().collect();
-            // The direct-level load replays the user's live sessions: they ran at difficulty 1 (the
-            // old pre-menu `DIFFICULTY` constant, and the guards above were created with it —
-            // captain_setup reads it [M 0x14b300:504-535]). The game's boot default is 2 [M
-            // 0x1c7e78:25] and the front-end boot keeps it until 180-fix-menus wires the page's
-            // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
-            drones.difficulty = 1;
+            // The difficulty was set before the creates above (the game's GameState+0x28 pick);
+            // the old direct-load hardcode `= 1` moved into the build parameter so replay loads
+            // pass 1 and the front-end path passes the menu's pick.
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
             mp_bonds: [None, None, None, None],
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, laser_charge: 100.0, missile_cam: None,
