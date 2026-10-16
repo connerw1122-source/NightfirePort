@@ -6,6 +6,7 @@
 //! Gaussian interpolation (G-032d: the nocash PSX-SPX coefficient table), summed and clamped.
 
 pub mod music;
+pub mod reverb;
 pub mod sfx;
 
 use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
@@ -36,9 +37,10 @@ pub enum Cmd {
     MusicGain(f32),
     /// Key off the music and empty its queue; the sample counter restarts at 0.
     MusicStop,
-    /// `psiSetReverb` / `PS2_SetupReverb`: the SPU reverb depth (EVOL, 0..1) applied to voices with `ReverbSend`.
-    /// The SPU's effect preset is mode 4 (delay 30, feedback 200 [M §5.5, slightly ambiguous]); the output runs a
-    /// delay line at this depth — the exact preset coefficients are pending a `PS2_SetupReverb` register dump [S].
+    /// `psiSetReverb` / `PS2_SetupReverb`: the SPU reverb depth (EVOL, 0..1) applied to voices with
+    /// `ReverbSend`. The SPU's effect preset is mode 4 STUDIO_3 — the exact 32-register set lives in
+    /// [`crate::reverb`] (ps2sdk libsd `effect.c`'s Sony preset tables, cross-checked against PCSX2's
+    /// SPU2 `V_Reverb`/`DoReverb`), and the wet output runs the SPU2 reverb equations at that preset.
     Reverb { depth: f32 },
 }
 
@@ -70,38 +72,41 @@ struct Voice {
     reverb: bool,
 }
 
-/// The SPU reverb: a stereo comb-filter delay line at the `EVOL` depth [M sound.md §5.5]. The SPU's effect preset is
-/// mode 4 (delay 30, feedback 200) — the `sceSdEffectAttr` layout is partially mangled in the decompile [M §9], so the
-/// exact preset is deferred (GAPS G-032d); this single-comb stand-in gives an audible reverb tail at the right depth.
+/// The SPU reverb: the SPU2 effect area running the game's mode-4 (STUDIO_3) preset through the
+/// reverb equations ([`reverb::ReverbCore`]; PCSX2 `V_Core::DoReverb`). The per-voice wet sends
+/// (VMIXEL/VMIXER) enter at full scale; the EVOL depth scales the wet return into the mix [M
+/// sound.md §5.5; reverb.rs module comment].
 struct Reverb {
-    /// Delay-line buffers (left, right), sized to ~25 ms (a small room) [S].
-    buf: [Vec<f32>; 2],
-    /// Write index into each buffer [S].
-    w: usize,
-    /// Feedback coefficient [S].
-    fb: f32,
-    /// The current `EVOL` send depth (0..1) [M].
+    /// The reverb delay RAM and equations, at the game's registers.
+    core: reverb::ReverbCore,
+    /// The current `EVOL` send depth (0..1), scaling the wet return [M].
     depth: f32,
+    /// Frame counter: one core tick every two frames — the reverb runs at half the SPU rate
+    /// (nocash psx-spx; PCSX2 downsamples by 2).
+    frame: usize,
+    /// The wet output held between ticks (zero-order hold) [S].
+    hold: [f32; 2],
 }
 
 impl Reverb {
     fn new(rate: u32) -> Reverb {
-        let len = (rate as f64 * 0.025) as usize;
-        Reverb { buf: [vec![0.0; len.max(1)], vec![0.0; len.max(1)]], w: 0, fb: 0.5, depth: 0.0 }
+        let _ = rate;
+        Reverb {
+            core: reverb::ReverbCore::new(reverb::ReverbRegs::from_mode(reverb::GAME_EFFECT_MODE), reverb::game_area(0)),
+            depth: 0.0,
+            frame: 0,
+            hold: [0.0; 2],
+        }
     }
     /// Process one stereo frame: `send` is the dry signal of a reverb-routed voice; returns the wet output.
     fn process(&mut self, send: [f32; 2]) -> [f32; 2] {
-        let n = self.buf[0].len();
-        let r = self.w.checked_sub(1).unwrap_or(n - 1);
-        let (pl, pr) = (self.buf[0][r], self.buf[1][r]);
-        let d = self.depth;
-        // The voice's dry signal, scaled by EVOL, feeds the delay line; the line feeds back at `fb` [S topology].
-        let (il, ir) = (send[0] * d, send[1] * d);
-        self.buf[0][self.w] = il + pl * self.fb;
-        self.buf[1][self.w] = ir + pr * self.fb;
-        self.w = (self.w + 1) % n;
-        // The wet output is the delayed signal at the send depth.
-        [pl * d, pr * d]
+        self.frame += 1;
+        if self.frame % 2 == 1 {
+            let to_i16 = |x: f32| (x * 32_767.0).clamp(-32_768.0, 32_767.0) as i16;
+            let wet = self.core.tick([to_i16(send[0]), to_i16(send[1])]);
+            self.hold = [wet[0] as f32 / 32_768.0, wet[1] as f32 / 32_768.0];
+        }
+        [self.hold[0] * self.depth, self.hold[1] * self.depth]
     }
 }
 
@@ -171,8 +176,8 @@ impl Mixer {
             }
         }
         self.voices.retain(|v| !ended.contains(&v.id));
-        // The SPU reverb: each reverb-routed voice's dry signal feeds the delay line at `EVOL`; the wet output is
-        // mixed back in. A single comb per channel (the exact `PS2_SetupReverb` preset is deferred, GAPS G-032d) [S].
+        // The SPU reverb: each reverb-routed voice's dry signal feeds the effect area at full send;
+        // the wet output returns scaled by EVOL (reverb.rs has the register-exact preset) [M §5.5].
         if self.reverb.depth > 0.0 && channels > 1 {
             for fi in 0..frames {
                 let wet = self.reverb.process(rev_buf[fi]);
