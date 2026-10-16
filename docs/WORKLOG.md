@@ -14571,3 +14571,12 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
   the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
   docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
+
+## menu-e2e-singleplayer (2026-10-16, branch s/menu-e2e-singleplayer)
+- Branch created from origin/master (f42de6ff). Task: every single-player path from boot to a level request, driven ONLY
+  through `action()`, `mouse_*()`, `tick()` and the host-side calls — never by assigning page/cursor/state fields.
+  Title → intro (skip and play out) → Main → NightFire; each Select Codename branch; each difficulty → the mission list
+  → every unlocked row; assert requested_level against CAMPAIGN and the sp_level table [M]; the driving-notice path
+  (mission_ended results/NfBonus routing, save prompt, next row unlocking, restart); Back at every step; fresh profile
+  vs unlock_all.
+- Started the fast suite in the background on the branch-point tree (baseline).
