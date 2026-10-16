@@ -14879,3 +14879,33 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+## npc-doors (2026-10-16, branch s/npc-doors) — start
+- Branch created from origin/master (6bab6409). Task: NPCs can't open doors (playtests 1012-1723,
+  1013-1825; 07000001 escort Mayhew stalls, guards/guests don't path through on 07000006/07000007).
+  Plan: port the drone side of door use from the NDrone route/door code — how a route reaches a door,
+  the Door_Activate call, wait-for-open, locked/scripted refusal — then tests: Mayhew's escort route
+  through its door, a 07000006 guard chasing Bond through a closed door, a locked door refusing drones,
+  and sister assertions that a closed door still blocks a drone that doesn't open it.
+
+## npc-doors (2026-10-16, branch s/npc-doors) — close-out
+- Fixed the route follow's permanent block: `LinkCreep_Decrement` 0x15a148 at creep step 0 calls
+  `AINetwork_SetupNextNode(-1)` — the route steps back a node and re-creeps (the game never
+  hard-blocks there; the 9/0xc terminal codes come through the route+2 latch [M 0x15b110]). The
+  port returned BLOCKED forever, so every followed route (mission/patrol/chase/0x63) wedged the
+  first time its straight line grazed an AI wall end (repro: the 0x63 Mayhew wedge at
+  (2.4,4.3)→(4.8,5.8), 0.096 off the boundary corner at (3.88,5.75,5.11)).
+- Fail-first: the escort test without the fix parks Mayhew at (3.2,7.4) 4 short of the shoji for
+  60k ticks (the playtest's "escort stalls at doors"); with it: 0x81 at +3730, the shoji OPEN at
+  +3760 with Bond 9.5 away and no E, crossed at +3818. Green on the merged tree too.
+- Tests: crates/nf-view/tests/npc_doors_live.rs — the escort no-E shoji walk, the 05 locked-door
+  refusals + the closed-door-blocks sister, and the 05/06/07 census + 07 watch + wall probes.
+  nf-game lib 234/234 (both trees); branch-point suite 1700/6/66 (the allowed set); the final-tree
+  suite re-run started in the sandbox's last minutes (suite2.out — read `tail -1` next session).
+- Report: docs/reports/npc-doors.md; remaining: the 07 party girls' missing AssignAIPath(8)
+  routes (a route-assignment gap, not doors), the backward-creep half [S], and the walkreal_07000001
+  harness note (its clear-guard loop predates mobile guards — the step-back un-wedges the port's
+  guards, and guard 15 at health 1.0 / dist 2.7 now outlasts the suite's 600 s window).
+- Late additions: the 06 chase test (guard #2 hears Bond's shots through the closed door #1, enters
+  0x81 at +401, opens at +408, crosses) and the 0x63 isolation drive rescooped to the un-wedge +
+  closed-door-blocks proof (closest 1.44 to the shut shoji; the region route carries no door nodes).
+  All 7 npc_doors_live tests green on the final tree; branch 79c669f8.
