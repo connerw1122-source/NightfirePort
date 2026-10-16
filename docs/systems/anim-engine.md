@@ -28,6 +28,7 @@ call layer).
 | +0xB4 | speed mode (0 normal × `FRAME_RATE_MUL`; 1 distance table; 2 synced to another script; 3 phase) |
 | +0xB5 | end mode (0 / 3 stop, 1 loop, 2 ping-pong; set to 1 when looping) |
 | +0xB6 | fade: 1 in, 0xFF (−1) out, 0 none |
+| +0x80 | facial marker: 0 (nothing), 0xe0000000 idle / 0xe0000001 blink / 0xe0000002 talk — `AnimFacialBlend` picks slots by it |
 | +0x60 / +0x6C / +0x70 | done flag pointer / on-stop / on-event callbacks |
 
 ## Adding scripts [M]
@@ -71,6 +72,39 @@ call layer).
 - Afterwards scripts faded out (0x200000 with 0x100000) and those with fade 0 are deleted.
 - Root motion is rotated by the object matrix — or by the saved rotation of the first script in anim-rotation mode —
   passed to the pre-translation callback (drones: `DroneAnim_PreTransCallback`) and added to the position.
+
+## The facial weights (`AnimFrameResolve` → `AnimFacialBlend` 0x1be648) [M]
+
+Per tick, for every object whose skin has facial morphs (`AnimSkin+0x2e` ≠ 0 — 22 on every face skin), resolve ends by
+blending the morph weight array (`animData+0xb0`, the 22 floats `SkinIt` consumes). `AnimFacialBlend` reads three
+SCRIPT slots through `AnimListBuild(obj, 0x200, marker)` — the predicate is the script's **+0x80 marker == marker**:
+
+- `0xe0000000` **idle**: its +0x54 sequence's frame buffer copies straight over the weights.
+- `0xe0000001` **blink** / `0xe0000002` **talk**: override a weight only when |w| > 0.01.
+- The anim object's eye bytes then write indices 14/13 (from `+0x97`) and 11/12 (from `+0x98`) over the same threshold.
+- **Under a script camera (`ScriptCam != 0`) only the talk slot applies, as a straight copy** — no threshold, no eye
+  bytes, no idle/blink.
+
+Who carries the markers:
+
+- `AnimScriptInit` 0x1c1600:52-61: **every script started while `ScriptCam != 0` on a facial-bearing skin gets
+  +0x80 = 0xe0000002** — a cut-scene's anim script IS the talk slot, so its facial window (the sequence flags bit 0x8,
+  `AnimProcessScriptCmds` 0x1c1b38:165 → the script's +0x54 slot via `AnimSeqSet` 0x1c7460's `param_7` pick) feeds the
+  weights directly: the 22-channel face track's channels are the morph weights, never bones. In gameplay new scripts
+  get marker 0.
+- `AnimFacialUpdate` 0x1be310 (gameplay): the idle/blink state machine appends the tables' scripts
+  (Male/Female_Facial_State_Anims, [D ACTION.ELF .data 0x2c6ea8/0x2c6ec0]) with markers 0xe0000000/0xe0000001 and its
+  `Rand_*` blink cadence.
+- `AnimFacialAppend` 0x1c6490: marks the appended script 0xe0000002 (the gameplay talk slot); its caller is
+  `NDrone2_SpeechSFX` 0x141b00 — a guard speaking a voice line animates his mouth through it.
+- A facial-bearing actor with **no** facial window still reads zeros: `AnimScriptNew` 0x1c1398 allocates the +0x54
+  slot for every facial-bearing skin (`AnimSeqNew` 0x1c7248 zeroes the 22-float buffer) and the ScriptCam talk-read
+  copies those zeros — the neutral face. (`AnimFacialBlend`'s gameplay callers are additionally gated on the draw
+  distance, min of animData+0x110..0x113 < 13; ScriptCam skips the gate.)
+
+The window classifier: the sequence record's flags bit 0x8 [M 0x1c1b38:165]. Census over all 18,244 kind-4 sequences
+on the disc: flags {0x00 × 17,363, 0x01 × 10, 0x08 × 871} and every flags-0x08 one carries exactly 22 channels — a
+body track is 3·bones + 3·popcount(mask) (≡ 0 mod 3), so the bit and the count can never disagree [D].
 
 ## The op-4 event kinds (`AnimProcessScriptCmds` 0x1c1b38 case 4) [M]
 
