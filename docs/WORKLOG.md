@@ -16719,3 +16719,28 @@ delay holds; (2) port SP_GetHitDamage + SP_Update damage path; (3) held entity t
 key's position (entity_start currently makes identity matrix, only interp positions); (4) re-check
 EVERY script with Event 3 p0=0 (0x0600006f, MP set 0x0600003c..45, lift 0x06000571) and the other
 unpause callers (Switch_Update, NDrone2_KickObject); keep fix_finale_live + 4a lift green.
+
+- script-negative-delay (task 732, GAPS G-047): the negative-delay hold + the SP hit-damage
+  unpause are in. [M disasm 0x1da9c4-0x1da9dc] settles Script_Update's gate: delay == 0 runs,
+  delay < 0 branches to the epilogue (no store, no decrement — HOLD), only a positive delay
+  counts down; the fix-finale-blockers "negative runs like 0" reading was wrong and made all 16
+  of 0700001b's solar panels shatter at t5. Ported: Player.hit_points (param 7 int→float [M
+  SP_CreateScriptPlayer 0x1db9a8 puVar2[5]]), Player.damage/tick_damage, the bullet pass's
+  per-tick contact gather on the held hit-point players' current stream objects (the
+  SP_GetHitDamage 0x1dc5f8 read set; mask 0 filters nothing [M 0x1ece30:24-31],
+  Collide_GetDamageNObjects sums all [M 0x1ee220]) and Player::update's damage tail —
+  SP+0x18 accumulates; at the threshold SP_UnPause 0x1dca58 (the one-tick +0x2c flag, delay 0)
+  and the threshold is subtracted [M 0x1dc2f8-0x1dc318]. Held-entity placement: NO code change —
+  Script_EntityStart tails with Script_Interp [M 0x1d8d78] and the port's entity_start already
+  interp's at creation; the probe showed all 16 held panels exactly at their placements (the
+  GAPS [S] origin-stacking guess did not reproduce). Sisters: 0x0600006f is played by nothing in
+  the port (the pre-existing open question, fix-cutscene-actors report) so the hold cannot touch
+  it; the MP 0x0600003c..45 set has no port references; the lift 0x06000571 holds at t1611 and
+  resumes through the game's case-2 mask&1/out rule — ch 0x22 rises when the hold engages [S
+  stand-in: the disc scans (the 11 scripts' 0xD/0x11 events, the placements, the 13 plates) find
+  no writer, the same shape as ch 0x4a; docs/levels/0700004a.md §6]; Switch_Update's and
+  NDrone2_KickObject's unpause calls were already ported. Tests: solar_panels_live 2/2 (16
+  panels hold in place after 600 ticks; the real fire path shatters only the shot one — the 10
+  debris pieces play, the other 15 stay held), nis::tests::negative_delay_holds... (synthetic
+  hold, first-key placement, positive-delay countdown sister), fix_finale_live 4/4. Suite on the
+  final tree: see the report. Report: docs/reports/script-negative-delay.md.
