@@ -621,6 +621,23 @@ pub const INTRO_MOVIES: [u32; 2] = [0x0737_0048, 0x0738_0048];
 /// `menu_movies::the_intro_movie_counts_pin_the_tick_budget` re-measures the disc's files against it.
 pub const INTRO_TICKS: u32 = 850;
 
+/// boot-flow: the game's boot order [M]: `bootup` 0x1c7e78 opens P_LANGUAGE 0x40000034 →
+/// P_PS2MEMCARDINIT (0x218538:18 → 0x40000032) → **P_INTRO 0x40000032** plays [`INTRO_MOVIES`] (the EA
+/// Games logo, then MGM Interactive) and opens the title 0x40000009 (P_START) [M P_INTRO_Handler
+/// 0x209e88:54 `0x44, 0x40000009`]. START on the title → P_PARISENUM 0x4000004a (the "Checking memory
+/// card" box, `Menu_UpdateMessageBox(…, 4, 0)` [M 0x20a648]) → **P_ESTHERO 0x40000043** plays
+/// [`ESTHERO_MOVIE`] (the rings/Earth intro) with a 3 s unskippable grace and then opens the main menu
+/// 0x40000002 [M P_ESTHERO_Handler 0x20a060: `DAT_002e1c4c = 0xb4`, `psiStartBackgroundMovie(0x73b0048)`,
+/// the finish arm's `0x44, 0x40000002`]. Matches PCSX2 from a fresh boot (2026-10-16, no save state).
+/// The port used to play the boot logos AFTER Start and never the 0x73B intro.
+pub const ESTHERO_MOVIE: u32 = 0x073b_0048;
+/// 0x073B0048 is 1756 pictures [D measured 2026-10-16 with `--movie 073B0048 --frame N`] → the headless
+/// budget at 30 fps (two 60 Hz ticks per picture).
+pub const ESTHERO_TICKS: u32 = 1756 * 2;
+/// P_ESTHERO's unskippable grace: `DAT_002e1c4c = 0xb4` = 180 ticks = 3 s, honoured by `Menu_StopMovie`
+/// 0x215a50 [M P_ESTHERO_Handler 0x20a060:18].
+pub const ESTHERO_GRACE: u32 = 0xb4;
+
 /// Which front-end page is up. The ids are the game's own (the constants above); the enum is the
 /// dispatcher the port drives.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -1612,6 +1629,12 @@ pub struct FrontEnd {
     /// Which of [`INTRO_MOVIES`] is up [M 0x209e88's `movie_283` counter: 1 → 0x07370048,
     /// 2 → 0x07380048, then the page change].
     pub intro_index: usize,
+    /// boot-flow: which movie list the run plays — [`INTRO_MOVIES`] at boot (P_INTRO) or the one-movie
+    /// [`ESTHERO_MOVIE`] list after START (P_ESTHERO) — and the page the run's end lands on.
+    pub intro_list: &'static [u32],
+    pub intro_end: Page,
+    /// Ticks since the run started (P_ESTHERO's 3 s skip grace).
+    pub intro_ticks: u32,
     /// fix-menu-movies2: the page's aux backdrop movie has a live frame on the ONE movie plane
     /// (fix-movie-playback's `movie_tex`) this frame — the overlay then draws no dark plate (the
     /// plane IS the backdrop, under these quads); without it the plate stands in (the pre-movies
@@ -1947,7 +1970,7 @@ impl FrontEnd {
         // post-unlock session and read 1 everywhere].
         unlocked[0] = true;
         unlocked[1] = true;
-        let mut fe = FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, requested_difficulty: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0,
+        let mut fe = FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, requested_difficulty: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0, intro_list: &INTRO_MOVIES, intro_end: Page::Start, intro_ticks: 0,
             backdrop_live: false,
             // fix-pause-menu: the pause page's own state (each on its line [WORKLOG lesson 4]).
             confirming_restart: false,
@@ -2818,6 +2841,7 @@ impl FrontEnd {
         // memcard-save-flow: the card flow pumps per frame, the way HandlePS2CardState 0x110b98
         // runs from the game's page handlers [M P_CNMENU 0x213288:14-16's 0x50 pump].
         self.card_tick();
+        if self.intro_playing && self.flow.get_state() == ST_MOVIE { self.intro_ticks = self.intro_ticks.saturating_add(1); }
         // The intro run ends when the movie state pops (its frames ran out or the host ended it
         // after the second intro movie) [M 0x209e88: the page change follows the movies].
         if self.intro_playing && self.flow.get_state() != ST_MOVIE {
@@ -3357,7 +3381,20 @@ impl FrontEnd {
     }
 
     /// The intro movie the P_INTRO run currently shows [M 0x209e88's movie_283 counter].
-    pub fn intro_movie_code(&self) -> u32 { INTRO_MOVIES[self.intro_index.min(INTRO_MOVIES.len() - 1)] }
+    pub fn intro_movie_code(&self) -> u32 { self.intro_list[self.intro_index.min(self.intro_list.len() - 1)] }
+
+    /// boot-flow: the boot P_INTRO run — the EA and MGM logos, then the title [M P_INTRO_Handler 0x209e88].
+    /// The window host calls this once when the boot front end opens; the page stays the title.
+    pub fn start_boot_intro(&mut self) {
+        self.flow.play_movie(INTRO_TICKS);
+        self.intro_playing = true;
+        self.intro_index = 0;
+        self.intro_list = &INTRO_MOVIES;
+        self.intro_end = Page::Start;
+        self.intro_ticks = 0;
+        self.menu_movie = false;
+        self.remove_pair();
+    }
 
     // ── codename-entry: the name-entry page 0x40000020 (P_CNNAME_Handler 0x213790 + the grid's
     // C_KEYBOARD_Handler 0x213a98) ──────────────────────────────────────────────────────────────
@@ -3895,6 +3932,8 @@ impl FrontEnd {
         // 0x1c98c8 case 6 pops the movie state on `Input_Action(-1, 0x19)`]; other input does
         // nothing while the movie owns the screen (the intro page has no controls).
         if self.intro_playing && self.flow.get_state() == ST_MOVIE {
+            // boot-flow: P_ESTHERO's 3 s grace — Menu_StopMovie ignores the skip until it runs out [M 0x215a50].
+            if a == Action::Confirm && self.intro_end == Page::Main && self.intro_ticks < ESTHERO_GRACE { return true; }
             if a == Action::Confirm {
                 self.flow.pop_state();
                 self.intro_playing = false;
@@ -4161,9 +4200,13 @@ impl FrontEnd {
                     // then 0x07380048 (non-looping) and only then opens the next page; the driver's
                     // observed order Title → movie → Main]. The page flips at once (menus_flow's
                     // contract); the overlay shows the movie fullscreen until the state pops.
-                    self.flow.play_movie(INTRO_TICKS);
+                    // boot-flow: START → P_ESTHERO's intro 0x073B0048, then the main menu [M 0x20a060].
+                    self.flow.play_movie(ESTHERO_TICKS);
                     self.intro_playing = true;
                     self.intro_index = 0;
+                    self.intro_list = std::slice::from_ref(&ESTHERO_MOVIE);
+                    self.intro_end = Page::Main;
+                    self.intro_ticks = 0;
                     // P_INTRO's 0x50 frame-1 removes the pair and clears the static before the
                     // movies start [M 0x209e88:37-47] — the menu music is silent under the EA
                     // logo (the playtest's leak); it restarts at the movie-2 end (the intro-end
