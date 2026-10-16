@@ -179,7 +179,8 @@ pub struct Entry {
     pub ammo: String,
     /// The level carries the first-person model (a view model was built for it).
     pub fp: bool,
-    /// Gadgets are ids 0x4A and up (`Player_WeaponChange`'s gadget cycle bounds) [M 0x1a6f80].
+    /// Gadgets are the gadget cycle's own bounds 0x4A..=0x5E (`Player_WeaponChange` 0x1a6f80's
+    /// disasm 0x1a707c/0x1a72ac-b0) [M].
     pub gadget: bool,
     /// `weapon_data+0x04 == 1`: appears in the switch cycle.
     pub sel: bool,
@@ -189,6 +190,10 @@ pub struct Entry {
     pub held: u32,
     pub tp: u32,
     pub proj: u32,
+    /// The game's own weapon-class byte (+0x06; 4 = explosive — `BOTSTATE_isPreferredWeapon`
+    /// 0x129580's preference 5 arm and `BOTWEAP_tooCloseForWeapon` 0x12a960's disasm
+    /// `0012aa14 lbu v1,6(v0)` [M]; every grenade/rocket/satchel id carries 4 [L ee_start_05.bin]).
+    pub cls: u8,
 }
 
 /// The spawnable records for the panel, each resolved through its `weapon_data` record.
@@ -198,12 +203,20 @@ pub fn catalog_entries(scene: &crate::scene::Scene) -> Vec<Entry> {
     let lang = sim.lang.as_ref();
     let mut out = Vec::new();
     for id in 1..0x72u8 {
-        // 0x47 is "no weapon" (`AnimDatumGetWeaponInfo`'s bounds exclude it from the cycle;
-        // `Player_WeaponChange` cycles 1..0x47) [M]. Everything else that the game names, shows or
-        // cycles stays listed — INCLUDING the clip-0 gadgets (0x50 Grapple, 0x56/0x57 Decryptor,
-        // 0x58 Q-Worm: tp model 0 and clip 0, but named and selectable, and the game's loadouts
-        // grant them — the old filter's `model==0 && clip<=0` silently dropped them).
+        // The game's own spawnable set is the two cycles of `Player_WeaponChange` 0x1a6f80: the
+        // weapons 0x01..0x46 (0x47 is "no weapon" — `AnimDatumGetWeaponInfo`'s bounds exclude it
+        // from the cycle) and the gadgets 0x4A..0x5E (disasm: 0x1a707c `addiu s6,zero,73` low
+        // clamp, 0x1a72ac/b0 `addiu fp,s6,1` / `addiu s7,a2,-1` — the walk wraps 0x4A..0x5E) [M].
+        // Everything else is never equipped on Bond by any of the game's own paths and only added
+        // noise rows: the 0x48/0x49 padding, the AI-clip records 0x61/0x71, the AI rocket record
+        // 0x62, and the 0x68..0x6F drop/AI variants that borrow OTHER weapons' name labels (0x69
+        // binds the Smoke Grenade label, 0x6A/0x6E the Q-Claw's, 0x6D the AT-600 Scorpion's, 0x6F
+        // the Militek MGL's [L ee_start_05.bin 0x2bf150]) — the user's "I can't tell what's what".
+        // INCLUDING the clip-0 gadgets (0x50 Grapple, 0x56/0x57 Decryptor, 0x58 Q-Worm: tp model 0
+        // and clip 0, but named and selectable, and the game's loadouts grant them — the old
+        // filter's `model==0 && clip<=0` silently dropped them).
         if id == 0x47 { continue; }
+        if !((1..=0x46).contains(&id) || (0x4a..=0x5e).contains(&id)) { continue; }
         let label = wd.name_label(id as usize);
         let has_mesh = wd.model(id as usize) != 0 || wd.projectile_mesh(id as usize) != 0;
         // Nameless, meshless, non-selectable padding (0x48/0x49 — the gadget cycle starts at 0x4A
@@ -222,11 +235,15 @@ pub fn catalog_entries(scene: &crate::scene::Scene) -> Vec<Entry> {
             clip: wd.clip_size(id as usize),
             ammo,
             fp: scene.view_models.contains_key(&id),
-            gadget: id >= 0x48,
+            // The gadget cycle's own bounds [M 0x1a6f80 disasm 0x1a707c/0x1a72ac-b0] — the old
+            // `id >= 0x48` contradicted its comment and would misgroup 0x48/0x49 if they ever
+            // grew a name.
+            gadget: (0x4a..=0x5e).contains(&id),
             sel: wd.selectable(id),
             held: norm(u32_at(0x7c)),
             tp: wd.model(id as usize),
             proj: norm(wd.projectile_mesh(id as usize)),
+            cls: rec[6],
         });
     }
     out
@@ -255,8 +272,8 @@ pub fn catalog(scene: &crate::scene::Scene) -> String {
     let Some(sim) = scene.sim.as_ref() else { return "{\"level\":\"none\",\"stamp\":0,\"current\":{},\"weapons\":[],\"npcs\":[]}".into() };
     let mut weapons = Vec::new();
     for e in catalog_entries(scene) {
-        weapons.push(format!("{{\"id\":{},\"name\":\"{}\",\"label\":{},\"clip\":{},\"ammo\":\"{}\",\"fp\":{},\"gadget\":{},\"sel\":{},\"held\":{},\"tp\":{},\"proj\":{}}}",
-            e.id, js(&e.name), e.label, e.clip, js(&e.ammo), e.fp, e.gadget, e.sel, e.held, e.tp, e.proj));
+        weapons.push(format!("{{\"id\":{},\"name\":\"{}\",\"label\":{},\"clip\":{},\"ammo\":\"{}\",\"fp\":{},\"gadget\":{},\"sel\":{},\"held\":{},\"tp\":{},\"proj\":{},\"cls\":{}}}",
+            e.id, js(&e.name), e.label, e.clip, js(&e.ammo), e.fp, e.gadget, e.sel, e.held, e.tp, e.proj, e.cls));
     }
     let current = current_json(sim);
     let mut skins: Vec<u32> = Vec::new();
@@ -293,32 +310,96 @@ pub fn apply(scene: &mut crate::scene::Scene, q: &[(String, String)]) -> (String
             let rounds = num("rounds").map(|r| r as i16).unwrap_or_else(|| sim.weapons.clip_size(id as usize).max(1));
             let wd = sim.weapons.clone();
             let name = record_name(sim.lang.as_ref(), &wd, id as u8);
-            // `Player_EquipWeapon` 0x1a8a58:20 refuses a weapon whose first-person model (+0xDC) is
-            // 0 — the game would refuse too, so the panel says so instead of switching to a record
-            // Bond cannot hold (the AI-only records list for completeness; the row's dim text says
-            // "no 1st-person model here").
-            if !sim.drones.inventory.equip_weapon(&wd, id as usize, rounds, true) {
-                return (format!("weapon {id:#04x} ({name}): refused — the record has no first-person model (Player_EquipWeapon 0x1a8a58:20)"), None);
-            }
-            let carry = (wd.clip_size(id as usize).max(1) * 3).max(rounds);
-            sim.drones.inventory.equip_ammo(&wd, id as usize, carry);
-            // fix-aims20-modes-lights: a twin-linked record (+0x05, e.g. the AIMS-20 0x1a ↔ its
-            // grenade twin 0x1b) leaves the give with the twin's own clip slot dry, and the mode
-            // press is dead forever — `Player_Weapon` 0x1a24c8:246-260 gates the twin switch on
-            // `Player_WeaponHasAmmo` 0x1a16c0, and the ground truth measured the gate ("with no
-            // grenade rounds the press did nothing; after picking up the 0x1b rounds (4) the press
-            // swapped"). The give is the port's acquire affordance (the game's pickups give the
-            // twin's rounds separately — 07000014 carries the 0x1b pickups), so fill the twin's
-            // slot once (its own slot: the pair's ammo types differ, +0x90 5 vs 12 [L ee_snapshot
-            // weapon_data], the `Player_AmmoInGun` own-slot pick) the way a taken 0x1b pickup does.
-            let twin = wd.records.get(id as usize).map(|r| r[5] as i8).unwrap_or(0);
-            if twin != 0 {
-                let t = (id as i32 + twin as i32) as usize;
-                if let Some(c) = sim.drones.inventory.clip.get_mut(t) {
-                    if *c == 0 { *c = wd.clip_size(t).max(1); }
+            // The give IS the level pickups' path now: `Inventory::take` is the port shape of
+            // `Pickup_Handler` 0x18e650 — a weapon he lacks is equipped (a fresh own fills the
+            // clip slot to +0x92 and spills the overflow to the spare pool [M Player_EquipWeapon
+            // 0x1a8a58]), an owned one takes the rounds as ammo and refuses at the ammo_data cap
+            // [M Player_EquipAmmo 0x1a8d18]. The panel's two documented divergences: `loaded`
+            // stays true (a dev give does not depend on the level's model set — the row's
+            // "(no fp model)" tag carries that fact), and the switch request below is the panel's
+            // own affordance (a pickup switches only when `Player_IsBetterWeapon` 0x1a6eb0 ranks
+            // the pickup higher). `clock` = the sim tick, the port's stand-in for `GameState+0x52`
+            // (the 10 → 0xC remap gate) [M 0x18e650:142; the game-side take call in drone.rs].
+            let p = nf_game::pickup::Pickup {
+                kind: nf_game::pickup::kind::WEAPON,
+                weapon: id as u16,
+                rounds,
+                // The world fields are inert for a take (`take` reads kind/weapon/rounds only).
+                model: 0,
+                bounds: nf_game::pickup::Model { centre: [0.0; 3], radius: 0.0 },
+                m: [[0.0; 4]; 4],
+                start: [0.0; 3],
+                vel: [0.0; 3],
+                state: 0,
+                lifetime: 0,
+                switch_channel: 0,
+                sound: None,
+                hidden: false,
+                gone: false,
+                from: None,
+                obj: None,
+                respawn: 0,
+                respawn_ticks: 0,
+                spin: false,
+                label: 0,
+            };
+            let drones = &mut sim.drones;
+            let clock = drones.frame;
+            // The armour lane is untouched by the WEAPON arm (`Pickup_Handler` case 0) — a scratch
+            // stands in for the taker's `BLData+0x8B0` the signature shares with the other kinds.
+            let mut armour_scratch = 0.0f32;
+            let fp = wd.first_person(id as usize);
+            let taken = drones.inventory.take(&wd, &p, true, &mut armour_scratch, clock);
+            // ONE take: the take mutates the inventory, so the Weapon/Ammo split comes off the
+            // single result (the owned arm IS the ammo take).
+            let mut verb = "";
+            let weapon_opt = match taken {
+                // `Taken` carries the raw id for display; the equip itself landed on the remapped
+                // record when `Upgrade_Weapon` translates the id (6 → 2, 10 → 0xC — the unlock
+                // tables [M 0x18e650:142]) — the status says so.
+                Some(nf_game::pickup::Taken::Weapon { weapon }) => { verb = "gave weapon"; Some(weapon) }
+                Some(nf_game::pickup::Taken::Ammo { weapon, .. }) => {
+                    verb = "already owned — the take added rounds for";
+                    Some(weapon)
+                }
+                _ => None,
+            };
+            if let Some(weapon) = weapon_opt {
+                // fix-aims20-modes-lights: a twin-linked record (+0x05, e.g. the AIMS-20 0x1a ↔ its
+                // grenade twin 0x1b) leaves the give with the twin's own clip slot dry, and the mode
+                // press is dead forever — `Player_Weapon` 0x1a24c8:246-260 gates the twin switch on
+                // `Player_WeaponHasAmmo` 0x1a16c0, and the ground truth measured the gate ("with no
+                // grenade rounds the press did nothing; after picking up the 0x1b rounds (4) the press
+                // swapped"). The give is the port's acquire affordance (the game's pickups give the
+                // twin's rounds separately — 07000014 carries the 0x1b pickups), so fill the twin's
+                // slot once (its own slot: the pair's ammo types differ, +0x90 5 vs 12 [L ee_snapshot
+                // weapon_data], the `Player_AmmoInGun` own-slot pick) the way a taken 0x1b pickup does.
+                let twin = wd.records.get(id as usize).map(|r| r[5] as i8).unwrap_or(0);
+                if twin != 0 {
+                    let t = (id as i32 + twin as i32) as usize;
+                    if let Some(c) = drones.inventory.clip.get_mut(t) {
+                        if *c == 0 { *c = wd.clip_size(t).max(1); }
+                    }
+                }
+                let remapped = nf_game::pickup::Inventory::upgrade_weapon(id as u16, 0, clock);
+                let note = if remapped != id as u16 {
+                    format!(" — a level pickup of {id:#04x} remaps to {remapped:#04x} (Upgrade_Weapon [M 0x18e650:142]); gave that record")
+                } else {
+                    String::new()
+                };
+                (format!("{verb} {id:#04x} ({name}){note}"), Some(weapon as u8))
+            } else {
+                // `Player_EquipWeapon` 0x1a8a58:20 refuses a weapon whose first-person model
+                // (+0xDC) is 0 — the game would refuse too, so the panel says so instead of
+                // switching to a record Bond cannot hold. With a model the take refused on
+                // the spare pool's cap (the owned arm): Bond keeps the weapon and the panel
+                // still lets him draw it (the dev affordance).
+                if fp == 0 {
+                    (format!("weapon {id:#04x} ({name}): refused — the record has no first-person model (Player_EquipWeapon 0x1a8a58:20)"), None)
+                } else {
+                    (format!("weapon {id:#04x} ({name}): the take refused (the spare pool is at its ammo_data cap, Player_EquipAmmo 0x1a8d18) — already owned, drawing it"), Some(id as u8))
                 }
             }
-            (format!("gave weapon {id:#04x} ({name})"), Some(id as u8))
         }
         "ammo_for" => {
             let Some(sim) = scene.sim.as_mut() else { return ("no game".into(), None) };

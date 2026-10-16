@@ -255,7 +255,7 @@ fn golden_weapon_models_resolve_on_every_story_level() {
 
 
 
-/// The frag grenade's drawn body (`weapon_data[0x35]+0x5C` = 0x02000726 [L ee_start_05.bin @0x2bf150
+/// The stun grenade's drawn body (`weapon_data[0x35]+0x5C` = 0x02000726 [L ee_start_05.bin @0x2bf150
 /// + 0x35·0x10C + 0x5C]): `Bullet_update` state 0 sets the mesh on the bullet object
 /// (`hashtable_set_object_to_entity_gfx` disasm 0x12e8f0-0x12e900 [M]) and `View_SetDrawInAllViews`
 /// draws it at the flight matrix every tick. Driven through the real input path: the panel gives the
@@ -264,16 +264,16 @@ fn golden_weapon_models_resolve_on_every_story_level() {
 fn a_thrown_grenade_draws_its_weapon_mesh() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
-    // Give Bond the frag grenade (the panel's `do=weapon` command — the dev path a player uses) and
+    // Give Bond the stun grenade (the panel's `do=weapon` command — the dev path a player uses) and
     // switch to it the way the viewer does (`Input.switch_to` → the holster/draw cycle).
     let (status, switch) = nf_view::panel::apply(&mut scene, &[("do".into(), "weapon".into()), ("id".into(), "53".into())]);
     eprintln!("[panel] {status}");
-    assert!(scene.view_models.contains_key(&0x35), "the frag grenade got a view model");
+    assert!(scene.view_models.contains_key(&0x35), "the stun grenade got a view model");
     assert_eq!(switch, Some(0x35));
     let sim = scene.sim.as_mut().unwrap();
     let mut input = nf_game::player::Input { switch_to: switch, ..Default::default() };
     for _ in 0..90 { sim.step_bond(input, false, false, false); if sim.gun.weapon == 0x35 { break; } input = Default::default(); }
-    assert_eq!(sim.gun.weapon, 0x35, "the frag grenade is drawn");
+    assert_eq!(sim.gun.weapon, 0x35, "the stun grenade is drawn");
     // Pull the trigger until the grenade spawns (the fire anim runs first; the round spawns when the
     // fire script's frame reaches `fire_anim_len` +0x44 [M Player_SetWeaponAnimObj case 9]).
     let mut thrown = false;
@@ -282,17 +282,17 @@ fn a_thrown_grenade_draws_its_weapon_mesh() {
         if !sim.drones.grenades.is_empty() { thrown = true; break; }
     }
     assert!(thrown, "the throw spawned a grenade");
-    // The scene must carry the projectile-mesh instances (the frag mesh + the stun's, resolved here).
+    // The scene must carry the projectile-mesh instances (the stun's mesh + the frag's 0x020002af both land in the pool — the walk covers every weapon).
     let slot0 = scene.attachments.iter().find_map(|a| a.projectile.map(|(s, _)| s))
         .expect("projectile mesh instances built");
     assert_eq!(slot0, 0, "slot 0 is the first grenade slot");
-    let frag = sim.weapons.projectile_mesh(0x35);
-    assert_eq!(frag, 0x0200_0726, "the frag's +0x5C mesh [L]");
-    assert!(scene.attachments.iter().any(|a| a.projectile == Some((0, frag))), "a frag-mesh instance for grenade slot 0");
+    let stun = sim.weapons.projectile_mesh(0x35);
+    assert_eq!(stun, 0x0200_0726, "the stun's +0x5C mesh [L] (0x35 = Stun Grenade; the frag is 0x34 → 0x020002af)");
+    assert!(scene.attachments.iter().any(|a| a.projectile == Some((0, stun))), "a stun-mesh instance for grenade slot 0");
     // While the grenade flies, its instance is posed AT the grenade (not collapsed to the FAR point).
     let (gpos, att) = {
         let g = &sim.drones.grenades[0];
-        (g.pos, scene.attachments.iter().position(|a| a.projectile == Some((0, frag))).unwrap())
+        (g.pos, scene.attachments.iter().position(|a| a.projectile == Some((0, stun))).unwrap())
     };
     let fs = scene.frame_state(None, 0.0, nf_view::scene::ViewOpts::default());
     let m = fs.attach[att];

@@ -6,8 +6,10 @@
 //! (`Txt_BindLabel(weapon_data[w]+0x38)`, the SP pickup-name lane — `Pickup_Handler` 0x18e650:246
 //! [M]; the verified map is docs/fields/weapon_data.md +0x30..0x3F: the HUD's fire-mode lane reads
 //! +0x30+mode*4, +0x38 = the SP name). The old panel hardcoded a partial name table that disagrees
-//! with the bank (it put "Frag Grenade" on 0x34 and "Stun Grenade" on 0x35 while the atlas pins
-//! 0x35 = Frag Grenade [L+M]) — the direct source of "can't tell what's what".
+//! with the bank (it put "Frag Grenade" on 0x34 and "Stun Grenade" on 0x35 while the old atlas
+//! claimed 0x35 = Frag Grenade — the bank re-read (fix-explosions2) settled 0x34 = Fragmentation
+//! Grenade, 0x35 = Stun Grenade, 0x36 = Smoke Grenade [L USATxt.dat]) — the direct source of
+//! "can't tell what's what".
 //!
 //! Meshes per record (docs/fields/weapon_data.md, the verified map): **+0x7C** = the held view-entity
 //! model (`AnimDatumSetEntity` per draw, `Player_WeaponFiring` 0x1a5460:106-107 [M] — the atlas's
@@ -210,13 +212,19 @@ fn panel_give_spawns_exactly_the_record() {
     assert!(ids.len() >= 60, "the catalog lists {} entries — the give test should cover them all", ids.len());
     for id in ids {
         let fp;
+        let clock;
         {
             let sim = scene.sim.as_mut().unwrap();
             let n = sim.drones.inventory.clip.len();
             let a = sim.drones.inventory.carried.len();
             sim.drones.inventory = nf_game::pickup::Inventory::empty(n, a);
             sim.gun.weapon = 0x47; // hands — the give must pull Bond onto the new record
-            fp = sim.weapons.first_person(id as usize);
+            // The give runs the pickups' own take path: `Pickup_Handler` remaps the id through
+            // `Upgrade_Weapon` before the owned-check/equip [M 0x18e650:142] — 6 → 2 and 10 → 0xC
+            // (the unlock tables, slot 0 without the shop [L ee_start_05.bin]); every other id is
+            // identity. The clock is the sim tick, the give's own `GameState+0x52` stand-in.
+            clock = sim.drones.frame;
+            fp = sim.weapons.first_person(nf_game::pickup::Inventory::upgrade_weapon(id as u16, 0, clock) as usize);
         }
         let q = [("do".to_string(), "weapon".to_string()), ("id".to_string(), format!("{id}"))];
         let (status, switch) = panel::apply(&mut scene, &q);
@@ -230,14 +238,16 @@ fn panel_give_spawns_exactly_the_record() {
             continue;
         }
         assert_eq!(switch, Some(id), "giving {id:#04x} must switch Bond onto it ({status})");
-        // Ownership lands on the record's BASE (`Player_EquipWeapon` 0x1a8a58 — a variant share the
-        // base's owned flag and clip slot; 0x03 gives owned[2] + clip[2] = 7 [M]).
-        let base = wd.base(id as usize) as usize;
-        assert!(sim.drones.inventory.owned.get(base).copied().unwrap_or(false), "giving {id:#04x}: base {base:#04x} not owned ({status})");
+        // The take landed on the remapped record (6 → 2, 10 → 0xC [M 0x18e650:142]); ownership
+        // lands on ITS base (`Player_EquipWeapon` 0x1a8a58 — a variant shares the base's owned
+        // flag and clip slot; 0x03 gives owned[2] + clip[2] = 7 [M]).
+        let given = nf_game::pickup::Inventory::upgrade_weapon(id as u16, 0, clock) as usize;
+        let base = wd.base(given) as usize;
+        assert!(sim.drones.inventory.owned.get(base).copied().unwrap_or(false), "giving {id:#04x} (gave {given:#04x}): base {base:#04x} not owned ({status})");
         // The record's own clip slot (base's when shared) is filled to the record's clip size.
-        let slot = if wd.shares_base_clip(id as usize) && wd.ammo_type(id as usize) == wd.ammo_type(base) { base } else { id as usize };
+        let slot = if wd.shares_base_clip(given) && wd.ammo_type(given) == wd.ammo_type(base) { base } else { given };
         let clip = sim.drones.inventory.clip.get(slot).copied().unwrap_or(-1);
-        assert_eq!(clip, wd.clip_size(id as usize), "giving {id:#04x}: clip slot {slot} holds {clip}, the record's size is {} ({status})", wd.clip_size(id as usize));
+        assert_eq!(clip, wd.clip_size(given), "giving {id:#04x} (gave {given:#04x}): clip slot {slot} holds {clip}, the record's size is {} ({status})", wd.clip_size(given));
     }
 }
 
