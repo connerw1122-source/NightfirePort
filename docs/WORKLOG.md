@@ -13773,3 +13773,13 @@ in the same state; a forced desync is detected. Branch s/net-match-host.
   several times too fast on a fast display. She now ticks off her own 60 Hz wall-clock
   accumulator (`menu_clock`), matching `Game_Run`'s once-per-60 Hz-frame `psiDecompressWoman`
   [M 0x1c9790:36-41].
+
+### net-match-host progress (sandbox7, 2026-10-15T23:15Z–00:10Z)
+
+- nf_game::net: the UDP lockstep session (051's API), nf-view wiring: the settings handover
+  (mp_match_settings was never read; the menu path loaded mp=false), load_mp_carry + MpSettings.seed
+  (0 keeps the local Rng constant), all-human slot-order spawn + Sim::mp_bonds +
+  swap_local_slot, the ready_inputs tick gate (no capture on a stall), step_net_remotes,
+  net_state_hash every 15 ticks, the message-box + return-to-lobby failure path, --net-host /
+  --net-join. Tests: net_session 5/0 (headless loopback), net_match_live 3/0 (two real sims,
+  1000 ticks same state; forced desync; disconnect). Suite on the merged tree: see the report.
