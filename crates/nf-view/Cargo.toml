@@ -9,6 +9,7 @@ description = "Level viewer for 007: Nightfire (PS2) data read from the user's o
 nf-formats = { path = "../nf-formats" }
 nf-game = { path = "../nf-game" }
 nf-audio = { path = "../nf-audio" }
+nf-net = { path = "../nf-net" }
 anyhow.workspace = true
 bytemuck.workspace = true
 winit = "0.30.13"

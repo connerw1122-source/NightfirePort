@@ -436,6 +436,22 @@ impl<T: Transport> Session<T> {
         miss
     }
 
+    /// Host: set (or replace) the match settings + seed clients receive in
+    /// WELCOME. The lobby arms the match AFTER clients joined (the confirm
+    /// page runs once the panels are full), so the constructor-time payload
+    /// must be replaceable — the re-send path (a re-HELLO's idempotent
+    /// WELCOME) then carries the real match, not the placeholder.
+    /// Host-only and only before GO; later calls are ignored.
+    pub fn set_host_match(&mut self, settings: MatchSettings, seed: u32) {
+        if self.started {
+            return;
+        }
+        if let Role::Host { settings: s, seed: sd, .. } = &mut self.role {
+            *s = settings;
+            *sd = seed;
+        }
+    }
+
     /// Host: start the match at `first_tick` and tell every connected client.
     pub fn start_match(&mut self, first_tick: u32) -> Result<(), SessionError> {
         if self.started {

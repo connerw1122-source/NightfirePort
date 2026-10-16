@@ -6968,7 +6968,7 @@ impl Scene {
 // ── net-match-host: the online match's shared sim surface ─────────────────────────────────────
 // [S] port-only (the PS2 game has no online mode): every machine runs the same MP level from the
 // host's settings + seed and exchanges only each agent's per-tick input (deterministic lockstep,
-// `nf_game::net`). The shared state every machine must agree on is the bonds' poses, the MP match
+// `nf-net`, the one session layer). The shared state every machine must agree on is the bonds' poses, the MP match
 // state and the shared RNG stream — `net_state_hash` folds exactly that in a fixed slot order.
 impl Sim {
     /// The load builds every human slot's bond in slot order (deterministic on every machine);
@@ -7001,12 +7001,12 @@ impl Sim {
         }
     }
 
-    /// The per-tick state hash sent every N ticks (the app calls it; `nf_game::net` compares).
+    /// The per-tick state hash sent every N ticks (the app calls it; the nf-net session compares).
     /// Fixed fold order: frame, RNG stream, then each slot's bond pose (slot order — the local
     /// slot reads `bond`, the others `mp_bonds`), then the MP match state. An empty slot folds a
     /// sentinel so the shape is total and equal on every machine.
     pub fn net_state_hash(&self, local: usize) -> u64 {
-        let mut h = nf_game::net::Hasher::new();
+        let mut h = nf_net::hash::Hasher::new();
         h.u32(self.drones.frame);
         h.u32(self.drones.rng.x);
         h.u32(self.drones.rng.y);

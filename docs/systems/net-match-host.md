@@ -18,14 +18,29 @@ This task wires the lockstep session into the running app: the match start (the 
 the host's settings + seed), the per-tick input exchange with the sim gate, the per-machine
 camera, the state hash, and the desync/disconnect path back to the lobby.
 
-## 2. The session layer (`nf_game::net`, new module)
+## 2. The session layer (consolidated 2026-10-16 into `crates/nf-net`)
 
-The networking lives in `nf_game::net` (crates/nf-game/src/net.rs), **not** a new `nf-net` crate,
-for three reasons [S]: (a) it consumes `mp::MpSettings` and `player::Input` directly — a crate
-would either depend on nf-game or duplicate the types; (b) the lobby task's design doc already
-noted that building the same networking module twice in parallel collides — a module inside
-nf-game merges more easily with 051's `s/net-lockstep-core` work when it lands; (c) no rendering
-and no new dependencies (`std::net::UdpSocket` only) either way. The API is the one task 051
+> **net-consolidate**: this module (`nf_game::net`) is DELETED. The ONE session layer is 051's
+> `crates/nf-net` (stronger protocol: acks + 32-tick bitmap + full unacked-window retransmit,
+> input delay, hash piggyback, keepalives, deterministic shim — see `net-lockstep.md` §9); the
+> features below that the app depends on moved into it or into `nf_view::mpnet`:
+> the `MpSettings` handover (a tagged DATA tunnel from `NetCore::start_match`), the FNV `Hasher`
+> (now `nf_net::hash::Hasher`, `Sim::net_state_hash` uses it unchanged), the lobby codenames
+> (`Session::set_display_name` + `agents()`), the refuse-when-started gate, and the full
+> `MpSettings` wire fidelity (protocol 2). The app surface lives in `nf_view::mpnet`
+> (`NetCore` + `SessionProxy`): the flag path and the lobby's `MpSession` trait object wrap the
+> same core; `App.net` adopts it when a match starts. The drop of a peer is NO LONGER terminal:
+> `DropPolicy::Neutral` feeds the dropped slot NEUTRAL inputs and the match runs on (the game's
+> own disconnected-pad shape [M `psiInput_PollDevices` 0x10ca78]) — the old `PeerLost` ends the
+> match instead; the app's `CoreEvent::ClientLeft` just logs it.
+
+The original 053 design (kept for the record): the networking lived in `nf_game::net`
+(crates/nf-game/src/net.rs), not a new `nf-net` crate, for three reasons [S]: (a) it consumes
+`mp::MpSettings` and `player::Input` directly — a crate would either depend on nf-game or
+duplicate the types; (b) the lobby task's design doc already noted that building the same
+networking module twice in parallel collides — a module inside nf-game merges more easily with
+051's `s/net-lockstep-core` work when it lands; (c) no rendering and no new dependencies
+(`std::net::UdpSocket` only) either way. The API is the one task 051
 specifies: `poll() -> Vec<NetEvent>`, `local_input(tick, input)`, `ready_inputs(tick) ->
 Option<[Input; 4]>`, plus `host(port)` / `connect(addr, codename)`, `start_match(&settings)`,
 `send_state_hash(tick, hash)`, `agents()`, `close()`.
