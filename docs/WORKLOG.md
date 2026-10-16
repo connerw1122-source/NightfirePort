@@ -14879,3 +14879,10 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## party07-start-rules (2026-10-16, branch s/party07-start-rules) — start
+- Task: verify/fix 07000007 party start rules from the first frame — Bond holds fists (not gun),
+  guards not hostile until the trigger, punch on a guard = mission fail with the game's fail text,
+  no guest fires, guests react to gunfire the game's way; cold start AND the 06 -> 07 carry.
+- Evidence anchors: party script channels, weapon lock Player_Weapon 0x1a24c8:242-275, guards'
+  friendly/alert start state, punch -> fail hook, guests' drone classes.
