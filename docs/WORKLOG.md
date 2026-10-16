@@ -14580,3 +14580,24 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   (nis_state, the NIS pause/quit [M music.md]); (3) headless tests on 07000002's intro and
   07000007's Kimiko scene: skip mid-line → nothing alive after the game's fade window;
   let it play → the voice ends naturally; the level music resumes. NF_SILENT.
+
+## cutscene-skip-audio (2026-10-16, branch s/cutscene-skip-audio) — close-out
+- The skip's voice kill is ported end to end. Root cause: the dispatcher had no
+  `Request::Event` arm, so `Script_FFwd`'s `Music_Event(5, hash)` [M 0x1dac78:55] was dropped —
+  `NisPlaying` never cleared and `NisQuitten` never armed; and the driver had `fade_kill` but
+  nothing set it. Fix: the arm carries event 5 to the music board [M 0x114e70]; `Item` grows
+  `StartedWhenNisPlaying` (sampled at `SFXStart3D` init [M 0x3aac step 5]) and `SFXUpdate` step 3
+  FadeAndKills it while `NisQuitten` stands (the −5/frame decay existed) [M sound.md §6].
+- `Script_SoundStart`'s gate ported [M 0x1d8820] (no re-fire on a live handle; no start once the
+  skip's fade is past its length — the catch-up is silent) and `Script_SoundEnd` [M 0x1daf60]:
+  only a live LOOPING sound stops at its marker (`Sound_IsLooping` 0x1de260 via the new
+  `World::sfx_looped`), a one-shot runs to its own end.
+- Tests (crates/nf-view/tests/cutscene_skip_audio_live.rs, headless NF_SILENT, the real
+  load/step/sound_tick path): 07000002 intro skip mid-line → nothing alive after the fade window,
+  the board quit (NisPlaying down, NisQuitten armed→spent); no skip → the one-shot line ends on
+  its own; 07000007 Kimiko (0x0600_0073) skip → the same + the handover completes. Reproduced
+  first: with the game-side halves reverted both skip tests fail.
+- Suite on the final merged tree (origin/master f42de6ff): ~264/382 binaries via foreground
+  `--only` batches (background jobs are reaped in this sandbox) — 0 failed except the 3
+  `disc_golden` (slim ISO); lib tests nf-game 234 / nf-audio 11 / nf-view 15 / nf-formats 79.
+- Report: docs/reports/cutscene-skip-audio.md (4 live-check asks incl. the skip-fade render).
