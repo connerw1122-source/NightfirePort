@@ -16078,3 +16078,43 @@ and other merged tasks' new tests. The 2 new live tests are green in the totals.
 - SUITE (final tree): 1835 passed, 6 failed, 72 ignored (43 min); the 6 = the 3 allowed
   disc_golden + the 3 pre-existing pylon-render failures (same set as the unmodified-tree suite
   of the cross-process session). The hat binaries via the runner --only: 9 passed, 0 failed.
+## death-loop-07 (2026-10-16, branch s/death-loop-07) — start
+
+Task: playtest 1012-1723 (07000007): after dying, the mission goes into a replay loop — it keeps
+reloading the mission start over and over. Reproduce headless (die on 07: a guest-shot fail and a
+health-zero death), take the fail path (the port's auto-restart and the fail menu's REPLAY/RESTART),
+run 600 ticks after the reload, and find what re-fails at once (carried fail channel, guest-shot
+flag not reset, weapon-lock edge firing a guard reaction, `level_exit_restart` loops). Fix to the
+game's restart semantics [M Mission_Update's fail cases, the RamLoad restore, the 07 party script's
+init]. Test: two consecutive deaths and restarts each land in a playable 07 that stays alive 600
+ticks.
+
+## death-loop-07 (2026-10-16, branch s/death-loop-07) — DONE 15:20 UTC
+
+The playtest 1012-1723 loop ("once I died, we went into a replay loop where it kept replaying at
+the start of the mission over and over again", 07000007). The sim-side chain was already loop-free
+(fix-restart-target's entry-checkpoint serve + fix-guest-reactions' case-5 wait + campaign-flow's
+states-only restore); what was still live was the FRONT END's fail-menu answer: the Results page's
+REPLAY row (menu.rs arm 0) requested the level warm but never carried the row's `Player_RamLoad(
+Bond, 1)` half [M P_ENDMISSION_Handler 0x216618:19-21], so the host's `start_async_load` fell into
+the live-capture arm and served the DYING sim — whose carried fail channel (ch 99/0x60 on the
+guest-shot fail) re-fails the mission the tick the reload comes back, and the auto-restart answers
+again: the loop. The other hypotheses checked and closed: no guest flag survives a reload (every
+guest latch is per-Drones, fresh each load); the weapon-lock edge memory `prev_lock_ch` resets on
+every load (lib.rs poll_async_load) and the reloaded sim's ch 0x48 is 0, so no spurious P2K
+auto-draw at spawn; `level_exit_restart` is consumed with `.take()` and fresh per Drones.
+
+Fix: `FrontEnd::requested_restart` (menu.rs — struct, new, action-top clear, mission_ended clear,
+Results arm 0 set) + the host wiring (lib.rs requested_level take: the marker sets
+`sim.drones.level_exit_restart`), so the front-end REPLAY serves the ENTRY checkpoint exactly as
+the sim's own auto answer (`fail_choose_restart`) does.
+
+Tests: crates/nf-view/tests/fix_death_loop_07_live.rs — two consecutive health-zero deaths and two
+consecutive guest-shot fails (the real punch path), each answered by the auto-restart and reloaded
+through the viewer's serve, each landing in a playable 07 that stays alive 600 ticks (3 tests, all
+green; the front-end test's sister reproduces the carried-channel loop on the pre-fix serve).
+Related: fix_death_restart_live 8, fix_restart_target_live 2, fix_restart_health_live 2,
+fix_death_retry_boost_live 4, fix_guest_reactions_live 3, pause_results_flows_live 9,
+fail_replay_level 1, menu_graph_walk 2, menus_flow 42, menu_sp_e2e 9, front_end_chain_live 2,
+memcard_save_flow 7, menu_audio_flows 9, menu_movies 3, menu_music_flow 14 — all green. Full suite
+re-run on the final tree (see the report).
