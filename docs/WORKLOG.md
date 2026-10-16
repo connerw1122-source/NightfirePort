@@ -16706,3 +16706,32 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+
+## scary-link-routing (738)
+
+- Scope: the uncited-audit runner-up "Scary-link routing" (`AINetwork_SetLinksFlagInCircle`
+  0x15b548) — make the port's route state carry the game's link flags.
+- Forensics: the flag store is `MAPLINK+4` (u16) on the 0x10-byte links array at `*(net+0x3c)`;
+  `+6` is the used counter the A* multiplies into its cost [M `AINetwork_DoAStarPath` 0x1571b0,
+  disasm 0x1575e4-0x1575e8: `lhu +6`, `lwc1 +0xc`]. Writers of `+4`: `ClearLinkFlags` 0x15b498
+  (per-cycle reset — also zeroes `+6`), `SetLinksFlagInCircle` 0x15b548 (clear-then-set with the
+  ±2 height gate and the closest-point 2D test), `LinkCreep_ForNodes` 0x159810 / `LinkCreep_Calc`
+  0x159b10 (the 0x10 creep marker). Call chain: `control_movement_object_handler` 0x1336f8 →
+  `Drone_InitComms` 0x139520:125-126 → `ClearLinkFlags(0x310)` + `Drone_BuildDynamicAwarePoints`
+  0x138b10, whose record-id switch flags 12.0/0x100 for bullets 0x2a/0x2c-0x2f (bullets ARE class
+  5 [M `Bullet_init` 0x12c5a0:87]) and 0x34/0x6c/0x3b-0x40, 8.0/0x100 for 0x37 (skip stuck),
+  3.0/0x200 for 0x36.
+- **The census result**: no code in ACTION.ELF READS `MAPLINK+4` — every `lhu/lh/lw +4` site in the
+  AI range is accounted for (the two `ReachedDestNode` 0x153598 / `ReactToDroneAlertMsg` 0x143824
+  sites read `SMI+4`, the state id, not link flags; the flags are WRITE-ONLY state). The A* honours
+  flags by NOT honouring them; the audit's "guards path straight through grenade radii" causality
+  is refuted at the decompile level — the flee system (HandleExplosives 0x1435f0 → msg 0x21 →
+  0x86/0x87/0x88, already ported G-026) is the game's actual avoidance. Pinned by the sister test
+  `astar_still_walks_a_scary_flagged_link`.
+- Ported: `nav::LinkFlags` + `Network::clear_link_flags` / `set_links_flag_in_circle` (exact
+  0x15b548 geometry), `Drones.link_flags` / `Drone.link_flags` (the `used` swap pattern),
+  `hazard_link_flag` (the record switch), the per-cycle clear+flag at the InitComms pass
+  (drone.rs, next to the existing used rebuild). Tests: flag geometry + cycle clear, the
+  A*-through-scary-link sister, the record-switch table.
+- Left: the class-0x2a ('*') gas objects' 3.0/0x200 flagging (the port has no gas object walk
+  here yet) and the LinkCreep 0x10 marker (write-only, no reader) — both documented [S].
