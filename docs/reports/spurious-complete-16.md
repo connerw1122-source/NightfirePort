@@ -58,12 +58,19 @@ queued for a fabricated 4 — the fold already happened on the earlier level [M 
     hand-off `to_end = 0x07300017` [M 0x182c60:111-112], and **no mission banner before the end
     condition**.
 - Full suite on the final tree (merged with origin/master @ de6110cc), fast runner
-  `python3 tools/test/suite.py`: **(total filled in below)**.
+  `python3 tools/test/suite.py`: **1878 passed, 6 failed, 72 ignored (47 min)** — the 6 are the
+  3 allowed `disc_golden` + the 3 pre-existing pylon render probes, the same baseline the
+  ladder-02 and inert-guards-02 runs reported; zero new failures.
 
 ## Suite total
 
-See "SUITE (spurious-complete-16 final tree)" in the WORKLOG entry; the run's final line and any
-FAILED lines are recorded there.
+`1878 passed, 6 failed, 72 ignored (47 min)` on the final merged tree (build 427 test binaries
+in 460 s). FAILED lines: `disc_golden::bigf_header_fields_behave_as_documented`,
+`disc_golden::bigf_tables_match_the_golden_manifest`,
+`disc_golden::directory_tree_matches_the_golden_manifest`,
+`fix_0c_pylon_live::the_0c_pylon_fills_the_view_from_the_closeup_spot`,
+`fix_0c_pylon_live::the_0c_pylon_is_on_screen_at_the_user_spot`,
+`probe_pylon_render::probe_render_pylon_only` — all pre-existing, none from this task's changes.
 
 ## What's left
 
