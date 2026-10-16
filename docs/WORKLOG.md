@@ -14879,3 +14879,13 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## hatch-crouch-0c (2026-10-16, branch s/hatch-crouch-0c) — start
+- Task: 0700000c hatch — playtests 1012-1723, 1013-1758, 1014-1725: after the hatch opens, Bond can't
+  get through ("he can't crouch through"), blocked and soft-locked under the hatch. Find the collision:
+  opening size vs crouched capsule height [M Player_Collide / crouch height in the player tables], the
+  hatch object's collision after it opens, any crawl-space trigger.
+- Plan: port crouched movement/collision so the passage is traversable exactly as in the game; headless
+  test from the hatch top: open, drop, crouch-walk the passage to the far room, assert Bond's position;
+  sister test: standing (not crouched) is blocked at the same spot.
+- Branch from origin/master ad761677, pushed.
