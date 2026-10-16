@@ -217,13 +217,7 @@ fn astronaut_hit_and_death_variants_fire() {
     let moved = (sim.list[ai].pos[0] - p0[0]).abs();
     assert!(moved > 0.3, "the corpse must drift (moved {moved:.3})");
     // The 10 s death timer (DAT_00298f58 = FRAME_RATE_INT · 10 [M 0x1747b8:22; 0x13a5a8:10]) → Fade.
-    for t in 0..295 {
-        sim.tick(&d, &bond_at(bp));
-        if t % 50 == 0 || t > 290 {
-            let dr = &sim.list[ai];
-            eprintln!("t{t} frame {} state {} timer_c {:?} present {} enabled {}", sim.frame, dr.state, dr.timer_c, dr.present, dr.enabled);
-        }
-    }
+    for _ in 0..295 { sim.tick(&d, &bond_at(bp)); }
     assert_eq!(sim.list[ai].state, state::FADE, "the death timer must reach Fade 0x48");
 }
 
