@@ -15350,3 +15350,31 @@ actor's root position + pose frame per tick; find the discontinuity (Script_GetI
 step, a frame repeat/skip in the anim playback, or a root-motion double application); fix the sim
 side to the game's evidence; assert a monotone root with bounded per-tick deltas over the whole
 walk; sister = a deliberately doubled frame trips the check.
+
+## cutscene-walk-stutter (2026-10-16, branch s/cutscene-walk-stutter) — DONE 12:00 UTC
+The 07000007 Kimiko scene's walking guest (playtest 1015-1738: "the one in the red dress,
+stuttered a little bit while she was walking towards the other two"). Headless trace through the
+real trigger path (Bond into TouchOnce #412 → SP #420's scene script 0x06000073 → the guests' pack
+anim scripts): the red-dress walker = the Anim object of skin 0x0500003b playing 0x060004f1 (body
+sequence 0x04000332, the world-space root that carries the actor). Findings [M, every link checked
+in the decomp]: the frame advances EXACTLY 1/tick (Script_Update 0x1da998 advances every stream
+clock by FRAME_RATE_MUL; Script_Interp case 2 0x1d9a08:157-166 writes clock−start_clock+start_frame
+clamped [1, len] and zeroes the advance; AnimScriptTick 0x1c2630's advance is skipped on the
+AnimSeqSet 0x1c7460 start bit 0x20000000, which is never cleared; AnimSeqTick 0x1c28d0:62-63 maps
+anim time → sequence frame 1:1 — no frame-rate multiplier, no window hand-off mid-walk — both
+op-0 windows of 060004f1 run [1..0x10e6/7] from frame 1); and the root shows exactly THREE one-tick
+jumps (seq frames 936/2735/3966, |Δ| 0.279/0.371/0.880 against the walk's 0.005-0.027 steps) —
+each a 1-2-frame LINEAR bridging segment IN THE DISC'S OWN ROOT POLYNOMIALS of 04000332 (dumped:
+seg49 [935..936] slope −0.227/frame, C0-continuous with seg48/seg50 at both ends; likewise 2735 and
+3966), isolated lunges from a standstill inside the walk. The game samples the same integer frames
+of the same polynomials (AnimFrameCopy 0x1c5668's segment walk = the port's Sequence::value,
+bit-exact per WORKLOG 0017), so the jumps are the disc data playing — NO sim-side fix without
+deviating from the game. The lock: crates/nf-view/tests/cutscene_walk_stutter_live.rs — the
+whole-scene trace asserts 1 frame/tick and no root delta beyond 0.05 unless it is exactly one of
+the disc's three slides (all three verified present); the sister feeds a doubled frame (frame
+repeat) and a non-disc jump and trips the checker; a disc slide passes. No lib code changed. The
+render side has no interpolation of its own to report: the view poses the character at the sim's
+integer frame (script_anim → script_pose_together), and the game's AnimFrameSet fractional blend is
+a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
+three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
+must be faded/off those actors when it plays.
