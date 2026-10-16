@@ -14892,3 +14892,16 @@ menu-audio-state (2026-10-16)
   start and debriefing. Invariant: never two menu-music sources at once, none during gameplay.
 - Branch s/menu-audio-state created from origin/master (ad761677). Work in progress; report will be at
   docs/reports/menu-audio-state.md.
+- menu-audio-state: the flows found four real state bugs and the fixes are in. The jingle
+  restarted UNDER the intro (the early page flip fired Main's 0x4c — fe_music_step now holds
+  the transition while intro_playing [M 0x209e88]); the main menu sat silent after a skipped
+  intro (the skip arm now runs the 0x50 finish restart [M 0x209e88:23-28] and open_pair_sfx/
+  remove_pair drive the music channel so a tick-queued restart lands at the next redraw, not
+  the next keypress); the pair played under the briefing (the SP pick and the MP start now
+  kill it — the game deletes the manager at the pick [M 0x20b8d8 case 0x4b]); the bank
+  alternation reset at the pause (the App now stashes the .bss statics across manager drops
+  and restores them into the pause's fresh fe and the demo results [M 0x1dceb8; L 0x30c958]).
+  enter_page(Credits) no longer starts the pair (the credits 0x4c is the swap [M 0x2152b0]).
+  tests/menu_audio_flows.rs: 9 action-driven flows with the per-frame invariants (<=1 audible
+  source, none during gameplay, never jingles + credits track). Report:
+  docs/reports/menu-audio-state.md (live checks 1-6).
