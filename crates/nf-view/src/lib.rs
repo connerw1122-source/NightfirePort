@@ -25,6 +25,7 @@ pub mod devwin;
 pub mod hud;
 pub mod credits;
 pub mod menu;
+pub mod menu_music;
 pub mod movie;
 pub mod scene;
 pub mod replay;
@@ -1094,6 +1095,18 @@ fn read_files_bin(iso_path: &str, name: &str) -> Option<Vec<u8>> {
     iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).ok()
 }
 
+/// frontend-music: the credits music's files — `SFXStartMusic(0x27, 0)` [M P_CREDITS 0x2152b0:94]
+/// plays MFX track 0x27 through the same MFXINFO.MXI → MFX_<n>.{SMF,SSD} path the level music
+/// uses [M docs/systems/music.md; the front end has no MapMusic entry — the loader runs from the
+/// command, not from `Sound_Ready`'s table].
+fn menu_music_files(iso_path: &str, track: i32) -> Option<(i32, nf_formats::music::Smf, std::sync::Arc<Vec<u8>>)> {
+    let iso = IsoImage::open(iso_path).ok()?;
+    let get = |p: &str| iso.find(p).and_then(|e| iso.read_file(e).ok());
+    let n = nf_formats::music::track_file(&get("PS2/MFXINFO.MXI")?, track).ok()??;
+    let smf = nf_formats::music::Smf::parse(&get(&nf_formats::music::music_path(n, "SMF"))?).ok()?;
+    Some((track, smf, std::sync::Arc::new(get(&nf_formats::music::music_path(n, "SSD"))?)))
+}
+
 /// The keyboard stand-ins for the game's cut-scene skip action (`Input_Action(-1, 0x19, 1)`, read by
 /// `SP_Update` state 2 [M 0x1dbda8:129-141]). Action 0x19 is bound to raw pad mask 0x840 — R1 (0x800)
 /// or D-pad DOWN (0x040), pad 0 only [M psiInput_MapInputs 0x10cd80:415-417] — so a movement key
@@ -1573,6 +1586,12 @@ struct App {
     fe: Option<menu::FrontEnd>,
     /// The current level's hashcode (the archive name), for the pause page's restart / the results.
     level_code: u32,
+    /// frontend-music: the front-end page the music transitions last saw (the manager's msg-0x44
+    /// page change re-runs the new page's 0x4c arm [M 0x21c858:345-346]); None before the first.
+    fe_music_page: Option<menu::Page>,
+    /// frontend-music: the host's SFXStart handle counter (the game's RPC passes the EE node
+    /// handle; the port's driver dedupes/tracks by it).
+    menu_handle: u32,
     /// The game's strings (USATxt.dat) for the front end when the loaded map has no Sim to hold them.
     lang: Option<nf_formats::hud::Lang>,
     /// The gamepad backend (fix-input), behind the `gamepad` cargo feature. `None` without a pad
@@ -1661,6 +1680,63 @@ impl App {
         self.grab(false);
     }
 
+    /// frontend-music: the front end's audio, one call per redraw beside `movie_tick`. Runs the
+    /// page-change transitions (the manager's msg-0x44 re-runs the new page's 0x4c arm [M
+    /// 0x21c858:345-346]), applies the queued [`menu_music::MusicCmd`]s to the sound driver, and
+    /// pumps the IOP stand-in while the menus are up (the sim path's `sound_tick` only runs in
+    /// the tick gate, which the front end skips). Silent under NF_SILENT: without an output
+    /// device `build_sound` returns None and the commands just bookkeep on the state machine.
+    fn menu_music_tick(&mut self) {
+        if self.fe.is_some() {
+            let page = self.fe.as_ref().unwrap().page;
+            if self.fe_music_page != Some(page) {
+                // The credits page closing restores the music volume and restarts the pair [M
+                // 0x2152b0:20-38]; every other change runs the new page's enter arm.
+                if self.fe_music_page == Some(menu::Page::Credits) {
+                    if let Some(fe) = self.fe.as_mut() { fe.music.credits_leave(); }
+                }
+                if let Some(fe) = self.fe.as_mut() { fe.music.page_enter(page); }
+                self.fe_music_page = Some(page);
+            }
+        }
+        let cmds = self.fe.as_mut().map(|fe| fe.music.take_cmds()).unwrap_or_default();
+        if !cmds.is_empty() {
+            // `StartJingle` only sounds on the front end: with a mission's bank as the primary the
+            // game's own `SFXStart(0x1d7/0x470)` finds no effect (the mission banks lack both ids —
+            // [D the bank probe: e.g. SB_12 carries 0x1d8-0x1da but neither jingle]), so the
+            // results page over a mission stays silent exactly like the game.
+            let front_end_loaded = self.level_code == 0 || self.level_code == menu::FRONTEND_LEVEL;
+            if let Some(s) = self.sound.as_mut() {
+                for c in cmds {
+                    match c {
+                        menu_music::MusicCmd::StopJingles => { s.driver.remove(0, Some(0x1d7)); s.driver.remove(0, Some(0x470)); }
+                        menu_music::MusicCmd::StartJingle(id) => {
+                            if front_end_loaded {
+                                self.menu_handle += 1;
+                                let h = self.menu_handle;
+                                s.batch(|drv, out| { drv.start(out, id, None, h, None); });
+                            }
+                        }
+                        menu_music::MusicCmd::StartMusic(track, section) => {
+                            match menu_music_files(&self.iso, track) {
+                                Some((t, smf, ssd)) => { s.music_files = Some((t, smf, ssd)); s.music_pending.push((0, track, section)); }
+                                None => eprintln!("menu music: track {track:#x} files not on the disc — no credits music"),
+                            }
+                        }
+                        menu_music::MusicCmd::StopMusic => { s.music = None; }
+                        menu_music::MusicCmd::MusicVolume(v) => { s.driver.music_master = v; }
+                        menu_music::MusicCmd::FadeDownMusic => { s.driver.fade_down(true); }
+                    }
+                }
+            }
+        }
+        // The pump: one driver update + output send per frame while the menus are up and the
+        // audio is not held (the pause page's hold mirrors `MenuManager_Create(pause_sound=1)`).
+        if !self.audio_paused {
+            if let Some(s) = self.sound.as_mut() { s.batch(|_, _| {}); }
+        }
+    }
+
     /// The ONE movie glue, one call per redraw. Every movie the game plays routes through the one
     /// `self.movie` player, by the game's own start sites: the P_INTRO pair while the run is up
     /// [M `P_INTRO_Handler` 0x209e88], the GameFlow state-6 briefing/outro [M 0x1c98c8 case 6 +
@@ -1687,7 +1763,13 @@ impl App {
             if wrong {
                 if let Some(p) = self.movie.take() { p.stop(); }
                 match movie::Player::start(&movie_iso, code) {
-                    Ok(p) => { self.movie = Some(p); eprintln!("movie: playing {code:08x} (intro)"); }
+                    Ok(p) => {
+                        self.movie = Some(p); eprintln!("movie: playing {code:08x} (intro)");
+                        // frontend-music: the intro's 0x4c-equivalent removes the pair before the
+                        // movie (menu_movie = 0) [M P_INTRO 0x209e88:42-44]; the movie's own audio
+                        // replaces it.
+                        fe.music.movie_started();
+                    }
                     Err(e) => eprintln!("movie: {code:08x} not started: {e:?} — the headless countdown carries the intro"),
                 }
             }
@@ -1695,6 +1777,9 @@ impl App {
             // second movie the host shortens the headless countdown so the state pops at the real
             // end (the slim ISO's zeroed PSS files [L] leave the countdown alone to carry it).
             if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {
+                // frontend-music: each finished intro movie restarts the pair while it is down
+                // [M 0x209e88:23-28 — the psiMovieFinished arm].
+                fe.music.movie_finished();
                 fe.intro_index += 1;
                 if fe.intro_index >= menu::INTRO_MOVIES.len() { fe.flow.movie_frames = fe.flow.movie_frames.min(1); }
             }
@@ -2256,6 +2341,9 @@ impl ApplicationHandler for App {
                 // fix-movie-playback: the movie glue runs before the load path so a phase-2
                 // resolve lands in the same frame the state 6 popped.
                 self.movie_tick();
+                // frontend-music: the menus' own audio (the jingle pair, the credits track), the
+                // page-change transitions and the per-frame pump.
+                self.menu_music_tick();
                 // fix-weapon-assets: a dev-menu/panel give of a weapon the level archive lacks.
                 // The game never gives cross-level weapons, so there is no game path to mirror —
                 // the port answers the give with a warm reload of the SAME level with the weapon's
@@ -2338,6 +2426,21 @@ impl ApplicationHandler for App {
                     match load(&self.iso, &name, self.all, save.as_ref()) {
                         Ok(mut scene) => {
                             self.sound = build_sound(&mut scene);
+                            // frontend-music: `Sound_Ready`'s front-end case [M 0x1dceb8 case
+                            // 0x7000048] — the load alternates bank 0xc (SBI slot 0 = SB_0, jingle
+                            // 0x1d7) and 0x38 (slot 1 = SB_1, jingle 0x470) through DAT_002e1b11,
+                            // then `MenuManager_Create` resets `menu_movie` [M 0x21b908:127] so the
+                            // first page enter restarts the pair. The port keeps every bank
+                            // resident, so the flip re-points the driver's primary slot.
+                            let loaded = u32::from_str_radix(name.trim_end_matches(".bin"), 16).unwrap_or(0);
+                            if loaded == menu::FRONTEND_LEVEL {
+                                if let Some(fe) = self.fe.as_mut() {
+                                    let hash = fe.music.front_end_sound_ready();
+                                    fe.music.jingles_up = false;
+                                    if let Some(s) = self.sound.as_mut() { s.driver.set_primary(if hash == 0x38 { 1 } else { 0 }); }
+                                }
+                                self.fe_music_page = None; // the manager re-create re-runs the page's 0x4c [M 0x21b908:127]
+                            }
                             // The fresh sound stack is unpaused: reset the mirror so the per-frame diff
                             // re-applies the current hold (a menu can still be up over the reload).
                             self.audio_paused = false;
@@ -2402,12 +2505,14 @@ impl ApplicationHandler for App {
                 // `pause_sound` runs `SFXPause` (batch op 9) + `SFXPauseAllStreams` (op 0x16) and
                 // `MenuManager_Delete` runs the unpause pair [M 0x21b908:121-124, 0x21c2b0:11-22];
                 // GameState+0x50 is read by NO sound code — the pause rides these ops. The port's
-                // hook is the menu page being up (any page: the sim is not ticking) or the viewer's
-                // P pause. `set_paused` reaches the output at once because `sound_tick` (and the
+                // hook is the pause page (the in-game pause manager's create) or the viewer's P
+                // pause — NOT the front end's own pages: its manager passes pause_sound = 0 and
+                // the jingle pair keeps playing over every page [M frontend-music].
+                // `set_paused` reaches the output at once because `sound_tick` (and the
                 // batch) only run inside the tick gate below. The fail/results page opens with
                 // `pause_sound` = 0 in the game (sound keeps playing [M Mission_Update 0x182c60:78])
                 // — the port's demo results hook rides the same gate [S, remaining host glue].
-                let menu_hold = self.fe.is_some() || self.paused;
+                let menu_hold = self.paused || self.fe.as_ref().is_some_and(|fe| fe.page == menu::Page::Pause);
                 if menu_hold != self.audio_paused {
                     self.audio_paused = menu_hold;
                     if let Some(s) = self.sound.as_mut() { s.set_paused(menu_hold); }
@@ -2997,7 +3102,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, };
     if dev {

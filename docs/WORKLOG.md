@@ -13546,3 +13546,47 @@ buffer SHA-1s), format doc in docs/formats/. No renderer work.
   pages, results, MP setup), the pause page music, movie backdrops' own audio vs the music, and the mission-end →
   front-end handover. Data + state + flow + getters (no drawing), in nf-view/menu.rs or nf_game. Tests: numbers only.
 - Status: branch created from origin/master (65528c8f), WORKLOG entry pushed. Research phase next.
+
+### frontend-music — session result (2026-10-16, ~00:25 UTC)
+
+- Ported the front end's music (no drawing): `crates/nf-view/src/menu_music.rs` — `MenuMusic`
+  (the state: `jingles_up` = `menu_movie` 0x2e1c48, `bank_flip` = `DAT_002e1b11`, `loaded_bank`
+  = the resident bank hash, `credits_saved_vol` = `music_vol_524`, `music_master` =
+  `MusicMasterVolume` @ 0x30c958, init 70 [L]) + `MusicCmd` (StopJingles / StartJingle /
+  StartMusic / StopMusic / MusicVolume / FadeDownMusic), and the transitions: the five restart
+  pages (P_START 0x20a408:17-22, P_MAIN 0x20a7b0:42-47, P_NFMAP 0x20b608:36-41, P_NFRESULTS
+  0x208e78:60-65, P_MPDEBRIEFING 0x212198:85-90 — `if menu_movie == 0 { SFXRemove 0x1d7+0x470;
+  SFXStart both; menu_movie = 1 }`), the no-op list pages + MP setup chain (pair continues),
+  the credits swap (enter 0x2152b0:89-93: save vol, remove pair, `SFXStartMusic(0x27,0)`; leave
+  :56-63: `SFXStopMusic`, restore the ENTRY volume, pair back), the movie pages (Menu_PlayMovie
+  0x215990:14-15 removes the pair, `psiStartBackgroundMovie(…, SFXGetVolume())` replaces it;
+  the finish arms 0x209e88:23-28 et al. restart it), the pause hold (MenuManager_Create
+  0x21b908:121-124 SFXPause+SFXPauseAllStreams / Delete 0x21c2b0:11-15), the quit fade
+  (SFXFadeDown(1) at 0x204408:150 / 0x216618:28 / 0x20ec00:155), the AV music slider (×5,
+  0x214818:72/80) and the cheats MUSIC toggle (0/100, 0x215bf0). The bank alternation
+  (Sound_Ready 0x1dceb8 case 0x7000048: hash 0xc/0x38 by DAT_002e1b11, flip after) is verified
+  against the disc: SBINFO slot 0 = 0xc = SB_0 carries jingle 0x1d7, slot 1 = 0x38 = SB_1
+  carries 0x470, mission banks (SB_12) carry neither — the port issues the resident bank's id.
+- Host wiring: `App::menu_music_tick` per redraw (page-change transitions + command drain +
+  the per-frame pump), the front-end load hook (`front_end_sound_ready` →
+  `Driver::set_primary` → `jingles_up = false` → `fe_music_page = None`), the menu hold
+  narrowed to the pause page only (the front end's own pages never pause sound), the intro
+  movie glue calls `movie_started`/`movie_finished`. Silent under NF_SILENT (no output → the
+  commands only bookkeep). `FrontEnd` gains the `music` field (own lines).
+- Doc: docs/systems/frontend-music.md (§1 no MapMusic for 0x7000048 — UpdateMusicalEvents
+  0x114e70:17 skips it; §2 the pair + banks; §3 the page table; §4 credits; §5 movies;
+  §6 pause; §7 mission-end handover; §8 volume knobs; §9 the port; §10 tests).
+- Tests: crates/nf-view/tests/menu_music_flow.rs — 14 (10 headless numbers-only + 4 NF_ISO
+  sisters with tamper-proofing sisters of their own kind: fresh-state discriminators, SBINFO
+  slots, SB_0/SB_1 jingle exclusivity, a mission bank lacking both jingles, the credits track
+  0x27 through MFXINFO.MXI). Two real bugs the first run caught and the decomp settled:
+  `jingle_id` must read the RESIDENT bank (added `loaded_bank`, init 0xc — the boot's own
+  Sound_Ready consumes DAT=0), and the full-walk test now runs the boot's own flip; the ISO
+  sisters read banks through `soundbank::bank_path` (PS2/ENGLISH/SB_<s>>3>/SB_<s>.<ext>).
+- Run before push: `cargo test --offline --release -j2 -p nf-view -p nf-audio` → 145 passed /
+  0 failed (includes menu_music_flow 14/14, menus_flow 36/36 unchanged, nf-audio bank/sfx
+  suites). Crates touched: nf-view, nf-audio.
+- Left: the merge with origin/master (it moved to 24b1f4dd) + the full four-crate suite on the
+  final tree, the PTP-persisted DAT restore nuance ([S] noted in the doc), the main agent's
+  audible/visual pass (menus must SOUND — no render checks apply; live checks listed in the
+  report if wanted).

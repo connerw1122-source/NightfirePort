@@ -1103,6 +1103,9 @@ pub struct FrontEnd {
     /// by the Screen Adjust page and saved in the global settings blob [M LS_MakeGlobalSettings
     /// 0x1cd9d0; docs/systems/screen-adjust.md §3/§5]. (Each field on its own line [WORKLOG lesson 4].)
     pub screen_x: i32,
+    /// frontend-music: the menus' audio state — the jingle pair, the credits track, the bank
+    /// alternation (docs/systems/frontend-music.md; each field on its own line [WORKLOG lesson 4]).
+    pub music: crate::menu_music::MenuMusic,
     pub screen_y: i32,
     /// The Screen Adjust page's enter snapshot — `PS2OldX`/`PS2OldY` 0x30d578/0x30d57c, taken by
     /// msg 0x4c and restored by the msg 0x6b close [M P_SCREENADJUST 0x217a58].
@@ -1233,6 +1236,8 @@ impl FrontEnd {
             // screen-adjust-model (each new field on its own line [WORKLOG lesson 4]): the game
             // boots the offset at 0/0 (.sbss) [M psiRestoreScreenPos 0x10b940's reset value].
             screen_x: 0,
+            // frontend-music: the menus' audio state (own line [WORKLOG lesson 4]).
+            music: crate::menu_music::MenuMusic::new(),
             screen_y: 0,
             screen_saved_x: 0,
             screen_saved_y: 0,
@@ -2429,6 +2434,7 @@ impl FrontEnd {
                             if restart {
                                 // YES on RESTART [M 0x204408:138-141 — state_quit_166 == 0:
                                 // ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)].
+                                self.music.quit_fade(); // the game's SFXFadeDown(1) runs on both arms [M 0x204408:150]
                                 let level = CAMPAIGN[self.mission].3;
                                 self.requested_level = Some(level);
                                 self.flow.reset_map_level_to_load(level, false, true);
@@ -2440,6 +2446,7 @@ impl FrontEnd {
                             }
                             // YES on QUIT [M 0x204408:142-152 — +0x28 = 0x4000001c (the SP quit page),
                             // ResetMap_LevelToLoad(0x7000048, 0, 0), the fade push and the delete].
+                            self.music.quit_fade(); // SFXFadeDown(1) before the push + delete [M 0x204408:150]
                             self.flow.page = PAGE_RESULTS_QUIT_TARGET;
                             self.requested_level = Some(FRONTEND_LEVEL);
                             self.flow.reset_map_level_to_load(FRONTEND_LEVEL, false, true);
