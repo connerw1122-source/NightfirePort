@@ -384,7 +384,7 @@ pub fn merge_weapon_assets<R: std::io::Read + std::io::Seek>(
             needed.retain(|h| !level.by_hash.contains_key(h));
             stats.maps += moved;
             stats.archives += 1;
-            eprintln!("weapon assets: {} weapon-model mesh(es) topped up from {archive_name}", moved);
+            eprintln!("weapon assets: {moved} map(s) of weapon-model meshes topped up from {archive_name}");
         }
     }
     // The top-up pass: a wanted view script no opened archive carried comes from the archive the
