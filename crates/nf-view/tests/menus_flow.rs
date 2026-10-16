@@ -87,6 +87,14 @@ fn the_page_sequence_matches_the_real_game() {
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(menu::CAMPAIGN[1].3));
     assert_eq!(fe.flow.level_to_load, 0x0710_0005, "story codes wrap to 0x0710 intro codes [M 0x1d3800's switch]");
+    // C_SBNFMAP's 84-frame fade sits ON TOP of the loader (disasm 0x20ba50-5c: PushState(84.0f, 7)
+    // after ResetMap_LevelToLoad) — GameFlow_Main only ticks the top state, so the load starts when
+    // the fade pops [M 0x1c98c8].
+    assert_eq!(fe.flow.get_state(), ST_FADE_HOLD, "the menu exit fade is pushed [M 0x20ba50]");
+    assert_eq!(fe.flow.fade_frames, 84, "the duration is C_SBNFMAP's 0x42a00000 = 84.0f");
+    let fade_ticks = fe.flow.fade_frames + 1;
+    for _ in 0..fade_ticks { fe.flow.main_tick(); }
+    assert_eq!(fe.flow.get_state(), ST_MAPLOAD, "the fade popped onto the loader");
     assert!(fe.flow.load_tick() == false);
     assert_eq!(fe.flow.movie_code, 0x0710_0005, "GameState+0x10 [M 0x1d6360]");
     fe.flow.main_tick();
