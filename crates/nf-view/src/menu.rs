@@ -2014,16 +2014,32 @@ impl FrontEnd {
         self.sfx_out.push(MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_MOVE });
         self.sfx_out.push(MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_SELECT });
         self.menu_movie = true;
+        // frontend-music: the restart also lands on the music channel — the bank-resolved id
+        // (0x1d7/0x470 by the resident front-end bank [M 0x1dceb8 case 0x7000048]) applied at the
+        // NEXT REDRAW, not at the next input: the sfx channel drains only in `menu_after`, so a
+        // restart queued by `tick` (the intro/attract ends, a skipped intro) stayed silent until
+        // the user touched a key. `movie_finished` IS the game's restart arm gated by the music
+        // state's own `menu_movie` mirror (`jingles_up`), so the two channels never stack: the
+        // sfx batch's leading removes kill whichever instance sounds first [M the 0x4c order].
+        self.music.movie_finished();
     }
 
     /// Every front-end page change funnels through here so the open pair rides the transitions
-    /// into the pair-playing pages (Start/Main/MissionSelect/Results/Credits/MpDebriefing — the
-    /// port's stand-ins for the game's twelve handlers [M the SFXStart(0x1d7) caller list]).
+    /// into the pair-playing pages (Start/Main/MissionSelect/Results/MpDebriefing — the port's
+    /// stand-ins for the game's restart handlers [M the SFXStart(0x1d7) caller list]; the credits
+    /// is the swap, handled below and in `MenuMusic::page_enter`).
     fn enter_page(&mut self, p: Page) {
         self.page = p;
         if matches!(p, Page::Start | Page::Main | Page::MissionSelect | Page::Results
-                    | Page::Credits | Page::MpDebriefing) {
+                    | Page::MpDebriefing) {
             self.open_pair_sfx();
+        }
+        if p == Page::Credits {
+            // The credits' 0x4c is the SWAP, not a pair restart: SFXRemove both, menu_movie = 0,
+            // SFXStartMusic(0x27, 0) [M 0x2152b0:89-94] — the music channel's page_enter(Credits)
+            // runs it; here only the static clears (a jingle start here died under the same
+            // frame's StopJingles and played for under a frame — menu-audio-state).
+            self.menu_movie = false;
         }
     }
 
@@ -2035,6 +2051,10 @@ impl FrontEnd {
     fn remove_pair(&mut self) {
         self.sfx_remove_out.push(SFX_MENU_OPEN_MOVE);
         self.sfx_remove_out.push(SFX_MENU_OPEN_SELECT);
+        // frontend-music: the music state's `menu_movie` mirror (`jingles_up`) follows the game's
+        // static — Menu_PlayMovie's rm leaves `menu_movie` 0 [M 0x215990:14-19], so a later
+        // page-enter/movie-finish restart is not double-gated off.
+        self.music.movie_started();
     }
 
     /// `Menu_PlaySound` [M 0x1f3278]: the gated sounds (0/1/2/8) drop when their
@@ -2542,6 +2562,18 @@ impl FrontEnd {
         }).collect()
     }
 
+    /// The load's own `MenuManager_Create` re-opens the queued page [M ResetMap_Load 0x1d6360:160-163
+    /// — `MenuManager_Create(GameState._32_4_, GameState._28_4_, …)` runs at the load's tail]: the
+    /// host calls this when a front-end-map load finishes (the quit arms' 0x4000001c lands on the
+    /// mission list, not the placeholder page it left up during the load). Returns whether the page
+    /// changed. pause-results-flows.
+    pub fn reopen_queued_page(&mut self) -> bool {
+        match Page::from_id(self.flow.page) {
+            Some(p) if self.page != p => { self.enter_page(p); self.cursor = 0; true }
+            _ => false,
+        }
+    }
+
     /// One menu tick: advance the flow machine, run the page's own timers [M the 0x4c/0x50 messages].
     pub fn tick(&mut self) {
         self.flow.main_tick();
@@ -2664,8 +2696,10 @@ impl FrontEnd {
             self.enter_page(Page::Pause);
             // MenuManager_Create zeroes the static on every manager open [M 0x21b908:125] — the
             // pause page's own 0x4c starts no pair (P_PAUSE 0x203c28 has no pair calls), and the
-            // next front-end page after the unpause restarts it fresh [M 0x21c2b0:15].
+            // next front-end page after the unpause restarts it fresh [M 0x21c2b0:15]. The music
+            // state's mirror follows the static (menu-audio-state).
             self.menu_movie = false;
+            self.music.jingles_up = false;
             self.cursor = 0;
             self.pause_tab = 0;
             self.confirming_restart = false;
@@ -3611,8 +3645,14 @@ impl FrontEnd {
             if a == Action::Confirm {
                 self.flow.pop_state();
                 self.intro_playing = false;
-            self.menu_movie = false; // the intro movie end clears menu_movie [M P_INTRO 0x209e88:44,58]
+                self.menu_movie = false; // the intro movie end clears menu_movie [M P_INTRO 0x209e88:44,58]
                 self.intro_index = 0;
+                // The game's StopMovie makes the page's next 0x50 see psiMovieFinished, and the
+                // finish arm restarts the pair while it is down [M 0x209e88:23-28] — the skip
+                // collapses to the same restart (menu-audio-state: without it the main menu sat
+                // silent after a skipped intro; the window's own skip path funnels through the
+                // intro-end block in `tick`, which calls the same restart).
+                self.open_pair_sfx();
                 return true;
             }
             return false;
@@ -3996,6 +4036,13 @@ impl FrontEnd {
                         );
                     } else {
                         self.requested_level = Some(level);
+                        // The game DELETES the menu manager at the pick (C_SBNFMAP case 0x4b's
+                        // load hand-over [M 0x20b8d8]), so the pair dies here — the port's manager
+                        // only goes at the async swap, and without this the jingle played on under
+                        // the briefing (menu-audio-state). menu_movie clears with it [M
+                        // MenuManager_Delete 0x21c2b0:15].
+                        self.menu_movie = false;
+                        self.remove_pair();
                     }
                     return true;
                 }
@@ -5091,6 +5138,16 @@ impl FrontEnd {
         self.mp_bots.iter().filter(|b| b.enabled).count()
     }
 
+    /// The debriefing's re-entry [M C_GCPAUSE 0x204408:146 — quitting a match (the QUIT row's
+    /// msg-0xd arm) with `MPSettings+0x180 != 0` sets GameState+0x28 = 0x40000033 and reloads
+    /// 0x0700048, so the front end re-opens on the debriefing page; P_MPDEBRIEFING 0x212198's
+    /// enter builds it]. The host calls this when an MP match quit re-enters the front end (the
+    /// port's in-match pause loop is not wired yet — the game's own handoff is this page id).
+    pub fn mp_debrief_enter(&mut self) {
+        self.enter_page(Page::MpDebriefing);
+        self.cursor = 0;
+    }
+
     /// The confirm page's Confirm — P_MPCONFIRM 0x20ec00:53-94: `Menu_StoreMPSettings` (the port
     /// has no MP card — the backup/restore pair is the debriefing's own [S]); the joined players'
     /// records compact; `+0x1A0 != -1 → ×60` (minutes → seconds); `+0x1D4 &= 1`; `+0x180 = 1`;
@@ -5102,6 +5159,11 @@ impl FrontEnd {
     /// team game, else the character), the pick on the agent's stored value.
     fn enter_mp_setup(&mut self) {
         self.enter_page(Page::MpSetup);
+        // The setup page drives agent 1's single pick row — the page cursor starts on it [M
+        // C_RBMPSETUP 0x20de58's 0x4c re-selects the per-agent list's row on every state step;
+        // the port keeps the pick in mp_setup_sel, so the row cursor is 0]. Without the reset
+        // the map wheel's cursor rode in and the walk's cursor<rows() check tripped.
+        self.cursor = 0;
         if self.mp_scenario & 0x2000_0000 != 0 {
             self.mp_setup_state = 2;
             self.mp_setup_sel = self.mp_join[0].team as usize;
@@ -5131,6 +5193,10 @@ impl FrontEnd {
         s.bot_count = bots;
         s.weapon_set = self.mp_weapon_set;
         s.radar = self.mp_radar;
+        // [M MPSettings+0x198 — the game's Player Mods page writes the friendly-fire enable in
+        // place (mp-menus.md row 0x1ae) and MP_RegisterBulletHit 0x1857c0:43-57 reads it; the
+        // port rebuilds the struct here, so the choice must be mapped or it is dropped.]
+        s.friendly_fire = self.mp_friendly_fire;
         // [M P_MPCONFIRM 0x20ec00's msg-0x4b: 0x20f708 andi 1 → 0x20f710 sw — Explosive Scenery
         // masks to 0/1 at match start, so the locked page's stale 0x10 can never arm it]
         self.mp_envmods[2] &= 1;
@@ -5148,8 +5214,12 @@ impl FrontEnd {
             if let Some(sess) = self.mp_session.as_mut() { sess.start_match(&s.clone()); }
         }
         // [M the match-start calls] — the level request + the fade push; MenuManager_Delete is
-        // the host closing the overlay once the load leaves the front-end map.
+        // the host closing the overlay once the load leaves the front-end map. The delete takes
+        // the pair with it [M 0x21c2b0:11-15] — the port's manager only goes at the async swap,
+        // so the pair dies here (menu-audio-state).
         self.requested_level = Some(self.mp_level);
+        self.menu_movie = false;
+        self.remove_pair();
         self.flow.reset_map_level_to_load(self.mp_level, false, false);
         self.flow.push_state(ST_FADE_HOLD);
         true

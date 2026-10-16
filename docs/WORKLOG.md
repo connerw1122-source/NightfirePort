@@ -14579,6 +14579,15 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
   the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
   docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
+
+## menu-e2e-singleplayer (2026-10-16, branch s/menu-e2e-singleplayer)
+- Branch created from origin/master (f42de6ff). Task: every single-player path from boot to a level request, driven ONLY
+  through `action()`, `mouse_*()`, `tick()` and the host-side calls — never by assigning page/cursor/state fields.
+  Title → intro (skip and play out) → Main → NightFire; each Select Codename branch; each difficulty → the mission list
+  → every unlocked row; assert requested_level against CAMPAIGN and the sp_level table [M]; the driving-notice path
+  (mission_ended results/NfBonus routing, save prompt, next row unlocking, restart); Back at every step; fresh profile
+  vs unlock_all.
+- Started the fast suite in the background on the branch-point tree (baseline).
 ## microcam-wheel-zoom (2026-10-16, branch s/microcam-wheel-zoom) — start
 - Branch created from origin/master (6bab6409). Task: while right-click (aim) held, mouse wheel steps the
   zoom between the weapon's per-weapon min/max zoom range (Player_Weapon zoom input arm / weapon_data zoom
@@ -15020,3 +15029,122 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   siren. Both pass; nf-game lib 234, nf-view lib 15, sound_coverage_live 4, alarm_panel_06_live 2.
   Report: docs/reports/alarm-panel-06.md (render asks + 3 live checks; suite owed — the sandbox
   reaped the background fast runner twice mid-build).
+
+## menu-graph-walk (2026-10-16, branch s/menu-graph-walk)
+- Branch created from origin/master (f42de6ff). Task: headless explorer that walks the whole reachable menu
+  graph from FrontEnd::new() by actions + ticks only (never direct field writes), with per-step invariants
+  (no panic, cursor < rows(), known page id, Back leaves within N steps, every page can reach Main,
+  requested_level never set twice per confirm, no dead-end pages), coverage print, plus a randomized
+  version (20 seeded runs x 5000 actions+ticks). Findings fix menu code where game evidence is clear [M],
+  else listed in the report.
+- menu-graph-walk close-out: the headless explorer (crates/nf-view/tests/menu_graph_walk.rs) walks
+  the front end from FrontEnd::new() by actions/ticks/host-calls only — 5 roots (raw boot; Main by
+  actions; pause via open_pause; results via mission_ended+results_enter; win via the final mission
+  under --unlock-all), BFS over (page, cursor, sub-state) with per-step invariants (no panic, cursor
+  < rows(), known page id, Back leaves within 8, every page reaches Main by actions — the mini-BFS
+  depth covers the 0x242-line credits roll [M 0x1f9a88], requested_level never set twice per
+  confirm, no dead ends) + 20 seeded runs × 5000 random actions/ticks. FrontEnd isn't Clone
+  (Box<dyn MpSession>), so nodes re-drive their paths (deterministic headless). Result: 38/42 pages
+  reached, every invariant green; the walk caught the MP setup page opening with the map wheel's
+  cursor riding in (cursor 1 on a 1-row page) — fixed: enter_mp_setup resets the row cursor [M
+  C_RBMPSETUP 0x20de58's 0x4c re-selects the list; the pick lives in mp_setup_sel]. Unreached (4,
+  reasons in the report): Options 0x40000068 (no opener in the whole decompile), MpDebriefing
+  (quit-during-MP-match only), MpLobby (needs a session; covered by mp_net_lobby), CheatMedal
+  0x4000004c (opener unknown — unlock-popups2's open question). Win/credits take no input by design
+  [M 0x215100/0x2152b0]. Report: docs/reports/menu-graph-walk.md (3 live-check asks).
+- menu-e2e-singleplayer close-out: crates/nf-view/tests/menu_sp_e2e.rs — 9 e2e tests driven only through
+  action()/tick()/the host-side calls (set_profile_dir, --unlock-all, requested_level/phase2_resolved takes,
+  the lib.rs demo_results flow prep before mission_ended, results_enter/bonus_enter/sync_profile_progress/
+  win_movie_finished, the card dialog answers); the name grid walked by d-pad BFS over CN_GRID (no other
+  window input path exists for it). Coverage: intro skip + playout; Back at every step to the title; all
+  three Select Codename branches (New Codename incl. the 0x3bc empty-name refusal + create + save + reload,
+  Play without saving's cancel/re-arm, an existing saved codename); the clamped difficulty wheel × all rows;
+  CAMPAIGN == SP_LEVEL_HASHES; all 12 rows' exact requested_level (driving rows → the notice, both
+  dismissals); the complete walk (results fields, the save prompt → ASK_OVERWRITE → the write → the NfBonus
+  hop → the list on the highest unlocked row → Double Cross through the chained driving rows → the file and
+  reload carry rows 0-2); the fail menu (REPLAY warm / QUIT); Equinox → the real 0x0730001b outro wrap →
+  just_completed → WinGame → Credits. Merged origin/master ad761677 mid-task (WORKLOG conflict resolved,
+  both entries kept). Findings: the fail-menu REPLAY sequencing (the headless front-end load clobbers
+  GameState+0x12 before the answer — the test answers in the disc's streaming window; live check asked) and
+  the per-leg phase2_resolved consume the walker mirrors from lib.rs 2326. Report:
+  docs/reports/menu-e2e-singleplayer.md (2 live checks).
+## menu-e2e-local-mp (2026-10-16, branch s/menu-e2e-local-mp) — start
+- Task: drive the FrontEnd ONLY through action()/mouse_*/tick (never assign page/cursor/state) and
+  cover every local-MP path to a match request: Main -> Multiplayer -> Local -> join (codename,
+  ready); for EVERY scenario row (Quick Game too), EVERY map row, both team/FFA setups: setup
+  (team -> character -> handicap) -> options hub (Rules, Player Mods, Enviro Mods, Bots + bot setup)
+  -> Continue -> Confirm -> requested_level + mp_match_settings validated against the choices.
+  Second Confirm while a request is pending must be refused. Back out from EVERY page at EVERY
+  prompt and walk forward again (setup page re-enters on the right prompt for the scenario's team
+  bit [M P_MPSETUP 0x20d7a8]). Locked rows/scenarios refuse. Debriefing returns to the scenario page.
+
+## menu-e2e-local-mp (2026-10-16, branch s/menu-e2e-local-mp) — close-out
+- menus_e2e_mp.rs: 5 action-driven tests covering all 13 scenario rows (locked refuse with the
+  0x010000ab desc [M C_SBMPSCEN:40-42], Quick Game's fixed config, team/FFA setup prompts per
+  P_MPSETUP 0x20d7a8's team bit), all 8 map rows to their requests (Ravine solo correctly refused
+  0x39e per C_SBMPOPTIONS's humans+bots > 1), every options sub-page with values riding into
+  mp_match_settings, back-out of every page at every prompt with correct re-entry, locked
+  characters refusing, and the debriefing returning to the scenario wheel via the new
+  mp_debrief_enter [M C_GCPAUSE 0x204408:146 / C_MPDBG 0x217860].
+- FIX: mp_confirm_start now maps friendly_fire into MpSettings (+0x198, read by
+  MP_RegisterBulletHit 0x1857c0:43-57) — the choice used to be dropped at handover.
+- Ran: menus_e2e_mp 5, menus_e2e 5, mp_menu_flow 9, mp_net_lobby 9, menu_music_flow 14,
+  menu_sfx_flow 14 — all green on the final tree. The fast suite built 394 binaries ok but its
+  run phase was cut by the sandbox (background jobs reaped between tool calls; the foreground run
+  hit the 9.5-min tool cap) — no total line; details in docs/reports/menu-e2e-local-mp.md.
+---
+
+menu-audio-state (2026-10-16)
+- Task: the menu music/sfx state must be right through every front-end flow. Playtest found menu music
+  playing in gameplay and during pause, and "audio breaks and there's no main menu music" after the intro.
+- Plan: drive the FrontEnd headless ONLY through action()/mouse_*/tick and host glue (movie_tick, menu_after,
+  page-enter music hook), assert the MenuMusic command stream and jingle state per flow against the game
+  [M frontend-music.md]: boot (intro full/skipped -> title -> Main), attract (natural/skipped), every backdrop
+  movie page, credits, SP mission start (music stops), pause (held, not removed), quit to front end, MP match
+  start and debriefing. Invariant: never two menu-music sources at once, none during gameplay.
+- Branch s/menu-audio-state created from origin/master (ad761677). Work in progress; report will be at
+  docs/reports/menu-audio-state.md.
+- menu-audio-state: the flows found four real state bugs and the fixes are in. The jingle
+  restarted UNDER the intro (the early page flip fired Main's 0x4c — fe_music_step now holds
+  the transition while intro_playing [M 0x209e88]); the main menu sat silent after a skipped
+  intro (the skip arm now runs the 0x50 finish restart [M 0x209e88:23-28] and open_pair_sfx/
+  remove_pair drive the music channel so a tick-queued restart lands at the next redraw, not
+  the next keypress); the pair played under the briefing (the SP pick and the MP start now
+  kill it — the game deletes the manager at the pick [M 0x20b8d8 case 0x4b]); the bank
+  alternation reset at the pause (the App now stashes the .bss statics across manager drops
+  and restores them into the pause's fresh fe and the demo results [M 0x1dceb8; L 0x30c958]).
+  enter_page(Credits) no longer starts the pair (the credits 0x4c is the swap [M 0x2152b0]).
+  tests/menu_audio_flows.rs: 9 action-driven flows with the per-frame invariants (<=1 audible
+  source, none during gameplay, never jingles + credits track). Report:
+  docs/reports/menu-audio-state.md (live checks 1-6).
+## pause-results-flows (2026-10-16, branch s/pause-results-flows) — start
+- Task: queue 674 — the in-mission menus end to end (pause page: Esc open, all tabs, Continue/Restart/Quit
+  with YES/NO; fail menu on death; mission complete -> results -> NfBonus/MissionSelect), driven ONLY through
+  action()/mouse_*/tick and host glue on a live 07000005 scene (NF_ISO). Assert page+request at each step,
+  sim paused while a menu is up, Restart restores full health + entry checkpoint, Quit returns to a working
+  front end, repeated presses during transitions don't double-fire, and the 5 s LOADING_HOLD eats input during
+  loads. Branch from master ad761677; suite started in background.
+
+## pause-results-flows (2026-10-16, branch s/pause-results-flows) — close-out
+- Nine headless end-to-end tests on live scenes (pause_results_flows_live.rs): Esc pause open +
+  sim frozen + resume, the four tabs (Left/Right/Tab, live OBJECTIVES rows on 07000007 — 05's first
+  objective waits for its enable channel [M 0x1827d8:41-54]), Continue, Restart YES/NO → cold
+  BaseMap full-health reload [M 0x204408:134-141, 0x1910f8:128-138], Quit YES → the front end with
+  a working mission list [M 0x204408:142-149], the fail menu on a real death → warm entry-checkpoint
+  restart via fail_restart_save [M 0x216618:19-21, 0x1957a8] and the quit row, mission complete →
+  results → NfBonus/MissionSelect [M 0x182c60:85-122, 0x208e78, 0x209670], the 5 s LOADING_HOLD pin
+  + the take-once/double-press guards. All host glue mirrored with lib.rs line cites; no page/cursor
+  assignments anywhere.
+- Fixes: (1) the quit's queued page re-opens after the front-end load — FrontEnd::reopen_queued_page
+  called by the host swap branch [M 0x1d6360:160-163]; a model-path edge was tried and REVERTED (it
+  perturbed the boot flow, menus_e2e 0/5). (2) The Esc arm rides ST_RUNNER [M 0x1c98c8 case 2,
+  0x1d3800:11-17]. (3) LOADING_HOLD pub. A fail-rows guard was also reverted after
+  menus_flow's results test showed it refused the first row press (the arm's queued request stands
+  at page-open; the game's one-press rule rides the arm's page move [M 0x216618:26]).
+- Verified: pause_results_flows_live 9/9, menus_e2e 5/5, menus_flow 42/42, front_end_chain_live 2/2,
+  fix_restart_target_live 2/2. The background fast runner was reaped by the sandbox three times
+  (known here) — no full-suite total; the report lists the per-crate runs and a chunked-run plan.
+- Findings for later: the sim-side fail menu keeps the drones ticking where the game freezes the
+  pump [M 0x182c60:78 + 0x1c9790:30-35]; results stats are Stats::default (host gap); Esc during a
+  cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
+  (live checks 1-3).
