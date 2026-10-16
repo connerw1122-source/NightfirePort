@@ -15148,3 +15148,10 @@ menu-audio-state (2026-10-16)
   pump [M 0x182c60:78 + 0x1c9790:30-35]; results stats are Stats::default (host gap); Esc during a
   cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
   (live checks 1-3).
+
+## sg5-semi-laser — started
+- Branch s/sg5-semi-laser from origin/master (aa3bc1f5). Task: SG5 semi-auto mode should
+  light its laser sight; find the mode-dependent laser, port sim state (mode→laser, beam
+  start/end), expose a getter, test semi→on + wall hit point, full-auto→off.
+- Setup reused from prior sandbox (repo, work/, ISO, nf-queue all present). Fast suite
+  started in background on first minutes.
