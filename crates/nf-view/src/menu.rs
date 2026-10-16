@@ -6709,6 +6709,26 @@ pub const PC_CONTROLS: [(&str, u32, &str); 13] = [
     ("G", 0x100_019f, "Cycle Gadget"), ("1 2 3", 0, "Select Weapon"), ("Esc", 0x100_01aa, "Pause"),
 ];
 
+/// The driving missions' keyboard + mouse bindings, the driving counterpart of `PC_CONTROLS`:
+/// (key, the game's action label id from USATxt.dat, the fallback text). The driving labels are
+/// the game's own controls vocabulary block, bank 0, ids 0x30a-0x315 [M USATxt.dat parsed with
+/// Lang::parse; 0x30a Gas, 0x30b Brake, 0x30c Steer Left-Right, 0x30d Fire, 0x30e "Cycle Weapon ",
+/// 0x30f Previous Weapon, 0x310 Next Weapon, 0x311 Use Gadget, 0x312 Look back, 0x313 Camera View,
+/// 0x314 E-Brake, 0x315 Pause; bank 1: 0x100032a Brake/Reverse, 0x100032b Handbrake; no
+/// secondary-fire or reload label exists — those two rows use id 0 + fallback like the on-foot
+/// table's port-only rows]. The keys are the port's mapping onto the game's driving actions
+/// [S docs/systems/driving-pc-input.md §3; the code is nf-game's
+/// `input::driving::{KeyboardMouse, pc_driving_bindings, PcDrivingInput}` — steering rides the
+/// analog axis because the game's digital steer actions are unconsumed, and the vehicle layer's
+/// own ramp (move_toward, 0.25/tick after a ±0.2 dead zone) shapes the digital input].
+pub const PC_DRIVING_CONTROLS: [(&str, u32, &str); 13] = [
+    ("A D / ← →", 0x30c, "Steer Left-Right"), ("W", 0x30a, "Gas"), ("S", 0x100_032a, "Brake/Reverse"),
+    ("Space", 0x314, "E-Brake"), ("L Click", 0x30d, "Fire"), ("B", 0, "Alt. Fire"),
+    ("Wheel ↑ / Q", 0x310, "Next Weapon"), ("Wheel ↓", 0x30f, "Previous Weapon"),
+    ("R Click / E", 0x311, "Use Gadget"), ("C", 0x313, "Camera View"), ("Tab / M3", 0x312, "Look back"),
+    ("R", 0, "Reload"), ("Esc", 0x315, "Pause"),
+];
+
 /// The PC port's key for a menu hint token: the game's ~A/~B/... button glyphs are PlayStation pad buttons
 /// (`specialchar` 0x2dd8d8); on PC the hint bars name the keyboard key `key_action` maps to that action instead (the
 /// user, 2026-10-15: "the controller layout is for Playstation controllers. But this is a PC port"). The objective
