@@ -13952,3 +13952,19 @@ Stage Summary:
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+
+---
+Task ID: 648-mp-pickups-respawn
+Agent: worker (mp-pickups-respawn)
+Task: MP pickups per weapon set, respawn timers, spawn rule, armour/health, gun emplacements / vehicles / grapple toggles
+
+Work Log:
+- Branch s/mp-pickups-respawn created from origin/master (7ac86f13); fast suite run started (finished 1581 passed / 7 failed / 66 ignored before this task's changes; failure list in the report).
+- Decompiled the whole MP pickup chain: Pickup_CreateFromSet 0x18f1b0, Pickup_MakeRandomWeaponSet 0x18f098, MP_RegisterPickup 0x189d80 / MP_UnregisterPickup 0x18a058 / MP_Pickup_Process 0x18a168, BOTSTATE_setPickupVisitTime 0x129958, MP_GetSpawnPoint 0x185098, MP_ReSpawn 0x185368, MP_EquipPlayer 0x1855f8, Upgrade_MPWeapon 0x1a9040, GunImp_Create 0x131f20, Car_Create 0x1305b0.
+- Settled the PickupMatrix layout: 11 sets x 10 bytes (5 u16), @0x2b9100; the old PICKUP_MATRIX_ROW0 was the even u16s of the first 20 bytes (sets 0+1 interleaved). Corrected row 0 to [6, 0x1c, 0x1e, 0x18, 0x2c] and added the full table.
+- New crates/nf-game/src/mp/pickups.rs: PICKUP_MATRIX, USEABLE_GUNS, make_random_weapon_set, weapon_for_kind, upgrade_mp_weapon (+ the five upgrade tables + the on-disc Upgrades bytes), equip_player, gun_imp_class, car_kind, MpPickups (64 records, eviction by min lifetime, visit stamps, process).
+- MpSettings: +0x1B8 gun_emplacements, +0x1CC vehicles, +0x1D0 grapple (boot defaults 0/0/1). MpMatch: pickups field, register/unregister/process wrappers, reroll_random_weapon_set (MP_Init 0x183438:11, skipped only for the front-end level).
+- New tests crates/nf-game/tests/mp_pickups_respawn.rs (10, numbers only): the tables, kind mapping, random-set determinism/dedup, ring eviction, visit stamps, the Near/Far/Random spawn policy, upgrade tables, the equip loadout, the toggles, boot defaults.
+
+Stage Summary:
+- 10/10 new tests pass; nf-game builds clean. PickupMatrix correction affects kinds 8-11 of SP set 0 (fix_pickups_remainder_live is self-consistent with the constant). Report to follow.

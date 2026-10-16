@@ -37,6 +37,19 @@ pub mod bots;
 /// GoldenEye items, the blueprint) — see `docs/systems/mp-match-rules.md`.
 pub mod rules;
 
+/// The MP weapon sets and pickups (mp-pickups-respawn): the `PickupMatrix` table and
+/// `Pickup_CreateFromSet` 0x18f1b0, the random-set re-roll of `MP_Init`, the spawn loadout
+/// `MP_EquipPlayer` 0x1855f8 + `Upgrade_MPWeapon` 0x1a9040, the registered-pickup layer
+/// (`MP_RegisterPickup` 0x189d80 / `MP_Pickup_Process` 0x18a168 / the visit stamps) and the
+/// enviro toggles (gun emplacements `GunImp_Create` 0x131f20, vehicles `Car_Create` 0x1305b0).
+pub mod pickups;
+
+pub use pickups::{
+    car_kind, equip_player, gun_imp_class, make_random_weapon_set, upgrade_mp_weapon,
+    weapon_for_kind, LoadoutWeapon, MpPickupRecord, MpPickups, PICKUP_MATRIX, UPGRADED_GRAPPLE_MP,
+    UPGRADED_P99_MP, UPGRADED_PPK_MP, UPGRADED_SILENCED_SNIPERS, UPGRADED_SNIPERS, USEABLE_GUNS,
+};
+
 pub use rules::{MpObjState, MpObjectsRt, Winner};
 
 /// The scenario words (`MPSettings+0x420`, atlas §3) — phase 1 only constructs Deathmatch; the rest
@@ -121,6 +134,21 @@ pub struct MpSettings {
     /// bullet hits in `MP_RegisterBulletHit` 0x1857c0:43-57 [M]. The menu's Player Mods row 0x1ae
     /// writes it [M mp-menus.md].
     pub friendly_fire: u32,
+    /// +0x1B8 (Ghidra `_440_`): the fixed gun emplacements toggle — `GunImp_Create` 0x131f20:56
+    /// creates nothing when it is 0 in a match; when the weapon set is the Random set (10) the
+    /// emplacement's weapon class is `Rand(10)`, otherwise the class is the set id [M]. Boot 0 [M
+    /// 0x1c7e78:38]; the menu's Enviro-Mods row 0x1ab writes it [M mp-menus.md].
+    pub gun_emplacements: u32,
+    /// +0x1CC (Ghidra `_460_`): the vehicles rule — `Car_Create` 0x1305b0:13-15 builds nothing in
+    /// a match when 0; 1 tanks (obj+0x112 = 0), 2 helicopters (obj+0x112 = 1, +1.5 y, entity gfx
+    /// 0x2000194), 3 Random draws `Rand(100) < 0x33` → helicopter else tank [M :29-42]. The arena
+    /// 0x700004b never gets vehicles [M :17-19]. Boot 0 [M 0x1c7e78:42]; Quick Game writes 2 [M
+    /// 0x20c600:51].
+    pub vehicles: u32,
+    /// +0x1D0 (Ghidra `_464_`): the grapple toggle — `MP_EquipPlayer` 0x1855f8:27-34 spawns the
+    /// player with `Upgrade_MPWeapon(slot, 0x50)` when it is non-zero, and with nothing extra when
+    /// 0. Boot 1 [M 0x1c7e78:45]; the menu's Enviro-Mods row 0x328 writes it [M mp-menus.md].
+    pub grapple: u32,
 }
 
 impl MpSettings {
@@ -150,6 +178,9 @@ impl MpSettings {
             radar: 1,
             registered_pickups: 0,
             friendly_fire: 0,
+            gun_emplacements: 0,
+            vehicles: 0,
+            grapple: 1,
         }
     }
 
@@ -353,6 +384,9 @@ pub struct MpMatch {
     pub assassin: Option<usize>,
     /// The target slot (global `Assasin`, scenario 0x400) [M 0x18b558:6].
     pub assassin_target: Option<usize>,
+    /// The MP pickup layer: the live `PickupMatrix` (row 10 re-rolled per `MP_Init`), the 64
+    /// registered-pickup records and the visit stamps (see [`pickups`]).
+    pub pickups: MpPickups,
 }
 
 fn sq_dist3d(a: [f32; 4], b: [f32; 3]) -> f32 {
@@ -387,7 +421,47 @@ impl MpMatch {
             objects_rt: MpObjectsRt::default(),
             assassin: None,
             assassin_target: None,
+            pickups: MpPickups::new(),
         }
+    }
+
+    /// `MP_Init` 0x183438:11's `Pickup_MakeRandomWeaponSet` call — the whole `MP_Init` body is
+    /// skipped only for the front-end level 0x7000048 [M 0x183438:10]; every arena (Ravine
+    /// included) re-rolls row 10 on every match init whatever the chosen set is, so the shipped
+    /// zeros are never played.
+    pub fn reroll_random_weapon_set(&mut self, rng: &mut Rng) {
+        if self.settings.level_code != 0x0700_0048 {
+            self.pickups.reroll_random_set(rng);
+        }
+    }
+
+    /// `MP_RegisterPickup` 0x189d80 through [`MpPickups::register`]: registers `obj` (the port's
+    /// pickup index) at `pos`, bumps `MPSettings+0x1D8` [M 0x189d80:107] and returns the slot
+    /// (the game also stores it into `PICKUPINFO+0x30` [M :98] — the caller's pickup record does
+    /// that through its own MP slot field). `usize::MAX` = the game's −1 (nothing evictable).
+    pub fn register_pickup(&mut self, obj: usize, pos: [f32; 3], cel: u32, lifetime: u16) -> usize {
+        let count = self.settings.registered_pickups;
+        let slot = self.pickups.register(obj, pos, cel, lifetime, count);
+        if slot != usize::MAX {
+            self.settings.registered_pickups = count + 1;
+        }
+        slot
+    }
+
+    /// `MP_UnregisterPickup` 0x18a058 through [`MpPickups::unregister`]: clears the record and
+    /// drops the registered count [M 0x189d80:107's inverse].
+    pub fn unregister_pickup(&mut self, slot: usize) {
+        if slot < 64 && self.pickups.records[slot].obj.is_some() {
+            self.pickups.unregister(slot);
+            self.settings.registered_pickups = self.settings.registered_pickups.saturating_sub(1);
+        }
+    }
+
+    /// `MP_Pickup_Process` 0x18a168 through [`MpPickups::process`] — `MP_Update`'s phase-0 arm
+    /// calls it every tick [M 0x184bd0:38].
+    pub fn pickup_process(&mut self, clock: f32) {
+        let count = self.settings.registered_pickups;
+        self.pickups.process(clock, count);
     }
 
     /// `MP_RegisterSpawnPoint` 0x184f20 (the placement 0x25 hook): the team gate, the FFA/team
