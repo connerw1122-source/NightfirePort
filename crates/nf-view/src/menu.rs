@@ -1779,6 +1779,10 @@ pub struct FrontEnd {
     /// plays them through nf-audio; the FrontEnd never touches the audio stack itself (tests
     /// stay silent). docs/systems/menu-sfx.md §3.
     pub sfx_out: Vec<MenuSfx>,
+    /// The `SFXRemove(0, id)` events this frame's page changes emitted — the host drains and
+    /// carries them through `Driver::remove` BEFORE the same frame's starts (the handlers' 0x4c
+    /// removes the menu-music pair before restarting it [M 0x20a408:17-22; menu-audio-leaks]).
+    pub sfx_remove_out: Vec<u32>,
     /// `enabled_sound_flags` 0x30d184 — gates MENU_SOUND 0/1/2/8 [M 0x1f3278's case gates]; the
     /// boot value 0x0b leaves sound 2 (○) disabled [L ee_start @0x30d184 = 0x0b].
     pub enabled_sound_flags: u8,
@@ -1959,6 +1963,8 @@ impl FrontEnd {
             /// The sounds this frame's input/page changes started — the host drains and plays them
             /// through nf-audio (never from inside the FrontEnd: tests stay silent).
             sfx_out: Vec::new(),
+            // menu-audio-leaks (each new field on its own line [WORKLOG lesson 4]).
+            sfx_remove_out: Vec::new(),
             /// `enabled_sound_flags` 0x30d184 — the boot value 0x0b gates MENU_SOUND 0/1/2/8
             /// [L ee_start 0x30d184 = 0x0b; M 0x1f3278's gates].
             enabled_sound_flags: 0x0b,
@@ -1997,6 +2003,10 @@ impl FrontEnd {
     /// bank state is the host's, so both events go out and the driver's lookup decides).
     fn open_pair_sfx(&mut self) {
         if self.menu_movie { return; }
+        // The 0x4c arm removes the pair before restarting it [M 0x20a408:17-22] — without the
+        // remove every restart stacked another looping item (the playtest's "a lot of different
+        // music songs playing").
+        self.remove_pair();
         self.sfx_out.push(MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_MOVE });
         self.sfx_out.push(MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_SELECT });
         self.menu_movie = true;
@@ -2011,6 +2021,16 @@ impl FrontEnd {
                     | Page::Credits | Page::MpDebriefing) {
             self.open_pair_sfx();
         }
+    }
+
+    /// `SFXRemove(0, 0x1d7)` + `SFXRemove(0, 0x470)` [M the twelve handlers' 0x4c arm removes
+    /// the pair before restarting it (0x20a408:17-18); P_INTRO's movie arms 0x209e88:38-39,53-54;
+    /// P_ATTRACT 0x20a1f0:45-46; Menu_PlayMovie 0x215990]. The events ride `sfx_remove_out`; the
+    /// host carries them through `Driver::remove` — all instances of the id, the IOP's KillSFX
+    /// walks every matching item [M IRX 0x1f88 → KillSFX 0x1ea4].
+    fn remove_pair(&mut self) {
+        self.sfx_remove_out.push(SFX_MENU_OPEN_MOVE);
+        self.sfx_remove_out.push(SFX_MENU_OPEN_SELECT);
     }
 
     /// `Menu_PlaySound` [M 0x1f3278]: the gated sounds (0/1/2/8) drop when their
@@ -2045,6 +2065,12 @@ impl FrontEnd {
     /// `Sound_Play` do [M 0x115a68, 0x1f3278].
     pub fn drain_sfx(&mut self) -> std::vec::Drain<'_, MenuSfx> {
         self.sfx_out.drain(..)
+    }
+
+    /// The frame's `SFXRemove(0, id)` events — the host applies them BEFORE the same frame's
+    /// starts (the handlers' 0x4c order [M 0x20a408:17-22; menu-audio-leaks]).
+    pub fn drain_sfx_removes(&mut self) -> std::vec::Drain<'_, u32> {
+        self.sfx_remove_out.drain(..)
     }
 
     /// credits-data: opens the credits page 0x40000030 — the AV Options Credits row's page change
@@ -2529,6 +2555,9 @@ impl FrontEnd {
             // `Menu_ResetNoInputCount`] — the game's 45 s clock starts at the main menu's open,
             // not at the START press.
             self.no_input_frames = 0;
+            // The movie-2 end restarts the pair [M 0x209e88:23-29 — remove, then SFXStart both,
+            // menu_movie=1]; the next page-open's 0x4c churn collapses into this one restart.
+            self.open_pair_sfx();
         }
         // credits-data: the credits page's 0x50 tick; the delayed 0x44/0x5f exit routes the page
         // [M P_CREDITS_Handler 0x2152b0:103-195 — ToMain = msg 0x44/0x40000002 after the win path,
@@ -2594,6 +2623,10 @@ impl FrontEnd {
         } else {
             ATTRACT_MOVIE_B
         };
+        // The attract 0x4c kills the pair before its movie starts [M 0x20a1f0:16-35]; the movie
+        // start also clears the static (Menu_PlayMovie's tail [M 0x215990]).
+        self.remove_pair();
+        self.menu_movie = false;
         self.attract_playing = true;
     }
 
@@ -2611,6 +2644,10 @@ impl FrontEnd {
         self.attract_movie = 0;
         self.page = self.attract_opener;
         self.no_input_frames = 0; // [M the opener's 0x4c Menu_ResetNoInputCount]
+        // The 0x50 restart [M 0x20a1f0:45-50 — remove+start gated on menu_movie==0]: the opener
+        // page is already set, so the pair restarts right here.
+        self.menu_movie = false;
+        self.open_pair_sfx();
     }
 
     /// The pause page opens over a running mission (the game's GS_PauseGame [M 0x17d178 pauses the
@@ -2621,6 +2658,10 @@ impl FrontEnd {
     pub fn open_pause(&mut self) -> bool {
         if self.page != Page::Pause && self.flow.current_level != FRONTEND_LEVEL && self.flow.current_level != 0 {
             self.enter_page(Page::Pause);
+            // MenuManager_Create zeroes the static on every manager open [M 0x21b908:125] — the
+            // pause page's own 0x4c starts no pair (P_PAUSE 0x203c28 has no pair calls), and the
+            // next front-end page after the unpause restarts it fresh [M 0x21c2b0:15].
+            self.menu_movie = false;
             self.cursor = 0;
             self.pause_tab = 0;
             self.confirming_restart = false;
@@ -3821,7 +3862,13 @@ impl FrontEnd {
                     self.flow.play_movie(INTRO_TICKS);
                     self.intro_playing = true;
                     self.intro_index = 0;
-                    self.enter_page(Page::Main);
+                    // P_INTRO's 0x50 frame-1 removes the pair and clears the static before the
+                    // movies start [M 0x209e88:37-47] — the menu music is silent under the EA
+                    // logo (the playtest's leak); it restarts at the movie-2 end (the intro-end
+                    // arm in tick). The page flip keeps menus_flow's contract.
+                    self.page = Page::Main;
+                    self.menu_movie = false;
+                    self.remove_pair();
                     self.cursor = 0;
                     return true;
                 }

@@ -14546,3 +14546,28 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   the playtest line; the count stacked per rocket). Hooks: `Sounds::live_ids`,
   `Driver::item_pos`. Ran: the new test green on the merged tree; nf-game/nf-audio cargo check
   clean; nf-view tests compile; the full suite on the final merged tree — see the report.
+
+## menu-audio-leaks (2026-10-16, branch s/menu-audio-leaks)
+- Branch created from origin/master (306c5d93). Task: the playtest audio leaks — the menu music under the
+  EA logo movie / during pause / after leaving the pause menu (results id 1015-1738), plus the "old menu
+  with no background" after the intro ends.
+- Plan: (1) stop the looping page-backdrop movie (0x07350048/0x07330048) when no front-end page wants it
+  (App::movie_tick's early return when self.fe is None); (2) the 0x1d7/0x470 front-end menu MUSIC pair —
+  port every SFXRemove(0,id) site [M the twelve handlers' msg-0x4c, P_ATTRACT_Handler 0x20a1f0, the
+  front-end exit] and carry the removal through the driver (a remove event beside drain_sfx), building on
+  625's attract code; (3) sweep for every other survival path (intro pair vs backdrop, level music vs
+  front-end map); (4) reproduce the intro-end "old menu" headless and fix from the game's flow [M].
+  Headless flow tests per case, NF_SILENT.
+- menu-audio-leaks close-out: the 0x1d7/0x470 menu-music pair's SFXRemove side ported at every
+  decomp site — the twelve handlers' 0x4c removes before it restarts (menu_movie gate kept,
+  removes ride a new `sfx_remove_out` channel the host applies before the same frame's starts),
+  P_INTRO's frame-1 removes under the EA logo + the movie-2 end restarts, P_ATTRACT's
+  0x4c/0x50, MenuManager_Create zeroes the static on the pause open (P_PAUSE starts no pair),
+  and the front-end close removes the pair through the driver (close_front_end — the game's
+  fade+bank-load death, KillSFX-all [M IRX 0x1f88/0x1ea4]); movie_tick stops the looping
+  backdrop with no fe and state 6 replaces a looping BGFMV occupant [M 0x1081a8]. Evidence:
+  SFXRemove = KillSFX over every (handle,id) match [M]; the pair looped by design, silent
+  under the intro in the real game [M 0x209e88:37-47]. Tests: nf-audio lib 11/11 (+2),
+  menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
+  the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
+  docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).

@@ -1733,9 +1733,13 @@ impl App {
         // miss returns without starting): the front-end map boots bank 0xC, a paused mission keeps
         // its own bank, which carries the pause blips [D SB_4/SB_5; docs/systems/menu-sfx.md §2-3].
         let menu_sfx: Vec<_> = fe.drain_sfx().collect();
-        if !menu_sfx.is_empty() {
+        let menu_rm: Vec<u32> = fe.drain_sfx_removes().collect();
+        if !menu_sfx.is_empty() || !menu_rm.is_empty() {
             if let Some(snd) = self.sound.as_mut() {
                 snd.batch(|drv, out| {
+                    // The 0x4c order: the removes land before the same frame's starts [M
+                    // 0x20a408:17-22] — the restart replaces the loop instead of stacking it.
+                    for id in &menu_rm { drv.remove(0, Some(*id)); }
                     for ev in &menu_sfx { drv.start(out, ev.id, None, 0, None); }
                 });
             }
@@ -1756,9 +1760,28 @@ impl App {
         // 0x204408 — the game's resume is its own row]: the host consumes the flag and
         // leaves the menu (the sound hold lifts through the diff below).
         if closed {
-            self.fe = None;
-            if self.scene.sim.is_some() { self.grab(true); }
+            self.close_front_end();
         }
+    }
+
+    /// The front end closes (a briefing resolved to a level, the pause's pick, the resume):
+    /// the menu-music pair dies with it. The game's exit path plays the menus fade and lets the
+    /// level's own `SFXLoadSoundBank` reset the items [M C_SBNFMAP 0x20b8d8 case 0x4b —
+    /// SFXFadeDown(1), no explicit pair remove]; the port's banks swap without that reset, so
+    /// the close removes the pair explicitly through the driver (all instances of the id — the
+    /// IOP's KillSFX semantics [M IRX 0x1f88 → KillSFX 0x1ea4]). Without it the looped items
+    /// played on through gameplay and the pause (the playtest's "music continues after I leave
+    /// the menu").
+    fn close_front_end(&mut self) {
+        let rm: Vec<u32> = self.fe.as_mut().map(|fe| fe.drain_sfx_removes().collect()).unwrap_or_default();
+        if let Some(snd) = self.sound.as_mut() {
+            snd.batch(|drv, _out| {
+                for id in &rm { drv.remove(0, Some(*id)); }
+                for id in [menu::SFX_MENU_OPEN_MOVE, menu::SFX_MENU_OPEN_SELECT] { drv.remove(0, Some(id)); }
+            });
+        }
+        self.fe = None;
+        if self.scene.sim.is_some() { self.grab(true); }
     }
 
     // ── net-match-host: the online session's app surface ────────────────────────────────────────
@@ -2117,14 +2140,13 @@ impl App {
     fn movie_tick(&mut self) {
         let movie_iso = self.movie_iso_path();
         let Some(fe) = self.fe.as_mut() else {
-            // No front end: the menus' movie slot must be empty. The game's backdrop belongs to the
-            // menu manager — `MenuManager_Delete` stops it before Game_Draw takes over [M
-            // psiStopBackgroundMovie 0x108328 on the manager's delete]. Left running, the looping
-            // backdrop kept drawing over the level and playing its soundtrack (the "menu music in
-            // gameplay / during the pause", playtests 1015-1738 and 1015-2231).
-            if let Some(p) = self.movie.take() {
-                eprintln!("movie: stopped {:08x} (the front end closed)", p.code());
-                p.stop();
+            // No front-end page is up: no page wants the looping backdrop — stop it. The game's
+            // page-change arm stops the aux when the new page's aux is 0 [M 0x21c858:334-338];
+            // the front end's close is that arm with no page at all (menu-audio-leaks finding 1:
+            // the backdrop — the menu music — played on through gameplay and the pause). A
+            // non-looping movie (a briefing's tail) keeps playing to its end.
+            if self.movie.as_ref().is_some_and(|p| p.is_looping()) {
+                if let Some(p) = self.movie.take() { let c = p.code(); p.stop(); eprintln!("movie: stopped {c:08x} (no front-end page)"); }
             }
             return;
         };
@@ -2202,6 +2224,12 @@ impl App {
                 fe.attract_movie_finished();
             }
         } else if fe.flow.get_state() == menu::ST_MOVIE {
+            // psiStartBackgroundMovie replaces whatever the one BGFMV slot holds [M 0x1081a8] —
+            // a looping page backdrop standing in the slot must yield to the state-6 movie
+            // (menu-audio-leaks: the playtest's menu music under the EA logo).
+            if self.movie.as_ref().is_some_and(|p| p.is_looping()) {
+                if let Some(p) = self.movie.take() { let c = p.code(); p.stop(); eprintln!("movie: stopped {c:08x} (state 6 replaces the backdrop)"); }
+            }
             match &mut self.movie {
                 Some(p) => {
                     // BGFMVPlaying follows the player: 1 while it decodes, 0 at the end of file —
@@ -2279,8 +2307,7 @@ impl App {
             if resolved != menu::FRONTEND_LEVEL {
                 // The briefing's return: the real level loads and the front end closes — the game
                 // leaves the menu system and Game_Draw takes over.
-                self.fe = None;
-                if self.scene.sim.is_some() { self.grab(true); }
+                self.close_front_end();
             }
             // The outro's return: the front end stays and the results page reopens on the map
             // (phase 2 set flow.page = 0x40000036 [M]; fe.page follows below in the hud build).
