@@ -18,3 +18,8 @@ walk posts no "Mission Complete" before the end condition; at the end it does.
 
 ---
 claimed-by: sandbox2 at 2026-10-16T14:40Z
+
+---
+## Report (done, 2026-10-16T16:50Z)
+
+Closed by the driver: the report is on `s/spurious-complete-16` (docs/reports/spurious-complete-16.md); the worker didn't run finish.sh.
