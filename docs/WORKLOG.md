@@ -15342,3 +15342,12 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+
+## ladder-02 (2026-10-16, branch s/ladder-02) — STARTED 12:46 UTC
+Task 691: ladders on 07000002 (the bunker and the water) — playtests 1011-1732 / 1014-1725: no
+camera movement while on ladders; mounting unequips the weapon and dismounting never re-equips;
+infinite re-latch when climbing off the bottom into the water. Plan: port the ladder state
+machine's look limits, the weapon holster/redraw, and the dismount-at-bottom-into-water checks
+[M Ladder_* / the player's ladder state in Player_Update, the dismount checks]; headless tests on
+02's water ladder and the bunker ladder (look within the game's clamp, dismount top+bottom with no
+re-latch, weapon returns after dismount).
