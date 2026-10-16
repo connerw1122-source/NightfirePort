@@ -15590,3 +15590,21 @@ weapon_data], which sound bank 12 loads, and check the port's driver resolves ea
 bank the GAME would use (fix-weapon-sounds' own-bank-first rule, the spare banks) plus that the
 effect record/sample is the same one. Test: fire the start pistol on 12, assert the played sample
 hash equals the owning bank's decode for each id; sister = a different weapon's id doesn't match.
+
+## pistol-sound-12 (2026-10-16, branch s/pistol-sound-12) — DONE 15:59 UTC
+Playtest 1012-1723 (07000012) "the starting pistol does not sound right": the chain verified end to
+end — kit weapon 0x10/7r [M 0x1a7ef8 case 0x7000012; L ee_snapshot 0x2bf150+0x10*0x10c], own bank
+0x1f=slot 22 [M 0x1dceb8:59-61], fire script 06000490 op1@1=0x1e1 + reload 06000495
+op1@36=0x1e2/op1@85=0x1e3 [D dumps], remap 0x1e1→0x602 for weapon 0x10 [M 0x1c1b38:270-273]. THE
+FINDING: the port's resolution is already correct — 0x602/0x1e2/0x1e3 all start from slot 22 with
+the bank's own decode, 0x1e1 never leaks (3 green tests in
+crates/nf-view/tests/pistol_sound_12_live.rs, real input path); the fix-weapon-sounds report's
+"remap targets → 2 everywhere" row is wrong on the disc (0x602/0x603 live in 2,10-13,16,21-24 —
+own bank included) and weapon.rs:297's "+0x60 is NOT a sound id" comment is a misread (its only
+consumers play it: cmd-7 Bullet_init [M 0x12c5a0:269] and the bot fire [M 0x178f68:277]; the
+player's fire script has no op 7 and the sim spawn passes short −1 = silent [M 0x1a4bf0:288], so
+0x603 is bot-only). Remaining audible-deviation candidate: the port's op-1 carries no
+Rand(500)−250 pitch jitter (determinism-stream change — follow-up task; live checks in the
+report). Suite: 413/415 binaries, 1756 passed / 7 failed (all the known allowed set) / 72
+ignored, 2 tail binaries unreached in the foreground-only window. Report:
+docs/reports/pistol-sound-12.md.
