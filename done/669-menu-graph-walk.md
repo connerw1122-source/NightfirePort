@@ -41,3 +41,8 @@ seeded runs of 5000 random actions and ticks, with the same invariants.
 
 ---
 claimed-by: sandbox3 at 2026-10-16T06:20Z
+
+---
+## Report (done, 2026-10-16T08:04Z)
+
+Closed by the driver: the report is on `s/menu-graph-walk` (docs/reports/menu-graph-walk.md); the worker didn't run finish.sh.
