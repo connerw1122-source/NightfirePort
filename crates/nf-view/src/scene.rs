@@ -3619,7 +3619,13 @@ impl Sim {
                         && u32::from_le_bytes(w[0x48..0x4c].try_into().unwrap()) != 0;
                     if light_gate {
                         let radius = f32::from_le_bytes([w[0x58], w[0x59], w[0x5a], w[0x5b]]);
-                        let pos = [camera[0] + dir[0] * 0.5, camera[1] + dir[1] * 0.5, camera[2] + dir[2] * 0.5];
+                        // muzzle-light-datum [M Player_MuzzleFlash 0x1a4298:66-89]: the light sits at the view model's
+                        // DATUM 0 (the muzzle), or datum 4 for the +0x68 & 0x40000 dual records while BL+0x958 is
+                        // clear — the same alternation the casing eject reads. The old eye + aim·0.5 stand-in sat
+                        // above and behind the gun and lit its camera-facing side; at the muzzle the light is AHEAD of
+                        // the gun and the PS2 view model stays dark with a lit edge (render vs PCSX2, 07000008 launch).
+                        let dual = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap()) & 0x40000 != 0 && self.gun.alt_fire_toggle == 0;
+                        let pos = self.view_datum(if dual { 4 } else { 0 }).unwrap_or([camera[0] + dir[0] * 0.5, camera[1] + dir[1] * 0.5, camera[2] + dir[2] * 0.5]);
                         self.drones.lights.create(radius, 2.0, pos, [w[0x56], w[0x55], w[0x54]], 0, 0, 1, 0, &mut self.drones.rng);
                         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
                         if flags68 & 0x2000 == 0 {
@@ -4694,7 +4700,7 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
             gs_idx += 1;
         }
         let draw = Draw::from_gs(pass, fog, alpha, test, zbuf);
-        let lkey = if matches!(layer, Layer::World) { (li as u32) << 16 | bi as u32 } else { 0 };
+        let lkey = if matches!(layer, Layer::World) { (li as u32) << 16 | bi as u32 } else if node == VIEW_MODEL_NODE { 1 } else { 0 };
         let key = b.texture.filter(|&t| (t as usize) < level.maps[inst.map].textures.len()).map(|t| (inst.map, t));
         // fix-render3: the room cel for the static World layer (build_LinkToRoom 0x1c9680 →
         // build_FindCel 0x1c8cb0 on the object's world centre; View_AddCels 0x1e6ba0 frustum-tests
@@ -4848,6 +4854,13 @@ fn casing_matrix(c: &nf_game::casing::Casing) -> Mat4 {
     let eul = [pitch0 + c.spin[0] * c.age, yaw0 + c.spin[1] * c.age, c.spin[2] * c.age];
     nf_formats::placement::object_matrix(eul, c.pos)
 }
+
+/// view-model-unlit: the `node` the first-person view model's draws carry. The game draws the view model
+/// in `Game_Draw` 0x1e6f50's list-2 pass, after `psiLight_SetLights(0, …)` zeroed the light slots for
+/// `DrawDrops`, and an animated object's draw (`obj+0xFA & 8` → `AnimObjectDraw` 0x1c4490) never
+/// re-uploads lights [M View_DrawObjList 0x1e69a0:75-98] — so the gun takes NO point lights. The renderer
+/// zeroes them for these draws; `node` is otherwise read only for World cel culling.
+pub const VIEW_MODEL_NODE: u32 = u32::MAX - 1;
 
 /// Tracer slots (bullets drawn at once).
 const TRACER_SLOTS: usize = 32;
@@ -5235,11 +5248,11 @@ impl Scene {
                 let placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
                 let (map, object) = level.by_hash[&sleeve];
                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
-                add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                add_instance(level, &inst, Layer::Character, Some((ci, None)), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, VIEW_MODEL_NODE);
                 for &(bone, part) in &skin.extra {
                     let Some(&(pmap, pobject)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
                     let pinst = Instance { map: pmap, object: pobject, matrix: ident, placement: placement.clone() };
-                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                    add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, VIEW_MODEL_NODE);
                     attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                 }
                 // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
@@ -5247,7 +5260,7 @@ impl Scene {
                 let flash = u32::from_le_bytes(r[0x48..0x4c].try_into().unwrap());
                 if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                     let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
-                    add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                    add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, VIEW_MODEL_NODE);
                     attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                 }
                 // fix-gadgets-live: the AIMS-20's four side lights [M Player_WeaponFiring 0x1a5460:256-360 —
@@ -5268,7 +5281,7 @@ impl Scene {
                         for id in 8u8..=11 {
                             let Some(dt) = skin.datums.iter().find(|d| d.id == id as u32 && d.bone >= 0) else { continue };
                             let linst = Instance { map: lmap, object: lobject, matrix: ident, placement: placement.clone() };
-                            add_instance(level, &linst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                            add_instance(level, &linst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, VIEW_MODEL_NODE);
                             attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: Some(id), projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                         }
                     }
@@ -5291,7 +5304,7 @@ impl Scene {
                 if wflags & 0x800 != 0 && ventity != 0 {
                     if let (Some(&(emap, eobject)), Some(dt)) = (level.by_hash.get(&ventity), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                         let einst = Instance { map: emap, object: eobject, matrix: ident, placement: placement.clone() };
-                        add_instance(level, &einst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                        add_instance(level, &einst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, VIEW_MODEL_NODE);
                         attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: true, quiver_bolt: None });
                     }
                 }

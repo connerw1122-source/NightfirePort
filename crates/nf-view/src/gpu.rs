@@ -673,6 +673,8 @@ impl Renderer {
                 // The game zeroes the light slots for the sky and sprite passes [M 0x1e5ad0:89].
                 continue;
             }
+            // The view model takes no point lights (the list-2 pass after the zeroing; `VIEW_MODEL_NODE`).
+            if dc.node == crate::scene::VIEW_MODEL_NODE && dc.layer != crate::scene::Layer::World { continue; }
             let (lp, lc) = self.lights.pick2([dc.centre[0], dc.centre[1], dc.centre[2], dc.radius], dc.lflags as u32);
             for (i, v) in lp.iter().chain(lc.iter()).enumerate() { s[24 + i * 4..28 + i * 4].copy_from_slice(v); }
         }
