@@ -15342,3 +15342,24 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+## sg5-semi-laser — started
+- Branch s/sg5-semi-laser from origin/master (aa3bc1f5). Task: SG5 semi-auto mode should
+  light its laser sight; find the mode-dependent laser, port sim state (mode→laser, beam
+  start/end), expose a getter, test semi→on + wall hit point, full-auto→off.
+- Setup reused from prior sandbox (repo, work/, ISO, nf-queue all present). Fast suite
+  started in background on first minutes.
+
+## sg5-semi-laser — done
+- The SG5's sight laser is the weapon record's +0x68 bit 0x8 [M Player_SetWeaponAnim 0x1a9338:21-26
+  latches BLData+0x964 per completed draw; Player_LaserPointer 0x1a65d8 gates on it from
+  Player_CollisionHandler 0x1949a8:188]. Disc: semi twin 0x17 = 0x88 (bit set), full-auto 0x16 =
+  0x80 [D weapon_data 0x2bf150] — semi lights it, full-auto doesn't (playtest 1015-1738).
+- Ported: WeaponData::has_laser_sight (nf-formats), Gun::laser_on latch set at every swap commit
+  (the port's four `weapon = switch_request` sites, scene.rs), the per-tick beam in Sim::run
+  (bone-4 datum via view_datum_matrix, local +Z·100 far end, head→far `segment_surface_bullet`
+  — the bit-0x8 drop-pass query [M Collide_RayIntersect u32=8], end clamped to the hit, dot =
+  hit + normal·0.01), getter Sim::laser_sight(). MAX_VIEW_CONE = 2000.0 [L symtab 0x30d0fc].
+- Tests: weapon_live disc test (0x17 bit / 0x16 / P2K), fix_sg5_laser_live (semi → on + end on a
+  re-traced floor hit + dot math; back to full-auto → off; fresh P2K → off). Suite on the final
+  tree: 1781 passed, 6 failed (3 disc_golden = the slim-ISO expected set; 3 wgpu no-GPU sandbox
+  failures), 72 ignored. Report: docs/reports/sg5-semi-laser.md

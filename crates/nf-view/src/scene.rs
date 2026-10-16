@@ -409,6 +409,16 @@ pub struct Sim {
     /// The laser watch's held-meter charge, 0–100 [S stand-in; M HUD_UpdateAmmoPane 0x19a7f0:160-176
     /// — the state-0xb pane reads a 0–100 value, not the clip percent; D the measured ~31/s drain].
     pub laser_charge: f32,
+    /// The held weapon's laser sight this tick [M `Player_LaserPointer` 0x1a65d8, run per frame from
+    /// `Player_CollisionHandler` 0x1949a8:188 while the latch `BLData+0x964` (set from
+    /// `weapon_data[w]+0x68 & 0x8` per draw [M `Player_SetWeaponAnim` 0x1a9338:21-26]) is lit — the
+    /// SG5's semi twin 0x17 carries the bit, the full-auto 0x16 does not [D]]: a tuple of
+    /// (beam start = the first-person model's bone-4 sight datum, beam end = the
+    /// head→datum+bone4·Z·100 ray's first hit clamped on it, or the far end when nothing is hit,
+    /// dot = `Some((hit + normal·0.01, normal))` when the ray met a surface — the red wall dot;
+    /// the draw scales it 1 + dist²/MAX_VIEW_CONE (2000.0 [L symtab 0x30d0fc]) capped at 4).
+    /// `None` = sight off (no bit, or no first-person datum yet). `laser_on` mirrors the latch.
+    pub laser_sight: Option<(nf_game::world::V3, nf_game::world::V3, Option<(nf_game::world::V3, nf_game::world::V3)>)>,
     /// The level's zip wires (placement type 0x3E, `Wire_Create` 0x1981d8). Bond grabs one by walking
     /// into its world sphere (fix-wire: the real grab + crossing live in `nf_game::player`).
     pub wires: Vec<nf_game::wire::Wire>,
@@ -2759,6 +2769,9 @@ impl Sim {
                     if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                     if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
+                    // The FP-model rebuild latches the sight laser from the new record [M Player_SetWeaponAnim
+                    // 0x1a9338:21-26 — BLData+0x964 = weapon_data[w]+0x68 & 0x8, on every completed draw].
+                    self.gun.laser_on = self.weapons.has_laser_sight(self.gun.weapon as usize);
                     let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
                 } else {
@@ -2773,6 +2786,9 @@ impl Sim {
                     if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                     if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
+                    // The FP-model rebuild latches the sight laser from the new record [M Player_SetWeaponAnim
+                    // 0x1a9338:21-26 — BLData+0x964 = weapon_data[w]+0x68 & 0x8, on every completed draw].
+                    self.gun.laser_on = self.weapons.has_laser_sight(self.gun.weapon as usize);
                     let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
                     let nwi = self.gun.weapon as usize;
@@ -2806,6 +2822,9 @@ impl Sim {
                     if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                     if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                     self.gun.weapon = self.gun.switch_request;
+                    // The FP-model rebuild latches the sight laser from the new record [M Player_SetWeaponAnim
+                    // 0x1a9338:21-26 — BLData+0x964 = weapon_data[w]+0x68 & 0x8, on every completed draw].
+                    self.gun.laser_on = self.weapons.has_laser_sight(self.gun.weapon as usize);
                     let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                     if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
                     // fix-reload-hang2: the script lookups use the weapon's OWN record — the game reads
@@ -2846,6 +2865,9 @@ impl Sim {
                         if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                         if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                         self.gun.weapon = self.gun.switch_request;
+                    // The FP-model rebuild latches the sight laser from the new record [M Player_SetWeaponAnim
+                    // 0x1a9338:21-26 — BLData+0x964 = weapon_data[w]+0x68 & 0x8, on every completed draw].
+                    self.gun.laser_on = self.weapons.has_laser_sight(self.gun.weapon as usize);
                         let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
                         // Start the draw script (+0xC0) at 1.25x [M case 2 → case 3]. The script lookup
@@ -2915,6 +2937,9 @@ impl Sim {
                         if self.gun.weapon >= 1 && self.gun.weapon <= 0x47 { self.gun.prev_weapon = self.gun.weapon; }
                         if self.gun.weapon >= 0x4a && self.gun.weapon <= 0x5e { self.gun.prev_gadget = if self.gun.weapon == 0x55 { 0x54 } else { self.gun.weapon }; }
                         self.gun.weapon = self.gun.switch_request;
+                    // The FP-model rebuild latches the sight laser from the new record [M Player_SetWeaponAnim
+                    // 0x1a9338:21-26 — BLData+0x964 = weapon_data[w]+0x68 & 0x8, on every completed draw].
+                    self.gun.laser_on = self.weapons.has_laser_sight(self.gun.weapon as usize);
                         let (nwi, nt) = (self.clip_slot(self.gun.weapon as usize), self.weapons.ammo_type(self.gun.weapon as usize));
                         if let (Some(&c), Some(&n)) = (self.drones.inventory.clip.get(nwi), self.drones.inventory.carried.get(nt)) { self.gun.clip = c.max(0) as u32; self.gun.spare = n.max(0) as u32; }
                         let draw = self.weapons.draw_script(self.gun.weapon as usize);
@@ -3805,6 +3830,33 @@ impl Sim {
         // The HUD's per-frame state: the weapon-name timer, the crouch-icon timer, the pickup messages
         // (`Text_UpdateMsg` 0x1b11d8 runs from the HUD/status-pane update at frame rate).
         self.hud_tick();
+        // The held weapon's laser sight [M Player_LaserPointer 0x1a65d8 — per frame from
+        // Player_CollisionHandler 0x1949a8:188, after PositionGun/AnimObjectUpdate so the bone pose is
+        // current]. Gate: the latch BLData+0x964 (Gun::laser_on, set per draw [M 0x1a9338:21-26] from
+        // weapon_data+0x68 & 0x8 — the SG5's semi twin 0x17 carries it [D]); the game's other early
+        // outs are the beam/dot sprites existing (the FP model being built — the port's datum lookup).
+        // The beam: start = the FP model's bone-4 sight datum (AnimGetBoneWorldTrans +0x7e8, 4, 0),
+        // direction = the bone matrix's local +Z (rows are the axes — tracer_matrix) scaled 100
+        // (0x1a65d8:104-127), ray from the HEAD (Player_GetHeadPos) with the bit-0x8 query —
+        // Collide_RayIntersect 0x1ec690's u32 = 8 drops pass-flagged hits (docs/reports/foliage-bullets.md);
+        // the end clamps to the hit (0x1a65d8:129-141) and the red dot sits hit + normal·0.01, aligned
+        // to the normal (0x1a65d8:189-205). Player_WeaponFiring 0x1a5460:88-98 hides the sprites every
+        // frame first — a None here is exactly that hidden state.
+        self.laser_sight = None;
+        if self.gun.laser_on && !self.disabled {
+            if let Some(m) = self.view_datum_matrix(4) {
+                let datum = [m[3][0], m[3][1], m[3][2]];
+                let z = [m[2][0], m[2][1], m[2][2]];
+                let far = [datum[0] + z[0] * 100.0, datum[1] + z[1] * 100.0, datum[2] + z[2] * 100.0];
+                let head = self.bond.head();
+                let hit = self.world.segment_surface_bullet(head, far);
+                let end = hit.map_or(far, |(t, _, _)|
+                    [head[0] + (far[0] - head[0]) * t, head[1] + (far[1] - head[1]) * t, head[2] + (far[2] - head[2]) * t]);
+                let dot = hit.map(|(_, n, _)|
+                    ([end[0] + n[0] * 0.01, end[1] + n[1] * 0.01, end[2] + n[2] * 0.01], n));
+                self.laser_sight = Some((datum, end, dot));
+            }
+        }
         // `Lights_CalcAmbientLight` (0x1cb178) runs per moving object from `control_movement_object_handler`
         // (0x1336f8) — the last step of the tick, before the draw reads obj+0x100..0x102.
         self.ramp_char_ambient();
@@ -4067,6 +4119,15 @@ impl Sim {
     /// The crosshair state (`HUD_UpdateCrossHair` 0x19e6d0 reads BLData+0x133): 2 normal, 3 = the red
     /// "no" mark on a non-enemy target (`Check_Target` 0x1a7810:181-182). fix-player2.
     pub fn crosshair_state(&self) -> u8 { self.cross_state }
+
+    /// The held weapon's laser sight this tick — the getter the draw code reads. The tuple is
+    /// (beam start = the FP model's bone-4 sight datum, beam end = the aim-trace hit or the far
+    /// end, dot = Some((pos, normal)) when the trace met a surface) [M Player_LaserPointer
+    /// 0x1a65d8; the field doc carries the cites]. `None` = the sight is off (the sprites stay
+    /// hidden, `Player_WeaponFiring` 0x1a5460:88-98).
+    pub fn laser_sight(&self) -> Option<(nf_game::world::V3, nf_game::world::V3, Option<(nf_game::world::V3, nf_game::world::V3)>)> {
+        self.laser_sight
+    }
 
     /// Characters whose drone is present but whose animation cannot be shown (drawn in the bind pose): (character,
     /// drone, script, its first sequence, in `seq_index`, that sequence's skeleton vs the mesh's).
@@ -6042,6 +6103,7 @@ impl Scene {
                 // options' widescreen is on [M Camera_CalcViewAngles 0x1baf70:28-32].
                 view_aspect: 4.0 / 3.0,
                 zoom_wheel: false,
+                laser_sight: None,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));

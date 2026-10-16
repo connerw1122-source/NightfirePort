@@ -52,6 +52,13 @@ pub struct Gun {
     /// `cand`, clearing the marker. So with the P2K silencer equipped (`BL+0x1BC[0x02] = 1`) cycling to the
     /// pistol hands the SILENCED 0x03 twin while it has ammo [M]. Indexed by weapon id (base only).
     pub twin_skip: Vec<i8>,
+    /// `BLData+0x964`: the sight-laser latch. `Player_SetWeaponAnim` 0x1a9338:21-26 writes it from
+    /// `weapon_data[w]+0x68 & 0x8` on every completed draw/switch (the port sets it wherever the
+    /// swap commits the new weapon); `Player_LaserPointer` 0x1a65d8:93 returns while it is 0, so
+    /// the SG5's beam lives only while the semi twin 0x17 (the record with the bit) is held [D].
+    /// The anim-script toggle (`AnimProcessScriptCmds` 0x1c1b38 case 1) can flip it outside the
+    /// draw path — the port does not port that command (no scripted user known); [S] noted.
+    pub laser_on: bool,
 }
 
 impl Gun {
@@ -386,7 +393,7 @@ pub fn reload_ticks(start: u32, reload: u32, flags68: u32, script_len: &impl Fn(
 
 impl Gun {
     /// Bond's start on 07000005 (`Player_InitWeapon`): weapon 2 with 7 in the clip and 41 spare [L].
-    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, reload_loop_restarted: false, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0, fire_state: false, latch: false, alt_fire_toggle: 0, twin_skip: vec![0i8; 0x72] } }
+    pub fn new(weapon: u8, clip: u32, spare: u32) -> Gun { Gun { weapon, clip, spare, timer: 0.0, pending: 0, held: false, reload_state: 0, reload_ticks: 0, reload_loop_restarted: false, switch_request: weapon, saved_weapon: weapon, prev_weapon: 0, prev_gadget: 0, switch_state: 0, fire_state: false, latch: false, alt_fire_toggle: 0, twin_skip: vec![0i8; 0x72], laser_on: false } }
 
     /// One tick with the trigger (action 9) `pressed` (no reload key, gun idle).
     pub fn update(&mut self, pressed: bool, p: GunParams) -> bool { self.update_with(pressed, false, false, p) }
