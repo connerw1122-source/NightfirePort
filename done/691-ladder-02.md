@@ -21,3 +21,8 @@ bottom (into the water, with no re-latch), and the weapon returns after the dism
 
 ---
 claimed-by: sandbox6 at 2026-10-16T12:39Z
+
+---
+## Report (done, 2026-10-16T13:36Z)
+
+Closed by the driver: the report is on `s/ladder-02` (docs/reports/ladder-02.md); the worker didn't run finish.sh.
