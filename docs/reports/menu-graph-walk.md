@@ -85,12 +85,10 @@ wrong prompt" — state riding between pages), caught now by the invariant inste
 
 - `cargo test --offline -p nf-view --test menu_graph_walk` — the walk (5 roots + probes), the
   randomizer (20×5000), green; coverage 38/42 printed.
-- `cargo test --offline --release -p nf-view` — the crate the menu change touches (the MpSetup
-  cursor fix) — green (menus_flow 42/42, mp_menu_flow 9/9, menu_sfx_flow 14/14, codename_entry,
-  credits_data, unlock_popups, memcard_save_flow, mission_stats_flow, mp_defaults_setup,
-  mp_net_lobby, mission_unlock_flow, … and the walk's own 3).
-- The full fast suite on the final tree: see the total line below (started with
-  `NF_ISO=… nohup python3 tools/test/suite.py`).
+- The full fast suite on the final tree (`NF_ISO=… nohup python3 tools/test/suite.py`) — it builds
+  and runs all four crates' binaries including nf-view's (menus_flow, mp_menu_flow, menu_sfx_flow,
+  codename_entry, unlock_popups, memcard_save_flow, … and the walk's own 3), which is the touched
+  crate's run; see the total line below. On the slim ISO only the 3 `disc_golden` tests may fail.
 
 ## What's left
 
@@ -105,4 +103,11 @@ wrong prompt" — state riding between pages), caught now by the invariant inste
 
 ## Suite total
 
-(to be filled from the final-tree run: `tail -1 suite.out`)
+The fast suite on the final tree was still in its test phase when the sandbox deadline hit: the
+build line is `build ok: 387 test binaries in 340 s`, the run was cut short before the total line
+could print (the runner buffers its output). What was verified directly: the walk's own 3 tests
+green (`cargo test -p nf-view --test menu_graph_walk`), and the branch-point tree's suite earlier in
+the session (`build ok` + the nf-view flow binaries green on their own runs during development:
+menus_flow, mp_menu_flow, menu_sfx_flow, unlock_popups, codename_entry, credits_data,
+memcard_save_flow). The next session should re-run `NF_ISO=… python3 tools/test/suite.py` on this
+branch and paste the total line here.
