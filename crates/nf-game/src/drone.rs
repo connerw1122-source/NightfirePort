@@ -3892,6 +3892,12 @@ impl Drone {
             // Death ENTER [M 0x1747b8:15-24]: the death channel, cease fire, anim 0x6F ± Rand(2)
             // (the state's one RNG draw), the drift impulse, damping cleared, the 10 s corpse timer.
             (ASTRONAUT_DEATH, msg::ENTER) => {
+                // The port's corpse model (inert dead drone: bullets skip it, the ground collision
+                // path skips it, the cull counts it). The game's own 0x200 bit is NOT set here —
+                // `NDrone2_SetAsDead` 0x14a2f0 only runs from DSTATE_Dead 0x47 / BotDead /
+                // HostageDead, and DSTATE_AstronautDeath 0x1747b8 (0xBF → Fade, no weapon drop)
+                // never calls it [M callers 00163fe8/00171518/00172628].
+                self.corpse = true;
                 self.set_death_channel();
                 self.firing = false; // [M 0x1747b8:18]
                 let v = rng.rand(2); // [M 0x1747b8:19]
@@ -3916,6 +3922,7 @@ impl Drone {
     /// volume (`Drone_PointInAnyAIBox(pos, 3)` [M :94; 0x13a290:23-38]) — the game re-rolls every
     /// tick while it isn't; a hit anim's variant draws ride other states only.
     fn astronaut_move_pick(&mut self, d: &Data, rng: &mut Rng, frame: u32) {
+        if self.health <= 0.0 { return; } // a pending death must not be re-asserted over (the port's combat convention)
         self.firing = self.los; // +0x3b = (+0x228 >> 2) & 1 [M 0x154618:78]
         self.desired_yaw = self.yaw_to_opp; // the aim update [M 0x154618:61-68]
         if frame >= self.strafe_at {
@@ -6896,12 +6903,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // The owner's grenade: usize::MAX = the player's throw [M +0x2B4 = the thrower; fix-actors].
                 if owner == usize::MAX { dr.hit_by_player = true; }
                 dr.health -= ddmg * dr.damage_taken;
-                if dr.health <= 0.0 {
-                    dr.health = 0.0;
-                    // The death selector: mode 0x1D → AstronautDeath 0xBF [M 0x146480:103-104].
-                    dr.set_state(if dr.mode == 0x1D { state::ASTRONAUT_DEATH } else { state::DEATH_ANIM });
-                }
-                else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
+                // `Drone_ExplosiveHit` → msg 9 for BOTH cases (the port routes it through the
+                // impact intercept): the kill's `HandleImpact` → `ExplosiveImpact` → the death
+                // selector (mode 0x1D → AstronautDeath 0xBF [M 0x146480:103-104], else 0x44)
+                // applies inside THIS delivery — a bare set_state here sat pending and was
+                // clobbered by the next UPDATE's state re-assert (the astronaut strafe pick).
+                dr.send(d, &mut self.rng, frame, msg::BULLET);
             }
         }
         let mut bm = [[0.0f32; 4]; 4];
