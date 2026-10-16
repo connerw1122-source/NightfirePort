@@ -118,4 +118,8 @@ Online → 127.0.0.1:27420 → Connect) should reach the same match through the 
 
 ## ntfy
 
-(ntfy result appended below after the finish step.)
+Delivered on the first try (curl, 2026-10-16T05:59Z, message id 2Bx3vNzCAtUy):
+"net-consolidate: done — one session layer (nf-net), nf_game::net deleted, app+lobby wired,
+e2e 3 peers/600 ticks lossy+reordered identical hashes, 285 tests green". finish.sh: the driver
+had already closed the claim (it watches for the report on the branch), so the script's
+already-closed path ran; the report body is attached to `done/661-net-consolidate.md`.
