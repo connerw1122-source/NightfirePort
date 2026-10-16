@@ -15372,6 +15372,82 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+## sg5-semi-laser — started
+- Branch s/sg5-semi-laser from origin/master (aa3bc1f5). Task: SG5 semi-auto mode should
+  light its laser sight; find the mode-dependent laser, port sim state (mode→laser, beam
+  start/end), expose a getter, test semi→on + wall hit point, full-auto→off.
+- Setup reused from prior sandbox (repo, work/, ISO, nf-queue all present). Fast suite
+  started in background on first minutes.
+
+## sg5-semi-laser — done
+- The SG5's sight laser is the weapon record's +0x68 bit 0x8 [M Player_SetWeaponAnim 0x1a9338:21-26
+  latches BLData+0x964 per completed draw; Player_LaserPointer 0x1a65d8 gates on it from
+  Player_CollisionHandler 0x1949a8:188]. Disc: semi twin 0x17 = 0x88 (bit set), full-auto 0x16 =
+  0x80 [D weapon_data 0x2bf150] — semi lights it, full-auto doesn't (playtest 1015-1738).
+- Ported: WeaponData::has_laser_sight (nf-formats), Gun::laser_on latch set at every swap commit
+  (the port's four `weapon = switch_request` sites, scene.rs), the per-tick beam in Sim::run
+  (bone-4 datum via view_datum_matrix, local +Z·100 far end, head→far `segment_surface_bullet`
+  — the bit-0x8 drop-pass query [M Collide_RayIntersect u32=8], end clamped to the hit, dot =
+  hit + normal·0.01), getter Sim::laser_sight(). MAX_VIEW_CONE = 2000.0 [L symtab 0x30d0fc].
+- Tests: weapon_live disc test (0x17 bit / 0x16 / P2K), fix_sg5_laser_live (semi → on + end on a
+  re-traced floor hit + dot math; back to full-auto → off; fresh P2K → off). Suite on the final
+  tree: 1781 passed, 6 failed (3 disc_golden = the slim-ISO expected set; 3 wgpu no-GPU sandbox
+  failures), 72 ignored. Report: docs/reports/sg5-semi-laser.md
+## casings-persist (2026-10-16, branch s/casings-persist) — start
+- Task: queue 683 — port exactly what the game does after a casing lands (rest state, lifetime, fade, the
+  32-casing pool's recycling order [M Bullet_InitCasingLists 0x12fd48, casing update/deletion, nf_game::casing]),
+  then a PC-port option "Keep shell casings: N" (0, 32, 64, 128; default = game behaviour) keeping the newest N
+  resting casings, oldest-first recycling. Deterministic, no wall-clock. Tests: fire 40 rounds → game count +
+  lifetime by default; keep=64 holds resting casings, oldest-first; sister: in-flight casings still collide and
+  bounce the same. Branch from master aa3bc1f5; suite started in background.
+
+## casings-persist (2026-10-16, branch s/casings-persist) — close-out
+- [M] correction first: the armed slot's class byte is 0x0d (`Bullet_init_casing` 0x12fde0:24) and
+  `control_funcs` 0x26f890 class 0x0d = update 0x12faa0, collide NULL — the game's casings NEVER
+  collide/bounce/rest/fade: the landing plane is a sound-only trigger parked at 0xc9742400 (−1e6)
+  after the sound [M 0x12fb88-94], the casing sinks through the floor, despawn at age > 240 → state
+  2 + undrawn + age 32767 [M 0x12fc58-94] (the tick still integrates after the despawn stores). The
+  state-1 ×0.1-gravity arm is unreachable for class 0x0d. The old [S] "the sound re-triggers every
+  tick" was wrong; the port now parks the plane exactly like the game.
+- Ported: the exact plane store + `landed` derived from it; the age-32767 store; the despawn-tick
+  integration. PC-port option `Casings::set_keep(n)` (0 = the game): n > 0 grows the pool to
+  max(32, n), rests each crossing casing on its plane (vel/spin zeroed, no integration, no despawn
+  for rests; in-flight still die at 240), the game's NextCasing order recycles oldest-first.
+  `Casings::ejected` counts slot takeovers. nf-view's casing attachment pool sizes to KEEP_MAX (128)
+  so kept casings have draw slots (default visual identical — the state-0 + mesh guards).
+- Tests: 7 unit (casing.rs — 40-round default cap+despawn, keep-64 hold + oldest-first recycle,
+  sister flight-identity with keep 0/64: bit-identical pos/vel + sound schedule until the landing);
+  1 live through step_bond (104 real rounds: default ≤ 32 + drains at 240; keep 64 fills all 64
+  slots, holds the rests past 240, the 105th round recycles slot 8). nf-game lib 240 ✓,
+  impacts_live 5 ✓, fix_shell_eject_live 2 ✓; full suite on the final tree (see the report).
+- Report: docs/reports/casings-persist.md
+## pss-vag-recheck — GAPS G-008: pss.rs / vag.rs on every movie
+
+Plan: (1) branch s/pss-vag-recheck from origin/master; (2) complete the PSS legs on
+`MOVIES/30_FPS/*.PSS` — video picture count vs the GOP walk, audio-vs-video duration at ±1 frame
+(the existing live test allows ±1 s), and every picture decoding without error; (3) the VAG/stream
+leg — every bank-referenced VAG stream decoded with sample count and loop points checked (the
+unmerged s/verify-pss-vag work is the reference; re-verified on this tree); (4) goldens: numbers
+and SHA-1s only; (5) docs/formats + close G-008.
+
+## pss-vag-recheck — GAPS G-008 closed: pss.rs / vag.rs on every movie
+
+- Branch s/pss-vag-recheck from origin/master. The slim on-foot ISO stubs all 22 `MOVIES/30_FPS/*.PSS`
+  (size 0), so the retail `007 - Nightfire (USA)` image was downloaded into the sandbox for the movie legs
+  (never committed; the repo's own .gitignore covers it).
+- The VAG half: `s/verify-pss-vag`'s unmerged golden test (`pss_vag_golden.rs` + `pss_vag.tsv`) was ported to
+  master's tree and re-verified green on the slim image (4/4, 111 s); the G-008 loop-point leg was added —
+  every looped bank sample's loop points validated (frame multiples, start < end, end = the extent) and
+  pinned per bank (`loop_sha1`, `loop_starts_sum`). `vag.rs` keeps the survey-corrected decoder attribution
+  (doc-only diff vs master).
+- The movie half: `pss_movies_g008.rs` + `golden/pss_movies_g008.tsv` (numbers/SHA-1s only) — on all 22
+  movies of the retail image the GOP walk equals the picture scan (no pictures outside a GOP), the demuxed
+  ES SHA-1s are pinned, audio kind/rate/channels + sample counts hold, audio-vs-video duration is within
+  ±1 frame for 15/20 audio-bearing movies (5 muxer-padded audio beds recorded: 0730000D −3040, 073B0048
+  −2880, 07300017 −2160, 073F0048 −1200, 073A0048 −1160 mf; 2 menu movies silent), and every picture decodes
+  without error with the all-frames YUV SHA-1 pinned per movie (~50 fps decoder; PIN_ONLY re-pin helper).
+- 5/5 g008 tests + 4/4 vag golden tests green on their images; sisters prove the goldens catch tampering.
+- Report: docs/reports/pss-vag-recheck.md (the full-suite status and what ran is in it).
 
 ## grates-02b (2026-10-16, branch s/grates-02b) — start
 - Task: queue 677b — land s/grates-02 (677) without breaking the 0c vent latches: with the grates
