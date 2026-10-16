@@ -198,6 +198,27 @@ impl MenuMusic {
     pub fn take_cmds(&mut self) -> Vec<MusicCmd> { std::mem::take(&mut self.queue) }
 }
 
+/// The host's per-redraw front-end music step, extracted from `App::menu_music_tick`
+/// (crates/nf-view/src/lib.rs) so the flows are drivable headless. One call per redraw beside
+/// `movie_tick`: runs the page-change transitions — the credits' leave when the page moved off
+/// Credits [M 0x2152b0:20-38], then the new page's enter (the manager's msg-0x44 re-sends 0x4c
+/// to the new page [M 0x21c858:345-346]) — and drains the queued commands.
+///
+/// The caller applies the returned commands to the sound driver exactly as `menu_music_tick`
+/// does, with the game's front-end gate: `StartJingle` only sounds while the front end is the
+/// loaded level (a mission's bank resolves neither jingle [D SB_12]); `StopJingles`,
+/// `StartMusic`, `StopMusic`, `MusicVolume` and `FadeDownMusic` always run.
+pub fn fe_music_step(fe: &mut crate::menu::FrontEnd, music_page: &mut Option<Page>) -> Vec<MusicCmd> {
+    if *music_page != Some(fe.page) {
+        if *music_page == Some(Page::Credits) {
+            fe.music.credits_leave();
+        }
+        fe.music.page_enter(fe.page);
+        *music_page = Some(fe.page);
+    }
+    fe.music.take_cmds()
+}
+
 impl Default for MenuMusic {
     fn default() -> Self { Self::new() }
 }

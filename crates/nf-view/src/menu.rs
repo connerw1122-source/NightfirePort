@@ -2014,16 +2014,32 @@ impl FrontEnd {
         self.sfx_out.push(MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_MOVE });
         self.sfx_out.push(MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_SELECT });
         self.menu_movie = true;
+        // frontend-music: the restart also lands on the music channel — the bank-resolved id
+        // (0x1d7/0x470 by the resident front-end bank [M 0x1dceb8 case 0x7000048]) applied at the
+        // NEXT REDRAW, not at the next input: the sfx channel drains only in `menu_after`, so a
+        // restart queued by `tick` (the intro/attract ends, a skipped intro) stayed silent until
+        // the user touched a key. `movie_finished` IS the game's restart arm gated by the music
+        // state's own `menu_movie` mirror (`jingles_up`), so the two channels never stack: the
+        // sfx batch's leading removes kill whichever instance sounds first [M the 0x4c order].
+        self.music.movie_finished();
     }
 
     /// Every front-end page change funnels through here so the open pair rides the transitions
-    /// into the pair-playing pages (Start/Main/MissionSelect/Results/Credits/MpDebriefing — the
-    /// port's stand-ins for the game's twelve handlers [M the SFXStart(0x1d7) caller list]).
+    /// into the pair-playing pages (Start/Main/MissionSelect/Results/MpDebriefing — the port's
+    /// stand-ins for the game's restart handlers [M the SFXStart(0x1d7) caller list]; the credits
+    /// is the swap, handled below and in `MenuMusic::page_enter`).
     fn enter_page(&mut self, p: Page) {
         self.page = p;
         if matches!(p, Page::Start | Page::Main | Page::MissionSelect | Page::Results
-                    | Page::Credits | Page::MpDebriefing) {
+                    | Page::MpDebriefing) {
             self.open_pair_sfx();
+        }
+        if p == Page::Credits {
+            // The credits' 0x4c is the SWAP, not a pair restart: SFXRemove both, menu_movie = 0,
+            // SFXStartMusic(0x27, 0) [M 0x2152b0:89-94] — the music channel's page_enter(Credits)
+            // runs it; here only the static clears (a jingle start here died under the same
+            // frame's StopJingles and played for under a frame — menu-audio-state).
+            self.menu_movie = false;
         }
     }
 
@@ -2035,6 +2051,10 @@ impl FrontEnd {
     fn remove_pair(&mut self) {
         self.sfx_remove_out.push(SFX_MENU_OPEN_MOVE);
         self.sfx_remove_out.push(SFX_MENU_OPEN_SELECT);
+        // frontend-music: the music state's `menu_movie` mirror (`jingles_up`) follows the game's
+        // static — Menu_PlayMovie's rm leaves `menu_movie` 0 [M 0x215990:14-19], so a later
+        // page-enter/movie-finish restart is not double-gated off.
+        self.music.movie_started();
     }
 
     /// `Menu_PlaySound` [M 0x1f3278]: the gated sounds (0/1/2/8) drop when their
@@ -2664,8 +2684,10 @@ impl FrontEnd {
             self.enter_page(Page::Pause);
             // MenuManager_Create zeroes the static on every manager open [M 0x21b908:125] — the
             // pause page's own 0x4c starts no pair (P_PAUSE 0x203c28 has no pair calls), and the
-            // next front-end page after the unpause restarts it fresh [M 0x21c2b0:15].
+            // next front-end page after the unpause restarts it fresh [M 0x21c2b0:15]. The music
+            // state's mirror follows the static (menu-audio-state).
             self.menu_movie = false;
+            self.music.jingles_up = false;
             self.cursor = 0;
             self.pause_tab = 0;
             self.confirming_restart = false;
@@ -3611,8 +3633,14 @@ impl FrontEnd {
             if a == Action::Confirm {
                 self.flow.pop_state();
                 self.intro_playing = false;
-            self.menu_movie = false; // the intro movie end clears menu_movie [M P_INTRO 0x209e88:44,58]
+                self.menu_movie = false; // the intro movie end clears menu_movie [M P_INTRO 0x209e88:44,58]
                 self.intro_index = 0;
+                // The game's StopMovie makes the page's next 0x50 see psiMovieFinished, and the
+                // finish arm restarts the pair while it is down [M 0x209e88:23-28] — the skip
+                // collapses to the same restart (menu-audio-state: without it the main menu sat
+                // silent after a skipped intro; the window's own skip path funnels through the
+                // intro-end block in `tick`, which calls the same restart).
+                self.open_pair_sfx();
                 return true;
             }
             return false;
