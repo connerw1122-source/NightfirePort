@@ -28,3 +28,8 @@ rendering. Keyboard + mouse only (no pads). Tests run on loopback (127.0.0.1) an
 
 ---
 claimed-by: sandbox7 at 2026-10-15T22:56Z
+
+---
+## Report (done, 2026-10-16T00:20Z)
+
+Closed by the driver: the report is on `s/net-match-host` (docs/reports/net-match-host.md); the worker didn't run finish.sh.
