@@ -5596,8 +5596,10 @@ pub fn flash_amount(head: V3, blast: V3, px: f32, pz: f32, yaw: f32, has_los: bo
     f
 }
 
-/// Stand-in for the renderer's "drawn" (`obj+0xFC`) and `Drone_PositionVisible`: within 60° of Bond's aim (or within
-/// 2 units) and any of five body points in line of sight from his eye (thin occluders hide one ray, not a cel).
+/// Stand-in for the renderer's "drawn" (`obj+0xFC`) ONLY: within 60° of Bond's aim (or within 2 units) and any of
+/// five body points in line of sight from his eye (thin occluders hide one ray, not a cel). The SPawner's
+/// "player can see the spot" gate is a different reader — `drone_position_visible` below; guards-0c-b decoupled
+/// them (the spawner must not ride the drawn gate's rays).
 /// guards-0c: the game's draw test is `Vision_InView` (0x1e89e0 [M], the four fov side planes) over the PORTAL-VISIBLE
 /// cels (`View_AddObjects` 0x1e62d8 walks `Vision_Portal_Recurse` first) — no occlusion rays anywhere. The sim has no
 /// portal graph, so the rays stand in for the room gate — but they run on the BULLET segment (the pass-flagged hits
@@ -5614,6 +5616,35 @@ pub fn visible_to(player: &Player, world: &CollisionWorld, pos: V3, head: V3) ->
     let side = [-v[1] / l.max(1e-6) * 0.5, v[0] / l.max(1e-6) * 0.5];
     let pts = [head, pos, [pos[0] + side[0], pos[1], pos[2] + side[1]], [pos[0] - side[0], pos[1], pos[2] - side[1]], [pos[0], pos[1] - 0.8, pos[2]]];
     l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5 && pts.iter().any(|&q| world.segment_bullet(player.eye, q).is_none()))
+}
+
+/// The spawner's own "player can see the spot" gate — the game's `Drone_PositionVisible`
+/// (0x13a7a0 [M]), called from the post-selection abort of `DroneSpawner_SpawnDrone` (0x137cb0:43-47 [M]: the
+/// picked template's spot visible → `return 0`, the slot persists and retries next tick; `DroneSpawner_Control`
+/// 0x137e68 itself reads NO visibility — its release test is the trigger channel's one-shot latch +0x1e
+/// [M 0x137e68:53-70] — so the abort is the spawner path's ONLY visibility reader). The game's test, in order:
+/// (1) `Vision_InView(pos, 2.0, viewer)` — the four fov side planes, radius slack 2.0, no collision
+/// [M 0x1e89e0 disasm: 4 plane dots, `< -param_1` fails]; (2) the spot's cel byte +0xa0 — when the template
+/// carries a cel (0x137cb0 passes `piVar10[1]`), an undrawn cel short-circuits to NOT visible → the spawn
+/// proceeds [M 0x13a7a0:58-60]; (3) ONE `Collide_LineOfSight` ray viewer→spot — `DroneVision_LineOfSightToObject`
+/// (0x178390 [M]: the AI cel walk, then) with HITTEST word 0xa27 [M 0x13a7a0:73-74 `param_6 | 0xa27`], which is
+/// the FLAT segment: NO bit 0x8 (pass-flagged occluders — glass, foliage — BLOCK the ray, unlike the bullet
+/// family 0x1ebff0-0x1ec010), bit 0x20 set (the 0x1000 missile cage is skipped — `segment_actor`,
+/// [M Collide_Pick 0x1eb480]), char 0 (dynamic-owned nodes tested [M 0x1edf50 wrapper]).
+/// guards-0c-b: the spawner must NOT ride the drawn gate's bullet rays — on 0700001b the sightline to spawner
+/// #187's Drake spot is bullet-CLEAR but flat-BLOCKED (a pass-flagged surface), so the drawn-gate abort rejected
+/// every spawn and the fight never started (fix_finale_live the_0700001b_drakes_defeat_ends_the_space_station).
+/// Stand-ins, same as the drawn gate: the 60°/2-unit cone for `Vision_InView` (no camera frustum in the sim) and
+/// the five bullet rays for the cel byte +0xa0 (no portal graph); only the game's own ray is exact.
+pub fn drone_position_visible(player: &Player, world: &CollisionWorld, pos: V3) -> bool {
+    let v = [pos[0] - player.eye[0], pos[2] - player.eye[2]];
+    let (a, l) = ([player.aim[0], player.aim[2]], (v[0] * v[0] + v[1] * v[1]).sqrt());
+    let al = (a[0] * a[0] + a[1] * a[1]).sqrt();
+    let side = [-v[1] / l.max(1e-6) * 0.5, v[0] / l.max(1e-6) * 0.5];
+    let pts = [pos, [pos[0] + side[0], pos[1], pos[2] + side[1]], [pos[0] - side[0], pos[1], pos[2] - side[1]], [pos[0], pos[1] - 0.8, pos[2]]];
+    l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5
+        && pts.iter().any(|&q| world.segment_bullet(player.eye, q).is_none())        // the cel byte +0xa0
+        && world.segment_actor(player.eye, pos).is_none())                           // the game's 0xa27 ray
 }
 
 /// Every drone placement of the level's main map, in placement order (`Drone_Create`); spawner templates included
@@ -8158,8 +8189,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     |i, min| { let q = list[i].pos; let dd = ((q[0] - player.pos[0]).powi(2) + (q[2] - player.pos[2]).powi(2)).sqrt();
                         dd >= min },
                     // Post-selection abort: the picked spot visible to Bond fails the attempt
-                    // [M 0x137cb0:43 — the slot persists and retries next tick].
-                    |i| { let q = list[i].pos; visible_to(player, d.world, q, [q[0], q[1] + 0.6, q[2]]) },
+                    // [M 0x137cb0:43 — the slot persists and retries next tick]. The game's test is
+                    // `Drone_PositionVisible` (0x13a7a0), NOT the drawn gate — its ONE 0xa27 ray is the
+                    // FLAT segment, so guards-0c's bullet-segment drawn rays must not feed it
+                    // (guards-0c-b: they aborted every Drake spawn on 0700001b, fix_finale_live).
+                    |i| { let q = list[i].pos; drone_position_visible(player, d.world, q) },
                     &mut |n| rng.rand(n));
                 match action {
                     crate::spawners::Action::Spawn(i) => {
