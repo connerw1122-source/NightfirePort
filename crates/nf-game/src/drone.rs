@@ -3448,15 +3448,27 @@ impl Drone {
         })
     }
 
-    /// `DroneFunc_HandleImpact` case 7 (0x1469b8:111-176): the tase. The accumulator `+0xBC` grows by
-    /// FRAME_RATE_MUL per msg; once it passes 2·health (`fptoui(+0xAC)` — the LIVE health) the drone
-    /// falls into `DSTATE_Taser` 0x4a with the HITDATA [M 0x1469b8:126-130 + the LAB_0014714c tail].
+    /// `DroneFunc_HandleImpact` case 7 (0x1469b8:58-176): the tase. Case 7's FIRST arm is the
+    /// mission-fail check [M-dis 0x146a9c-0x146ad4: `addiu a1,zero,7` before the accumulator]: on
+    /// 07000007 tasing an UNARMED person (ObjectIsArmed 0x178768 on the victim's own class byte) is
+    /// an instant mission fail — reason 7 → label 0x4000033 + ch 99 [M 0x13e560 case
+    /// 2/4/5/7/8/10/0xb/0xc → "Cover Lost", default → ch 99]. The taser family's own case-7 arms
+    /// bypass this (DSTATE_Taser 0x162b98 case 7 sets a timer; DSTATE_Stunned 0x162eb0 case 7
+    /// re-enters/0x4a — neither calls HandleImpact), but DSTATE_Stunned_Recover 0x1630b8 case 7
+    /// FORWARDS to `HandleImpact(msg, 0, 1)`, so a re-tase of a recovering victim re-runs the check.
+    /// The accumulator `+0xBC` grows by FRAME_RATE_MUL per msg; once it passes 2·health
+    /// (`fptoui(+0xAC)` — the LIVE health) the drone falls into `DSTATE_Taser` 0x4a with the HITDATA
+    /// [M 0x1469b8:126-130 + the LAB_0014714c tail].
     /// Below the threshold only the accumulator == 1 tick acts — the game re-enters the drone's
     /// current state (`SetState(uVar12)` unless +0x4F8 & 0x4000000 [M 0x1469b8:132-141]); the port
     /// skips that re-entry (a no-op re-flinch — the accumulator and the fall timing are unaffected;
     /// noted in the report). This IS the base DSTATE's msg-7 handler: the port runs it for every
     /// state without its own case-7 arm (the taser family handles its own in `handle_taser`).
-    fn on_tase(&mut self) -> bool {
+    fn on_tase(&mut self, d: &Data) -> bool {
+        // 0x1469b8:58-68 — the fail arm, BEFORE the accumulator (the game's order).
+        if d.level == 0x0700_0007 && !self.obj_armed() {
+            self.fail_reason = Some(crate::ally::mission_fail_reason(7));
+        }
         self.tase_accum = self.tase_accum.saturating_add(1);
         if self.tase_accum as u32 > (self.health as u32) << 1 {
             self.set_state(state::TASER); // the HITDATA rides self.hit (the port's state-param stand-in)
@@ -3546,9 +3558,10 @@ impl Drone {
                 true
             }
             (STUNNED_RECOVER, msg::TASE) => {
-                // case 7 → `HandleImpact(msg, 0, 1)`: the accumulator grows again; the re-fall when it
+                // case 7 → `HandleImpact(msg, 0, 1)`: the reason-7 fail arm re-runs (0x1469b8:58-68
+                // is inside the forwarded case 7) and the accumulator grows; the re-fall when it
                 // passes 2·health [M 0x1630b8 case 7].
-                self.on_tase()
+                self.on_tase(d)
             }
             _ => true, // unhandled → GLOBAL → `DroneFunc_HandleImpact`'s default: dropped [M 0x1469b8:366]
         })
@@ -3619,7 +3632,7 @@ impl Drone {
         // exactly like msg 8/6 [M 0x1469b8 case 7].
         if m == msg::TASE {
             if let Some(r) = self.handle_taser(d, rng, frame, s, m) { return r; }
-            return self.on_tase();
+            return self.on_tase(d);
         }
         // fix-stunner-press: the taser family's OWN switch covers every other message — the game's
         // family DSTATEs unhandle (→ GLOBAL = HandleImpact → default: dropped [M 0x1469b8:366]), so

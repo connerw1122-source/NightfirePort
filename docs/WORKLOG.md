@@ -14969,6 +14969,36 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## party07-start-rules (2026-10-16, branch s/party07-start-rules) — start
+- Task: verify/fix 07000007 party start rules from the first frame — Bond holds fists (not gun),
+  guards not hostile until the trigger, punch on a guard = mission fail with the game's fail text,
+  no guest fires, guests react to gunfire the game's way; cold start AND the 06 -> 07 carry.
+- Evidence anchors: party script channels, weapon lock Player_Weapon 0x1a24c8:242-275, guards'
+  friendly/alert start state, punch -> fail hook, guests' drone classes.
+
+## party07-start-rules (2026-10-16, branch s/party07-start-rules) — close-out
+- Verified the 07000007 start rules end-to-end (new crates/nf-view/tests/party_start_rules_live.rs,
+  6 tests, all green): cold AND 06→07 carry — the loadout request is 1 (fists), armour 0, the P2K
+  owned-but-holstered, the spawn plate fires ch 0x47, no drone is in a combat state while Bond is
+  unarmed, every guest unarmed (ObjectIsArmed 0x178768's classes) + prop 0x1f=0 (deaf to sound
+  alerts) + prop 0x54=1 + a bound anim (no T-pose) at start; the punch on a bouncer → reason 5 →
+  ch 99 + label 0x4000033 + the "Mission Fail" banner + MissionState 2, from cold AND the carry;
+  gunfire (broad hearing radius, 8 P2K shots among the guests) panics no guest and no guest gains
+  a weapon; the spawn-plate position assert (#0 33.4,44.5,−70.6) holds on the carry.
+- THE fix: the tase fail (the last unported party fail path) — `Drone::on_tase` now runs
+  HandleImpact case 7's mission-fail arm BEFORE the accumulator [M 0x1469b8:58-68, dis
+  0x146a9c-0x146ad4]: on 07000007 tasing an UNARMED person (ObjectIsArmed 0x178768) → reason 7 →
+  label 0x4000033 + ch 99 [M 0x13e560]. Game shape kept: the taser family's own case-7 arms bypass
+  it (DSTATE_Taser 0x162b98 / DSTATE_Stunned 0x162eb0 don't call HandleImpact) while
+  DSTATE_Stunned_Recover 0x1630b8 case 7 FORWARDS to HandleImpact, so its port arm calls on_tase(d)
+  and re-runs the check. Disasm note: the doc's "bullet/impact → reason 7" was a mislabel — msg 7
+  is only the Stunner dart (0x13fff0:269-274); a real bullet (msg 8) has no fail hook in the game.
+- Docs refreshed: 07000007.md §6 + the walkthrough note (reason 2/0xb were already ported by
+  fix-party-mission/fix-actors; only 7 was missing), mission.md's SetMissionFailReason line.
+- Out of scope, noted: DSTATE_Taser/StunDartImpact ENTER set fail reasons 0xd/0xe for victims with
+  the byte +0xc5 ∈ {0x11, 0x0c} [M 00162b98 case 1 / 00163430] — a separate mechanic, not ported.
+
 ## npc-doors (2026-10-16, branch s/npc-doors) — start
 - Branch created from origin/master (6bab6409). Task: NPCs can't open doors (playtests 1012-1723,
   1013-1825; 07000001 escort Mayhew stalls, guards/guests don't path through on 07000006/07000007).
