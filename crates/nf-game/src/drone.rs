@@ -6689,16 +6689,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             self.bullet_paths.push((b.pos, end));
             // fix-samurai-fire: the `+0x6C` bit 0x10000 Swoosh ribbon [M `Bullet_init` 0x12c5a0:116-133:
             // for such records `Swoosh_Create(spawn, spawn, weapon_data+0x76, 0x20005cd, 0)` when the
-            // base (+0x02) is 0x33/0x6a/0x6e — else 0x2000918, kind 1 — stored at BU+0xe; `Bullet_update`
+            // base (+0x02) is 0x33/0x6a/0x6e — else 0x2000481, kind 1 — stored at BU+0xe; `Bullet_update`
             // feeds the round's position every tick, so the ribbon reads as a beam from the muzzle to
-            // the round]. The port has no swoosh system (the grenade-path trail comment documents the
-            // same gap for the rockets): one cyan gas puff per flying tick at the round's tail — the
-            // Phoenix Samurai's bolt/beam trail (the live capture's "a short cyan beam", 0x32/0x33 both
-            // carry 0x10000 and size +0x76 = 15 [L ee_start_05.bin @ 0x2bf150]). No RNG draws (the
-            // game's swoosh path consumes none of the shared generator; determinism). Colour/size [S]
-            // — the main agent's render check owns the look.
+            // the round]. rocket-trail-gas: the stand-in PUFF runs only for the 0x20005cd family (the
+            // Phoenix Samurai's bolt — the live capture's "a short cyan beam", 0x32/0x33 both carry
+            // 0x10000 and size +0x76 = 15 [L ee_start_05.bin @ 0x2bf150]). The rockets (0x2c/0x2d/
+            // 0x2e/0x2f — the 0x2000481 flame ribbon) spawn NO gas in the game: every `Bullet_DoTrails`
+            // 0x12d890 gas arm reads a record flag the rockets don't carry [M decomp :144-199 — bit
+            // 0x2 → `Bullet_trail_effect_smoke`, 0x20 → the 0x2000039 exhaust, 0x80000 → the small
+            // 0x2000039; L sweep +0x6c: 0x2d = 0x0001a200, 0x2c = 0x00012204, 0x2e = 0x00032200 — none
+            // of 0x2/0x20/0x80000], so the old per-tick puff here was a port-only haze down the 08
+            // corridor. The thin trail is the ribbon itself — the documented unported swoosh system.
+            // No RNG draws (the game's swoosh path consumes none of the shared generator;
+            // determinism). Colour/size [S] — the main agent's render check owns the look.
             let flags6c_b = d.weapons.records.get(b.weapon as usize).map_or(0u32, |r| u32::from_le_bytes(r[0x6c..0x70].try_into().unwrap()));
-            if flags6c_b & 0x1_0000 != 0 {
+            let swoosh_05cd = d.weapons.records.get(b.weapon as usize).is_some_and(|r| {
+                matches!(u16::from_le_bytes([r[0x02], r[0x03]]), 0x33 | 0x6a | 0x6e)
+            });
+            if flags6c_b & 0x1_0000 != 0 && swoosh_05cd {
                 self.gas.init(b.pos, 0.0, [0.0; 3], 0.3, 0.6, 5, [0x30, 0xd0, 0xff, 0x90], 6.0);
             }
             // The photograph targets and breakable doors see the bullet this tick (the game's
