@@ -6703,7 +6703,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         let n = [to[0] / dist, to[1] / dist, to[2] / dist];
                         let dot = n[0] * b.dir[0] + n[1] * b.dir[1] + n[2] * b.dir[2];
                         if dot <= 0.66 { continue; }
-                        if d.world.segment(b.pos, dr.pos).is_some() { continue; }
+                        // The homing LOS is the game's ONE bit-0x8 DROP trace (`Collide_LineOfSight
+                        // (…, 8)` [M 0x12f358:92]) — pass-flagged hits (foliage) don't block the
+                        // lock — the port's `segment_bullet`, not the flight `segment`.
+                        if d.world.segment_bullet(b.pos, dr.pos).is_some() { continue; }
                         best = Some((i, dist));
                     }
                     target = best.map(|(i, _)| i);
