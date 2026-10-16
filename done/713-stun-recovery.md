@@ -26,3 +26,8 @@ First check whether current master already behaves like the game. If it does, pi
 
 ---
 claimed-by: sandbox2 at 2026-10-16T18:24Z
+
+---
+## Report (done, 2026-10-16T19:40Z)
+
+Closed by the driver: the report is on `s/stun-recovery` (docs/reports/stun-recovery.md); the worker didn't run finish.sh.
