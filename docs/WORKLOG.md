@@ -15908,3 +15908,12 @@ INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 pa
 72 ignored (46 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes (the
 07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
 and other merged tasks' new tests. The 2 new live tests are green in the totals.
+
+## mp-match-end (2026-10-16, branch s/mp-match-end) — STARTED 17:20 UTC
+Task 705: a local MP match ends and returns through the debriefing — start a local MP match from
+the menus (frag limit 1 or a 1-minute time limit), play it headless until the end condition fires
+[M MP_CheckForEndCondition 0x184268 / MP_Update states, 402 + 621b on master], and assert the
+host's handover to the front end: the debriefing page (board, ranks, winner line), Confirm → the
+scenario page, a second match starts. The host glue may be missing (port it the way the SP
+mission end works: Drones::mission_end → the host). Tests for the frag-limit and the time-limit
+ends.
