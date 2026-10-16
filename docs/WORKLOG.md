@@ -15400,3 +15400,31 @@ remote-mine-detonate (2026-10-16)
   ray-through-the-opening and the mux asserts unchanged. 4/4 fix_level_0c_live, 4/4 fix_ss_grate_live,
   fix_0c_hatch_live + fix_0c_vent2_live green.
 - Report: docs/reports/grates-02b.md (live check: the warehouse pair's re-sweep in PCSX2).
+## guard-drops-flashbang (2026-10-16, branch s/guard-drops-flashbang) — start
+Task 681: guards drop exactly the game's drops on death; the stun/flash grenade (0x35) stuns and
+never kills. Plan: read DroneWeap_DropWeapon + the death pickup-create path + the stun explode arm;
+write the 5-guard drop-list test, the 3-guard flashbang no-damage test, and the sisters (frag
+kills, empty-handed guard drops nothing); fix any mismatch against the decompile.
+
+## guard-drops-flashbang (2026-10-16, branch s/guard-drops-flashbang) — DONE 10:50 UTC
+The playtest's two symptoms on 07000005. (1) Drops: the port's per-death drop was already the
+game's ONE object (`DroneWeap_DropWeapon` 0x17a2a0 — held gun, `base · (0.25|0.5 + FRand(0.5))`
+rounds, weapon byte cleared; the fists record 1 carries model 0 so a disarmed guard drops nothing
+on death; the captain grenade drop `DroneFunc_OnInitDeath` 0x145bd0 needs `Drone+0x19`, and
+07000005's 16 guards are all kind 2 with props 9/5 clear — no captains, no grenade drops at
+difficulties 1-2). Locked by the 5-guard drop-list test (placements 3/5/7/9/66, skins
+0x2e/0x2f/0x30, SG5 + sniper): exactly one pickup, the right base id, the rounds bands [7..=22] /
+[2..=7]. (2) The flashbang: the fuse death already took the `& 0x2000` flash branch with NO
+damage — but the stun loop skipped disabled guards and stunned through walls. Port fixes [M]:
+the broadcast now rides the state machine — msg 0x18 (`DroneFunc_HandleImpact` case 0x18
+0x1469b8:250-313) delivered by `Drone_MessageObjVicinity` 0x13a438's rule (class 2 within 20.0
+`0x41a00000` + `NDrone2_CanSeeObject` head→blast LOS 0x176f18, no enabled gate — WaitSwitch drops
+it [M 0x15b960 `return 0`] and the SM's GLOBAL fallback still lands case 0x18); the drop +
+ChangeWeapon(1) moved into the StunGrenadeImpact ENTER (its own case 1 [M 0x172bb0:15-18]); the
+flashed waiter re-enables [S — the game's re-enable path unpinned, live check in the report].
+Tests: crates/nf-game/tests/guard_drops_flashbang_live.rs (4) — flash among 3 guards: no health
+loss, stun family, disarm, no explosion record; sisters: frag kills (incl. the yard's pl 303 in
+radius), the stunned fists-holding yard killed by a frag adds NO pickups; recovery holds (3600).
+Ran: nf-game full 446/446 (50 bins), nf-view grenade suites 15/15, suite.py on the pre-fix tree
+1779 passed / 6 failed (3 disc_golden allowed + 3 pylon render = the main agent's GPU) / 72
+ignored; the fresh suite.py run on this final tree is suite_final.out.

@@ -242,6 +242,9 @@ pub mod msg {
     /// "Open that door" (`DroneAnim_EventFunc` 0x13b750 event 6 → `Drone_SM_SendMsg(0x20, 0, own, own)`;
     /// docs/fields/drone-statemachine.md). Only `DSTATE_OpenDoor` handles it: retry the door activation.
     pub const DOOR: u8 = 0x20;
+    /// The stun-grenade broadcast (`Bullet_DoTrails` 0x12d890's `+0x70 & 0x2000` flash arm →
+    /// `Drone_MessageObjVicinity(20.0, 0x18, …)` 0x12e0c0 [M]; `DroneFunc_HandleImpact` case 0x18).
+    pub const FLASH: u8 = 0x18;
 }
 
 /// Anim states (`DroneAnimStates` index).
@@ -1946,6 +1949,21 @@ impl Drone {
         self.on_impact(d, rng, frame, s, false)
     }
 
+    /// Msg 0x18 in state `s` — `DroneFunc_HandleImpact` case 0x18 (0x1469b8:250-313): prop 0x1C is
+    /// immune (the game plays the 0x57/0x11/0x19 flinch anims — not modelled); every other drone
+    /// enters StunGrenadeImpact 0x4D. No state gate in the game's arm — a WaitSwitch drone reaches
+    /// it through the unhandled→GLOBAL fallback [M 0x15b960 `return 0` + the SM fallback], so the
+    /// port intercepts before the state match exactly like msg 8/6/7.
+    fn on_flash(&mut self, d: &Data, _rng: &mut Rng, _frame: u32, _s: u8) -> bool {
+        if self.prop(d, 0x1c) { return true; }
+        // A flashed WaitSwitch guard responds to the real event: the port's `drawn = enabled &&
+        // visible` [S — the game's obj+0xF0 & 0x30 re-enable path for a flashed waiter is unpinned;
+        // live check below] would otherwise freeze him invisible and unhittable for the whole stun.
+        self.enabled = true;
+        self.set_state(state::STUN_GRENADE_IMPACT);
+        true
+    }
+
     /// Msg 6 in state `s` (the punch). The per-state `HandleImpact` arguments are the SAME as msg 8's for every state
     /// that handles the punch (a scan of all 250 DSTATE decomps, 2026-10-12: 46 states carry case 6, each with the
     /// resume/allow of its case 8) — only the impact handler differs (`NDrone2_PunchImpact` vs `NDrone2_BulletImpact`).
@@ -3416,6 +3434,15 @@ impl Drone {
                 // [L 07000005]) [M 0x147188 + 0x172bb0]. The old 7200 read the switch's DEFAULT arm — twice
                 // the game's stun for a stun bullet.
                 self.stun_until = frame + 3600;
+                // fix-guard-drops-flashbang [M 0x172bb0:15-18, the state's own case 1]: the flashed
+                // guard DROPS the held gun and takes the fists — `if (+0xda != 4) { DropWeapon;
+                // ChangeWeapon(1) }` — whatever route stunned him (the flash broadcast, a stunned
+                // waiter included). The drop rolls the shared stream here, before the anim draw, in
+                // the game's case-1 order.
+                if self.weapon != 4 {
+                    self.drop_weapon(d, rng);
+                    self.weapon = 1;
+                }
                 self.alert = self.alert.max(0.66);
                 self.vision_on = false;
                 self.firing = false;
@@ -3626,6 +3653,11 @@ impl Drone {
         use state::*;
         if m == msg::BULLET { return self.on_bullet(d, rng, frame, s); }
         if m == msg::PUNCH { return self.on_punch(d, rng, frame, s); }
+        // fix-guard-drops-flashbang: the flash broadcast rides the state machine like every other
+        // impact — `DroneFunc_HandleImpact` case 0x18 [M 0x1469b8:250-313] through the same
+        // unhandled→GLOBAL fallback the bullets use (WaitSwitch's handler drops it [M 0x15b960], the
+        // GLOBAL base state picks it up).
+        if m == msg::FLASH { return self.on_flash(d, rng, frame, s); }
         // fix-stunner-press (109b): the tase. The taser family handles its own case-7 arms
         // (`handle_taser`); every other state falls to the base handler — `DroneFunc_HandleImpact`
         // IS the base DSTATE, so its case 7 (the accumulator + the fall) is the GLOBAL fallback,
@@ -9029,36 +9061,22 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             self.gas.init(pos, 0.0, [0.0; 3], 0.5, 1.68, 0xb, [0x00, 0x80, 0x80, 0x80], 30.0);
                             self.shake = self.shake.max(2.0);
                             if owner == usize::MAX {
-                                for dr in self.list.iter_mut() {
-                                    if !dr.present || dr.corpse || !dr.enabled { continue; }
-                                    // `HandleImpact` case 0x18's first gate [M 0x1469b8:251-270]: a guard with
-                                    // behaviour prop 0x1C is immune — it flinches (anims 0x57/0x11/0x19) and
-                                    // never enters 0x4D. The port skips the flinch anims (cosmetic) and keeps
-                                    // the immunity.
-                                    if dr.prop(d, 0x1c) { continue; }
-                                    let dx = dr.pos[0] - pos[0]; let dy = dr.pos[1] - pos[1]; let dz = dr.pos[2] - pos[2];
-                                    if dx * dx + dy * dy + dz * dz <= 400.0 {
-                                        dr.hit_by_player = true;
-                                        // `StunGrenadeImpact` ENTER [M 0x172bb0]: DCVars+0xCE0 =
-                                        // `DroneFunc_RecoverTime`'s 0x35 arm — FRAME_RATE_INT·30·0.01·(200 −
-                                        // Drone+0xB9) = 18·(200−0) = 3600 ticks at the stats default b9 = 0 [M
-                                        // 0x147188; +0xB9 = BOT_stats[8] via BOT_setDroneStats 0x126318:17, and
-                                        // 07000005's stats blob is zero at run time [L]]. The old 7200 read the
-                                        // switch's DEFAULT arm (unknown weapon → 36·(200−b9)) — twice the game.
-                                        dr.stun_until = frame + 3600;
-                                        // ...and he DROPS the held weapon: `DroneWeap_DropWeapon` +
-                                        // `DroneWeap_ChangeWeapon(1)` unless already holding 4 [M 0x172bb0 case 1].
-                                        if dr.weapon != 4 {
-                                            // The drop rolls the shared RNG — lift it out of the &mut list
-                                            // borrow (the stream itself is untouched: the same Rng continues).
-                                            let mut rng = std::mem::replace(&mut self.rng, Rng::new(0));
-                                            dr.drop_weapon(d, &mut rng);
-                                            self.rng = rng;
-                                            dr.weapon = 1;
-                                        }
-                                        dr.alert = dr.alert.max(0.66); // `Drone_AlertStatusSet(2)` [M 0x172bc8]
-                                        dr.set_state(state::STUN_GRENADE_IMPACT);
-                                    }
+                                // The broadcast [M 0x12d890 flash arm 0x12e0c0 → `Drone_MessageObjVicinity`
+                                // 0x13a438]: msg 0x18 to every class-2 object within 20.0 (`0x41a00000`;
+                                // the 30.0 `Collide_SphereIntersect` 0x41f00000 is the pre-filter) —
+                                // no enabled/active gate at the delivery (a WaitSwitch drone's handler drops
+                                // it, then the SM's GLOBAL fallback still lands case 0x18) — with
+                                // `NDrone2_CanSeeObject(drone, blast, 5, 0x500)` = the head→blast line of
+                                // sight [M 0x176f18, the AI-net ray + `Collide_LineOfSight`; the port's
+                                // `CollisionWorld::line_of_sight` stands in]. The stun itself (recover,
+                                // drop+ChangeWeapon(1), alert, anim) is the StunGrenadeImpact ENTER.
+                                for i in 0..self.list.len() {
+                                    let (present, corpse, dpos) = { let dr = &self.list[i]; (dr.present, dr.corpse, dr.head()) };
+                                    if !present || corpse { continue; }
+                                    // The vicinity radius: `Vec_Dist3D(obj+0x30, blast+0x30) <= 20.0` [M 0x13a438:28-29].
+                                    if (dpos[0] - pos[0]).powi(2) + (dpos[1] - pos[1]).powi(2) + (dpos[2] - pos[2]).powi(2) > 400.0 { continue; }
+                                    if !d.world.line_of_sight(dpos, pos) { continue; }
+                                    self.list[i].send(d, &mut self.rng, frame, msg::FLASH);
                                 }
                             }
                             break;
