@@ -15908,3 +15908,14 @@ INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 pa
 72 ignored (46 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes (the
 07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
 and other merged tasks' new tests. The 2 new live tests are green in the totals.
+
+## searchlight-flip-06 (2026-10-16, branch s/searchlight-flip-06) — start
+- Task: playtest 1013-1825 (07000006) — "Sometimes a spotlight will cover a piece of ground and
+  it will like flip on its side". Trace each 06 searchlight's beam matrix per tick over its sweep
+  (searchlight.rs, the parts' matrices); find the sign flip / gimbal discontinuity (the align2dir
+  up-vector fallback when the beam points straight down, an atan2 wrap, or the roll
+  [M Searchlight_Update 0x1cb900, Mat_Align2Dir with its fallback vector]); fix to the game's
+  math. Test: every 06 searchlight's beam basis continuous tick to tick over 1800 ticks (no
+  column flips sign while the direction moves smoothly); sister: a synthetic straight-down beam
+  uses the game's fallback.
+- Branch cut from origin/master; escort-01b (690b) closed on its branch + report + ntfy.
