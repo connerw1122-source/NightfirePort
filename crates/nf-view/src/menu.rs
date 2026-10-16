@@ -5102,6 +5102,11 @@ impl FrontEnd {
     /// team game, else the character), the pick on the agent's stored value.
     fn enter_mp_setup(&mut self) {
         self.enter_page(Page::MpSetup);
+        // The setup page drives agent 1's single pick row — the page cursor starts on it [M
+        // C_RBMPSETUP 0x20de58's 0x4c re-selects the per-agent list's row on every state step;
+        // the port keeps the pick in mp_setup_sel, so the row cursor is 0]. Without the reset
+        // the map wheel's cursor rode in and the walk's cursor<rows() check tripped.
+        self.cursor = 0;
         if self.mp_scenario & 0x2000_0000 != 0 {
             self.mp_setup_state = 2;
             self.mp_setup_sel = self.mp_join[0].team as usize;

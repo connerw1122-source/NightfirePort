@@ -14879,3 +14879,26 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## menu-graph-walk (2026-10-16, branch s/menu-graph-walk)
+- Branch created from origin/master (f42de6ff). Task: headless explorer that walks the whole reachable menu
+  graph from FrontEnd::new() by actions + ticks only (never direct field writes), with per-step invariants
+  (no panic, cursor < rows(), known page id, Back leaves within N steps, every page can reach Main,
+  requested_level never set twice per confirm, no dead-end pages), coverage print, plus a randomized
+  version (20 seeded runs x 5000 actions+ticks). Findings fix menu code where game evidence is clear [M],
+  else listed in the report.
+- menu-graph-walk close-out: the headless explorer (crates/nf-view/tests/menu_graph_walk.rs) walks
+  the front end from FrontEnd::new() by actions/ticks/host-calls only — 5 roots (raw boot; Main by
+  actions; pause via open_pause; results via mission_ended+results_enter; win via the final mission
+  under --unlock-all), BFS over (page, cursor, sub-state) with per-step invariants (no panic, cursor
+  < rows(), known page id, Back leaves within 8, every page reaches Main by actions — the mini-BFS
+  depth covers the 0x242-line credits roll [M 0x1f9a88], requested_level never set twice per
+  confirm, no dead ends) + 20 seeded runs × 5000 random actions/ticks. FrontEnd isn't Clone
+  (Box<dyn MpSession>), so nodes re-drive their paths (deterministic headless). Result: 38/42 pages
+  reached, every invariant green; the walk caught the MP setup page opening with the map wheel's
+  cursor riding in (cursor 1 on a 1-row page) — fixed: enter_mp_setup resets the row cursor [M
+  C_RBMPSETUP 0x20de58's 0x4c re-selects the list; the pick lives in mp_setup_sel]. Unreached (4,
+  reasons in the report): Options 0x40000068 (no opener in the whole decompile), MpDebriefing
+  (quit-during-MP-match only), MpLobby (needs a session; covered by mp_net_lobby), CheatMedal
+  0x4000004c (opener unknown — unlock-popups2's open question). Win/credits take no input by design
+  [M 0x215100/0x2152b0]. Report: docs/reports/menu-graph-walk.md (3 live-check asks).
