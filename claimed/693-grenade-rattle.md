@@ -18,3 +18,6 @@ most), and none once it rests. Sister: a grenade thrown at a wall still sounds o
   `NF_ISO=<abs path> nohup python3 tools/test/suite.py > suite.out 2>&1 &` (docs/tools/test-suite.md; once `tools/test/suite.py`
   is on your branch: merge `origin/master` first). Read `tail -1 suite.out` and its FAILED/TIMEOUT lines before you push, and
   run it once more on your final tree (merged with `origin/master`). Report the total line.
+
+---
+claimed-by: sandbox3 at 2026-10-16T13:24Z
