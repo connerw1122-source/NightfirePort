@@ -138,3 +138,74 @@ fn a_straight_down_beam_uses_the_games_fallback() {
             "row 0 = the sound tiny-cross direction (got {:?}, want {:?})", m[0], r0);
     }
 }
+
+/// The playtest's scenario: Bond WALKS through the courtyard across the beam lines — the spots
+/// sweep over moving ground, heads arm/track/lose — the beam basis must stay continuous through
+/// all of it (the same tick-to-tick assert, Bond at walking speed, no fixed parking spot).
+#[test]
+fn beam_basis_stays_continuous_while_bond_walks_the_courtyard() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000006.bin", false).expect("load 07000006");
+    let sim = scene.sim.as_mut().unwrap();
+    for _ in 0..300 { sim.step_bond(Default::default(), false, false, false); if !sim.disabled { break; } }
+    let mut lit = false;
+    for _ in 0..240u32 {
+        sim.step_bond(Default::default(), false, false, false);
+        if sim.drones.searchlights.parts.iter().any(|p| p.kind == 1 && p.state == 0) { lit = true; break; }
+    }
+    assert!(lit, "a courtyard head sweeps");
+    let n = sim.drones.searchlights.parts.len();
+    let head_of: Vec<Option<usize>> = {
+        let parts = &sim.drones.searchlights.parts;
+        (0..n).map(|i| parts.iter().position(|p| p.links[3] == Some(i))).collect()
+    };
+    let mut prev: Vec<Option<[[f32; 3]; 3]>> = vec![None; n];
+    let mut prev_state: Vec<u8> = vec![0xff; n];
+    let mut active_run: Vec<u32> = vec![0; n];
+    let mut violations: Vec<String> = Vec::new();
+    for t in 0..1800u32 {
+        // A walking Bond: a slow circle around the courtyard centre (BEAM_SPOT's neighbourhood),
+        // crossing the beam lines repeatedly (the arm/track/lose cycle at walking speed).
+        let a = t as f32 * 0.011;
+        let input = nf_game::player::Input {
+            turn: 0.05,
+            forward: 0.8,
+            ..Default::default()
+        };
+        let _ = a;
+        sim.step_bond(input, false, false, false);
+        for (i, p) in sim.drones.searchlights.parts.iter().enumerate() {
+            if !matches!(p.kind, 0 | 1 | 3) { continue; }
+            let rows = [[p.matrix[0][0], p.matrix[0][1], p.matrix[0][2]],
+                        [p.matrix[1][0], p.matrix[1][1], p.matrix[1][2]],
+                        [p.matrix[2][0], p.matrix[2][1], p.matrix[2][2]]];
+            let hstate = head_of[i].map(|h| sim.drones.searchlights.parts[h].state).unwrap_or(0xff);
+            let active = matches!(hstate, 0 | 1);
+            active_run[i] = if active { active_run[i] + 1 } else { 0 };
+            if let (Some(pr), Some(ps)) = (prev[i], prev_state.get(i).copied()) {
+                if ps != hstate || !active || active_run[i] < 3 {
+                    prev[i] = Some(rows); prev_state[i] = hstate; continue;
+                }
+                for r in 0..3 {
+                    let (a, b) = (pr[r], rows[r]);
+                    let la = (a[0] * a[0] + a[1] * a[1] + a[2] * a[2]).sqrt();
+                    let lb = (b[0] * b[0] + b[1] * b[1] + b[2] * b[2]).sqrt();
+                    if la <= 1e-6 || lb <= 1e-6 { continue; }
+                    let c = ang(a, b);
+                    if c > 0.35 {
+                        violations.push(format!(
+                            "t {t} part {i} kind {} row {r}: angle {c:.3} between {:?} and {:?}",
+                            p.kind, a, b));
+                    }
+                }
+            }
+            prev[i] = Some(rows);
+            prev_state[i] = hstate;
+        }
+        if !violations.is_empty() { break; }
+    }
+    for v in violations.iter().take(8) { eprintln!("[flip] {v}"); }
+    assert!(violations.is_empty(),
+        "the beam basis snapped while Bond walked the courtyard; first: {}",
+        violations.get(0).map_or(String::new(), |v| v.clone()));
+}
