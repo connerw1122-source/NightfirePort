@@ -14104,3 +14104,11 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
 - Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
   (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
   attract page draws the movie fullscreen over black, no controls, no plate.
+
+- rocket-sound-leak (s/rocket-sound-leak): started. Playtest 1015-1738: after a guided (Sentinel)
+  rocket finishes, a looping sound keeps playing from the shooter's old position, stacks per shot.
+  Plan: find the launch/flight loop handle started at guided-rocket launch that is never stopped on
+  rocket death / guided-camera end; stop it the way the game does [M SFXStop / sound handle on
+  delete]; audit other projectile/object loops (grenades rolling, MGL, thrown mines) for the same
+  leak. Headless test: fire 3 guided rockets, let them die, assert no leftover live looping items
+  in the driver.
