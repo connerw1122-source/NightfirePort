@@ -31,3 +31,7 @@ rendering. Keyboard + mouse only (no pads). Tests run on loopback (127.0.0.1) an
 
 ---
 claimed-by: sandbox5 at 2026-10-15T22:39Z
+
+---
+## Report (done, 2026-10-16T00:00Z)
+
