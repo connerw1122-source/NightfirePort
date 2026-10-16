@@ -84,11 +84,12 @@ fn legal_values(row: &OptRow) -> Option<Vec<i32>> {
 
 /// The value the row would take: List — the nearest legal item value (ties → the lower
 /// value, so ON_OFF lands on a legal side either way); Slider — clamped 0..=100 like
-/// `opt_step`'s `(v + 10*dir).clamp(0, 100)`.
+/// `opt_step`'s `(v + 10*dir).clamp(0, 100)`. The distance math widens to i64: the file's
+/// value is user-controlled and `i32::MIN`'s `.abs()` would overflow (a debug panic).
 fn clamp_to_row(row: &OptRow, v: i32) -> Option<i32> {
     let legal = legal_values(row)?;
     if legal.is_empty() { return Some(v.clamp(0, 100)); } // slider
-    let best = legal.iter().copied().min_by_key(|&l| ((l - v).abs(), l));
+    let best = legal.iter().copied().min_by_key(|&l| ((l as i64 - v as i64).abs(), l));
     best
 }
 
@@ -169,8 +170,11 @@ pub fn parse(text: &str) -> Result<Settings, String> {
         let Some((k, v)) = line.split_once('=') else {
             return Err(format!("line {}: expected `key = value`", n + 1));
         };
-        let Ok(v) = v.trim().parse::<i32>() else {
-            return Err(format!("line {}: value `{}` is not an integer", n + 1, v.trim()));
+        // A trailing `# comment` after the integer is fine (the doc's own examples carry
+        // one); values are integers, so the first `#` starts the comment.
+        let v = v.split('#').next().unwrap_or("").trim();
+        let Ok(v) = v.parse::<i32>() else {
+            return Err(format!("line {}: value `{v}` is not an integer", n + 1));
         };
         let sec = match &section {
             Sec::Known(i) => *i,

@@ -1776,6 +1776,7 @@ impl App {
         let (opts, warn) = settings::load_default();
         if let Some(w) = warn { eprintln!("[settings] {w}"); }
         fe.opts = opts;
+        fe.net_notice = Some(msg.to_string());
         fe.page = menu::Page::MpJoin;
         fe.cursor = 0;
         fe.closed = false;
@@ -1965,6 +1966,11 @@ impl App {
     fn demo_results(&mut self, complete: bool) {
         if self.level_code == 0 || self.level_code == menu::FRONTEND_LEVEL { return; }
         let mut fe = menu::FrontEnd::new();
+        // settings-persist: this fresh front end boots the option file's values too — its
+        // defaults would otherwise ride the results page's quit back into the front end.
+        let (opts, warn) = settings::load_default();
+        if let Some(w) = warn { eprintln!("[settings] {w}"); }
+        fe.opts = opts;
         // The demo hook stands in for Mission_Update 0x182c60, which fires in state 2 — the flow
         // must be in a state reset_map_level_to_load accepts (its gate [M 0x1d3800]) for the outro
         // request to wrap into the movie state.

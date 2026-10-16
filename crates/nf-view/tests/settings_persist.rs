@@ -222,6 +222,35 @@ fn save_creates_a_missing_config_dir() {
 }
 
 #[test]
+fn extreme_file_values_clamp_without_overflowing() {
+    // The clamp's distance math must not overflow on user-controlled values — i32::MIN's
+    // .abs() would panic in a debug build and wrap in release (the audit's finding).
+    let s = Scratch::new("i32edge");
+    std::fs::write(
+        s.path(),
+        "[mp]\n0x0296 = -2147483648\n0x01b3 = 2147483647\n[av]\n0x0194 = -2147483648\n",
+    )
+    .unwrap();
+    let (opts, warn) = settings::load_opts(&s.path());
+    assert!(warn.is_none(), "an extreme value is out of range, not corrupt: {warn:?}");
+    assert_eq!(opts.get(&0x1000_011c), Some(&-75), "i32::MIN lands on the handicap's −75 end");
+    assert_eq!(opts.get(&0x1000_0128), Some(&1), "i32::MAX → the nearest of On/Off is 1");
+    assert_eq!(opts.get(&0x1000_0135), Some(&0), "i32::MIN clamps the slider to 0");
+}
+
+#[test]
+fn a_trailing_comment_after_a_value_is_not_corrupt() {
+    // The doc's own examples carry `# the row name` after the integer — a hand editor
+    // copying one must not lose the whole file to "corrupt".
+    let s = Scratch::new("comment");
+    std::fs::write(s.path(), "[adv]\n0x0196 = 0 # Vibration\n[av]\n0x0194 = 55 # music\n").unwrap();
+    let (opts, warn) = settings::load_opts(&s.path());
+    assert!(warn.is_none(), "{warn:?}");
+    assert_eq!(opts.get(&0x1000_011a), Some(&0));
+    assert_eq!(opts.get(&0x1000_0135), Some(&55));
+}
+
+#[test]
 fn the_nf_config_dir_override_routes_the_default_path() {
     let s = Scratch::new("env");
     // Tests run with --test-threads=1 (the suite's flag), so the process env is safe here.
