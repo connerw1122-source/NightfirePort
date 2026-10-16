@@ -15860,3 +15860,32 @@ fix_swim_entry_live, fix_swim_vent_live, fix_swim_vent5_live, walkreal_07000005_
 LADDER-02 FINAL SUITE (14:16 UTC): the final-tree fast-runner total `1808 passed, 6 failed,
 72 ignored (42 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes; no
 regressions from the cel-scoped hit-below fix.
+
+## grenade-rattle2 (2026-10-16, branch s/grenade-rattle2) — STARTED
+
+- Task 693's `s/grenade-rattle` was HELD at merge: its own unit test
+  `grenade_sits_after_max_bounces_and_explodes_only_at_the_fuse` failed on the merge tree
+  (grenade.rs:556 — at the bounce max the port kept the velocity, left [0,−30.002722,0] vs the
+  test's [0,0,0]), and the batch listed `fix_grenade_types_live`'s stun whiteout and
+  `fix_weapon_fire_modes_live::grenade_events_match_the_records` as failing too.
+- Re-derived the cap from the DISASSEMBLY (the decomp's `else` was the miss): the gate
+  `sltiu $v1, $v1, 0x14; beqz → 0x12d6a0` [M 0x12d578-0x12d57c] — the branch target is NOT the
+  state write, it is the cap arm `Mat_Align2Dir(obj+0x90, velocity)` + `sw $zero, 0xf8($s0)`
+  [M 0x12d6a0-0x12d6bc]: at the 20th bounce the game aligns the matrix and ZEROES BU+0xF8 with
+  no dot gate. The old test was right; grenade-rattle's "the cap gates the whole arm" reading
+  missed the else. The port's `resting` models the game's zero-speed bullet (the re-normalise
+  pins the move at zero [M 0x12f020-0x12f030]) — the cap arm sets velocity = 0 + resting = true,
+  the fuse keeps counting. The sub-cap arm keeps the rattle's dot-gated reflect (dot > 0 → the
+  gate skips reflect, scale AND zero [M 0x12d5f8 `bc1f 0x12d6c0`]); the slow-bounce zero tail is
+  unchanged [M 0x12d674 `bc1f 0x12d6c0` → 0x12d67c-0x12d69c].
+- The two merge-batch live failures (`the_stun_grenade_whites_bond_out_at_the_games_time_and_alpha`,
+  `grenade_events_match_the_records`) PASS on the merged tree (origin/master a4156da0 merged into
+  origin/s/grenade-rattle e6bc9124) — no action needed.
+- Fixed `crates/nf-game/src/grenade.rs` (the cap arm restored with the disasm-cited comment).
+  Tests before push: nf-game lib grenade filter 12/12 (the cap test green), grenade_rattle_live
+  4/4, grenade_live 2/2, fix_grenade_types_live 3+1 ignored, fix_weapon_fire_modes_live 5/5.
+- FINAL SUITE on the merged tree (17:05 UTC, all 423 binaries, --test-threads=1, per-binary
+  limit 600 s, foreground chunks — the sandbox kills background jobs): `1866 passed, 6 failed,
+  72 ignored` — the 3 allowed disc_golden (slim-ISO LBA columns; the content hashes match) +
+  the 3 pre-existing no-GPU pylon render probes (fix_0c_pylon_live 2, probe_pylon_render 1,
+  `wgpu adapter: NotFound`). No failures from this task. Report: docs/reports/grenade-rattle2.md.
