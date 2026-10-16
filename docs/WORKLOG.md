@@ -14468,3 +14468,25 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   zoom between the weapon's per-weapon min/max zoom range (Player_Weapon zoom input arm / weapon_data zoom
   fields; Micro-Camera uses its own range); wheel keeps switching weapons when aim is not held. Headless
   tests through the window's input path.
+
+## microcam-wheel-zoom (2026-10-16, branch s/microcam-wheel-zoom) — close-out
+- The playtest's wheel zoom: while the right button (aim) is held, a wheel notch steps the zoom
+  target ×2/÷2 within the held weapon's own range [1.0, weapon_data+0x88 — the max Player_Weapon
+  0x1a24c8:156-187 writes to BL+0x8D8]; the ×2 step is the port's own [S] (the game's zoom is
+  continuous — Player_Zoom 0x1a1a70 ramps ×1.025/tick). Zoomable = scope flag +0x68 & 0x40 with a
+  magnification above 1 [L weapon_data: 0x11, 0x1e..0x29, 0x32/0x33, 0x54/0x55, 0x5d/0x5e]. Not
+  right-clicking (or a non-zoomable weapon) → the wheel keeps switching weapons (weapon_cycle).
+- Input.zoom_cycle (nf-game player.rs), local view input — pack_input leaves it OFF the wire (the
+  remote path never runs the zoom pipeline; step_net_remotes ticks Bond::tick_ctx only), so the
+  20-byte lockstep packet is unchanged; unpack/replay yield 0. Sim.zoom_wheel latch: once stepped,
+  the hold-ramp to max yields until the aim falls (target → 1.0 [M the aim-bit arm], latch cleared;
+  the twin-switch zoom reset clears it too). Window routing: wheel_steps_zoom() in lib.rs.
+- Tests: microcam_wheel_zoom_live.rs 4/4 (NF_ISO, real input path: sniper 10-5-2.5 + clamp + latch
+  reset, micro camera 8→1 with the CameraPane-11 bracket gate, weapon switch without aim, the
+  routing predicate on the disc's weapon_data). Runs: nf-game lib 234 + integration (net_session
+  35 — the wire round-trip pins the packet), nf-formats 11/14 (the 3 allowed disc_golden), nf-view
+  lib 15 + 26 live test files incl. net_match_live 3/3 (1000-tick lockstep) and weapon_matrix 6/6.
+  Pre-existing unrelated failure: driving_ai_follow's real-data test on the leftover DRIVING/
+  scratch folder. suite.py not runnable here (background jobs reaped between calls) — flagged in
+  the report.
+- Report: docs/reports/microcam-wheel-zoom.md (two --bond render asks for the main agent).
