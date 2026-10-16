@@ -268,7 +268,7 @@ fn handshake_delivers_settings_seed_and_go() {
     );
     for s in 1..=3u8 {
         assert!(
-            events.iter().any(|e| matches!(e, Event::ClientJoined { slot } if *slot == s)),
+            events.iter().any(|e| matches!(e, Event::ClientJoined { slot, .. } if *slot == s)),
             "host must report ClientJoined slot {s}"
         );
     }
