@@ -213,33 +213,43 @@ fn the_seeded_run_reproduces_bit_for_bit() {
     assert_eq!(run(), run(), "the same load + inputs → the same decals and RNG state");
 }
 
-/// casings-persist: 40 rounds through the real input path. Default (keep = 0) is the game: the
-/// 32-object pool caps the concurrent count (the oldest slots are recycled round-robin [M
-/// 0x12fde0:16-21]) and every casing still despawns at its 240-tick lifetime [M 0x12fc58-94].
-/// With keep = 64 the resting casings are held past that lifetime (the pool grew to 64) and the
-/// pool recycles oldest-first.
+/// casings-persist: 40 rounds through the real input path (fire presses spaced past the weapon's
+/// cycle; `casings.ejected` counts actual slot takeovers). Default (keep = 0) is the game: the
+/// 32-object pool caps the concurrent count (the oldest slots recycle round-robin [M
+/// 0x12fde0:16-21]) and every casing despawns at its 240-tick lifetime [M 0x12fc58-94]. With
+/// keep = 64 the pool grows past the game's cap, the rests are held far past that lifetime and
+/// the pool recycles oldest-first (the game's NextCasing slot order).
 #[test]
 fn forty_rounds_default_caps_at_32_and_keeps_64_holds_the_rest() {
     let Some(iso) = std::env::var("NF_ISO").ok() else { return };
     let mut scene = nf_view::load(&iso, "07000005.bin", false).unwrap();
-    // Phase 1 — the game's default: fire 40 (press/release pairs for the semi-auto), one settled
-    // tick between shots; the casings land (plane ≤ the shooter's feet) and sink as the game's do.
-    let (mut max_alive, cap32) = {
+    // Phase 1 — the game's default: 40 ejects (press for a tick, then 19 settled ticks — the
+    // semi-auto's cycle gates the shot, not the press). The casings land (the plane is at the
+    // shooter's feet) and sink through the floor exactly as the game's do [M: class 0x0d has no
+    // collide handler].
+    let (max_alive, alive_at_40) = {
         let sim = scene.sim.as_mut().unwrap();
         sim.bond.yaw = 0.4;
         sim.bond.pitch = -0.05;
         sim.bond.eye = 0.0;
         let mut max_alive = 0usize;
-        for _ in 0..40 {
+        let mut presses = 0u32;
+        while sim.drones.casings.ejected < 40 && presses < 4000 {
+            // The test's ammo dump: the 100+ round run outfires the loadout — keep the CARRIED
+            // pool topped up (the inventory is the source of truth; gun.clip/spare re-sync from it
+            // every tick [M BLData +0x170/+0x1B8]) so the clip/reload cycle runs, just never dry.
+            let t = sim.weapons.ammo_type(sim.gun.weapon as usize);
+            if let Some(n) = sim.drones.inventory.carried.get_mut(t) { *n = (*n).max(500); }
             sim.step_bond(Input { fire: true, ..Input::default() }, true, false, false);
-            sim.step_bond(Input::default(), false, false, false);
-            let alive = sim.drones.casings.list.iter().filter(|c| c.state != 2).count();
-            max_alive = max_alive.max(alive);
+            for _ in 0..19 { sim.step_bond(Input::default(), false, false, false); }
+            max_alive = max_alive.max(sim.drones.casings.list.iter().filter(|c| c.state != 2).count());
+            presses += 1;
         }
+        assert_eq!(sim.drones.casings.ejected, 40, "40 rounds fired through the real input path");
         (max_alive, sim.drones.casings.list.iter().filter(|c| c.state != 2).count())
     };
     assert!(max_alive <= 32, "the game's pool never exceeds 32 live casings [M 0x12fd48] (peak {max_alive})");
-    assert_eq!(cap32, 32, "40 rounds → the pool holds exactly the newest 32 (keep = 0)");
+    assert!(alive_at_40 <= 32, "40 ejects in a 32-slot pool (early shots may already have despawned)");
     // The lifetime: settle past the last casing's 240 ticks — every slot despawns.
     let drained = {
         let sim = scene.sim.as_mut().unwrap();
@@ -247,22 +257,43 @@ fn forty_rounds_default_caps_at_32_and_keeps_64_holds_the_rest() {
         sim.drones.casings.list.iter().filter(|c| c.state != 2).count()
     };
     assert_eq!(drained, 0, "keep = 0: the 240-tick lifetime kills every casing [M 0x12fc68]");
-    // Phase 2 — keep = 64: 25 more rounds (65 total) in a 64-slot pool; the rests are held and
-    // slot 0 (the oldest) is the one recycled.
-    let (held, slot0, alive_now) = {
+    // Phase 2 — keep = 64. After the drain the eject cursor sits at slot 8 (40 % 32); 64 more
+    // rounds fill EVERY slot of the grown pool exactly once (slots 8..63, then 0..7). Each lands
+    // within a few ticks and RESTS, so all 65 are held far past the 240-tick lifetime (the firing
+    // span alone exceeds it) — the game could never hold more than 32.
+    let (alive65, rest65) = {
         let sim = scene.sim.as_mut().unwrap();
         sim.drones.casings.set_keep(64);
         assert_eq!(sim.drones.casings.list.len(), 64, "set_keep(64) grew the pool");
-        for _ in 0..25 {
+        let mut presses = 0u32;
+        while sim.drones.casings.ejected < 104 && presses < 4000 {
+            let t = sim.weapons.ammo_type(sim.gun.weapon as usize);
+            if let Some(n) = sim.drones.inventory.carried.get_mut(t) { *n = (*n).max(500); }
             sim.step_bond(Input { fire: true, ..Input::default() }, true, false, false);
-            sim.step_bond(Input::default(), false, false, false);
+            for _ in 0..19 { sim.step_bond(Input::default(), false, false, false); }
+            presses += 1;
         }
+        assert_eq!(sim.drones.casings.ejected, 104, "64 more rounds with keep = 64");
         for _ in 0..260 { sim.step_bond(Input::default(), false, false, false); }
         let list = &sim.drones.casings.list;
-        let held = list.iter().filter(|c| c.state != 2 && c.resting).count();
-        (held, list[0].clone(), list.iter().filter(|c| c.state != 2).count())
+        let alive = list.iter().filter(|c| c.state != 2).count();
+        let rest = list.iter().filter(|c| c.state == 0 && c.resting).count();
+        (alive, rest)
     };
-    assert_eq!(alive_now, 64, "the pool holds the newest 64 resting casings (65 fired)");
-    assert_eq!(held, 63, "64 held, one (slot 0) freshly recycled and still flying");
-    assert!(!slot0.resting && slot0.state == 0, "slot 0 flies again — recycled oldest-first");
+    assert_eq!(alive65, 64, "the grown pool holds all 64 resting casings — past the game's 32 cap AND the 240-tick lifetime");
+    assert_eq!(rest65, 64, "every one of them rested on its landing plane");
+    // One more round (the 105th) recycles the OLDEST phase-2 rest: the cursor wraps to slot 8,
+    // the first phase-2 shot's slot — it flies again, its rest gone, and the pool stays at 64.
+    let (alive_after, rest_after, slot8) = {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.step_bond(Input { fire: true, ..Input::default() }, true, false, false);
+        sim.step_bond(Input::default(), false, false, false);
+        let list = &sim.drones.casings.list;
+        (list.iter().filter(|c| c.state != 2).count(),
+         list.iter().filter(|c| c.resting).count(),
+         (list[8].resting, list[8].age))
+    };
+    assert_eq!(alive_after, 64, "the 105th round reused a slot — the pool never exceeds keep");
+    assert_eq!(rest_after, 63, "64 rests minus the recycled slot");
+    assert!(!slot8.0 && slot8.1 <= 3.0, "slot 8 — the pool's oldest slot — flies again, a fresh shot");
 }

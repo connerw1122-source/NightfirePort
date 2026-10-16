@@ -93,6 +93,10 @@ pub struct Casings {
     /// each casing on its landing plane, holding the newest N resting ones (the pool recycles
     /// oldest-first, the game's NextCasing order [M 0x12fde0:16-21]).
     keep: usize,
+    /// Every slot takeover since the pool was created — one per actual eject (the player's
+    /// reserve 0x12fde0 or a guard's `eject_bone` 0x12f678; the mesh-less early returns don't
+    /// take a slot [M 0x12fde0:13-15]). A stat for tests and the eventual options UI.
+    pub ejected: u32,
 }
 
 impl Default for Casings { fn default() -> Self { Self::new() } }
@@ -102,7 +106,7 @@ impl Casings {
         state: 2, delay: 0.0, pos: [0.0; 3], vel: [0.0; 3], spin: [0.0; 3], rot: 0.0, age: 0.0,
         landing_y: 0.0, mesh: 0, material: 0, landed: false, pending: false, local: [0.0; 3],
         resting: false,
-    }).collect(), next: 0, keep: 0 } }
+    }).collect(), next: 0, keep: 0, ejected: 0 } }
 
     /// The PC-port option's current value (0 = the game's behaviour).
     pub fn keep(&self) -> usize { self.keep }
@@ -185,6 +189,7 @@ impl Casings {
             state: 3, delay, pos: origin, vel, spin, rot: 0.0, age: 0.0, landing_y, mesh, material, landed: false,
             pending: false, local, resting: false,
         };
+        self.ejected += 1;
         self.next = (self.next + 1) % self.list.len();
     }
 
@@ -202,6 +207,7 @@ impl Casings {
             landing_y: 0.0, mesh, material: (weapon[0x50] & 0x3f) as u16, landed: false, pending: true,
             local: [f(0xf8), -f(0xfc), f(0x100)], resting: false,
         };
+        self.ejected += 1;
         self.next = (self.next + 1) % self.list.len();
     }
 
