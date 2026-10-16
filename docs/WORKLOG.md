@@ -16706,3 +16706,10 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+- 2026-10-16 s/pause-music-1b (task 740): Music still plays during the pause menu on
+  0700001b (playtest 1016-1355); earlier fixes stopped it on other levels. Plan: find
+  what is different on 1b (the level's music source or stream, a script-driven track,
+  the space ambience) and pause or stop it the way the game's pause does
+  [M the pause entry's music calls]. Test: pausing on 1b silences the level music;
+  unpausing resumes it. Sister: 05 still behaves. Branch created from origin/master
+  f09f3c6c.
