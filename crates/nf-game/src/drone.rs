@@ -5558,6 +5558,11 @@ pub fn level_drones(d: &Data, level: &nf_formats::level::Level, rng: &mut Rng, l
         if p.flags & 0xff == 0x4e { crate::light::placement_light(level, m, i, rng, lights); return None; }
         if p.flags & 0xff != 0x0f { return None; }
         let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map(|&(_, v)| v).unwrap_or(0);
+        // Drone_Create's difficulty gate [M 0x136be0:49]: level_tag+0x34 (param 2) is the
+        // placement's MINIMUM-difficulty tag — the drone spawns iff `param2 <= difficulty`
+        // (u32 compare; the pre-create gate draws no RNG, exactly as the game skips before
+        // `Drone_Create`'s body). docs/fields/level-tag.md's "spawn frame" name is a misread.
+        if param(2) > d.difficulty { return None; }
         let floor = d.world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
         let mut dr = Drone::new(d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, rng);
         dr.placement = i;
@@ -6153,8 +6158,8 @@ impl Drones {
         });
         // The helicopter (`Copter_Create` 0x17d340, placement 0x2F) and the locks (`Lock_Create`
         // 0x1ae1f8, placement 0x2E) (fix-objects2). Neither draws RNG at create.
-        self.copters = crate::copter::Copter::create(&level.maps[m].placements);
-        self.locks = crate::lock::Lock::create(&level.maps[m].placements, |p| {
+        self.copters = crate::copter::Copter::create(&level.maps[m].placements, self.difficulty);
+        self.locks = crate::lock::Lock::create(&level.maps[m].placements, self.difficulty, |p| {
             let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
                 else { level.maps[m].objects.get(p.index as usize) };
             obj.map(|o| (o.centre, o.radius))

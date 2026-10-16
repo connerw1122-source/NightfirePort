@@ -14723,3 +14723,36 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   shipped game's own gap, now logged honestly). Tests: weapon_model_census_live 3/3 (dev-panel
   view models on 07000005/0c/14; the 20-level table through the real merges; the bogus-hash
   sister), weapon_assets_live 5/5. Report: docs/reports/weapon-model-coverage.md.
+## difficulty-effects2 (2026-10-16, branch s/difficulty-effects2) — start
+- Task: land HELD 629 (s/difficulty-effects). Master now has 4108d7b2. Plan: merge origin/s/difficulty-effects,
+  apply the 053 net-match-host load_impl resolution (mp: bool, mp_settings: Option<MpSettings>, difficulty: u32;
+  load_mp_carry passing Some(settings), 1; async load choosing load_mp_carry -> dev -> load_with_carry_difficulty),
+  fix the E0308 in menu.rs (FrontEnd::difficulty is usize, requested_difficulty Option<u32>), then fix the
+  create-time roster gate in drone.rs so the front-end pick reaches the creates (Scene::build hard-codes
+  difficulty: 1 into its Data and set_difficulty runs after the creates), and get the 10 listed failures green
+  with game evidence (decide from the game which difficulty direct-load tests represent; boot default 2 [M 0x1c7e78:25],
+  wrappers keep 1 for replay parity). Full suite on the final tree before push.
+
+## difficulty-effects2 (2026-10-16, branch s/difficulty-effects2) — close-out
+- Landed HELD 629: re-applied by reverting master's revert dc841e30 (the main agent's own merge
+  1e96af8a already carried the 053 net-match-host resolution verbatim: load_impl(.., mp: bool,
+  mp_settings: Option<MpSettings>, difficulty: u32), load_mp_carry passing Some(settings), 1, the
+  async front-end load choosing load_mp_carry -> dev -> load_with_carry_difficulty). The E0308 was
+  already resolved in that content (menu.rs `Some(self.difficulty as u32 + 1)`).
+- THE fix: Scene::build's create-time drone::Data carried a hard-coded `difficulty: 1`, so
+  Drone_Create's gate read 1 on every load and set_difficulty ran after the creates. The game
+  holds the pick in GameState+0x28 before the load's creates [M 0x216ca8:15, 0x136be0:49] — the
+  Data now carries the load's difficulty; difficulty_wiring_live green (00 Agent roster 37).
+- Direct loads keep difficulty 1 (the documented replay parity: the recorded sessions ran at d1).
+  With the gate live that makes the pre-gate calibration roster the 00-Agent one [M 0x136be0:49]:
+  the 07000011 stairwell spawner tests, the searchlights first-shot deferral (the staged danim's
+  remaining script length is draw-stream dependent) and the tower2/13/4a walkthroughs load at 00
+  Agent; the 07000012 keypad locks carry param 6 = 1 — Lock_Create auto-unlocks them at d1
+  [M 0x1ae1f8 tail], so the Q-Decryptor burn is the Agent+ behavior. 07000006's idle gate guard
+  (placement 487) shifts list[15]->list[13] at d1 (six param2=2 creates held back). No assertion
+  weakened; per-test evidence in docs/reports/difficulty-effects2.md.
+- Verified: the 10 held failures + their binaries (29 tests) green; difficulty_gates 3,
+  difficulty_spawn_gate_live 1; suite on the final tree (merged origin/master 6bab6409) ran as
+  foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
+  76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
+  display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
