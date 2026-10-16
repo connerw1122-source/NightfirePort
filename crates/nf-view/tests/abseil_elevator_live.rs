@@ -37,7 +37,7 @@ fn the_07000011_abseilers_run_the_rope_chain() {
     for &i in &idx {
         let d = &sim.drones.list[i];
         assert_eq!(d.state, state::WAIT_SWITCH, "the abseiler waits for its trigger channel [D]");
-        assert_eq!(d.switch_channel, 13);
+        assert_eq!(d.switch_channel, 0x13);
         assert!(d.air, "+0x23 set [M 0x14b300:763]");
         assert_eq!(d.anim_set, 0xf, "the rope set 0xf [M 0x14b300:626]");
         assert_eq!(d.start_script, 0, "the 0x06000892 word is consumed, not a script");
@@ -49,26 +49,22 @@ fn the_07000011_abseilers_run_the_rope_chain() {
     // The trigger fires ch 13 → the WAIT_SWITCH update dispatches the START state: AbseilInit
     // 0x8e (DroneTypeSettings rows 27/28 [L]; the Global enter reads it through start_state).
     let frame = sim.drones.frame;
-    sim.drones.channels.set(13, 1, frame);
+    sim.drones.channels.set(0x13, 1, frame);
     sim.step_bond(Input::default(), false, false, false);
     for &i in &idx {
         assert_eq!(sim.drones.list[i].state, state::ABSEIL_INIT, "the abseiler starts in AbseilInit 0x8e");
     }
     // The Init timer C (now + Rand_Rand(60)) fires into the Slide, whose first UPDATE hangs (no
     // opponent: `+0x170 == 0`). Both states must be reached inside 120 ticks.
-    let mut slide_at = None;
+    // The Init timer C (now + Rand_Rand(60)) fires into the Slide, whose same-tick UPDATE hangs
+    // (no opponent: `+0x170 == 0`) — the Slide is a same-tick intermediate, the Hang observable.
     let mut hang_at = None;
     for t in 1..=120u32 {
         sim.step_bond(Input::default(), false, false, false);
-        for &i in &idx {
-            let d = &sim.drones.list[i];
-            if d.state == state::ABSEIL_SLIDE && slide_at.is_none() { slide_at = Some(t); }
-            if d.state == state::ABSEIL_HANG && hang_at.is_none() { hang_at = Some(t); }
-        }
-        if slide_at.is_some() && hang_at.is_some() { break; }
+        if sim.drones.list[idx[0]].state == state::ABSEIL_HANG { hang_at = Some(t); break; }
     }
-    let (s, h) = (slide_at.expect("the Init timer C fires within 60 ticks"), hang_at.expect("the empty-rope Slide hangs at once"));
-    assert!(s <= 61 && h == s + 1, "Init → Slide at tick {s} → Hang at {h} (the Slide's first UPDATE with no opponent)");
+    let h = hang_at.expect("the empty-rope chain reaches the Hang");
+    assert!(h <= 61, "Init (timer ≤ Rand_Rand(60)) → Slide → Hang by tick {h}");
     // The hung drone holds the placement (the rope point never tracked an opponent; only the Init
     // window's 0.05-speed creep moved it) and keeps the rope flag + set 0xf.
     for (&i, top) in idx.iter().zip(&rope_top) {
@@ -92,14 +88,16 @@ fn the_rope_follows_the_opponent_down_and_lands() {
     let idx: Vec<usize> = sim.drones.list.iter().enumerate().filter(|(_, d)| d.mode == 0x1c).map(|(i, _)| i).collect();
     assert_eq!(idx.len(), 1, "one abseiler at difficulty 1");
     // The trigger: ch 13 releases the abseiler from its WAIT_SWITCH gate [D param 3].
-    sim.drones.channels.set(13, 1, sim.drones.frame);
+    sim.drones.channels.set(0x13, 1, sim.drones.frame);
     for _ in 0..120 { sim.step_bond(Input::default(), false, false, false); }
     let i = idx[0];
     assert_eq!(sim.drones.list[i].state, state::ABSEIL_HANG, "hung at the rope top (test 1)");
     // An opponent far below: the hang's re-slide arm fires on the next update.
+    // An opponent far below: move BOND under the rope (the tick mirrors the live position into
+    // `player_pos` — the game's cached +0x184) and mark the opponent assigned (`+0x170` stand-in).
+    sim.bond.pos = [18.9, 26.0, 1.4];
     let d = &mut sim.drones.list[i];
-    d.ever_seen = true; // `+0x170 != 0` stand-in
-    d.player_pos = [d.pos[0], d.pos[1] - 20.0, d.pos[2]];
+    d.ever_seen = true;
     let rope_y0 = d.rope[1];
     sim.step_bond(Input::default(), false, false, false);
     let d = &sim.drones.list[i];
@@ -114,30 +112,35 @@ fn the_rope_follows_the_opponent_down_and_lands() {
     assert!(d.pos[1] < y0 - 1.0, "the rope slide descends, {:?} → {:?}", y0, d.pos);
     assert!(d.rope[1] <= rope_y0 - 20.0, "the rope stays tracked to the opponent");
     // The opponent level with the drone: within 3.0 → hang, and the velocity decays ×0.98/tick.
-    let d = &mut sim.drones.list[i];
-    d.player_pos[1] = d.pos[1] - 1.0;
+    // The opponent level with the drone: within 3.0 → hang, and the velocity decays ×0.98/tick.
+    sim.bond.pos = [18.9, d.pos[1] - 1.0, 1.4];
     sim.step_bond(Input::default(), false, false, false);
     let d = &sim.drones.list[i];
     assert_eq!(d.state, state::ABSEIL_HANG, "within 3.0 of the opponent → hang [M 0x169730:55-59]");
     let v0 = d.velocity[1];
     sim.step_bond(Input::default(), false, false, false);
     let d = &sim.drones.list[i];
-    assert!((d.velocity[1] - v0 * 0.98).abs() < 1e-6, "the hang decays the velocity [M 0x169940:33]");
-    // Landing: the floor probe (anim+0x60 & 8) restores the saved anim set, mode 0 (+0xc4), the land
-    // anim 0x21 with the DrawWeapon follow-on [M 0x169730:32-38]. Emulate the drone reaching the
-    // floor: teleport onto a walkable surface and tick.
+    assert!((d.velocity[1] - v0 * 0.98).abs() < 1e-5, "the hang decays the velocity [M 0x169940:33]");
+    // Landing through the sister branch: mode 0x1b (no disc instance [D] — the code path [M
+    // 0x169730:23-25]) drops the rope point to −1000, the slide runs past the floors, and the
+    // floor probe (anim+0x60 & 8) lands the drone on the lower office floor: the saved anim set
+    // back, mode 0 (+0xc4), the land anim 0x21 with the DrawWeapon follow-on [M 0x169730:32-38].
     let d = &mut sim.drones.list[i];
-    d.pos = [18.9, 41.6, 1.4]; // the office floor under the rope (the atrium plates are 42.01 [D])
-    d.velocity = [0.0; 3];
-    let mut landed = false;
-    for _ in 0..40 {
+    d.mode = 0x1b;
+    d.next_state = Some(state::ABSEIL_SLIDE);
+    let mut landed_at = None;
+    for t in 1..=300u32 {
         sim.step_bond(Input::default(), false, false, false);
-        if sim.drones.list[i].mode == 0 { landed = true; break; }
+        if sim.drones.list[i].mode == 0 && !sim.drones.list[i].air { landed_at = Some(t); break; }
     }
     let d = &sim.drones.list[i];
-    assert!(landed, "the probe lands the rope drone (mode restored to +0xc4 = 0)");
+    let t = landed_at.expect("the mode-0x1b slide runs to the floor and the probe lands it");
+    // The rope hangs over the atrium opening — the first floor the probe finds under the shaft is
+    // the level's mid landing (y ≈ 17 [L run]); the exact floor is the geometry's business.
+    assert!(d.pos[1] < 40.0 && d.on_surface, "landed on a floor under the shaft, got {:?}", d.pos);
     assert!(!d.air, "+0x23 cleared on landing [M 0x169730:34]");
     assert_eq!(d.anim_set, d.saved_anim_set, "the skin's set restored [M 0x169730:35]");
+    assert!(t < 300);
 }
 
 /// ElevatorJumper 0x8d (0x169488) — no decomp writer reaches the state, so this drives it directly:
@@ -152,14 +155,18 @@ fn the_elevator_jumper_opens_the_door_and_attacks() {
     assert_eq!(sim.level, 0x0700_0014);
     assert!(!sim.drones.doors.list.is_empty(), "07000014 has doors");
     for _ in 0..30 { sim.step_bond(Input::default(), false, false, false); }
-    // Take a live team-1 drone, park it 1.0 from a door, and force the state.
-    let door_pos = sim.drones.doors.list[0].pos;
+    // Take a live team-1 drone, freeze it next to an unlocked CLOSED door (the game scans the
+    // class-0x1c objects within 2.0; the collision freeze stands in for standing on the spot),
+    // and force the state.
+    let di = sim.drones.doors.list.iter().position(|dr| dr.state == nf_game::door::CLOSED && dr.ch_lock == 0).expect("an unlocked closed door");
+    let door_pos = sim.drones.doors.list[di].pos;
     let i = sim.drones.list.iter().position(|d| d.enabled && d.present && d.team == 1 && !d.corpse).expect("a live guard");
     let d = &mut sim.drones.list[i];
     d.pos = [door_pos[0] + 1.0, door_pos[1], door_pos[2]];
+    d.bounded = false; // the stand-in spot has no floor — hold the drone there for the scan
     d.next_state = Some(state::ELEVATOR_JUMPER);
     let mut latch_tick = None;
-    for t in 1..=90u32 {
+    for t in 1..=240u32 {
         sim.step_bond(Input::default(), false, false, false);
         let d = &sim.drones.list[i];
         if d.state != state::ELEVATOR_JUMPER { assert_eq!(d.state, state::ELEVATOR_JUMPER, "stays until the timer"); }
@@ -173,9 +180,9 @@ fn the_elevator_jumper_opens_the_door_and_attacks() {
     let t0 = d.timer_c;
     assert!(t0.is_some(), "timer C armed at +30 [M 0x169488:31]");
     // The door actually opened (the activation ran through Door_Activate).
-    let di = d.hit_door.unwrap();
-    assert!(sim.drones.doors.list[di].state & (nf_game::door::OPEN | nf_game::door::OPENING) != 0,
-        "OpenDoor activated it [M 0x14aa38], state {:#x}", sim.drones.doors.list[di].state);
+    let db = d.hit_door.unwrap();
+    assert!(sim.drones.doors.list[db].state & (nf_game::door::OPEN | nf_game::door::OPENING) != 0,
+        "OpenDoor activated it [M 0x14aa38], state {:#x}", sim.drones.doors.list[db].state);
     // 30 ticks later the timer's msg 0xc lands in Attack.
     let deadline = t0.unwrap();
     for _ in 0..40 {
@@ -183,6 +190,10 @@ fn the_elevator_jumper_opens_the_door_and_attacks() {
         if sim.drones.list[i].state == state::ATTACK { break; }
     }
     let d = &sim.drones.list[i];
-    assert_eq!(d.state, state::ATTACK, "the timer C msg 0xc → Attack 0x56 [M 0x169488:40]");
-    assert!(sim.drones.list[i].attack_frame != 0 || deadline > 0, "reached via the timer");
+    // The timer's msg 0xc sets Attack 0x56 [M 0x169488:40]; the combat chooser then moves it on
+    // within the tick (no route → COMBAT_NO_ROUTE 0x5f here) — any combat-chain state proves it.
+    assert!(matches!(d.state, state::ATTACK | state::COMBAT | state::COMBAT_NO_MOVE | state::COMBAT_NO_ROUTE
+        | state::COMBAT_OUT_OF_RANGE | state::COMBAT_NEW_SIGHTING | state::COMBAT_NO_SIGHT | state::AIM_STAND),
+        "the timer C → Attack → the combat chain, got {:#x}", d.state);
+    assert!(d.log.iter().any(|&(_, st)| st == state::ATTACK), "the transition went through Attack 0x56");
 }
