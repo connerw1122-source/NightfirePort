@@ -15593,3 +15593,21 @@ must be faded/off those actors when it plays.
   count, a few at most), none once it rests; sister: a grenade thrown at a wall still sounds on
   impact.
 - Started: branch created from origin/master (22be196b); fast suite launching in the background.
+- grenade-rattle close-out: the game's bounce block verified on the disassembly [M 0x12ce80
+  0x12d4bc-0x12d640]: the sound gate (flash 0x15 / smoke 0x13 first-bounce-only, else 0x51c on
+  EVEN pre-increment counters < 0xF — ≤ 8 per grenade, gain 100.0), the counter BU+0x100 capping
+  the reflect at 20, the slow-bounce zero (speed·coeff < FRAME_RATE_MUL·0.01 [L 0x30d0d4 = 1.0] →
+  BU+0xF8 = 0), the DOT GATE on the reflect (a separating contact parks + counts only), and the
+  park BEFORE the reflect. The hittest's TWO FORMS apply to EVERY bullet [M 0x12e7b0:427-437 —
+  the family test only zeroes the probe radius for the MGL; the port's old move-length ray for the
+  bouncing family was [S] and wrong] — the grenade family (0.25 probe) now gets the 0x101 sphere
+  below probe·0.5 and the 0x201 ray max(1.0, move) — the settled grenade re-contacts every tick,
+  the counter climbs, and the parity cap silences it within ≤ 15 contacts (the game's settle
+  "brrrp" then silence; the micro-bounce cycle rides ~0.04 above the floor until the fuse).
+  WldGravity (0,−9.8,0) [L ee_snapshot.bin 0x2d8890], FRAME_RATE_DIV 1.0 / REC_FRAME_RATE 1/60
+  [L 0x30d0d4/0x30d0dc] — the port's constants exact. The port's parity gate (drone.rs Bounce
+  arm) already matched [M]; the rattle's mechanics were the unconditional reflect + the missing
+  forms. Tests grenade_rattle_live (drop/lob/wall/skim on 07000005 through the real sim):
+  ≤ 8 bounce sounds, silence after t60, the wall impact sounds. ai_live 35/35, grenade_live 2/2.
+  Full fast suite NOT run (deadline): the touched crate's live tests green. Report:
+  docs/reports/grenade-rattle.md.

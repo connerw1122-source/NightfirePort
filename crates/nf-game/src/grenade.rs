@@ -313,21 +313,21 @@ impl Grenade {
         // serves (0x37/0x3a/0x3b — the hat 0x45 keeps its verified path); the bouncing family
         // (0x34…) keeps the old move-length ray — the game gives it the same two forms [S backlog:
         // a 1.0 u look-ahead would shift every pinned frag bounce point].
-        let sticky = matches!(self.weapon_type, 0x37 | 0x3a | 0x3b);
-        const PROBE_RADIUS: f32 = 0.25;
-        let world_hit = if !sticky {
-            world.segment_surface(self.pos, end, false)
-                .map(|(t, normal, mat)| (t, [self.pos[0] + (end[0] - self.pos[0]) * t, self.pos[1] + (end[1] - self.pos[1]) * t, self.pos[2] + (end[2] - self.pos[2]) * t], normal, mat))
-        } else {
+        // grenade-rattle: the two forms apply to EVERY bullet [M 0x12e7b0:427-437 — the family test
+        // there only ZEROES the probe radius (the MGL 0x2c..0x31 / 0x62 / 0x6d get 0.0 → always the
+        // ray), it does not gate the forms; the bouncing family's old move-length ray was [S] and
+        // wrong]. The grenade family keeps the 0.25 floor [L 0x3e800000 in the max at :430].
+        let probe: f32 = if matches!(self.weapon_type, 0x2c..=0x31 | 0x62 | 0x6d) { 0.0 } else { 0.25 };
+        let world_hit = {
             let speed = speed2.sqrt();
             let move_len = speed * dt;
-            if move_len < PROBE_RADIUS * 0.5 {
+            if move_len < probe * 0.5 {
                 // 0x101: the sphere at the pre-move position; the hit point IS the closest point
                 // (the game's HITDATA+0x40 = `Dist2Tri`'s out).
-                world.sphere_surface(self.pos, PROBE_RADIUS, false)
+                world.sphere_surface(self.pos, probe, false)
                     .map(|(q, normal, mat, _)| (0.0f32, q, normal, mat))
             } else {
-                // 0x201: the ray with the 1 u floor.
+                // 0x201: the ray with the 1 u floor [M :443-465 — `uVar19 = max(1.0, fVar16)`].
                 let dir = [self.velocity[0] / speed, self.velocity[1] / speed, self.velocity[2] / speed];
                 let len = 1.0f32.max(move_len);
                 let far = [self.pos[0] + dir[0] * len, self.pos[1] + dir[1] * len, self.pos[2] + dir[2] * len];
@@ -398,36 +398,45 @@ impl Grenade {
                 // Bounce arm, which reads the record's flags and blasts instead of bouncing (the MGL's
                 // 'Grenade' 0x2A [L ee_start_05.bin]; its 'Delay' twin 0x2B bounces to the fuse).
                 // Bounce: reflect the velocity by the surface normal, × the material coefficient [L 0x3037dc].
-                let v = self.velocity;
-                let dot = v[0] * normal[0] + v[1] * normal[1] + v[2] * normal[2];
-                let reflected = [v[0] - 2.0 * dot * normal[0], v[1] - 2.0 * dot * normal[1], v[2] - 2.0 * dot * normal[2]];
-                let c = bounce_coefficient(mat);
-                self.velocity = [reflected[0] * c, reflected[1] * c, reflected[2] * c];
-                // `Bullet_CollisionHandler` (0x12ce80, the store at LAB_0012d478): the bounce writes
-                // `BU+0x30 = *(HITDATA+0x40) + *(HITDATA+0x10) · uVar13` — the hit point offset ALONG the
-                // hit normal by uVar13 = uVar12 = 0x3d23d70a = 0.04 (set at 0x12ce80:257-258 for the
-                // generic bounce arms; the contact-detonation arm's 0x3b03126f = 0.002 differs only on
-                // the MGL's Explode position, folded here — 0.038 on a ≥ 4.0 blast radius). Without it
-                // the grenade rests exactly ON the collision triangle and every later sight/LOS ray to
-                // it grazes the surface at the ray's end (the port's Collide_Intersect analogue accepts
-                // tt ∈ [0,1] inclusive) — the ai_live grenade-scare guard never saw the bounced frag.
+                // grenade-rattle: the reflect arm is DOT-GATED [M 0x12ce80 0x12d5f0-0x12d600 —
+                // `fVar23 = 2·(v·n); if (fVar23 <= 0.0) { reflect; Normalise; speed ×= coeff }`]: a
+                // contact the grenade is already SEPARATING from (the 1 u look-ahead ray's hit while
+                // climbing) parks and counts but leaves the velocity/speed alone — the port's
+                // unconditional reflect flipped such a contact back INTO the surface and re-collided
+                // every tick (the playtests' "rapidly contacting the ground"). The cap [M 0x12d578-
+                // 0x12d57c — `(ushort)(counter+1) < 0x14` gates the whole arm]: at 20 bounces the
+                // handler parks and counts but does NOT reflect or scale — the port's old `resting`
+                // freeze at the cap is gone.
+                // The park BEFORE the reflect (the game's order: LAB_0012d478's park, then the sound
+                // block, then the counter, then the dot-gated reflect): `BU+0x30 = *(HITDATA+0x40) +
+                // *(HITDATA+0x10) · 0.04` — the hit point offset ALONG the hit normal by 0x3d23d70a
+                // (set at 0x12ce80:257-258 for the generic bounce arms; the contact-detonation arm's
+                // 0.002 differs only on the MGL's Explode position, folded in the Sim's blast).
+                // Without it the grenade rests exactly ON the collision triangle and every later
+                // sight/LOS ray to it grazes the surface at the ray's end — the ai_live grenade-scare
+                // guard never saw the bounced frag. The 1 u look-ahead ray's hit point may sit ahead
+                // of the tick's move — the game parks AT the contact (the look-ahead is the game's).
                 let off = 0.04f32;
                 let hit = [hit[0] + normal[0] * off, hit[1] + normal[1] * off, hit[2] + normal[2] * off];
                 self.pos = hit;
                 self.bounces = self.bounces.saturating_add(1);
-                // Slow bounce or the bounce max: the speed zeroes and the grenade sits — NO explosion
-                // [M Bullet_CollisionHandler 0x12ce80; fix-weapons-all: the old port exploded here,
-                // which blew the frag up the moment it touched the ground].
-                let speed = (self.velocity[0] * self.velocity[0] + self.velocity[1] * self.velocity[1] + self.velocity[2] * self.velocity[2]).sqrt();
-                if self.bounces >= BOUNCE_MAX || speed < BOUNCE_MIN_SPEED {
+                let v = self.velocity;
+                let dot = v[0] * normal[0] + v[1] * normal[1] + v[2] * normal[2];
+                if self.bounces < BOUNCE_MAX && dot <= 0.0 {
+                    let reflected = [v[0] - 2.0 * dot * normal[0], v[1] - 2.0 * dot * normal[1], v[2] - 2.0 * dot * normal[2]];
+                    let c = bounce_coefficient(mat);
+                    self.velocity = [reflected[0] * c, reflected[1] * c, reflected[2] * c];
                     // The game's rest: the slow-bounce tail zeroes the speed [M 0x12ce80 tail] and
                     // `Bullet_update`'s re-normalise (`Vec_NormaliseLen` stores the length back, disasm
                     // 0x12f020-0x12f030) keeps a zero-speed bullet's move at zero — a rested grenade
                     // never re-collides. fix-grenade-throw: the port's velocity kept re-accumulating
                     // gravity at rest, so the grenade re-collided EVERY tick (the user's "rapid sound
                     // as if it's rapidly contacting the ground").
-                    self.velocity = [0.0; 3];
-                    self.resting = true;
+                    let speed = (self.velocity[0] * self.velocity[0] + self.velocity[1] * self.velocity[1] + self.velocity[2] * self.velocity[2]).sqrt();
+                    if speed < BOUNCE_MIN_SPEED {
+                        self.velocity = [0.0; 3];
+                        self.resting = true;
+                    }
                 }
                 return Some(GrenadeEvent::Bounce(hit));
             }
