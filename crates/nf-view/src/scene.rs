@@ -4503,10 +4503,29 @@ pub struct CharVertex {
 /// Per-vertex GPU skinning data (`Scene::skin_layout`); world vertices carry `a = u32::MAX` (static).
 #[repr(C)]
 #[derive(Clone, Copy, bytemuck::Pod, bytemuck::Zeroable)]
-pub struct SkinAttr { pub a: u32, pub b: u32, pub w: f32, pub col: u32 }
+pub struct SkinAttr { pub a: u32, pub b: u32, pub w: f32, pub col: u32,
+    /// fix-gpu-facial-morphs (`SkinIt` 0x10bf30:90-116): the vertex's morph-target element base in
+    /// the concatenated per-character target buffer (char target base + morph·3), −1 = no morph
+    /// (non-character verts, no targets, facial count 0, or a negative morph index — the game's
+    /// `*(short*)(vert+6) != -1` gate).
+    pub mtb: i32,
+    /// This character's facial-weight block base, in vec4s of the weight buffer (`mwb + m/4`,
+    /// lane `m%4` — `AnimObjectDraw` 0x1c4490:147-152 marshals the weights from animobj+0xb0).
+    pub mwb: u32,
+    /// The character's facial channel count (the skin's +0x12 facial count — `Morph_Count`).
+    pub cnt: u32,
+    /// The character's target block end (exclusive element index) — the per-channel bound the
+    /// game's count-bounded loop gives (`f32_at`'s `o + 12 > len` skip in `morph_vertex`).
+    pub tend: u32 }
 
 /// The palette / colour-table layout of `Scene::skin_layout`.
-pub struct SkinLayout { pub char_base: Vec<u32>, pub attach_base: u32, pub sl_base: u32, pub door_base: u32, pub pick_base: u32, pub n_mats: u32, pub col_att: u32, pub col_pick: u32, pub col_sl: u32, pub col_one: u32 }
+pub struct SkinLayout { pub char_base: Vec<u32>, pub attach_base: u32, pub sl_base: u32, pub door_base: u32, pub pick_base: u32, pub n_mats: u32, pub col_att: u32, pub col_pick: u32, pub col_sl: u32, pub col_one: u32,
+    /// fix-gpu-facial-morphs: the per-character facial-weight block stride, in vec4s (the widest
+    /// facial count across the characters, rounded up; 0 = the scene has no morph bearer).
+    pub wt_stride: u32,
+    /// Total morph-target f32 elements across the characters in character order (the GPU target
+    /// buffer's size; equals `morph_target_blob().len() / 4`).
+    pub n_tgt: u32 }
 
 /// One frame's pose state (`Scene::frame_state`).
 pub struct FrameState {
@@ -6963,15 +6982,14 @@ impl Scene {
     pub fn animate(&self, choice: Option<usize>, ticks: f32, opts: ViewOpts) -> Vec<[f32; 3]> {
         let FrameState { posed, attach, hidden } = self.frame_state(choice, ticks, opts);
         let hidden = |_: &Character, ci: usize| hidden[ci];
-        // fix-facial2: the morph weights per morph-bearing script character (the ledge dialogue's
-        // face track), computed once per frame — `SkinIt` 0x10bf30 consumes them per vertex.
-        // fix-facial3: drone-backed characters are gated OUT until the GPU half (the report's item
-        // 3) lands — the driver's face window is live from tick 0 and the weights-as-morph term on
-        // the CPU path alone broke the gpu_palette oracle (0.0033 > 1e-3 on 07000006, exactly the
-        // morph delta the shader does not apply yet). The weights source itself stays live and
-        // tested (facial3_live's driver test reads facial_weights_at directly).
+        // fix-facial2: the morph weights per morph-bearing character right now — the face-track
+        // window sampled at the object's frame (`SkinIt` 0x10bf30 consumes them per vertex).
+        // fix-facial3's CPU-only gate is LIFTED here (its item 3): the GPU half landed with
+        // fix-gpu-facial-morphs — the shader adds the same term from the same weight source, so
+        // including the drone-backed characters keeps the two paths identical (the gpu_palette
+        // oracle 0.0033 disagreement the gate was avoiding is exactly the term both now apply).
         let facial: Vec<Option<Vec<f32>>> = self.characters.iter().enumerate().map(|(ci, c)| {
-            if c.morph_targets.is_some() && c.script.is_some() { self.facial_weights_at(ci, c) } else { None }
+            if c.morph_targets.is_some() { self.facial_weights_at(ci, c) } else { None }
         }).collect();
         self.char_verts.iter().map(|v| {
             // Searchlight parts: the simulation's matrices (`Searchlight_Update`), coronas as camera billboards
@@ -7065,6 +7083,18 @@ impl Scene {
         let mut char_base = Vec::with_capacity(self.characters.len());
         let mut n = 0u32;
         for c in &self.characters { char_base.push(n); n += 1 + c.skeleton.bones as u32; }
+        // fix-gpu-facial-morphs: the morph layout — per-character weight blocks (a fixed stride =
+        // the widest facial count in vec4s) and the concatenated target element ranges in
+        // character order (`morph_target_blob`'s layout). A scene with no morph bearer gets
+        // stride 0 and every attr's mtb −1 (the shader's morph term is skipped).
+        let wt_stride = self.characters.iter().map(|c| c.skin.facial as usize).max()
+            .map_or(0, |m| m.div_ceil(4)) as u32;
+        let mut n_tgt = 0u32;
+        let mut tgt_base = Vec::with_capacity(self.characters.len());
+        for c in &self.characters {
+            tgt_base.push(n_tgt);
+            n_tgt += c.morph_targets.as_ref().map_or(0, |t| (t.len() / 4) as u32);
+        }
         let max_of = |f: &dyn Fn(&CharVertex) -> Option<u32>| self.char_verts.iter().filter_map(|v| f(v)).max().map_or(0, |m| m + 1);
         let n_sl = max_of(&|v| v.searchlight.map(u32::from));
         let n_door = max_of(&|v| v.door.map(u32::from));
@@ -7084,7 +7114,7 @@ impl Scene {
         let col_sl = col_pick + n_pick;
         let col_one = col_sl + n_sl;
         let attrs = self.char_verts.iter().map(|v| {
-            let one = |m: u32, col: u32| SkinAttr { a: m, b: m, w: 1.0, col };
+            let one = |m: u32, col: u32| SkinAttr { a: m, b: m, w: 1.0, col, mtb: -1, mwb: 0, cnt: 0, tend: 0 };
             if let Some(sl) = v.searchlight { return one(sl_base + sl as u32, col_sl + sl as u32); }
             if let Some(pk) = v.pickup { return one(pick_base + pk as u32, col_pick + pk as u32); }
             if let Some(dr) = v.door { return one(door_base + dr as u32, col_one); }
@@ -7092,13 +7122,59 @@ impl Scene {
             let c = &self.characters[v.character as usize];
             let base = char_base[v.character as usize];
             let bone = |s: u16| c.slot_bones.get(s as usize).filter(|&&b| (b as u32) < c.skeleton.bones as u32).map(|&b| base + 1 + b as u32);
+            // fix-gpu-facial-morphs: the character branch also carries the morph plumbing —
+            // `SkinIt` 0x10bf30:90 gates on the vertex's morph index (−1 = none) and the object's
+            // Morph_Count; the target block is this character's [tgt_base, tgt_base + len). The
+            // single-bone/no-bone fallbacks keep the same plumbing (the game's SkinIt morphs every
+            // vertex carrying a morph index, before any skinning); `one()`'s mtb −1 stays only on
+            // the non-character verts (searchlights, doors, pickups, attachments).
+            let (mtb, mwb, cnt, tend) = {
+                let tb = tgt_base[v.character as usize];
+                let tlen = c.morph_targets.as_ref().map_or(0, |t| (t.len() / 4) as u32);
+                let ok = tlen > 0 && c.skin.facial > 0 && v.morph >= 0;
+                (if ok { (tb + (v.morph as u32) * 3) as i32 } else { -1 },
+                 (v.character as u32) * wt_stride,
+                 if ok { c.skin.facial as u32 } else { 0 },
+                 tb + tlen)
+            };
+            let one_char = |m: u32| SkinAttr { a: m, b: m, w: 1.0, col: v.character, mtb, mwb, cnt, tend };
             match (bone(v.slots[0]), bone(v.slots[1])) {
-                (Some(a), Some(b)) => SkinAttr { a, b, w: v.weight, col: v.character },
-                (Some(a), None) => one(a, v.character),
-                _ => one(base, v.character),
+                (Some(a), Some(b)) => SkinAttr { a, b, w: v.weight, col: v.character, mtb, mwb, cnt, tend },
+                (Some(a), None) => one_char(a),
+                _ => one_char(base),
             }
         }).collect();
-        (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_sl, col_one }, attrs)
+        (SkinLayout { char_base, attach_base, sl_base, door_base, pick_base, n_mats, col_att, col_pick, col_sl, col_one, wt_stride, n_tgt }, attrs)
+    }
+
+    /// fix-gpu-facial-morphs: the morph targets of every character, concatenated in character order
+    /// (the GPU target buffer's contents; `skin_layout`'s `n_tgt` element ranges index it). Static
+    /// per scene — the MORPH_DATA blocks never change at runtime.
+    pub fn morph_target_blob(&self) -> Vec<u8> {
+        let mut out = Vec::new();
+        for c in &self.characters { out.extend_from_slice(c.morph_targets.as_deref().unwrap_or(&[])); }
+        out
+    }
+
+    /// fix-gpu-facial-morphs: one frame's facial morph weights, laid out for the GPU weight buffer
+    /// — per character a `SkinLayout::wt_stride`-vec4 block (`mwb`), `skin.facial` live floats
+    /// then zeros (`AnimFacialBlend` 0x1be648's array at animobj+0xb0, which `AnimObjectDraw`
+    /// 0x1c4490:147-152 marshals into `Morph_Weight` for `SkinIt`). Characters with no live
+    /// window stay zero (the game's Morph_Count gate) — the shader adds nothing. The drone-backed
+    /// characters are INCLUDED (the un-gate this fix lands with the GPU half — fix-facial3's
+    /// item 3): `facial_weights_at` reads their own playing script's face window.
+    pub fn skin_morph_weights(&self, l: &SkinLayout) -> Vec<f32> {
+        let stride = l.wt_stride as usize * 4;
+        if stride == 0 { return Vec::new(); }
+        let mut out = vec![0.0f32; self.characters.len() * stride];
+        for (ci, c) in self.characters.iter().enumerate() {
+            if c.skin.facial == 0 { continue; }
+            if let Some(w) = self.facial_weights_at(ci, c) {
+                let n = w.len().min(stride);
+                out[ci * stride..ci * stride + n].copy_from_slice(&w[..n]);
+            }
+        }
+        out
     }
 
     /// The frame's resolved lights for the renderer: the sim's `LightList` with the kind-2

@@ -36,17 +36,44 @@ struct U { vp: mat4x4<f32>, fog: vec4<f32>, fogk: vec4<f32>, lp0: vec4<f32>, lp1
 // G-043 GPU skinning: the frame's matrix palette and colour table (`Scene::skin_palette`).
 @group(0) @binding(1) var<storage, read> pal: array<mat4x4<f32>>;
 @group(0) @binding(2) var<storage, read> cols: array<vec4<f32>>;
+// fix-gpu-facial-morphs (`SkinIt` 0x10bf30:88-118): the per-character facial-weight blocks
+// (`SkinAttr.mwb`, `wt_stride` vec4s each — `AnimFacialBlend` 0x1be648's array at animobj+0xb0)
+// and the concatenated MORPH_DATA targets (f32 triplets, `parsemap_block_morph_data` 0x1d23e8;
+// each character's block is [attr.mtb .. attr.tend)).
+@group(0) @binding(3) var<storage, read> wts: array<vec4<f32>>;
+@group(0) @binding(4) var<storage, read> mtg: array<f32>;
 @group(1) @binding(0) var tex: texture_2d<f32>;
 @group(1) @binding(1) var samp: sampler;
 struct VO { @builtin(position) p: vec4<f32>, @location(0) uv: vec2<f32>, @location(1) c: vec4<f32>, @location(2) d: f32 };
+// `SkinIt` 0x10bf30's morph term, before the skinning: pos += Σ_m weight[m] × target[morph + m],
+// the 12-byte reads as three f32; the game marshals the weights with an identity Morph_Index
+// (`AnimObjectDraw` 0x1c4490:150), so channel m reads target base + (morph + m)·12. Channels
+// past the character's target block contribute nothing (the count-bounded loop — `morph_vertex`).
+fn morph_pos(p0: vec3<f32>, mtb: i32, mwb: u32, cnt: u32, tend: u32) -> vec3<f32> {
+    var pos = p0;
+    if (mtb >= 0 && cnt > 0u) {
+        for (var m: u32 = 0u; m < cnt; m = m + 1u) {
+            let w = wts[mwb + m / 4u][m % 4u];
+            if (w != 0.0) {
+                let e = u32(mtb) + m * 3u;
+                if (e + 2u < tend) { pos = pos + w * vec3<f32>(mtg[e], mtg[e + 1u], mtg[e + 2u]); }
+            }
+        }
+    }
+    return pos;
+}
 @vertex fn vs(@location(0) p0: vec3<f32>, @location(1) uv: vec2<f32>, @location(2) c0: vec4<f32>,
-              @location(3) sa: vec2<u32>, @location(4) sw: f32, @location(5) sc: u32, @location(6) n0: vec4<f32>) -> VO {
+              @location(3) sa: vec2<u32>, @location(4) sw: f32, @location(5) sc: u32, @location(6) n0: vec4<f32>,
+              @location(7) mtb: i32, @location(8) mm: vec2<u32>, @location(9) tend: u32) -> VO {
     var o: VO;
     var p = p0;
     var c = c0;
     // Skinned (a != 0xFFFFFFFF): w*(P[a]*p) + (1-w)*(P[b]*p), and the object's TAmbient multiplier.
     if (sa.x != 0xffffffffu) {
-        let q = vec4<f32>(p0, 1.0);
+        // fix-gpu-facial-morphs: the morph term goes on the source position BEFORE the palette
+        // blend — the game's order (`SkinIt` 0x10bf30 runs the Morph_Weight loop over the vertex
+        // stream, then the VU1 skinning macro).
+        let q = vec4<f32>(morph_pos(p0, mtb, mm.x, mm.y, tend), 1.0);
         p = sw * (pal[sa.x] * q).xyz + (1.0 - sw) * (pal[sa.y] * q).xyz;
         // fix-searchlight-remainder: the colour table's .a now carries the searchlight corona's alpha
         // byte (obj+0x106 / 255) — every other slot keeps 1.0, so this multiply changes only the
@@ -247,6 +274,10 @@ pub struct Renderer {
     pal_buf: wgpu::Buffer,
     col_buf: wgpu::Buffer,
     pub skin_layout: crate::scene::SkinLayout,
+    /// fix-gpu-facial-morphs: the per-character facial-weight blocks (per frame) and the static
+    /// morph-target buffer.
+    wts_buf: wgpu::Buffer,
+    mtg_buf: wgpu::Buffer,
     /// The frame's lights, resolved (kind-2 positions against their parts). Per draw the renderer
     /// picks the ≤2 closest within the draw's bounding sphere (`Lights_CalcClosestLights`
     /// 0x1cb2e0 / `psiLight_SetLights` 0x10e588) into the draw's uniform slot.
@@ -304,7 +335,10 @@ impl Renderer {
                 count: None,
             },
             wgpu::BindGroupLayoutEntry { binding: 1, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
-            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None }],
+            wgpu::BindGroupLayoutEntry { binding: 2, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            // fix-gpu-facial-morphs: the facial-weight blocks and the MORPH_DATA targets.
+            wgpu::BindGroupLayoutEntry { binding: 3, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None },
+            wgpu::BindGroupLayoutEntry { binding: 4, visibility: wgpu::ShaderStages::VERTEX, ty: wgpu::BindingType::Buffer { ty: wgpu::BufferBindingType::Storage { read_only: true }, has_dynamic_offset: false, min_binding_size: None }, count: None }],
         });
         let tbgl = device.create_bind_group_layout(&wgpu::BindGroupLayoutDescriptor {
             label: None,
@@ -353,7 +387,7 @@ impl Renderer {
                     }), Some(wgpu::VertexBufferLayout {
                         array_stride: std::mem::size_of::<crate::scene::SkinAttr>() as u64,
                         step_mode: wgpu::VertexStepMode::Vertex,
-                        attributes: &wgpu::vertex_attr_array![3 => Uint32x2, 4 => Float32, 5 => Uint32],
+                        attributes: &wgpu::vertex_attr_array![3 => Uint32x2, 4 => Float32, 5 => Uint32, 7 => Sint32, 8 => Uint32x2, 9 => Uint32],
                     })],
                 },
                 primitive: wgpu::PrimitiveState { cull_mode: None, ..Default::default() },
@@ -413,10 +447,18 @@ impl Renderer {
         let (skin_layout, char_attrs) = scene.skin_layout();
         let pal_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("palette"), size: (skin_layout.n_mats.max(1) as u64) * 64, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
         let col_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("colours"), size: (skin_layout.col_one as u64 + 1) * 16, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        // fix-gpu-facial-morphs: the per-character facial-weight blocks (written each frame in
+        // `update_skin`) and the scene's concatenated MORPH_DATA targets (static). A scene with no
+        // morph bearer gets 16-byte dummies (a zero-size storage binding is a create error) — the
+        // attrs' mtb −1 keeps the shader off them.
+        let wts_buf = device.create_buffer(&wgpu::BufferDescriptor { label: Some("morph weights"), size: ((skin_layout.wt_stride as u64 * scene.characters.len() as u64) * 16).max(16), usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
+        let blob = scene.morph_target_blob();
+        let mtg_contents = if blob.is_empty() { vec![0u8; 16] } else { blob };
+        let mtg_buf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: Some("morph targets"), contents: &mtg_contents, usage: wgpu::BufferUsages::STORAGE | wgpu::BufferUsages::COPY_DST });
         let slots = (scene.materials.len() + 2) as u64;
         let make_uniform = || {
             let buf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: UNIFORM_SLOT as u64 * slots, usage: wgpu::BufferUsages::UNIFORM | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
-            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &ubgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buf, offset: 0, size: Some(std::num::NonZero::new(UNIFORM_SLOT as u64).unwrap()) }) }, wgpu::BindGroupEntry { binding: 1, resource: pal_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: col_buf.as_entire_binding() }] });
+            let bg = device.create_bind_group(&wgpu::BindGroupDescriptor { label: None, layout: &ubgl, entries: &[wgpu::BindGroupEntry { binding: 0, resource: wgpu::BindingResource::Buffer(wgpu::BufferBinding { buffer: &buf, offset: 0, size: Some(std::num::NonZero::new(UNIFORM_SLOT as u64).unwrap()) }) }, wgpu::BindGroupEntry { binding: 1, resource: pal_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 2, resource: col_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 3, resource: wts_buf.as_entire_binding() }, wgpu::BindGroupEntry { binding: 4, resource: mtg_buf.as_entire_binding() }] });
             (buf, bg)
         };
         let (uniform, uniform_bg) = make_uniform();
@@ -485,7 +527,7 @@ impl Renderer {
         let mut verts = scene.vertices.clone();
         for (v, cv) in verts[scene.char_vertex_start..].iter_mut().zip(&scene.char_verts) { v.pos = cv.pos; }
         let vbuf = device.create_buffer_init(&wgpu::util::BufferInitDescriptor { label: None, contents: bytemuck::cast_slice(&verts), usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST });
-        let stat = crate::scene::SkinAttr { a: u32::MAX, b: u32::MAX, w: 1.0, col: 0 };
+        let stat = crate::scene::SkinAttr { a: u32::MAX, b: u32::MAX, w: 1.0, col: 0, mtb: -1, mwb: 0, cnt: 0, tend: 0 };
         let mut attrs = vec![stat; scene.char_vertex_start];
         attrs.extend_from_slice(&char_attrs);
         attrs.resize(verts.len(), stat);
@@ -531,7 +573,7 @@ impl Renderer {
         // movies.md §Presentation], so the quad draws BEFORE the HUD runs (under the page
         // controls); state 6 suppresses the overlay while its movie plays, so the draw position
         // is equivalent there.
-        Renderer { woman_tex, snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, skin_layout, lights: Default::default(), screen_aspect: 0.0, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
+        Renderer { woman_tex, snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, wts_buf, mtg_buf, skin_layout, lights: Default::default(), screen_aspect: 0.0, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
     }
 
     /// The game's depth-0 pyramid for the walk [M `Vision_Calculate_View_Fustrum` 0x1e7df8,
@@ -605,6 +647,14 @@ impl Renderer {
         let (pal, cols) = scene.skin_palette(&self.skin_layout, choice, time, opts, vis);
         if !pal.is_empty() { queue.write_buffer(&self.pal_buf, 0, bytemuck::cast_slice(&pal)); }
         queue.write_buffer(&self.col_buf, 0, bytemuck::cast_slice(&cols));
+        self.upload_morph_weights(queue, scene);
+    }
+
+    /// fix-gpu-facial-morphs: one frame's facial morph weights into the weight buffer (the GPU half
+    /// of `SkinIt` 0x10bf30's Morph_Weight marshalling). No-op on scenes without morph bearers.
+    pub fn upload_morph_weights(&self, queue: &wgpu::Queue, scene: &Scene) {
+        let wts = scene.skin_morph_weights(&self.skin_layout);
+        if !wts.is_empty() { queue.write_buffer(&self.wts_buf, 0, bytemuck::cast_slice(&wts)); }
     }
 
     /// Upload an already-built (possibly interpolated) palette and colour table.
