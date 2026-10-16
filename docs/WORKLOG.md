@@ -15582,3 +15582,14 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+
+## guards-0c (2026-10-16, branch s/guards-0c) — start
+- Task 698: the 0700000c guards' AI and walking (playtests 1012-1723 / 1012-2105: "All of the AI in
+  this level is bugged as hell. The walking animation is kind of fucked too."). List every 0c drone
+  at start and over 1800 ticks: class, state transitions, route, the anim sequence and frame per
+  tick; compare against the game's route/patrol data and the NDrone2 state machine; find stuck
+  states, walk anims that don't match their speed (foot sliding — the anim rate vs the move
+  speed), route nodes they never reach. Fix the sim side with evidence; table before/after. Tests:
+  each patrol guard completes its route loop within the game's period, with the walk anim rate
+  tied to its speed.
+- Started: branch created from origin/master (22be196b); the fast suite launching in the background.
