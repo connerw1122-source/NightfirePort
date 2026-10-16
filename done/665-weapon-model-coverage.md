@@ -22,3 +22,8 @@ Data only: the main agent checks the look.
 
 ---
 claimed-by: sandbox7 at 2026-10-16T05:18Z
+
+---
+## Report (done, 2026-10-16T06:28Z)
+
+Closed by the driver: the report is on `s/weapon-model-coverage` (docs/reports/weapon-model-coverage.md); the worker didn't run finish.sh.
