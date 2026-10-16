@@ -16715,3 +16715,17 @@ AstronautHit 0xBE (0x174690) / AstronautDeath 0xBF (0x1747b8), float movement
 DroneMove_AstronautCombat 0x154618, bob/float anim DroneMove_AstronautAnim 0x155ea0.
 Acceptance: headless 0700001b load — astronauts drift (no floor snap), float anim runs,
 hit/death variants fire. Branch from origin/master 170bcf01.
+- astronaut-guards-1b (task 730, 2026-10-16): the zero-G astronaut guards on 0700001b (uncited
+  audit gap 7) ported — kind 0x18 forces mode 0x1D + start 0xBD [M 0x14b300:722-727], row 29's
+  start flows through start_state; the five states 0xBD-0xC1 (Launch/Combat/CombatMove/Hit/Death
+  [M 0x16dd28/0x174458/0x174550/0x174690/0x1747b8]); flying physics = no gravity, no floor snap,
+  vel integration + ×0.98 damping while +0x4F8 & 0x40 (DeathMove clears it [M 0x140968:139-141,
+  0x156008:45]); strafe pick 3×FRand(2)−1 · (FRand(10)+10) into a kind-3 AI volume, re-arm
+  60+Rand(150) [M 0x154618]; death routes mode 0x1D → 0xBF (bullet 0x1461c8 + explosive 0x146480);
+  health = weapon_data[0x33]+0xc × difficulty (×3 Drake). Found on the way: on_bullet_resume's
+  0x55 wrapper clobbered an at-once-completed flinch call's queued resume (CallFullyComplete,
+  0x13ab58) — fixed. 4/4 live tests green (astronaut_guards_live.rs). NOT done in the window: the
+  full suite run (the background runner died twice — cargo PATH, then alsa env; restarted too late
+  for the 23:20 sandbox), the Launch AIPath/FollowRoute route walking (the port treats the
+  spawn-hold as the completed route — the game's AssignAIPath nodes sit within 0.3 of the posts
+  [M 00154190:68-96]), and the HitMove bump-source branch (+0x470 has no port field).
