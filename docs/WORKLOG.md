@@ -16227,3 +16227,10 @@ fix_cutscenes_live 4/4, fix_cutscenes2_live 5/5, fix_kimiko_handback_live 1/1,
 models_characters_live 6/6, fix_party_mission_live 9/9, scenario_live 6/6. The pre-change
 full-suite run `1864 passed, 6 failed, 72 ignored (50 min)` (the 3 allowed disc_golden + the 3
 pre-existing pylon render probes); the final-tree fast-runner suite started 16:41 UTC.
+
+- 2026-10-16 s/death-animation-sp (task 714): Bond's death has no death animation
+  (playtest 1015-0046). Plan: trace game's death sequence (Player_HandleDeath
+  0x190bb0, Player_ChangeSubState case 0xd/0xe, death camera script 0x6000151 /
+  0x60008e0 zero-g), compare with the port's sim/flow, fix what's missing, test
+  on 05 that the death script runs the game's tick count before the failed page.
+  Branch created from origin/master c10b530f.
