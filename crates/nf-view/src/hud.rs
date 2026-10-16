@@ -15,7 +15,47 @@ const SH: f32 = 448.0;
 /// fix-context-hints added the third-icon context textures [M 0x2FC168 = 0x03000064+ctx; only 0x66
 /// (winch, ctx 2), 0x67 (hanging man, ctx 3) and 0x6A (figure, ctx 6) exist on the disc [D tex-list] —
 /// the table's other four ids never resolve in `hashtable_set_sprite` and the icon stays hidden].
-pub const TEXTURES: [u32; 26] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141, 0x0300_0066, 0x0300_0067, 0x0300_006a, 0x0300_005e, 0x0300_004a, 0x0300_005f, 0x0300_005c, 0x0300_005d, 0x0300_0059];
+/// fix-space-pane added the 0700001b missile-status pane's five (0x03000177..7B [M SpaceSprInfo 0x2be3b0 +
+/// `HUD_UpdateSpacePane` 0x19d3b8; D 0700001b.bin entry 61 sub 0..4]).
+pub const TEXTURES: [u32; 31] = [0x0300_0026, 0x0300_007a, 0x0300_0128, 0x0300_018d, 0x0300_018e, 0x0300_0003, 0x0300_0034, 0x0300_0002, 0x0300_0173, 0x0300_0174, 0x0300_017f, 0x0300_017d, 0x0300_0055, 0x0300_0056, 0x0300_0057, 0x0300_0090, 0x0300_0141, 0x0300_0066, 0x0300_0067, 0x0300_006a, 0x0300_005e, 0x0300_004a, 0x0300_005f, 0x0300_005c, 0x0300_005d, 0x0300_0059,
+    0x0300_0177, 0x0300_0178, 0x0300_0179, 0x0300_017a, 0x0300_017b];
+
+/// The 0700001b missile-status pane (pane 20: `SpacePane` 0x2be598 = {x 0, y 0, flags 0, create
+/// `HUD_CreateDefault`, update `HUD_UpdateSpacePane` 0x19d3b8, `SpaceSprInfo` 0x2be3b0, 11 sprites}
+/// [L ACTION.ELF]) — the white "T" at the top right of the Equinox space level. Returns each drawn
+/// sprite with its runtime texture and colour (0xRRGGBBAA). [M 0x19d3b8]:
+/// - Level gate: the update enables the pane (+0x1C = 1) only while `GameState+0xC == 0x0700001b`
+///   and disables it on any other level; `HUD_Update` 0x19a088 hides a disabled pane's sprites.
+///   Pane 20 is only ever disabled by `HUD_Reset` 0x1a0d38, after which the update re-enables it.
+/// - Sprites 1..8 (the eight lamps, tex 0x03000178): `MissileDeploy[k−1]` == 1 → tex 0x03000177
+///   flashing 0x00ff00ff / 0xffffffff on `frame % (FPS/2) < FPS/4`; == 3 → tex 0x03000177, 0x00ff0080;
+///   else switch channel k on → tex 0x0300017A, 0xff000080 when the state is 2, else 0xff0000ff.
+///   The port does not yet model `MissileDeploy` (written by `SpaceMissile_Update` 0x1aa118's
+///   jump-table states, undecompiled; `Create_SpaceMissile` 0x1a9ef0 zeroes it) — it stays 0 here, so
+///   only the channel rule applies [S for missile states 1..3].
+/// - Sprite 0 (the T, tex 0x03000179): flashes 0xff000080 / 0x7f7f7f7f while channel 9 is on (the game
+///   leaves the last written colour when it goes off; the port returns to the template's) [M; S the reset].
+/// - Sprites 9 / 10 (the top boxes, tex 0x0300017B): 0x7f7f7f7f, flashing 0xff000080 while channel
+///   0x18 / 0x1C is on.
+/// The game's sprite texture and colour persist between frames (`hashtable_set_sprite` is sticky); the
+/// port recomputes from the inputs each frame.
+pub fn space_pane(table: &[SpriteInfo], level: u32, on: impl Fn(u32) -> bool, frame: u32) -> Vec<(SpriteInfo, u32)> {
+    if level != 0x0700_001b || table.len() < 11 { return Vec::new(); }
+    // `GameState+0x34 % (FRAME_RATE_INT >> 1) < FRAME_RATE_INT >> 2` with FRAME_RATE_INT 60.
+    let flash = frame % 30 < 15;
+    let deploy = [0u8; 8];
+    let mut out: Vec<(SpriteInfo, u32)> = table[..11].iter().map(|s| (*s, s.colour)).collect();
+    for k in 1..9 {
+        let st = deploy[k - 1];
+        if st == 1 { out[k].0.texture = 0x0300_0177; out[k].1 = if flash { 0x00ff_00ff } else { 0xffff_ffff }; }
+        if on(k as u32) && st != 3 { out[k].0.texture = 0x0300_017a; out[k].1 = if st == 2 { 0xff00_0080 } else { 0xff00_00ff }; }
+        if st == 3 { out[k].0.texture = 0x0300_0177; out[k].1 = 0x00ff_0080; }
+    }
+    if on(9) { out[0].1 = if flash { 0xff00_0080 } else { 0x7f7f_7f7f }; }
+    out[9].1 = if on(0x18) && flash { 0xff00_0080 } else { 0x7f7f_7f7f };
+    out[10].1 = if on(0x1c) && flash { 0xff00_0080 } else { 0x7f7f_7f7f };
+    out
+}
 const CROSS_TEX: u32 = 0x0300_0026;
 const FONT_TEX: u32 = 0x0300_0003;
 /// SightPane textures [D 07000005.bin entries 71 + 56]: 0x03000034 = the scope overlay (256×256, the circular
@@ -680,6 +720,11 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
                 h.sprite(Anchor::Left, (0.0, 0.0), icon, gs(icon.colour >> 8, a_icon));
             }
         }
+    }
+    // The 0700001b missile-status pane (pane 20, `HUD_UpdateSpacePane` 0x19d3b8 — `space_pane`). The pane's
+    // CREATE has x 0, y 0, flags 0: the sprites' own x/y are screen positions [L 0x2be598].
+    for (sp, c) in space_pane(&t.space, s.level, |k| s.drones.channels.on(k), frame) {
+        h.sprite(Anchor::Right, (0.0, 0.0), &sp, gs(c >> 8, c & 0xff));
     }
     // The crouch icon (health pane sprite 19): while crouched (player mode 4) tex 0x03000173; after standing
     // 0x03000174 for 60 ticks, alpha 0xFF then fading over the last 30 (alpha = timer·255/30). The game writes
