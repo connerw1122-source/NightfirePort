@@ -14471,3 +14471,21 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
 
+
+---
+level-load-time (final)
+- Probe: load_time_probe.rs times nf_view::load for all 27 on-foot levels cold+warm by phase
+  (marks in load_impl + Scene::build via thread-local nf_view::phase_mark). Baseline warm build
+  total 17.61 s/27 levels: pools 8.18, assembly 7.65, session mesh merge 6.95.
+- Cuts (load-side only): pool-slot replay (projectile/tracer/gas/decal/casing/debris — slot 0
+  decodes, slots 1..N replay bit-exactly), reserved final scene arrays, parsed-foreign-archive
+  cache (FIFO 4) for merge_weapon_models with LevelMap/MapObject Clone derives in nf-formats.
+  Build 17.61 → 13.36 s; 07000014 1.469 → 1.236 s, 07000005 0.696 → 0.448 s warm.
+- Proof: load_scene_digest.rs FNV digests captured pre-change on 5 levels (02/05/0c/14/01),
+  pinned as constants in load_scene_equality.rs — all identical after every cut (the harness
+  caught + reverted one wrong "no-op" removal: the assembly bbox re-scan is the only sound cull
+  radius for merged non-World groups; proof commented at the site).
+- Tests: load_scene_equality PASS, async_level_load_live 3/3, nf-view lib 15/15, nf-formats
+  11 passed / 3 failed = the slim ISO's 3 allowed disc_golden. suite.py not runnable here
+  (background jobs reaped between tool calls) — flagged in the report.
+- Report: docs/reports/level-load-time.md; finish.sh 652 done; ntfy sent (curl, EXIT=0).
