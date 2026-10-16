@@ -3833,7 +3833,7 @@ impl FrontEnd {
         s.team_game = (self.mp_scenario >> 29) & 1;   // [M MP_Init 0x183438:41 — the core re-derives]
         for (i, slot) in self.mp_join.iter().enumerate().take(4) {
             if !slot.joined { continue; }
-            s.players[i] = nf_game::mp::MpPlayer { team: slot.team, skin: slot.skin, armor_bonus: 0 };
+            s.players[i] = nf_game::mp::MpPlayer { team: slot.team, skin: slot.skin, armor_bonus: 0, radar_on: 1 };
         }
         self.mp_match_settings = Some(s);
         // [M the match-start calls] — the level request + the fade push; MenuManager_Delete is
