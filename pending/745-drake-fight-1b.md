@@ -2,6 +2,12 @@
 
 Playtest 1016-1355 (the user, on master 2026-10-16): "none of the mechanics are set for this fight properly. This one's going to require a lot of testing." Port the 1b boss fight's logic from the decompile and the level scripts [M + D]: Drake's AI and phases, the missile launch sequence (the missile channels 1..8, `MissileDeploy`, `SpaceMissile_Update`'s states), and the win/fail conditions. Tests: a scripted headless run reaches each phase on the game's triggers, and the mission completes or fails on the game's conditions.
 
+**Tests pin only proven behaviour.** Every assertion about what the game does cites its evidence: [M] a decompile
+address that actually says it, [D] disc bytes, or [L] a live PCSX2 measurement from a FRESH boot (a save-state resume
+skips the boot path). A guess, a port choice or an [S] item is never a hard assertion: mark it `// [S] unverified` and
+keep it out of pass/fail. If an existing test contradicts the decompile, the TEST is wrong: fix it, with the address, and
+say so in the report. Never weaken a decompile-backed test to make code pass.
+
 **Run the crates your tests touch before pushing**, and report what you ran.
 
 **Branch:** `s/drake-fight-1b`.

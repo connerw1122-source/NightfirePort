@@ -2,6 +2,12 @@
 
 Playtest 1016-1355 (the user, on master 2026-10-16): "Scorpion rockets are way too slow" (multiplayer). The Sentinel's speed was measured live (×4.04 on 0x2c/0x2d). Check the Scorpion records 0x2E/0x2F the same way: the init speed, the 0x200 quarter, the per-tick flight step [M Bullet_init 0x12c5a0, Bullet_update 0x12e7b0] and any homing. Set them to the game's numbers, with evidence. Test: the Scorpion's per-tick step matches the game's.
 
+**Tests pin only proven behaviour.** Every assertion about what the game does cites its evidence: [M] a decompile
+address that actually says it, [D] disc bytes, or [L] a live PCSX2 measurement from a FRESH boot (a save-state resume
+skips the boot path). A guess, a port choice or an [S] item is never a hard assertion: mark it `// [S] unverified` and
+keep it out of pass/fail. If an existing test contradicts the decompile, the TEST is wrong: fix it, with the address, and
+say so in the report. Never weaken a decompile-backed test to make code pass.
+
 **Run the crates your tests touch before pushing**, and report what you ran.
 
 **Branch:** `s/scorpion-rocket-speed`.

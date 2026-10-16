@@ -6,6 +6,12 @@ The user: "the menus aren't consistent and look awful". Today the port's menus a
 
 Port the parser for the whole menu-def (pages, controls, components, sprites, keyframes, messages) and the keyframe runtime as a pure data/sim layer: given a page id and a tick, produce the list of what each control draws (position, size, colour/alpha, texture, text label) exactly as the game would at that tick. Then add a comparison test: for every page the port transcribed, the runtime's tick-0 and settled draw lists equal (or list every difference from) the transcribed constants. Do NOT change the drawing code; the main agent wires the runtime into the renderer and compares with PCSX2. Report every page where the transcription disagrees with the data.
 
+**Tests pin only proven behaviour.** Every assertion about what the game does cites its evidence: [M] a decompile
+address that actually says it, [D] disc bytes, or [L] a live PCSX2 measurement from a FRESH boot (a save-state resume
+skips the boot path). A guess, a port choice or an [S] item is never a hard assertion: mark it `// [S] unverified` and
+keep it out of pass/fail. If an existing test contradicts the decompile, the TEST is wrong: fix it, with the address, and
+say so in the report. Never weaken a decompile-backed test to make code pass.
+
 **Run the crates your tests touch before pushing**, and report what you ran.
 
 **Branch:** `s/menu-def-runtime`.

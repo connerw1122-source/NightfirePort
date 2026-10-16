@@ -2,6 +2,12 @@
 
 Playtest 1016-1355 (the user, on master 2026-10-16): "on the multiplayer maps, like Gondola, it's missing the actual gondolas. It has these things called remote tanks and like helicopters that you should be able to pilot, and you can't." Census every MP map's dynamic objects [D placements]: the gondolas, the remote-control tanks and helicopters, and any other movers/usables. Port their movement and the pilot/usable mechanics (the remote-vehicle control) from the decompile [M]. The drawing side is the main agent's; the sim and the controls are yours. Tests per map: the gondolas move on their routes; a player can take control of a remote tank/helicopter and drive it.
 
+**Tests pin only proven behaviour.** Every assertion about what the game does cites its evidence: [M] a decompile
+address that actually says it, [D] disc bytes, or [L] a live PCSX2 measurement from a FRESH boot (a save-state resume
+skips the boot path). A guess, a port choice or an [S] item is never a hard assertion: mark it `// [S] unverified` and
+keep it out of pass/fail. If an existing test contradicts the decompile, the TEST is wrong: fix it, with the address, and
+say so in the report. Never weaken a decompile-backed test to make code pass.
+
 **Run the crates your tests touch before pushing**, and report what you ran.
 
 **Branch:** `s/mp-map-objects`.

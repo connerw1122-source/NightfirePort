@@ -33,6 +33,12 @@ Tests:
 
 Run the FULL suite and list every failure. The main agent will compare the panels against PCSX2.
 
+**Tests pin only proven behaviour.** Every assertion about what the game does cites its evidence: [M] a decompile
+address that actually says it, [D] disc bytes, or [L] a live PCSX2 measurement from a FRESH boot (a save-state resume
+skips the boot path). A guess, a port choice or an [S] item is never a hard assertion: mark it `// [S] unverified` and
+keep it out of pass/fail. If an existing test contradicts the decompile, the TEST is wrong: fix it, with the address, and
+say so in the report. Never weaken a decompile-backed test to make code pass.
+
 **Run the crates your tests touch before pushing**, and report what you ran.
 
 **Branch:** `s/script-negative-delay`.

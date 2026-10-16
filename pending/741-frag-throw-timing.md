@@ -2,6 +2,12 @@
 
 Playtest 1016-1355 (the user, on master 2026-10-16): "frag grenades are flying out way too soon. They don't let the animation finish. We're going in the opposite direction with that one" (07000014). Find the game's release frame for the frag throw (the fire script's spawn frame / the release-frame family [M Player_WeaponFiring 0x1a5460, +0x44]) and when the port's release changed: bisect the recent merges (grenade-rattle2, the throw-cadence work). Fix it so the grenade spawns on the game's frame. Test: a frag throw spawns the grenade exactly on the game's release tick, measured from the press.
 
+**Tests pin only proven behaviour.** Every assertion about what the game does cites its evidence: [M] a decompile
+address that actually says it, [D] disc bytes, or [L] a live PCSX2 measurement from a FRESH boot (a save-state resume
+skips the boot path). A guess, a port choice or an [S] item is never a hard assertion: mark it `// [S] unverified` and
+keep it out of pass/fail. If an existing test contradicts the decompile, the TEST is wrong: fix it, with the address, and
+say so in the report. Never weaken a decompile-backed test to make code pass.
+
 **Run the crates your tests touch before pushing**, and report what you ran.
 
 **Branch:** `s/frag-throw-timing`.

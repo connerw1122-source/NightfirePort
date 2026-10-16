@@ -2,6 +2,12 @@
 
 Playtest 1016-1355 (the user, on master 2026-10-16): "the hints are being displayed at 1,000 miles an hour" (07000005). Find the hint bar's timing in the game: how long each hint shows, the scroll or fade rate, and what the per-tick step is [M the hint pane / context-hint update in the HUD code]. Then find why the port runs it fast: a per-frame step instead of per tick at uncapped fps, or a wrong constant. Test: a hint shows for the game's tick count at 60 Hz, and the same at 240 rendered frames per second (frame-rate independent).
 
+**Tests pin only proven behaviour.** Every assertion about what the game does cites its evidence: [M] a decompile
+address that actually says it, [D] disc bytes, or [L] a live PCSX2 measurement from a FRESH boot (a save-state resume
+skips the boot path). A guess, a port choice or an [S] item is never a hard assertion: mark it `// [S] unverified` and
+keep it out of pass/fail. If an existing test contradicts the decompile, the TEST is wrong: fix it, with the address, and
+say so in the report. Never weaken a decompile-backed test to make code pass.
+
 **Run the crates your tests touch before pushing**, and report what you ran.
 
 **Branch:** `s/hint-bar-speed-05`.
