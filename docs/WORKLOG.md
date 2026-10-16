@@ -14879,3 +14879,11 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## pause-results-flows (2026-10-16, branch s/pause-results-flows) — start
+- Task: queue 674 — the in-mission menus end to end (pause page: Esc open, all tabs, Continue/Restart/Quit
+  with YES/NO; fail menu on death; mission complete -> results -> NfBonus/MissionSelect), driven ONLY through
+  action()/mouse_*/tick and host glue on a live 07000005 scene (NF_ISO). Assert page+request at each step,
+  sim paused while a menu is up, Restart restores full health + entry checkpoint, Quit returns to a working
+  front end, repeated presses during transitions don't double-fire, and the 5 s LOADING_HOLD eats input during
+  loads. Branch from master ad761677; suite started in background.
