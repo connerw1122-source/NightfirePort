@@ -15148,3 +15148,13 @@ menu-audio-state (2026-10-16)
   pump [M 0x182c60:78 + 0x1c9790:30-35]; results stats are Stats::default (host gap); Esc during a
   cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
   (live checks 1-3).
+
+## head-track (2026-10-16, s/head-track)
+
+Task: guards' heads turn the wrong direction/angle (playtests 1013-1758, 1015-0046). Port and
+verify the head/neck tracking: target choice, yaw/pitch limits and rates, the bone(s) driven and
+the composition order with the body animation [M drone update / AnimProcess head-track code,
+limit constants]. Plan: reproduce through the real input path headless, assert the head bone's
+world yaw/pitch for 3 guard poses (Bond left/right/above) against values computed from the game's
+formula, check the limits clamp, report any convention flip. Work starts now; status: setup done,
+branch pushed.
