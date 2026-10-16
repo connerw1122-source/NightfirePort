@@ -78,17 +78,22 @@ fix_searchlight_remainder_live, fix_flesh_hit_effects_live, fix_flesh_impacts_li
 The fast runner **could not complete in this sandbox**: background jobs (even `setsid nohup`)
 are killed between tool calls, and the full 4-crate run (~50 min) does not fit the foreground
 window. What ran in the foreground on the final tree (branch == origin/master + this task, no
-drift):
+drift), via `tools/test/suite.py --only` over 175 of the 436 test binaries (all the
+render/draw/palette/gas-adjacent ones, then the next 130 nf-view binaries alphabetically):
 
-- `python3 tools/test/suite.py . target --limit 60 --only <45 render/draw/palette/gas-adjacent
-  nf-view binaries>`: **135 passed, 1 failed, 2 ignored (4 min)**. The one failure,
-  `probe_pylon_render::probe_render_pylon_only`, is pre-existing — it fails in the previous
-  session's chunk logs too (~/suite-chunk-ae.out), alongside the documented allowed set (the 3
-  disc_golden on the slim ISO, fix_0c_pylon_live ×2).
-- The five named binaries above, individually.
+- chunk 1 (45 binaries, limit 60 s): **135 passed, 1 failed** — `probe_pylon_render::
+  probe_render_pylon_only`, pre-existing (fails in the previous session's chunk logs too,
+  ~/suite-chunk-ae.out, alongside the documented allowed set).
+- chunk 2a (60 binaries, limit 25 s): **193 passed, 3 failed** — the 2 pre-existing
+  `fix_0c_pylon_live` failures + `campaign_flow_live` TIMEOUT (the 25 s limit is far under the
+  runner's default 600 s; the binary needs more than 25 s, not a regression).
+- chunk 2b (70 binaries, limit 25 s): **249 passed, 1 failed** — `fix_guard_weapons_live`
+  TIMEOUT (same limit artifact: its damage-matrix test needs more than 25 s).
 
-The remaining ~380 nf-view binaries and the other crates did not run in this window — the next
-session should start the fast runner first thing and read its total line.
+Totals over the 175 binaries: **577 passed, 5 failed/TIMEOUT (3 pre-existing failures + 2
+limit-timeouts), 21 ignored**. The remaining ~260 binaries and the other crates did not run in
+this window — the next session should start the fast runner first thing (default limits) and
+read its total line.
 
 ## Live checks / renders for the main agent
 
