@@ -16234,3 +16234,12 @@ pre-existing pylon render probes); the final-tree fast-runner suite started 16:4
   0x60008e0 zero-g), compare with the port's sim/flow, fix what's missing, test
   on 05 that the death script runs the game's tick count before the failed page.
   Branch created from origin/master c10b530f.
+- death-animation-sp: traced the game's death camera/anim flow — dead branch of Player_Update
+  0x193600:316-319 runs ONLY AnimObjectUpdate + Player_HandleDeath (no movement: the eye
+  obj+0x30 freezes; Player_PositionCamera 0x18f5d8 case 0 → Camera_SetToPlayer 0x1bc048 →
+  Player_GetHeadPos 0x195aa0 = obj+0x30 + BL+0x908 − BL+0x90c, dead zeroes 0x90c). The port kept
+  ticking walk physics while dead — an airborne death fell 3.06 units (probe). Fix: gate
+  bond.tick_ctx on !death.active (scene.rs). Pinned death_anim_sp_live: the death script
+  0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
+  fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
+  recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).

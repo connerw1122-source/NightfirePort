@@ -2355,7 +2355,20 @@ impl Sim {
             if self.drones.health.health > 0.0 {
                 self.bond.pos[1] += self.drones.health.hit_push;
             }
-            self.bond.tick_ctx(&self.world, &ctx, &input);
+            // death-animation-sp: the dead branch of `Player_Update` 0x193600 runs ONLY
+            // `AnimObjectUpdate` + `Player_HandleDeath` [M 0x193600:316-319, state obj+0xf4 2/3] —
+            // no substate arm, no `Player_MonitorAir`, no collision pass. Bond's eye (`obj+0x30`)
+            // freezes where he died: the death camera is cam mode 0 (`Player_SetCamMode(BL, 0)`
+            // [M `Player_CheckForDeath` 0x190810:64]) → `Player_PositionCamera` 0x18f5d8 case 0 →
+            // `Camera_SetToPlayer` 0x1bc048 → `Player_GetHeadPos` 0x195aa0 reads `obj+0x30/34/38 +
+            // BL+0x908 − BL+0x90c`, and the dead arm zeroes BL+0x90c [M 0x18f5d8:130-132]; nothing
+            // in the dead branch writes obj+0x30 (the anim system moves no object position —
+            // `AnimObjectUpdate` 0x1befd8 / `AnimSeqTick` 0x1c28d0 / `AnimFrameResolve` 0x1c35f8
+            // have no obj+0x30 writes). The pre-fix port kept ticking the walk physics, so a death
+            // in the air kept falling (the probe: −3.06 units over ~55 ticks).
+            if !self.drones.death.active {
+                self.bond.tick_ctx(&self.world, &ctx, &input);
+            }
             // audit-sound-calls: drain the jump launch / head-bump sounds into the Sim's sound
             // pool (`Player_HandleJump` 0x1916b0:184,195-198 via `Bond::sfx_out`).
             for (id, pos) in self.bond.sfx_out.drain(..) {
