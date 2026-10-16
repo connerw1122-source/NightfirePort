@@ -14628,3 +14628,32 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   `--only` batches (background jobs are reaped in this sandbox) — 0 failed except the 3
   `disc_golden` (slim ISO); lib tests nf-game 234 / nf-audio 11 / nf-view 15 / nf-formats 79.
 - Report: docs/reports/cutscene-skip-audio.md (4 live-check asks incl. the skip-fade render).
+## faster-live-tests (2026-10-16, branch s/faster-live-tests) — start
+- Task: cut the slow live-test binaries' time (weapon_matrix_live 307 s, levels_sweep_live 184 s,
+  fix_guard_weapons_live 157 s, walkreal_07000001_live 132 s, models_misc_live 100 s,
+  campaign_flow_live 85 s, then fix_striped_box_census 73 s, fix_party_mission_live 61 s,
+  portal_sweep_live 40 s) without losing coverage: share loaded levels across a binary's tests
+  (OnceLock cache + per-test clone), cut tick counts only where the assertion provably doesn't
+  need them, delete the f71a2925 probe `crates/nf-view/tests/zz_obj_drives_probe.rs` (moving any
+  real assertion first). No assertions weakened or removed.
+- Baseline full suite started on the untouched master tree (suite-baseline.out).
+- Profile (three parallel research passes + direct binary runs): models_misc was 95% load time
+  (80 loads of 34 unique archives, 7 of 10 tests read only `misc_drawn`); walkreal_07000001 was
+  87% wedged lenient legs burning the 6000-tick give-up cap (25 legs, ~150k of 174k ticks;
+  arrivals ≤1800); fix_striped_box probe_gate loaded 12/14 three times each (18 loads/11
+  archives); fix_party_mission carried six assertion-free probes (~35-40 s); portal_sweep's
+  raw-walk diagnostic doubled its raycasts print-only; fix_guard_weapons' re-park stall window
+  was 3000 ticks with a 75-tick min-gap floor; zz_obj_drives_probe has zero assertions, all its
+  facts pinned by campaign_flow_live + fix_objects2_live.
+- Changes (test harnesses only — no nf-view/nf-game source): models_misc process-wide
+  misc_drawn cache (80→37 loads, golden sha1 unchanged); walker LENIENT_GIVE_UP_TICKS 6000→3000
+  (non-lenient panic cap stays 6000; 23 binaries validated by the suite); striped-box probe_gate
+  per-archive grouping (18→11 loads); party probes #[ignore]d with the pinning test named;
+  portal raw-walk scan removed (asserts untouched); guard-weapons stall window 3000→900 (still
+  12× the 75-tick floor); zz probe deleted + backlog L-464 EV repointed.
+- Measured: models_misc 100→39.8, walkreal_07000001 132→92.9, fix_striped_box_census 73→52.1,
+  portal_sweep 40→35.6 (direct release runs, --test-threads=1, NF_ISO). No assertion weakened
+  or removed; the misc census golden passes unchanged.
+- Left: campaign_flow front_end_chain replay memoize (~20 s), engine-side ACTION.ELF/WeaponData
+  once-per-process + foreign-map load cache (helps every binary), weapon_matrix budget surgery.
+- Report: docs/reports/faster-live-tests.md (before/after table + suite total).
