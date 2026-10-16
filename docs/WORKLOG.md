@@ -14462,3 +14462,13 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+## cutscene-skip-audio (2026-10-16, branch s/cutscene-skip-audio) — start
+- Playtest 1014-1725 (07000002): "Skip the cutscene in the middle of dialogue, and the
+  dialogue still kept going until it finished." Also: mission music kept playing over
+  cut-scenes; the music only changed late.
+- Plan: (1) port the script player's skip path — the stream stop/fade and SFXStop on the
+  speech handles [M the skip arm]; (2) port the music handover around a cut-scene
+  (nis_state, the NIS pause/quit [M music.md]); (3) headless tests on 07000002's intro and
+  07000007's Kimiko scene: skip mid-line → nothing alive after the game's fade window;
+  let it play → the voice ends naturally; the level music resumes. NF_SILENT.
