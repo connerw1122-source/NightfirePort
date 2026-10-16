@@ -14593,5 +14593,11 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   refusals + the closed-door-blocks sister, and the 05/06/07 census + 07 watch + wall probes.
   nf-game lib 234/234 (both trees); branch-point suite 1700/6/66 (the allowed set); the final-tree
   suite re-run started in the sandbox's last minutes (suite2.out — read `tail -1` next session).
-- Report: docs/reports/npc-doors.md; remaining: the 06 combat-chase variant, the 07 party girls'
-  missing AssignAIPath(8) routes (a route-assignment gap, not doors), the backward-creep half [S].
+- Report: docs/reports/npc-doors.md; remaining: the 07 party girls' missing AssignAIPath(8)
+  routes (a route-assignment gap, not doors), the backward-creep half [S], and the walkreal_07000001
+  harness note (its clear-guard loop predates mobile guards — the step-back un-wedges the port's
+  guards, and guard 15 at health 1.0 / dist 2.7 now outlasts the suite's 600 s window).
+- Late additions: the 06 chase test (guard #2 hears Bond's shots through the closed door #1, enters
+  0x81 at +401, opens at +408, crosses) and the 0x63 isolation drive rescooped to the un-wedge +
+  closed-door-blocks proof (closest 1.44 to the shut shoji; the region route carries no door nodes).
+  All 7 npc_doors_live tests green on the final tree; branch 79c669f8.
