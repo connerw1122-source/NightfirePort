@@ -15934,3 +15934,9 @@ the bank's smoke. Suite on the final tree: 419/425 binaries — 1846 passed, 13 
 was a REAL regression from the first give cut — fixed; remote_mine/weapon_anims flaky under the
 OOM-collided parallel chunks, green solo); 5 binaries OOM-killed mid-run need a clean re-run
 (weapon_matrix_live first — listed in the report). Report: docs/reports/dev-panel-spawns.md
+
+ADDENDUM (17:43 UTC): the 5 OOM-killed binaries re-ran solo on the final tree — ALL GREEN
+(weapon_matrix_live 6/0, async_level_load_live 3/0, fix_aim_raise_live 5/0, fix_death_restart_live
+8/0, walk_07000013_live 2/0). FINAL-TREE TALLY: 1870 passed, 7 failed, 48 ignored over 424/425
+binaries — the 7 are exactly the known environmental set (3 disc_golden, driving_ai_follow, the 3
+no-GPU pylon probes); nf_cpd_child is the guard's child runner. No leftover runs.
