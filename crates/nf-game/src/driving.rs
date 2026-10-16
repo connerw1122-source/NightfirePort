@@ -20,6 +20,8 @@
 
 use std::collections::HashMap;
 
+pub mod mission;
+
 /// The game's fixed physics step [M `FUN_002d6b90`'s {60,60,50,60} table; sim+0xdc0 = 1/fps].
 pub const DT: f32 = 1.0 / 60.0;
 
