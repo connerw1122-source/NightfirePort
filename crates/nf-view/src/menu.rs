@@ -5091,6 +5091,16 @@ impl FrontEnd {
         self.mp_bots.iter().filter(|b| b.enabled).count()
     }
 
+    /// The debriefing's re-entry [M C_GCPAUSE 0x204408:146 — quitting a match (the QUIT row's
+    /// msg-0xd arm) with `MPSettings+0x180 != 0` sets GameState+0x28 = 0x40000033 and reloads
+    /// 0x0700048, so the front end re-opens on the debriefing page; P_MPDEBRIEFING 0x212198's
+    /// enter builds it]. The host calls this when an MP match quit re-enters the front end (the
+    /// port's in-match pause loop is not wired yet — the game's own handoff is this page id).
+    pub fn mp_debrief_enter(&mut self) {
+        self.enter_page(Page::MpDebriefing);
+        self.cursor = 0;
+    }
+
     /// The confirm page's Confirm — P_MPCONFIRM 0x20ec00:53-94: `Menu_StoreMPSettings` (the port
     /// has no MP card — the backup/restore pair is the debriefing's own [S]); the joined players'
     /// records compact; `+0x1A0 != -1 → ×60` (minutes → seconds); `+0x1D4 &= 1`; `+0x180 = 1`;
@@ -5131,6 +5141,10 @@ impl FrontEnd {
         s.bot_count = bots;
         s.weapon_set = self.mp_weapon_set;
         s.radar = self.mp_radar;
+        // [M MPSettings+0x198 — the game's Player Mods page writes the friendly-fire enable in
+        // place (mp-menus.md row 0x1ae) and MP_RegisterBulletHit 0x1857c0:43-57 reads it; the
+        // port rebuilds the struct here, so the choice must be mapped or it is dropped.]
+        s.friendly_fire = self.mp_friendly_fire;
         // [M P_MPCONFIRM 0x20ec00's msg-0x4b: 0x20f708 andi 1 → 0x20f710 sw — Explosive Scenery
         // masks to 0/1 at match start, so the locked page's stale 0x10 can never arm it]
         self.mp_envmods[2] &= 1;
