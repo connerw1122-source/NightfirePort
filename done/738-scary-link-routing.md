@@ -21,3 +21,8 @@ say so in the report. Never weaken a decompile-backed test to make code pass.
 
 ---
 claimed-by: sandbox4 at 2026-10-16T22:41Z
+
+---
+## Report (done, 2026-10-16T23:28Z)
+
+Closed by the driver: the report is on `s/scary-link-routing` (docs/reports/scary-link-routing.md); the worker didn't run finish.sh.
