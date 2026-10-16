@@ -13959,3 +13959,25 @@ Stage Summary:
   pickups, doors). Fix top hotspots; determinism bar = identical per-tick state hash before/after
   for every level over the 600 ticks. No behaviour changes; report any fix that would change results
   instead of making it.
+## sim-tick-cost (2026-10-16, branch s/sim-tick-cost) — close-out
+- Probe: crates/nf-view/tests/tick_cost_live.rs (NF_ISO, release-only) — each of the 20 SP levels,
+  600 ticks of one fixed input script through the real step_bond; per-tick median/p95/max + the
+  per-phase breakdown via the new nf_game::prof capture API (force_enable/capture/take_samples/
+  reset + 5 new `phase:` scopes; nothing renamed) + a per-tick FNV state digest (bond, drones,
+  bullets, doors, channels, triggers, scripts, SS, audio, mission, RNG). NF_TICKCOST_RECORD /
+  NF_TICKCOST_CHECK give the before/after hash bar; two-run determinism is always asserted.
+- Fix 1: Pickup::touches ran the LOS ray for EVERY pickup every tick; the game's own `&&` puts
+  Collide_LineOfSight INSIDE the distance short-circuit [M Pickup_Update 0x18e148:203-214]. Reordered
+  to the game's order (pure read — bit-identical results). Was 66 % of the tick (1.14 of 1.72 ms avg).
+- Fix 2: CollisionWorld::set_dynamic unchanged fast path + per-part block memcpy reuse (same floats
+  the transform re-derives; movers' (id,cur,cur) rebuild kept). 0.27 → 0.06 ms avg; 16: 0.38→0.07.
+- Results: 20-level mean 1.72 → 0.33 ms/tick (−81 %; 0700000d 5.38→0.44, 14: 3.37→0.23, 15: 4.15→0.48).
+  Determinism: 20/20 levels, 601 digests each, identical to the pre-fix record (verified twice +
+  after each fix). Report: docs/reports/sim-tick-cost.md (table + phase shares + live checks).
+- Ran: tick_cost_live 2/2; nf-formats+nf-audio 105/3 (the 3 allowed disc_golden); nf-game all
+  binaries 398/0; nf-view suite chunks 77/0 + 117/0 (incl. replay_live 3/3, ai_traces, doors,
+  pickups, collision, weapon/flow/HUD sets). The bg suite.py is reaped by this sandbox (two dead
+  starts) — foreground chunks instead. Left: master moved 42 commits (306c5d93) — merge + baseline
+  re-record on the merged tree is one NF_TICKCOST_RECORD run; remaining hotspots are real AI work
+  (07's control-list loop 0.53 ms) + set_dynamic parts (08, cacheable on held anim frames) +
+  visible_to per-drone rays.
