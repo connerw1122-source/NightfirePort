@@ -6146,7 +6146,7 @@ pub struct Drones {
     /// per-drone outboxes in `tick`; the menus (180-fix-menus) read it through here.
     pub progress: crate::progress::Progress,
     /// `GameState+0x28` (0x2a37a8 is the SCORED member and stays 0 in play — the MODEL difficulty lives
-    /// at +0x28, 0x2a3790): 1 Agent / 2 Secret Agent / 3 00 Agent / 4 the bonus double-damage mode
+    /// at +0x28, 0x2a3790): 1 Operative / 2 Agent / 3 00 Agent [D difficulty 0x2df4c0: rows Txt 0x14d/0x14e/0x14f, +0xc = 1/2/3] / 4 the bonus double-damage mode
     /// [M Player_HandlePain 0x19040c and DroneWeap_DoBulletAccuracy 0x179848 both switch on +0x28;
     /// the difficulty page writes it there, C_SBNFDFCTY_Handler 0x216dc4]. Boot default 2 [M bootup
     /// 0x1c7e78:25, `sw t0,40(s1)` @0x1c7f88 → 0x2a3790 = 2; Ghidra's `_40_4_` field name is DECIMAL].

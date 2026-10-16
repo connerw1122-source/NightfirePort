@@ -634,7 +634,7 @@ fn the_mission_layer_re_arms_on_a_warm_transition() {
 // does: Mission_Update case 4 (mission_ended) → the outro movie wrap (the loader's phase 0/2) →
 // the results page 0x40000036 on the map [M 0x1d6360:160-163] → P_NFRESULTS case 0x4c (the
 // fields + Menu_SetLevelBonus 0x1ffa10) → Confirm → the mission list 0x4000001c [M 0x208e78:43]
-// → the next mission's row confirmed [M C_SBNFMAP 0x20b8d8:18-41]. From 01's end to 05's start.
+// → the next mission's row confirmed [M C_SBNFMAP 0x20b8d8:18-41; the lock gate :21-23]. From 01's end to 05's start.
 
 use nf_view::menu::{self, Action, CAMPAIGN, FrontEnd, Outcome, Page, Stats};
 
@@ -670,7 +670,7 @@ fn front_end_chain_01_to_05() {
     for (mi, &m) in CHAIN.iter().enumerate() {
         if mi > 0 {
             // The mission list offers the next mission: its row unlocked, confirmed, and the
-            // game's mission start riding the request [M C_SBNFMAP 0x20b8d8:18-41].
+            // game's mission start riding the request [M C_SBNFMAP 0x20b8d8:18-41; the lock gate :21-23].
             let rowi = CAMPAIGN.iter().position(|c| c.3 == m).unwrap();
             assert!(fe.unlocked_row(rowi), "the mission page lists 0x{m:08x} (unlocked by the previous award)");
             fe.cursor = rowi;
@@ -717,7 +717,7 @@ fn front_end_chain_01_to_05() {
             if let Some(r) = fe.flow.phase2_resolved.take() { resolved = Some(r); break; }
         }
         assert_eq!(resolved, Some(menu::FRONTEND_LEVEL), "the outro routes to the front end");
-        assert_eq!(fe.flow.page, menu::PAGE_RESULTS, "phase 2 sets +0x28 = 0x40000036 [M 0x1d6360]");
+        assert_eq!(fe.flow.page, menu::PAGE_RESULTS, "phase 2 sets +0x1c = 0x40000036 [M 0x1d6360]");
         fe.tick();
         assert_eq!(fe.flow.current_level, menu::FRONTEND_LEVEL, "the front-end map loads [M 0x1d6360 phase 3]");
         // P_NFRESULTS case 0x4c against the live layer: the fields + the award.
@@ -790,7 +790,7 @@ fn front_end_chain_01_to_05() {
     assert_eq!(status, 0b1111_0111, "01-04's awards + the boot rows rode the saves");
     // The mission page offers 05: confirming its row starts the mission.
     fe.cursor = row5;
-    assert!(fe.action(Action::Confirm), "05's unlocked row confirms [M C_SBNFMAP 0x20b8d8:18-41]");
+    assert!(fe.action(Action::Confirm), "05's unlocked row confirms [M C_SBNFMAP 0x20b8d8:18-41; the lock gate :21-23]");
     assert_eq!(fe.requested_level, Some(0x0700_0011), "05's start is requested");
     let _ = std::fs::remove_dir_all(&dir);
 }

@@ -13,7 +13,7 @@
 //!    weapon_data[2]'s pool — type 1, cap 70 — not record 6's type 2 [L weapon_data]. The
 //!    message's ammo NAME stays the RAW id's type (a game quirk [M 0x18e650 case 1 reads
 //!    `weapon_data[raw+0x24]+0x90`]).
-//! 3. `Pickup_Create`'s level-conditional rounds override [M 0x18dda0: GameState+0x12 ==
+//! 3. `Pickup_Create`'s level-conditional rounds override [M 0x18dda0: GameState+0xc ==
 //!    0x7000008 && id == 0x2c → rounds = 4]: the vault's rocket pickup is created with 4, not the
 //!    placement's 5 — the take grants 4 loaded, 0 spare (cap 14 = 4 [L ammo_data]), not 4+1.
 //! 4. A hidden pickup is still takeable — `Pickup_Update`'s take path never reads `obj+0xF0` [M

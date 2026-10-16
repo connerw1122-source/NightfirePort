@@ -3,7 +3,8 @@
 //! searchlights, 07000005). Measures the frames from first sight to the first bullet for the game's three sighting
 //! paths, through the real sim path (positions only — no state injection):
 //! 1. fresh idle guard, own sight — the sight reaction floor (`DroneFunc_ReactionTime` 0x14ac60: 59 ticks at
-//!    alertness 1, stat 0; live notice 61, WORKLOG 0019) plus the state/aim transitions and the first combat
+//!    alertness (+0x50C) 0, stat 0, and only on 07000002/03/05/09/0a — every other level gets
+//!    FRAME_RATE_DIV × 10 ticks, and alertness ≥ 1 returns 0 [M 0x14ac60:9-26]; live notice 61, WORKLOG 0019) plus the state/aim transitions and the first combat
 //!    move (a step move plays out its ~100-frame danim with the request held off, [M 0x1676a0:16-18]);
 //! 2. a guard already at alertness 1 (the alarm/searchlight-raised guard — `HandleSoundAlerts` and the alarm pulse
 //!    set 1.0) spotting Bond: no reaction floor;

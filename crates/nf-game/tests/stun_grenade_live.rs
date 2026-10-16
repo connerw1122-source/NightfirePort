@@ -1,4 +1,4 @@
-//! The two stun-grenade guards on 07000001 (placement param 11 = 0x13 → 3× stun, and 0x11 → 1× stun,
+//! The two smoke-grenade guards on 07000001 (placement param 11 = 0x13 → 3× smoke 0x36, and 0x11 → 1× smoke —
 //! decoded by `NDrone2_DefaultInit` 0x14b300 into `+0xBCC`/`+0xBCE`) never throw in play (user playtest,
 //! fix-drone2 bug 1). The headless repro (this file's first version, shown failing: "no guard reached
 //! GRENADE_THROW; last states [0x2c, 0x1]") and the decompile say that is the **game's own behaviour**:
@@ -122,20 +122,20 @@ fn bond_near(world: &nf_game::world::CollisionWorld, g: [f32; 3]) -> Player {
 /// activates (nothing on the disc raises channel 5). Sister assertions: guard A really fights (sniper
 /// fire + reload), guard B really is a dtypenew-0 combat guard (he would throw if his channel fired).
 #[test]
-fn stun_grenade_guards_match_the_game_on_07000001() {
+fn smoke_grenade_guards_match_the_game_on_07000001() {
     use nf_game::drone::state;
     let Some(l) = Level01::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
     let mut sim = l.sim();
 
-    // Exactly the two param-11 carriers decode to stun 0x36 (guard A 3×, guard B 1×) — the param-11
+    // Exactly the two param-11 carriers decode to SMOKE 0x36 (case 1 [M 0x14b300:356-358]; 0x35 is the stun, case 2 [M :359-361]; L USATxt 0x36 "Smoke Grenade") (guard A 3×, guard B 1×) — the param-11
     // fix's observable effect (`NDrone2_DefaultInit` 0x14b300, param 11 → +0xBCC/+0xBCE).
     let carriers: Vec<usize> = (0..sim.list.len()).filter(|&i| sim.list[i].grenade_weapon == 0x36 && sim.list[i].grenade_count > 0).collect();
-    assert_eq!(carriers.len(), 2, "07000001 decodes exactly 2 stun-grenade carriers, got {carriers:?}");
+    assert_eq!(carriers.len(), 2, "07000001 decodes exactly 2 smoke-grenade carriers, got {carriers:?}");
     let (a, b) = (carriers[0], carriers[1]);
     let (ga, gb) = (sim.list[a].clone(), sim.list[b].clone());
-    assert_eq!((ga.grenade_weapon, ga.grenade_count), (0x36, 3), "guard A = 0x13 → stun × 3");
-    assert_eq!((gb.grenade_weapon, gb.grenade_count), (0x36, 1), "guard B = 0x11 → stun × 1");
+    assert_eq!((ga.grenade_weapon, ga.grenade_count), (0x36, 3), "guard A = 0x13 → smoke × 3");
+    assert_eq!((gb.grenade_weapon, gb.grenade_count), (0x36, 1), "guard B = 0x11 → smoke × 1");
     // And they are the documented placements.
     assert!((ga.pos[0] - (-30.058)).abs() < 0.1 && (ga.pos[2] - 13.443).abs() < 0.1, "guard A at (−30.06, 13.44), got {:?}", ga.pos);
     assert!((gb.pos[0] - 6.950).abs() < 0.1 && (gb.pos[2] - 2.200).abs() < 0.1, "guard B at (6.95, 2.20), got {:?}", gb.pos);
@@ -163,12 +163,12 @@ fn stun_grenade_guards_match_the_game_on_07000001() {
         assert!(sim.grenades.is_empty(), "t{t}: the sniper threw a grenade (the game's sniper states cannot)");
     }
     assert!(fought, "guard A never fought — the engagement must be real for the lock to mean anything");
-    assert_eq!(sim.list[a].grenade_count, 3, "the sniper keeps his 3 stun grenades");
+    assert_eq!(sim.list[a].grenade_count, 3, "the sniper keeps his 3 smoke grenades");
 
     // Guard B: his channel is never raised (no trigger, no script, no pickup, no death channel — [D]),
     // so he stays a disabled waiter: no AI, no draw — the game's furniture behaviour.
     for _ in 0..1200 { sim.tick(&d, &bond); }
     assert_eq!(sim.list[b].state, state::WAIT_SWITCH, "guard B never leaves WaitSwitch");
     assert!(!sim.list[b].enabled && !sim.list[b].drawn, "guard B is inactive and not drawn");
-    assert_eq!(sim.list[b].grenade_count, 1, "guard B keeps his stun grenade");
+    assert_eq!(sim.list[b].grenade_count, 1, "guard B keeps his smoke grenade");
 }

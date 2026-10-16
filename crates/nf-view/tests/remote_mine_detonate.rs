@@ -11,8 +11,10 @@
 //!   (`Player_SetWeaponAnimObj` case 9, 0x1a2e38:416-420) behind the +0x95C latch. The mine
 //!   0x37: `+0x44 = 0x1a` = 26 frames [L ee_start_05.bin record 0x37]; its fire script is
 //!   0x06000728 [L +0xB0].
-//! - The release arm re-arms the timer to `max(+0x40, 1.0)` [M 0x1a5460:662-664]; the mine's
-//!   `+0x40 = 0.0` [L] → the interval is the 1.0 s floor = 60 ticks, spawn-to-spawn.
+//! - The release arm re-arms the timer to `max(+0x40, 1.0)` [M 0x1a5460:661-663]; the timer
+//!   counts down by FRAME_RATE_MUL per update [M 0x1a5460:630], so its unit is 60 Hz frames and
+//!   the 1.0 floor is ONE frame, not 1 s. (The record's +0x40 read here as 0.0 and below as 450.0
+//!   [L] — the two readings disagree; the 80..100-tick interval assert below does not depend on it.)
 //! - No reload scripts on 0x37 (+0xA4/+0xA8/+0xAC = 0 [L]): the clip refill is
 //!   `Player_ReloadAmmoType` + a script-less state-6 pass [M 0x1a5460:408-430] — no anim wait.
 //! - The detonator [M 0x1a4bf0's +0x68 & 0x20000 arm]: one fire marks EVERY player-owned mine
@@ -144,8 +146,8 @@ fn the_throw_release_frame_and_the_re_throw_interval_match_the_game() {
     assert!((16..=19).contains(&press_to_spawn),
         "the press→spawn delay must be the fire script's +0x44 = 26-frame release at the script clock, got {press_to_spawn}");
 
-    // The re-throw: the release arm re-armed +0x92C to max(+0x40, 1.0) = 1.0 s = 60 ticks [M
-    // 0x1a5460:662-664; +0x40 = 0.0 [L]]. Press again on the FIRST tick the timer allows.
+    // The re-throw: the release arm re-armed +0x92C to max(+0x40, 1.0) [M 0x1a5460:661-663] — in
+    // 60 Hz frames (−FRAME_RATE_MUL per update, :630). Press again on the FIRST tick it allows.
     let mut t2 = None;
     for k in 1..200 {
         let ready = scene.sim.as_ref().map_or(false, |sim| sim.gun.timer <= 0.0) && idle(&scene);
@@ -167,7 +169,7 @@ fn the_throw_release_frame_and_the_re_throw_interval_match_the_game() {
     // note) — the live check L-2 pins the game's +0x92C through two throws.
     assert!((80..=100).contains(&interval),
         "the re-throw interval must be the 0xb/0xc chain (the fire + the fire-last + the draw ≈ 90 ticks), got {interval}");
-    // The 60-tick press wait: a press BEFORE the timer runs out must NOT throw early.
+    // The refire timer (+0x92C, 60 Hz frames [M 0x1a5460:630]): a press BEFORE the timer runs out must NOT throw early.
     // (t2 was the first legal tick; the timer gate itself is the sister below.)
 
     // ── The table (the task's deliverable) ──────────────────────────────────────────────────
@@ -175,8 +177,8 @@ fn the_throw_release_frame_and_the_re_throw_interval_match_the_game() {
     // |---------------------------|--------|----------------------------------------------------|
     // | press → shot              | 0      | 0x1a5460:618-660 (arm 1.0, −1, fire at ≤0, one call)|
     // | shot → spawn (the script) | 26     | +0x44 = 0x1a [L]; 0x1a2e38:416-420                 |
-    // | shot → next shot          | 60     | +0x92C = max(+0x40=0, 1.0) [M 0x1a5460:662]        |
-    // | spawn → next spawn        | 60     | the sum of the arms above                          |
+    // | shot → next shot          | ≥1     | +0x92C = max(+0x40, 1.0) frames [M 0x1a5460:630, 662]|
+    // | spawn → next spawn        | 80-100 | the 0xb/0xc chain (asserted above)                 |
 }
 
 /// The task's main flow: three mines at the game's cadence, then ONE detonator fire — all three
