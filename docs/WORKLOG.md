@@ -14462,3 +14462,9 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+## microcam-wheel-zoom (2026-10-16, branch s/microcam-wheel-zoom) — start
+- Branch created from origin/master (6bab6409). Task: while right-click (aim) held, mouse wheel steps the
+  zoom between the weapon's per-weapon min/max zoom range (Player_Weapon zoom input arm / weapon_data zoom
+  fields; Micro-Camera uses its own range); wheel keeps switching weapons when aim is not held. Headless
+  tests through the window's input path.
