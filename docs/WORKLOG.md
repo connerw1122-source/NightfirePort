@@ -13858,3 +13858,39 @@ Work Log (async-level-load):
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+
+## net-determinism (2026-10-15, branch s/net-determinism) — lockstep audit, started
+- Task: prove the MP match sim (mp-core/mp-bots/match-rules/MpSettings) is a pure function of
+  (settings, seed, per-tick inputs): audit nondeterminism sources (wall clock, HashMap order,
+  uninit/order, threads, float paths), check RNG seeding (game's Rand_*), deliver state_hash(&MpWorld)
+  -> u64 (integers + f32 bit patterns), a recorded-input replay harness, and tests: two independent
+  sims, same inputs, 10 000 ticks (bots on, every scenario), identical hashes every tick; sister test
+  proving the hash catches a one-bit difference. Doc: docs/systems/net-lockstep.md. Networking itself
+  is NOT this task — determinism only.
+
+## net-determinism (2026-10-15, branch s/net-determinism) — the MP sim proven lockstep-safe
+- The audit: every nondeterminism source in the MP tick checked (wall clock, HashMap order, sorts,
+  uninit, threads, libm floats) — the sim core was already clean; two REAL finds, both fixed:
+  F1 bots aimed with std atan2/cos/sin (libm ulps across platforms flip the 0x178c48 aim-cone
+  gate) → now the game's ATAN2_APPROX 0x1e4528 / PS2Sinf 0x120700 [M trig.rs]; F4 the brains read
+  the driver-supplied ctx.now while next_bullet_at was tick-derived — the brain's canonical clock
+  is now its own 60 Hz tick, ctx.now kept but ignored (a host's wall-clock accumulation cannot
+  reach sim state). One `Rng::new(seed)` stream per match, the game's Rand_* — no other entropy in
+  nf-game (grep); pinned by one_extra_rng_draw_diverges + different_seed_diverges.
+- Deliverables: nf_game::mp::hash — state_hash(&MpMatch) -> u64, FNV-1a 64 over f32 BIT PATTERNS
+  (own hasher, not DefaultHasher; FNV vectors pinned) + BotBrain::state_hash (logs as lengths);
+  nf_game::mp::replay — MpRecord (seed+settings+level registrations+per-tick inputs; spawn indices
+  re-derived through the policy) + run_record + the single apply_event mapping; 6 tests in
+  tests/mp_lockstep.rs (needs --features mp-bots), incl. the 10 000-tick two-sim bots-on soak over
+  all 12 scenario words — identical combined hashes every tick — and the one-bit sisters.
+- Suite on the final tree (foreground chunks — background jobs die in this sandbox): nf-game 371
+  passed / 0 failed / 2 ignored (--test-threads=1); nf-audio 13/0; nf-formats 92/3 (the 3
+  permitted disc_golden); mp_lockstep 6/6 (--features mp-bots); nf-view targeted determinism set
+  28/0 (mp_core_live 5, mp_bots_live 2, mp_menu_flow 9, mp_menu_lists_live 5, replay_live 3,
+  fps_determinism_live 4). The full nf-view pass (wgpu GPU probes + walks) does not fit the
+  window — flagged, same as the last windows.
+- Doc: docs/systems/net-lockstep.md (the contract, the audit table F1-F9, the design, what the
+  future nf-net host owes, a live check if the main agent wants on-hardware trig samples).
+- Final tree: merged origin/master (24b1f4dd — stats/menu-sfx/async-load; WORKLOG union kept both)
+  and re-ran: nf-game 378/0/2, mp_lockstep 6/6 (--features mp-bots), nf-view mp set 28/0.
+  ntfy: all three fallbacks returned HTTP 429 (daily quota) — exact errors in the report.
