@@ -1483,7 +1483,7 @@ mod scenarios {
         if let Some(gi) = gi {
             if let Some(sim) = scene.sim.as_mut() {
                 sim.drones.list[gi].grenade_count = 3;
-                sim.drones.list[gi].grenade_weapon = 0x36; // stun (DroneWeap_ThrowGrenade's 0x36)
+                sim.drones.list[gi].grenade_weapon = 0x36; // smoke (the bank: 0x36 Smoke Grenade; DroneWeap_ThrowGrenade 0x179558 throws whatever Drone+0xBCC holds — the lob is the same for every type)
                 // B-10: set alert to max + seen so the guard goes straight to ATTACK/AIM_STAND_FIRE instead of
                 // RunForCover (the guard sees Bond immediately and engages, reaching the throw decision).
                 sim.drones.list[gi].alert = 1.0;
@@ -1491,7 +1491,7 @@ mod scenarios {
                 sim.drones.list[gi].ever_seen = true;
                 sim.drones.list[gi].visibility = 1.0;
             }
-            eprintln!("[scenario] grenade-throw: Bond 12 m from an active guard given 3 stun grenades (param-24 path), alert maxed. Watch for the lob (anim 0x49) within ~10 s; F1 shows the state.");
+            eprintln!("[scenario] grenade-throw: Bond 12 m from an active guard given 3 smoke grenades (0x36, param-24 path), alert maxed. Watch for the lob (anim 0x49) within ~10 s; F1 shows the state.");
         }
     }
     #[allow(dead_code)] // B-10: removed from registry — same as grenade-throw.
@@ -1503,13 +1503,15 @@ mod scenarios {
         if let Some(gi) = gi {
             if let Some(sim) = scene.sim.as_mut() {
                 sim.drones.list[gi].grenade_count = 3;
-                sim.drones.list[gi].grenade_weapon = 0x36;
+                sim.drones.list[gi].grenade_weapon = 0x36; // smoke (the bank: 0x36 Smoke Grenade [L USATxt.dat +0x38])
                 sim.drones.list[gi].alert = 1.0;
                 sim.drones.list[gi].seen = true;
                 sim.drones.list[gi].ever_seen = true;
                 sim.drones.list[gi].visibility = 1.0;
             }
-            eprintln!("[scenario] grenade-bounce-explode: Bond 12 m from an active guard given 3 stun grenades. The grenade should arc, bounce (sound 0x51C) and explode (sound 0x4A7). F1 shows the arc + explosion radius.");
+            // 0x36 is the SMOKE grenade and never explodes (`Bullet_DoTrails` 0x12d890's 0x20000
+            // arm) — the old "stun … explode (sound 0x4A7)" wording was wrong on both counts.
+            eprintln!("[scenario] grenade-bounce-explode: Bond 12 m from an active guard given 3 smoke grenades (0x36). The grenade should arc and bounce (sound 0x51C); the smoke itself never explodes. F1 shows the arc + explosion radius.");
         }
     }
     #[allow(dead_code)] // B-8: removed from registry until its test passes
