@@ -666,9 +666,10 @@ mod tests {
         assert!(!Inventory::is_better_weapon(&w, 2, 2), "sister: the same id never re-switches (15 < 15 is false)");
     }
 
-    /// `Pickup_CreateFromSet` (0x18f1b0) with the live row 0 [L MPSettings+0x1B4 = 0,
-    /// PickupMatrix 0x2b9100]: set 9 → weapon 0x2c (the rocket launcher), kind 0, the BASE id,
-    /// `clip_size·2` = 8 rounds; sets 7/8/10/11 → 0x6/0x1e/0x6/0x10.
+    /// `Pickup_CreateFromSet` (0x18f1b0) with row 0 [M PickupMatrix 0x2b9100 = 11 rows × 10
+    /// bytes; row 0 = 0x6, 0x1c, 0x1e, 0x18, 0x2c for kinds 7..11 — corrected by
+    /// mp-pickups-respawn, the earlier values were sets 0+1 interleaved]: kind 11 → weapon 0x2c
+    /// (the rocket launcher), kind 0, the BASE id, `clip_size·2` = 8 rounds; kind 9 → 0x1e.
     #[test]
     fn set_kinds_resolve_through_the_pickup_matrix() {
         let mut w = table();
@@ -680,7 +681,7 @@ mod tests {
         let mut models = models;
         let rocket_model = w.model(0x2c as usize);
         models.insert(rocket_model, Model { centre: [0.0; 3], radius: 0.5 });
-        let p = Pickup::create_from_set([1.0, 2.0, 3.0], [0.0; 3], 9, &w, &models).expect("set 9 creates");
+        let p = Pickup::create_from_set([1.0, 2.0, 3.0], [0.0; 3], 11, &w, &models).expect("set 11 creates");
         assert_eq!((p.kind, p.weapon, p.rounds), (kind::WEAPON, 0x2c, 8), "the rocket set: kind 0, base id, clip·2");
         assert_eq!(p.model, rocket_model, "the WEAPON's glist, not the placement's object");
         assert_eq!((p.state, p.spin), (1, false), "rests where placed, no spin");
