@@ -14471,3 +14471,30 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   flags [M]; find the sub-meshes/datums/attachments that carry the loaded bolts on the view model
   and why they are absent. Deliver data/attachments; the main agent checks the look against PCSX2.
 - Status: setup in progress; branch pushed from origin/master.
+
+## delta-repeater (2026-10-16, branch s/delta-repeater) — close-out
+- Playtest 1015-1738's Delta Repeater (crossbow 0x11) pair fixed.
+- The bolt's wall hit: the port's shot dispatch routed every `+0x6C & 8` (gravity) weapon into
+  the GRENADE path — the bolt bounced off walls with the grenade bounce sounds. Gravity and the
+  grenade family are independent in the game: gravity is `Bullet_update` 0x12e7b0 case 1's arm
+  for ANY bullet [M], the bounce block/stick arm/ricochet/contact-explode gate on
+  `weapon_data+0x70` 0x80/0x100/0x10/0x4 in `Bullet_CollisionHandler` 0x12ce80 [M]. The record
+  reads +0x6C = 0x808, +0x70 = 0x00000002 [L ee_start_05.bin @ 0x2bf150 + 0x11·0x10C] — the bolt
+  arcs and DIES at the wall with the standard 0x61 impact effect, no bounce/stick/ricochet.
+  Fix: the dispatch gate is gravity AND a family flag (0x4/0x80/0x100) — the 115-record sweep
+  moves exactly 0x11; PlayerBullet grew `gravity: bool` running the game's case-1 integration
+  (WldGravity (0,−9.8,0)·(1/60)², shared consts with grenade.rs). flush_world_impacts' existing
+  walk then gives the correct hit (impact sound via +0x70 & 2, no revive).
+- The missing arrows: `Player_WeaponFiring` 0x1a5460:331-381 attaches the bolt mesh (+0x5C =
+  0x0200816, the flying projectile's own mesh) to the FP view model's datums 4/5/6 every tick —
+  datum 4 when count > 0 (not in fire state 9), 5 when > 1, 6 when ≥ 3; count = clip[0x11],
+  +1 in state 9, min(carried[0x0F], clip_size 3) in reload state 6 past frame 80 [M]. The
+  datums live on the FP skin 0x05000083 (+0xDC), bone 40, the three magazine slots [D]. The port
+  had NO crossbow branch (fix-fire-modes3's left-over). Implemented as the AIMS-lights pattern:
+  build-time attachments + a per-frame count arm off the new `Attachment.quiver_bolt`.
+- Tests: new delta_repeater_live 3/3 (bolt flight + death + no grenade; the MGL sister; the
+  quiver counts); fire_modes3_live's crossbow test updated off the old "grenade-path projectile"
+  pin. Ran: nf-game 440/0, nf-view touched-path tests 44/0. suite.py cannot survive this
+  sandbox's background reaping (the drive-mission-scripts precedent) — the touched-crates runs
+  stand in, flagged in the report.
+- Report: docs/reports/delta-repeater.md; render checks + 2 optional live checks listed there.

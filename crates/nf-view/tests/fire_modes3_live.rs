@@ -415,16 +415,25 @@ fn crossbow_mode_press_is_inert_and_fires_single() {
         sim.drones.inventory.fire_mode.get(0x11).copied().unwrap_or(0) };
     assert_eq!(mode_before, mode_after, "the mode byte did not move");
     // The bolt's projectile kind: the crossbow's +0x6C carries the GRAVITY bit (0x11 = 0x808 [L]) —
-    // the bolt is a gravity projectile (it arcs), spawned through Bullet_init's grenade path.
+    // the bolt ARCS (`Bullet_update` 0x12e7b0 case 1's gravity arm), but gravity is not the
+    // grenade family: its +0x70 = 0x2 carries no bounce/stick/ricochet/contact-explode flag
+    // [L ee_start_05.bin @ 0x2bf150 + 0x11·0x10C], so `Bullet_CollisionHandler` 0x12ce80's plain
+    // arm kills it at the wall with the standard impact effect. delta-repeater moved the dispatch
+    // to the gravity-AND-family-flag gate: the bolt is a straight player bullet now, not a
+    // grenade (the old "grenade-path projectile" model bounced it off walls with the grenade
+    // sounds — playtest 1015-1738).
     {
         let sim = scene.sim.as_ref().unwrap();
         let f6c = u32::from_le_bytes(sim.weapons.records[0x11][0x6c..0x70].try_into().unwrap());
+        let f70 = u32::from_le_bytes(sim.weapons.records[0x11][0x70..0x74].try_into().unwrap());
         assert_eq!(f6c & 0x8, 0x8, "the crossbow bolt carries the gravity bit [L 0x11 +0x6C = 0x808]");
+        assert_eq!(f70 & (0x4 | 0x80 | 0x100), 0, "and NO grenade-family collision flag [L 0x11 +0x70 = 0x2]");
     }
     aim_down(&mut scene, 10, -0.9);
     arm(&mut scene, 10);
-    let (_, _, grenades, _, _) = fire_once(&mut scene, 30);
-    assert_eq!(grenades, 1, "one pull fires one gravity bolt (a grenade-path projectile, not a straight bullet)");
+    let (shots, _, grenades, _, _) = fire_once(&mut scene, 30);
+    assert_eq!(shots, 1, "one pull fires one bolt");
+    assert_eq!(grenades, 0, "the bolt is NOT a grenade (delta-repeater: the gravity bit alone is not the grenade family)");
 }
 
 /// The sniper family (Winter Tactical 0x1E ↔ 0x1F): the mode press lands the Armor-Piercing twin
