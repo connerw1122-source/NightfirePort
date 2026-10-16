@@ -5,6 +5,8 @@ Branch `s/frame-cost-guard` (merged with origin/master 4bdf7678). Task: pin the 
 for any remaining loop whose cost scales with the vertex count or the effect-pool sizes rather than with the
 live objects — the class of bug that made the 2026-10-15 playtest "very laggy" (52 ms frames on 07000005, 34 ms
 of it `Scene::colour_mults` walking every character vertex; master's c49f8b69 fixed that one).
+Per-level phases are the ones the game window's `RedrawRequested` handler runs (lib.rs:2602 on this
+branch):
 
 ## What's done
 
@@ -26,7 +28,7 @@ debug runs don't false-fail, all NF_ISO-gated):
     CPU) — budget 3 ms,
   - `hud::overlay` (hud.rs:293) — budget 3 ms,
   - `Scene::posed_vertices` — timed, printed, **no budget**: it is OFF the window's per-frame path (its only
-    caller is the `NF_BENCH` block, lib.rs:1436; the render path is `skin_palette` + `update_skin`), and its
+    caller is the `NF_BENCH` block, lib.rs:1462; the render path is `skin_palette` + `update_skin`), and its
     cost is level-dependent by design (measured 0.4 ms on 07000041, 716 ms on the 74-character driving maps).
     The existing render3_live counter test guards its per-key ambient lookups.
 - `menu_overlay_budgets_hold_on_every_page` — `menu::menu_overlay` (menu.rs:3980) over the six front-end pages
@@ -95,21 +97,21 @@ headroom on the worst level.
    ~1.4 MB uploads per frame by the audit's estimate. NOT fixed: `render` cannot run in this sandbox (no
    wgpu adapter), so no before/after numbers are provable here, and a staging restructure changes what the GPU
    consumes — it needs the main agent's `--shot` render comparison before merging.
-2. **`lerp_palette` blends the full 7.3k-12.3k-entry palette every RENDERED frame** (lib.rs:2747-2765 +
-   lib.rs:97-104), even entries bit-identical between ticks (the FAR pool slots, idle bones — most of the
-   8561 attachment slots). A per-entry `if x == y { return *y }` fast path would skip most of the work but is
-   NOT bit-identical: `blend_pose(x, x, t)` round-trips through `rot_quat`/`slerp`/`quat_rows`, which differs
-   from `*y` at ULP level — visually identical, but it breaks the strict hash proof and touches the
-   fix-interp-ghosting path, so it needs a visual check first.
-3. **`upload_skin` runs every rendered frame even when no tick ran and interp is off** (lib.rs:2763-2765) —
-   re-uploading ~0.9 MB of unchanged bytes. The skip (`!ticked && !interp`) is safe but untestable headless;
-   bundle it with 2's visual check.
+2. **`lerp_palette` blends the full 7.3k-12.3k-entry palette every RENDERED frame** (the blend/upload block
+   lib.rs:2969-2989 + `lerp_palette` at lib.rs:97), even entries bit-identical between ticks (the FAR pool
+   slots, idle bones — most of the 8561 attachment slots). A per-entry `if x == y { return *y }` fast path
+   would skip most of the work but is NOT bit-identical: `blend_pose(x, x, t)` round-trips through
+   `rot_quat`/`slerp`/`quat_rows`, which differs from `*y` at ULP level — visually identical, but it breaks
+   the strict hash proof and touches the fix-interp-ghosting path, so it needs a visual check first.
+3. **`upload_skin` runs every rendered frame even when no tick ran and interp is off** (the
+   `upload_skin` calls at lib.rs:2985/2987) — re-uploading ~0.9 MB of unchanged bytes. The skip
+   (`!ticked && !interp`) is safe but untestable headless; bundle it with 2's visual check.
 4. **`frame_state` poses hidden characters before checking `hidden`** (posed collected at scene.rs:5998-6053,
    `hidden` first used at 6372 inside the attach closure): the 12+ spawner-held-back characters get a full
    drone pose they don't need. NOT fixed: hidden owners' attachments collapse to `collapse(&datum)` where
    `datum` depends on the live pose — skipping the pose would change those collapse translations (not
    bit-identical).
-5. `view_model_entries` scans all attachments per ticked interp frame for the view model's few (lib.rs:228) —
+5. `view_model_entries` scans all attachments per ticked interp frame for the view model's few (lib.rs:213) —
    tens of µs, cache-per-weapon-switch if it ever profiles hot.
 
 ## Live checks for the main agent

@@ -9,8 +9,8 @@
 //! budgets so a regression fails a test instead of a playtest. Measured numbers are printed for
 //! the report table.
 //!
-//! What is timed (the per-frame CPU chain, gpu.rs `cel_visibility` → lib.rs `skin_palette` gate →
-//! `Renderer::update_skin`'s CPU half → `hud::overlay`/`menu_overlay`):
+//! What is timed (the per-frame CPU chain, gpu.rs `cel_visibility` → the lib.rs `skin_palette` gate →
+//! `Renderer::update_skin`'s CPU half → `hud::overlay`/`menu_overlay`; line numbers as of this branch):
 //! - `Scene::frame_state` (scene.rs:5994) — the shared pose/attachment core,
 //! - `Scene::colour_mults` (scene.rs:6802) — the fixed per-key ambient multipliers,
 //! - `Scene::skin_palette` (scene.rs:6678) — the palette the GPU path uploads,
@@ -19,7 +19,7 @@
 //!   needs a wgpu device (its body is pure CPU; only `Renderer::new` demands one),
 //! - `hud::overlay` (hud.rs:293) and `menu::menu_overlay` (menu.rs:3980),
 //! - `Scene::posed_vertices` (scene.rs:6881) — timed for the record but NOT on the window's
-//!   per-frame path: lib.rs reaches it only from `--shot` and `NF_BENCH` (lib.rs:1436).
+//!   per-frame path: lib.rs reaches it only from `--shot` and `NF_BENCH` (lib.rs:1462).
 //!
 //! Release-only (`#[cfg(not(debug_assertions))]`): the budgets are meaningless in a debug build.
 //! Every test is NF_ISO-gated like the other `_live` tests. The palette/colour hashes printed per
@@ -122,7 +122,7 @@ fn time_a_level(iso_path: &str, name: &str) {
     let vp = view_proj(eye, yaw, 0.0, 16.0 / 9.0);
 
     // The cel_visibility composition (gpu.rs:567) headless — the room mask the window feeds
-    // skin_palette with (lib.rs:2738), plus the near-LOS rescue the game-mask pass runs.
+    // skin_palette with (the lib.rs gate at 2960), plus the near-LOS rescue the game-mask pass runs.
     let cel_once = || -> Option<Vec<bool>> {
         let planes = nf_view::gpu::extract_frustum(vp);
         if scene.cel_graph.portals.is_empty() { return None; }
@@ -172,7 +172,7 @@ fn time_a_level(iso_path: &str, name: &str) {
     assert_budget(&format!("{name} hud_overlay"), 3.0, hud);
     assert_budget(&format!("{name} cel_vis"), 3.0, cel);
     // posed_vertices gets NO budget: it is off the window's per-frame path by construction (its
-    // only caller is the NF_BENCH block, lib.rs:1436 — the render path is skin_palette +
+    // only caller is the NF_BENCH block, lib.rs:1462 — the render path is skin_palette +
     // update_skin), and its cost scales with the level's vertex count (measured 0.4 ms on
     // 07000001's 76-character scene, 420 ms there — level-dependent by design). The render3_live
     // counter test guards its per-key ambient lookups instead.

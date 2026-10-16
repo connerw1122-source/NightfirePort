@@ -6799,7 +6799,7 @@ impl Scene {
         // frame-cost-guard: the per-attachment fallback this comment used to describe ("attachments
         // without an entry fall back to their owner's multiplier") was dead code. `colour_mults`
         // inserts EVERY index `0..attachments.len()` into `attach_mult` whenever the sim is Some
-        // (scene.rs:6849's `for ai in 0..self.attachments.len()`), and this loop only ran under
+        // (scene.rs:6863's `for ai in 0..self.attachments.len()`), and this loop only ran under
         // `has` — which is `!mults.is_empty()`, implying the sim is Some. So `contains_key` was
         // always true and the body never executed; on 07000005 it still cost 8561 hash lookups
         // per ticked frame. `colour_attach_map_covers_every_slot_on_the_lag_levels` pins the
