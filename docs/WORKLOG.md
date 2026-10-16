@@ -13863,3 +13863,24 @@ Work Log (async-level-load):
 - Branch created from origin/master (0f5f07f4). Plan: decode driving-mission script data from the MIS*.VIV
   archives (500 refpack), port the mission state machine (objectives/completion, fail states, timers, PTP
   end status) into nf_game::driving, headless scripted-event tests.
+
+## drive-mission-scripts (2026-10-16, branch s/drive-mission-scripts) — close-out
+- The driving missions' script data decoded and the mission state machine ported headless.
+  Data: the `Map ` pool record's `Rule`/`MSet`/`Trgr` chunks in each track `.crp` [M 0x22faf8:108-129];
+  MIS01 = 114×0x20 Rule entries / 760 B MSet ("helicopter") / 754×0x40 Trgr records [D].
+  Rule entry = {type u32, flags bits 0-2, group i32, hash u32, payload 16 B} [M 0x205220+0x209318];
+  15 rule classes from RTTI [D 0x397c28..] with ctor sizes [M 0x209390]; MIS01 histogram
+  {Always 2, Damage 4, Death 14, Health 4, Prog 41, Speed 28, Timer 14, Collision 5, ProgCounter 2}.
+  Objectives: MSet enabled byte +0x2c+i, target +0x4c+i*4 (0x2711 gate), params +0xcc/+0x14c
+  [M 0x205498]; channels stride 0x54 [M 0x20d378]; active = first enabled non-zero [M 0x20d488];
+  MIS01 channels {2 target 30, 26 target 24} [D]. Damage/health thresholds + difficulty percents
+  [M 0x206ec0]. End: PTP mapping [M ptp.rs, 0x174bf0:315-323 + 0x1c8560].
+- Port: nf-game/src/driving/mission.rs (MissionSet/RuleEntry/RuleKind/Trigger/Mission with
+  step(dt, SimSnapshot), fire, fail, drive_return) + crp.rs pool_find/record_window (additive).
+  Per-type firing semantics are [S] — the descriptor fns FUN_0020b120..0020b3f8 are not
+  decomposed; all [S] boundaries in docs/systems/drive-mission-scripts.md §5.
+- Tests: nf-game lib driving::mission 9/9; driving_mission_live (NF_DRIVING-gated) 5/5 (MIS01
+  numbers pinned, all 8 archives parse, scripted complete/fail over the real rules, trigger
+  stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
+  the touched crates' tests ran instead; flagged in the report.
+- Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
