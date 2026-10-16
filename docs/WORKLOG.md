@@ -16239,3 +16239,30 @@ gas_rgba/blend zeroing alpha?, and whether the sibling pool meshes (SMOKE_QUAD 0
 0x0200_001f, 0x0200_026e) draw either. Fix per [M View_DrawObjectGlist 0x1e6780 obj+0xF0 & 8
 billboard + gas colour bytes]; add a render-side assertion (vertices/pixels at the puff pos),
 not just a pool check.
+
+## blood-puff-render (2026-10-16, branch s/blood-puff-render) — close-out 19:10 UTC
+
+DONE (commit 87ff6158): the blood puff's draw chain measured end to end on 07000005 [D map 10
+obj 41 "BodyHit": 8 verts/6 tris, radius 0.032, texture map-10 #21 (32×32 GREY smoke — the disc's
+blood puff is NOT red; brightest palette entry 213,214,214), GS 0x7f00000048/0x5001b/0x131000000
+= additive, atest GEQUAL 1, no z-write] — slots, group material (Effect pass 5, 1152 indices =
+64×6 tris), skin attrs (a = attach_base + ai), the palette billboard at the puff (verified with
+the shot's camera axes), the CPU posed verts 0.1 from the puff, the pipeline and the draw
+submission all check out. TWO DEFECTS FIXED: (1) the frustum cull — `Layer::frustum_cullable`
+(gpu.rs): the Effect pools never cull now, NF_CULL or not; their build-time sphere is the
+IDENTITY-matrix centre (obj.centre ≈ the world origin, r 0.032) while the verts pose per frame —
+the game culls these objects per frame at the LIVE matrix [M View_AddObjects 0x1e62d8 →
+Vision_InView 0x1e89e0 on obj+0x8c/obj+0x80]; culling on the build sphere drops every puff the
+moment the origin leaves the frustum, wherever the puffs are posed — the exact shape of A-11's
+truck vanish, and the only mechanism that survives the driver's "even with the matrix forced in
+front of the camera" test. (2) skin_palette's gas colour slots now carry the pool's live
+rgba/255 — the game's obj+0x103..0x106 TAmbient tint, alpha (fade) included [M
+View_SetupRenderModes_Tweak 0x1e5888:46-49 + psiSetTweakARGB 0x124770; gases_smoke 0x1ab2d0's
+tail rewrites the bytes each tick; Gas_Init 0x1aacc8:56-59 seeds them] — the GPU path (the one
+that draws) never faded the puff. Tests: crates/nf-view/tests/blood_puff_render_live.rs (2, the
+draw chain + the cull rule), green; gpu_skin/frame_cost/searchlight-remainder/flesh pairs green.
+Suite: the fast runner could NOT run to completion in this sandbox (background jobs are killed
+between tool calls; a foreground 50-min run does not fit the window) — a foreground chunk over
+the 45 render/draw/palette/gas-adjacent nf-view binaries: 135 passed, 1 failed
+(probe_pylon_render::probe_render_pylon_only — pre-existing, fails in the prior session's chunk
+logs too), 2 ignored. The remaining binaries did not run — flagged in the report.
