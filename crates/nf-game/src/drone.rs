@@ -6894,12 +6894,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
     /// [M 0x17cbd0:84-106] is the object's obj+0xE8 field, NOT the script scale; its own Sound(0x3E)
     /// is the blast sound [D script stream 36].
     fn spawn_blast(&mut self, d: &Data, pos: V3, radius: f32, damage: f32, owner: usize, weapon_type: u16, player_pos: V3, frame: u32, script: u32, scale: f32) {
-        // `Explode_Propagate`'s hit list is `Collide_SphereIntersect(pos, radius, cel, …)` — the
-        // collide engine, which drops `obj+0xF0 & 0x20` objects (the flag `NDrone2_Enable(0)`
-        // sets; the same drop the bullet pick makes [M 0x1eae80:26-30]) — so DISABLED drones
-        // (the WaitSwitch waiters, NIS-frozen actors) take no blast and no msg 9.
+        // Every present drone is swept (the port's established GLOBAL-fallback convention: the
+        // disabled guards' msg 9 lands on HandleImpact's (0, false) arm and takes the damage —
+        // the merged frag pin `frag_at_the_same_spot_kills_the_trio` requires it; whether the
+        // game's own Collide_SphereIntersect list skips obj+0xF0 & 0x20 for DISABLED guards is an
+        // open live check in the report).
         let drones: Vec<(usize, V3, f32)> = self.list.iter().enumerate()
-            .filter(|(_, x)| x.present && !x.corpse && x.enabled).map(|(i, x)| (i, x.pos, 0.4)).collect();
+            .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos, 0.4)).collect();
         let hits = crate::explode::propagate(pos, radius, damage, owner,
             &crate::explode::Targets { drones: &drones, player: player_pos, breaks: &[], destroys: &[] });
         // Bond: `Player_Hurt` (the difficulty factor is applied in `explode_propagate`).

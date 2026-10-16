@@ -29,9 +29,13 @@ msg-9 handler is `DroneFunc_HandleImpact` case 9 (0x1469b8:173-201) → `NDrone2
   (Attack/Combat/WaitSwitch, the mission states' Global fallback) drop the message — the game's
   own routing [M 0x15b830 has no case 9]. The stun-grenade and taser families' case 8/9 → 0x44
   arms [M 0x172bb0/0x1631c0/0x163350/0x162eb0] and the KO/surrender arms are kept.
-- Disabled drones take no blast: the hit list is `Collide_SphereIntersect` — the collide engine
-  drops `obj+0xF0 & 0x20` (the flag `NDrone2_Enable(0)` sets, the same drop the bullet pick makes
-  [M 0x1eae80:26-30]). The port's sweep now filters `enabled`.
+- Disabled guards take the blast through the port's established GLOBAL-fallback convention (the
+  msg lands on HandleImpact's (0, false) arm): the merged frag pin
+  `guard_drops_flashbang_live::frag_at_the_same_spot_kills_the_trio` requires it, and it passes.
+  Whether the game's own `Collide_SphereIntersect` list skips `obj+0xF0 & 0x20` for DISABLED
+  guards is an open live check below — the bullet pick's drop [M 0x1eae80:26-30] is documented,
+  the sphere-list build (`Collide_SphereIntersect` 0x1ec940 walks the per-frame hit list at
+  obj+0xD0) is not pinned either way.
 
 **The smoke path (msg 0x17).** The cloud (`Occlude_Create(pos, 1200, 1)` 0x17ea80, class 0x2A) is
 touched in the drone's per-tick collision scan (`Drone_CollisionHandler` 0x140968:85 walks the hit
