@@ -58,6 +58,13 @@ step-back un-wedges them identically.
    and route censuses; the 07 watch shows no guest route crosses a door pair in 24,000 idle ticks
    — the party girls never receive kind-8 mission routes in the port, see Remaining).
 
+The suite run on the final merged tree also caught the 0x63 isolation drive asserting the
+wrong thing (the 0x63 region route carries no door nodes — kind-8 paths are excluded from
+`NavPathForPosition` [M 0x158488's kind & 0xD filter], so that drive can never dispatch 0x81); it
+is rescooped to what it proves: pre-fix the drive wedged 8 units short of the shoji, with the
+step-back it closes to 1.44 of the closed shoji and stops — and the never-activated door BLOCKS it
+(the 01 sister). All 7 `npc_doors_live` tests green on the final tree (e1d25a18).
+
 ## What ran
 
 - `cargo test --offline --release -p nf-game --lib`: 234/234 (branch tree and merged tree).
@@ -66,9 +73,15 @@ step-back un-wedges them identically.
 - The fast-runner suite on the branch-point tree (master 6bab6409 + worklog): **1700 passed, 6
   failed, 66 ignored (60 min)** — the failures are exactly the allowed set (3 disc_golden on the
   slim ISO + the documented pylon Vulkan-ICD trio). A re-run on the final merged tree
-  (f42de6ff) was started in the sandbox's last minutes (`suite2.out`); the total line could not be
-  read before the session ended — the next session should read `tail -1 suite2.out` and its
-  FAILED lines.
+  (f42de6ff) was started in the sandbox's last minutes (`suite2.out`); it had reached the 3
+  allowed disc_golden failures, one `TIMEOUT walkreal_07000001_live` (600 s), and one
+  `npc_doors_live` failure (the rescooped drive above) when the session ended — the next session
+  should read `tail -1 suite2.out` and its FAILED/TIMEOUT lines. The walkreal timeout is the
+  harness's clear-guard loop against a NOW-MOBILE guard (guard 15 pinned at health 1.0, dist 2.7,
+  "exposed" shots not landing for 900-tick stretches): the step-back un-wedges the port's guards,
+  and the walker's approach/aim tuning was built against guards frozen at their wedges. The test
+  family is the documented walkreal flake territory (045g's follow-up); the contact itself keeps
+  advancing — flagging for the walker owner with the spot (07000001 stairwell, guard 15).
 
 1b. `the_06_guard_chasing_bond_opens_the_closed_door` (07000006) — Bond beyond the closed door #1
    pair fires at the enabled IDLE guard #2 on the near side (the real input path, 8 shots); the
