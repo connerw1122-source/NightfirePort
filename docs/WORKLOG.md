@@ -15148,3 +15148,12 @@ menu-audio-state (2026-10-16)
   pump [M 0x182c60:78 + 0x1c9790:30-35]; results stats are Stats::default (host gap); Esc during a
   cutscene lacks the ScriptCam guard [M 0x193600:75]. Report: docs/reports/pause-results-flows.md
   (live checks 1-3).
+
+## pss-vag-recheck — GAPS G-008: pss.rs / vag.rs on every movie
+
+Plan: (1) branch s/pss-vag-recheck from origin/master; (2) complete the PSS legs on
+`MOVIES/30_FPS/*.PSS` — video picture count vs the GOP walk, audio-vs-video duration at ±1 frame
+(the existing live test allows ±1 s), and every picture decoding without error; (3) the VAG/stream
+leg — every bank-referenced VAG stream decoded with sample count and loop points checked (the
+unmerged s/verify-pss-vag work is the reference; re-verified on this tree); (4) goldens: numbers
+and SHA-1s only; (5) docs/formats + close G-008.
