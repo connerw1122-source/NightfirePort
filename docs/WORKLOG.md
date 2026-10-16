@@ -14462,3 +14462,12 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+## delta-repeater (2026-10-16, branch s/delta-repeater) — started
+- Playtest 1015-1738: the Delta Repeater (crossbow) model is missing the loaded arrows, and the
+  bolt's world hit plays a grenade-like bounce sound / bounces when the game's bolt should
+  stick or die [playtest].
+- Plan: port the bolt's world-hit behavior from Bullet_CollisionHandler + weapon_data +0x6C/+0x70
+  flags [M]; find the sub-meshes/datums/attachments that carry the loaded bolts on the view model
+  and why they are absent. Deliver data/attachments; the main agent checks the look against PCSX2.
+- Status: setup in progress; branch pushed from origin/master.
