@@ -117,3 +117,9 @@ plus the per-phase pinning tests.
    woman at the fireplace.
 4. **PCSX2 gdbwatch** (only if the renders disagree): the fireplace Kimiko drone's obj+0xF0 at
    the scene's start — expect bit 0x10 set within one tick of event 5 [M 0x149dd0:10-12].
+
+## Final-tree suite total (appended at close-out)
+
+The final-tree fast-runner suite (the merged tree with this task's draw-gate refactor and the
+pinning tests, started 16:41 UTC): `1877 passed, 6 failed, 72 ignored (40 min)` — the 6 are the
+3 allowed disc_golden + the 3 pre-existing pylon render probes. No regressions.
