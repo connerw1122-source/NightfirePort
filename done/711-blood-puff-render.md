@@ -47,3 +47,7 @@ claimed-by: sandbox1 at 2026-10-16T17:40Z
 ## Report (done, 2026-10-16T18:53Z)
 
 Closed by the driver: the report is on `s/blood-puff-render` (docs/reports/blood-puff-render.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T19:13Z)
+
