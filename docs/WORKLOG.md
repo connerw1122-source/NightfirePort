@@ -14255,3 +14255,33 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   stability). suite.py not runnable in this sandbox (background jobs reaped between calls) —
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
+
+- Task: rocket-sound-leak — the guided rocket's launch whoosh never stopped (playtest 1015-1738:
+  a looping sound stayed at the shooter's old position after a Sentinel rocket finished, stacking
+  per shot). Root cause: `fire_player`'s launch whoosh 0x10e — LOOPED ([L ACTION.ELF SFXOutputData
+  @0x2c94a0 entry 0x10e: looped 1, inner 5/outer 30], played for every ammo-type-0x0e weapon [L
+  ee_start_05.bin weapon_data @0x2bf150 +0x90 sweep: 0x2c/0x2d/0x2e/0x2f/0x30/0x31/0x6d]) — was
+  fire-and-forget, and the EE pool frees a looped node only on Sound_Stop. The game: Bullet_init
+  0x12c5a0:269-290 stores the LAST launch play's handle at BU+0xF0; Bullet_update's head
+  0x12e7b0:98-108 moves it with the rocket every tick (Sound_SetPosition) and clears it when the
+  driver finished it; Bullet_Delete 0x12e660:13-16 stops it on the object's delete (disasm
+  0x12e680 lw a0,0xf0(s2) → jal Sound_Stop → sw zero,0xf0(s2)) — the guided camera's restore rides
+  the same pass; Bullet_update case 3 (0x12ed68) stops it too. Fix: `PlayerBullet.snd` (BU+0xF0,
+  own line), the flight-head follow + finished-clear in `update_player_bullets`, and the stop at
+  the REAL delete pass — the dead-bullet retain in `flush_world_impacts` (post fix-gas-rng4 merge:
+  a pierce/ricochet revives its bullet, so the stop must not run at the dead flag; a revived
+  bullet keeps its handle, as in the game). Also dropped the drone grenade throw's fire-and-forget
+  looped 0x5ef (the game plays NO throw sound: DroneWeap_ThrowGrenade 0x179558 has no Sound_Play3D;
+  DroneWeap_FireWeapon 0x178f68:275 skips 0x5ef; Bullet_init's 0x5ef arm is the hat's (+2==0x45)
+  with the Bullet_Delete stop). Audit (no other leak in the port): grenade/mine/MGL sounds all
+  non-looped ([L SFXOutputData sweep: 0x51c/0x4a7/0x446/0x447/0x27c/0x16/0x14/0x13/0x15/0x41b/
+  0x5c9 looped 0]); the hat's looped 0x5ef and the turret's looped 0x5e5 charge (GunImp_Deactivate
+  0x132c18:62 stops it) are coverage gaps in the port, not leaks (the port never starts them);
+  Car_Deactivate 0x131d88:32 stops CAR_INFO+0x108; SpaceMissile plays nothing; the copter's
+  FireMissile is not ported yet. Tests: `fix_rocket_sound_leak_live::three_guided_rockets_leave_
+  no_looping_whoosh_behind` — 3 guided rockets through the real path (load_dev → step_bond →
+  Sounds → sound_tick → the driver): exactly ONE live 0x10e item per flight whose tracked position
+  follows the bullet, ZERO after each death (pre-fix the test failed at the stuck-position assert —
+  the playtest line; the count stacked per rocket). Hooks: `Sounds::live_ids`,
+  `Driver::item_pos`. Ran: the new test green on the merged tree; nf-game/nf-audio cargo check
+  clean; nf-view tests compile; the full suite on the final merged tree — see the report.
