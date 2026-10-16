@@ -14571,3 +14571,13 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
   the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
   docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
+
+## alarm-panel-06 (2026-10-16, branch s/alarm-panel-06) — start
+- Task: playtest 1015-2142 (07000006) "no panel to turn off the alarm" — the wall panel/switch
+  Bond can use to silence the alarm is missing in the port. Plan: find the alarm system's
+  objects/channels [M], the script/switch object that ends it, the Player_Activate 0x1a5170 arm
+  that uses it; find the panel's placement on 07000006 (type/hash, glist/prompt); find why the
+  port has none (not created / no prompt / channel write missing); port the missing part so E at
+  the panel stops the alarm exactly as the game does (channel, sound stop, guard state).
+  Headless: raise alarm on 07000006, walk Bond to the panel, use it, assert alarm state + sound
+  + channel clear; sister: use with no alarm. Branch created from origin/master f42de6ff.
