@@ -453,6 +453,16 @@ impl GameFlow {
 /// mission."]); the record bytes read back from the EE snapshot at 0x2df2e0 [L work/ee_snapshot.bin].
 /// The port keeps the game's level codes verbatim — the 0x09xxxxxx rows are the driving maps
 /// (`C_SBNFMAP` passes them straight to `ResetMap_LevelToLoad` [M 0x20b8d8:21-24]).
+/// A DRIVING.ELF mission hash (0x09xxxxxx) — no level archive on the disc; the game hands over to
+/// the driving executable [M GameFlow state 9, psiLaunchDriving 0x120af0].
+pub fn is_driving_level(level: u32) -> bool { level >> 24 == 0x09 }
+
+/// The campaign rows' names for port-only messages (the game's own names are Txt labels; these
+/// mirror USATxt 0x03000001.. for the notice text) [L the comments on CAMPAIGN].
+pub const CAMPAIGN_NAMES: [&str; 12] = ["Paris Prelude", "The Exchange", "Alpine Escape", "Enemies Vanquished",
+    "Double Cross", "Night Shift", "Chain Reaction", "Phoenix Fire", "Deep Descent", "Island Infiltration",
+    "Countdown", "Equinox"];
+
 pub const CAMPAIGN: [(u32, u32, u32, u32); 12] = [
     // (ring-preview texture, name label, description label, level) = sp_level[i] +0x00/+0x04/+0x08/+0x0c
     (0x0300_0085, 0x0300_0001, 0x0300_0013, 0x0900_0001), // Paris Prelude
@@ -1759,12 +1769,20 @@ pub struct FrontEnd {
     /// the game's Menu_CreateOptionBox error box with a port-only string (no label id exists for
     /// it [S]); the page under it returns to the MP lobby (MpJoin). None = no notice.
     pub net_notice: Option<String>,
+    /// The port's message box over any page (a port-only string, the game's option-box look): set
+    /// for things the port can't do yet (a driving mission) and for the online session's failures.
+    /// Confirm or Back dismisses it; every other action is swallowed while it stands.
+    pub notice: Option<String>,
 
     // menu-sfx (each new field on its own line [WORKLOG lesson 4]).
     /// The sounds this frame's input/page changes started — the host drains (`drain_sfx`) and
     /// plays them through nf-audio; the FrontEnd never touches the audio stack itself (tests
     /// stay silent). docs/systems/menu-sfx.md §3.
     pub sfx_out: Vec<MenuSfx>,
+    /// The `SFXRemove(0, id)` events this frame's page changes emitted — the host drains and
+    /// carries them through `Driver::remove` BEFORE the same frame's starts (the handlers' 0x4c
+    /// removes the menu-music pair before restarting it [M 0x20a408:17-22; menu-audio-leaks]).
+    pub sfx_remove_out: Vec<u32>,
     /// `enabled_sound_flags` 0x30d184 — gates MENU_SOUND 0/1/2/8 [M 0x1f3278's case gates]; the
     /// boot value 0x0b leaves sound 2 (○) disabled [L ee_start @0x30d184 = 0x0b].
     pub enabled_sound_flags: u8,
@@ -1945,12 +1963,15 @@ impl FrontEnd {
             /// The sounds this frame's input/page changes started — the host drains and plays them
             /// through nf-audio (never from inside the FrontEnd: tests stay silent).
             sfx_out: Vec::new(),
+            // menu-audio-leaks (each new field on its own line [WORKLOG lesson 4]).
+            sfx_remove_out: Vec::new(),
             /// `enabled_sound_flags` 0x30d184 — the boot value 0x0b gates MENU_SOUND 0/1/2/8
             /// [L ee_start 0x30d184 = 0x0b; M 0x1f3278's gates].
             enabled_sound_flags: 0x0b,
             /// The handlers' `menu_movie` static: set once the open pair has played, reset by the
             /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
             net_notice: None,
+            notice: None,
             menu_movie: false,
             // net-online-lobby (each new field on its own line [WORKLOG lesson 4]).
             mp_net_port: 27420,
@@ -1982,6 +2003,10 @@ impl FrontEnd {
     /// bank state is the host's, so both events go out and the driver's lookup decides).
     fn open_pair_sfx(&mut self) {
         if self.menu_movie { return; }
+        // The 0x4c arm removes the pair before restarting it [M 0x20a408:17-22] — without the
+        // remove every restart stacked another looping item (the playtest's "a lot of different
+        // music songs playing").
+        self.remove_pair();
         self.sfx_out.push(MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_MOVE });
         self.sfx_out.push(MenuSfx { sound: MENU_SOUND_PAGE_OPEN, id: SFX_MENU_OPEN_SELECT });
         self.menu_movie = true;
@@ -1996,6 +2021,16 @@ impl FrontEnd {
                     | Page::Credits | Page::MpDebriefing) {
             self.open_pair_sfx();
         }
+    }
+
+    /// `SFXRemove(0, 0x1d7)` + `SFXRemove(0, 0x470)` [M the twelve handlers' 0x4c arm removes
+    /// the pair before restarting it (0x20a408:17-18); P_INTRO's movie arms 0x209e88:38-39,53-54;
+    /// P_ATTRACT 0x20a1f0:45-46; Menu_PlayMovie 0x215990]. The events ride `sfx_remove_out`; the
+    /// host carries them through `Driver::remove` — all instances of the id, the IOP's KillSFX
+    /// walks every matching item [M IRX 0x1f88 → KillSFX 0x1ea4].
+    fn remove_pair(&mut self) {
+        self.sfx_remove_out.push(SFX_MENU_OPEN_MOVE);
+        self.sfx_remove_out.push(SFX_MENU_OPEN_SELECT);
     }
 
     /// `Menu_PlaySound` [M 0x1f3278]: the gated sounds (0/1/2/8) drop when their
@@ -2030,6 +2065,12 @@ impl FrontEnd {
     /// `Sound_Play` do [M 0x115a68, 0x1f3278].
     pub fn drain_sfx(&mut self) -> std::vec::Drain<'_, MenuSfx> {
         self.sfx_out.drain(..)
+    }
+
+    /// The frame's `SFXRemove(0, id)` events — the host applies them BEFORE the same frame's
+    /// starts (the handlers' 0x4c order [M 0x20a408:17-22; menu-audio-leaks]).
+    pub fn drain_sfx_removes(&mut self) -> std::vec::Drain<'_, u32> {
+        self.sfx_remove_out.drain(..)
     }
 
     /// credits-data: opens the credits page 0x40000030 — the AV Options Credits row's page change
@@ -2514,6 +2555,9 @@ impl FrontEnd {
             // `Menu_ResetNoInputCount`] — the game's 45 s clock starts at the main menu's open,
             // not at the START press.
             self.no_input_frames = 0;
+            // The movie-2 end restarts the pair [M 0x209e88:23-29 — remove, then SFXStart both,
+            // menu_movie=1]; the next page-open's 0x4c churn collapses into this one restart.
+            self.open_pair_sfx();
         }
         // credits-data: the credits page's 0x50 tick; the delayed 0x44/0x5f exit routes the page
         // [M P_CREDITS_Handler 0x2152b0:103-195 — ToMain = msg 0x44/0x40000002 after the win path,
@@ -2579,6 +2623,10 @@ impl FrontEnd {
         } else {
             ATTRACT_MOVIE_B
         };
+        // The attract 0x4c kills the pair before its movie starts [M 0x20a1f0:16-35]; the movie
+        // start also clears the static (Menu_PlayMovie's tail [M 0x215990]).
+        self.remove_pair();
+        self.menu_movie = false;
         self.attract_playing = true;
     }
 
@@ -2596,6 +2644,10 @@ impl FrontEnd {
         self.attract_movie = 0;
         self.page = self.attract_opener;
         self.no_input_frames = 0; // [M the opener's 0x4c Menu_ResetNoInputCount]
+        // The 0x50 restart [M 0x20a1f0:45-50 — remove+start gated on menu_movie==0]: the opener
+        // page is already set, so the pair restarts right here.
+        self.menu_movie = false;
+        self.open_pair_sfx();
     }
 
     /// The pause page opens over a running mission (the game's GS_PauseGame [M 0x17d178 pauses the
@@ -2606,6 +2658,10 @@ impl FrontEnd {
     pub fn open_pause(&mut self) -> bool {
         if self.page != Page::Pause && self.flow.current_level != FRONTEND_LEVEL && self.flow.current_level != 0 {
             self.enter_page(Page::Pause);
+            // MenuManager_Create zeroes the static on every manager open [M 0x21b908:125] — the
+            // pause page's own 0x4c starts no pair (P_PAUSE 0x203c28 has no pair calls), and the
+            // next front-end page after the unpause restarts it fresh [M 0x21c2b0:15].
+            self.menu_movie = false;
             self.cursor = 0;
             self.pause_tab = 0;
             self.confirming_restart = false;
@@ -3515,6 +3571,19 @@ impl FrontEnd {
 
     /// One menu action. Returns true when the action changed the state.
     pub fn action(&mut self, a: Action) -> bool {
+        // The MP start checks' refusal is the game's option box too (Menu_CreateOptionBox with the
+        // error label [M C_SBMPOPTIONS 0x20e818:50-130]); it was never drawn, so Continue just did
+        // nothing (playtest 1015-2231 "cant get into a match").
+        if self.notice.is_some() || self.net_notice.is_some() || self.mp_error != 0 {
+            if matches!(a, Action::Confirm | Action::Back) {
+                self.notice = None;
+                self.net_notice = None;
+                self.mp_error = 0;
+                self.sfx(MENU_SOUND_SELECT, SFX_MENU_TICK);
+                return true;
+            }
+            return false;
+        }
         // attract-mode: while the attract movie plays the game blocks the page input — msg 0x68
         // cleared the queued actions and the 0x22 dispatcher is gated on the manager's block byte
         // [M 0x21c858 case 0x68 `Input_ClearAllActions`; 0x21c3d8:70] — and polls the skip action
@@ -3793,7 +3862,13 @@ impl FrontEnd {
                     self.flow.play_movie(INTRO_TICKS);
                     self.intro_playing = true;
                     self.intro_index = 0;
-                    self.enter_page(Page::Main);
+                    // P_INTRO's 0x50 frame-1 removes the pair and clears the static before the
+                    // movies start [M 0x209e88:37-47] — the menu music is silent under the EA
+                    // logo (the playtest's leak); it restarts at the movie-2 end (the intro-end
+                    // arm in tick). The page flip keeps menus_flow's contract.
+                    self.page = Page::Main;
+                    self.menu_movie = false;
+                    self.remove_pair();
                     self.cursor = 0;
                     return true;
                 }
@@ -3889,8 +3964,21 @@ impl FrontEnd {
                     // holds there and no `requested_level` goes out (a 0x09 hash has no level
                     // archive on the ISO [D] — the old path failed the load).
                     if !self.unlocked_row(self.cursor) { return false; }
+                    // One request per pick: the game deletes the menu manager with it [M the
+                    // ResetMap_LevelToLoad + MenuManager_Delete pair]; the port's overlay stays up
+                    // until the host takes the request.
+                    if self.requested_level.is_some() { return false; }
                     self.mission = self.cursor.min(CAMPAIGN.len() - 1);
                     let level = CAMPAIGN[self.mission].3;   // +0x0c [M 0x20b8d8:21]
+                    // The port has no DRIVING.ELF: entering GameFlow state 9 left the flow stuck there
+                    // for good (playtest 1015-2231 "can't start any sp levels" — Paris Prelude, the
+                    // only row a fresh profile opens, is a driving mission). The row says so instead,
+                    // and `unlocked_row` lets the next on-foot row open through it [S port choice].
+                    if is_driving_level(level) {
+                        self.notice = Some(format!("{} is a driving mission.\nDriving isn't in the PC port yet -\nthe next mission is unlocked.",
+                            CAMPAIGN_NAMES.get(self.mission).copied().unwrap_or("This")));
+                        return true;
+                    }
                     self.flow.reset_map_level_to_load(level, false, false);
                     if self.flow.get_state() == ST_LAUNCH_DRIVING {
                         eprintln!(
@@ -4391,10 +4479,7 @@ impl FrontEnd {
                         // [M disasm 0x217654/0x21765c] and opens the setup page [M
                         // 0x217638-0x217644 → 0x40000051].
                         self.mp_level = MP_MAP_ROWS[row].3;
-                        self.enter_page(Page::MpSetup);
-                        // P_MPSETUP picks the prompt from the scenario's team bit [M 0x20d7a8].
-                        self.mp_setup_state = if self.mp_scenario & 0x2000_0000 != 0 { 2 } else { 3 };
-                        self.mp_setup_sel = 0;
+                        self.enter_mp_setup();
                         return true;
                     }
                     _ => {}
@@ -4472,7 +4557,10 @@ impl FrontEnd {
                 match a {
                     Action::Up if self.mp_options_row > 0 => { self.mp_options_row -= 1; return true; }
                     Action::Down if self.mp_options_row + 1 < MP_OPTIONS_ROWS.len() => { self.mp_options_row += 1; return true; }
-                    Action::Back => { self.enter_page(Page::MpSetup); return true; }
+                    // Back to the setup page re-runs its 0x4c: the prompt from the scenario's team
+                    // bit [M P_MPSETUP 0x20d7a8] — the stale state left a free-for-all on the team
+                    // prompt after backing out (playtest 1015-2231).
+                    Action::Back => { self.enter_mp_setup(); return true; }
                     Action::Confirm => {
                         let row = self.mp_options_row.min(MP_OPTIONS_ROWS.len() - 1);
                         // AI Bots is locked on Ravine [M P_MPOPTIONS 0x217678:20-25].
@@ -4694,7 +4782,10 @@ impl FrontEnd {
 
     /// sp_level[i]+0x10, with `menu_unlock_everything` [M 0x20b8d8:18].
     pub fn unlocked_row(&self, i: usize) -> bool {
-        self.unlock_all || self.unlocked.get(i).copied().unwrap_or(false)
+        if self.unlock_all || self.unlocked.get(i).copied().unwrap_or(false) { return true; }
+        // A row after an unlocked DRIVING row opens through it (the port can't play driving yet, so
+        // the campaign would otherwise stop at Paris Prelude) [S port choice].
+        i > 0 && i < CAMPAIGN.len() && is_driving_level(CAMPAIGN[i - 1].3) && self.unlocked_row(i - 1)
     }
 
     /// The unlock flags packed the game's way — bit i = `sp_level[i]+0x10`
@@ -5000,7 +5091,24 @@ impl FrontEnd {
     /// `GameFlow_PushState(80.0f, 7, 0xff)` + `SFXFadeDown` + `MenuManager_Delete`. The port's
     /// handover: the level request rides the existing `requested_level`/load machinery, the
     /// match config lands in `mp_match_settings` for the host's MP core.
+    /// P_MPSETUP's page enter [M 0x20d7a8]: the prompt from the scenario's team bit (team pick for a
+    /// team game, else the character), the pick on the agent's stored value.
+    fn enter_mp_setup(&mut self) {
+        self.enter_page(Page::MpSetup);
+        if self.mp_scenario & 0x2000_0000 != 0 {
+            self.mp_setup_state = 2;
+            self.mp_setup_sel = self.mp_join[0].team as usize;
+        } else {
+            self.mp_setup_state = 3;
+            self.mp_setup_sel = self.mp_join[0].skin as usize;
+        }
+    }
+
     pub fn mp_confirm_start(&mut self) -> bool {
+        // One start per confirm: the game deletes the menu manager with the request, so a second
+        // press never reaches the page [M P_MPCONFIRM's MenuManager_Delete]. The port's overlay
+        // stays up until the host takes the request — refuse while one is pending.
+        if self.requested_level.is_some() { return false; }
         let humans = self.mp_human_count();
         if humans == 0 { return false; }
         let time = if self.mp_time_limit == -1 { -1 } else { self.mp_time_limit * 60 };   // [M the ×0x3c]
@@ -5579,18 +5687,8 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
             }
             hint_bar(&mut h, font, &hint(0x49b, "~A Confirm  ~V Change  ~B Back"), 50.0, 419.0, cream);
             quad640(&mut h, 0x0300_016d, 434.0, 38.0, 156.0, 43.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
-            // net-match-host: the session's message box (the game's Menu_CreateOptionBox error
-            // box [M mp-menus]; the port-only texts have no label ids, so the string draws raw
-            // [S]). The page under it is the lobby (MpJoin) — the failure path set it.
-            if let Some(t) = &fe.net_notice {
-                quad640(&mut h, 0x0300_0199, 120.0, 196.0, 400.0, 88.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
-                let lines: Vec<String> = t.split('\n').flat_map(|p| wrap_px(p, font, mx(360.0))).collect();
-                let n = lines.len().min(3) as f32;
-                for (k, l) in lines.iter().take(3).enumerate() {
-                    let mid = 240.0 + (k as f32 - (n - 1.0) / 2.0) * 22.0;
-                    centred(&mut h, font, -2, l, mx(320.0), my(mid), cream, true, 1.0);
-                }
-            }
+            // net-match-host's message box now draws with the general notice at the end of the
+            // overlay (fe.net_notice) — dismissable with Enter/Esc on any page.
         }
         // The MP wheels with the codename wheel's layout [L pages 0x40000012 (header 0x2c4 Scenario Options),
         // 0x40000027 / 0x4000003f (header 0x294 Multiplayer Bot Setup); hint 0x218; PCSX2 m55, m56, m57, m61, m63].
@@ -6081,6 +6179,43 @@ pub fn menu_overlay(fe: &FrontEnd, font: &nf_formats::hud::Font, hfont: &nf_form
         // has no page data (nothing static to draw).
         Page::NfBonus | Page::WinGame | Page::CheatMedal => {}
     }
+    // The port's message box over whatever page is up (the option-box plate the MP pages use).
+    // The MP start checks' refusal [M C_SBMPOPTIONS 0x20e818:50-130]: the game's label, with a
+    // plain fallback when the language file doesn't resolve it.
+    let mp_err = (fe.mp_error != 0).then(|| {
+        let s = bind(fe.mp_error);
+        if !s.is_empty() { s } else {
+            match fe.mp_error {
+                0x39e => "A match needs at least two players.\nAdd bots on the Options page.".to_string(),
+                0x389 => "Both teams need at least one player.".to_string(),
+                _ => "Only one MI6 player is allowed in a free-for-all.".to_string(),
+            }
+        }
+    });
+    if let Some(t) = fe.notice.as_ref().or(fe.net_notice.as_ref()).or(mp_err.as_ref()) {
+        // The page under a message box dims so the box reads on its own (it sat on the list rows'
+        // text in the live check).
+        // In FRONT of every page layer (the HUD sorts higher layers to the back; the page rows draw
+        // at -2/-3, so the box takes -9..-12): the dim, the box fill, its frame, then the text.
+        // Solid fills through the renderer's white texture — the font-atlas plates draw nothing
+        // on pages without that atlas.
+        let solid = |h: &mut Hud, layer: i32, x: f32, y: f32, w: f32, hh: f32, c: [f32; 4]| {
+            let (a, b) = (h.ndc(Anchor::Centre, mx(x), my(y)), h.ndc(Anchor::Centre, mx(x + w), my(y + hh)));
+            let p = |q: [f32; 2]| HudVertex { p: q, uv: [0.0, 0.0], c };
+            h.ndc_solid(layer, [p([a[0], a[1]]), p([b[0], a[1]]), p([b[0], b[1]]), p([a[0], a[1]]), p([b[0], b[1]]), p([a[0], b[1]])], c);
+        };
+        solid(&mut h, -9, 0.0, 0.0, MW, MH, gs(0x000000, 0x90));
+        solid(&mut h, -10, 100.0, 180.0, 440.0, 120.0, gs(0x180c08, 0xf0));
+        solid(&mut h, -11, 100.0, 180.0, 440.0, 2.0, gs(CREAM, 0xc0));
+        solid(&mut h, -11, 100.0, 298.0, 440.0, 2.0, gs(CREAM, 0xc0));
+        let lines: Vec<String> = t.split('\n').flat_map(|p| wrap_px(p, font, mx(400.0))).collect();
+        let n = lines.len().min(3) as f32;
+        for (k, l) in lines.iter().take(3).enumerate() {
+            let mid = 230.0 + (k as f32 - (n - 1.0) / 2.0) * 22.0;
+            centred(&mut h, font, -12, l, mx(320.0), my(mid), cream, true, 1.0);
+        }
+        centred(&mut h, font, -12, "Press Enter", mx(320.0), my(282.0), dim, true, 1.0);
+    }
     h.finish()
 }
 
@@ -6392,7 +6527,16 @@ fn results_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: 
                     tex_quad_or_plate(h, textures, rf.emblem, 135.0, 80.0, 370.0, 186.0, [0.0, 0.0, 256.0, 128.0], gs(0x7f7f7f, 0xff));
                     // The medal plate 0x100001d1 [M :159-161]: the medal name / no-medal line.
                     plate(h, 49.0, 264.0, 541.0, 37.0, gs(0x1e1210, 0x60));
-                    h.text(Anchor::Centre, font, -2, &rf.medal_text, mx(49.0 + 270.0), my(264.0 + 18.0), false, bright, false);
+                    // The bound text carries its own line break ("Congratulations!\nYou won a …");
+                    // each line centres in the plate (it drew left-aligned from the plate's centre
+                    // and ran off the screen on the live end sequence).
+                    let lines: Vec<&str> = rf.medal_text.lines().filter(|l| !l.trim().is_empty()).collect();
+                    let n = lines.len().max(1) as f32;
+                    let scale = if n > 1.0 { 0.8 } else { 1.0 };
+                    for (k, l) in lines.iter().enumerate() {
+                        let y = 264.0 + 18.5 + (k as f32 - (n - 1.0) / 2.0) * 16.0;
+                        centred(h, font, -2, l.trim(), mx(49.0 + 270.5), my(y), bright, false, scale);
+                    }
                     // "Total Score:" is the page's own static label [L]; the number 0x10000167 is
                     // SeparateNumber(+0x34) [M :96-97].
                     h.text(Anchor::Centre, font, -2, &lbl(0x2cb, "Total Score:"), mx(48.0 + 132.0), my(336.0 + 8.0), false, cream, false);

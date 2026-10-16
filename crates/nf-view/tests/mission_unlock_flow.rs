@@ -56,14 +56,21 @@ fn first_three_completions_unlock_in_game_order_and_survive_save_load() {
     // state already offers. Completing it awards rows 1 and 2.
     let mut progress = nf_game::progress::Progress::default();
     assert!(fe.results_enter(&mut progress, 0x0700_0005, 6, 2, None), "the results fields built");
-    assert!(fe.unlocked_row(2), "row 2 unlocked by row 1's award [M 0x1ffa10:63-65]");
+    // The GAME's award flags (packed_unlocks = sp_level+0x10) stay exactly the game's; the port's
+    // `unlocked_row` additionally opens a row behind an unlocked DRIVING row, because the port can't
+    // play driving yet (playtest 1015-2231: a fresh profile was stuck on Paris Prelude) [S].
+    assert_eq!(fe.packed_unlocks() & 0b100, 0b100, "row 2 awarded by row 1's completion [M 0x1ffa10:63-65]");
+    assert_eq!(fe.packed_unlocks() & 0b1000, 0, "the game's flag for row 3 is still clear");
     assert!(fe.unlocked_row(0) && fe.unlocked_row(1), "sister: no regression — the game's flags never clear");
-    assert!(!fe.unlocked_row(3), "sister: row 3 stays locked until row 2 completes");
+    // Rows 2 and 3 are driving (0x09000005/6), so the port opens through them to row 4, the next
+    // on-foot mission (Double Cross) — and stops there.
+    assert!(fe.unlocked_row(3) && fe.unlocked_row(4), "the port opens through the driving rows");
+    assert!(!fe.unlocked_row(5), "sister: the chain stops behind an on-foot row");
 
     // Row 2 completes (0x09000005 — a DRIVING hash; the award code is hash-agnostic [M :62-66]).
     fe.results_enter(&mut progress, 0x0900_0005, 6, 2, None);
-    assert!(fe.unlocked_row(3), "row 3 (driving) unlocked by row 2's award");
-    assert!(!fe.unlocked_row(4), "sister: row 4 still locked");
+    assert_eq!(fe.packed_unlocks() & 0b1000, 0b1000, "row 3 awarded by row 2's completion");
+    assert_eq!(fe.packed_unlocks() & 0b10000, 0, "the game's flag for row 4 is still clear");
 
     // Row 3 completes (0x09000006, driving) → row 4.
     fe.results_enter(&mut progress, 0x0900_0006, 6, 2, None);
@@ -124,15 +131,18 @@ fn sp_confirm_splits_on_foot_from_driving() {
     to_mission_select(&mut fe);
     assert_eq!(fe.cursor, 0, "the list opens on the first unlocked row = 0");
 
-    // Row 0 is the DRIVING 0x09000001: state 9, no requested_level.
+    // Row 0 is the DRIVING 0x09000001. The game hands over to DRIVING.ELF in GameFlow state 9 [M
+    // 0x1d3800:105-108]; the port has no driving executable, and entering state 9 left the flow
+    // stuck for good (playtest 1015-2231). The port shows a notice instead: the flow stays in the
+    // runner and no level load goes out [S port choice].
     assert!(fe.action(Action::Confirm));
-    assert_eq!(fe.flow.get_state(), ST_LAUNCH_DRIVING, "the state-9 handover [M 0x1d3800:105-108]");
-    assert_eq!(fe.launching_driving(), Some(0x0900_0001), "the host's getter reports the attempt");
+    assert_ne!(fe.flow.get_state(), ST_LAUNCH_DRIVING, "the port never enters the dead state 9");
+    assert_eq!(fe.flow.get_state(), ST_RUNNER);
+    assert!(fe.notice.is_some(), "the driving notice shows");
     assert!(fe.requested_level.is_none(), "sister: no level load goes out for a 0x09 hash");
+    assert!(fe.action(Action::Confirm), "Enter dismisses the notice");
 
-    // Row 1 is the on-foot 0x07000005: the normal loader path (re-arm the flow as the game's
-    // would be — a driving confirm never returns here in the real program).
-    fe.flow.stack = vec![ST_RUNNER];
+    // Row 1 is the on-foot 0x07000005: the normal loader path.
     fe.cursor = 1;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0005), "the on-foot pick requests the level");

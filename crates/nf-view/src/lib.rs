@@ -1613,6 +1613,11 @@ struct App {
     frame_ticks: u32,
     /// The paused menus' 60 Hz accumulator (seconds) for the animations that run while the game is paused.
     menu_clock: f32,
+    /// The sim reported the mission's own end this frame (see `Drones::mission_end`).
+    pending_mission_end: bool,
+    /// Dev `--set-channel <ch>`: a switch channel raised 2 s into the level (channel 100 = mission
+    /// success — what scratchpad complete.py writes in PCSX2), for end-of-mission checks.
+    force_channel: Option<u8>,
     cam_prev: Option<Camera>,
     cam_cur: Option<Camera>,
     pal_prev: Option<(Vec<nf_formats::anim::Mat4>, Vec<[f32; 4]>)>,
@@ -1689,7 +1694,16 @@ struct LevelLoad {
     /// drive-ptp: the DRIVING return (`Boot_LoadPTPData` 0x1c8560), taken from the OLD sim at
     /// spawn and applied to the NEW one at the swap (see `swap_in_scene`).
     ptp_return: Option<nf_game::ptp::DriveReturn>,
+    /// The finished build, parked while the loading screen's minimum time runs (`LOADING_HOLD`).
+    ready: Option<Option<Result<scene::Scene, String>>>,
 }
+
+/// The loading screen's minimum time on screen. The PS2's disc load kept it up ~11.5 s on
+/// 07000001 → 07000002 (PS2LSActive 2 → 0, measured in PCSX2 2026-10-15) — long enough to read
+/// the objective and the hint while the dots sweep (183.5 ms a step, the port's 11-vblank cadence
+/// exactly). The port builds a level in 1-2 s, so the screen flashed by (playtest 1015-2142); the
+/// user chose to hold it a few seconds [S — a PC-port choice, not the game's timing].
+const LOADING_HOLD: f64 = 5.0;
 
 impl App {
     /// One menu action from the keyboard or the mouse (PC mouse support, 2026-10-15): the movie skip, the pause page's
@@ -1703,7 +1717,10 @@ impl App {
         // up during a movie]. The port's Confirm keys (Enter/Space) stand in for
         // the pad's X/Start [S docs/systems/input.md §3].
         if fe.flow.get_state() == menu::ST_MOVIE {
-            if a == MA::Confirm { fe.flow.skip_movie(); }
+            // A movie can't be skipped in its first second on screen: the press that picked the
+            // mission (or a quick double-tap) used to skip its briefing before a frame showed.
+            let shown = self.movie.as_ref().map_or(f32::MAX, |p| p.shown_for());
+            if a == MA::Confirm && shown >= 1.0 { fe.flow.skip_movie(); }
             return;
         }
         if fe.page == menu::Page::Pause && a == MA::Back {
@@ -1724,9 +1741,13 @@ impl App {
         // miss returns without starting): the front-end map boots bank 0xC, a paused mission keeps
         // its own bank, which carries the pause blips [D SB_4/SB_5; docs/systems/menu-sfx.md §2-3].
         let menu_sfx: Vec<_> = fe.drain_sfx().collect();
-        if !menu_sfx.is_empty() {
+        let menu_rm: Vec<u32> = fe.drain_sfx_removes().collect();
+        if !menu_sfx.is_empty() || !menu_rm.is_empty() {
             if let Some(snd) = self.sound.as_mut() {
                 snd.batch(|drv, out| {
+                    // The 0x4c order: the removes land before the same frame's starts [M
+                    // 0x20a408:17-22] — the restart replaces the loop instead of stacking it.
+                    for id in &menu_rm { drv.remove(0, Some(*id)); }
                     for ev in &menu_sfx { drv.start(out, ev.id, None, 0, None); }
                 });
             }
@@ -1747,9 +1768,28 @@ impl App {
         // 0x204408 — the game's resume is its own row]: the host consumes the flag and
         // leaves the menu (the sound hold lifts through the diff below).
         if closed {
-            self.fe = None;
-            if self.scene.sim.is_some() { self.grab(true); }
+            self.close_front_end();
         }
+    }
+
+    /// The front end closes (a briefing resolved to a level, the pause's pick, the resume):
+    /// the menu-music pair dies with it. The game's exit path plays the menus fade and lets the
+    /// level's own `SFXLoadSoundBank` reset the items [M C_SBNFMAP 0x20b8d8 case 0x4b —
+    /// SFXFadeDown(1), no explicit pair remove]; the port's banks swap without that reset, so
+    /// the close removes the pair explicitly through the driver (all instances of the id — the
+    /// IOP's KillSFX semantics [M IRX 0x1f88 → KillSFX 0x1ea4]). Without it the looped items
+    /// played on through gameplay and the pause (the playtest's "music continues after I leave
+    /// the menu").
+    fn close_front_end(&mut self) {
+        let rm: Vec<u32> = self.fe.as_mut().map(|fe| fe.drain_sfx_removes().collect()).unwrap_or_default();
+        if let Some(snd) = self.sound.as_mut() {
+            snd.batch(|drv, _out| {
+                for id in &rm { drv.remove(0, Some(*id)); }
+                for id in [menu::SFX_MENU_OPEN_MOVE, menu::SFX_MENU_OPEN_SELECT] { drv.remove(0, Some(id)); }
+            });
+        }
+        self.fe = None;
+        if self.scene.sim.is_some() { self.grab(true); }
     }
 
     // ── net-match-host: the online session's app surface ────────────────────────────────────────
@@ -1889,7 +1929,7 @@ impl App {
             } else if dev { load_with_carry_dev(&iso, &name, all, save.as_ref()) } else { load_with_carry(&iso, &name, all, save.as_ref()) }
                 .map_err(|e| e.to_string())
         });
-        self.async_load = Some(LevelLoad { job, next, ptp_return });
+        self.async_load = Some(LevelLoad { job, next, ptp_return, ready: None });
     }
 
     /// One frame of the running load (async-level-load): `false` = the worker still runs — the
@@ -1899,18 +1939,37 @@ impl App {
     /// the swap is done, the caller falls through to normal play.
     fn poll_async_load(&mut self) -> bool {
         let Some(load) = self.async_load.as_mut() else { return true; };
-        let Some(res) = load.job.poll() else {
+        if load.ready.is_none() { load.ready = load.job.poll(); }
+        // A successful build into a level with a loading screen waits out LOADING_HOLD (the
+        // front-end map draws no loading screen [M ResetMap_GenLoadScreen skipped for 0x07000048];
+        // a failure goes at once).
+        let hold = load.next != menu::FRONTEND_LEVEL
+            && load.job.elapsed_ticks() < (LOADING_HOLD * 60.0) as u32
+            && !matches!(load.ready, Some(Some(Err(_))) | Some(None));
+        if load.ready.is_none() || hold {
             let (level, dots) = (load.next, loading::dots_lit(load.job.elapsed_ticks()));
             self.draw_loading_screen(level, dots);
             if let Some(g) = &self.gfx { g.window.request_redraw(); }
             return false;
-        };
+        }
         // The job is over whatever the result: take it and let the frame finish normally.
-        let load = self.async_load.take().unwrap();
+        let mut load = self.async_load.take().unwrap();
+        let res = load.ready.take().unwrap();
         match res {
             Some(Ok(scene)) => {
                 let name = level_archive_name(load.next);
                 self.swap_in_scene(scene, load.ptp_return);
+                // A real level loaded from the front end: the menu manager is gone [M the MP
+                // confirm's / the SP pick's MenuManager_Delete — "the host closing the overlay once
+                // the load leaves the front-end map"]. The MP start loads its arena directly (no
+                // briefing hand-over), and the front end stayed open over it — the arena never
+                // showed, only the menu's backdrop (playtest 1015-2231 "cant get into a match").
+                if load.next != menu::FRONTEND_LEVEL
+                    && self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() != menu::ST_MOVIE)
+                {
+                    self.fe = None;
+                    if self.scene.sim.is_some() { self.grab(true); }
+                }
                 // frontend-music: `Sound_Ready`'s front-end case [M 0x1dceb8 case 0x7000048] — the
                 // load alternates bank 0xc (SBI slot 0 = SB_0, jingle 0x1d7) and 0x38 (slot 1 =
                 // SB_1, jingle 0x470) through DAT_002e1b11, then `MenuManager_Create` resets
@@ -1924,7 +1983,7 @@ impl App {
                     }
                     self.fe_music_page = None; // the manager re-create re-runs the page's 0x4c [M 0x21b908:127]
                 }
-                eprintln!("level: loaded {name}");
+                eprintln!("level: loaded {name} (loading screen {:.1} s)", load.job.elapsed_ticks() as f64 / 60.0);
             }
             Some(Err(e)) => eprintln!("level: failed to load {}: {e}", level_archive_name(load.next)),
             None => eprintln!("level: load of {} panicked (worker thread died)", level_archive_name(load.next)),
@@ -1940,6 +1999,14 @@ impl App {
     /// return, the renderer rebuild — GPU upload, this thread owns the device — and the entry
     /// checkpoint, in the exact order the synchronous path ran.
     fn swap_in_scene(&mut self, mut scene: scene::Scene, ptp_return: Option<nf_game::ptp::DriveReturn>) {
+        // The previous scene's skin palette and its interpolation cameras belong to the OLD skin
+        // layout: uploading them into the new renderer overran its palette buffer every frame
+        // until a tick rebuilt them — and a level that doesn't tick at once (an MP arena with the
+        // menu still up) never did (the 787 GPU validation errors, playtest 1015-2231).
+        self.pal_cur = None;
+        self.pal_prev = None;
+        self.cam_prev = None;
+        self.cam_cur = None;
         self.sound = build_sound(&mut scene);
         // The fresh sound stack is unpaused: reset the mirror so the per-frame diff
         // re-applies the current hold (a menu can still be up over the reload).
@@ -2013,12 +2080,14 @@ impl App {
         // :77 GetScore(0) + :169 Menu_SetLevelBonus] — the fields the overlay draws
         // (front-end-chain). GameState+0x72 is BaseMap [M 0x182c60:68-70's clamp].
         if complete {
-            let lang = self.lang.as_ref();
+            // The front end's language table isn't loaded while a mission runs — fall back to the
+            // level's own (the medal name drew as a raw "<0x2c7>" on the live end sequence).
+            let lang = self.lang.clone().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.clone()));
             if let Some(sim) = self.scene.sim.as_mut() {
                 let b = sim.drones.mission.base_map;
                 let base = if b == u32::MAX || b == 0 { self.level_code } else { b };
                 let diff = sim.drones.progress.difficulty;
-                fe.results_enter(&mut sim.drones.progress, base, 6, diff, lang);
+                fe.results_enter(&mut sim.drones.progress, base, 6, diff, lang.as_ref());
             }
         }
         self.fe = Some(fe);
@@ -2091,7 +2160,17 @@ impl App {
     /// the phase-2 resolve routing the host's level load [M ResetMap_Load 0x1d6360 LoadState 2].
     fn movie_tick(&mut self) {
         let movie_iso = self.movie_iso_path();
-        let Some(fe) = self.fe.as_mut() else { return };
+        let Some(fe) = self.fe.as_mut() else {
+            // No front-end page is up: no page wants the looping backdrop — stop it. The game's
+            // page-change arm stops the aux when the new page's aux is 0 [M 0x21c858:334-338];
+            // the front end's close is that arm with no page at all (menu-audio-leaks finding 1:
+            // the backdrop — the menu music — played on through gameplay and the pause). A
+            // non-looping movie (a briefing's tail) keeps playing to its end.
+            if self.movie.as_ref().is_some_and(|p| p.is_looping()) {
+                if let Some(p) = self.movie.take() { let c = p.code(); p.stop(); eprintln!("movie: stopped {c:08x} (no front-end page)"); }
+            }
+            return;
+        };
         // A pending end_to request from mission_ended rides the same path a menu pick does.
         if let Some(code) = fe.requested_level.take() {
             // A cold menu reload (the pause page's RESTART [M 0x204408:139 ResetMap_LevelToLoad(.., 0, 1)])
@@ -2142,7 +2221,15 @@ impl App {
             if wrong {
                 if let Some(p) = self.movie.take() { p.stop(); }
                 match movie::Player::start(&movie_iso, code) {
-                    Ok(p) => { self.movie = Some(p); eprintln!("movie: playing {code:08x} (attract)"); }
+                    Ok(p) => {
+                        self.movie = Some(p); eprintln!("movie: playing {code:08x} (attract)");
+                        // frontend-music: P_ATTRACT's 0x4c removes the menu-music pair before the
+                        // movie (menu_movie = 0) [M 0x20a1f0:20-22] — the trailer's own soundtrack
+                        // replaces it. Missing here, the menu music kept playing over the trailer
+                        // (the user's "the cutscene that plays if you don't touch anything should
+                        // have its own audio").
+                        fe.music.movie_started();
+                    }
                     Err(e) => {
                         // A declined start = the game's un-started movie: BGFMVPlaying == 0, so
                         // psiMovieFinished is true from tick one and the page closes at once
@@ -2153,9 +2240,17 @@ impl App {
                 }
             }
             if self.movie.as_ref().is_some_and(|p| p.code() == code && p.finished()) {
+                // The 0x50 finish arm restarts the pair while it is down [M 0x20a1f0:34-39].
+                fe.music.movie_finished();
                 fe.attract_movie_finished();
             }
         } else if fe.flow.get_state() == menu::ST_MOVIE {
+            // psiStartBackgroundMovie replaces whatever the one BGFMV slot holds [M 0x1081a8] —
+            // a looping page backdrop standing in the slot must yield to the state-6 movie
+            // (menu-audio-leaks: the playtest's menu music under the EA logo).
+            if self.movie.as_ref().is_some_and(|p| p.is_looping()) {
+                if let Some(p) = self.movie.take() { let c = p.code(); p.stop(); eprintln!("movie: stopped {c:08x} (state 6 replaces the backdrop)"); }
+            }
             match &mut self.movie {
                 Some(p) => {
                     // BGFMVPlaying follows the player: 1 while it decodes, 0 at the end of file —
@@ -2203,6 +2298,12 @@ impl App {
             // The page's aux loop [M 0x21c858:338]: stop when the page has no aux, (re)start when
             // the playing code differs from the page's.
             let aux = menu::aux_movie_for(fe.page_id());
+            // A skipped attract (the Enter skip ends it inside the FrontEnd, not through the
+            // finished poll above) leaves the trailer's player here: its 0x50 arm restarts the
+            // menu-music pair the same way the natural end does [M 0x20a1f0:34-39].
+            if self.movie.as_ref().is_some_and(|p| !p.is_looping() && matches!(p.code(), menu::ATTRACT_MOVIE_A | menu::ATTRACT_MOVIE_B)) {
+                fe.music.movie_finished();
+            }
             let wrong = match &self.movie {
                 Some(p) => aux == 0 || p.code() != aux || !p.is_looping(),
                 None => aux != 0,
@@ -2227,8 +2328,7 @@ impl App {
             if resolved != menu::FRONTEND_LEVEL {
                 // The briefing's return: the real level loads and the front end closes — the game
                 // leaves the menu system and Game_Draw takes over.
-                self.fe = None;
-                if self.scene.sim.is_some() { self.grab(true); }
+                self.close_front_end();
             }
             // The outro's return: the front end stays and the results page reopens on the map
             // (phase 2 set flow.page = 0x40000036 [M]; fe.page follows below in the hud build).
@@ -2529,7 +2629,7 @@ impl ApplicationHandler for App {
             }
             // Left button: grab the mouse, then fire (action 9) while held. With the dev menu open (F2), a left click
             // selects a menu item instead (WORKLOG 0081).
-            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+            WindowEvent::MouseInput { state, button: MouseButton::Left, .. } if self.fe.is_some() && self.async_load.is_none() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
                 if state == ElementState::Pressed {
                     if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) {
                         if fe.flow.get_state() == menu::ST_MOVIE { self.menu_input(menu::Action::Confirm); }
@@ -2537,7 +2637,7 @@ impl ApplicationHandler for App {
                     }
                 }
             }
-            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+            WindowEvent::MouseInput { state: ElementState::Pressed, button: MouseButton::Right, .. } if self.fe.is_some() && self.async_load.is_none() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
                 self.menu_input(menu::Action::Back);
             }
             WindowEvent::MouseInput { state, button: MouseButton::Left, .. } => {
@@ -2550,7 +2650,7 @@ impl ApplicationHandler for App {
                 if self.grabbed { self.zoom = state == ElementState::Pressed; }
             }
             // Cursor moves: track the NDC position for the dev menu's click hit-test (when the menu is open).
-            WindowEvent::CursorMoved { position, .. } if self.fe.is_some() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
+            WindowEvent::CursorMoved { position, .. } if self.fe.is_some() && self.async_load.is_none() && !self.dev.as_deref().is_some_and(|d| d.menu) => {
                 self.menu_pointer = self.menu_space(position.x, position.y);
                 if let (Some((x, y)), Some(fe)) = (self.menu_pointer, self.fe.as_mut()) {
                     if fe.mouse_move(x, y) { self.menu_after(); }   // the hover's focus-move sound
@@ -2586,6 +2686,11 @@ impl ApplicationHandler for App {
                     eprintln!("[spot] {m}");
                     return;
                 }
+                // No menu input while a level load runs: the loading screen owns the frame and the
+                // game's main loop runs no menu manager inside ResetMap_Load [M 0x1d6360 state 3].
+                // Keys pressed there used to reach the still-open front end — a second Enter on
+                // the MP confirm page started a second load of the same arena (playtest 1015-2231).
+                if event.state == ElementState::Pressed && self.fe.is_some() && self.async_load.is_some() { return; }
                 if event.state == ElementState::Pressed && self.fe.is_some() {
                     // net-online-lobby: the join address page takes the raw keys FIRST — digits,
                     // dots and the colon type, Backspace deletes, Ctrl+C/Ctrl+V work the page's
@@ -2616,7 +2721,14 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
-                    if let Some(a) = menu::key_action(k) { self.menu_input(a); }
+                    // Windows key auto-repeat never confirms, backs out or skips: the game's actions
+                    // are edge-triggered [M Input_Action(.., 1)], and a held Enter's repeats skipped
+                    // the briefing the moment it started (playtest 1015-2231 "no intro"). Held
+                    // arrows still scroll.
+                    if let Some(a) = menu::key_action(k) {
+                        if event.repeat && matches!(a, menu::Action::Confirm | menu::Action::Back) { return; }
+                        self.menu_input(a);
+                    }
                     return;
                 }
                 // fix-ingame-dev-menu: while the dev menu is open, the keys drive the menu and never the game
@@ -3009,6 +3121,10 @@ impl ApplicationHandler for App {
                         // 0700004a's pack cut-scene → the 0x0720004a movie code) — resolve the movie/wrapper
                         // codes the way the game's load pipeline does [M 0x1d3800 + 0x1d6360 phase 2 +
                         // 0x1d3560; nf_game::triggers::resolve_exit_code].
+                        if let Some(end_to) = sim.drones.mission_end.take() {
+                            eprintln!("level: mission over (LevelToEndTo {end_to:08x}) — the outro + results");
+                            self.pending_mission_end = true;
+                        }
                         if let Some(next) = sim.drones.level_exit.take() {
                             let resolved = nf_game::triggers::resolve_exit_code(next);
                             if resolved != next { eprintln!("level: exit {next:08x} resolves to {resolved:08x} [M 0x1d3560]"); }
@@ -3057,6 +3173,14 @@ impl ApplicationHandler for App {
                     }
                     // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
                     if let Some(d) = self.dev.as_deref_mut() { d.after_tick(&mut self.scene); }
+                    // The mission's end sequence (`Mission_Update` case 4 → `ResetMap_LevelToLoad`
+                    // of the outro or the front end): the same front-end path the F8 hook drives.
+                    if let Some(ch) = self.force_channel {
+                        if let Some(sim) = self.scene.sim.as_mut() {
+                            if sim.drones.frame >= 120 { sim.drones.set_channel(ch); self.force_channel = None; eprintln!("[dev] channel {ch} raised"); }
+                        }
+                    }
+                    if std::mem::take(&mut self.pending_mission_end) { self.demo_results(true); }
                 }
                 let Some(g) = &mut self.gfx else { return };
                 if g.minimized {
@@ -3495,7 +3619,8 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let force_channel = if dev { args.iter().position(|a| a == "--set-channel").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u8>().ok()) } else { None };
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, pending_mission_end: false, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
         net: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,

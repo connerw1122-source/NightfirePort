@@ -3906,12 +3906,24 @@ impl Sim {
                     // `ResetMap_LevelToLoad(LevelToEndTo)` [M 0x182c60:73]. The 0x0700xxxx codes
                     // are the port's own levels; the 0x0730xxxx codes are the driving interludes
                     // (the handover below).
-                    if next & 0xffff_0000 == 0x0700_0000 {
+                    if next & 0xffff_0000 == 0x0700_0000 && next != 0x0700_0048 {
                         self.drones.level_exit = Some(next);
-                    } else if nf_game::ptp::is_driving_interlude(next) {
-                        self.ptp_handover(next);
                     } else {
-                        eprintln!("ission] complete → LevelToEndTo {next:08x} (driving level, not ported)");
+                        // The mission's own end: the front end (no outro) or an 0x0730 outro code
+                        // (the outro movie plays, then its phase-2 resolve routes on — the driving
+                        // interludes ride the same code [M 0x1d3560]). The host runs the end
+                        // sequence (`mission_ended` → outro → results); the driving return is
+                        // still stashed for the hub. Missing glue before 2026-10-15: a finished
+                        // mission only logged "not ported" — no outro, no results (playtest
+                        // 1015-2231 "beginning and ending mission cutscenes are missing").
+                        if nf_game::ptp::is_driving_interlude(next) {
+                            self.ptp_handover(next);
+                            // The handover's hub resume (0x7000048) is the end sequence's job now:
+                            // the outro plays first, then the front end (no driving to run).
+                            self.drones.level_exit = None;
+                        }
+                        eprintln!("[mission] complete → LevelToEndTo {next:08x}: the end sequence");
+                        self.drones.mission_end = Some(next);
                     }
                 }
                 nf_game::mission::Event::MenuOpen => {

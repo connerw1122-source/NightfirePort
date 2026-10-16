@@ -14319,6 +14319,14 @@ main agent draws it. Tests: a headless match's snapshot matches the sim state. B
   names_on_radar gate, radar blips (MP_GetRadarObjects: viewer excluded, dead dropped, team
   colors, the per-scenario markers, the +0x28 radar toggle gate — new MpPlayer::radar_on).
   Feeds nf_view::hud::radar_project (already ported). Tests mp_hud_data 4/0 headless.
+
+- rocket-sound-leak (s/rocket-sound-leak): started. Playtest 1015-1738: after a guided (Sentinel)
+  rocket finishes, a looping sound keeps playing from the shooter's old position, stacks per shot.
+  Plan: find the launch/flight loop handle started at guided-rocket launch that is never stopped on
+  rocket death / guided-camera end; stop it the way the game does [M SFXStop / sound handle on
+  delete]; audit other projectile/object loops (grenades rolling, MGL, thrown mines) for the same
+  leak. Headless test: fire 3 guided rockets, let them die, assert no leftover live looping items
+  in the driver.
 ## fix-gas-rng4 (2026-10-15, branch s/fix-gas-rng4) — started 23:59 UTC
 
 Task: land 111d3's (s/fix-gas-rng3, tip fbf62779) deferred impact draws on top of master's
@@ -14463,6 +14471,106 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   the touched crates' tests ran instead; flagged in the report.
 - Report: docs/reports/drive-mission-scripts.md; live checks L-1..L-4 listed (doc §7).
 
+## stun-ai-recover (2026-10-16, branch s/stun-ai-recover) — the stunner's stunned drone state, started
+
+- Playtest 1015-1738: stunner guards "get stunned infinitely and don't complete the animation".
+  Task: port the stunned drone state fully — entry (the stun arm in the drone damage path [M]),
+  the stun animation, the duration/re-hit rules, the exit back to the AI. Prove a stunned guard
+  completes the animation and returns to combat after the game's timer, and that re-stunning
+  behaves like the game. Tests on 07000005 with the Stunner (0x4a/0x4c) on a guard.
+
+## stun-ai-recover (2026-10-16, branch s/stun-ai-recover) — the stunned guard's re-hit was dead code; the down flag + the downed sphere — DONE 04:35 UTC
+
+- Playtest 1015-1738 (07000005, the Stunner): guards "get stunned infinitely and don't complete
+  the animation". Re-verified every arm of the 109b taser family (Taser 0x162b98 / Stunned
+  0x162eb0 / Stunned_Recover 0x1630b8) against the decompile — the state machine itself was
+  faithful. The real defect was BELOW it: a downed guard could not be HIT again. Trace (the real
+  input path): a re-tase tap on the downed guard spent a round, the target test locked (ray-vs-
+  origin 0.000), the dart flew — and first_box_hit returned None on all 16 posed boxes; the dart
+  buried itself in the floor. Every re-hit arm of DSTATE_Stunned (case 7 re-fall / case 0x19
+  re-arm [M 0x162eb0]) was unreachable from play.
+- Ground truth: NDrone2_Collision 0x140e90 branches on the DOWN flag Drone+0x2f [M :65-90] —
+  downed, the shootable volume is a low sphere (r 0.3, centre (0.3−obj+0xa0) above the origin).
+  The flag: set by DSTATE_Stunned ENTER, cleared by EXIT [M case 1/2]; the same pair in
+  StunGrenadeLoop [M 0x1631c0 case 1/2]; StunDartLoop [M 0x163570, unported] too. The port had
+  no +0x2f at all. Player_WeaponFiring 0x1a5460:90-106 reads it on the aim target for the
+  reticle datum swap.
+- Fix (drone.rs): Drone::down (the +0x2f stand-in; set/cleared at the STUNNED and
+  STUN_GRENADE_LOOP enter/exit arms) + the downed sphere in the bullet contact (r 0.3 at
+  pos+0.3 up; the +0xa0 lift drops out — the port's origins rest on the floor when down). The
+  standing boxes stand-in untouched. Nothing else in the family changed; the accumulator's
+  never-reset re-verified [M — the grow at 0x1469b8:72 is the ONLY drone +0xBC writer in the
+  whole decompile].
+- Tests: stun_ai_recover_live (new, the real input path on 07000005) — 2 green: (1) the full
+  timer ride — fall at hold tick 20 → TASER→STUNNED at rel+1798 (the 1800 twitch timer) →
+  STUNNED_RECOVER at +49 past the 1200 RecoverTime expiry with Bond 8 u away → the get-up 0x76
+  completes into the combat family (0x56 in the log) — the animation completes; (2) Bond at
+  2.5 u keeps him down past the expiry (the tc re-arms 3210→3510, AnyoneNear 2.0 [M 0x162eb0
+  case 0xc]) and the re-tase tap on the downed guard lands (the downed sphere) and re-arms
+  (stored anim 0x32 → tc 3510→4621 [M case 7 → 0x19]; the 0x31 draw takes the re-fall arm, the
+  test branches like the game). Ran: nf-view stun_ai_recover_live 2/2; nf-game lib + the
+  stunner-adjacent live tests — see the run log; the full suite in the background (see the
+  report for what completed in the window — the sandbox reset mid-session and took the first
+  run's output).
+- Live checks for the main agent: (1) the downed-guard reticle datum swap [M 0x1a5460:90-106] —
+  the flag now exists (Drone::down), the draw is view-side; (2) whether the game's fall/twitch
+  anims loop or hold (the port holds the last frame — if the game loops, that's the visible
+  "don't complete the animation" half); (3) the MP dart family 0x50-0x52 (StunDartImpact/Loop/
+  Recover) — SP never enters them per the decompile; an MP probe would settle their owner.
+- Task: rocket-sound-leak — the guided rocket's launch whoosh never stopped (playtest 1015-1738:
+  a looping sound stayed at the shooter's old position after a Sentinel rocket finished, stacking
+  per shot). Root cause: `fire_player`'s launch whoosh 0x10e — LOOPED ([L ACTION.ELF SFXOutputData
+  @0x2c94a0 entry 0x10e: looped 1, inner 5/outer 30], played for every ammo-type-0x0e weapon [L
+  ee_start_05.bin weapon_data @0x2bf150 +0x90 sweep: 0x2c/0x2d/0x2e/0x2f/0x30/0x31/0x6d]) — was
+  fire-and-forget, and the EE pool frees a looped node only on Sound_Stop. The game: Bullet_init
+  0x12c5a0:269-290 stores the LAST launch play's handle at BU+0xF0; Bullet_update's head
+  0x12e7b0:98-108 moves it with the rocket every tick (Sound_SetPosition) and clears it when the
+  driver finished it; Bullet_Delete 0x12e660:13-16 stops it on the object's delete (disasm
+  0x12e680 lw a0,0xf0(s2) → jal Sound_Stop → sw zero,0xf0(s2)) — the guided camera's restore rides
+  the same pass; Bullet_update case 3 (0x12ed68) stops it too. Fix: `PlayerBullet.snd` (BU+0xF0,
+  own line), the flight-head follow + finished-clear in `update_player_bullets`, and the stop at
+  the REAL delete pass — the dead-bullet retain in `flush_world_impacts` (post fix-gas-rng4 merge:
+  a pierce/ricochet revives its bullet, so the stop must not run at the dead flag; a revived
+  bullet keeps its handle, as in the game). Also dropped the drone grenade throw's fire-and-forget
+  looped 0x5ef (the game plays NO throw sound: DroneWeap_ThrowGrenade 0x179558 has no Sound_Play3D;
+  DroneWeap_FireWeapon 0x178f68:275 skips 0x5ef; Bullet_init's 0x5ef arm is the hat's (+2==0x45)
+  with the Bullet_Delete stop). Audit (no other leak in the port): grenade/mine/MGL sounds all
+  non-looped ([L SFXOutputData sweep: 0x51c/0x4a7/0x446/0x447/0x27c/0x16/0x14/0x13/0x15/0x41b/
+  0x5c9 looped 0]); the hat's looped 0x5ef and the turret's looped 0x5e5 charge (GunImp_Deactivate
+  0x132c18:62 stops it) are coverage gaps in the port, not leaks (the port never starts them);
+  Car_Deactivate 0x131d88:32 stops CAR_INFO+0x108; SpaceMissile plays nothing; the copter's
+  FireMissile is not ported yet. Tests: `fix_rocket_sound_leak_live::three_guided_rockets_leave_
+  no_looping_whoosh_behind` — 3 guided rockets through the real path (load_dev → step_bond →
+  Sounds → sound_tick → the driver): exactly ONE live 0x10e item per flight whose tracked position
+  follows the bullet, ZERO after each death (pre-fix the test failed at the stuck-position assert —
+  the playtest line; the count stacked per rocket). Hooks: `Sounds::live_ids`,
+  `Driver::item_pos`. Ran: the new test green on the merged tree; nf-game/nf-audio cargo check
+  clean; nf-view tests compile; the full suite on the final merged tree — see the report.
+
+## menu-audio-leaks (2026-10-16, branch s/menu-audio-leaks)
+- Branch created from origin/master (306c5d93). Task: the playtest audio leaks — the menu music under the
+  EA logo movie / during pause / after leaving the pause menu (results id 1015-1738), plus the "old menu
+  with no background" after the intro ends.
+- Plan: (1) stop the looping page-backdrop movie (0x07350048/0x07330048) when no front-end page wants it
+  (App::movie_tick's early return when self.fe is None); (2) the 0x1d7/0x470 front-end menu MUSIC pair —
+  port every SFXRemove(0,id) site [M the twelve handlers' msg-0x4c, P_ATTRACT_Handler 0x20a1f0, the
+  front-end exit] and carry the removal through the driver (a remove event beside drain_sfx), building on
+  625's attract code; (3) sweep for every other survival path (intro pair vs backdrop, level music vs
+  front-end map); (4) reproduce the intro-end "old menu" headless and fix from the game's flow [M].
+  Headless flow tests per case, NF_SILENT.
+- menu-audio-leaks close-out: the 0x1d7/0x470 menu-music pair's SFXRemove side ported at every
+  decomp site — the twelve handlers' 0x4c removes before it restarts (menu_movie gate kept,
+  removes ride a new `sfx_remove_out` channel the host applies before the same frame's starts),
+  P_INTRO's frame-1 removes under the EA logo + the movie-2 end restarts, P_ATTRACT's
+  0x4c/0x50, MenuManager_Create zeroes the static on the pause open (P_PAUSE starts no pair),
+  and the front-end close removes the pair through the driver (close_front_end — the game's
+  fade+bank-load death, KillSFX-all [M IRX 0x1f88/0x1ea4]); movie_tick stops the looping
+  backdrop with no fe and state 6 replaces a looping BGFMV occupant [M 0x1081a8]. Evidence:
+  SFXRemove = KillSFX over every (handle,id) match [M]; the pair looped by design, silent
+  under the intro in the real game [M 0x209e88:37-47]. Tests: nf-audio lib 11/11 (+2),
+  menu_sfx_flow 14/14 (+5), menus_flow 42/42, mp_menu_flow 9/9, nf-view lib 15/15; suite on
+  the branch-point tree 1622/7/66 (the 7 = the documented environmental set). Report:
+  docs/reports/menu-audio-leaks.md (5 live-check asks incl. the finding-4 render).
 ## npc-doors (2026-10-16, branch s/npc-doors) — start
 - Branch created from origin/master (6bab6409). Task: NPCs can't open doors (playtests 1012-1723,
   1013-1825; 07000001 escort Mayhew stalls, guards/guests don't path through on 07000006/07000007).
