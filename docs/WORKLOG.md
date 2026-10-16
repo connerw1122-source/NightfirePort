@@ -15506,3 +15506,15 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+
+## civilian-no-shoot (2026-10-16, branch s/civilian-no-shoot)
+- Task: playtest 1011-1419 (07000002) "The no shoot icon was there, but I was still able to
+  shoot at him". The game shows the red no-shoot crosshair over civilians AND refuses to fire
+  [M the crosshair's target class check in the player's weapon update and the trigger gate].
+  Port the trigger refusal: which targets, which weapons, whether a held trigger fires once the
+  aim leaves the civilian. Tests on 07000002: aim at a civilian and fire — no shot, no ammo
+  used; aim off — fires. Sister: a guard right next to the civilian can be shot. The main agent
+  wires nothing here unless the crosshair draw itself is wrong.
+- Plan: read the port's crosshair state (scene.rs cross_state) + the decomp's crosshair target
+  class check and the trigger gate (Player_WeaponFiring 0x1a5460 area), write the failing test
+  through the real fire path, port the gate, sister tests, run touched crates + the suite.
