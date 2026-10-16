@@ -14202,3 +14202,23 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   from the disc's USATxt.dat, sister negatives included). Foreground runs — the background
   suite.py is reaped by this sandbox (died twice, empty suite.out); a third attempt runs while
   this entry is written.
+## drive-hud-data (2026-10-16, branch s/drive-hud-data)
+- Branch created from origin/master (0f5f07f4). Task: port the driving-mission HUD's data model from DRIVING.ELF
+  as a per-frame snapshot (values + label/texture ids + positions as the game sets them), wired to 506's physics /
+  107's state where they exist; the main agent draws it. Tests: the snapshot follows the sim (numbers only).
+- Plan: read docs/atlas/driving-elf.md + the DRIVING.ELF decomp for the HUD writers (speed/gear, vehicle health,
+  weapon+ammo, minimap/radar, objective markers, timers); check how s/mp-hud-data wired its snapshot; implement
+  the snapshot in nf-game + numbers-only tests; run the crates my tests touch, then the full suite before push.
+- drive-hud-data close-out: the driving HUD's data model as a per-frame snapshot —
+  `crates/nf-game/src/driving_hud.rs` (`DriveHud` + `CarReadout`/`MissionTimer`/`Objective`/
+  `Beacon`/`WeaponReadout`), wired to 506's `Car` (speed |vel| 0x18aa88:26-29, gear +0x2d8,
+  rpm :62, pos/yaw) via `observe`; the mission groups at their proven E-command level
+  (dispatch table 0x36fda0: timer 507/509·381/383·357/359·309/311·315/317, objectives
+  225/226/227/228 with the {vt 0x370e70, p1..p4} record [M 00151510], beacon 321/323,
+  ESetVisualDamage's {vt 0x370558, p1..p5} [M 00159638]); the HUD render object RRenderHUDView
+  at manager+0x28 read per frame by 001c1ec0:80-81 → 001c1b18:118-144 (0xa8 element block,
+  label table DAT_0037d790); positions/sheet ids + the mission-state structs left open with
+  5 live-check asks (docs/reports/drive-hud-data.md). Tests: nf-game lib 213/213 (final tree),
+  drive_hud 6/6, drive_physics 13/13; fast-runner suite on the branch-point tree: 1577 passed,
+  7 failed (3 allowed disc_golden + the documented pylon Vulkan-ICD pair + the pre-existing
+  walkreal LEAD_HIDE flake), 66 ignored, 62 min.
