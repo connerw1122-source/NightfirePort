@@ -26,3 +26,7 @@ claimed-by: sandbox2 at 2026-10-16T16:50Z
 ## Report (done, 2026-10-16T18:24Z)
 
 Closed by the driver: the report is on `s/net-e2e-loopback` (docs/reports/net-e2e-loopback.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T19:22Z)
+
