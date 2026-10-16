@@ -15934,6 +15934,14 @@ LADDER-02 FINAL SUITE (14:16 UTC): the final-tree fast-runner total `1808 passed
 72 ignored (42 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes; no
 regressions from the cel-scoped hit-below fix.
 
+## kimiko-actors-07 (2026-10-16, branch s/kimiko-actors-07) — STARTED 15:41 UTC
+Task 701: the right actors in the 07000007 Kimiko cut-scene — playtest 1012-2337: "models in
+that cutscene arent accurate" (earlier reports: duplicates in the Drake scene, models present
+before they should be). Plan: list every actor the 07000007 scene script creates or uses (skin
+hash, spawn/despawn ticks, script actor vs level drone) [M the script's entity create ops,
+Script_AnimStart 0x1d8f40, the actor binding]; compare against the script data; fix the port's
+binding (wrong skin / level drone drawn instead of the script actor / missing despawn); tests:
+the actor set and skins per scene phase match the script, with no duplicates.
 ## civilian-no-shoot (2026-10-16, branch s/civilian-no-shoot)
 - Task: playtest 1011-1419 (07000002) "The no shoot icon was there, but I was still able to
   shoot at him". The game shows the red no-shoot crosshair over civilians AND refuses to fire
@@ -16181,3 +16189,41 @@ the type-3 banner from a sub-objective / an inherited channel) [M Mission_Update
 the objective message types]; plan: walk 16's route headless (the 16 door/corridor tests have fixtures), log every
 mission message, fix the gate so the banner shows only on the game's real completion, test that the walk posts no
 "Mission Complete" before the end condition.
+## kimiko-actors-07 (2026-10-16, branch s/kimiko-actors-07) — close-out 16:45 UTC
+Task 701: the right actors in the 07000007 Kimiko cut-scene. THE INVENTORY [D, the pack decodes
+via the format doc]: the Kimiko scene 0x06000073 (pack 07800007.bin, 4326 ticks, SP #420 via
+TouchOnce #412 → ch 0x48) creates exactly three Script_AnimStart actors at tick 0, all killed at
+4326 — stream 1 skin 0x0500003b on anim 0x060004f1, stream 2 skin 0x05000015 on 0x060004f2,
+stream 3 skin 0x0500000d (the tuxedo Bond double) on 0x06000225 — plus keyed entity 0x02000acb
+(stream 14, type 0x31); events 5 (the drone freeze) + 4 (player disable) at 0, 6/7 at 4326. The
+fly-through 0x06000072 (pack 07900007.bin, 3000 ticks, SP #419 via TouchOnce #356 → ch 0x15)
+creates 13 Script_AnimStart guests at tick 0 (streams 1-13; Drake 0x05000016/060001fd, a second
+0x05000015, the tuxedo Bond 0x0500000d/060001fe, and the guest skins 0x05000019 ×3 / 0x05000022 ×2
+/ 0x05000020 ×2 / 0x05000021 / 0x05000023 / 0x05000024), plus keyed entity 0x020004d0 (stream 14,
+type 0x19) and the letterbox-adjacent sprites; same event shape (5+4 at 0, 6/7 at 2999/3000).
+THE GAME'S NO-DUPLICATE MECHANISM [M]: event 5 → Drone_EnableAll(0) 0x1383e8 → NDrone2_Enable(0)
+0x149dd0:8-15 sets obj+0xF0 |= 0x10 (the bit View_AddObjects 0x1e62d8:33 excludes from the draw
+list) on EVERY drone's object; event 4 → Player_Disable 0x195f70:17 hides the player's body the
+same way; Player_Enable 0x195498:23 restores. The reused level drones are gated by their SECOND
+switches [M NDrone2_PreDroneControl 0x148db0:49-78]: Drake's drone (0x05000016, second ch 0x15)
+stands enabled but out of sight at [126.82, 47.0, -94.33] and deletes (tag 100) when the
+fly-through's freeze lifts; the fireplace Kimiko drone (0x05000015 at [92.06, 43.75, -31.65],
+second ch 0x48) parks WAIT_SWITCH (0x01) DISABLED — she never visibly stands; her scene double
+replaces her and she deletes at the free. PORT STATE: all of this already faithful on master
+(the event-5 freeze maps to `enabled = false`, the draw gate skips disabled drones, the
+second-switch deletes land) — the playtest's "models aren't accurate" is explained by the
+pre-fix-core builds (the freeze landed 10-11 17:10 UTC, the playtest is 10-12 23:37, the
+inventory+pinning task fix-cutscene-actors merged 10-14). THE DELTA THIS TASK: the render's
+draw-gate closure hoisted into `Scene::char_hidden` (one source of truth, readable by the live
+tests) + `crates/nf-view/tests/kimiko_actors_live.rs` (2 tests, green on the merged tree): the
+Kimiko scene's draw set per phase (pre-scene: the parked fireplace Kimiko + the unseen Drake;
+mid-scene: the 3 doubles once each with every level drone frozen out, no duplicates, the [D]
+root endpoints 91.97,-31.67 / 94.13,-35.76 pinned within 0.15; post-skip: the doubles deleted,
+the freeze lifted, the ch-0x48 drone deleted, Bond at the hand-back entity) and the fly-through's
+(13 live actors pinned stream-for-stream, no duplicates, the Bond double at its [D] root, the
+doubles dead and Drake's drone deleted at the end). Tests run before push: the 8 draw-path
+binaries on the merged tree — kimiko_actors_live 2/2, fix_cutscene_actors_live 5/5,
+fix_cutscenes_live 4/4, fix_cutscenes2_live 5/5, fix_kimiko_handback_live 1/1,
+models_characters_live 6/6, fix_party_mission_live 9/9, scenario_live 6/6. The pre-change
+full-suite run `1864 passed, 6 failed, 72 ignored (50 min)` (the 3 allowed disc_golden + the 3
+pre-existing pylon render probes); the final-tree fast-runner suite started 16:41 UTC.

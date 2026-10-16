@@ -4259,7 +4259,6 @@ impl Sim {
             _ => None,
         })
     }
-
     /// The game data the simulation consults, borrowed from this Sim.
     pub fn data(&self) -> nf_game::drone::Data<'_> {
         nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models , surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref(), difficulty: self.drones.difficulty }
@@ -6336,13 +6335,17 @@ impl Scene {
             Some((mats, world, m))
         }).collect();
         // Held back: spawner reinforcements and drones disabled while they wait for a switch channel (object flags
-        // 0x30, `NDrone2_Enable(0)`); R shows them.
-        let hidden = |c: &Character, ci: usize| match c.script {
-            Some(src) => self.sim.as_ref().and_then(|s| s.script_anim(src, c.skin.hashcode)).is_none(),
-            None => !opts.reinforcements && match drone_of(ci) {
-                Some((s, di)) => !s.drones.list[di].present || !s.drones.list[di].enabled,
-                None => matches!(c.role, drone::SpawnRole::Reinforcement { .. }),
-            },
+        // 0x30, `NDrone2_Enable(0)`); R shows them. The inspect path (`choice`) pins a drone-backed
+        // character visible; script actors keep their liveness gate either way.
+        let hidden = |c: &Character, ci: usize| {
+            if choice.is_some() {
+                match c.script {
+                    Some(src) => self.sim.as_ref().and_then(|s| s.script_anim(src, c.skin.hashcode)).is_none(),
+                    None => false,
+                }
+            } else {
+                self.char_hidden(ci, opts)
+            }
         };
         // A matrix that collapses a mesh to one point: its triangles become degenerate and draw nothing.
         let collapse = |at: &Mat4| -> Mat4 { [[0.0; 4], [0.0; 4], [0.0; 4], [at[3][0], at[3][1], at[3][2], 1.0]] };
@@ -6811,6 +6814,28 @@ impl Scene {
     /// window (the started opcode-0 window whose sequence carries the skin's facial channel count,
     /// the same window `script_pose_together` poses bones from) sampled at the object's frame via
     /// `AnimFacialBlend`'s source arithmetic [M `facial_weights`, `AnimFacialBlend` 0x1be648].
+
+    /// The per-frame draw gate of character `ci` (`frame_state`'s `hidden`, hoisted here so the live
+    /// tests read the same gate the render walks). A script actor is hidden while its
+    /// `Script_AnimStart` object is not live (created at `Script_AnimStart` 0x1d8f40, deleted by
+    /// `Script_KillStream` — 0x06000072/73 set no keep-objects flag [D]); a drone-backed character is
+    /// hidden when its drone is absent or drawn-frozen: `enabled` is the port's `obj+0xF0` stand-in —
+    /// `NDrone2_Enable(0)` 0x149dd0:8-15 sets `obj+0xF0 |= 0x10`, the bit `View_AddObjects`
+    /// 0x1e62d8:33 excludes from the draw list, and `Drone_EnableAll(0)` [M 0x1383e8] applies it to
+    /// every present drone when a cut-scene fires event 5; a spawner-held-back reinforcement stays
+    /// hidden unless R asks for the reinforcements.
+    pub fn char_hidden(&self, ci: usize, opts: ViewOpts) -> bool {
+        let Some(s) = self.sim.as_ref() else { return false };
+        let c = &self.characters[ci];
+        match c.script {
+            Some(src) => s.script_anim(src, c.skin.hashcode).is_none(),
+            None => !opts.reinforcements && match s.char_drone.get(ci).copied().flatten() {
+                Some(di) => { let dr = &s.drones.list[di]; !dr.present || !dr.enabled }
+                None => matches!(c.role, drone::SpawnRole::Reinforcement { .. }),
+            },
+        }
+    }
+
     pub fn facial_weights_now(&self, c: &Character) -> Option<Vec<f32>> {
         self.facial_weights_at(self.characters.iter().position(|cc| std::ptr::eq(cc, c))?, c)
     }
