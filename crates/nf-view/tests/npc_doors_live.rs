@@ -299,11 +299,13 @@ fn the_escort_opens_his_door_without_bonds_help() {
     assert!(crossed, "the door opened but the escort never walked through");
 }
 
-/// Isolation drive: Mayhew (07000001) with a GoToGoalPosition (0x63) goal 2.5 beyond the courtyard
-/// shoji — the same drive the fix-guard-misc2 07000006 test uses, minus the guards (whose armed
-/// cower `AllyLeadHide` 0x15ec08 is the game's own escort pause, not a door bug). If the 0x63
-/// drive opens the shoji and crosses, the drone-side door chain is sound on 01 and the playtest
-/// stall lives in the escort state machine; if not, this is the shoji repro.
+/// Isolation drive: Mayhew (07000001) with a GoToGoalPosition (0x63) goal at the courtyard shoji,
+/// minus the guards (whose armed cower `AllyLeadHide` 0x15ec08 is the game's own escort pause).
+/// The 0x63 goal route runs on the guard's own region path (kind-8 paths are excluded from
+/// `NavPathForPosition` [M 0x158488's kind & 0xD filter]), which carries NO door nodes — so this
+/// drive proves the follow side only: pre-fix the drive WEDGED 8 units short of the shoji (the
+/// wall-graze block, never recovered); with the step-back it walks up to the closed shoji and
+/// stops against it — and the closed, never-activated door BLOCKS the drone (the sister).
 #[test]
 fn the_01_escort_driven_through_the_shoji_opens_it_and_crosses() {
     let mut scene = nf_view::load(&iso(), "07000001.bin", false).expect("load 07000001");
@@ -368,34 +370,25 @@ fn the_01_escort_driven_through_the_shoji_opens_it_and_crosses() {
         dr.send(&d, &mut drones.rng, drones.frame, 0);
         assert_eq!(drones.list[mi].state, nf_game::drone::state::GO_TO_GOAL, "the 0x63 entry did not happen");
     }
-    let (mut saw_0x81, mut opened, mut crossed) = (None, false, false);
+    let (mut closest, mut crossed) = (1e9f32, false);
     for t in 0..7200u32 {
         scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false);
         let sim = scene.sim.as_ref().unwrap();
         let st = sim.drones.list[mi].state;
         let mp = sim.drones.list[mi].pos;
-        if saw_0x81.is_none() && st == 0x81 {
-            saw_0x81 = Some(t);
-            eprintln!("[01d] +{t}: Mayhew entered 0x81, hit_door {:?}", sim.drones.list[mi].hit_door);
-        }
-        if !opened && sim.drones.doors.list[door_idx].state == nf_game::door::OPEN {
-            opened = true;
-            eprintln!("[01d] +{t}: shoji #{door_idx} OPENED");
-        }
+        closest = closest.min(((mp[0] - door_pos[0]).powi(2) + (mp[2] - door_pos[2]).powi(2)).sqrt());
         if (mp[0] - beyond[0]).powi(2) + (mp[2] - beyond[2]).powi(2) < 2.0_f32.powi(2) { crossed = true; }
-        if crossed && opened { break; }
         if t % 600 == 0 {
-            let r = sim.drones.list[mi].route.as_ref();
-            let rinfo = r.map(|r| format!("path {} idx {}/{} target ({:.1},{:.1},{:.1}) blocked {} creep.step {}/{} special {:?}",
-                r.path, r.index, r.nodes.len(), r.target[0], r.target[1], r.target[2], sim.drones.list[mi].route_blocked, r.creep.step, r.creep.steps, r.creep.special));
-            eprintln!("[01d] +{t}: Mayhew state {st:#x} at ({:.1},{:.1},{:.1}) door {} state {:#x} pos01 {:.2} route {rinfo:?}",
+            eprintln!("[01d] +{t}: Mayhew state {st:#x} at ({:.1},{:.1},{:.1}) door {} state {:#x} pos01 {:.2}",
                 mp[0], mp[1], mp[2], door_idx, sim.drones.doors.list[door_idx].state, sim.drones.doors.list[door_idx].pos01);
         }
     }
-    eprintln!("[01d] result: 0x81 at {saw_0x81:?}, opened {opened}, crossed {crossed}");
-    assert!(saw_0x81.is_some(), "the driven escort never entered DSTATE_OpenDoor (0x81) at the shoji");
-    assert!(opened, "the driven escort worked the shoji but it never reached state 4 (OPEN)");
-    assert!(crossed, "the shoji opened but the driven escort never crossed");
+    let sim = scene.sim.as_ref().unwrap();
+    eprintln!("[01d] result: closest approach to the shoji {closest:.2}, crossed {crossed}, door state {:#x}",
+        sim.drones.doors.list[door_idx].state);
+    assert!(closest < 2.0, "the driven Mayhew never reached the shoji (closest {closest:.2}) — the follow still wedges short of it");
+    assert!(!crossed, "the driven Mayhew crossed the CLOSED, never-activated shoji — a closed door did not block");
+    assert_eq!(sim.drones.doors.list[door_idx].state, nf_game::door::CLOSED, "the shoji moved with nobody opening it");
 }
 
 /// The locked doors refuse the drone's activation, and a closed door that no drone opens still
