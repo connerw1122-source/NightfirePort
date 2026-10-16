@@ -16485,3 +16485,12 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
 - Report: docs/reports/uncited-gameplay-audit.md. Left: the 10 queued tasks (none started,
   audit-only by design) + the live checks; gap ④/⑤ should rebase onto task 704's
   s/mp-bots-in-match branch.
+
+## gameflow-state-stack
+- Task: port the real GameFlow state stack from ACTION.ELF — GameFlow_Main, GameFlow_PushState /
+  GameFlow_PopState / GameFlow_GetState (0x1c98c8, 0x1c9f38, 0x1c9eb0, 0x1c9e80), the state ids,
+  who pushes/pops what (level load, movie, front end, pause, fade hold), each state's tick — and
+  replace the port's stand-in flow machine where it differs, without breaking the menus (menu e2e
+  + mission_unlock_flow are the guard rails). Test: stack contents across a full SP run match the
+  game's push/pop sequence.
+- Status: started (branch cut from origin/master at e2bdc00f-ish master).
