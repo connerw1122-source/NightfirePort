@@ -22,3 +22,8 @@ frag-limit and the time-limit ends.
 
 ---
 claimed-by: sandbox5 at 2026-10-16T16:48Z
+
+---
+## Report (done, 2026-10-16T17:37Z)
+
+Closed by the driver: the report is on `s/mp-match-end` (docs/reports/mp-match-end.md); the worker didn't run finish.sh.
