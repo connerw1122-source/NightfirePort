@@ -529,6 +529,30 @@ impl Route {
             nodes.pop();
             links.pop();
         }
+        // `AINetwork_AlterDestFor_DROUTE_Nearest` (0x156088), which the game's CalcRouteToPosition
+        // (0x15afe0:32) and CalcRouteToObject (0x15aee8) run when CalcRoute returns 1 — the A*
+        // ended at the FALLBACK node (DoAStarPath's 1 [M 0x1571b0:222]; the goal position had no
+        // nav node: the target sits behind cover), so the route can only reach the mesh point
+        // nearest him. Cast the final leg from the route's LAST node (`MoveTestFromNode`, the
+        // 0x41 count's last entry [M 0x156088:31-33]); a blocked ray pulls the dest back to one
+        // unit before the hit — dest = hit − normalize(hit − node.pos) — and re-cels it [M
+        // 0x156088:33-56]. Without the pull the final creep leg walks into the wall and the
+        // drone sticks short of cover. The altered-dest flag 0x40 has no port reader (the chase
+        // re-routes per tick, recomputing the alter) and is not modelled [S].
+        let mut dest = dest;
+        if res == 1 && !nodes.is_empty() {
+            let last = p.nodes[*nodes.last().unwrap() as usize].pos;
+            let (pass, hit) = net.move_test(world, last, dest, true, true);
+            if pass != 1 {
+                if let Some(hit) = hit {
+                    let dx = hit[0] - last[0];
+                    let dy = hit[1] - last[1];
+                    let dz = hit[2] - last[2];
+                    let len = (dx * dx + dy * dy + dz * dz).sqrt();
+                    if len > 1e-4 { dest = [hit[0] - dx / len, hit[1] - dy / len, hit[2] - dz / len]; }
+                }
+            }
+        }
         let mut r = Route::new(pi, RouteMode::OneWay, nodes, links, start, dest);
         r.calc(net, 0);
         r.target = r.creep.a;
@@ -706,4 +730,34 @@ mod tests {
         }
         assert_eq!(visited.len(), 4, "all four links walked: {visited:?}");
     }
+    /// `AINetwork_AlterDestFor_DROUTE_Nearest` (0x156088): the chase route's A* ended at the
+    /// fallback node (the game's CalcRoute 1 [M DoAStarPath 0x1571b0:222]; the port's astar
+    /// result 1), so `CalcRouteToPosition` 0x15afe0:32 alters the dest: the final leg from the
+    /// route's LAST node is move-tested, and a blocked ray pulls the dest back to one unit
+    /// before the hit [M 0x156088:33-56]. Without it the drone creeps into the wall and sticks.
+    #[test]
+    fn droute_nearest_pulls_the_dest_back_before_the_wall() {
+        let mut n = net(&[[0.0, 0.0, 0.0], [1.5, 0.0, 0.0], [4.0, 0.0, 4.0], [0.0, 0.0, 4.0]], &[(0, 1), (1, 2), (2, 3), (3, 0)], 4);
+        n.bounds = true;
+        n.walls.push(Wall { a: [3.0, 0.0, -2.0], b: [3.0, 0.0, 2.0], ha: 2.0, hb: 2.0, flags: 0 });
+        let w = CollisionWorld::empty();
+        // The target sits behind the wall (x 5) with NO nav node: found None, fallback node 1.
+        let goal = TargetNodes { found: None, fallback: Some(1) };
+        let (res, r) = Route::to_position(&n, &w, Some(0), [0.0, 0.0, 0.0], [5.0, 0.0, 0.0], &goal, &[0; 4]).unwrap();
+        assert_eq!(res, 1, "the fallback result is the game's CalcRoute 1 [M 0x1571b0]");
+        // The ray node 1 (1.5,0,0) → (5,0,0) hits the wall at (3,0,0); dir = (1,0,0); the dest is
+        // pulled to (2,0,0) — one unit before the hit, the nearest reachable point.
+        assert!((r.dest[0] - 2.0).abs() < 1e-3 && r.dest[1].abs() < 1e-3 && r.dest[2].abs() < 1e-3,
+            "dest = hit − normalize(hit − node.pos) [M 0x156088:44-52], got {:?}", r.dest);
+        // Sister 1 [M 0x156088:35-57 — the alter only runs on the -1]: a CLEAR final leg keeps the dest.
+        let (_, r2) = Route::to_position(&n, &w, Some(0), [0.0, 0.0, 0.0], [2.5, 0.0, 0.0], &goal, &[0; 4]).unwrap();
+        assert_eq!(r2.dest, [2.5, 0.0, 0.0], "a reachable-in-the-open dest is not altered");
+        // Sister 2 [M 0015afe0:32 — the alter only on CalcRoute 1]: a node AT the dest (result 0)
+        // keeps the dest too.
+        let goal0 = TargetNodes { found: Some(2), fallback: None };
+        let (res3, r3) = Route::to_position(&n, &w, Some(0), [0.0, 0.0, 0.0], [5.0, 0.0, 0.0], &goal0, &[0; 4]).unwrap();
+        assert_eq!(res3, 0);
+        assert_eq!(r3.dest, [5.0, 0.0, 0.0], "a found goal is not altered");
+    }
+
 }
