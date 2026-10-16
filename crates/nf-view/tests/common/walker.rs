@@ -12,6 +12,17 @@ use nf_view::scene::Scene;
 
 pub const TICKS_PER_SEC: u32 = 60;
 
+/// faster-live-tests: the LENIENT leg's give-up cap (ticks). A lenient leg that burns this long is
+/// a deterministic wedge (the give-up dumps show real geometry — wall/door frames), and the design
+/// already treats the give-up as expected: the caller skips the node and the next one re-aims
+/// [walk_nav_to]. On walkreal_07000001 every leg that genuinely arrives lands within 1800 ticks
+/// while 25 wedged legs each burned the full 6000; 3000 keeps ~1.6× headroom over the longest real
+/// arrival while halving the burn (~35 s on that binary alone). A shorter cap never changes an
+/// ARRIVING leg's outcome — it only shortens how long a wedge burns before the documented skip —
+/// and the non-lenient panic cap below stays 6000. The full-suite run validates the cap across
+/// every walker user (23 binaries include common/walker.rs).
+const LENIENT_GIVE_UP_TICKS: u32 = 3_000;
+
 /// Wrap an angle into −π..π.
 pub fn wrap_pi(a: f32) -> f32 {
     let mut a = a;
@@ -552,10 +563,11 @@ impl Walker {
                 let dump = fail_dump(&self.scene, wp.at, label);
                 panic!("walk_to {label}: 40000-tick cap\n{dump}");
             }
-            if self.total_ticks - start_ticks >= 6_000 {
-                // Lenient or not: a 100-second leg is a wedge. Report and bail.
+            let give_up = if self.lenient { LENIENT_GIVE_UP_TICKS } else { 6_000 };
+            if self.total_ticks - start_ticks >= give_up {
+                // Lenient or not: a leg this long is a wedge. Report and bail.
                 let dump = fail_dump(&self.scene, wp.at, label);
-                if self.lenient { eprintln!("[walk] {label}: gave up at the 6000-tick cap\n{dump}"); return u32::MAX; }
+                if self.lenient { eprintln!("[walk] {label}: gave up at the {give_up}-tick cap\n{dump}"); return u32::MAX; }
                 panic!("walk_to {label}: 6000-tick cap\n{dump}");
             }
             let sim = self.scene.sim.as_ref().unwrap();
