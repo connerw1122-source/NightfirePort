@@ -15824,3 +15824,13 @@ fix_swim_entry_live, fix_swim_vent_live, fix_swim_vent5_live, walkreal_07000005_
 LADDER-02 FINAL SUITE (14:16 UTC): the final-tree fast-runner total `1808 passed, 6 failed,
 72 ignored (42 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes; no
 regressions from the cel-scoped hit-below fix.
+
+## dev-panel-spawns — the dev panel spawns what it says
+
+Plan: (1) branch s/dev-panel-spawns from origin/master (a4156da0); (2) audit the dev panel's
+weapon/gadget/grenade/ammo lists (crates/nf-view/src/dev.rs) against the game's weapon table
+[L weapon_data 0x2bf150 + the label ids] — each entry's id, its displayed name (the game's own
+label), its projectile mesh and its class; (3) fix mislabelled/misgrouped entries and make each
+give use the same path the level pickups use; (4) tests: for every panel entry, the given weapon
+id's record name, class and projectile mesh match the table; the frag gives 0x34 with the frag
+mesh, the stun 0x35; (5) run the crates the tests touch, then the full fast suite, report.
