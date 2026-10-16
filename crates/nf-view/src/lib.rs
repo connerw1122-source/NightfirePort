@@ -2141,8 +2141,11 @@ impl App {
                 {
                     self.stash_music_statics();
                     self.fe = None;
-                    if self.scene.sim.is_some() { self.grab(true); }
                 }
+                // The mission takes the mouse on arrival. The briefing path closed its front end at
+                // the phase-2 resolve, BEFORE the level existed (close_front_end's grab saw no sim),
+                // so the level came up un-grabbed: no mouse look until a click, and Esc quit.
+                if load.next != menu::FRONTEND_LEVEL && self.fe.is_none() && self.scene.sim.is_some() { self.grab(true); }
                 // frontend-music: `Sound_Ready`'s front-end case [M 0x1dceb8 case 0x7000048] — the
                 // load alternates bank 0xc (SBI slot 0 = SB_0, jingle 0x1d7) and 0x38 (slot 1 =
                 // SB_1, jingle 0x470) through DAT_002e1b11, then `MenuManager_Create` resets
@@ -3001,7 +3004,12 @@ impl ApplicationHandler for App {
                 }
                 match (k, event.state) {
                     (KeyCode::Escape, ElementState::Pressed) => {
-                        if self.grabbed {
+                        // Esc in a mission ALWAYS pauses, grabbed or not: the briefing hand-over left the
+                        // mouse un-grabbed, and the un-grabbed Esc quit the game from inside a mission
+                        // (playtest 1016 "froze then crashed" / "pause menu wasnt working"). Only the bare
+                        // viewer (no mission) quits on an un-grabbed Esc.
+                        let in_mission = self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL;
+                        if self.grabbed || in_mission {
                             self.grab(false);
                             // Esc in a mission opens the pause page [S: the game pauses on Start].
                             if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL {
