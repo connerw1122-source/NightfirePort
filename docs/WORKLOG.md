@@ -13858,3 +13858,11 @@ Work Log (async-level-load):
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+
+## difficulty-effects (2026-10-16, branch s/difficulty-effects) — difficulty audit, started
+- Task: audit everything the selected difficulty changes in the game (GameState+0x40 from the
+  difficulty table 0x2df4c0+0x0c; find every read): enemy damage/accuracy/reaction/health, Bond's
+  damage taken, armour, ammo, hints on/off, the score's difficulty bonus, objectives per
+  difficulty, continue health boosts (ContinueHealthBoost*). List each with its address and the
+  port's status; implement the missing ones in the sim. Tests per effect (numbers only) with
+  sister assertions. Doc: docs/reports/difficulty-effects.md at finish.
