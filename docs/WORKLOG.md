@@ -16706,3 +16706,9 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+- 2026-10-16 s/hint-bar-speed-05 (task 739): playtest 1016-1355 — "the hints are being
+  displayed at 1,000 miles an hour" (07000005). Plan: find the hint pane / context-hint
+  update in the HUD decompile (show duration, scroll/fade rate, per-tick step), find why
+  the port runs it fast (per-frame step at uncapped fps vs per tick, or wrong constant),
+  fix, and pin a test: a hint shows for the game's tick count at 60 Hz and the same at
+  240 rendered fps (frame-rate independent). Branch created from origin/master f09f3c6c.
