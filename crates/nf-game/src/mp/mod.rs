@@ -31,6 +31,15 @@ use crate::world::CollisionWorld;
 /// the sim calls it yet; the dispatch is behind the `mp-bots` feature.
 pub mod bots;
 
+/// The lockstep state hash (`state_hash(&MpMatch) -> u64`, FNV-1a 64 over the state's bit
+/// patterns) — the desync detector the future `nf-net` UDP lockstep exchanges per tick. See
+/// `docs/systems/net-lockstep.md`.
+pub mod hash;
+
+/// The recorded-input replay harness for the MP core: settings + seed + per-tick events in, the
+/// same sim calls the live host makes, per-tick hashes out.
+pub mod replay;
+
 /// The per-scenario rules (402 mp-match-rules): kill scoring, the end-condition latches and the
 /// state machine, the who-won decision, respawn rules, friendly fire, and every scenario's
 /// objective update (CTF flags, Uplink terminals, KOTH hill, Demolition/Protection sites,
@@ -149,6 +158,11 @@ pub struct MpSettings {
     /// player with `Upgrade_MPWeapon(slot, 0x50)` when it is non-zero, and with nothing extra when
     /// 0. Boot 1 [M 0x1c7e78:45]; the menu's Enviro-Mods row 0x328 writes it [M mp-menus.md].
     pub grapple: u32,
+    /// Port-only ([S], no game field): the deterministic lockstep seed — every machine in an
+    /// online match builds the level from the same seed (net-match-host). The game's local flow
+    /// keeps the level-build constant the port used before (0x1234_5678 equivalent: seed 0 keeps
+    /// `Rng::new`'s mixing for local play — see `net-match-host.md`'s local-compat note).
+    pub seed: u32,
 }
 
 impl MpSettings {
@@ -181,6 +195,7 @@ impl MpSettings {
             gun_emplacements: 0,
             vehicles: 0,
             grapple: 1,
+            seed: 0,
         }
     }
 

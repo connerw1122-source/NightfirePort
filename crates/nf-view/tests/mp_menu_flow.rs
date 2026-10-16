@@ -10,14 +10,20 @@
 
 use nf_view::menu::{Action, FrontEnd, Page, MP_MAP_ROWS, MP_OPTIONS_ROWS, MP_SCENARIO_ROWS};
 
-/// Main menu → Multiplayer → Join (the main menu's row 1 confirm).
+/// Main menu → Multiplayer → Local → Join (the main menu's row 1 confirm; net-online-lobby put
+/// the port's Local / Host Online / Join Online choice between them, and row 0 Local keeps the
+/// game's page [S docs/systems/net-online-lobby.md §2]).
 fn enter_mp(fe: &mut FrontEnd) {
     fe.tick(); // boot → the runner state [M 0x1c98c8 case 1] — the flow machine must be live for
                // the confirm's ResetMap_LevelToLoad push to be accepted
     fe.page = Page::Main;
     fe.cursor = 1; // Multiplayer [M MAIN_ITEMS 0x149; C_GOMULTIPLAYER fires on row 1]
     assert!(fe.action(Action::Confirm), "Multiplayer confirm must navigate");
-    assert_eq!(fe.page, Page::MpJoin, "C_GOMULTIPLAYER's delayed msg 0x44 lands on 0x40000019");
+    assert_eq!(fe.page, Page::MpMode, "the port's mode choice is up [S net-online-lobby]");
+    assert_eq!(fe.page.id(), 0x5000_0001);
+    fe.cursor = 0; // Local [S — the game's own flow]
+    assert!(fe.action(Action::Confirm), "Local confirm must navigate");
+    assert_eq!(fe.page, Page::MpJoin, "Local lands on C_GOMULTIPLAYER's 0x40000019");
     assert_eq!(fe.page.id(), 0x4000_0019);
 }
 

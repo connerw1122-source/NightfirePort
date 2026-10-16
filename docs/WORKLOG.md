@@ -13767,6 +13767,9 @@ Work Log (drive-ai-traffic2):
   6 failed / 26 ignored — the 6 = the 3 permitted disc_golden + 3 wgpu adapter-NotFound GPU probes
   (probe_pylon_render, fix_0c_pylon_live ×2; environmental). Not run: the walk/walkreal tails + render/weapon
   probes (~96) — flagged for the next window.
+
+## net-online-lobby (2026-10-15, branch s/net-online-lobby)
+
 ## async-level-load (2026-10-15, branch s/async-level-load) — DONE 22:10 UTC
 - Research [M work/decomp/ACTION.ELF]: ResetMap_Load 0x1d6360 state 3 draws the screen
   (ResetMap_GenLoadScreen 0x1d5de0, skipped for 0x07000048), runs the whole blocking build on the
@@ -13804,6 +13807,16 @@ Work Log (drive-ai-traffic2):
 - Report docs/reports/async-level-load.md with 6 live checks (the dots' cadence on a warm
   transition, the cold + fail-Restart arms, the movie-wrapped load, the weapon-give hitch left
   synchronous, the failure path).
+
+## net-match-host (sandbox7, started 2026-10-15T23:15Z)
+
+Task 053: wire 051's UDP lockstep session into the running app (crates/nf-view/src/lib.rs, the MP match
+path from 611/402): online match start builds the same MP level with the host's settings + seed on every
+machine; the local agent's keyboard+mouse input goes to the session each frame; the sim advances one tick
+only when `ready_inputs(tick)` returns all agents' inputs; each machine renders its own agent's view, the
+others as remote characters; state hash every N ticks; desync/disconnect show the game's message box and
+return to the lobby. Tests: two app sims in one process over loopback, 1 000 ticks of scripted input end
+in the same state; a forced desync is detected. Branch s/net-match-host.
 
 ## fix-ingame-lag + pause-woman clock (2026-10-15, main agent, branch mine/pc-menus2)
 
@@ -13953,6 +13966,144 @@ Stage Summary:
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
 
+## net-determinism (2026-10-15, branch s/net-determinism) — lockstep audit, started
+- Task: prove the MP match sim (mp-core/mp-bots/match-rules/MpSettings) is a pure function of
+  (settings, seed, per-tick inputs): audit nondeterminism sources (wall clock, HashMap order,
+  uninit/order, threads, float paths), check RNG seeding (game's Rand_*), deliver state_hash(&MpWorld)
+  -> u64 (integers + f32 bit patterns), a recorded-input replay harness, and tests: two independent
+  sims, same inputs, 10 000 ticks (bots on, every scenario), identical hashes every tick; sister test
+  proving the hash catches a one-bit difference. Doc: docs/systems/net-lockstep.md. Networking itself
+  is NOT this task — determinism only.
+
+## net-determinism (2026-10-15, branch s/net-determinism) — the MP sim proven lockstep-safe
+- The audit: every nondeterminism source in the MP tick checked (wall clock, HashMap order, sorts,
+  uninit, threads, libm floats) — the sim core was already clean; two REAL finds, both fixed:
+  F1 bots aimed with std atan2/cos/sin (libm ulps across platforms flip the 0x178c48 aim-cone
+  gate) → now the game's ATAN2_APPROX 0x1e4528 / PS2Sinf 0x120700 [M trig.rs]; F4 the brains read
+  the driver-supplied ctx.now while next_bullet_at was tick-derived — the brain's canonical clock
+  is now its own 60 Hz tick, ctx.now kept but ignored (a host's wall-clock accumulation cannot
+  reach sim state). One `Rng::new(seed)` stream per match, the game's Rand_* — no other entropy in
+  nf-game (grep); pinned by one_extra_rng_draw_diverges + different_seed_diverges.
+- Deliverables: nf_game::mp::hash — state_hash(&MpMatch) -> u64, FNV-1a 64 over f32 BIT PATTERNS
+  (own hasher, not DefaultHasher; FNV vectors pinned) + BotBrain::state_hash (logs as lengths);
+  nf_game::mp::replay — MpRecord (seed+settings+level registrations+per-tick inputs; spawn indices
+  re-derived through the policy) + run_record + the single apply_event mapping; 6 tests in
+  tests/mp_lockstep.rs (needs --features mp-bots), incl. the 10 000-tick two-sim bots-on soak over
+  all 12 scenario words — identical combined hashes every tick — and the one-bit sisters.
+- Suite on the final tree (foreground chunks — background jobs die in this sandbox): nf-game 371
+  passed / 0 failed / 2 ignored (--test-threads=1); nf-audio 13/0; nf-formats 92/3 (the 3
+  permitted disc_golden); mp_lockstep 6/6 (--features mp-bots); nf-view targeted determinism set
+  28/0 (mp_core_live 5, mp_bots_live 2, mp_menu_flow 9, mp_menu_lists_live 5, replay_live 3,
+  fps_determinism_live 4). The full nf-view pass (wgpu GPU probes + walks) does not fit the
+  window — flagged, same as the last windows.
+- Doc: docs/systems/net-lockstep.md (the contract, the audit table F1-F9, the design, what the
+  future nf-net host owes, a live check if the main agent wants on-hardware trig samples).
+- Final tree: merged origin/master (24b1f4dd — stats/menu-sfx/async-load; WORKLOG union kept both)
+  and re-ran: nf-game 378/0/2, mp_lockstep 6/6 (--features mp-bots), nf-view mp set 28/0.
+  ntfy: all three fallbacks returned HTTP 429 (daily quota) — exact errors in the report.
+
+## net-lockstep-core (2026-10-15, branch s/net-lockstep-core) — UDP lockstep session, started
+- Task: build the MP session layer on 050's determinism (050 not landed yet: the session takes the
+  per-tick state hash as an opaque u64 from the caller, so 050's state_hash(&MpWorld) wires in
+  later). New crate crates/nf-net (no rendering, no game-sim deps): host on a UDP port + up to 3
+  clients joining by address, handshake (protocol version + build id + codename, host's MpSettings
+  + seed to clients), per-tick input packets with tunable input delay (2-4 ticks), redundancy
+  (each packet repeats the last N unacked inputs), acks, stall when an input is missing (never
+  guess), state-hash exchange every N ticks with a desync error, timeout/disconnect handling,
+  session API poll()/local_input()/ready_inputs(). std::net::UdpSocket only, no new crates.
+  Tests over loopback: host + 3 clients, 2 000 ticks with a loss/latency shim, in sync; version
+  mismatch refused; client timeout reported. Doc: docs/systems/net-lockstep.md.
+
+## net-online-lobby (2026-10-15, branch s/net-online-lobby) — DONE 23:55 UTC
+- The online Host / Join front end on top of 611's MP flow [S — the PS2 game has no online mode;
+  the menu-def holds no network page]: Main → Multiplayer now asks Local / Host Online / Join
+  Online on the port-only PAGE_MP_MODE 0x5000_0001 (spare 0x5000_0000 block); Local keeps the
+  game's 0x40000019 couch flow byte-for-byte. Host: PAGE_MP_HOST (port default 27420, ◀ ▶ step,
+  Start Listening) → the host's own panel joins and the game's Join page doubles as the host lobby
+  (remote agents mirror into mp_join slots 1-3 with their codenames, so the panel getters, the
+  start checks and the confirm lines all work unchanged); the usual Scenario → Map → Setup →
+  Options walk publishes every choice change on the tick diff; P_MPCONFIRM's confirm also calls
+  MpSession::start_match. Join: PAGE_MP_NETJOIN (typed digits/dots/colon, 22-char cap, Backspace,
+  Ctrl+C/V on the page's own clipboard, every other key swallowed in lib.rs) → Connecting… /
+  Connection refused / a 600-tick timeout → PAGE_MP_LOBBY mirrors the host's choices read-only
+  (mp_lobby_lines = P_MPCONFIRM's own label pairs) until match_started runs the host's confirm
+  handover on the client. Back cancels cleanly everywhere (the local Join page's previously-stuck
+  Back now pops to the mode page [M P_MPJOIN 0x20ca00's 0x6b → the delayed 0x5f pop]).
+- The session is the trait MpSession (menu.rs: MpNetLink/MpNetError/MpNetAgent/MpNetChoices +
+  poll/link/listen/connect/agents/host_choices/publish_choices/start_match/match_started/
+  set_codename/close); FrontEnd::mp_session holds any Box<dyn MpSession>. crates/nf-net was NOT
+  created and nf_game::net untouched: 051 (net-lockstep-core) owns the wire; the trait lives beside
+  its only consumer and 051's session implements (or adapts to) it. No socket anywhere; no session
+  wired in FrontEnd::new() (the pages report "No network session is wired").
+- Tests: crates/nf-view/tests/mp_net_lobby.rs, 9 headless tests over a deterministic FakeSession
+  (host flow incl. the full choices walk + start settings human_count 2 / master 1; port-busy +
+  host Back teardown; join typing/paste/gate/Connecting/lobby-mirror/handover; refused + retry;
+  the 599/600-tick timeout sisters; no-session reports; Local/Back routing; the mouse rows) — 9/9;
+  mp_menu_flow 9/9 re-verified through the mode page; menus_flow 37/37; mp_menu_lists_live 5/5;
+  mp_bots_live 2/2. Suite on the final tree (merged origin/master — async-level-load, lib.rs
+  auto-merged, WORKLOG both kept): detached background runs die between tool calls here, so
+  foreground --only chunks: chunk A (mp/menu family + the 4 lib tests) 15 binaries 415/0; chunk B
+  (rng/fields/trig/tuning/level/diff/spawner/pickup/progress/inputs + async-load + objective_state)
+  14 binaries 40/0; the two full-suite attempts added 43 binaries 0 FAILED/0 TIMEOUT before the
+  10-minute tool window killed them (the ~360-binary pass does not fit the sandbox window).
+- Deliverables: docs/systems/net-online-lobby.md (the design + evidence) and
+  docs/reports/net-online-lobby.md (the report: deviations, live checks for the main agent, and
+  the one crate ask — the system clipboard for Ctrl+V).
+
+### net-match-host progress (sandbox7, 2026-10-15T23:15Z–00:10Z)
+
+- nf_game::net: the UDP lockstep session (051's API), nf-view wiring: the settings handover
+  (mp_match_settings was never read; the menu path loaded mp=false), load_mp_carry + MpSettings.seed
+  (0 keeps the local Rng constant), all-human slot-order spawn + Sim::mp_bonds +
+  swap_local_slot, the ready_inputs tick gate (no capture on a stall), step_net_remotes,
+  net_state_hash every 15 ticks, the message-box + return-to-lobby failure path, --net-host /
+  --net-join. Tests: net_session 5/0 (headless loopback), net_match_live 3/0 (two real sims,
+  1000 ticks same state; forced desync; disconnect). Suite on the merged tree: see the report.
+
+## attract-mode (2026-10-15, branch s/attract-mode)
+Task 625-attract-mode: port the title screen's no-input attract sequence — `P_ATTRACT_Handler`
+0x20a1f0 and the no-input counter (`Menu_ResetNoInputCount`; `FrontEnd::no_input_frames` already
+counts): the timeout value, what plays (movie codes / demo data), how input interrupts it, and
+the return to the title. Flow + state on `FrontEnd` in crates/nf-view/src/menu.rs (no drawing —
+the main agent renders), the host starts the movie through the existing movie player. Tests: the
+timeout fires at the game's frame count; any input returns to the title. Docs first:
+docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
+
+## attract-mode (2026-10-15, branch s/attract-mode) — DONE 23:55 UTC
+- docs/systems/attract-mode.md first: the counter (frame_counter 0x30d164 +1 per menu tick
+  [M Menu_AlphaUpdate 0x1f3170] − last_action 0x30d168 [M Menu_InputAction 0x1f1f40's 12 stores,
+  machine-verified sw gp,-29960(gp)]), the timeout (`P_START` 0x20a408 / `P_MAIN` 0x20a7b0 0x50:
+  `Menu_GetNoInputCount() == 0xa8c` → 0x44/0x40000035), `P_ATTRACT_Handler` 0x20a1f0 (the
+  movie.291 0x30d368 toggle, the 0x073a0048/0x073b0048 pick — the opener id arrives as the 0x4c's
+  param_6 [M 0x21c858:345], so the title always plays A and the main menu alternates A,B,A —
+  the menu_movie 0x2e1c48 flag block, SFXRemove 0x1d7/0x470, psiStartBackgroundMovie non-looping,
+  0x68/1 input block), the interrupt (`MenuManager_Update` 0x21c3d8:40-43: action 0x19 while the
+  movie plays → Menu_StopMovie(0) 0x215a50 — the ONLY input that reaches anything; the 0x22
+  dispatcher is gated on manager+0x1d4; bSkipAttract 0x30d2a6 is read but never written — dead,
+  machine-verified 0 stores) and the return (0x50 finish → music back + 0x68/0 → 0x5f pop → the
+  opener's 0x4c resets the count).
+- Port: state + flow + getters on FrontEnd (attract_playing/attract_movie/attract_toggle/
+  attract_opener; ATTRACT_FRAMES/ATTRACT_MOVIE_A/B/PAGE_ATTRACT constants), no drawing (the
+  attract page has no controls — the draw side gets attract_playing+attract_movie for the
+  fullscreen movie plane). Host glue in lib.rs::movie_tick (Player::start on the one BGFMV slot,
+  the psiMovieFinished poll, declined-start closes at once) + the redraw's attract_up fullscreen
+  suppress. Count resets at every re-open stand-in: intro end (P_MAIN 0x4c), the credits' two
+  exits, the opener's return.
+- An independent audit (subagent) machine-verified every [M] claim against the decompile + raw
+  ELF scan and found 3 edge defects, all fixed: the missing !intro_playing fire guard (a long
+  intro would fire the attract mid-movies), the Player::start-Err hang (a missing PSS file left
+  the attract up forever with input blocked — now closes at once, the game's BGFMVPlaying==0),
+  and the missing count reset on the credits exits.
+- Tests: menus_flow.rs +5 (timeout at exactly 0xa8c + sister; the A/B/A alternation with the
+  intro-end reset pinned at 1; skip vs swallowed input; movie-end return + no-op sister; the
+  intro guard) — 42/42 green. Ran: nf-view menus_flow + movie_playback_flow + menu_movies +
+  menu_live + menu_backdrop_still + mp_menu_flow + dev_menu_flow + lib (51 tests, 0 failed);
+  nf-game + nf-formats + nf-audio 105 passed / 3 failed = the slim ISO's 3 disc_golden (allowed).
+  Full suite: tools/test/suite.py in the background — see the report for what completed in the
+  sandbox window.
+- Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
+  (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
+  attract page draws the movie fullscreen over black, no controls, no plate.
 ---
 Task ID: 648-mp-pickups-respawn
 Agent: worker (mp-pickups-respawn)
