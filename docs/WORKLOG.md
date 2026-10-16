@@ -16739,3 +16739,17 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+- mp-host-match-logic close-out: the live host now RUNS the match logic — create_mode_objects
+  at MP_Start (the game's draw order, before the humans' spawn picks), update_objects every
+  frame (MP_ObjectUpdate 0x18b198; the lockstep rig's order, on_hill false — no hill box
+  parsed), the humans' slot positions refreshed per tick, player_killed on the death's start
+  tick (Player_CheckForDeath 0x190810:91's site; the killer from the last-shooter word +0x20),
+  the bots' frags + human-damage gate through the real rules (player_killed /
+  register_bullet_hit 0x1857c0), the 5 s respawn (Player_HandleDeath 0x190bb0:41-54 → the new
+  MpMatch::mp_respawn = MP_ReSpawn 0x185368: gates → policy pick → apply, health
+  armor_bonus+100, the body moves), and the request_debriefing → open_mp_debriefing handover
+  (the fe re-created, the sim freezes behind the page). Tests: mp_host_match_live 2/2 — the
+  local deathmatch (kill scores → 300-tick respawn at the policy's point → frag limit → the
+  debriefing board) and the audit's CTF live-vs-headless parity. mp_match_rules 10/10,
+  mp_debriefing 14/14, net_match_live 3/3, mp_bots_live/mp_core_live/mp_menu_flow/
+  mp_debriefing_flow/mp_net_lobby/menus_e2e_mp all green on the merged tree.
