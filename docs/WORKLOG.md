@@ -15342,3 +15342,11 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+
+## hatch-crouch-0c2
+
+Started: 2026-10-16 ~11:41 UTC. Branch s/hatch-crouch-0c2 from origin/master (e416e5f0).
+Task: re-land 680's hatch crouch fix. Its grounded-rule "pick-contact arm" in player.rs broke 6
+movement tests on master (several PCSX2-measured traces). Re-derive the pick-contact arm from the
+decompile (Player_Collide / grounded test) [M], find what the traces show that arm gets wrong, and
+land a rule that passes all 6 AND the 0c crouch test.
