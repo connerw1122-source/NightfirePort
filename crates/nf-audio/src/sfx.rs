@@ -73,6 +73,11 @@ struct Item {
     delete: bool,
     fade_kill: bool,
     fade_kill_vol: i32,
+    /// `StartedWhenNisPlaying` (SFXItem+0x294): sampled from the IOP's `NisPlaying` at start init
+    /// (`SFXStart3D`@3aac step 5). While `NisQuitten` stands, every item with this flag gets
+    /// `FadeAndKill = 1` — the cut-scene's own sounds (the mid-line dialogue) die in the skip's
+    /// fade window [M sound.md §6 step 3].
+    started_when_nis: bool,
     streamed: bool,
     /// `Paused` (SFXItem+0x290): a `PauseInNis` sound while an NIS plays — pitch 0, skipped by `SFXUpdate` [M §8].
     paused: bool,
@@ -267,10 +272,12 @@ impl Driver {
         let item = Item {
             id, counter: 0, vh: [None; 10], base_volume: [0; 10], pitch: [0; 10], pan: [0; 10], cue_pos: 0, csw: [0; 50], cued: Vec::new(),
             inner: if inner == -1 { fx.inner } else { inner }, outer: if outer == -1 { fx.outer } else { outer }, fx: Arc::new(fx), slot,
-            updated: 0, real_pos: p, pos: p, handle, delete: false, fade_kill: false, fade_kill_vol: 100, streamed: false,
+            updated: 0, real_pos: p, pos: p, handle, delete: false, fade_kill: false, fade_kill_vol: 100,
             paused: false, key_on_delay: kd,
             gpaused: false,
             sample_hash: 0,
+            started_when_nis: self.nis_playing,
+            streamed: false,
         };
         self.items.insert(0, item);
         if self.setup(out, 0) { return 0; }
@@ -629,6 +636,13 @@ impl Driver {
         self.update_ducker();
         self.fade_update();
         if self.nis_quitten { self.stop_ducker(); }
+        // §6 step 3's second half: `For all items: if NisQuitten && StartedWhenNisPlaying:
+        // FadeAndKill=1` — the skip's dialogue kill. `NisPlaying` has already dropped by then (the
+        // EE's event 5 cleared it), so only the lines that started before the skip are hit; the
+        // step-4 loop then spends FadeAndKillVolume (−5/frame from 100, ≈21 frames) [M §6].
+        if self.nis_quitten {
+            for it in &mut self.items { if it.started_when_nis { it.fade_kill = true; } }
+        }
         for it in &mut self.items { it.updated = 0; }
         let mut i = 0;
         while i < self.items.len() {
@@ -726,6 +740,14 @@ impl Driver {
 
     /// Live items (tests).
     pub fn items(&self) -> usize { self.items.len() }
+
+    /// Probe (read-only, tests): every item's (id, delete, fade_kill, started_when_nis, looping) —
+    /// the skip's dialogue kill is asserted through these; `looping` (any live voice's loop bit)
+    /// tells the NIS score (which never ends on its own) from the one-shot lines.
+    pub fn items_probe(&self) -> Vec<(u32, bool, bool, bool, bool)> {
+        self.items.iter().map(|it| (it.id, it.delete, it.fade_kill, it.started_when_nis,
+            it.vh.iter().flatten().any(|v| self.voices[*v].as_ref().is_some_and(|vo| vo.looping)))).collect()
+    }
 
     /// The pitch-0 pause of one item's live voices (front + rear): the NIS pause's edge and the
     /// global pause's edge [M sound.md §8]. The port adds volume 0 — the SPU's pitch 0 alone would

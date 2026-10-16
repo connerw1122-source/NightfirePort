@@ -5426,6 +5426,14 @@ pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelle
     /// `*(int*)(BU+0x40)` object pointer; none = re-scan, and the scan re-runs when the target
     /// dies [M 0x12f3b4: the `+0xfe & 1` clear-and-rescan]).
     pub target: Option<usize>,
+    /// delta-repeater: `weapon_data+0x6C & 0x8` — the GRAVITY bit `Bullet_update` 0x12e7b0's case 1
+    /// applies to any bullet (`velocity = dir·speed; velocity += WldGravity·FRAME_RATE_DIV·
+    /// REC_FRAME_RATE²; dir = norm(velocity), speed = len`), not a grenade-family marker. The Delta
+    /// Repeater 0x11 (+0x6C = 0x808 [L ee_start_05.bin @ 0x2bf150 + 0x11·0x10C]) flies its lobbed arc
+    /// with this bit while its +0x70 = 0x2 carries no bounce/stick/ricochet flag [M Bullet_CollisionHandler
+    /// 0x12ce80 — the bounce block gates on +0x70 & 0x80, the stick arm on 0x100, the ricochet on 0x10].
+    /// Field on its own line (merge lesson 4).
+    pub gravity: bool,
     /// fix-weapon-fire-modes: the weapon record's `+0x6C` carries the 0x4 GUIDED-CAMERA bit —
     /// `Bullet_init` 0x12c5a0:234-254 hands the view to the projectile: `Player_ChangeSubState
     /// (owner, 10)`, `BLData+0x878 = the bullet obj`, `Player_SetCamMode(BLData, 0xc)`,
@@ -5550,6 +5558,11 @@ pub fn level_drones(d: &Data, level: &nf_formats::level::Level, rng: &mut Rng, l
         if p.flags & 0xff == 0x4e { crate::light::placement_light(level, m, i, rng, lights); return None; }
         if p.flags & 0xff != 0x0f { return None; }
         let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map(|&(_, v)| v).unwrap_or(0);
+        // Drone_Create's difficulty gate [M 0x136be0:49]: level_tag+0x34 (param 2) is the
+        // placement's MINIMUM-difficulty tag — the drone spawns iff `param2 <= difficulty`
+        // (u32 compare; the pre-create gate draws no RNG, exactly as the game skips before
+        // `Drone_Create`'s body). docs/fields/level-tag.md's "spawn frame" name is a misread.
+        if param(2) > d.difficulty { return None; }
         let floor = d.world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
         let mut dr = Drone::new(d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, rng);
         dr.placement = i;
@@ -5954,6 +5967,11 @@ impl crate::nis::World for Data<'_> {
     fn glist_sphere(&self, hash: u32) -> Option<([f32; 3], f32)> {
         self.models.get(&hash).map(|m| (m.centre, m.radius))
     }
+    /// `Sound_IsLooping` (0x1de260) reads the SFX table's loop bit for the id. No table (a headless
+    /// run without the SFX data) reads as looping — the game's absent-handle case [M 0x1de260:5-7].
+    fn sfx_looped(&self, id: u32) -> bool {
+        self.sfx.is_none_or(|t| t.get(id).looped)
+    }
     fn discrete0(&self, skin: u32, script: u32, frame: f32) -> Option<nf_formats::anim::Mat4> {
         self.discrete_parts(skin, script, frame).into_iter().next().map(|p| p.1)
     }
@@ -6145,8 +6163,8 @@ impl Drones {
         });
         // The helicopter (`Copter_Create` 0x17d340, placement 0x2F) and the locks (`Lock_Create`
         // 0x1ae1f8, placement 0x2E) (fix-objects2). Neither draws RNG at create.
-        self.copters = crate::copter::Copter::create(&level.maps[m].placements);
-        self.locks = crate::lock::Lock::create(&level.maps[m].placements, |p| {
+        self.copters = crate::copter::Copter::create(&level.maps[m].placements, self.difficulty);
+        self.locks = crate::lock::Lock::create(&level.maps[m].placements, self.difficulty, |p| {
             let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
                 else { level.maps[m].objects.get(p.index as usize) };
             obj.map(|o| (o.centre, o.radius))
@@ -6305,6 +6323,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 pos: from, dir, speed, travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
                 homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
                 target: None,
+                // delta-repeater: `Bullet_init` spawns the record's bullet with the gravity bit
+                // untouched; `Bullet_update` case 1 applies it per flight tick [M 0x12e7b0]. The
+                // spawn tick (state 0's half step) applies none — the game's gravity arm lives in
+                // case 1 only.
+                gravity: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x8 != 0,
                 // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:234-254]: `+0x6C & 4` rides the camera.
                 guided_cam: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x4 != 0,
                 // rocket-sound-leak: BU+0xF0 — the launch whoosh's handle (0 when the weapon plays none).
@@ -6411,7 +6434,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             if b.travelled > b.range { b.dead = true; continue; }
             let mut step = if b.first { (self.rng.frand(0.5) + 0.5) * b.speed } else { b.speed };
+            let first = b.first;
             b.first = false;
+            // delta-repeater: `Bullet_update` 0x12e7b0 case 1's gravity arm [M] for `+0x6C & 8`
+            // records — velocity = dir·speed, `velocity += WldGravity · (FRAME_RATE_DIV ·
+            // REC_FRAME_RATE²)` (= (0, −9.8/3600, 0) at the fixed 60 Hz; WldGravity (0x2d8890) =
+            // (0, −9.8, 0) [L docs/systems/pickups.md], REC_FRAME_RATE = 1/60, FRAME_RATE_DIV = 1/60),
+            // then `Vec_NormaliseLen` writes the normalised direction back and stores the length into
+            // BU+0xF8. The spawn tick (state 0) applies none — the arm lives in case 1. The port's
+            // grenade path runs the same integration (grenade.rs, fix-player3).
+            if b.gravity && !first {
+                let (vx, vy, vz) = (b.dir[0] * b.speed, b.dir[1] * b.speed, b.dir[2] * b.speed);
+                let vy = vy + crate::grenade::WLD_GRAVITY[1] * crate::grenade::REC_FRAME_RATE * crate::grenade::REC_FRAME_RATE;
+                let len = (vx * vx + vy * vy + vz * vz).sqrt();
+                if len > 1e-9 {
+                    b.dir = [vx / len, vy / len, vz / len];
+                    b.speed = len;
+                }
+            }
             b.travelled += step;
             if b.travelled > b.range { step -= b.travelled - b.range; }
             let l = step.max(1.0);
@@ -6489,6 +6529,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 }
             }
             self.bullet_path_weapons.push(b.weapon);
+            // fix-foliage-bullets: the flight trace stays the plain first-hit ray. The game's
+            // pass machinery lives in the Collide_Update walk (0x1ea398:216-229) and the
+            // handler's per-hit state-1 arm (0x12ce80), but the bullets' own HITTEST stays
+            // inactive (+0x94 = 0 [M 0x12c668]) and the live-pinned guard cover trace
+            // (ai_live guard_takes_cover_like_the_game, UnderCoverAim 37) says the round stops
+            // on the flagged tree's first face — the pass does NOT lift the flight stop. The
+            // bit-0x8 drop is the AIM/LOS family's (segment_bullet): see the report.
             let tw = d.world.segment(b.pos, end);
             let mut best: Option<(usize, i16, f32)> = None;
             for (i, dr) in self.list.iter().enumerate() {
@@ -7190,6 +7237,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     if let Some(fb) = self.fuseboxes.iter_mut().find(|f| f.placement == player) {
                         fb.register_wire(obj, group);
                     }
+                }
+                // `Script_FFwd`'s `Music_Event(5, hash)` [M 0x1dac78:55] — the NIS-skipped pulse
+                // (the only `Request::Event` the script player pushes; other kinds ride this arm
+                // unused). `UpdateMusicalEvents` clears `NisPlaying` and arms `NisQuitten = 5`
+                // [M 0x114e70]; the IOP's `SFXUpdate` step 3 then FadeAndKills every sound that
+                // started while the NIS played — the mid-line dialogue dies inside the skip's fade
+                // window (playtest 1014-1725: "the dialogue still kept going") [M sound.md §6].
+                crate::nis::Request::Event { kind: 0x40, params } => {
+                    self.music.event(5, params.first().copied().unwrap_or(0));
                 }
                 _ => {}
             }

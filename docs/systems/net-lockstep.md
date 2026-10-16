@@ -1,7 +1,11 @@
 # Net lockstep — the MP match sim as a pure function
 
-Status: **determinism proven for the MP core + bots; the UDP host itself is future work** (`nf-net`,
-not built here). This doc is the audit the lockstep design rests on: every nondeterminism source in
+Status: **determinism proven for the MP core + bots; the UDP session layer is `crates/nf-net`** —
+the ONE session layer since net-consolidate (2026-10-16): 051's `nf-net` crate absorbed 053's
+`nf_game::net` (deleted) and now carries the full `MpSettings` wire fidelity (protocol 2: per-player
+`radar_on` + `registered_pickups`), the lobby display codename + `agents()`, the
+refuse-when-started gate, the FNV `Hasher` (`nf_net::hash::Hasher`), and the DATA tunnel the
+lobby's choices mirror rides. See §9. This doc is the audit the lockstep design rests on: every nondeterminism source in
 the MP tick was checked against the code, the two real ones were fixed, and the sim's purity is now
 pinned by tests that hash the whole state every tick. Facts are tagged [M] code (function + address),
 [D] disc, [L] EE snapshot, [S] suggested — the repo's evidence rules (`docs/fields/README.md`).
@@ -285,3 +289,40 @@ None needed — the PS2 game has no network mode, so there is nothing to
 observe in PCSX2. The game-side facts this doc cites (pad-disconnect shape,
 bot slot rules, quit path) were verified from the decompile and can be
 spot-checked there if desired.
+
+## 9. The consolidation (net-consolidate, 2026-10-16, branch `s/net-consolidate`)
+
+Two workers built two UDP sessions in parallel (051 `nf-net`, 053 `nf_game::net`); the app wired
+053's. This task made ONE session layer and deleted the other:
+
+- **Kept 051's `crates/nf-net`** — the stronger protocol, measured by tests: a contiguous ack +
+  32-tick bitmap so the full unacked window rides every packet (an isolated loss can never lose a
+  tick; 053 had no acks — after >3 losses an input was gone until the 5 s timeout killed the
+  match); a configurable input delay 2..=4 carried in WELCOME; hash exchanges every
+  `hash_every` ticks with the previous hash piggybacking on every HASH packet; keepalives; GO
+  retransmit; the deterministic loss/reorder/latency shim its tests run on (053's live-socket
+  tests were flaky under load — its own comments say so). Wire input 24 B vs 053's 20 B: the
+  `trigger`/`reload`/`use_key` lanes (`Sim::step_bond`'s separate args) ride the wire now.
+- **Ported 053's unique features**: the full `MpSettings` fidelity (protocol 2: settings 208 B —
+  per-player `radar_on` [M `MP_GetRadarObjects` 0x189840, `HUD_RadarUpdate` 0x19f6e8] and
+  `registered_pickups` +0x472); the lobby display codename (the HELLO/WELCOME 32 B payload is now
+  a display name — the compatibility gate is protocol + build) with `Session::agents()`;
+  `RefuseReason::Started` (a HELLO after GO is refused — no mid-match join);
+  `nf_net::hash::Hasher` (moved verbatim); and the `MpSettings` match handover (053's START now
+  rides a tagged DATA tunnel, because the WELCOME at join time cannot know the confirm page's
+  final settings — the host sends the payload on arm, before GO).
+- **Wired both consumers to it**: the app's flag path (`--net-host`/`--net-join`) drives
+  `nf_view::mpnet::NetCore` directly; the lobby's `FrontEnd::mp_session` (052's `MpSession`
+  trait) is now a real `nf_view::mpnet::SessionProxy` over the same core (created when the online
+  pages open, adopted as the lockstep gate when their match starts); the page logic and the 9
+  lobby tests are unchanged (the trait kept its shape).
+- **Proof**: `crates/nf-net/tests/loopback_e2e.rs` — host + 2 clients over real 127.0.0.1 UDP
+  with 8% injected loss and 25% injected transpositions, 600 ticks, identical per-tick state
+  hashes on all peers; sister test: one corrupted input trips the desync detector. 053's tests
+  are ported in `crates/nf-net/tests/ported_session.rs` (built/codename refusal on the raw wire,
+  forged-hash desync, silent-peer timeout + NEUTRAL continuation; the delay-1 clean-link
+  per-tick run is `#[ignore]`d with the reason inline — the e2e pins the same contract under
+  worse links). The app-level sims test is ported in `crates/nf-view/tests/net_match_live.rs`
+  (two real MP sims, 1000 ticks, per-tick hash equality; forced desync; disconnect keeps the
+  match running on NEUTRAL — the game's own dead-pad shape [M `psiInput_PollDevices` 0x10ca78],
+  replacing 053's terminal PeerLost).

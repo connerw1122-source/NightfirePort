@@ -36,6 +36,21 @@ use crate::world::V3;
 /// D gfx-list 07000029 entry 64 obj 0].
 pub const SMOKE_QUAD: u32 = 0x0200_0039;
 
+/// Every mesh hash the pool's own `Gas_Init` sites can carry, beyond the `EffectInfo` rows' gas
+/// entries (those the renderer collects from `SurfaceSounds::effects` itself). flesh-hit-effects:
+/// the renderer's draw-slot list must cover these or the puff sits in the pool with nothing to
+/// draw it through — the user's "no red puffs" was the blood puff 0x0200_08bc with no slot:
+/// - `SMOKE_QUAD` — the `Gas_Init` default (muzzle, searchlight, laser burn, flashbang, exhaust,
+///   ripples) [M 0x1aacc8:81];
+/// - `0x0200_001f` — the projectile trail smoke [M `Bullet_trail_effect_smoke` 0x12cba8 disasm
+///   0x12cc10-0x12cc74, gas.rs `init_trail_smoke`];
+/// - `0x0200_08bc` — the FLESH hit's blood puff [M `NDrone2_DealWithObjHit` 0x13fff0's default arm,
+///   disasm 0x140470 `ori $t0, $t0, 0x8bc` — sizes 3.0/6.0, kind 5, rgba 0xffffffff → 0xffffff00,
+///   life 0x3c, and the gas obj's `+0xf0 |= 8` draw flag];
+/// - `0x0200_026e` — the Phoenix Samurai bolt's flesh puff [M the 0x32/0x33 arm, disasm
+///   0x140408 `ori $t0, $t0, 0x26e` — sizes 1.0/16.0].
+pub const POOL_MESHES: &[u32] = &[SMOKE_QUAD, 0x0200_001f, 0x0200_08bc, 0x0200_026e];
+
 /// REC_FRAME_RATE (0x30d0dc — GS_SetRefreshRate 0x17d2b8 sets it = 1/FRAME_RATE; 0x30d0cc is
 /// FRAME_RATE_INT) = 1/60 [M symtab; grenade.rs:52].
 const REC_FRAME_RATE: f32 = 1.0 / 60.0;

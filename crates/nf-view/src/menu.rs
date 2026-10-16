@@ -1519,6 +1519,10 @@ pub struct FrontEnd {
     pub stats: Stats,
     /// The level the front end wants the host to load next (set together with a MAPLOAD push).
     pub requested_level: Option<u32>,
+    /// difficulty-effects: the difficulty page's confirm, as the game's 1-based difficulty
+    /// value (`C_SBNFDFCTY` 0x216ca8:15 stores `difficulty[idx*0x18+0xc]` — 1/2/3 — into
+    /// GameState+0x28 at pick time, kept across loads).
+    pub requested_difficulty: Option<u32>,
     /// The pause page's quit confirm: the game swaps the row text and only quits on the second
     /// choose (`state_quit_166` [M C_GCPAUSE_Handler 0x204408:210-220]). RESTART confirms the same
     /// way (the same YES/NO list, text 0x1ff [M 0x204408's msg-0x4b d1=6 cases bind 0x1ff/0x200 and
@@ -1863,7 +1867,7 @@ impl FrontEnd {
         // post-unlock session and read 1 everywhere].
         unlocked[0] = true;
         unlocked[1] = true;
-        let mut fe = FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0,
+        let mut fe = FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, requested_difficulty: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0,
             backdrop_live: false,
             // fix-pause-menu: the pause page's own state (each on its line [WORKLOG lesson 4]).
             confirming_restart: false,
@@ -3940,6 +3944,9 @@ impl FrontEnd {
                 Action::Up | Action::Down => return false,
                 Action::Confirm => {
                     self.difficulty = self.cursor.min(DIFFICULTIES.len() - 1);
+                    // difficulty-effects: the pick writes GameState+0x28 NOW (1-based: the
+                    // wheel's rows are values 1/2/3 = Operative/Agent/00 Agent) [M 0x216ca8:15].
+                    self.requested_difficulty = Some(self.difficulty as u32 + 1);
                     // → the Single Player list [M C_SBNFDFCTY 0x216ca8:10-17 Menu_ChangePageCloseIris
                     // 0x4000001c — the driver's observed order Select Difficulty → Single Player].
                     self.enter_page(Page::MissionSelect);

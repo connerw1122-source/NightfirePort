@@ -216,7 +216,7 @@ fn the_samurai_bolt_puffs_the_energy_mesh_instead() {
         let dir = [d[0] / l, d[1] / l, d[2] / l];
         sim.drones.player_bullets.push(nf_game::drone::PlayerBullet {
             pos: e, dir, speed: 60.0, travelled: 0.0, range: 100.0, damage: 10.0, weapon: 0x32,
-            first: false, dead: false, bounces: 0, homing: false, target: None, guided_cam: false, snd: 0,
+            first: false, dead: false, bounces: 0, homing: false, target: None, gravity: false, guided_cam: false, snd: 0,
         });
     }
     let mut meshes = Vec::new();

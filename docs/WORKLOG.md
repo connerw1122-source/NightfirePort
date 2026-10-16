@@ -14580,3 +14580,311 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   (mission_ended results/NfBonus routing, save prompt, next row unlocking, restart); Back at every step; fresh profile
   vs unlock_all.
 - Started the fast suite in the background on the branch-point tree (baseline).
+## microcam-wheel-zoom (2026-10-16, branch s/microcam-wheel-zoom) — start
+- Branch created from origin/master (6bab6409). Task: while right-click (aim) held, mouse wheel steps the
+  zoom between the weapon's per-weapon min/max zoom range (Player_Weapon zoom input arm / weapon_data zoom
+  fields; Micro-Camera uses its own range); wheel keeps switching weapons when aim is not held. Headless
+  tests through the window's input path.
+
+## microcam-wheel-zoom (2026-10-16, branch s/microcam-wheel-zoom) — close-out
+- The playtest's wheel zoom: while the right button (aim) is held, a wheel notch steps the zoom
+  target ×2/÷2 within the held weapon's own range [1.0, weapon_data+0x88 — the max Player_Weapon
+  0x1a24c8:156-187 writes to BL+0x8D8]; the ×2 step is the port's own [S] (the game's zoom is
+  continuous — Player_Zoom 0x1a1a70 ramps ×1.025/tick). Zoomable = scope flag +0x68 & 0x40 with a
+  magnification above 1 [L weapon_data: 0x11, 0x1e..0x29, 0x32/0x33, 0x54/0x55, 0x5d/0x5e]. Not
+  right-clicking (or a non-zoomable weapon) → the wheel keeps switching weapons (weapon_cycle).
+- Input.zoom_cycle (nf-game player.rs), local view input — pack_input leaves it OFF the wire (the
+  remote path never runs the zoom pipeline; step_net_remotes ticks Bond::tick_ctx only), so the
+  20-byte lockstep packet is unchanged; unpack/replay yield 0. Sim.zoom_wheel latch: once stepped,
+  the hold-ramp to max yields until the aim falls (target → 1.0 [M the aim-bit arm], latch cleared;
+  the twin-switch zoom reset clears it too). Window routing: wheel_steps_zoom() in lib.rs.
+- Tests: microcam_wheel_zoom_live.rs 4/4 (NF_ISO, real input path: sniper 10-5-2.5 + clamp + latch
+  reset, micro camera 8→1 with the CameraPane-11 bracket gate, weapon switch without aim, the
+  routing predicate on the disc's weapon_data). Runs: nf-game lib 234 + integration (net_session
+  35 — the wire round-trip pins the packet), nf-formats 11/14 (the 3 allowed disc_golden), nf-view
+  lib 15 + 26 live test files incl. net_match_live 3/3 (1000-tick lockstep) and weapon_matrix 6/6.
+  Pre-existing unrelated failure: driving_ai_follow's real-data test on the leftover DRIVING/
+  scratch folder. suite.py not runnable here (background jobs reaped between calls) — flagged in
+  the report.
+- Report: docs/reports/microcam-wheel-zoom.md (two --bond render asks for the main agent).
+## cutscene-skip-audio (2026-10-16, branch s/cutscene-skip-audio) — start
+- Playtest 1014-1725 (07000002): "Skip the cutscene in the middle of dialogue, and the
+  dialogue still kept going until it finished." Also: mission music kept playing over
+  cut-scenes; the music only changed late.
+- Plan: (1) port the script player's skip path — the stream stop/fade and SFXStop on the
+  speech handles [M the skip arm]; (2) port the music handover around a cut-scene
+  (nis_state, the NIS pause/quit [M music.md]); (3) headless tests on 07000002's intro and
+  07000007's Kimiko scene: skip mid-line → nothing alive after the game's fade window;
+  let it play → the voice ends naturally; the level music resumes. NF_SILENT.
+
+## cutscene-skip-audio (2026-10-16, branch s/cutscene-skip-audio) — close-out
+- The skip's voice kill is ported end to end. Root cause: the dispatcher had no
+  `Request::Event` arm, so `Script_FFwd`'s `Music_Event(5, hash)` [M 0x1dac78:55] was dropped —
+  `NisPlaying` never cleared and `NisQuitten` never armed; and the driver had `fade_kill` but
+  nothing set it. Fix: the arm carries event 5 to the music board [M 0x114e70]; `Item` grows
+  `StartedWhenNisPlaying` (sampled at `SFXStart3D` init [M 0x3aac step 5]) and `SFXUpdate` step 3
+  FadeAndKills it while `NisQuitten` stands (the −5/frame decay existed) [M sound.md §6].
+- `Script_SoundStart`'s gate ported [M 0x1d8820] (no re-fire on a live handle; no start once the
+  skip's fade is past its length — the catch-up is silent) and `Script_SoundEnd` [M 0x1daf60]:
+  only a live LOOPING sound stops at its marker (`Sound_IsLooping` 0x1de260 via the new
+  `World::sfx_looped`), a one-shot runs to its own end.
+- Tests (crates/nf-view/tests/cutscene_skip_audio_live.rs, headless NF_SILENT, the real
+  load/step/sound_tick path): 07000002 intro skip mid-line → nothing alive after the fade window,
+  the board quit (NisPlaying down, NisQuitten armed→spent); no skip → the one-shot line ends on
+  its own; 07000007 Kimiko (0x0600_0073) skip → the same + the handover completes. Reproduced
+  first: with the game-side halves reverted both skip tests fail.
+- Suite on the final merged tree (origin/master f42de6ff): ~264/382 binaries via foreground
+  `--only` batches (background jobs are reaped in this sandbox) — 0 failed except the 3
+  `disc_golden` (slim ISO); lib tests nf-game 234 / nf-audio 11 / nf-view 15 / nf-formats 79.
+- Report: docs/reports/cutscene-skip-audio.md (4 live-check asks incl. the skip-fade render).
+## faster-live-tests (2026-10-16, branch s/faster-live-tests) — start
+- Task: cut the slow live-test binaries' time (weapon_matrix_live 307 s, levels_sweep_live 184 s,
+  fix_guard_weapons_live 157 s, walkreal_07000001_live 132 s, models_misc_live 100 s,
+  campaign_flow_live 85 s, then fix_striped_box_census 73 s, fix_party_mission_live 61 s,
+  portal_sweep_live 40 s) without losing coverage: share loaded levels across a binary's tests
+  (OnceLock cache + per-test clone), cut tick counts only where the assertion provably doesn't
+  need them, delete the f71a2925 probe `crates/nf-view/tests/zz_obj_drives_probe.rs` (moving any
+  real assertion first). No assertions weakened or removed.
+- Baseline full suite started on the untouched master tree (suite-baseline.out).
+- Profile (three parallel research passes + direct binary runs): models_misc was 95% load time
+  (80 loads of 34 unique archives, 7 of 10 tests read only `misc_drawn`); walkreal_07000001 was
+  87% wedged lenient legs burning the 6000-tick give-up cap (25 legs, ~150k of 174k ticks;
+  arrivals ≤1800); fix_striped_box probe_gate loaded 12/14 three times each (18 loads/11
+  archives); fix_party_mission carried six assertion-free probes (~35-40 s); portal_sweep's
+  raw-walk diagnostic doubled its raycasts print-only; fix_guard_weapons' re-park stall window
+  was 3000 ticks with a 75-tick min-gap floor; zz_obj_drives_probe has zero assertions, all its
+  facts pinned by campaign_flow_live + fix_objects2_live.
+- Changes (test harnesses only — no nf-view/nf-game source): models_misc process-wide
+  misc_drawn cache (80→37 loads, golden sha1 unchanged); walker LENIENT_GIVE_UP_TICKS 6000→3000
+  (non-lenient panic cap stays 6000; 23 binaries validated by the suite); striped-box probe_gate
+  per-archive grouping (18→11 loads); party probes #[ignore]d with the pinning test named;
+  portal raw-walk scan removed (asserts untouched); guard-weapons stall window 3000→900 (still
+  12× the 75-tick floor); zz probe deleted + backlog L-464 EV repointed.
+- Measured: models_misc 100→39.8, walkreal_07000001 132→92.9, fix_striped_box_census 73→52.1,
+  portal_sweep 40→35.6 (direct release runs, --test-threads=1, NF_ISO). No assertion weakened
+  or removed; the misc census golden passes unchanged.
+- Left: campaign_flow front_end_chain replay memoize (~20 s), engine-side ACTION.ELF/WeaponData
+  once-per-process + foreign-map load cache (helps every binary), weapon_matrix budget surgery.
+- Report: docs/reports/faster-live-tests.md (before/after table + suite total).
+## net-consolidate (2026-10-16, branch s/net-consolidate) — started
+- Task: one lockstep session layer from the 050-053 chain. 051 nf-net (std-only crate,
+  handshake/input-delay/redundancy+32-tick ack bitmap/stall/desync-hash/timeout) vs 053
+  nf_game::net (UdpSocket, 3-tick redundancy, no acks, 5 s timeout; the wired one) vs
+  052's MpSession trait in the lobby. Pick the stronger protocol, port unique features,
+  wire app + lobby, delete the other layer, keep/port all tests, add a 2-client loopback
+  e2e (loss+reorder, 600 ticks, identical state hashes) + desync-detector test, update
+  docs/systems/net-lockstep.md + net-match-host.md.
+- Plan: study both layers -> justify choice -> port -> wire -> e2e -> suite -> report.
+
+## net-consolidate (2026-10-16, branch s/net-consolidate) — close-out
+- ONE lockstep session layer: kept 051's crates/nf-net (acks + 32-tick bitmap + full unacked-window
+  retransmit, input delay 2..=4 in WELCOME, hash piggyback, keepalives, GO retransmit, deterministic
+  shim; 24 B input carries trigger/reload/use_key), deleted 053's nf_game::net (src/net.rs +
+  tests/net_session.rs). Protocol 1 -> 2: MatchSettings 208 B (per-player radar_on
+  [M MP_GetRadarObjects 0x189840] + registered_pickups +0x472), HELLO codename is a display name
+  (gate = proto+build), RefuseReason::Started (no mid-match join), PT_DATA tunnel (the MpSettings
+  match handover = 053's START; sent on arm because WELCOME precedes the confirm page),
+  set_host_match (the lobby arms after joins), nf_net::hash::Hasher (moved verbatim),
+  Session::agents() + set_display_name.
+- Wiring: nf_view::mpnet (NetCore + SessionProxy) — App.net (flag path --net-host/--net-join, same
+  seed-in-MpSettings handover) AND the lobby's FrontEnd::mp_session (052's MpSession trait, now a
+  real impl; the trait kept its shape, 9 lobby tests unchanged); menu_after adopts the lobby's
+  session as the lockstep gate when its match starts. Hash cadence moved into the session
+  (hash_every 15). Drop policy: Neutral (the game's dead-pad shape [M psiInput_PollDevices
+  0x10ca78]) replaces the terminal PeerLost.
+- Tests: loopback_e2e 2/2 (host+2 clients over real 127.0.0.1, 8% loss + 25% reorder, 600 ticks,
+  identical per-tick hashes; sister: corrupted input trips the desync detector); ported_session 3/3
+  (raw-wire build REFUSE, forged-hash desync, silent-peer timeout + NEUTRAL continuation,
+  clean-link 300-tick per-tick equality); 051's shim suite 8/8 + lib 11/11; nf-game
+  lib 234/234; nf-view lib 15/15; mp_net_lobby 9/9; net_match_live 3/3 (1000-tick sims equality,
+  forced desync, disconnect). suite.py not runnable (background jobs reaped between calls — twice),
+  touched-crate tests ran in the foreground instead; flagged in the report.
+- Docs: net-lockstep.md §9 + net-match-host.md §2 describe the single design. (The one
+  mid-session "stall" was a harness bug — a dropped start_match arm in the ported test — traced
+  and fixed; all 4 ported tests pass.)
+- Report: docs/reports/net-consolidate.md; no live checks needed (no game-referenced behaviour).
+## satchel-stick2 (2026-10-16, branch s/satchel-stick2)
+- Task: the playtest's satchel charge (0x3b, 07000005, thrown at the low wall by the start, --bond
+  105.97,24.87,110.12,-4.369,-0.166) never sticks — "even standing directly at a wall and throwing it at it, it
+  still bounced", and the countdown digits are wrong. The 109z worker could not bounce it headless, so the
+  headless setup differs from play: replay the exact window input path (the throw from the view model at the
+  real release frame, at a wall 1-2 m away, while walking), find the bounce, fix from the stick arm
+  [M Bullet_CollisionHandler 0x12ce80:256-266]. Digits: check the sim side feeding phase.digits and the satchel
+  list frame_state reads (kinds 4/5); drawing is the main agent's, the data must be there.
+- (start) branch created from origin/master 32647326; work started.
+
+## satchel-stick2 (2026-10-16, branch s/satchel-stick2) — close-out
+- The play-vs-headless difference (the 109z report's open question): `Bullet_update`'s world hittest has TWO
+  forms [M 0x12e7b0:425-465] — radius max(0.25, obj+0x8C), slow moves (move < radius·0.5) test a ONE-SIDED
+  sphere at the pre-move position (0x101: Collide_SphereIntersect 0x1ec940 → Intersect_PointGeom 0x1e92d8 →
+  Dist2Tri 0x1dfca8, closest point wins, behind-faces skipped [best gate init 0.0, :103-109; the flag word
+  only ever gets 0x20, :391]), fast moves a `max(1.0, move)` ray (0x201). The satchel (0.0667 u/tick [L
+  ee_start_05.bin weapon_data 0x3b +0x20]) spends its whole approach in the sphere form — the game parks it
+  the moment a face is within 0.25 u; the port's 0.067 u ray needed a centre crossing, so grazes/throws at
+  the wall flew on (the playtest's "it still bounced") while the dead-centre headless tests always crossed.
+- Fixes: `world.rs sphere_surface` (the 0x101 transcript) + `grenade.rs` picks the game's two forms for the
+  sticky family (0x37/0x3a/0x3b; hat 0x45 untouched; the bouncing family keeps the old ray [S backlog]);
+  scene.rs kinds-4/5 drops the `stuck` gate (DoTrails spawns the digit objects every tick in every state < 2
+  [M 0x12d890:418-553] — the numbers ride the satchel from the throw); the stick arm carries
+  last_qs/digits into the new phase (the countdown latch lives in BU; the old reset blanked the digits for a
+  tick at the stick).
+- Tests: two failing-first unit sisters (run against the reverted fix: both FAILED; with it: PASS — the 0.2 u
+  wall graze sticks on the first update, the 0.2 u floor graze parks 0.04 up); live 9/9 (the 109z five +
+  the pitch fan −0.02..−0.28 all stick on the wall top, the walk-up throw parks on the near side, digits
+  present in flight incl. the frame_state kinds-4/5 matrices); fix_satchel_tripbomb_live 5/5,
+  fix_grenade_release_live 4/4, fix_grenade_throw_live 4/4, fix_grenade_types_live 3/3+1 ign,
+  fix_remote_mine_play 3/3, nf-game lib 236/236 — all on the merged tree (origin/master 6bab6409).
+- Report: docs/reports/satchel-stick2.md (live checks: the rebuilt-binary replay of the user's repro, the
+  gdbwatch fallback, the obj+0x8C read; left: the frag family's 1 u look-ahead, the pierce roll, L-583).
+- flesh-hit-effects (s/flesh-hit-effects): started. Playtest 1015-1738: bullet hits on people show
+  "No red puffs". Plan: port the flesh-hit effect spawn — the material/effect lookup for a character
+  hit [M Effect_Create / Effect_Bullet on the flesh path, the EffectInfo row for flesh, its gas/
+  decal/debris entries] so a guard hit spawns the game's own blood puff into the existing gas/effect
+  pools (data only — the pools already draw). Test: shoot a guard on 07000005, assert the puff with
+  the right mesh/colour/life in the pool; sister: a world hit doesn't spawn it.
+
+- Task: flesh-hit-effects — "No red puffs" on bullet hits to people (playtest 1015-1738). Evidence
+  chain: a character hit carries HITDATA+0x50 = 0 [M Collide_Jointy 0x1ec180:125/173], so
+  Effect_Create 0x1ce688:63's material gate early-outs — there is NO EffectInfo row for flesh
+  (the 23-row table [L ACTION.ELF EffectInfo @0x3037c0] has no red row; Drone_CollisionHandler
+  0x140968 calls no effect) — the blood puff is the VICTIM's own: NDrone2_DealWithObjHit
+  0x13fff0's default arm Gas_Init(3.0, 6.0, obj+0x20, HITDATA+0x40, 0, 0, 0x20008bc, 5, 0xffffffff,
+  0xffffff00, life 0x3c) + the gas obj's +0xf0 |= 8 [M disasm 0x14047c site; the 0x32/0x33 bolt arm
+  0x140414 = 0x200026e at 1.0/16.0]. fix-flesh-impacts already spawns it into the pool (victim_puff
+  — pool data verified correct against the disasm). The actual gap was RENDER-side: the gas
+  draw-slot list (scene.rs) only knew the EffectInfo rows' gas meshes + SMOKE_QUAD — the blood mesh
+  0x0200_08bc had no slot, the puff sat in the pool invisible. Fix: gas::POOL_MESHES (the pool's own
+  spawn meshes: SMOKE_QUAD, the trail smoke 0x0200_001f [M Bullet_trail_effect_smoke 0x12cba8
+  disasm], the blood 0x0200_08bc, the bolt puff 0x0200_026e) extends the renderer's slot meshes.
+  Tests: fix_flesh_hit_effects_live — a real shot at a guard on 07000005 (load → settle → guard
+  moved ahead → aim at the live torso box → fire) asserts the puff's exact game data (mesh/kind 5/
+  scale 3.0/life 60/white rgba) near the guard + the guard takes damage + the scene has gas slots
+  for the three hardcoded-site meshes (a slot exists only when level.by_hash resolves the hash —
+  the draw proof); sister: a world hit never spawns the blood mesh. RED pre-fix at the slot
+  assertion, GREEN post-fix. Ran: the new test 2/2 green; nf-game + nf-view check clean; the full
+  suite on the final tree — see the report.
+## foliage-bullets (2026-10-16, branch s/foliage-bullets) — start
+- Branch created from origin/master (4108d7b2). Task 658: the playtest's "those trees are
+  bulletproof, like the leaves" (07000005, the small trees near the start) — make the port's
+  bullet trace treat foliage exactly as the game's does.
+- Evidence so far ([M] decompile + disassembly, [D] level data via the port's parser):
+  Collide_Intersect 0x1ebaa8 sets the per-hit pass flag (HITDATA+0x51 bit 1) from the glist
+  node's flags bit 0x40 (cel+0x94 — the placement's flags word [M 0x1d1998:103]); bullet-family
+  queries carry HITTEST+0x98 bit 0x8, which DROPS pass-flagged hits outright (1e8 fraction,
+  disasm 0x1ebf40-0x1ec010); the aim trace is 0x20a/0x208 (Player_WeaponInitBullet 0x1a4bf0:154),
+  Bullet_homing's LOS is 8 (0x12f358:92). 07000005's tree objects (map 50 obj 96/98) carry glist
+  flags 0x41 — the whole tree is bullet-pass; leaf cards carry the 0x40 surface byte.
+
+## foliage-bullets (2026-10-16, branch s/foliage-bullets) — close-out
+- The foliage pass machinery mapped [M]: Collide_Intersect 0x1ebaa8 sets HITDATA+0x51 bit 1 from
+  the glist node's flags bit 0x40 (cel+0x94 = the placement's celglist+0x44 [0x1d1998:103]) or the
+  surface byte's bit 0x40 (disasm 0x1ebf78-80); bit 0x80 sets it only under HITTEST+0x98 bit 0x1;
+  the bit-0x8 queries (aim trace 0x20a/0x208 [0x1a4bf0:154], Bullet_homing LOS 8 [0x12f358:92],
+  the laser 0xa0a) drop pass-flagged hits outright (disasm 0x1ebff0-0x1ec010); Collide_Update
+  0x1ea398:216-229 walks past pass hits; Bullet_CollisionHandler 0x12ce80 re-derives per hit
+  (state 1 past, state 2 at the stop, Effect_Create per hit, ricochet mask 0).
+- [D] 07000005: the small trees = obj 96 (0x13/0x03, ×5) + obj 98 (0x13/0x04, ×2), glist flags
+  0x41 (node-pass); leaf cards obj 21/109/117/144, flags 0x10, byte 0x40 (material-pass); a wood
+  core obj 97 (30 tris, 0x04, flags 0) — unflagged — the aim trace's first stop behind the canopy.
+- [L] The flight does NOT pass: the bullets' HITTEST stays inactive (0x12c668 `sh $zero, 0xe4`),
+  Collide_Update never walks them, and the live-pinned guard cover trace (ai_live
+  guard_takes_cover_like_the_game, UnderCoverAim 37) fails with both the bit-0x8 drop and the
+  keep-walk flight models (90 each) and passes only with the original first-hit flight. Reverted
+  the flight paths; the playtest's "bulletproof" = the class-19 stop's record has no decal/gas —
+  debris chips only ([D] the parsed EffectInfo).
+- Port: CollisionWorld carries the node pass per triangle + segment_bullet/segment_surface_bullet
+  (the bit-0x8 family) + segment_surface_flags + effect::penetration_roll_node; the flight paths
+  unchanged. Tests: nf-game lib 235/235 (the new bullet_queries_drop_the_pass_flagged_hits),
+  ai_live 35/35 (the cover pin back green), grenade/spawner/nav_kick/level live green, nf-view
+  fix_foliage_bullets_live 3/3 on 07000005.
+- Not run: the full fast-runner suite (this sandbox reaps background jobs between tool calls; the
+  ~62 min foreground run does not fit the window) — flagged in the report.
+- Report: docs/reports/foliage-bullets.md; 4 live checks listed there.
+## delta-repeater (2026-10-16, branch s/delta-repeater) — started
+- Playtest 1015-1738: the Delta Repeater (crossbow) model is missing the loaded arrows, and the
+  bolt's world hit plays a grenade-like bounce sound / bounces when the game's bolt should
+  stick or die [playtest].
+- Plan: port the bolt's world-hit behavior from Bullet_CollisionHandler + weapon_data +0x6C/+0x70
+  flags [M]; find the sub-meshes/datums/attachments that carry the loaded bolts on the view model
+  and why they are absent. Deliver data/attachments; the main agent checks the look against PCSX2.
+- Status: setup in progress; branch pushed from origin/master.
+
+## delta-repeater (2026-10-16, branch s/delta-repeater) — close-out
+- Playtest 1015-1738's Delta Repeater (crossbow 0x11) pair fixed.
+- The bolt's wall hit: the port's shot dispatch routed every `+0x6C & 8` (gravity) weapon into
+  the GRENADE path — the bolt bounced off walls with the grenade bounce sounds. Gravity and the
+  grenade family are independent in the game: gravity is `Bullet_update` 0x12e7b0 case 1's arm
+  for ANY bullet [M], the bounce block/stick arm/ricochet/contact-explode gate on
+  `weapon_data+0x70` 0x80/0x100/0x10/0x4 in `Bullet_CollisionHandler` 0x12ce80 [M]. The record
+  reads +0x6C = 0x808, +0x70 = 0x00000002 [L ee_start_05.bin @ 0x2bf150 + 0x11·0x10C] — the bolt
+  arcs and DIES at the wall with the standard 0x61 impact effect, no bounce/stick/ricochet.
+  Fix: the dispatch gate is gravity AND a family flag (0x4/0x80/0x100) — the 115-record sweep
+  moves exactly 0x11; PlayerBullet grew `gravity: bool` running the game's case-1 integration
+  (WldGravity (0,−9.8,0)·(1/60)², shared consts with grenade.rs). flush_world_impacts' existing
+  walk then gives the correct hit (impact sound via +0x70 & 2, no revive).
+- The missing arrows: `Player_WeaponFiring` 0x1a5460:331-381 attaches the bolt mesh (+0x5C =
+  0x0200816, the flying projectile's own mesh) to the FP view model's datums 4/5/6 every tick —
+  datum 4 when count > 0 (not in fire state 9), 5 when > 1, 6 when ≥ 3; count = clip[0x11],
+  +1 in state 9, min(carried[0x0F], clip_size 3) in reload state 6 past frame 80 [M]. The
+  datums live on the FP skin 0x05000083 (+0xDC), bone 40, the three magazine slots [D]. The port
+  had NO crossbow branch (fix-fire-modes3's left-over). Implemented as the AIMS-lights pattern:
+  build-time attachments + a per-frame count arm off the new `Attachment.quiver_bolt`.
+- Tests: new delta_repeater_live 3/3 (bolt flight + death + no grenade; the MGL sister; the
+  quiver counts); fire_modes3_live's crossbow test updated off the old "grenade-path projectile"
+  pin. Ran: nf-game 440/0, nf-view touched-path tests 44/0. suite.py cannot survive this
+  sandbox's background reaping (the drive-mission-scripts precedent) — the touched-crates runs
+  stand in, flagged in the report.
+- Report: docs/reports/delta-repeater.md; render checks + 2 optional live checks listed there.
+
+## weapon-model-coverage (2026-10-16, branch s/weapon-model-coverage)
+- Branch created from origin/master (f42de6ff). Task: every weapon id 1..0x73 gets its first-person
+  view-model on every single-player level; load logs still print "27 weapon-model hashes still missing".
+- Plan: (1) census — each weapon's view-model skin hash, which archive holds it, and whether the port
+  resolves it per SP level; (2) fix the misses (unmerged archives, hash aliases, per-class archive
+  rules); (3) headless test on 3 levels that every dev-panel weapon resolves a view model, plus a
+  bogus-hash-must-report-missing sister; (4) census table before/after in the report.
+- weapon-model-coverage close-out: the disc index tabulates map objects (DiscIndex.objects, cache
+  V2 — every kind-0/1/2/11 ENTITY_PARAMS hashcode -> first holding archive); merge_weapon_assets
+  tops up the still-missing weapon-model meshes from the archive the index names (surgical for
+  --give, whole-table for --dev). Census [D: weapon_data/ammo_data/FileList from the EE snapshot,
+  all 99 archives scanned]: every fp-armed weapon's +0xDC skin exists (41 skins / 96 ids, mostly
+  on the MP packs 07000029/4B/46/43 — the per-class archive shape), the silenced twins / variants
+  share skins (benign aliases), the session merge's "27 still missing" on 07000005 was a mid-load
+  stage count, and the one real miss was weapon 0x63's tp mesh 02000312 (on 07000004/16 only —
+  unreachable on 07000001-03). Residue = the casing meshes 02000446/02000443 on NO archive (the
+  shipped game's own gap, now logged honestly). Tests: weapon_model_census_live 3/3 (dev-panel
+  view models on 07000005/0c/14; the 20-level table through the real merges; the bogus-hash
+  sister), weapon_assets_live 5/5. Report: docs/reports/weapon-model-coverage.md.
+## difficulty-effects2 (2026-10-16, branch s/difficulty-effects2) — start
+- Task: land HELD 629 (s/difficulty-effects). Master now has 4108d7b2. Plan: merge origin/s/difficulty-effects,
+  apply the 053 net-match-host load_impl resolution (mp: bool, mp_settings: Option<MpSettings>, difficulty: u32;
+  load_mp_carry passing Some(settings), 1; async load choosing load_mp_carry -> dev -> load_with_carry_difficulty),
+  fix the E0308 in menu.rs (FrontEnd::difficulty is usize, requested_difficulty Option<u32>), then fix the
+  create-time roster gate in drone.rs so the front-end pick reaches the creates (Scene::build hard-codes
+  difficulty: 1 into its Data and set_difficulty runs after the creates), and get the 10 listed failures green
+  with game evidence (decide from the game which difficulty direct-load tests represent; boot default 2 [M 0x1c7e78:25],
+  wrappers keep 1 for replay parity). Full suite on the final tree before push.
+
+## difficulty-effects2 (2026-10-16, branch s/difficulty-effects2) — close-out
+- Landed HELD 629: re-applied by reverting master's revert dc841e30 (the main agent's own merge
+  1e96af8a already carried the 053 net-match-host resolution verbatim: load_impl(.., mp: bool,
+  mp_settings: Option<MpSettings>, difficulty: u32), load_mp_carry passing Some(settings), 1, the
+  async front-end load choosing load_mp_carry -> dev -> load_with_carry_difficulty). The E0308 was
+  already resolved in that content (menu.rs `Some(self.difficulty as u32 + 1)`).
+- THE fix: Scene::build's create-time drone::Data carried a hard-coded `difficulty: 1`, so
+  Drone_Create's gate read 1 on every load and set_difficulty ran after the creates. The game
+  holds the pick in GameState+0x28 before the load's creates [M 0x216ca8:15, 0x136be0:49] — the
+  Data now carries the load's difficulty; difficulty_wiring_live green (00 Agent roster 37).
+- Direct loads keep difficulty 1 (the documented replay parity: the recorded sessions ran at d1).
+  With the gate live that makes the pre-gate calibration roster the 00-Agent one [M 0x136be0:49]:
+  the 07000011 stairwell spawner tests, the searchlights first-shot deferral (the staged danim's
+  remaining script length is draw-stream dependent) and the tower2/13/4a walkthroughs load at 00
+  Agent; the 07000012 keypad locks carry param 6 = 1 — Lock_Create auto-unlocks them at d1
+  [M 0x1ae1f8 tail], so the Q-Decryptor burn is the Agent+ behavior. 07000006's idle gate guard
+  (placement 487) shifts list[15]->list[13] at d1 (six param2=2 creates held back). No assertion
+  weakened; per-test evidence in docs/reports/difficulty-effects2.md.
+- Verified: the 10 held failures + their binaries (29 tests) green; difficulty_gates 3,
+  difficulty_spawn_gate_live 1; suite on the final tree (merged origin/master 6bab6409) ran as
+  foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
+  76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
+  display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).

@@ -494,6 +494,12 @@ pub struct Sim {
     /// host feeds it from `FrontEnd::view_aspect`). screen-adjust-model (field on its own line
     /// [WORKLOG lesson 4]).
     pub view_aspect: f32,
+    /// microcam-wheel-zoom: the mouse wheel has stepped the zoom while the aim (right) button is
+    /// held — the hold-ramp to the weapon's max (`Player_Zoom` 0x1a1a70's target ×1.025/tick)
+    /// yields until the aim falls, which resets the target to 1.0 [M `Player_Weapon` 0x1a24c8's
+    /// aim-bit arm] and this latch with it. Port-only input ([S] the playtest request); the
+    /// game's pad zoom has no wheel and keeps the plain ramp.
+    pub zoom_wheel: bool,
 }
 
 /// A status-pane message (`Text_AddMsg` 0x1b0c30's `TXT_MSG` node): the bound text, its remaining ticks,
@@ -2024,6 +2030,7 @@ impl Sim {
                         // weapon), so the reset is `zoom`/`zoom_target` = 1.0.
                         self.zoom = 1.0;
                         self.zoom_target = 1.0;
+                        self.zoom_wheel = false;
                     }
                     if let Some(m) = sw.new_mode {
                         if let Some(fm) = self.drones.inventory.fire_mode.get_mut(self.gun.weapon as usize) { *fm = m; }
@@ -2486,9 +2493,27 @@ impl Sim {
             // from the per-weapon table on the bit's rise [M Player_Weapon 0x1a24c8:156-187] and
             // `Player_Zoom` 0x1a1a70:18 reads the zoom button only while the bit is set. During
             // the raise the bit is clear, so the target stays 1.0 until the raise's last tick.
-            if input.zoom && self.aiming { self.zoom_target = max_zoom; } else { self.zoom_target = 1.0; }
+            if input.zoom && self.aiming {
+                // microcam-wheel-zoom: a wheel notch while the aim is held steps the zoom target
+                // ×2 (up) / ÷2 (down) within the weapon's own range [1.0, weapon_data+0x88 — the
+                // max `Player_Weapon` writes to BL+0x8D8]. The ×2 step is the port's own [S] (the
+                // playtest request; the game's own zoom is continuous — `Player_Zoom` 0x1a1a70
+                // ramps the held target ×1.025/tick). Once the wheel has stepped, the hold-ramp
+                // to max yields (`zoom_wheel`) so the notch stays until the aim falls.
+                if input.zoom_cycle != 0 {
+                    let step = (2.0f32).powi(input.zoom_cycle as i32);
+                    self.zoom_target = (self.zoom_target * step).clamp(1.0, max_zoom.max(1.0));
+                    self.zoom_wheel = true;
+                } else if !self.zoom_wheel {
+                    self.zoom_target = max_zoom;
+                }
+            } else {
+                self.zoom_target = 1.0;
+                self.zoom_wheel = false;
+            }
         } else {
             self.zoom_target = 1.0;
+            self.zoom_wheel = false;
         }
         // Interpolate zoom toward target [M 0x1a1a70 lines 22-39].
         // `Player_Zoom` (0x1a1a70): zoom in at 1.025×/tick, zoom out at 1.15×/tick [M lines 22-39].
@@ -3412,15 +3437,29 @@ impl Sim {
                 // 0x1a4bf0:187-200 — the 0x4A/0x4C ray test's miss arm returns before Bullet_init;
                 // the target test above ran on this same shot tick].
                 let spawn_shot = !matches!(self.gun.weapon, 0x4a | 0x4c) || self.stunner_target == Some(true);
-                // Gravity weapons (`+0x6C & 0x8`) are grenades: `Bullet_init` with the weapon record
-                // [M 0x12c5a0] — the throw origin the game uses is the midpoint of the head and the view
-                // model's bone 0 (`flags68 & 0x10000` arm, `Player_WeaponInitBullet` 0x1a4bf0:230); the port
-                // has no view bones and spawns from the eye (*deviation*). Direction: the aim ray with
-                // `Bullet_init`'s three spread draws, in the game's RNG order [M 0x12c5a0:166-184]. The spawn
-                // itself is silent (`Bullet_init`'s param_7 = 0xffff); the throw's own sound is the fire
-                // script's op-1 command (played above).
+                // Grenade-family weapons: `Bullet_init` with the weapon record [M 0x12c5a0] — the throw
+                // origin the game uses is the midpoint of the head and the view model's bone 0
+                // (`flags68 & 0x10000` arm, `Player_WeaponInitBullet` 0x1a4bf0:230); the port has no view
+                // bones and spawns from the eye (*deviation*). Direction: the aim ray with `Bullet_init`'s
+                // three spread draws, in the game's RNG order [M 0x12c5a0:166-184]. The spawn itself is
+                // silent (`Bullet_init`'s param_7 = 0xffff); the throw's own sound is the fire script's
+                // op-1 command (played above).
+                // delta-repeater: the gate is the GRAVITY bit AND a grenade-family collision flag — the
+                // BOUNCE 0x80 (Bullet_CollisionHandler 0x12ce80's LAB_0012d4bc gate), the STICK 0x100
+                // (the stick arm 0x12d1a0..0x12d1fc) or the CONTACT-EXPLODE 0x4 (the explode arm
+                // 0x12d068). Gravity alone is NOT the grenade family: `Bullet_update` 0x12e7b0's case 1
+                // applies `+0x6C & 8` gravity to ANY bullet, and the Delta Repeater 0x11 (+0x6C = 0x808,
+                // +0x70 = 0x2 [L ee_start_05.bin @ 0x2bf150 + 0x11·0x10C]) flies its lobbed arc as a
+                // plain bullet — its wall hit is the standard impact effect (flags 0x61) and a DEAD
+                // bullet (state 2, no bounce/stick/ricochet bit set) [M 0012ce80]. The old gravity-only
+                // gate made the port's bolt a bouncing grenade — the playtest's "sounds like a grenade
+                // is bouncing … bounces against the wall when it shouldn't be bouncing" (1015-1738).
+                // Record sweep [L ee_start_05.bin]: this gate moves exactly record 0x11 off the grenade
+                // path; every other gravity record (0x2a/0x2b/0x34–0x37/0x3a–0x3c/0x45) carries 0x4,
+                // 0x80 or 0x100 and keeps today's routing.
                 let flags6c = u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap());
-                if flags6c & 0x8 != 0 {
+                let flags70_w = u32::from_le_bytes(w[0x70..0x74].try_into().unwrap());
+                if flags6c & 0x8 != 0 && flags70_w & (0x4 | 0x80 | 0x100) != 0 {
                     let f32_at = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
                     let sdir = nf_game::bullet::spread(dir, f32_at(0x24), flags, &mut self.drones.rng);
                     let speed = f32_at(0x20);
@@ -4234,6 +4273,10 @@ pub struct Attachment {
     /// piece on — so the tube hides during the swap (the user: "it looks like it's already on and you're screwing
     /// it on tighter").
     pub silencer: bool,
+    /// delta-repeater: one of the Delta Repeater's three loaded-bolt slots — the datum id 4/5/6
+    /// the quiver arm attaches the bolt mesh (`weapon_data+0x5C` = 0x0200816) to, per the bolt
+    /// count [M Player_WeaponFiring 0x1a5460:331-381]. The visibility rule lives in frame_state.
+    pub quiver_bolt: Option<u8>,
 }
 
 /// Viewer switches that change what the game state would be.
@@ -4706,7 +4749,7 @@ impl Scene {
     }
 
     /// `skeletons`: every skeleton on the disc by id; `sequences`: the level's animation archive, grouped by skeleton.
-    pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>) -> Scene {
+    pub fn build(level: &Level, cels_only: bool, skeletons: &HashMap<u8, Skeleton>, sequences: HashMap<u8, Vec<Sequence>>, drones: Option<&DroneContext>, difficulty: u32) -> Scene {
         let by_hash: HashMap<u32, (u8, usize)> = sequences.iter()
             .flat_map(|(&sk, v)| v.iter().enumerate().map(move |(i, s)| (s.hashcode, (sk, i)))).collect();
         let (mut instances, missing) = level.scene_instances(cels_only);
@@ -4984,10 +5027,10 @@ impl Scene {
             let character = characters.len() as u32 - 1;
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             let local = anim::quat_trans_to_mat(dt.q, dt.t);
-            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
+            attachments.push(Attachment { character, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
             // The same gun as a pickup once the drone drops it.
             add_instance(level, &winst, Layer::Character, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-            attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
+            attachments.push(Attachment { character, bone: 0, local, flash: None, tracer: None, dropped: true, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
             // Its muzzle flash: `DroneWeap_FireWeapon` asks `AnimGetBoneWorldTrans(obj, datum id, 1, …)`, which looks up
             // the datum whose id is id + 1 — the muzzle (07000005: 8 → 9 at x −0.77, 16 → 17 at x −1.18).
             if let Some((fmesh, rgb)) = wd.muzzle_flash(weapon as u8) {
@@ -4995,7 +5038,7 @@ impl Scene {
                 if let (Some(&(fmap, fobject)), Some(md)) = (level.by_hash.get(&fmesh), muzzle) {
                     let finst = Instance { map: fmap, object: fobject, ..winst };
                     add_instance(level, &finst, Layer::Effect, Some((character, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
+                    attachments.push(Attachment { character, bone: md.bone as usize, local: anim::quat_trans_to_mat(md.q, md.t), flash: Some(rgb), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                 }
             }
         }
@@ -5023,7 +5066,7 @@ impl Scene {
                     let Some(&(pmap, pobject)) = part.and_then(|h| level.by_hash.get(&h)) else { continue };
                     let pinst = Instance { map: pmap, object: pobject, matrix: ident, placement: placement.clone() };
                     add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
+                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                 }
                 // The muzzle flash (`Player_MuzzleFlash`): mesh `weapon+0x48` on datum 0, colour (+0x56, +0x55, +0x54).
                 let r = &wd.records[wid as usize];
@@ -5031,7 +5074,7 @@ impl Scene {
                 if let (Some(&(fmap, fobject)), Some(dt)) = (level.by_hash.get(&flash), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                     let finst = Instance { map: fmap, object: fobject, matrix: ident, placement: placement.clone() };
                     add_instance(level, &finst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
+                    attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: Some([r[0x56], r[0x55], r[0x54]]), tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                 }
                 // fix-gadgets-live: the AIMS-20's four side lights [M Player_WeaponFiring 0x1a5460:256-360 —
                 // for the records whose class halfword (+0x02) is 0x1a/0x1b, `AnimDatumSetEntity(animobj,
@@ -5052,7 +5095,7 @@ impl Scene {
                             let Some(dt) = skin.datums.iter().find(|d| d.id == id as u32 && d.bone >= 0) else { continue };
                             let linst = Instance { map: lmap, object: lobject, matrix: ident, placement: placement.clone() };
                             add_instance(level, &linst, Layer::Effect, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                            attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: Some(id), projectile: None, script: None, gas: None, effect: None, silencer: false });
+                            attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: Some(id), projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                         }
                     }
                 }
@@ -5075,7 +5118,32 @@ impl Scene {
                     if let (Some(&(emap, eobject)), Some(dt)) = (level.by_hash.get(&ventity), skin.datums.iter().find(|d| d.id == 0 && d.bone >= 0)) {
                         let einst = Instance { map: emap, object: eobject, matrix: ident, placement: placement.clone() };
                         add_instance(level, &einst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: true });
+                        attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: true, quiver_bolt: None });
+                    }
+                }
+                // delta-repeater: the Delta Repeater's loaded bolts — the playtest's "model is missing
+                // the arrows" (1015-1738). The game re-issues the attachments EVERY tick in
+                // `Player_WeaponFiring` 0x1a5460:331-381 for the records whose base (+0x02) is 0x11:
+                // clear the view model's datums 4/5/6, then `AnimDatumSetEntity(vm, d, 0x0200816, 0xff)`
+                // — datum 4 when count > 0 (NOT while the view state is 9, the fire script's), datum 5
+                // when > 1, datum 6 when >= 3 [M :361-381]. The mesh is the record's +0x5C — the SAME
+                // hash the flying projectile draws (0x0200816 "Bolt", its own ENTITY_PARAMS object
+                // [L ee_start_05.bin @ 0x2bf150 + 0x11·0x10C + 0x5C; in 07000014's map right after the
+                // Crossbow_3rd_LOD0]). The datums live on the FP skin (0x05000083, +0xDC): 4/5/6 on
+                // bone 40 at t y 0.17/0.06/0.00, z −0.19 — the three magazine slots top→bottom, plus
+                // 0/3 on bone 38 [D 0700000c.bin/07000014.bin kind-3 skin, `nf-extract datums`]. The
+                // per-frame count (clip[0x11], +1 in fire state 9, min(carried[0x0F], clip_size 3) in
+                // reload state 6 past frame 80) lives in frame_state off `quiver_bolt` — the port's
+                // build-time attachment + visibility arm is the AIMS-lights pattern.
+                if u16::from_le_bytes([r[2], r[3]]) == 0x11 {
+                    let bolt = u32::from_le_bytes(r[0x5c..0x60].try_into().unwrap());
+                    if let Some(&(bmap, bobject)) = level.by_hash.get(&bolt) {
+                        for id in 4u8..=6 {
+                            let Some(dt) = skin.datums.iter().find(|d| d.id == id as u32 && d.bone >= 0) else { continue };
+                            let binst = Instance { map: bmap, object: bobject, matrix: ident, placement: placement.clone() };
+                            add_instance(level, &binst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                            attachments.push(Attachment { character: ci, bone: dt.bone as usize, local: anim::quat_trans_to_mat(dt.q, dt.t), flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: Some(id) });
+                        }
                     }
                 }
                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones: level.maps[map].objects[object].gfx.slot_bones.clone(), start: None, role: drone::SpawnRole::Placed, floor: None, script: None , morph_targets: None });
@@ -5136,7 +5204,7 @@ impl Scene {
                                     let Some(&(map, object)) = part.and_then(|ph| level.by_hash.get(&ph)) else { continue };
                                     let pinst = Instance { map, object, matrix: ident, placement: placement.clone() };
                                     add_instance(level, &pinst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
+                                    attachments.push(Attachment { character: ci, bone: bone as usize, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                                 }
                                 characters.push(Character { matrix: ident, skin: skin.clone(), skeleton: skeleton.clone(), slot_bones, start: None, role: drone::SpawnRole::Placed, floor: None, script: Some((h, si as u8)), morph_targets: morph_of_object.clone() });
                                 script_objects += 1;
@@ -5160,7 +5228,7 @@ impl Scene {
                                                 let winst = Instance { map: wmap, object: wobject, matrix: ident, placement: placement.clone() };
                                                 add_instance(level, &winst, Layer::Character, Some((ci, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
                                                 let local = anim::quat_trans_to_mat(dt.q, dt.t);
-                                                attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
+                                                attachments.push(Attachment { character: ci, bone: dt.bone as usize, local, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                                             } else { weapons_missing += 1; }
                                         } else { weapons_missing += 1; }
                                     }
@@ -5174,7 +5242,7 @@ impl Scene {
                                 if level.maps[map].objects[object].flags & 0x8 != 0 { script_billboards.insert(hash); }
                                 let inst = Instance { map, object, matrix: ident, placement: placement.clone() };
                                 add_instance(level, &inst, Layer::Character, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                                attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: Some((h, si as u8, hash)), gas: None, effect: None, silencer: false });
+                                attachments.push(Attachment { character: 0, bone: 0, local: ident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: Some((h, si as u8, hash)), gas: None, effect: None, silencer: false, quiver_bolt: None });
                                 script_objects += 1;
                             }
                             _ => {}
@@ -5190,7 +5258,7 @@ impl Scene {
             for slot in 0..TRACER_SLOTS {
                 let tinst = Instance { map: tmap, object: tobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
                 add_instance(level, &tinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
+                attachments.push(Attachment { character: 0, bone: 0, local: tinst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
             }
             // fix-gadgets-live: the gadget BEAM draws the game's own sprites, not the trail stand-in —
             // `Draw_LaserBeam` 0x1a4560 sets the beam object's gfx to 0x2000131 "lazer" (the class-'N'
@@ -5210,7 +5278,7 @@ impl Scene {
                     if let Some(&(bmap, bobj)) = level.by_hash.get(&hash) {
                         let binst = Instance { map: bmap, object: bobj, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default() };
                         add_instance(level, &binst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                        attachments.push(Attachment { character: 0, bone: 0, local: binst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false });
+                        attachments.push(Attachment { character: 0, bone: 0, local: binst.matrix, flash: None, tracer: Some(slot), dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
                     }
                 }
             }
@@ -5246,7 +5314,7 @@ impl Scene {
             for slot in 0..proj_slots {
                 let pinst = Instance { map: pmap, object: pobject, matrix: anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]), placement: pslot_placement.clone() };
                 add_instance(level, &pinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u16, mesh)), script: None, gas: None, effect: None, silencer: false });
+                attachments.push(Attachment { character: 0, bone: 0, local: pinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u16, mesh)), script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
             }
         }
         for (inst, follows_camera) in &sky {
@@ -5276,7 +5344,12 @@ impl Scene {
                 // written with the gas system but no slot was ever created, so no puff ever drew — the user's
                 // "when you shoot the snow, there's no impact" (snow leaves no decal).
                 let mut gas_meshes: Vec<u32> = surf.effects.iter().flat_map(|r| r.gas.iter().map(|g| g.mesh)).filter(|m| *m != 0).collect();
-                gas_meshes.push(nf_game::gas::SMOKE_QUAD);
+                // flesh-hit-effects: the pool's OWN spawn meshes too — the blood puff 0x0200_08bc
+                // (`NDrone2_DealWithObjHit` 0x13fff0's flesh arm), the bolt puff 0x0200_026e and the
+                // trail smoke 0x0200_001f are hardcoded `Gas_Init` sites, not `EffectInfo` rows, and
+                // had no slot: the puff sat in the pool with nothing to draw it through (the user's
+                // "no red puffs", 1015-1738). The list lives with the spawners (`gas::POOL_MESHES`).
+                gas_meshes.extend_from_slice(nf_game::gas::POOL_MESHES);
                 gas_meshes.sort(); gas_meshes.dedup();
                 {
                     let gslot_placement = level.maps[level.main_map().unwrap_or(0)].placements.first().cloned().unwrap_or_default();
@@ -5286,7 +5359,7 @@ impl Scene {
                         for slot in 0..GAS_DRAW_SLOTS {
                             let inst = Instance { map: m, object: o, matrix: gident, placement: gslot_placement.clone() };
                             add_instance(level, &inst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                            attachments.push(Attachment { character: 0, bone: 0, local: gident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: Some((slot as u16, mesh)), effect: None, silencer: false });
+                            attachments.push(Attachment { character: 0, bone: 0, local: gident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: Some((slot as u16, mesh)), effect: None, silencer: false, quiver_bolt: None });
                         }
                     }
                 }
@@ -5303,7 +5376,7 @@ impl Scene {
                         for slot in 0..slots {
                             let inst = Instance { map: m, object: o, matrix: ident, placement: slot_placement.clone() };
                             add_instance(level, &inst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                            attachments.push(Attachment { character: 0, bone: 0, local: inst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)), silencer: false });
+                            attachments.push(Attachment { character: 0, bone: 0, local: inst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)), silencer: false, quiver_bolt: None });
                         }
                     }
                 }
@@ -5320,7 +5393,7 @@ impl Scene {
                 for slot in 0..4 {
                     let cinst = Instance { map: m, object: o, matrix: ident, placement: cplacement.clone() };
                     add_instance(level, &cinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: 0, bone: 0, local: cinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((3, slot, 0x0200_0273)), silencer: false });
+                    attachments.push(Attachment { character: 0, bone: 0, local: cinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((3, slot, 0x0200_0273)), silencer: false, quiver_bolt: None });
                 }
             }
         }
@@ -5333,7 +5406,7 @@ impl Scene {
                 for slot in 0..DRONE_SCAN_SLOTS {
                     let sinst = Instance { map: m, object: o, matrix: ident, placement: splacement.clone() };
                     add_instance(level, &sinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                    attachments.push(Attachment { character: 0, bone: 0, local: sinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((6, slot, DRONE_SCAN)), silencer: false });
+                    attachments.push(Attachment { character: 0, bone: 0, local: sinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((6, slot, DRONE_SCAN)), silencer: false, quiver_bolt: None });
                 }
             }
         }
@@ -5352,7 +5425,7 @@ impl Scene {
                     for slot in 0..2 {
                         let dinst = Instance { map: dm, object: dobj, matrix: dident, placement: dplacement.clone() };
                         add_instance(level, &dinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
-                        attachments.push(Attachment { character: 0, bone: 0, local: dinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)), silencer: false });
+                        attachments.push(Attachment { character: 0, bone: 0, local: dinst.matrix, flash: None, tracer: None, dropped: false, aims_light: None, projectile: None, script: None, gas: None, effect: Some((kind, slot, mesh)), silencer: false, quiver_bolt: None });
                     }
                 }
             }
@@ -5804,7 +5877,13 @@ impl Scene {
             let glist_bounds: HashMap<u32, ([f32; 3], [f32; 3])> = level.maps.iter()
                 .flat_map(|m| m.objects.iter())
                 .map(|o| (o.hashcode, (o.min, o.max))).collect();
-            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref(), difficulty: 1 };
+            // difficulty-effects2: the create-time Data carries the load's difficulty — the game's
+            // GameState+0x28 (0x2a3790) already holds the pick when the load's creates run
+            // [M C_SBNFDFCTY 0x216ca8:15 writes it at confirm; Drone_Create 0x136be0:49 reads it],
+            // so `load_with_carry_difficulty(3)` must create the full roster here (the hard-coded 1
+            // starved the 00-Agent load to the Operative roster). The direct loads keep 1 — the
+            // documented replay parity (the recorded sessions ran at difficulty 1).
+            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref(), difficulty };
             // net-match-host: an online match builds from the host's seed (equal on every machine — the
             // settings blob carries it); local play keeps the pre-net constant.
             let mut rng = nf_game::drone::Rng::new(if d.mp_seed == 0 { 0x1234_5678 } else { d.mp_seed });
@@ -5827,6 +5906,12 @@ impl Scene {
             let bond = nf_game::player::Bond::stand_at(&world, p0, yaw0);
             let mut drones = nf_game::drone::Drones::new(list, rng);
             drones.lights = lights;
+            // The selected difficulty BEFORE the creates: every create-time gate reads it
+            // (captain_setup 0x14b300:504-535, Drone_Create's min-difficulty tag 0x136be0:49,
+            // Lock_Create's Operative auto-unlock 0x1ae1f8:67, Copter_Create's HP 0x17d340:76,
+            // Hint_Create's stage gate 0x1b3248) — the game loads with GameState+0x28 already
+            // holding the menu's pick [M C_SBNFDFCTY 0x216ca8:15].
+            drones.set_difficulty(difficulty);
             drones.attach_level(level);
             // fix-door-portal-links (G-035): `build_LinkDoors2Portals` (0x1c8ac8) runs at load — each
             // portal-linked door (placement param 4) takes the portal quad it sits in; the vision
@@ -5866,7 +5951,7 @@ impl Scene {
             // obj+0xD0 chain is filled by the player's pick through it [M Collide_Update
             // 0x1ea398:160-233 + the reciprocal node append]). `Hint_Update` fires once when the
             // player's cel is in the set with the marker's channels satisfied.
-            let hints = nf_game::player::hints(level);
+            let hints = nf_game::player::hints(level, drones.difficulty);
             let hint_cels = hints.iter().map(|h| match find_cell_raycast(&cel_graph, h.centre, Some(&world)) {
                 Some(c) => icon_straddle_cels(&cel_graph, c, h.centre, h.radius),
                 None => Vec::new(),
@@ -5932,12 +6017,9 @@ impl Scene {
             drones.pickups.extend(placed_pickups);
             drones.pickups.extend(reserved);
             drones.script_pickup_slots = sim_slots.into_iter().collect();
-            // The direct-level load replays the user's live sessions: they ran at difficulty 1 (the
-            // old pre-menu `DIFFICULTY` constant, and the guards above were created with it —
-            // captain_setup reads it [M 0x14b300:504-535]). The game's boot default is 2 [M
-            // 0x1c7e78:25] and the front-end boot keeps it until 180-fix-menus wires the page's
-            // write (C_SBNFDFCTY 0x216ca8) into `set_difficulty`.
-            drones.difficulty = 1;
+            // The difficulty was set before the creates above (the game's GameState+0x28 pick);
+            // the old direct-load hardcode `= 1` moved into the build parameter so replay loads
+            // pass 1 and the front-end path passes the menu's pick.
             Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
             mp_bonds: [None, None, None, None],
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, laser_charge: 100.0, missile_cam: None,
@@ -5950,6 +6032,7 @@ impl Scene {
                 // screen-adjust-model: viewer+0x114's 4:3 default; the host feeds 16/9 when the AV
                 // options' widescreen is on [M Camera_CalcViewAngles 0x1baf70:28-32].
                 view_aspect: 4.0 / 3.0,
+                zoom_wheel: false,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));
@@ -6326,8 +6409,17 @@ impl Scene {
                     // axes [*suggested*: the game offsets by its own small rotation/translation pair
                     // 0x12d890:486-511 — the port's (±0.03, 0.032, 0.06) is cosmetic].
                     4 | 5 => {
+                        // satchel-stick2: NO `stuck` gate — `Bullet_DoTrails`' 0x3b tail spawns the
+                        // two digit objects EVERY tick in every state < 2 [M 0x12d890:418-553; the
+                        // sim writes `digits` in flight too — grenade.rs's tail runs before the
+                        // stuck early-out], so the numbers ride the satchel from the throw. The old
+                        // `g.stuck` filter matched the playtest's "the numbers aren't working": a
+                        // satchel that hadn't stuck yet drew nothing. In flight `phase.normal` is
+                        // the spawn's [0, 1, 0] placeholder (the stick overwrites it with the
+                        // surface normal), so the flight digits stand upright on the satchel [S —
+                        // the game aligns them to the bullet's own matrix; the main agent renders].
                         let satchels: Vec<&nf_game::grenade::Grenade> = s.drones.grenades.iter()
-                            .filter(|g| g.weapon_type == 0x3b && g.state < 2 && g.stuck && g.phase.is_some())
+                            .filter(|g| g.weapon_type == 0x3b && g.state < 2 && g.phase.is_some())
                             .collect();
                         let Some(g) = satchels.get(slot) else { return far };
                         let p = g.phase.as_ref().unwrap();
@@ -6396,6 +6488,35 @@ impl Scene {
             // Unarmed (dropped, or surrendered: `ChangeWeapon(1)`): no gun. *Deviation*: a drawn sidearm (weapon 6) still
             // shows the original weapon's mesh.
             if drone_of(a.character as usize).is_some_and(|(s, di)| s.drones.list[di].weapon <= 1) { return collapse(&datum); }
+            if let Some(slot) = a.quiver_bolt {
+                // delta-repeater: the Delta Repeater's bolt count, re-evaluated per frame exactly where
+                // `Player_WeaponFiring` 0x1a5460:331-381 re-issues the datum entities each tick [M]:
+                // count = clip[0x11] (the s16 at BLData+0x1B8 + 0x11·0xC — the port's `clip[0x11]`);
+                // +1 while the view state is 9 (`sVar13 == 9` → `lVar11 = clip + 1`, the fire script's
+                // state, the port's `gun.fire_state`); once the reload script (view state 6) passes
+                // frame 80.0 the count is min(carried[weapon+0x90 = 0x0F], clip_size +0x92 = 3)
+                // [M :345-360]. Attachment rule [:368-381]: datum 4 when count > 0 AND the view state
+                // is NOT 9; datum 5 when count > 1; datum 6 when count >= 3. Only the held weapon's
+                // quiver draws (the game writes the held vm's datums; a holstered crossbow keeps its
+                // last state — the port collapses the un-held model's bolts, the AIMS arm's pattern).
+                let Some(s) = self.sim.as_ref() else { return collapse(&datum) };
+                if self.view_models.get(&s.gun.weapon) != Some(&(a.character as usize)) { return collapse(&datum); }
+                if u16::from_le_bytes(s.weapons.records[s.gun.weapon as usize][2..4].try_into().unwrap()) != 0x11 { return collapse(&datum); }
+                let mut count = s.drones.inventory.clip.get(0x11).copied().unwrap_or(0) as i32;
+                if s.gun.fire_state {
+                    count += 1;
+                } else if s.gun.reload_state != 0 && s.view_time > 80.0 {
+                    let at = s.weapons.ammo_type(0x11);
+                    let carried = s.drones.inventory.carried.get(at).copied().unwrap_or(0) as i32;
+                    count = carried.min(s.weapons.clip_size(0x11) as i32);
+                }
+                let show = match slot {
+                    4 => count > 0 && !s.gun.fire_state,
+                    5 => count > 1,
+                    _ => count >= 3,
+                };
+                return if show { datum } else { collapse(&datum) };
+            }
             if let Some(bone) = a.aims_light {
                 // fix-gadgets-live: the AIMS-20's side lights (mesh 0x2000132 on bones 8..0xB, attached
                 // in build for the 0x1a/0x1b records [M Player_WeaponFiring 0x1a5460:256-360]). Only the
@@ -6980,7 +7101,7 @@ impl Scene {
 // ── net-match-host: the online match's shared sim surface ─────────────────────────────────────
 // [S] port-only (the PS2 game has no online mode): every machine runs the same MP level from the
 // host's settings + seed and exchanges only each agent's per-tick input (deterministic lockstep,
-// `nf_game::net`). The shared state every machine must agree on is the bonds' poses, the MP match
+// `nf-net`, the one session layer). The shared state every machine must agree on is the bonds' poses, the MP match
 // state and the shared RNG stream — `net_state_hash` folds exactly that in a fixed slot order.
 impl Sim {
     /// The load builds every human slot's bond in slot order (deterministic on every machine);
@@ -7013,12 +7134,12 @@ impl Sim {
         }
     }
 
-    /// The per-tick state hash sent every N ticks (the app calls it; `nf_game::net` compares).
+    /// The per-tick state hash sent every N ticks (the app calls it; the nf-net session compares).
     /// Fixed fold order: frame, RNG stream, then each slot's bond pose (slot order — the local
     /// slot reads `bond`, the others `mp_bonds`), then the MP match state. An empty slot folds a
     /// sentinel so the shape is total and equal on every machine.
     pub fn net_state_hash(&self, local: usize) -> u64 {
-        let mut h = nf_game::net::Hasher::new();
+        let mut h = nf_net::hash::Hasher::new();
         h.u32(self.drones.frame);
         h.u32(self.drones.rng.x);
         h.u32(self.drones.rng.y);
