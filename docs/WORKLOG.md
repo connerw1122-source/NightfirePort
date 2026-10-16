@@ -16706,3 +16706,11 @@ suite.
   0x06000151 (len 297, seq 0x04000123 window, op-4 at 5/8/152/278) runs at +2.0/tick to 297, the
   fail page opens on the 448-tick fade beat, and the eye freezes grounded+airborne (fail-first
   recorded). Renderer input for the drawing side: death.script_time + script_pose(0x06000151).
+- 2026-10-16 s/ps2sinf-remaining (task 726, GAPS G-046): the remaining sim call
+  sites still use the host's sin/cos/atan where the game uses its own PS2Sinf /
+  trig (bit-exact proven, 40/40 [verify ledger]). Plan: list every remaining
+  f32::sin/cos/tan/atan2 in nf-game and nf-view's sim side that stands in for a
+  game trig call, find the game's function at each site [M], swap to the port's
+  bit-exact version. Keep walk*/walkreal* and the AI traces green; report every
+  site that changed a trace with before/after; update GAPS.md.
+  Branch created from origin/master 170bcf01.
