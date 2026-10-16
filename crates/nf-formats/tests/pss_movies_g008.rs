@@ -244,8 +244,9 @@ fn gop_walk_and_durations_match_the_golden() {
         assert_eq!(row.video_es_sha1, g.video_es_sha1, "{name}: video ES SHA-1 vs golden");
         assert_eq!(row.audio_es_sha1, g.audio_es_sha1, "{name}: audio ES SHA-1 vs golden");
     }
-    let golden_full = format!("{HEADER}\n{}", golden.lines().skip(1).collect::<Vec<_>>().join("\n"));
-    let d = diff_tsv(&golden_full, &actual);
+    // The frames_sha1 column belongs to the decode test (feature `movies`); this test's rows carry "-" there.
+    let strip_last = |t: &str| t.lines().map(|l| l.split('\t').take(17).collect::<Vec<_>>().join("\t")).collect::<Vec<_>>().join("\n");
+    let d = diff_tsv(&strip_last(&golden), &strip_last(&actual));
     assert!(d.is_empty(), "{} g008 differences:\n{}", d.len(), d.join("\n"));
 }
 
@@ -287,9 +288,9 @@ fn picture_counts_see_a_tampered_coding_type() {
     bad[at + 5] = (bad[at + 5] & 0xc7) | (4 << 3);
     let (pictures2, ..) = picture_counts(&bad);
     assert_eq!(pictures2, pictures - 1, "{name}: sister — one picture header left the count");
-    let (_, per_gop, outside) = gop_walk(&d.video);
+    // The walk must track the scan on the tampered stream too (both counters see the same headers).
     let (_, per_gop2, outside2) = gop_walk(&bad);
-    assert_eq!(per_gop2.iter().sum::<usize>() + outside2, per_gop.iter().sum::<usize>() + outside, "{name}: sister — the walk tracks the scan");
+    assert_eq!(per_gop2.iter().sum::<usize>() + outside2, pictures2, "{name}: sister — the walk tracks the scan");
 }
 
 /// G-008: every picture of every movie decodes without error (feature `movies`), the decoded frame count
