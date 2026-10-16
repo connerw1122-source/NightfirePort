@@ -13781,3 +13781,43 @@ Work Log (async-level-load):
   several times too fast on a fast display. She now ticks off her own 60 Hz wall-clock
   accumulator (`menu_clock`), matching `Game_Run`'s once-per-60 Hz-frame `psiDecompressWoman`
   [M 0x1c9790:36-41].
+
+## unlock-popups2 (2026-10-15, branch s/unlock-popups2) — DONE 01:10 UTC
+
+Work Log (unlock-popups2):
+- (23:38-23:45) Branch from origin/s/unlock-popups @ b1432898, pushed with the start entry; merged
+  origin/master. menu.rs had 4 conflict blocks — all "both sides" (619's fields/methods/wheel arms
+  beside codename-entry/nfstats-model/secret-codes/screen-adjust); `secret: SecretEntry` was on both
+  sides, kept once. Two merge slips fixed right after: stats_enter was nested inside
+  cheat_medal_confirm (unclosed delimiter) and the master-side constructor inits were missing
+  (E0063) — the merge commit + the fix commit are separate on the branch.
+- (23:47-23:49) Reproduced: front_end_chain_01_to_05 FAILED at :751 (expected MissionSelect after
+  the results Confirm, got NfBonus) — same as the hold record.
+- (23:50-00:00) The evidence: P_NFRESULTS case 0x4b routes on DAT_002e1c2c — set inside
+  Menu_SetLevelBonus 0x1ffa10's tier loop (medal 4..1, ProcessRewardCounter's "not already
+  standing" arm [M 0x1ffa10:71-82]) — to the 007 Bonus page 0x40000038 [M 0x208e78:48-53]; only
+  with no new reward does Confirm go straight to the mission list [M :39-44]. P_NFBONUS's own 0x4b
+  lands on 0x4000001c while !just_completed [M 0x209670:50-53]. A probe of the failing leg:
+  mission 01 scores 24150000 → medal 4 (platinum) → on a fresh profile every tier 1-4 is newly
+  granted → the game DOES show P_NFBONUS. The port's new_reward mirrors the same gate
+  (results_enter → set_level_bonus → progress.new_reward). VERDICT: the code is right, the test
+  was wrong — fixed by Confirming through the bonus page when it shows (with sister asserts: the
+  hop implies new_reward, the host's bonus_enter runs on the page enter, the second Confirm).
+  front_end_chain_live's single-Confirm test is untouched (its mission_ended path never sets
+  new_reward — matches the 1540/1 record).
+- (00:00-01:08) The suite on the final merged tree (background suite.py starts kept dying — the
+  cargo-lock race + this sandbox reaping detached processes; foreground slices + a direct sweep):
+  nf-game FULL 41 binaries 375 passed / 0 failed. nf-formats + nf-audio FULL 105 passed / 3 failed
+  = exactly the 3 disc_golden slim-ISO tests (allowed). nf-view: all 304 test binaries executed
+  (a -P 2 direct sweep, 90 s caps) — the ONLY real failure is the known no-GPU fix_0c_pylon_live
+  pair (2 tests); campaign_flow_live 5/5 (99 s), fix_guard_weapons_live 3/3 (164 s),
+  fix_party_mission_live 15/15 (74 s), fix_death_restart_live 8/8 (13 s) all pass with serial
+  re-runs — their sweep failures were the 90 s cap (124) or the parallel kill (137), not real.
+
+Stage Summary:
+- 619 landed: the held suite failure is fixed by the test change the evidence demanded (the game's
+  own post-results hop through P_NFBONUS on a new reward), the code needed nothing.
+- Branch s/unlock-popups2: merge 7f715272 + fix b1f7b487 + test fix eea62bcc + report.
+- Left: the pylon pair needs the main agent's GPU render check (as recorded by 507/drive-ptp);
+  P_NFBONUS's page-enter build is host-driven (bonus_enter) — a host integration may want to call
+  it automatically on the page switch.
