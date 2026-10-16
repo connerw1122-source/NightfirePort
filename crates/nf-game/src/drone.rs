@@ -100,7 +100,7 @@ pub mod state {
     pub const STUN_GRENADE_RECOVER: u8 = 0x4f;
     /// The taser family (109b): `DSTATE_Taser` 0x162b98 — the fall state msg 7 enters once the tase
     /// accumulator passes 2·health [M DroneFunc_HandleImpact 0x1469b8:126-130]. ENTER plays the
-    /// Rand(2) fall anim (0x31/0x32), drops the weapon, arms the twitch timer 1800
+    /// Rand(2) fall anim (0x31/0x32), drops the weapon, arms the 30-tick fall wait
     /// [M 0x162b98:44-56].
     pub const TASER: u8 = 0x4a;
     /// `DSTATE_Stunned` 0x162eb0 — the down state; ENTER arms the recover (+0xce0) and plays the
@@ -3568,10 +3568,15 @@ impl Drone {
             (TASER, msg::ENTER) => {
                 // +0xCE0 = `DroneFunc_RecoverTime`: the taser arm FRAME_RATE_INT·10 → 600·0.01·(200−0)
                 // = 1200 [M 0x147188 cases 0x4a/0x4c]. The weapon drop: `DropWeapon + ChangeWeapon(1)`
-                // for non-civilians with +0xDA != 4 [M 0x162b98:27-34] — NOT modelled: the port's guards
-                // carry one fixed weapon (the stun-grenade family's standing gap; `Drone::weapon` is the
-                // held weapon MODEL id, not the game's ChangeWeapon slot — noted in the report).
+                // for non-civilians with +0xDA != 4 [M 0x162b98:27-34] — the same shape the flashbang
+                // family drops with (the port's +0xDA stand-in is the held `weapon` byte; the game's
+                // ChangeWeapon slot is not modelled — the fists id stands in). The drop rolls the
+                // shared stream here, BEFORE the anim draw, in the game's case-1 order.
                 self.tase_recover = 1200;
+                if self.weapon != 4 {
+                    self.drop_weapon(d, rng);
+                    self.weapon = 1;
+                }
                 self.alert = self.alert.max(0.66); // AlertStatusSet(2) [M 0x162b98:42]
                 self.vision_on = false;
                 self.firing = false;
@@ -3580,22 +3585,27 @@ impl Drone {
                 let a = if rng.rand(2) == 0 { anim_state::TASER_FALL_B } else { anim_state::TASER_FALL_A };
                 self.tase_fall_anim = a;
                 self.call_anim(d, a, 0, 0);
-                // The twitch timer: FRAME_RATE_DIV·30 = 1800 [M 0x162b98:50-56].
-                self.timer_c = Some(frame + 1800);
+                // The fall wait: FRAME_RATE_DIV·30 = 30 ticks [M 0x162b98:50-56 — the disasm loads
+                // the float at 0x30D0D4 = FRAME_RATE_DIV = 60·(1/60) ≈ 1.0 [L 0x30d0d4] and
+                // multiplies 30.0f; the old +1800 read FRAME_RATE_DIV as 60, stretching the fall
+                // to 30 s against the game's 0.5 s].
+                self.timer_c = Some(frame + 30);
                 true
             }
             (TASER, msg::TASE) => {
-                // case 7: another tase re-arms the twitch timer [M 0x162b98 case 7].
-                self.timer_c = Some(frame + 1800);
+                // case 7: another tase re-arms the fall wait [M 0x162b98 case 7 — the same
+                // FRAME_RATE_DIV·30 = 30, disasm 0x162E5C]. Holding the beam keeps him falling;
+                // on release the last re-arm runs out within 30 ticks.
+                self.timer_c = Some(frame + 30);
                 true
             }
             (TASER, msg::TIMER_C) => {
                 // case 0xc: the fall anims (+0x56a ∈ 0x31..0x32) fall through to Stunned 0x4b; an
-                // interrupted (or fallen-back) anim re-arms 300 and waits [M 0x162b98 case 0xc].
+                // interrupted (or fallen-back) anim re-arms now+5 and re-checks [M 0x162b98:83-95].
                 if matches!(self.anim.state, anim_state::TASER_FALL_A | anim_state::TASER_FALL_B) {
                     self.set_state(STUNNED);
                 } else {
-                    self.timer_c = Some(frame + 300);
+                    self.timer_c = Some(frame + 5);
                 }
                 true
             }
