@@ -15342,3 +15342,13 @@ remote-mine-detonate (2026-10-16)
   menu binaries re-run green (170 tests).
 - Read-but-unchanged: CnName/MpSetup keep the keyboard (the task's carve-out); Records/Rewards'
   single spinner row has nothing to hover; the ScreenAdjust bar click = ✕ (Enter keeps+leaves).
+
+## cross-process-determinism (2026-10-16, branch s/cross-process-determinism) — start
+- Branch created from origin/master (e416e5f0). Task: the sim must give the same result in every
+  process — 664's guard-reaction matrix test measured different streams in different processes
+  (same cell 125/200 in a suite run, 153/200 standalone). Plan: reproduce (10 standalone runs of
+  that test binary, per-cell numbers), audit every HashMap/HashSet iteration that feeds sim state
+  / RNG draws / AI decisions in nf-game and nf-view's Sim glue (RandomState is per-process),
+  replace with BTreeMap/IndexMap or sorted iteration, add a two-process 600-tick 07000005 combat
+  guard test requiring bit-identical per-tick state hashes (mp/hash.rs), plus the sister toy-map
+  test that trips the guard.
