@@ -14112,3 +14112,42 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
   the stun animation, the duration/re-hit rules, the exit back to the AI. Prove a stunned guard
   completes the animation and returns to combat after the game's timer, and that re-stunning
   behaves like the game. Tests on 07000005 with the Stunner (0x4a/0x4c) on a guard.
+
+## stun-ai-recover (2026-10-16, branch s/stun-ai-recover) — the stunned guard's re-hit was dead code; the down flag + the downed sphere — DONE 04:35 UTC
+
+- Playtest 1015-1738 (07000005, the Stunner): guards "get stunned infinitely and don't complete
+  the animation". Re-verified every arm of the 109b taser family (Taser 0x162b98 / Stunned
+  0x162eb0 / Stunned_Recover 0x1630b8) against the decompile — the state machine itself was
+  faithful. The real defect was BELOW it: a downed guard could not be HIT again. Trace (the real
+  input path): a re-tase tap on the downed guard spent a round, the target test locked (ray-vs-
+  origin 0.000), the dart flew — and first_box_hit returned None on all 16 posed boxes; the dart
+  buried itself in the floor. Every re-hit arm of DSTATE_Stunned (case 7 re-fall / case 0x19
+  re-arm [M 0x162eb0]) was unreachable from play.
+- Ground truth: NDrone2_Collision 0x140e90 branches on the DOWN flag Drone+0x2f [M :65-90] —
+  downed, the shootable volume is a low sphere (r 0.3, centre (0.3−obj+0xa0) above the origin).
+  The flag: set by DSTATE_Stunned ENTER, cleared by EXIT [M case 1/2]; the same pair in
+  StunGrenadeLoop [M 0x1631c0 case 1/2]; StunDartLoop [M 0x163570, unported] too. The port had
+  no +0x2f at all. Player_WeaponFiring 0x1a5460:90-106 reads it on the aim target for the
+  reticle datum swap.
+- Fix (drone.rs): Drone::down (the +0x2f stand-in; set/cleared at the STUNNED and
+  STUN_GRENADE_LOOP enter/exit arms) + the downed sphere in the bullet contact (r 0.3 at
+  pos+0.3 up; the +0xa0 lift drops out — the port's origins rest on the floor when down). The
+  standing boxes stand-in untouched. Nothing else in the family changed; the accumulator's
+  never-reset re-verified [M — the grow at 0x1469b8:72 is the ONLY drone +0xBC writer in the
+  whole decompile].
+- Tests: stun_ai_recover_live (new, the real input path on 07000005) — 2 green: (1) the full
+  timer ride — fall at hold tick 20 → TASER→STUNNED at rel+1798 (the 1800 twitch timer) →
+  STUNNED_RECOVER at +49 past the 1200 RecoverTime expiry with Bond 8 u away → the get-up 0x76
+  completes into the combat family (0x56 in the log) — the animation completes; (2) Bond at
+  2.5 u keeps him down past the expiry (the tc re-arms 3210→3510, AnyoneNear 2.0 [M 0x162eb0
+  case 0xc]) and the re-tase tap on the downed guard lands (the downed sphere) and re-arms
+  (stored anim 0x32 → tc 3510→4621 [M case 7 → 0x19]; the 0x31 draw takes the re-fall arm, the
+  test branches like the game). Ran: nf-view stun_ai_recover_live 2/2; nf-game lib + the
+  stunner-adjacent live tests — see the run log; the full suite in the background (see the
+  report for what completed in the window — the sandbox reset mid-session and took the first
+  run's output).
+- Live checks for the main agent: (1) the downed-guard reticle datum swap [M 0x1a5460:90-106] —
+  the flag now exists (Drone::down), the draw is view-side; (2) whether the game's fall/twitch
+  anims loop or hold (the port holds the last frame — if the game loops, that's the visible
+  "don't complete the animation" half); (3) the MP dart family 0x50-0x52 (StunDartImpact/Loop/
+  Recover) — SP never enters them per the decompile; an MP probe would settle their owner.
