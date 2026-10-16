@@ -60,10 +60,13 @@ fn channel_0_is_a_real_channel() {
     assert!(!ch.on(0), "a zero write clears ch 0");
 }
 
-/// The winches: their SSs sit on ch 0 [D #351/#364/#377]; with ch 0 raised the playhead advances
-/// like any SS (`SS_Update` gates nothing on the channel INDEX — the port's tick reads on(ch)).
+/// The winches: their SSs carry the channel word 0 [D #351/#364/#377] — which `SS_Operate`
+/// 0x1a9df8:47-48 short-circuits as "no channel" (`== 0` -> return 0), and their mask 0x2 is the
+/// bullet-presence bit (the obj+0xD0 contact chain, unported headlessly). grates-02 corrected the
+/// old channel-seek model [M SS_Update 0x1a9948's state machine]: a ch-0 poke must NOT move them;
+/// they hold key 0 until a bullet operates them in the real game.
 #[test]
-fn the_pulley_winches_sweep_once_channel_0_rises() {
+fn the_pulley_winches_hold_key0_a_channel_0_poke_moves_nothing() {
     let Some(_) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load_at([5.8, 15.8, -107.5], std::f32::consts::PI);
     let sim = scene.sim.as_mut().unwrap();
@@ -76,19 +79,26 @@ fn the_pulley_winches_sweep_once_channel_0_rises() {
         sim.drones.sss.list[ss377].rate,
     );
     assert_eq!((r351, r364, r377), (75, 75, 75), "the winch SSs' rate word [D #351/#364/#377]");
-    // Raise ch 0 the way a game writer would and tick: the playheads must move off key 0.
+    // Raise ch 0 and tick: the playheads must NOT move (the channel word 0 is no channel [M
+    // 0x1a9df8:47-48]; state 0x40 + operate = 0 rests without re-posing [M 0x1a9948:85]).
     let frame = sim.drones.channels.time[18];
     sim.drones.channels.set(0, 1, frame + 1);
     assert!(sim.drones.channels.on(0), "ch 0 holds");
+    let (m351, m364, m377) = (
+        sim.drones.sss.list[ss351].matrix,
+        sim.drones.sss.list[ss364].matrix,
+        sim.drones.sss.list[ss377].matrix,
+    );
     for _ in 0..40 { sim.step_bond(Input::default(), false, false, false); }
     let (t351, t364, t377) = (
         sim.drones.sss.list[ss351].t,
         sim.drones.sss.list[ss364].t,
         sim.drones.sss.list[ss377].t,
     );
-    assert!(t351 > 0.0, "winch #351's playhead advances with ch 0 on [M 0x1a9948], got {t351}");
-    assert!(t364 > 0.0, "winch #364's playhead advances with ch 0 on, got {t364}");
-    assert!(t377 > 0.0, "winch #377's playhead advances with ch 0 on, got {t377}");
+    assert_eq!((t351, t364, t377), (0.0, 0.0, 0.0), "the ch-0 poke moves no winch playhead [M 0x1a9df8:47-48]");
+    assert_eq!(sim.drones.sss.list[ss351].matrix, m351, "winch #351's pose holds");
+    assert_eq!(sim.drones.sss.list[ss364].matrix, m364, "winch #364's pose holds");
+    assert_eq!(sim.drones.sss.list[ss377].matrix, m377, "winch #377's pose holds");
 }
 
 /// The verified legs as a regression (101g's open-hole drop): from the duct top the crouched
@@ -101,7 +111,9 @@ fn from_the_duct_top_the_hole_drops_bond_onto_the_balcony() {
     for _ in 0..120 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
     let sim = scene.sim.as_mut().unwrap();
     let ss138 = sim.drones.sss.of_placement(138).expect("ventmesh-front SS [D #138]");
-    assert!((sim.drones.sss.list[ss138].t - 5.0).abs() < 0.01, "the hatch is fully open");
+    let last138 = (sim.drones.sss.list[ss138].keys.len() - 1) as u16;
+    let open138 = nf_game::door::interp(&sim.drones.sss.list[ss138].keys, 0, last138, last138 as f32, sim.drones.sss.list[ss138].spline).unwrap();
+    assert_eq!(sim.drones.sss.list[ss138].matrix, open138, "the hatch is fully open (the held pose is the last key's)");
     sim.step_bond(Input { crouch: true, ..Default::default() }, false, false, false);
     assert!(sim.bond.crouched, "the crouch key crouched Bond");
     // Crouch-walk forward off the duct edge, through the hole, onto the balcony.

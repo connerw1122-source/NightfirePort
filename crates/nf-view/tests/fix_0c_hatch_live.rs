@@ -72,10 +72,24 @@ fn the_hatch_sweep_takes_the_game_rate_ticks() {
     // Sister: the blocker (#179, 2 keys, rate 10 [D]) — the last==1 special case advances 1/rate
     // per tick [M 0x1a9948:103-105], so its sweep is unchanged by the rate fix: ~10 ticks.
     assert!(t179_done <= 13, "the blocker (#179, rate 10 [D]) must sweep in ~10 ticks, took {t179_done}");
-    // Sister: the blocker STAYS up (the channel holds, the playhead does not return).
+    // Sister: the blocker STAYS up and the hatch STAYS open. The game's observable is the POSE:
+    // after the sweep's wrap (`(int)last < (int)t` -> t=0, state 0/0x40 [M 0x1a9948:119-128]) no
+    // state re-poses the matrix, so the object holds its END pose (the last key's, interp clamps
+    // t); the playhead itself rests at 0. Both sweeps end disarmed at state 0 (mask 0x1, ch 18,
+    // p1=1 [D]) — the game's one-shot.
     for _ in 0..60 { sim.step_bond(Input::default(), false, false, false); }
-    assert!((sim.drones.sss.list[ss179].t - 1.0).abs() < 0.01, "the blocker stays risen while ch 18 holds");
-    assert!((sim.drones.sss.list[ss138].t - 5.0).abs() < 0.01, "the hatch stays open while ch 18 holds");
+    assert_eq!(sim.drones.sss.list[ss138].t, 0.0, "the playhead rests at 0 after the wrap [M 0x1a9948:120]");
+    let last138 = (sim.drones.sss.list[ss138].keys.len() - 1) as u16;
+    let last179 = (sim.drones.sss.list[ss179].keys.len() - 1) as u16;
+    let open138 = nf_game::door::interp(&sim.drones.sss.list[ss138].keys, 0, last138, last138 as f32, sim.drones.sss.list[ss138].spline).unwrap();
+    let risen179 = nf_game::door::interp(&sim.drones.sss.list[ss179].keys, 0, last179, last179 as f32, sim.drones.sss.list[ss179].spline).unwrap();
+    assert_eq!(sim.drones.sss.list[ss138].matrix, open138, "the hatch holds the last key's pose (open) [M states 0/0x40 never re-pose]");
+    assert_eq!(sim.drones.sss.list[ss179].matrix, risen179, "the blocker holds the last key's pose (risen) [M states 0/0x40 never re-pose]");
+    // Frozen: another 60 ticks (states 0) change nothing.
+    let (f138, f179) = (sim.drones.sss.list[ss138].matrix, sim.drones.sss.list[ss179].matrix);
+    for _ in 0..60 { sim.step_bond(Input::default(), false, false, false); }
+    assert_eq!(sim.drones.sss.list[ss138].matrix, f138, "the hatch pose is frozen after the wrap");
+    assert_eq!(sim.drones.sss.list[ss179].matrix, f179, "the blocker pose is frozen after the wrap");
 }
 
 /// Symptom 1's sister: the warehouse ventmesh #180 (6 keys, rate 50 [D]) — the same 5×-slow model
@@ -117,7 +131,9 @@ fn bond_crouches_through_the_open_vent_to_the_display_ground() {
     {
         let sim = scene.sim.as_ref().unwrap();
         let ss138 = sim.drones.sss.of_placement(138).expect("ventmesh-front SS exists [D #138]");
-        assert!((sim.drones.sss.list[ss138].t - 5.0).abs() < 0.01, "the hatch is fully open before the walk");
+        let last138 = (sim.drones.sss.list[ss138].keys.len() - 1) as u16;
+        let open138 = nf_game::door::interp(&sim.drones.sss.list[ss138].keys, 0, last138, last138 as f32, sim.drones.sss.list[ss138].spline).unwrap();
+        assert_eq!(sim.drones.sss.list[ss138].matrix, open138, "the hatch is fully open before the walk (the held pose is the last key's)");
         let from = [5.78, 16.3, -111.7];
         assert!(sim.world.segment_hit(from, [5.78, 16.3, -113.0]).is_none(), "the opening passes a ray");
     }
@@ -159,7 +175,9 @@ fn from_the_duct_top_the_open_hole_carries_bond_down() {
         eprintln!("on the ramp: pos ({:.2}, {:.2}, {:.2})", p[0], p[1], p[2]);
         assert!(p[1] > 16.5, "Bond stands on the duct ramp (top 17.2-17.5 [D probe]); at y {:.2}", p[1]);
         let ss138 = sim.drones.sss.of_placement(138).expect("ventmesh-front SS [D #138]");
-        assert!((sim.drones.sss.list[ss138].t - 5.0).abs() < 0.01, "the hatch is fully open");
+        let last138 = (sim.drones.sss.list[ss138].keys.len() - 1) as u16;
+        let open138 = nf_game::door::interp(&sim.drones.sss.list[ss138].keys, 0, last138, last138 as f32, sim.drones.sss.list[ss138].spline).unwrap();
+        assert_eq!(sim.drones.sss.list[ss138].matrix, open138, "the hatch is fully open (the held pose is the last key's)");
     }
     let sim = scene.sim.as_mut().unwrap();
     sim.step_bond(Input { crouch: true, ..Default::default() }, false, false, false);
