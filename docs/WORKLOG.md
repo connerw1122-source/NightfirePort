@@ -15513,3 +15513,20 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+
+## hatch-crouch-0c2 (2026-10-16, branch s/hatch-crouch-0c2) — the pick-contact arm landed, 3 of 6 fixed — WINDOW END
+- Re-derived the game's grounded pick-contact arm [M]: `Player_FeetOnPoint` 0x194188:176-185
+  grounds on `HITTEST+0x9c != 0` — a BITMASK (Collide_Update 0x1ea398:83 zeroes it; Collide_Intersect
+  0x1ebaa8 tail 0x1ec138-150 ORs the per-hit copy's +0x9c; Intersect_CylGeom 0x10a72c sets bit 1)
+  whose bit block reads: face normal (copy+0x00, written per tri at 0x109da0:298) and
+  `R = copy+0x50 − (bottom+push)`; with copy+0x50 tracking the live bottom via the DeltaP adds
+  (0x1ebaa8:353-373), dot2 < 0 = the push has an upward component. Landed: grounded =
+  walkable || pick(push[1] > 0) || ray — the dot1 0.7 gate left unported [S: it would refuse the
+  0c pier ramp the game rides]. 680's push != 0 over-grounded (any wall touch) — the pond dismount,
+  kbd trace fixed; hatch_crouch_live restored 4/4 (pose observable + the vent2 16.6 re-point).
+- STILL FAILING: walk_0700004a (the shaft plate), fix_pickups_trace (3 takes < killed),
+  walkreal_07000001 (Bond trails 12.2 at the stairwell head) — all descents; next lead: the pick
+  predicate should test q below the PICK-START bottom (the fall-past grazes then fail dot2).
+  Full suite on the final tree: 1816 passed, 11 failed, 72 ignored (59 min; 3 disc_golden + 3
+  pylon GPU + 1 frame_cost noise + 2 stale-binary vent2 + the 3 movement fails). Report:
+  docs/reports/hatch-crouch-0c2.md.
