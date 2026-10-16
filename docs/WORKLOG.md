@@ -13858,3 +13858,9 @@ Work Log (async-level-load):
   option box with record+0x08 (0x31d on −1) [M 0x205bd0-0x205bdc → 0x202218]; the dismissal re-show is
   P_PAUSE_Handler 0x203c28:19-24's msg-0x50 arm; hints are uncounted/unlimited — no reader of the hint label
   outside 0x182630, no PlrStat hints counter).
+
+## memcard-save-flow (2026-10-16, branch s/memcard-save-flow) — started
+- Task: port the save flow around the profile — when the game saves (LS_Save callers, P_PS2MEMCARDINIT_Handler
+  0x218538, C_LBERROPTIONS_Handler 0x2185e8, Menu_UpdateMessageBox 0x1f7de8's cases), the messages it shows
+  ("Saving…", card-full / no-card errors), autosave behaviour; map card states to the port's file save honestly
+  (no fake card errors). State + messages on FrontEnd, host writes the file.
