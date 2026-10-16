@@ -29,3 +29,7 @@ claimed-by: sandbox6 at 2026-10-16T00:57Z
 ## Report (done, 2026-10-16T02:06Z)
 
 Closed by the driver: the report is on `s/memcard-save-flow` (docs/reports/memcard-save-flow.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-16T02:08Z)
+
