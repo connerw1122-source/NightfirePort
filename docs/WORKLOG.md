@@ -16238,3 +16238,42 @@ volume rows reach the sound layer's volumes at boot; Back discards edits (file u
 keys and out-of-range values tolerated (clamped); (4) fix whatever the roundtrip exposes, each fix
 citing the game address; (5) run the crates the tests touch, then the full fast suite (background
 start per the task message), report.
+
+## settings-persist (2026-10-16, branch s/settings-persist) — in progress 03:10 UTC
+- The option pages' values survive launches: `crates/nf-view/src/settings.rs` —
+  `settings.toml` in the user's config dir (NF_CONFIG_DIR override → %APPDATA%\NightfirePort /
+  XDG+~/.config + NightfirePort; std only, no dirs crate). Keys are the rows' game LABEL ids
+  per page section ([adv]/[mp]/[av]) — the game reads the rows back by label (msg 0x35 [M
+  P_CNOPTIONS 0x213f08:24-71]), so a reorder can't scramble anything; the ADV/MP Auto Aim
+  label 0x197 collision is split by section (ctrls 0x1000_011b / 0x1000_0129). Unknown
+  keys AND unknown sections (a newer port's) are ignored, not corrupt; out-of-range values
+  snap to the nearest legal item (sliders 0..=100 like opt_step's clamp); missing/corrupt
+  file → default_opts() + a stderr warning.
+- Model/host split as the repo's own pattern: `FrontEnd::settings_save_pending` raised by
+  CnAdvanced/CnMp/CnAv Confirm and Back (Back saves the RESTORED values), the host drains it
+  in `menu_after` → `settings::save_opts`; the three windowed fe boots (title, Esc-pause,
+  net_fail) apply the file over the defaults; the headless --fe render path deliberately
+  does NOT load (renders stay independent of the user's config, WORKLOG lesson 6).
+- Progress/settings split recorded in docs/systems/settings-persist.md: game progress stays
+  in the 635-memcard-save-flow Profile model; this file is settings only (the game's own
+  split: the global-settings blob [M LS_MakeGlobalSettings 0x1cd9d0] vs the save-game
+  records [M Menu_EnumSaves 0x1f7b78]).
+- Window settings: the port has NO size/fullscreen state (winit default attributes) —
+  nothing to persist; the [window] section name is reserved (unknown sections already
+  parse-skip, so a future port's file won't reset an older port's settings).
+- Tests: crates/nf-view/tests/settings_persist.rs — 11 green (real-input-path round trip,
+  missing, corrupt ×3 shapes, unknown keys/sections, reordered rows, the changed-value
+  sister, clamping, back-out, the 0x197 split, mkdir, NF_CONFIG_DIR); menus_flow 42 +
+  mp_menu_flow 9 + codename_entry 14 + screen_adjust 9 + mission_stats_flow 3 +
+  front_end_chain_live 2 — 0 failed. Full suite: tools/test/suite.py running on the final
+  tree — see docs/reports/settings-persist.md for the total.
+- Live checks for the main agent: none needed — this task has no visual surface (the file
+  format, the boot load and the page-exit save are all headless-verified; the pages render
+  exactly as before, the only delta is which values they show).
+- settings-persist ADDENDUM 04:08 UTC: the suite finished in foreground chunks (the sandbox
+  kills background jobs between tool calls — verified with a canary sleep). Final tree:
+  180/372 binaries (all nf-game/nf-formats/nf-audio + 125 nf-view incl. every menu/save/flow
+  binary) — 1087 passed, 6 failed, 38 ignored; the 6 = the 3 allowed disc_golden + the 3
+  known no-GPU pylon environmental failures (same trio prior tasks recorded). Audit found
+  and I fixed: a net_notice line my edit had dropped, an i64 overflow edge in the clamp,
+  and a missing settings load on the F8/F9 demo-results fe. See docs/reports/settings-persist.md.
