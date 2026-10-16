@@ -15621,3 +15621,15 @@ integer frame (script_anim → script_pose_together), and the game's AnimFrameSe
 a no-op at integer frames. Live checks requested (see the report): the game's guest root at the
 three slide frames; the 040003f9/06000225 tail garbage (frames ≥ ~4270, ±40000 root) — the game
 must be faded/off those actors when it plays.
+
+## escort-01b (2026-10-16, branch s/escort-01b) — start
+- Task: the held s/escort-01 (690) fails at merge with escort-01 alone on master:
+  fix_mission_live::the_07000001_exit_works_end_to_end — the courtyard shoji never reaches OPEN
+  (state 4); "an activation every tick kept it ping-ponging 0x8<->0x10" [M NDrone2_DoorIsOpen
+  0x14aaa0]. npc_doors_live::the_escort_opens_his_door_without_bonds_help failed in the same
+  batch. Find which escort change touches the door (the follow / the waiting at doors / the door
+  use); a door being opened is not re-activated, per NDrone2_DoorIsOpen and the drone door
+  handler's state checks [M]. Keep fix_mission_live (4), npc_doors_live, walkreal_07000001_live,
+  escort_follow_07000001_live green.
+- Branch s/escort-01b = origin/s/escort-01 (f499138d) merged with origin/master (22be196b);
+  the WORKLOG conflict resolved append-only (both sides' entries kept in order).
