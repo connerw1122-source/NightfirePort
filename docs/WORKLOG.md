@@ -14879,3 +14879,12 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   foreground chunks (background jobs reaped here — nohup and setsid both died in the build phase):
   76 binaries, 722 passed, 0 failed, 1 ignored; nf_view's windowed unit binary can't run without a
   display (pre-existing). Report: docs/reports/difficulty-effects2.md (live checks L-1, L-2).
+
+## pickups-08 (2026-10-16, branch s/pickups-08) — start
+- Task: the briefcase and the rocket launcher in the 07000008 safe room refuse pickup in playtests
+  1012-2337 / 1013-1758. Find why each refuses (placement types and pickup kinds [M Pickup_Create
+  0x18dda0, Pickup_Handler 0x18e650], the use/collect radius, any gate — script channel, safe state,
+  Q-Laser cut, gadget pickup status), fix the sim so walking or using the item collects it exactly as
+  the game does, with headless tests on 07000008 (collect both from Bond positions taken from the
+  placements; check the inventory and the HUD message; sister: out of range does nothing).
+- Started: branch created from origin/master (ad761677); fast suite running in the background.
