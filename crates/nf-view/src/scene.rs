@@ -3412,15 +3412,29 @@ impl Sim {
                 // 0x1a4bf0:187-200 — the 0x4A/0x4C ray test's miss arm returns before Bullet_init;
                 // the target test above ran on this same shot tick].
                 let spawn_shot = !matches!(self.gun.weapon, 0x4a | 0x4c) || self.stunner_target == Some(true);
-                // Gravity weapons (`+0x6C & 0x8`) are grenades: `Bullet_init` with the weapon record
-                // [M 0x12c5a0] — the throw origin the game uses is the midpoint of the head and the view
-                // model's bone 0 (`flags68 & 0x10000` arm, `Player_WeaponInitBullet` 0x1a4bf0:230); the port
-                // has no view bones and spawns from the eye (*deviation*). Direction: the aim ray with
-                // `Bullet_init`'s three spread draws, in the game's RNG order [M 0x12c5a0:166-184]. The spawn
-                // itself is silent (`Bullet_init`'s param_7 = 0xffff); the throw's own sound is the fire
-                // script's op-1 command (played above).
+                // Grenade-family weapons: `Bullet_init` with the weapon record [M 0x12c5a0] — the throw
+                // origin the game uses is the midpoint of the head and the view model's bone 0
+                // (`flags68 & 0x10000` arm, `Player_WeaponInitBullet` 0x1a4bf0:230); the port has no view
+                // bones and spawns from the eye (*deviation*). Direction: the aim ray with `Bullet_init`'s
+                // three spread draws, in the game's RNG order [M 0x12c5a0:166-184]. The spawn itself is
+                // silent (`Bullet_init`'s param_7 = 0xffff); the throw's own sound is the fire script's
+                // op-1 command (played above).
+                // delta-repeater: the gate is the GRAVITY bit AND a grenade-family collision flag — the
+                // BOUNCE 0x80 (Bullet_CollisionHandler 0x12ce80's LAB_0012d4bc gate), the STICK 0x100
+                // (the stick arm 0x12d1a0..0x12d1fc) or the CONTACT-EXPLODE 0x4 (the explode arm
+                // 0x12d068). Gravity alone is NOT the grenade family: `Bullet_update` 0x12e7b0's case 1
+                // applies `+0x6C & 8` gravity to ANY bullet, and the Delta Repeater 0x11 (+0x6C = 0x808,
+                // +0x70 = 0x2 [L ee_start_05.bin @ 0x2bf150 + 0x11·0x10C]) flies its lobbed arc as a
+                // plain bullet — its wall hit is the standard impact effect (flags 0x61) and a DEAD
+                // bullet (state 2, no bounce/stick/ricochet bit set) [M 0012ce80]. The old gravity-only
+                // gate made the port's bolt a bouncing grenade — the playtest's "sounds like a grenade
+                // is bouncing … bounces against the wall when it shouldn't be bouncing" (1015-1738).
+                // Record sweep [L ee_start_05.bin]: this gate moves exactly record 0x11 off the grenade
+                // path; every other gravity record (0x2a/0x2b/0x34–0x37/0x3a–0x3c/0x45) carries 0x4,
+                // 0x80 or 0x100 and keeps today's routing.
                 let flags6c = u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap());
-                if flags6c & 0x8 != 0 {
+                let flags70_w = u32::from_le_bytes(w[0x70..0x74].try_into().unwrap());
+                if flags6c & 0x8 != 0 && flags70_w & (0x4 | 0x80 | 0x100) != 0 {
                     let f32_at = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
                     let sdir = nf_game::bullet::spread(dir, f32_at(0x24), flags, &mut self.drones.rng);
                     let speed = f32_at(0x20);

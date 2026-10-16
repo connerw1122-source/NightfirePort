@@ -171,7 +171,7 @@ fn probe_sniper_direct_bullet() {
         eprintln!("[direct] world segment eye→torso: {seg:?} (None = clear), dist {l:.1}");
         scene.sim.as_mut().unwrap().drones.player_bullets.push(nf_game::drone::PlayerBullet {
             pos: from, dir, speed: 4.0, travelled: 0.0, range: 80.0, damage: 3.5, weapon: 2,
-            first: true, dead: false, bounces: 0, homing: false, target: None, guided_cam: false,
+            first: true, dead: false, bounces: 0, homing: false, target: None, gravity: false, guided_cam: false,
         });
     }
     for t in 0..40u32 {

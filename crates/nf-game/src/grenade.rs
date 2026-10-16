@@ -136,9 +136,9 @@ pub struct SmokeCloud {
 }
 
 /// `WldGravity` (VECTOR at 0x2d8890): `(0, −9.8, 0)`. [L] docs/systems/pickups.md, player.md.
-const WLD_GRAVITY: V3 = [0.0, -9.8, 0.0];
+pub(crate) const WLD_GRAVITY: V3 = [0.0, -9.8, 0.0];
 /// `REC_FRAME_RATE` (0x30d0cc) = 1/60.
-const REC_FRAME_RATE: f32 = 1.0 / 60.0;
+pub(crate) const REC_FRAME_RATE: f32 = 1.0 / 60.0;
 /// `Bullet_CollisionHandler` bounce max: 0x14 (20) bounces.
 const BOUNCE_MAX: u8 = 20;
 /// `Bullet_CollisionHandler` min speed to keep bouncing: `FRAME_RATE_MUL · 0.01` = 0.01.
