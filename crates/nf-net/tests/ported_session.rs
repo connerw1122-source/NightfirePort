@@ -48,6 +48,7 @@ fn two_peers_timeout(port: u16, timeout_ms: u64) -> (Session<UdpTransport>, Sess
     (host, client)
 }
 
+
 /// Pump with an advancing logical clock until `f` holds (bounded). The
 /// client may be gone (the timeout test's silence is the point).
 fn pump_until(host: &mut Session<UdpTransport>, client: Option<&mut Session<UdpTransport>>,
@@ -82,12 +83,7 @@ fn drain(h: &mut Session<UdpTransport>, c: &mut Session<UdpTransport>, ms: u64)
 /// ticks exchange identical inputs on both sides (the e2e suite's 600-tick
 /// lossy+reordered run pins the same per-tick equality under worse links;
 /// this port keeps 053's clean-link per-tick contract at a bounded runtime).
-/// IGNORED (net-consolidate): at input_delay 1 with exactly-one-tick feed it
-/// hits a session stall this task did not get to chase — the e2e suite pins
-/// the same contract under loss+reorder at input_delay 3 (both PASS), so the
-/// lockstep guarantee is proven; the delay-1 edge is next session's work.
 #[test]
-#[ignore]
 fn host_and_client_lockstep_300_ticks() {
     let (mut host, mut client) = two_peers_timeout(27810, 4000);
     let mut ms: u64 = 0;
@@ -106,6 +102,9 @@ fn host_and_client_lockstep_300_ticks() {
     let (slot, seed, _settings, _delay) = connected.expect("client Connected with the handshake payload");
     assert_eq!(slot, 1);
     assert_eq!(seed, 0x1234_5678, "the seed rides the handshake");
+
+    host.start_match(0).unwrap();
+    pump2(&mut host, &mut client, &mut ms, |_, c, _, _, _| c.is_started(), "GO");
 
     // 300 lockstep ticks: each side submits its scripted input, the pump
     // delivers (a missing input is a stall, never a guess), both read the

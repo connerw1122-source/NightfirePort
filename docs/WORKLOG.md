@@ -14491,10 +14491,12 @@ cover/fire-rate AI tests the first gas-rng hold broke.
   0x10ca78]) replaces the terminal PeerLost.
 - Tests: loopback_e2e 2/2 (host+2 clients over real 127.0.0.1, 8% loss + 25% reorder, 600 ticks,
   identical per-tick hashes; sister: corrupted input trips the desync detector); ported_session 3/3
-  (raw-wire build REFUSE, forged-hash desync, silent-peer timeout + NEUTRAL continuation) with the
-  delay-1 clean-link run #[ignore]d (documented edge); 051's shim suite 8/8 + lib 11/11; nf-game
+  (raw-wire build REFUSE, forged-hash desync, silent-peer timeout + NEUTRAL continuation,
+  clean-link 300-tick per-tick equality); 051's shim suite 8/8 + lib 11/11; nf-game
   lib 234/234; nf-view lib 15/15; mp_net_lobby 9/9; net_match_live 3/3 (1000-tick sims equality,
   forced desync, disconnect). suite.py not runnable (background jobs reaped between calls — twice),
   touched-crate tests ran in the foreground instead; flagged in the report.
-- Docs: net-lockstep.md §9 + net-match-host.md §2 describe the single design.
+- Docs: net-lockstep.md §9 + net-match-host.md §2 describe the single design. (The one
+  mid-session "stall" was a harness bug — a dropped start_match arm in the ported test — traced
+  and fixed; all 4 ported tests pass.)
 - Report: docs/reports/net-consolidate.md; no live checks needed (no game-referenced behaviour).

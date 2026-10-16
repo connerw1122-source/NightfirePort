@@ -72,8 +72,8 @@ buttons 0 / analog 0x7f for a dead pad]. The app logs `ClientLeft` instead of `n
   REFUSE (a raw HELLO with a wrong build id gets REFUSE/2 back on a real socket), the forged-hash
   desync at a hash cadence boundary (both sides report `Event::Desync`), the silent-peer timeout
   (`ClientLeft/Timeout`) with the NEUTRAL continuation after the drop (the port's behavioural
-  replacement for the terminal PeerLost). 3 PASS; the fourth port (`host_and_client_lockstep_300_ticks`,
-  053's clean-link per-tick contract at input_delay 1) is `#[ignore]`d — see "What's left".
+  replacement for the terminal PeerLost), and 053's clean-link per-tick lockstep contract
+  (`host_and_client_lockstep_300_ticks`, input_delay 1, per-tick equality both sides). 4/4 PASS.
 - **051's tests** kept and green: the shim suite (handshake/refusal, 2000 ticks at 5% loss +
   30 ms/20 ms jitter with hash equality at every tick, stall-never-guesses, timeout, EndMatch
   policy, real-UDP loopback) — 8/8 — plus the crate's unit tests (proto round-trips incl. the
@@ -87,8 +87,8 @@ buttons 0 / analog 0x7f for a dead pad]. The app logs `ClientLeft` instead of `n
 - **The lobby tests** (`crates/nf-view/tests/mp_net_lobby.rs`, 052's suite): 9/9 PASS unchanged —
   the `MpSession` trait kept its shape, so the fake needed no edits.
 - **Crates run before pushing** (the task's requirement): `cargo test --offline --release -p
-  nf-net` (24 passed, 1 ignored), `-p nf-game --lib` (234 passed), `-p nf-view --lib` (15
-  passed), `-p nf-view --test net_match_live --test mp_net_lobby` (12 passed).
+  nf-net` (25 passed), `-p nf-game --lib` (234 passed), `-p nf-view --lib` (15 passed),
+  `-p nf-view --test net_match_live --test mp_net_lobby` (12 passed).
 
 ## The fast suite
 
@@ -100,11 +100,6 @@ run on the merged tree.
 
 ## What's left
 
-- **The delay-1 clean-link stall** (`host_and_client_lockstep_300_ticks`, `#[ignore]`d with the
-  reason inline): feeding exactly one tick per pump at `input_delay 1` stalls a tick past the 5 s
-  pump deadline somewhere mid-run, while the lossy e2e at input_delay 3 (600 ticks, 2 clients)
-  and 051's own 2000-tick shim run pass. The lockstep guarantee itself is proven by those; the
-  delay-1/feed-shape edge needs one session with `--nocapture` tracing of the send windows.
 - The full `tools/test/suite.py` run on the merged tree (see above).
 - `docs/systems/net-online-lobby.md` still describes the trait object as unwired; the wiring is
   real now — one paragraph there would finish the doc set (the two required docs are updated).
