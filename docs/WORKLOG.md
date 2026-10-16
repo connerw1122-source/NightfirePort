@@ -15930,3 +15930,13 @@ INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 pa
 72 ignored (46 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes (the
 07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
 and other merged tasks' new tests. The 2 new live tests are green in the totals.
+
+## guards-0c-b (2026-10-16, branch s/guards-0c-b) — start
+- Task 698b: guards-0c (s/guards-0c, HELD at merge) broke
+  fix_finale_live.rs::the_0700001b_drakes_defeat_ends_the_space_station
+  (fix_finale_live.rs:161 "the gate spawns Drake (spawner #187 [D])"). Moving visible_to's body
+  rays onto the bullet segment changed something spawner #187's release on 0700001b depends on.
+  Find the reader of visible_to / the drawn flag the spawner path uses, and what the game gates
+  the spawner release on [M DroneSpawner_Control 0x137e68]. Decouple the game's way or fix the
+  segment query. Keep guards_0c_live AND all of fix_finale_live green.
+- Started: branch = origin/s/guards-0c (7b3c746a) merged with origin/master; suite starting next.
