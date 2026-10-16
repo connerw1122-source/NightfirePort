@@ -789,6 +789,10 @@ impl Driver {
     /// a spare's slot only for ids it lacks.
     pub fn item_slot(&self, id: u32) -> Option<usize> { self.items.iter().find(|it| it.id == id).map(|it| it.slot) }
 
+    /// rocket-sound-leak test hook: the live item's tracked 3-D position (`SFXSetPositionAndVelocity`'s
+    /// target, item `real_pos`, /1000 back to units), first item with the id.
+    pub fn item_pos(&self, id: u32) -> Option<[f32; 3]> { self.items.iter().find(|it| it.id == id).map(|it| it.real_pos.map(|x| x as f32 / 1000.0)) }
+
     /// The ids of the live items (tests).
     pub fn ids(&self) -> Vec<u32> { self.items.iter().map(|it| it.id).collect() }
 }
@@ -1022,5 +1026,41 @@ mod tests {
         // Out-of-range reverb is clamped.
         d.set_environment(500, 0);
         assert_eq!(d.reverb_target, 100);
+    }
+
+    /// `SFXRemove(0, id)` kills EVERY instance of the id — the IOP's KillSFX walks the whole
+    /// item list [M IRX 0x1f88:11-16 → KillSFX 0x1ea4]; the menu-music pair (0x1d7/0x470) is
+    /// looped by design and dies only this way (menu-audio-leaks).
+    #[test]
+    fn remove_kills_every_instance_of_the_id() {
+        let (b, sbf) = one_sound_bank();
+        let mut d = Driver::new();
+        d.load_bank(4, b, sbf);
+        let mut out = Vec::new();
+        assert_eq!(d.start(&mut out, 7, None, 0, None), 0);
+        assert_eq!(d.start(&mut out, 7, None, 0, None), 0, "a second instance keys on too");
+        assert_eq!(d.ids(), vec![7, 7]);
+        // Sister: a remove of another id touches nothing [M the (handle, id) match].
+        d.remove(0, Some(9));
+        d.update(&mut Vec::new(), &[]);
+        assert_eq!(d.ids(), vec![7, 7], "the other id's remove is a no-op");
+        d.remove(0, Some(7));
+        d.update(&mut Vec::new(), &[]);
+        assert!(d.ids().is_empty(), "SFXRemove(0, id) removes every matching item [M 0x1f88]");
+    }
+
+    /// A start whose id no loaded bank holds returns 1 and starts nothing — the game's lookup
+    /// miss [M the IOP lookup, docs/systems/sound.md §2]. Per front-end visit only ONE half of
+    /// the open pair resolves (SB_0 holds 0x1d7, SB_1 holds 0x470 [D]); the other half must not
+    /// leave an item behind.
+    #[test]
+    fn a_bank_miss_starts_nothing() {
+        let (b, sbf) = one_sound_bank();
+        let mut d = Driver::new();
+        d.load_bank(4, b, sbf);
+        let mut out = Vec::new();
+        assert_eq!(d.start(&mut out, 0x1d7, None, 0, None), 1, "the id is not in the bank");
+        assert!(out.is_empty(), "no voice command either");
+        assert!(d.ids().is_empty(), "no item, no leak");
     }
 }

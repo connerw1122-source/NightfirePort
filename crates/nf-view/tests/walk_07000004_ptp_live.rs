@@ -60,8 +60,11 @@ fn mission_complete_hands_over_through_the_ptp_block() {
     settle(&mut scene);
     run_to_handover(&mut scene);
     let sim = scene.sim.as_ref().unwrap();
-    // The resume target [M 0x1c8560 tail — the game's unconditional front-end load].
-    assert_eq!(sim.drones.level_exit, Some(nf_game::ptp::RESUME_LEVEL));
+    // The resume target is still the front end [M 0x1c8560 tail], but the host's end sequence owns
+    // it now: the interlude code goes to `mission_end` (outro → results → the front end) instead of
+    // a bare front-end load that skipped the outro (playtest 1015-2231).
+    assert_eq!(sim.drones.mission_end, Some(0x0730_0004));
+    assert_eq!(sim.drones.level_exit, None);
     assert_eq!(nf_game::ptp::RESUME_LEVEL, 0x0700_0048);
     assert!(sim.drones.level_exit_cold, "the return is a fresh ACTION boot [M 0x1c8560]");
     // The return: the dev Success stands in for FUN_00300058(0x100000, 1) [M 0x174bf0:322].
@@ -101,7 +104,10 @@ fn the_fail_choice_takes_the_abort_path() {
     assert_eq!(ret.result, 0, "FUN_00300058(0x100000, 0) [M 0x174bf0:316]");
     assert_eq!(ret.status_byte, 4);
     assert_eq!(ret.mission_state(), 3, "status 4 → Mission_SetStatus(3) [M 0x1c8560:16-20]");
-    assert_eq!(sim.drones.level_exit, Some(0x0700_0048), "the resume level does not depend on the result [M 0x1c8560 tail]");
+    // The interlude is the mission's end: the host's end sequence plays the outro, then the front
+    // end (the hub resume) — the bare 0x7000048 load skipped the outro (playtest 1015-2231).
+    assert_eq!(sim.drones.mission_end, Some(0x0730_0004), "the end sequence gets the interlude code");
+    assert_eq!(sim.drones.level_exit, None, "the end sequence owns the next load, whatever the result");
 }
 
 /// The stats carried: whatever the session's 12 slots hold rides the return into the next

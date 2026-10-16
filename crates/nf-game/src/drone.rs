@@ -685,6 +685,15 @@ pub struct Drone {
     /// alpha (`obj+0x106` / `+0xCFC`). Note `+0xCD8` is a shared scratch word: the Disabled state reads it as a resume
     /// state id (0x172440), UnderCoverIdle as a tries count (0x169e58) — drone-port-check.md #2.
     pub corpse: bool,
+    /// `Drone+0x2f`, the DOWN flag: lying on the ground. Set by DSTATE_Stunned's ENTER and
+    /// cleared by its EXIT [M 0x162eb0 case 1/2]; the same pair in DSTATE_StunGrenadeLoop
+    /// [M 0x1631c0 case 1/2] and DSTATE_StunDartLoop [M 0x163570 case 1/2, unported]. The readers:
+    /// `NDrone2_Collision` 0x140e90 swaps the shootable volume to the low sphere (radius 0.3,
+    /// centre (0.3 − obj+0xa0) above the origin [M :65-90]) — the dart of a re-tase hits a downed
+    /// guard through it — and `Player_WeaponFiring` 0x1a5460:90-106 swaps the reticle datum when
+    /// the aim target is down. (stun-ai-recover: the downed pose's bone boxes leave the aimed ray
+    /// uncovered, so the flag + the sphere stand-in is what makes the re-hit real.)
+    pub down: bool,
     pub death_pending: bool,
     pub death_channel: u8,
     /// The last hit on this drone came from the player (a bullet, a punch or an owned explosion) —
@@ -1054,6 +1063,7 @@ impl Drone {
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false,
             mission_wait_channel: 0,
             stun_until: 0, player_pos: [0.0; 3],
+            down: false,
             tase_accum: 0,
             tase_recover: 0,
             tase_fall_anim: 0,
@@ -3414,7 +3424,13 @@ impl Drone {
                 self.call_anim(d, a, STUN_GRENADE_LOOP, 0);
                 true
             }
-            (STUN_GRENADE_LOOP, msg::ENTER) => { self.vision_on = false; self.firing = false; self.timer_c = Some(self.stun_until); true }
+            (STUN_GRENADE_LOOP, msg::ENTER) => {
+                // The down flag +0x2f, its EXIT clearing it [M 0x1631c0 case 1/2].
+                self.vision_on = false; self.firing = false; self.timer_c = Some(self.stun_until);
+                self.down = true;
+                true
+            }
+            (STUN_GRENADE_LOOP, msg::EXIT) => { self.down = false; true }
             (STUN_GRENADE_LOOP, msg::TIMER_C) => {
                 // Case 0xC [M NDrone2_DSTATE_StunGrenadeLoop 0x1631c0 case 0xc]: near re-arms the
                 // timer at frame + 5·FRAME_RATE_INT = 300; clear falls through to
@@ -3491,12 +3507,19 @@ impl Drone {
                 true
             }
             (STUNNED, msg::ENTER) => {
-                // case 1: +0xCC4 = now + (+0xCE0); the twitch anim by the stored fall anim; alert 2
-                // [M 0x162eb0 case 1].
+                // case 1: +0xCC4 = now + (+0xCE0); the twitch anim by the stored fall anim; alert 2;
+                // the down flag +0x2f (its EXIT clears it) [M 0x162eb0 case 1/2].
                 self.timer_c = Some(frame + self.tase_recover);
+                self.down = true;
                 self.alert = self.alert.max(0.66);
                 let a = if self.tase_fall_anim == anim_state::TASER_FALL_B { anim_state::STUNNED_TWITCH_B } else { anim_state::STUNNED_TWITCH_A };
                 self.call_anim(d, a, 0, 0);
+                true
+            }
+            (STUNNED, msg::EXIT) => {
+                // case 2: the down flag clears on every exit (the get-up, the re-fall, the death)
+                // [M 0x162eb0 case 2].
+                self.down = false;
                 true
             }
             (STUNNED, msg::TASE) => {
@@ -5410,7 +5433,15 @@ pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelle
     /// ee_start_05.bin]) sets it — the 'Unguided' 0x2D (0x1a200) and the Torpedo 'Guided' 0x30
     /// (0x20200, homing only) do not [L], matching the PCSX2 pass (only 0x2C puts the view on the
     /// rocket).
-    pub guided_cam: bool }
+    pub guided_cam: bool,
+    /// `BU+0xF0`: the launch sound's handle (`Bullet_init` 0x12c5a0:269-290 stores the LAST
+    /// `Sound_Play3D` return there — for the ammo-0x0e rockets the 0x10e whoosh's; 0 = none).
+    /// `Bullet_update` 0x12e7b0:98-108 moves the voice with the rocket every tick and clears the
+    /// handle when the driver finished it; `Bullet_Delete` 0x12e660:13-16 stops it on the object's
+    /// delete (disasm 0x12e680 `lw a0, 0xf0(s2)` → `jal Sound_Stop` → `sw zero, 0xf0(s2)`).
+    /// rocket-sound-leak: on its own line (merge lesson 4).
+    pub snd: crate::sound::Handle,
+}
 
 /// fix-weapon-fire-modes: the guided missile's look-input steering (`Bullet_update` 0x12e7b0:177-244,
 /// run while the owner rides the camera in substate 10): the look analog floats (the game's
@@ -5701,6 +5732,10 @@ pub struct Drones {
     /// The pending level-exit request: when a `LOAD_LEVEL` (0xE8) trigger fires, the next level's hashcode
     /// (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad` 0x1d3800). The main loop reads this to reload [M].
     pub level_exit: Option<u32>,
+    /// The mission's own end (`Mission_Update` 0x182c60 case 4's `ResetMap_LevelToLoad(LevelToEndTo)`
+    /// to the front end or an outro/interlude code, not the next 0x0700 level): the host runs the
+    /// game's end sequence (the outro movie when the level has one, then the results page).
+    pub mission_end: Option<u32>,
     /// The gas/smoke puffs (`Gas_Init` 0x1aacc8 / `gases_smoke` 0x1ab2d0, crates/nf-game/src/gas.rs):
     /// muzzle smoke, broken-searchlight smoke, bullet trails. Fixed slot pool, updated per tick.
     pub gas: crate::gas::GasPool,
@@ -5962,7 +5997,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        let mut drones = Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), player_pos: [0.0; 3], bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), shake: 0.0, health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
+        let mut drones = Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), player_pos: [0.0; 3], bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), shake: 0.0, health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, mission_end: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
@@ -6237,7 +6272,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // grenade ammo pool (docs/fields/ammo-data.md rec 14: the frag/cluster grenades 0x2c-0x31's
         // rocket/torpedo kin) — also plays the launch whoosh 0x10e at the shooter, on top of the
         // fire sound. sound-coverage port (audit-sound-calls).
-        if w[0x90] == 0x0e { self.audio.play3d(0x10e, from, None); }
+        // rocket-sound-leak: the HANDLE is kept (the game stores it at BU+0xF0 [M 0x12c5a0:277-282]).
+        // 0x10e is a LOOPED id ([L ACTION.ELF SFXOutputData @0x2c94a0, entry 0x10e: looped 1, inner
+        // 5 / outer 30]) — the EE pool only frees a looped node on `Sound_Stop`, so the old
+        // fire-and-forget play left a looping whoosh at the muzzle per shot, stacking per rocket
+        // (playtest 1015-1738: "it doesn't stop, and it can stack up"). The game stops it in
+        // `Bullet_Delete` [M 0x12e660:13-16] / `Bullet_update` case 3 [M 0x12ed68]. The play sits
+        // outside the pellet loop; every disc 0x0e record (0x2c/0x2d/0x2e/0x2f/0x30/0x31/0x6d [L
+        // ee_start_05.bin weapon_data +0x90 sweep]) is single-pellet, so one whoosh per shot is the
+        // game's one `Sound_Play3D` per `Bullet_init` exactly.
+        let whoosh = if w[0x90] == 0x0e { self.audio.play3d(0x10e, from, None) } else { 0 };
         let f = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
         for _ in 0..u32::from_le_bytes(w[0x18..0x1c].try_into().unwrap()).clamp(1, 16) {
@@ -6268,6 +6312,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 target: None,
                 // fix-weapon-fire-modes [M Bullet_init 0x12c5a0:234-254]: `+0x6C & 4` rides the camera.
                 guided_cam: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x4 != 0,
+                // rocket-sound-leak: BU+0xF0 — the launch whoosh's handle (0 when the weapon plays none).
+                snd: whoosh,
             });
         }
         // `Bullet_init_casing` 0x12fde0 (Player_WeaponInitBullet 0x1a4bf0:306, right after the
@@ -6360,6 +6406,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let mut bullets = std::mem::take(&mut self.player_bullets);
         for (bi, b) in bullets.iter_mut().enumerate() {
             if b.dead { continue; }
+            // rocket-sound-leak [M Bullet_update 0x12e7b0:98-108, the head of EVERY tick before the
+            // state machine]: while BU+0xF0 is live the game moves the launch sound with the bullet
+            // (`Sound_SetPosition(handle, obj)`), and when the driver reports it finished it zeroes
+            // the handle (a looped voice never finishes on its own; the clear covers a stopped one).
+            if b.snd != 0 {
+                if self.audio.finished(b.snd) { b.snd = 0; }
+                else { self.audio.set_position(b.snd, b.pos); }
+            }
             if b.travelled > b.range { b.dead = true; continue; }
             let mut step = if b.first { (self.rng.frand(0.5) + 0.5) * b.speed } else { b.speed };
             b.first = false;
@@ -6449,7 +6503,28 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 if !self.npc_enabled || !dr.present || !dr.enabled || dr.corpse { continue; }
                 let c = [dr.pos[0], dr.pos[1], dr.pos[2]];
                 if seg_point_dist2(b.pos, end, c) > 1.05 * 1.05 * 4.0 { continue; }
-                if let Some((part, t)) = crate::damage::first_box_hit(b.pos, ray, &dr.hit_boxes(d)) {
+                let fb = crate::damage::first_box_hit(b.pos, ray, &dr.hit_boxes(d));
+                // `NDrone2_Collision` 0x140e90's down branch (+0x2f set [M :65-90]): the shootable
+                // volume is the low sphere — radius 0.3, centre (0.3 − obj+0xa0) above the origin
+                // along the up vector — while a standing guard uses 0.4/0.55. The port's standing
+                // stand-in is the posed bone boxes (established, the damage tests pin them); a
+                // DOWNED guard's boxes lie along the ground and leave the aimed-at-origin ray
+                // uncovered (the playtest's re-tase did nothing), so the game's own sphere is the
+                // contact here. The port's origins rest on the floor when down (the anim root
+                // settles), so the centre is pos + 0.3 up — the lift term drops out.
+                let fb = fb.or_else(|| {
+                    if !dr.down { return None; }
+                    let centre = [dr.pos[0], dr.pos[1] + 0.3, dr.pos[2]];
+                    let ab = [end[0] - b.pos[0], end[1] - b.pos[1], end[2] - b.pos[2]];
+                    let ab2 = ab[0] * ab[0] + ab[1] * ab[1] + ab[2] * ab[2];
+                    let ap = [centre[0] - b.pos[0], centre[1] - b.pos[1], centre[2] - b.pos[2]];
+                    let t = if ab2 > 1e-9 { (ap[0] * ab[0] + ap[1] * ab[1] + ap[2] * ab[2]) / ab2 } else { 0.0 };
+                    let tc = t.clamp(0.0, 1.0);
+                    let cl = [b.pos[0] + ab[0] * tc, b.pos[1] + ab[1] * tc, b.pos[2] + ab[2] * tc];
+                    let d2 = (cl[0] - centre[0]).powi(2) + (cl[1] - centre[1]).powi(2) + (cl[2] - centre[2]).powi(2);
+                    (d2 <= 0.3 * 0.3).then(|| (i16::MAX, tc))
+                });
+                if let Some((part, t)) = fb {
                     if best.is_none_or(|(_, _, bt)| t < bt) { best = Some((i, part, t)); }
                 }
             }
@@ -6610,6 +6685,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // fix-gas-rng4: the dead-bullet retain moved to the impact flush (`flush_world_impacts`,
         // the end of `tick`) — a deferred ricochet/pierce revives its bullet in place through
         // `player_bullets[bi]`, and the flush replays the world-hit walk before the retain runs.
+        // rocket-sound-leak: the launch whoosh's `Sound_Stop` rides the REAL delete pass at the
+        // flush's retain (a revived bullet keeps its handle, as in the game — `Bullet_Delete`
+        // never ran for a bullet that lived on).
         self.player_bullets = bullets;
     }
 
@@ -6742,6 +6820,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     b.first = false;
                 }
             }
+        }
+        // rocket-sound-leak [M Bullet_Delete 0x12e660:13-16 — every bullet death funnels through
+        // the object's delete pass]: `if (BU+0xF0 != 0) { Sound_Stop(BU+0xF0); BU+0xF0 = 0; }`
+        // (disasm 0x12e680: `lw a0, 0xf0(s2)`; 0x12e68c: `jal Sound_Stop`; 0x12e694: `sw zero,
+        // 0xf0(s2)`). The guided camera's restore rides the same function ([M :22-31 — BL+0x878 = 0,
+        // BL+0x944 = 0xf]). The retain below IS the delete (fix-gas-rng4 moved it here from
+        // `update_player_bullets`): the bullets still flagged dead at this point are the removed
+        // ones — a pierce/ricochet revived its bullet above (dead = false, handle kept, the game's
+        // Bullet_Delete never ran for it); the pre-fix leak never stopped the looped whoosh at all
+        // (playtest 1015-1738).
+        for b in self.player_bullets.iter().filter(|b| b.dead) {
+            if b.snd != 0 { self.audio.stop(b.snd); }
         }
         self.player_bullets.retain(|b| !b.dead);
     }
@@ -8322,10 +8412,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 if done_msg != 0 || next_ai != 0 { dr.send(d, rng, frame, done_msg); }
             }
             // `DroneAnim_EventFunc` datum 1 (the grenade-throw release): `DroneWeap_ThrowGrenade` creates a
-            // projectile (WORKLOG 0080). The throw sound 0x5EF enters the pool.
+            // projectile (WORKLOG 0080). rocket-sound-leak: the 0x5EF this used to play here is a LOOPED
+            // id ([L ACTION.ELF SFXOutputData entry 0x5ef: looped 1, weight 0]) entered fire-and-forget —
+            // one stuck looping voice per drone grenade, the same stacking leak as the guided rocket's
+            // whoosh. The game plays NO sound on the throw: `DroneWeap_ThrowGrenade` 0x179558 has no
+            // `Sound_Play3D` call at all, and `DroneWeap_FireWeapon` 0x178f68:275 explicitly SKIPS the
+            // 0x5ef id ("the silent" sound — the shot-pitch draw is skipped with it [M
+            // fix-guard-weapons3]); `Bullet_init`'s own 0x5ef arm belongs to the hat record (+2 == 0x45
+            // [M 0x12c5a0:286-290]) whose handle `Bullet_Delete` stops [M 0x12e660:13-16]. [M]
             if std::mem::take(&mut dr.pending_grenade) {
                 if let Some(g) = dr.throw_grenade(d, rng, index) {
-                    if let Some(t) = d.sfx { let h = t.get(0x5ef); self.audio.play3d(h.id, g.pos, None); }
                     self.grenades.push(g);
                 }
             }
@@ -9149,6 +9245,7 @@ mod tests {
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
             mission_wait_channel: 0,
             stun_until: 0, player_pos: [0.0; 3],
+            down: false,
             tase_accum: 0,
             tase_recover: 0,
             tase_fall_anim: 0,

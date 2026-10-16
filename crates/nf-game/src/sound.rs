@@ -226,6 +226,11 @@ impl Sounds {
     /// fix-laser-beam test hook: the ids of the ACTIVE (state 0 = playing) voices, pool order.
     pub fn active_ids(&self) -> Vec<u32> { self.nodes.iter().flatten().filter(|n| n.state == 0).map(|n| n.id).collect() }
 
+    /// rocket-sound-leak test hook: the ids of ALL live nodes regardless of state, pool order (one
+    /// entry per node — duplicates count the stacking). A leaked LOOPED start sits in state 1
+    /// forever, invisible to `active_ids`.
+    pub fn live_ids(&self) -> Vec<u32> { self.nodes.iter().flatten().map(|n| n.id).collect() }
+
     /// `Sound_SetPosition`.
     pub fn set_position(&mut self, h: Handle, pos: V3) { if let Some(Some(n)) = self.node(h) { n.pos = pos; } }
 
