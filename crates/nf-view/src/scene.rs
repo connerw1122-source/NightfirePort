@@ -494,6 +494,12 @@ pub struct Sim {
     /// host feeds it from `FrontEnd::view_aspect`). screen-adjust-model (field on its own line
     /// [WORKLOG lesson 4]).
     pub view_aspect: f32,
+    /// microcam-wheel-zoom: the mouse wheel has stepped the zoom while the aim (right) button is
+    /// held — the hold-ramp to the weapon's max (`Player_Zoom` 0x1a1a70's target ×1.025/tick)
+    /// yields until the aim falls, which resets the target to 1.0 [M `Player_Weapon` 0x1a24c8's
+    /// aim-bit arm] and this latch with it. Port-only input ([S] the playtest request); the
+    /// game's pad zoom has no wheel and keeps the plain ramp.
+    pub zoom_wheel: bool,
 }
 
 /// A status-pane message (`Text_AddMsg` 0x1b0c30's `TXT_MSG` node): the bound text, its remaining ticks,
@@ -2024,6 +2030,7 @@ impl Sim {
                         // weapon), so the reset is `zoom`/`zoom_target` = 1.0.
                         self.zoom = 1.0;
                         self.zoom_target = 1.0;
+                        self.zoom_wheel = false;
                     }
                     if let Some(m) = sw.new_mode {
                         if let Some(fm) = self.drones.inventory.fire_mode.get_mut(self.gun.weapon as usize) { *fm = m; }
@@ -2486,9 +2493,27 @@ impl Sim {
             // from the per-weapon table on the bit's rise [M Player_Weapon 0x1a24c8:156-187] and
             // `Player_Zoom` 0x1a1a70:18 reads the zoom button only while the bit is set. During
             // the raise the bit is clear, so the target stays 1.0 until the raise's last tick.
-            if input.zoom && self.aiming { self.zoom_target = max_zoom; } else { self.zoom_target = 1.0; }
+            if input.zoom && self.aiming {
+                // microcam-wheel-zoom: a wheel notch while the aim is held steps the zoom target
+                // ×2 (up) / ÷2 (down) within the weapon's own range [1.0, weapon_data+0x88 — the
+                // max `Player_Weapon` writes to BL+0x8D8]. The ×2 step is the port's own [S] (the
+                // playtest request; the game's own zoom is continuous — `Player_Zoom` 0x1a1a70
+                // ramps the held target ×1.025/tick). Once the wheel has stepped, the hold-ramp
+                // to max yields (`zoom_wheel`) so the notch stays until the aim falls.
+                if input.zoom_cycle != 0 {
+                    let step = (2.0f32).powi(input.zoom_cycle as i32);
+                    self.zoom_target = (self.zoom_target * step).clamp(1.0, max_zoom.max(1.0));
+                    self.zoom_wheel = true;
+                } else if !self.zoom_wheel {
+                    self.zoom_target = max_zoom;
+                }
+            } else {
+                self.zoom_target = 1.0;
+                self.zoom_wheel = false;
+            }
         } else {
             self.zoom_target = 1.0;
+            self.zoom_wheel = false;
         }
         // Interpolate zoom toward target [M 0x1a1a70 lines 22-39].
         // `Player_Zoom` (0x1a1a70): zoom in at 1.025×/tick, zoom out at 1.15×/tick [M lines 22-39].
@@ -5938,6 +5963,7 @@ impl Scene {
                 // screen-adjust-model: viewer+0x114's 4:3 default; the host feeds 16/9 when the AV
                 // options' widescreen is on [M Camera_CalcViewAngles 0x1baf70:28-32].
                 view_aspect: 4.0 / 3.0,
+                zoom_wheel: false,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));

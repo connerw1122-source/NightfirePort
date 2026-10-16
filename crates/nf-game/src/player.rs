@@ -122,6 +122,14 @@ pub struct Input {
     /// records without a twin link, or switches to the twin variant (weapon_data +0x05) when set.
     /// Keyboard: M (documented in the HUD help).
     pub mode_switch: bool,
+    /// One mouse-wheel notch while the aim (right) button is held: +1 zooms in a step, −1 out
+    /// (microcam-wheel-zoom). The zoom target steps ×2 / ÷2 within the held weapon's own range
+    /// [1.0, weapon_data+0x88] [M Player_Weapon 0x1a24c8:156-187's clamp]; when the aim is not
+    /// held the wheel keeps switching weapons (the window routes it to `weapon_cycle` instead).
+    /// Local view state — NOT part of the net input packet (the remote path never runs the
+    /// zoom pipeline; `Sim::step_net_remotes` ticks `Bond::tick_ctx` only), so the wire format
+    /// is unchanged and `unpack_input` always yields 0.
+    pub zoom_cycle: i8,
 }
 
 #[derive(Clone, Debug)]

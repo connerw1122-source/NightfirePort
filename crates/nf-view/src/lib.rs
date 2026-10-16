@@ -1563,6 +1563,9 @@ struct App {
     /// direct selection (number keys). Consumed by the next game tick.
     weapon_cycle: i8,
     gadget_cycle: i8,
+    /// microcam-wheel-zoom: pending wheel zoom step (±1) — the wheel while the aim (right) button
+    /// is held on a weapon that can zoom. Consumed by the next game tick, like `weapon_cycle`.
+    zoom_cycle: i8,
     weapon_switch_to: Option<u8>,
     /// The external dev panel (http://127.0.0.1:7007, `--dev`) and the level its catalog describes.
     panel: Option<panel::Handle>,
@@ -1689,6 +1692,14 @@ struct LevelLoad {
     /// drive-ptp: the DRIVING return (`Boot_LoadPTPData` 0x1c8560), taken from the OLD sim at
     /// spawn and applied to the NEW one at the swap (see `swap_in_scene`).
     ptp_return: Option<nf_game::ptp::DriveReturn>,
+}
+
+/// microcam-wheel-zoom: where a wheel notch goes. While the aim (right) button is held on a weapon
+/// that can zoom — the game's own scope flag +0x68 & 0x40 with a magnification above 1 [M
+/// weapon_data 0x2bf150; the sim's zoom block gates on the same two] — the wheel steps the zoom
+/// [S the 2026-10-15 playtest]. Otherwise it keeps switching weapons (the pre-feature behaviour).
+pub fn wheel_steps_zoom(zoom_held: bool, weapon_flags: u32, weapon_zoom: f32) -> bool {
+    zoom_held && weapon_flags & 0x40 != 0 && weapon_zoom > 1.0
 }
 
 impl App {
@@ -2494,7 +2505,19 @@ impl ApplicationHandler for App {
                     }
                 }
             } else if self.grabbed && !self.noclip {
-                if y > 0.0 { self.weapon_cycle = 1; }
+                // microcam-wheel-zoom: while the right button (aim) is held and the held weapon can
+                // zoom, the wheel steps the zoom instead of switching [S the 2026-10-15 playtest:
+                // "have the scroll wheel do the zoom while you're right-clicking to aim in. And if
+                // you're not right-clicking, of course, weapon switch"]. Zoomable = the game's own
+                // scope flag +0x68 & 0x40 with a magnification above 1 [M weapon_data; the sim's
+                // zoom block gates on the same two]. Otherwise the wheel keeps switching weapons.
+                let zoomable = self.scene.sim.as_ref().is_some_and(|s| {
+                    wheel_steps_zoom(self.zoom, s.weapons.flags(s.gun.weapon as usize), s.weapons.zoom(s.gun.weapon as usize))
+                });
+                if zoomable {
+                    if y > 0.0 { self.zoom_cycle = 1; }
+                    else if y < 0.0 { self.zoom_cycle = -1; }
+                } else if y > 0.0 { self.weapon_cycle = 1; }
                 else if y < 0.0 { self.weapon_cycle = -1; }
             }
         }
@@ -2930,6 +2953,7 @@ impl ApplicationHandler for App {
                                     aiming: self.aiming,
                                     weapon_cycle: std::mem::take(&mut self.weapon_cycle),
                                     gadget_cycle: std::mem::take(&mut self.gadget_cycle),
+                                    zoom_cycle: std::mem::take(&mut self.zoom_cycle),
                                     switch_to: self.weapon_switch_to.take(),
                                     fire: self.trigger,
                                     zoom: self.zoom,
@@ -3495,7 +3519,7 @@ pub fn run() -> Result<()> {
     // scenario systems are merged into `dev::scenario` / `dev::SCENARIOS` in `dev.rs`; `apply_scenario` is gone.)
     #[cfg(feature = "gamepad")]
     let pad_backend = gamepad::Backend::new(&iso);
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, zoom_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, menu_pointer: None,
         net: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,
