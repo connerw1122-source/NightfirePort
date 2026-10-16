@@ -14657,3 +14657,40 @@ cover/fire-rate AI tests the first gas-rng hold broke.
 - Left: campaign_flow front_end_chain replay memoize (~20 s), engine-side ACTION.ELF/WeaponData
   once-per-process + foreign-map load cache (helps every binary), weapon_matrix budget surgery.
 - Report: docs/reports/faster-live-tests.md (before/after table + suite total).
+## net-consolidate (2026-10-16, branch s/net-consolidate) — started
+- Task: one lockstep session layer from the 050-053 chain. 051 nf-net (std-only crate,
+  handshake/input-delay/redundancy+32-tick ack bitmap/stall/desync-hash/timeout) vs 053
+  nf_game::net (UdpSocket, 3-tick redundancy, no acks, 5 s timeout; the wired one) vs
+  052's MpSession trait in the lobby. Pick the stronger protocol, port unique features,
+  wire app + lobby, delete the other layer, keep/port all tests, add a 2-client loopback
+  e2e (loss+reorder, 600 ticks, identical state hashes) + desync-detector test, update
+  docs/systems/net-lockstep.md + net-match-host.md.
+- Plan: study both layers -> justify choice -> port -> wire -> e2e -> suite -> report.
+
+## net-consolidate (2026-10-16, branch s/net-consolidate) — close-out
+- ONE lockstep session layer: kept 051's crates/nf-net (acks + 32-tick bitmap + full unacked-window
+  retransmit, input delay 2..=4 in WELCOME, hash piggyback, keepalives, GO retransmit, deterministic
+  shim; 24 B input carries trigger/reload/use_key), deleted 053's nf_game::net (src/net.rs +
+  tests/net_session.rs). Protocol 1 -> 2: MatchSettings 208 B (per-player radar_on
+  [M MP_GetRadarObjects 0x189840] + registered_pickups +0x472), HELLO codename is a display name
+  (gate = proto+build), RefuseReason::Started (no mid-match join), PT_DATA tunnel (the MpSettings
+  match handover = 053's START; sent on arm because WELCOME precedes the confirm page),
+  set_host_match (the lobby arms after joins), nf_net::hash::Hasher (moved verbatim),
+  Session::agents() + set_display_name.
+- Wiring: nf_view::mpnet (NetCore + SessionProxy) — App.net (flag path --net-host/--net-join, same
+  seed-in-MpSettings handover) AND the lobby's FrontEnd::mp_session (052's MpSession trait, now a
+  real impl; the trait kept its shape, 9 lobby tests unchanged); menu_after adopts the lobby's
+  session as the lockstep gate when its match starts. Hash cadence moved into the session
+  (hash_every 15). Drop policy: Neutral (the game's dead-pad shape [M psiInput_PollDevices
+  0x10ca78]) replaces the terminal PeerLost.
+- Tests: loopback_e2e 2/2 (host+2 clients over real 127.0.0.1, 8% loss + 25% reorder, 600 ticks,
+  identical per-tick hashes; sister: corrupted input trips the desync detector); ported_session 3/3
+  (raw-wire build REFUSE, forged-hash desync, silent-peer timeout + NEUTRAL continuation,
+  clean-link 300-tick per-tick equality); 051's shim suite 8/8 + lib 11/11; nf-game
+  lib 234/234; nf-view lib 15/15; mp_net_lobby 9/9; net_match_live 3/3 (1000-tick sims equality,
+  forced desync, disconnect). suite.py not runnable (background jobs reaped between calls — twice),
+  touched-crate tests ran in the foreground instead; flagged in the report.
+- Docs: net-lockstep.md §9 + net-match-host.md §2 describe the single design. (The one
+  mid-session "stall" was a harness bug — a dropped start_match arm in the ported test — traced
+  and fixed; all 4 ported tests pass.)
+- Report: docs/reports/net-consolidate.md; no live checks needed (no game-referenced behaviour).

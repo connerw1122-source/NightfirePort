@@ -8,15 +8,16 @@
 //!
 //! | type | name | payload |
 //! |------|------|---------|
-//! | 1 | HELLO (client→host) | proto u16, build u32, codename 32B |
-//! | 2 | WELCOME (host→client) | proto u16, build u32, codename 32B, slot u8, input_delay u8, hash_every u8, rsv u8, seed u32, settings 176B |
-//! | 3 | REFUSE (host→client) | reason u8, rsv 3B |
+//! | 1 | HELLO (client→host) | proto u16, build u32, display codename 32B |
+//! | 2 | WELCOME (host→client) | proto u16, build u32, host codename 32B, slot u8, input_delay u8, hash_every u8, rsv u8, seed u32, settings 208B |
+//! | 3 | REFUSE (host→client) | reason u8 (1 version, 2 build, 3 started, 4 full), rsv 3B |
 //! | 4 | INPUT | base_tick u32, agent_mask u8, count u8, ack_tick u32, ack_bits u32, count*popcount(mask)*24B inputs |
 //! | 5 | HASH | tick u32, hash u64, prev_tick u32, prev_hash u64 |
 //! | 6 | KEEPALIVE | seq u32 |
 //! | 7 | LEAVE | slot u8, reason u8, rsv 2B |
 //! | 8 | SLOTMAP | human_slots bitmask u8, rsv 3B |
 //! | 9 | GO (host→client) | first_tick u32 |
+//! | 10 | DATA (app tunnel) | len u16 + bytes — opaque app-to-app blob (the lobby's choices); the session never inspects it |
 //!
 //! INPUT `agent_mask` bit i = slot i has an input in each tick run; inputs
 //! are stored per tick in ascending slot order. The ack fields acknowledge
@@ -37,6 +38,7 @@ pub const PT_KEEPALIVE: u8 = 6;
 pub const PT_LEAVE: u8 = 7;
 pub const PT_SLOTMAP: u8 = 8;
 pub const PT_GO: u8 = 9;
+pub const PT_DATA: u8 = 10;
 
 /// codename field width on the wire (nul-padded).
 pub const CODENAME_WIRE: usize = 32;
@@ -92,6 +94,12 @@ pub enum Packet {
     },
     Go {
         first_tick: u32,
+    },
+    /// Opaque app-to-app payload (the lobby's choices mirror). The session
+    /// relays it between connected peers and hands it up through
+    /// `Event::Data` untouched.
+    Data {
+        bytes: Vec<u8>,
     },
 }
 
@@ -188,6 +196,12 @@ pub fn encode(p: &Packet, out: &mut Vec<u8>) {
             out.push(PT_GO);
             out.push(0);
             out.extend_from_slice(&first_tick.to_le_bytes());
+        }
+        Packet::Data { bytes } => {
+            out.push(PT_DATA);
+            out.push(0);
+            out.extend_from_slice(&(bytes.len() as u16).to_le_bytes());
+            out.extend_from_slice(bytes);
         }
     }
 }
@@ -309,6 +323,16 @@ pub fn decode(buf: &[u8]) -> Option<Packet> {
                 first_tick: u32::from_le_bytes([body[0], body[1], body[2], body[3]]),
             })
         }
+        PT_DATA => {
+            if body.len() < 2 {
+                return None;
+            }
+            let n = u16::from_le_bytes([body[0], body[1]]) as usize;
+            if body.len() < 2 + n {
+                return None;
+            }
+            Some(Packet::Data { bytes: body[2..2 + n].to_vec() })
+        }
         _ => None,
     }
 }
@@ -383,5 +407,16 @@ mod tests {
         assert!(decode(&b).is_none());
         // Sister assertion: truncated payload must not decode.
         assert!(decode(&b[..3]).is_none());
+    }
+
+    #[test]
+    fn data_roundtrip_and_truncation() {
+        let p = Packet::Data { bytes: vec![1, 2, 3, 0xAA, 0xBB] };
+        let mut b = Vec::new();
+        encode(&p, &mut b);
+        assert_eq!(decode(&b).unwrap(), p);
+        // Sister: a short body must not decode (the len prefix outruns it).
+        assert!(decode(&b[..b.len() - 1]).is_none());
+        assert!(decode(&b[..4]).is_none());
     }
 }

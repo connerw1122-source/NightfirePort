@@ -1041,6 +1041,7 @@ dependencies = [
  "nf-audio",
  "nf-formats",
  "nf-game",
+ "nf-net",
  "pollster",
  "wgpu",
  "winit",
