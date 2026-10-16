@@ -15908,3 +15908,13 @@ INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 pa
 72 ignored (46 min)` — the 3 allowed disc_golden + the 3 pre-existing pylon render probes (the
 07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
 and other merged tasks' new tests. The 2 new live tests are green in the totals.
+
+## mp-bots-in-match (2026-10-16, branch s/mp-bots-in-match) — start
+- Task 704: a local MP Quick Game loads its arena with 3 bots (the menu repair, 2026-10-15) —
+  prove the bots PLAY. Headless from the menus' mp_match_settings through load_mp_carry, tick
+  3600 frames of the arena and check each bot: route movement, acquisition + fire at the human
+  and other bots, damage + death, respawn per the game's rules, scores going up. Use the MP core
+  (nf_game::mp, the bots module) and the game's bot AI [M BOT_update and friends]. Fix anything
+  inert. Sister: with bots disabled only the human is in the match.
+- Started: branch created from origin/master (3bb7be9a). Setup in progress (sandbox was reset —
+  full re-clone + downloads); suite starts as soon as the game files are in.
