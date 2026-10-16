@@ -15021,3 +15021,12 @@ remote-mine-detonate (2026-10-16)
   sister: firing while no mine is out does nothing.
 - Branch s/remote-mine-detonate from origin/master (27e5d48a). Report will be at
   docs/reports/remote-mine-detonate.md.
+- remote-mine-detonate: the cadence measured and tabled (press→shot 0, shot→spawn 17 = the +0x44
+  26-frame release at the script clock, spawn→spawn 90 = the 0xb/0xc chain — the mine's +0x6C
+  0x400 bit routes it through the +0xB4 fire-last whose stop refills the clip BEFORE the draw
+  [M 0x1a2e38 case 0xc :521-523]). THE FIX: the port's 0xb/0xc arm skipped that refill — the
+  clip sat 0 through the draw and the next press did nothing (the playtest's heavy delay);
+  Gun::reload_one + the arm now refill first. The detonator halves verified on master (the twin
+  switch, the +0x20000 walk, the hand return). OPEN: the 3-mine detonation yields 0 blasts
+  (the single-mine path passes) — tests/remote_mine_detonate.rs's third test reproduces it.
+  Live checks L-1/L-2/L-3 in docs/reports/remote-mine-detonate.md.
