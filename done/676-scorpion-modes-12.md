@@ -20,3 +20,8 @@ straight. Check the mode label value too (the HUD reads it). Sister: homing neve
 
 ---
 claimed-by: sandbox3 at 2026-10-16T08:04Z
+
+---
+## Report (done, 2026-10-16T09:27Z)
+
+Closed by the driver: the report is on `s/scorpion-modes-12` (docs/reports/scorpion-modes-12.md); the worker didn't run finish.sh.
