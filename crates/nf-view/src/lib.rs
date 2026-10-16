@@ -549,6 +549,16 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                 &casing_meshes(&elf))?;
             eprintln!("weapon assets: merged {} archive(s), {} skin(s), {} map(s), {} sequence(s), {} script(s) in {:.2}s",
                 st.archives, st.skins, st.maps, st.sequences, st.scripts, t.elapsed().as_secs_f32());
+            // weapon-model-coverage: the honest final tally — the session mesh merge's per-stage
+            // "still missing" count is before this merge ran. The residue is the set on NO archive
+            // of the disc (the shipped game cannot resolve it either, e.g. the two casing meshes
+            // 0x02000446/0x02000443 [D census]).
+            let still: Vec<u32> = weapon_assets::meshes_for_wanted(&level, wd, &weapon_wanted, &casing_meshes(&elf))
+                .into_iter().filter(|h| !level.by_hash.contains_key(h)).collect();
+            if !still.is_empty() {
+                eprintln!("weapon models: {} hash(es) unresolved after the merge, on no archive of the disc: {}",
+                    still.len(), still.iter().map(|h| format!("{h:08x}")).collect::<Vec<_>>().join(" "));
+            }
         }
     }
     // The weapon_data the DroneContext consumes: the hoisted build when the merge ran, else built
@@ -1076,7 +1086,7 @@ fn take_maps_holding(level: &mut Level, foreign: Level, hashes: &[u32]) -> usize
 /// The session object table (`models-weapons-items`, see the caller's comment): every weapon-model mesh
 /// (`weapon_data` +0x80 held guns, +0x4C muzzle flashes, +0x5C projectile bodies, and the view-model
 /// sleeves) the level archive misses is merged from the latest earlier story archive that holds it.
-fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
+pub fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     read: &impl Fn(&str) -> Result<Option<Vec<u8>>>, prefix: &str, level: &mut Level) -> Result<()> {
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let Ok(wd) = nf_formats::weapon::WeaponData::from_action_elf(&elf) else { return Ok(()) };

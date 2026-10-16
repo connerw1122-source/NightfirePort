@@ -67,7 +67,8 @@ pub struct MergeStats {
     pub scripts: usize,
 }
 
-/// skin hash → owning archive, kind-5 script hash → owning archive (the first archive on the disc
+/// skin hash → owning archive, kind-5 script hash → owning archive, and (weapon-model-coverage)
+/// map-object hashcode → first archive on the disc that holds it (the first archive on the disc
 /// that holds it — the same "first wins" the game's accumulating tables produce).
 #[derive(Clone, Debug, Default)]
 pub struct DiscIndex {
@@ -75,6 +76,9 @@ pub struct DiscIndex {
     pub cache_key: u64,
     pub skins: HashMap<u32, String>,
     pub scripts: HashMap<u32, String>,
+    /// weapon-model-coverage: every map-object hashcode (the weapon records' +0x48/+0x4C/+0x5C/
+    /// +0x7C/+0x80 meshes live here) → the first archive whose ENTITY_PARAMS names it.
+    pub objects: HashMap<u32, String>,
     pub archives: usize,
 }
 
@@ -112,8 +116,10 @@ impl DiscIndex {
     /// One pass over every level `.bin` on the disc. Kind-3 entries: the first u32 of the raw entry
     /// is the skin's hashcode (`Level::parse`'s skin rule; `parse_skin` itself needs the archive's
     /// skeleton bone counts, which the index pass does not owe). Kind-5 entries: `Script::parse`'s
-    /// hashcode. Only the `05`/`06` prefixes are tabulated — everything else (map objects, NIS,
-    /// menus) is not a weapon asset.
+    /// hashcode. Kind-0/1/2/11 entries (maps): every ENTITY_PARAMS (0x04) block's first u32 — the
+    /// object hashcode `Level::parse` keys `by_hash` by [D census: 1,153 distinct on our disc].
+    /// Only the `05`/`06` prefixes are tabulated for skins/scripts — everything else (map objects,
+    /// NIS, menus) is not a weapon asset.
     fn scan<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>, cache_key: u64) -> DiscIndex {
         let mut idx = DiscIndex { cache_key, ..Default::default() };
         let Ok((entries, bin)) = disc::files_bin_entries(iso) else { return idx };
@@ -135,6 +141,18 @@ impl DiscIndex {
                     5 => {
                         if let Ok(sc) = Script::parse(l.data(&fd, pe)) {
                             if (sc.hashcode & 0xff00_0000) == 0x0600_0000 { idx.scripts.entry(sc.hashcode).or_insert_with(|| name.clone()); }
+                        }
+                    }
+                    0 | 1 | 2 | 11 => {
+                        // The map-object hashcodes (weapon-model-coverage). `MapFile::parse` is the
+                        // same walk `Level::parse` runs; a non-map entry here (menu packs) just
+                        // yields no 0x04 blocks — tolerated, the index only owes object names.
+                        let Ok(mf) = nf_formats::map::MapFile::parse(l.data(&fd, pe)) else { continue };
+                        for blk in mf.blocks.iter().filter(|b| b.id == nf_formats::map::id::ENTITY_PARAMS) {
+                            let payload = blk.payload(l.data(&fd, pe));
+                            if payload.len() < 4 { continue; }
+                            let h = u32::from_le_bytes(payload[0..4].try_into().unwrap());
+                            if h != u32::MAX { idx.objects.entry(h).or_insert_with(|| name.clone()); }
                         }
                     }
                     _ => {}
@@ -161,26 +179,32 @@ fn cache_path<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>, iso_path: &st
 }
 
 /// The cache body: the version/key header, then `S <hash> <archive>` (skin) / `C <hash>
-/// <archive>` (script) rows — text, so it stays greppable and holds no game bytes.
+/// <archive>` (script) / `O <hash> <archive>` (map object, weapon-model-coverage) rows — text, so
+/// it stays greppable and holds no game bytes. V2 adds the object rows; a V1 file is stale.
 fn write_cache(idx: &DiscIndex) -> Result<String> {
-    let mut s = format!("#NF-WEAPON-INDEX-V1 {:016x}\n", idx.cache_key);
+    let mut s = format!("#NF-WEAPON-INDEX-V2 {:016x}\n", idx.cache_key);
     for (h, a) in &idx.skins { s.push_str(&format!("S {h:08x} {a}\n")); }
     for (h, a) in &idx.scripts { s.push_str(&format!("C {h:08x} {a}\n")); }
+    for (h, a) in &idx.objects { s.push_str(&format!("O {h:08x} {a}\n")); }
     Ok(s)
 }
 
 fn parse_cache(s: &str) -> Option<DiscIndex> {
     let mut idx = DiscIndex::default();
+    let mut version = "";
     for line in s.lines() {
         let mut it = line.split_whitespace();
         match it.next()? {
-            "#NF-WEAPON-INDEX-V1" => idx.cache_key = u64::from_str_radix(it.next()?, 16).ok()?,
+            "#NF-WEAPON-INDEX-V2" => { idx.cache_key = u64::from_str_radix(it.next()?, 16).ok()?; version = "V2"; }
+            "#NF-WEAPON-INDEX-V1" => { idx.cache_key = u64::from_str_radix(it.next()?, 16).ok()?; version = "V1"; }
             "S" => { let h = u32::from_str_radix(it.next()?, 16).ok()?; idx.skins.insert(h, it.next()?.to_string()); }
             "C" => { let h = u32::from_str_radix(it.next()?, 16).ok()?; idx.scripts.insert(h, it.next()?.to_string()); }
+            "O" if version == "V2" => { let h = u32::from_str_radix(it.next()?, 16).ok()?; idx.objects.insert(h, it.next()?.to_string()); }
             _ => {}
         }
     }
-    (!idx.skins.is_empty() || !idx.scripts.is_empty()).then_some(idx)
+    // A V1 cache has no object rows — the mesh top-up would find nothing; caller rescans.
+    (version == "V2" && (!idx.skins.is_empty() || !idx.scripts.is_empty())).then_some(idx)
 }
 
 /// The fp skins a load still needs: every wanted weapon's `+0xDC` the level archive lacks (all
@@ -217,6 +241,31 @@ pub fn wanted_scripts(wd: &nf_formats::weapon::WeaponData, wanted: &Wanted) -> V
         }
     }
     out
+}
+
+/// The weapon-model mesh hashes the wanted weapons still miss (weapon-model-coverage): the
+/// records' +0x80/+0x4C/+0x48/+0x5C/+0x7C for exactly the wanted subset, plus — for `All` (the
+/// dev panel, which can give anything) — the whole-table list `wanted_weapon_models` covers (the
+/// sleeves and the casing meshes). A surgical `--give` stays surgical: only its own weapons'
+/// meshes can open another archive, so a native-weapon give adds nothing (native_carry_is_unchanged).
+pub fn meshes_for_wanted(level: &Level, wd: &nf_formats::weapon::WeaponData, wanted: &Wanted,
+    casing_meshes: &[u32]) -> Vec<u32> {
+    match wanted {
+        Wanted::None => vec![],
+        Wanted::All => crate::wanted_weapon_models(level, wd, casing_meshes)
+            .into_iter().filter(|h| !level.by_hash.contains_key(h)).collect(),
+        Wanted::Ids(ids) => {
+            let mut out: Vec<u32> = Vec::new();
+            for &w in ids {
+                let Some(r) = wd.records.get(w as usize) else { continue };
+                for off in [0x80usize, 0x4c, 0x48, 0x5c, 0x7c] {
+                    let h = u32::from_le_bytes(r[off..off + 4].try_into().unwrap());
+                    if h != 0 && h != u32::MAX && !level.by_hash.contains_key(&h) && !out.contains(&h) { out.push(h); }
+                }
+            }
+            out
+        }
+    }
 }
 
 /// Merges the wanted weapons' assets from their owning archives into the level's tables. First
@@ -315,6 +364,28 @@ pub fn merge_weapon_assets<R: std::io::Read + std::io::Seek>(
         stats.maps += crate::take_maps_holding(level, foreign, &hashes);
         stats.archives += 1;
         eprintln!("weapon assets: merged {archive_name} ({} skins, {} maps so far)", new_skins.len(), stats.maps);
+    }
+    // The mesh top-up (weapon-model-coverage): a weapon-model hash the level archive misses and no
+    // opened archive carried can still sit on an archive no wanted skin points at (weapon 0x63's
+    // third-person mesh 0x02000312 lives on 07000004/16 [D census]; the session mesh merge only
+    // sweeps EARLIER story archives, so 07000001-03 could never reach it). Pull it from the archive
+    // the index names for it — the same session-accumulation mechanism, one map take per archive.
+    let mut needed = meshes_for_wanted(level, wd, wanted, casing_meshes);
+    needed.retain(|h| !level.by_hash.contains_key(h));
+    let mut topup_archives: Vec<String> = Vec::new();
+    for h in &needed {
+        if let Some(a) = index.objects.get(h) { if !topup_archives.contains(a) { topup_archives.push(a.clone()); } }
+    }
+    for archive_name in &topup_archives {
+        let fd = match read(archive_name)? { Some(d) => d, None => continue };
+        let Ok(foreign) = Level::parse(&fd) else { continue };
+        let moved = crate::take_maps_holding(level, foreign, &needed);
+        if moved > 0 {
+            needed.retain(|h| !level.by_hash.contains_key(h));
+            stats.maps += moved;
+            stats.archives += 1;
+            eprintln!("weapon assets: {} weapon-model mesh(es) topped up from {archive_name}", moved);
+        }
     }
     // The top-up pass: a wanted view script no opened archive carried comes from the archive the
     // index names for it (a weapon's scripts can sit in a shared anim pack rather than beside its
