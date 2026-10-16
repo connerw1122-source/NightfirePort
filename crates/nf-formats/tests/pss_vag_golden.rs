@@ -300,7 +300,9 @@ fn pss_movies_tree_and_golden_when_data_exists() {
         assert_eq!(d.audio.values().map(|v| v.len()).sum::<usize>(), expect(7), "{p}: audio bytes");
         assert!(d.ended && d.trailing == 0, "{p}: end code reached, no trailing bytes");
         // the demuxed elementary stream hashes, printed for the golden (pin them from a data-image run)
-        eprintln!("{p}: ES sha1 video {} audio {}", hex(&sha1(&d.video)), hex(&sha1(d.audio.values().next().unwrap())));
+        // Some movies carry no audio stream at all (07350048, the menu backdrop [D]) — no hash to print.
+        eprintln!("{p}: ES sha1 video {} audio {}", hex(&sha1(&d.video)),
+            d.audio.values().next().map_or_else(|| "none".to_string(), |a| hex(&sha1(a))));
         // Sister: a corrupted pack start code must fail the demux.
         let mut bad = data.clone();
         let first_pack = data.windows(4).position(|w| w == [0, 0, 1, 0xba]).unwrap();
