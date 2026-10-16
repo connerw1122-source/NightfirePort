@@ -91,5 +91,24 @@ other input path for that page (lib.rs never calls `cn_type_char`).
 
 - `menu_sp_e2e`: **9 passed / 0 failed** on the branch-point tree and again on the merged tree
   (origin/master ad761677) after the merge.
-- The full fast suite (`tools/test/suite.py`) on the final merged tree — see the WORKLOG entry
-  for the total line.
+- The full fast suite could not run to completion in this sandbox: background jobs are reaped
+  between tool calls here (nohup/setsid both die — the same environmental blocker
+  difficulty-effects2 hit), so the suite ran as foreground chunks, and a disk-full
+  (`No space left on device`) mid-build cost a cleanup (target/debug + target/release/examples
+  removed) before the build finished. 393 test binaries total; the suite builds them in 0 s
+  (cached) but the serial run phase is ~5 binaries/min here.
+  - Chunk A (the whole priority set, complete, with the runner's total): the four lib tests
+    (nf_view, nf_game, nf_formats, nf_audio) + menus_e2e, menus_flow, menu_sfx_flow,
+    menu_music_flow, codename_entry, memcard_save_flow, mission_unlock_flow, unlock_popups,
+    movie_playback_flow, front_end_chain_live, campaign_flow_live, mp_menu_flow,
+    mission_stats_flow, dossier_pages, screen_adjust, dev_menu_flow, devwin_flow,
+    objective_hints_flow, mp_menu_lists_live, menu_backdrop_still, mp_net_lobby, menu_sp_e2e,
+    unlock_popups_live, sfx_rejected_start_live, progress_live, diff_calls, fields_live —
+    **549 passed, 0 failed, 0 ignored (2 min)**.
+  - Chunk B: the next 160 alphabetical binaries, cut off by the 10-minute tool-call cap after
+    **42 more binaries — all green, 0 FAILED / TIMEOUT / CRASH**.
+  - **Not run (~145 nf-view binaries, mostly the walk_*/fix_*_live level walks):** the next
+    sandbox should continue from the branch and finish the sweep
+    (`python3 tools/test/suite.py --only <the rest of the alphabetical list>`; the completed
+    sets are the 47 from the first foreground run + chunk A's 29 + chunk B's 42, all recorded
+    in ../suite.log on the same tree).
