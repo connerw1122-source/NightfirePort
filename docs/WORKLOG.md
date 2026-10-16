@@ -16259,3 +16259,10 @@ ranked, top-10 queue-ready tasks, live checks) + crates/nf-formats/tests/script_
 against three golden totals (5,263 streams, 23,329 placements, 2,230 maps); zero truncations /
 unknown ops. Fast-runner suite started 18:16 UTC on the pre-census tree; final-tree delta is
 docs + the new test only.
+
+---
+
+script-census DONE (19:41 UTC 10-16). Suite on merged base: 1894 passed, 6 failed, 72 ignored
+(46 min; the 3 allowed disc_golden + 3 pre-existing pylon render probes). Final tree delta =
+docs + the pinning test only; script_census 6/6 green on it. Report:
+docs/reports/script-census.md. finish.sh + ntfy follow.
