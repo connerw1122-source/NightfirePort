@@ -17623,3 +17623,48 @@ gap: the deep ladder's final exit into the bathhouse is closed by the bath hatch
 path is the SS/USE subsystem's. Regression set green: nf-game lib 242, fix_ladder_water_live 4,
 fix_ladder2_live 4, fix_ladder_live 3, fix_swim_live 4, fix_swim_vent_live 2, fix_swim_entry_live
 2, walkreal_0700000c_live 1.
+- 2026-10-17 s/mayhew-exit-walk (task 750c): Mayhew is bugged walking to the exit
+  before the mid cut-scene on the estate levels (07000005). Plan: reproduce on
+  master through the real path (nf_view::load + step_bond), record Mayhew's route
+  nodes and states per tick, port the game's scripted route/goal and the
+  cut-scene trigger with [M] citations. Branch created from origin/master
+  31dd6161.
+- mayhew-exit-walk findings (02:15-03:40 UTC): the "mid cut-scene" on 07000005 is SP #38
+  (script 0x060008C8, 143-tick camera scene, Bond skin 0x05000007 anim 0x06000A24) — the
+  hand-over onto the truck. Its trigger is the SCRIPT TouchOnce ch 0x5C created by the truck
+  script 0x06000A22 stream 8 at t 1882, gone t 2312 [D script decode + live sim trace], a static
+  plate at (98.49, 27.05, 106.36) — the gatehouse walkway edge, ~1.2 above the walked lane.
+  The port's trigger machinery fires it when Bond stands at the edge within the window (probe:
+  ch 0x5C at t ~2173 → SP #38 re-places Bond on the truck bed → ch 0x71 → the ride climbs).
+  The REAL-INPUT walk from the spawn stalls at x≈101.2, y 24.94 (manual walker + the ignored
+  walkreal_07000005 note) — ~3 units short of the plate; the window closes and the whole
+  truck-exit chain (0x5C → SP #38 → bed 0x71 → park 0x70 → guard 0x72 → mux #316 → SP #320 →
+  ch 0x1D → #118 → 07000006) never runs. No Mayhew drone exists on 07000005 (16 drones are all
+  guards 0x0500002e/2f/30 [D]; the user's "mayhew" = the level name Mayhew A). The untouched
+  evidence: floor probes show the walkway at 27.05 only in Room_Road_A1's edge (nearest tri
+  vertex 2.59 away) — the plate hangs over the arch void; the game's contact is the sphere
+  overlap [M Trigger_Hit 0x1b1fc8 = pure chain classification; the port's capsule (b = feet+1.86
+  + r 0.55) crosses the plate plane at the edge].
+- mayhew-exit-walk (03:45 UTC): the chain pinned green —
+  crates/nf-view/tests/mayhew_handover_live.rs (2/2 on master + this branch): the real-input
+  walk reaches the gatehouse edge (99.69, 25.94, 106.98) at t ~373, ch 0x5C fires at t 1884
+  (inside the script's own window t 1882..2312 [D 0x06000A22 stream 8]), SP #38 hands Bond
+  onto the bed (ch 0x71) and the ride carries him west; the sister (no walk → no 0x5C, no
+  exit) holds. Remaining (next session): the manual turn+forward walk from the spawn stalls
+  at (101.2, 24.94) oscillating (probe trace) while the walker's nav walk crosses — pin the
+  exact collision feature there, then decide whether the sim's step/climb needs the game's
+  Player physics [M]; walkreal_07000005's two #[ignore]d tests park on the same spot.
+- mayhew-exit-walk (03:12 UTC): the pin extended to the FULL chain — the hand-over test now
+  crouches after the hand-over [D fix-truck's ride stance] and asserts level_exit 0x07000006
+  through the walked path: walk → the gatehouse edge → ch 0x5C at t 1884 → SP #38 → the bed →
+  the crouched ride → ch 0x70 → mux #316 → SP #320 → ch 0x1D → #118 → 07000006. GREEN, plus
+  the sisters walk_07000005_live 2/2 and fix_truck_live 2/2. The port's truck-exit chain is
+  functional on master when Bond reaches the gatehouse edge inside the t 1882..2312 window;
+  the open item stays the manual beeline stall at (101.2, 24.94) — the walkway lip / arch
+  face there, and what the player actually steers in play (the live checks in the report).
+- mayhew-exit-walk (03:20 UTC): walkreal_07000005_live::walk_to_the_gatehouse_and_ride_the_truck
+  UN-PARKED and GREEN (1 passed, the cable sister still ignored) — the approach target moved to
+  the walkway's west edge (98.6, 26.0, 106.5) instead of the arch-face line (100, 26, 108); the
+  walked ride parks at (29.86, 37.93, 52.4) at t 5687 with no falls, ch 0x70/0x1D and the exit
+  through the real walked path. The whole truck-exit chain is now double-pinned (the walkreal
+  harness + mayhew_handover_live).
