@@ -7461,7 +7461,7 @@ impl Drone {
 
     /// `NDrone2_GetHeadPos` (0x149aa8) at fixed +0.6 — the game's `DroneAnim_CurrentMoveState`
     /// (0x13e378) move-state switch (crouch/aim heights) is not modelled [S].
-    fn head(&self) -> V3 { [self.pos[0], self.pos[1] + 0.6, self.pos[2]] }
+    pub fn head(&self) -> V3 { [self.pos[0], self.pos[1] + 0.6, self.pos[2]] }
 }
 
 fn seg_point_dist2(a: V3, b: V3, p: V3) -> f32 {

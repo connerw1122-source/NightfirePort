@@ -120,3 +120,49 @@ inert configuration)**.
 So the kind port is visible play on 05 / 08 / 0a / 11 / 15 / 1b — not on 06 (whose only placement
 is the inert one). The 07000005 #331–333 trio sits at the chasm the plunge triggers already cover
 [docs/levels/07000005.md] — worth checking whether the game doubles the kill (plunge + hurt) there.
+
+## The port as merged (level-08-interactables-2, re-landing 708a onto master's one system)
+
+`crates/nf-game/src/hurt.rs` is the ONE hurt module (the 708a `Drones::hurts` variant is retired):
+master's `Sim.hurts` (`nf-view/src/scene.rs` creates them with the level and ticks them in the
+scene pass next to the drown tick). `Hurt_Update` 0x17e5d0's contact law lives in
+`Hurt::update_touch(gate_on, a, b, r, drone)` — the gate maintenance (the live 0x20 bit), the
+state-0 who law (gated → the channel value is the mask; ungated who 0 → starts at once; ungated
+who ≠ 0 → the victim's class bit must survive the AND: the player's class 2 → 0x10, a drone's
+class 3 → 0x8 [M 0x17e5d0:57-95]), the capsule-vs-glist-tris contact, the one-shot retire.
+`Hurt::update(gate_on, bond_pos)` is the player wrapper (the standing capsule, r 0.55).
+
+Two victim passes run per tick:
+
+- **The player** — `Player_DealWithObjHit` 0x194458's class-0x27 arm through
+  `health.pain_generic` (difficulty factor, no armour for types 1..7 [M 0x1902c8:84-104]) + the
+  pain grunt. This is the arm that keeps 07000016's #309 "HurtPoly-ShuttleLaunch" (gate 0xf3,
+  1000 damage [D]) from killing Bond on the silo floor during the chaser fight — the channel is
+  low until the launch, so the volume loads and stays disabled [M 0x17e870 tail + 0x17e5d0:26-37].
+- **The drones** — `NDrone2_DealWithObjHit` 0x13fff0 gives NPCs the same treatment; the who masks
+  naming the drone bit 8 (07000008's #42–44, who 0x18 [D]) are delivered for it. The capsule is
+  the trigger walk's drone body ([pos−1.0 … head], r 0.4 — the Toucher law drone.rs builds for
+  `Trigger_Calc`); the delivery is the explosion path's flat subtract (`health -= damage ·
+  damage_taken`, `last_damage` stamped — the drones' own update's health ≤ 0 selector picks the
+  death). A one-shot volume fired by any victim retires for all of them (the shared obj state
+  [M 0x17e5d0:41-47]).
+
+`Hurt.hits` is the port's mechanism witness (the applications count; the live tests' "the volumes
+stay armed" pin reads it) — not game state.
+
+Tests: the row law + the who/gate laws in `hurt.rs`'s units (incl. the drone bit 8 / who 0x18
+takes both victims / who 1 inert for every class); the live pairs `hurt_07000008_live` (the
+platform stand + the real walk off the boarding platform: the fall, the plunge, the death-NIS
+hold, hits == 0), `hurt_02_live`, `interact_07000006_live` (#373 inert), `fix_finale_live` +
+`spurious_complete_16_live` (#309 stays dead during the fight).
+
+### Live checks for the main agent (the 705d coordination)
+
+3. PCSX2, fresh boot of 07000016: watch `switch_channels[243]` (0xf3) and the Mission state
+   (0x182c60) through the chaser fight. Expected: the channel rises with (or after) Mission
+   state 6 — the chasers' defeat — never before; #309 (gate 0xf3, 1000 damage) must stay
+   disabled for the whole fight. Settles the ShuttleLaunch question 705d and this task both need.
+4. PCSX2, fresh boot of 07000008: let a guard (or drive the chopper's passengers) onto the y
+   −24.1 valley floor under #42–44 — expect the drone's health to drop by 1000·damage_taken and
+   the death selector to fire (the drone-side delivery the port infers from NDrone2_DealWithObjHit
+   0x13fff0; not yet live-pinned).
