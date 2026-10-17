@@ -17885,3 +17885,9 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- drone-skins-g021: docs/GAPS.md G-021 — the 33 drone placements whose own archive carries no
+  skin: per level, find which placements render skinless or fall back (nf-extract / a test
+  listing them), trace the game's lookup (LoaderLoad 0x1d4a00 type 4, the skin hashtable get
+  with its per-level substitutions [M]), port the missing sources. Tests: per-level skinless
+  counts drop to the game's (0 or cited exceptions), with the skin hash each placement resolves
+  to; ISO-gated, numbers/ids only; no drawing. Branch from origin/master 3456a72f.
