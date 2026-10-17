@@ -17391,3 +17391,34 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+
+## scorpion-rocket-speed (2026-10-17, branch s/scorpion-rocket-speed) — 00:40 UTC
+
+Started. Playtest 1016-1355: AT-600 Scorpion rockets are way too slow (MP). Sentinel's speed was
+measured live (×4.04 on 0x2c/0x2d); checking the Scorpion records 0x2E/0x2F the same way: init
+speed, the 0x200 quarter, per-tick flight step [M Bullet_init 0x12c5a0, Bullet_update 0x12e7b0],
+any homing. Goal: set them to the game's numbers with evidence; test pins the Scorpion per-tick
+step. Plan: read the bullet records + Bullet_init/Bullet_update decomp, find where the port sets
+Scorpion rocket speed, fix with cited addresses, write the 07000005-style test, run nf-game.
+
+## scorpion-rocket-speed (2026-10-17, branch s/scorpion-rocket-speed) — 02:05 UTC
+
+Done. Playtest 1016-1355 (MP): "Scorpion rockets are way too slow" — the port flew the AT-600's
+twins at the quartered init speed only (0x2e 0.0625 / 0x2f 0.0833 u/tick). Evidence: the live
+records [L ee_start_05/ee_start_07000001/ee_start_0700000a/ee_snapshot @0x2bf150+w·0x10C] give
+0x2e +0x20 0.25 / +0x6C 0x32200 (the 0x200 quarter + the 0x20000 homing, no 0x4) and 0x2f
+0.3333 / 0x1a200 — byte-identical flags to the MEASURED 0x2d (fix-sentinel-camera-play's ×4.04
+flight scale, 0.33666 u/frame [L PCSX2]); the mover reads neither 0x20000 nor 0x4 [M Bullet_update
+0x12e7b0:157,380-474; Bullet_homing 0x12f358 steers the direction only, 0x12f358:126-166; the
+guided cam is init-time, 0x12c5a0:234-254]. So the twins join the scale: 0x2e 0.2525, 0x2f
+0.336667 u/tick. Fix: one line in fire_player (drone.rs), cited. Failing first: the new
+scorpion_rocket_speed_live read 0.06248 on the pre-fix src. scorpion_modes_live was calibrated
+on the slow flight (24° @ 18 u passes the guard by ~0.9 u at the game's own speed — the sweep
+beats the ±0.01/component steer near arrival; the pursuit rides a ~17° equilibrium); recalibrated
+to 12 u at 17°, the curve detector now the heading rotation ≥ 0.15 rad (spread ≤ 0.0028, no
+gravity bit) — lock/hit asserts unchanged, no game pin weakened. Suite: 5 interleaved foreground
+chunks on the final tree + a 250 s re-run of the limit-timed-out heavies; the 3 disc_golden
+failures are the slim ISO's allowed set, the wgpu-adapter failures are this sandbox's missing
+GPU (render tests are the main agent's surface). Left: the ×4.04's internal source (the same
+unpinned gap the Sentinel task left — live checks 1-2 in the report settle it); the drone-fired
+path's raw +0x20 (lands within ~1% by coincidence for these records, out of scope).

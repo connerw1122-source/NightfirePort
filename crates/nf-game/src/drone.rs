@@ -7833,11 +7833,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // 0x200 quarter [M Bullet_init 0x12c5a0:207-211]) × 4.04). Bullet_update rewrites
             // BU+0xF8 per tick (0x12e7b0 at 0x12ecf8, the Vec_NormaliseLen step) and the object's
             // control integrates the move — ×4.04 is the measured flight scale on the measured
-            // twins only (0x2c/0x2d); the other 0x200 records keep fire-modes3's pins (the Torpedo
+            // twins (0x2c/0x2d; the Scorpion's 0x2e/0x2f join them below — scorpion-rocket-speed);
+            // the other 0x200 records keep fire-modes3's pins (the Torpedo
             // 0x30's 0.025, the Korsakov 0x43's 0.375). The port's 0.0625 was 5.4× too slow (the
             // playtest: "The rockets are way too slow"). Live check: gdbwatch BU+0xF8 through a
             // 0x2c ride to confirm the guided scale (predicted 0.2525).
-            if weapon == 0x2c || weapon == 0x2d { speed *= 4.04; }
+            // scorpion-rocket-speed [L ee_start_05.bin / ee_snapshot.bin weapon_data @0x2bf150 +
+            // w·0x10C, identical in all four snapshots]: the AT-600 Scorpion's twins ride the SAME
+            // flight mover with the same flight-relevant record shape — 0x2f's +0x6C is byte-identical
+            // to the measured 0x2d's (0x1a200), and 0x2e shares the 0x2c's init (0.25 × the 0x200
+            // quarter), differing only by 0x20000 (homing) instead of 0x4 (guided cam). Neither bit
+            // is read by the per-tick step: the state-1 mover moves dir·speed [M Bullet_update
+            // 0x12e7b0:157,380-474], Bullet_homing steers the DIRECTION only and never writes
+            // BU+0xF8 [M 0x12f358:126-166], and the guided cam is init-time only [M 0x12c5a0:234-254].
+            // So the measured ×4.04 scale is theirs too: predicted flight 0x2e = 0.2525,
+            // 0x2f = 0.336667 u/tick (= the measured 0x2d's — its flags are identical). Playtest
+            // 1016-1355 (MP): "Scorpion rockets are way too slow" — the port flew them init-only
+            // (0.0625 / 0.0833). Live check: gdbwatch BU+0xF8 through a 0x2e/0x2f flight.
+            if matches!(weapon, 0x2c | 0x2d | 0x2e | 0x2f) { speed *= 4.04; }
             self.player_bullets.push(PlayerBullet {
                 pos: from, dir, speed, travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
                 homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
