@@ -118,6 +118,9 @@ fn same_time_keyframes_replace_unless_flag_0x20() {
     // rebuild by hand through the parser path instead: use MenuDef::parse on a crafted stream.
     let mut data: Vec<u8> = Vec::new();
     let mut put = |v: i32, d: &mut Vec<u8>| d.extend_from_slice(&v.to_le_bytes());
+    // The leading format word the walk consumes before the tag switch [M 0x21b908 disasm
+    // 0x11598c-0x11599c — 0xfffffffa on the disc's 08000002]; `MenuDef::parse` skips it.
+    put(-0x06, &mut data);
     put(-0x10, &mut data); put(0x4000_0002, &mut data); put(0x0800_0002, &mut data);
     put(0, &mut data); data.push(0); put(0, &mut data);
     put(-0x07, &mut data); put(0x1000_0001, &mut data); data.push(0); data.push(0);
