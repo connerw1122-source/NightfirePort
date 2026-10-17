@@ -48,6 +48,11 @@ pub struct Hurt {
     pub sound: u16,
     /// the one-shot byte [M record+0x40 → state 2 retires the volume; D default 0].
     pub one_shot: bool,
+    /// param 4 → ext+0x16 — the WHO mask `Hurt_Update` 0x17e5d0's state 0 ANDs with the contact
+    /// classes' bits (class 3 → 8, class 2 = the player → 0x10, class 5 → 2) when there is no gate
+    /// [M; docs/systems/hurt-volumes.md]. 0 starts at once; a mask without 0x10 never starts for
+    /// the player — who 1 collects nothing at all (the configured-inert volumes, e.g. 07000006 #373).
+    pub who: u16,
     /// The obj+0xF0 0x20 disabled bit: set at create when the gate channel is off [M 0x17e870 tail],
     /// maintained by Hurt_Update.
     pub disabled: bool,
@@ -76,6 +81,7 @@ impl Hurt {
                 pain_type: (param(0) & 0xff) as u8,
                 sound: param(3) as u16,
                 one_shot: false,
+                who: param(4) as u16,
                 disabled,
                 fired: false,
             });
@@ -93,6 +99,9 @@ impl Hurt {
         // on → &= ~0x20]; a zero gate never disables.
         self.disabled = self.gate != 0 && !gate_on;
         if self.disabled || self.fired { return None; }
+        // The start law for an ungated volume [M 0x17e5d0 state 0]: who 0 starts at load; a nonzero
+        // who starts only on a matching contact class — the player brings bit 0x10.
+        if self.gate == 0 && self.who != 0 && self.who & 0x10 == 0 { return None; }
         // The collide contact: the bond capsule (r 0.55 [M Player_CollLadder's +0x7CC], 1.8 tall)
         // against the volume box.
         const R: f32 = 0.55;
@@ -117,7 +126,7 @@ mod tests {
     use super::*;
 
     fn hurt(gate: u16) -> Hurt {
-        Hurt { placement: 0, lo: [-1.0, -1.0, -1.0], hi: [1.0, 1.0, 1.0], gate, damage: 1.0, pain_type: 1, sound: 0xffff, one_shot: false, disabled: false, fired: false }
+        Hurt { placement: 0, lo: [-1.0, -1.0, -1.0], hi: [1.0, 1.0, 1.0], gate, damage: 1.0, pain_type: 1, sound: 0xffff, one_shot: false, who: 0, disabled: false, fired: false }
     }
 
     #[test]
@@ -138,6 +147,20 @@ mod tests {
         assert!(h.update(true, [0.0, 1.7, 0.0]).is_none(), "feet above the box top: no contact");
         assert!(h.update(true, [0.0, 1.9, 0.0]).is_none(), "above the box: no contact");
         assert!(h.update(true, [3.0, 0.0, 0.0]).is_none());
+    }
+
+    #[test]
+    fn the_who_mask_decides_whether_an_ungated_volume_can_start() {
+        // [M Hurt_Update 0x17e5d0 state 0; docs/systems/hurt-volumes.md] who 1 collects nothing
+        // (07000006 #373, 07000005 #328-330): inert. Sisters: who 0 and who 0x18 (07000008 #42-44)
+        // reach the player.
+        let mut h = hurt(0);
+        h.who = 1;
+        assert!(h.update(true, [0.0, 0.0, 0.0]).is_none(), "who 1 never starts");
+        h.who = 0x18;
+        assert!(h.update(true, [0.0, 0.0, 0.0]).is_some(), "who 0x18 carries the player bit");
+        h.who = 0;
+        assert!(h.update(true, [0.0, 0.0, 0.0]).is_some(), "who 0 starts at load");
     }
 
     #[test]
