@@ -17372,3 +17372,11 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+
+## music-triggers (2026-10-17, branch s/music-triggers) — started 01:55 UTC
+
+Task 750: the music trigger placements (0xFB, 15 on the disc) — `MusicTrigger_Create` 0x1b30e0 +
+`MusicTrigger_Update` 0x1b31a0 (`Music_Event(id, 2)` while its countdown runs). Porting into the
+music system from the decompile [M]; test through the real path (entering the volume raises the
+game's music event; leaving lets it expire at the game's tick); update the census handled sets.
+In progress.
