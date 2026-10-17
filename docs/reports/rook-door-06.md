@@ -69,6 +69,24 @@ downstream of a missing walk-start, and the repro needs that trigger first.
    - the port's documented deviation `drone.rs:4787-4789`: the route is frozen while parked
      in 0x81 (the game's creep keeps walking), so a slow/Bond-blocked door wedges him.
 
+## The definitive census (probe `rook_absent_06_live.rs`, pushed with this report)
+
+**07000006 has NO lead-mode drone at all.** All 26 drones dumped with mode/team/
+`start_state`: every guard is team 1 (modes 0/2/7/25 — patrols, snipers, alarm spawns), the
+spawner-held ones are guard skins (0x2e/0x2f/0x30, alt states 0x2a/0x56/0x85), and the ONLY
+ally is **drone #15 — the driver** (skin 0x05000035, mode 23, team 3, `start_state` 0x32
+TruckDriverIdle, the kind-8 mission route path 10). Nobody has an AllyLead start (0x1c) or
+the escort dtype. The two ch-185 waiters are #12 (a team-1 guard skin 0x0500002e whose start
+script plays) and #15 the driver — so "Rook" in the user's report must be **the driver**
+(the friendly truck driver of the fix-06-driver playtests) or an NPC the SCRIPTS drive.
+
+Both kind-8 mission routes on the map head EAST from the truck (path 10: x 66.2→84.9,
+z 28.8→21.5; path 12 kind 0x208: 68.9→82.7→77.0), NOT into the castle interior (its doors
+sit at z < 0 — door #1 (36.5, 40, −16.25) with the path-7 node pair, door #4 (4, 49, −64.9)
+with the path-3 pair upstairs). So even the driver's own route does not obviously produce
+"leads Bond to the party" — the walk start (and the route the user sees him take) is the
+open question for the live check below.
+
 ## What's left
 
 1. Find what starts Rook's walk in the real game: dump the ScriptPlayers watching ch 185
