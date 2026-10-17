@@ -6127,12 +6127,33 @@ impl Drone {
         }
     }
 
-    /// `DroneVision_EnemyLookForOpponent` (Attack when seen and the drone may react to the player).
-    /// `DroneVision_EnemyLookForOpponent` (0x177ed0): Attack when Bond is seen (prop 0x3C) and the drone is alert
-    /// (≥ 0.66) or has prop 0x51; the first such sighting marks it as the drone's own (`+0x4F8 |= 0xC000000`).
-    /// Friendly drones (`+0x44 == 3`, team 3: civilians, hostages, allies — dtype 10/0xb/0xd/0xe) never attack:
-    /// the game returns 0 before the sight check [M 0x177ed0:31-38].
+    /// `DroneVision_EnemyLookForOpponent` (0x177ed0): Attack when the opponent is seen (prop 0x3C) and the drone is
+    /// alert (≥ 0.66) or has prop 0x51; the first such sighting marks it as the drone's own (`+0x4F8 |= 0xC000000`).
+    /// The game's opponent is the stored `Drone+0x170` — the gate at 0x177ed0:18-20 returns 0 when it is empty —
+    /// and `NDrone2_FindOpponent` (0x1424e0) only ever stores Bond there for a drone whose OWN team ≠ 2
+    /// [M disasm 0x142e04-0x142e0c]; a team-2 ally's candidates are only team-1 drones (`+0x44 == 1`,
+    /// [M 0x143100-0x143104], plus range + `NDrone2_CanSeeObject`). Bond is therefore never a team-2 ally's
+    /// opponent. The port's opponent is implicitly Bond (docs/port-map/guard-ai.md — `opponent_info`) and the
+    /// ally-candidate scan (0x142e88..) is unported, so a team-2 ally (dtype 0xC — Zoe, Mayhew, Drake
+    /// [M 0x14cbd8: store 0x14ccd8]) has no opponent and can neither enter ATTACK here nor fire (fire_weapon).
+    /// Team 3 (dtype 10/0xb/0xd/0xe — civilians, hostages) is returned 0 before the sight check [M 0x177ed0:31-38],
+    /// except on 07000009/0700000A where the game skips the team-3 check ([M 0x177ed0:29-35] — not ported, no
+    /// placement needs it yet).
     fn look_for_opponent(&mut self, d: &Data) -> Option<u8> {
+        // [M 0x177ed0:12-14] a script-playing fully-alert drone never attacks out of its script
+        // (`SMI+4 == 3 && 1.0 <= Drone+0x50c`).
+        if self.state == state::PLAY_SCRIPT && self.alert >= 1.0 {
+            if std::env::var_os("NF_AILOG").is_some() {
+                eprintln!("[ailog] guard {} look_for_opponent: PLAY_SCRIPT with alert {:.2} ≥ 1.0 — the script holds [M 0x177ed0:12-14]", self.index, self.alert);
+            }
+            return None;
+        }
+        if self.team == 2 {
+            if std::env::var_os("NF_AILOG").is_some() {
+                eprintln!("[ailog] guard {} look_for_opponent: team 2 ally — no stored opponent (FindOpponent 0x142e0c keeps Bond out of +0x170) — no opponent", self.index);
+            }
+            return None;
+        }
         if self.team == 3 {
             if std::env::var_os("NF_AILOG").is_some() {
                 eprintln!("[ailog] guard {} look_for_opponent: team 3 — no opponent", self.index);
@@ -6505,6 +6526,16 @@ impl Drone {
 
     /// `DroneWeap_Fire(c)`.
     fn fire(&mut self, d: &Data, rng: &mut Rng, frame: u32, c: bool) {
+        // The fire request is `DroneWeap_DoOpponentTargetting`'s (0x179a48): it aims and requests
+        // fire at the STORED opponent `Drone+0x170` — empty for a team-2 ally (FindOpponent 0x142e0c
+        // never stores Bond for one; the ally scan 0x143100 takes team-1 candidates only, unported
+        // here). No request → no firing flag, no bullet.
+        if self.team == 2 {
+            if std::env::var_os("NF_AILOG").is_some() {
+                eprintln!("[ailog] guard {} fire: team 2 ally — empty +0x170, no fire request [M 0x179a48 + 0x142e0c]", self.index);
+            }
+            return;
+        }
         if c && !self.firing { self.next_bullet_time(d, rng, frame, true); }
         self.firing = true;
         self.burst_done = false;
@@ -6647,6 +6678,10 @@ impl Drone {
     /// `DroneWeap_HandleFiring` → `DoFiring` → `FireWeapon`.
     fn handle_firing(&mut self, d: &Data, rng: &mut Rng, frame: u32, p: &Player, motion: (bool, bool), owner: usize, lights: &mut crate::light::LightList) -> Option<crate::bullet::Bullet> {
         if !self.firing { return None; }
+        // A team-2 ally has no stored opponent (FindOpponent 0x142e0c keeps Bond out of +0x170), so
+        // the game's `DoFiring` never reaches `FireWeapon` — no bullet, no shot count, no clip spend.
+        // (The port's opponent is implicitly Bond; the ally-candidate scan is unported.)
+        if self.team == 2 { return None; }
         self.burst_done = false;
         let mut more = false;
         let mut bullet = None;
@@ -6707,6 +6742,18 @@ impl Drone {
     /// `DroneWeap_FireWeapon` + `DoBulletAccuracy`: hit roll, the miss wobble, the cone (`Bullet_init`), damage
     /// (`Drone_ModBulletDamage`: the ×2 under TooClose lands at the hit site, × `+0x100` here).
     fn fire_weapon(&mut self, d: &Data, rng: &mut Rng, frame: u32, p: &Player, (moving, first_moved): (bool, bool), owner: usize, lights: &mut crate::light::LightList) -> Option<crate::bullet::Bullet> {
+        // The game's fire path aims and shoots the STORED opponent `Drone+0x170` only
+        // (`DroneWeap_DoOpponentTargetting` 0x179a48 reads it; no team check downstream [M]).
+        // `NDrone2_FindOpponent` never stores Bond in +0x170 for a team-2 ally [M 0x142e0c] and its
+        // ally scan stores team-1 candidates only [M 0x143100-0x143104] — the scan is unported (the
+        // port's opponent is implicitly Bond), so a team-2 ally has an empty +0x170 and
+        // `DoOpponentTargetting` produces no bullet. Mirror that no-op.
+        if self.team == 2 {
+            if std::env::var_os("NF_AILOG").is_some() {
+                eprintln!("[ailog] guard {} fire_weapon: team 2 ally — empty +0x170, no bullet [M 0x179a48 + 0x142e0c]", self.index);
+            }
+            return None;
+        }
         let w = d.weapons.records.get(self.weapon as usize)?;
         let f32_at = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
         // Hit chance: p = 100 − 5·accuracy, ×2 under TooClose ([0x30cb14] — `close_threshold`), ×0.25
