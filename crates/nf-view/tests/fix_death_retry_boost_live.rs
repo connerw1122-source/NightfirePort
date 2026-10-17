@@ -63,7 +63,7 @@ fn boost_is_a_max_picked_by_the_difficulty_global() {
     // A low buffer rises to the floor...
     let hp = nf_game::bullet::PlayerHealth { health: 10.0, armour: 25.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, flash_total: 0.0, flash_alpha: 0.0, hit_push: 0.0 };
     let inv = nf_game::pickup::Inventory::empty(0x72, 0x30);
-    let ch = nf_game::triggers::Channels { v: vec![0u8; 256], time: vec![0u32; 256] };
+    let ch = nf_game::triggers::Channels { v: vec![0u8; 256], time: vec![0u32; 256], writes: None, script_channels: Default::default() };
     let mut low = RamSave::capture(&hp, 2, &inv, &ch);
     low.continue_boost(2);
     assert_eq!(low.health, 50.0, "max(10, 50) = 50 — the boost arm [M 0x1957a8:21-34]");
@@ -89,7 +89,7 @@ fn boost_is_a_max_picked_by_the_difficulty_global() {
 fn without_the_boost_the_buffer_restores_raw() {
     let hp = nf_game::bullet::PlayerHealth { health: 10.0, armour: 25.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, flash_total: 0.0, flash_alpha: 0.0, hit_push: 0.0 };
     let inv = nf_game::pickup::Inventory::empty(0x72, 0x30);
-    let ch = nf_game::triggers::Channels { v: vec![0u8; 256], time: vec![0u32; 256] };
+    let ch = nf_game::triggers::Channels { v: vec![0u8; 256], time: vec![0u32; 256], writes: None, script_channels: Default::default() };
     let save = RamSave::capture(&hp, 2, &inv, &ch);
     let mut h2 = hp;
     let mut i2 = inv.clone();

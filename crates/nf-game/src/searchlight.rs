@@ -334,8 +334,53 @@ impl Searchlights {
             // The player's pick sphere: centre `obj+0x80` (the `Player.sph` the port fills from
             // `Bond::sphere_centre`), radius `M_CONTROL+0x8C` = 1.0576 [L ee_start_05.bin].
             const PLAYER_SPH_R: f32 = 1.0576;
-            let (mut t_hit, mut n_hit) = match d.world.segment_surface(pos, end, false) {
-                Some((t, n, _)) => (Some(t), Some(n)),
+            // The game excludes the head's OWN cel and object from the spot ray (`Collide_RayIntersect`
+            // carries the source object, and `Collide_PickObj` 0x1eae80:57-59 refuses param_3 == param_2
+            // plus the hittest's two extra exclusion slots [M]). The port's ray origin sits inside the
+            // head's own platform/housing geometry, so the port skips everything the ray crosses before
+            // it exits the head's own gfx box — the same "not my own housing" effect [S for the box
+            // stand-in, M for the exclusion itself]. The box is the part's LOCAL-space bounds (the
+            // bullet stand-in tests it after the matrix's world→local transform), so the slab test runs
+            // in that local space too — the rotation preserves lengths, so the slab's t is the same
+            // parameter the world ray carries (`pos + dir·t`, |dir| = 100, t ∈ [0, 1] over the ray).
+            let mut skip = 0.0f32; // the skipped fraction of the 100-unit ray
+            {
+                let h = &self.parts[head];
+                let to_local = |v: V3| {
+                    let d = [v[0] - h.matrix[3][0], v[1] - h.matrix[3][1], v[2] - h.matrix[3][2]];
+                    [0, 1, 2].map(|k| d[0] * h.matrix[k][0] + d[1] * h.matrix[k][1] + d[2] * h.matrix[k][2])
+                };
+                let o = to_local(pos);
+                let dv = to_local([pos[0] + dir[0], pos[1] + dir[1], pos[2] + dir[2]]);
+                let (bmin, bmax) = (&h.box_min, &h.box_max);
+                let (mut t_near, mut t_far) = (f32::NEG_INFINITY, f32::INFINITY);
+                let mut inside = true;
+                for k in 0..3 {
+                    let d = dv[k] - o[k];
+                    if d.abs() < 1e-9 {
+                        if o[k] < bmin[k] || o[k] > bmax[k] { inside = false; }
+                    } else {
+                        let mut t1 = (bmin[k] - o[k]) / d;
+                        let mut t2 = (bmax[k] - o[k]) / d;
+                        if t1 > t2 { std::mem::swap(&mut t1, &mut t2); }
+                        t_near = t_near.max(t1);
+                        t_far = t_far.min(t2);
+                        if o[k] < bmin[k] || o[k] > bmax[k] { inside = false; }
+                    }
+                }
+                // Origin inside the box: skip to the exit; outside: skip the entry face. The cap keeps
+                // a wrong stand-in from pushing the start past the ray's end (the housing is a ~0.5-unit
+                // box [L ee_start_05.bin head 016dfe70]; 4 world units of skip is generous).
+                let skip_t = if inside { t_far } else if t_near <= t_far && t_near > 0.0 { t_near } else { 0.0 };
+                if skip_t.is_finite() { skip = (skip_t / 100.0).clamp(0.0, 0.04); }
+            }
+            let (skip_pos, skip_end) = if skip > 0.0 {
+                ([pos[0] + dir[0] * skip, pos[1] + dir[1] * skip, pos[2] + dir[2] * skip], end)
+            } else { (pos, end) };
+            let (mut t_hit, mut n_hit) = match d.world.segment_surface(skip_pos, skip_end, false) {
+                // t is the SUB-segment's fraction ([skip, 1] of the full ray): rebase it, so t_hit stays
+                // in the dir parametrization the player-sphere test below shares.
+                Some((t, n, _)) => (Some(skip + t * (1.0 - skip)), Some(n)),
                 None => (None, None),
             };
             {

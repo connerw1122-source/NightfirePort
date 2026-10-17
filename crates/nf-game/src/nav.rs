@@ -632,7 +632,7 @@ impl Route {
 
     /// `AINetwork_FollowRoute` + `LinkCreep_Handler`: updates the move target. Returns the result code and the node
     /// reached when a special node was reached this tick (`NDrone2_ReachedDestNode`).
-    pub fn follow(&mut self, net: &Network, feet: V3) -> (u8, Option<u16>) {
+    pub fn follow(&mut self, net: &Network, feet: V3, near_pos: &dyn Fn(V3) -> bool) -> (u8, Option<u16>) {
         self.remaining = self.distance(net, feet);
         let count = self.nodes.len() as i32;
         if self.index >= count && self.mode != RouteMode::Loop && self.remaining < self.radius { return (follow::ARRIVED, None); }
@@ -640,7 +640,12 @@ impl Route {
         if let Some(node) = self.creep.special {
             let pos = net.paths[self.path].nodes[node as usize].pos;
             self.target = pos;
-            if dist2d(feet, pos) >= 0.4 { return (follow::MOVING, None); }
+            // `LinkCreep_AtSpecialNode` 0x159dd0: d < 0.4 → at the node; 0.4 ≤ d < 1.0 →
+            // `NDrone2_DroneNearPos` 0x143e68 decides; d ≥ 1.0 → not yet. The old port only had
+            // the first tier, so a drone blocked at a closed door (the panel stops the body in
+            // the 0.4-1.0 band) never reached its own door node and never opened the door.
+            let dd = dist2d(feet, pos);
+            if dd >= 0.4 && (dd >= 1.0 || !near_pos(pos)) { return (follow::MOVING, None); }
             self.creep.special = None;
             reached = Some(node);
         }
@@ -780,7 +785,7 @@ mod tests {
         let mut feet = [0.0, 0.0, 0.0];
         let mut visited = vec![];
         for _ in 0..400 {
-            r.follow(&n, feet);
+            r.follow(&n, feet, &|_| false);
             feet = r.target;
             if !visited.contains(&r.index) { visited.push(r.index) }
         }
