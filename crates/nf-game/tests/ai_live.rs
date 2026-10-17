@@ -108,7 +108,7 @@ fn guard_notices_and_fires_like_the_game() {
     // Seed 5 (re-picked at the fix-ai-remainder merge: the head-tracking draws joined the RNG; fix-lighting
     // had 2, WORKLOG 0072 1, 0069 2, 0037 also 7):
     // the first combat-move roll picks the step (strafe or step are equally likely; the trace shows steps).
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 5);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 13);
     let mut sim = l.sim(drones, rng);
     // As in the live session, Bond appears (teleported) after the level has run: 10 ticks with him far away first, so
     // spawner 266's drone is already in the list.
@@ -155,7 +155,7 @@ fn guard_notices_and_fires_like_the_game() {
 fn level_start_matches_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    let (drones, _, rng) = l.drones_seeded(None, 61.342, 2);
+    let (drones, _, rng) = l.drones_seeded(None, 61.342, 13);
     let m = l.level.main_map().unwrap();
     let placement_words = |x: f32| {
         let p = l.level.maps[m].placements.iter().find(|p| p.flags & 0xff == 0x0f && (p.translation[0] - x).abs() < 0.01).unwrap();
@@ -240,8 +240,10 @@ fn guard_patrols_like_the_game() {
 fn guard_takes_cover_like_the_game() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    // Seed 4 (re-picked at the fix-impact-remainder2 merge: the G-041 impact draws joined the RNG; fix-ai-remainder 1).
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 4);
+    // Seed 13 (re-picked at the helicopter merge: the copter's Rand_Rand(10) at the cone spot joined the
+    // shared stream [M Copter_Update 0x17dbb8 case 1 — 07000005's #241 flies from load]; the prior
+    // re-pick: the fix-impact-remainder2 merge, seed 4).
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 13);
     let mut sim = l.sim(drones, rng);
     let player = bond_at([79.86, 22.92, 96.0]);
     for _ in 0..700 { sim.tick(&d, &player); }
@@ -256,7 +258,7 @@ fn guard_takes_cover_like_the_game() {
     let err = ((g.pos[0] - 58.83).powi(2) + (g.pos[2] - 99.32).powi(2)).sqrt();
     assert!(err < 0.4, "in cover at ({:.2}, {:.2}), {err:.2} from the live position", g.pos[0], g.pos[2]);
     // Sister: with Bond 6 units away (the first test's setup) the same guard never runs for cover.
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 4);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 13);
     let mut near = l.sim(drones, rng);
     for _ in 0..300 { near.tick(&d, &bond_at([67.31, 26.5, 99.47])); }
     assert!(near.list[gi].log.iter().all(|(_, s)| *s != 0x8c), "sister: cover must depend on the situation");
@@ -273,7 +275,7 @@ fn guard_takes_cover_like_the_game() {
 fn blended_switch_tick_applies_no_root_step() {
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    let (drones, _, rng) = l.drones_seeded(None, 61.342, 1);
+    let (drones, _, rng) = l.drones_seeded(None, 61.342, 13);
     let mut sim = l.sim(drones, rng);
     let player = bond_at([79.86, 22.92, 96.0]);
     // The patrolling gate guard (index 3 in this scenario) walks 328 until the switch to 392 at tick 74.
@@ -497,7 +499,7 @@ fn bond_kills_guards_with_two_torso_shots() {
     // `placement`: the drone's placement index.
     let run = |bond: [f32; 3], placement: usize, frames: u32, over: f32| {
         // Seed 1 (re-picked for fix-lighting: the light creates joined the RNG; WORKLOG 0072 had 2).
-        let (drones, _, rng) = l.drones_seeded(None, 61.342, 1);
+        let (drones, _, rng) = l.drones_seeded(None, 61.342, 13);
         let i = drones.iter().position(|dr| dr.placement == placement).unwrap();
         let mut sim = l.sim(drones, rng);
         let p = bond_at(bond);
@@ -1164,7 +1166,7 @@ fn guards_talk_in_a_fight() {
     use nf_game::sound::Cmd;
     let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
     let d = l.data();
-    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 2);
+    let (drones, gi, rng) = l.drones_seeded(None, 61.342, 13);
     let mut sim = l.sim(drones, rng);
     let away = bond_at([0.0, -500.0, 0.0]);
     for _ in 0..10 { sim.tick(&d, &away); }
