@@ -1228,6 +1228,16 @@ pub struct Drone {
     /// zeroed heap allocations, so a respawn (a fresh struct) counts again. Outboxed like the
     /// other `PlrStat_Log*` outboxes and folded into `Drones.progress` by the tick.
     pub detected_logged: bool,
+    /// glass-breach-guards-4: this tick's position change was carried by the anim root motion
+    /// (`root_motion` applied a delta) rather than the AI steering step. The game's class-2 pane
+    /// drain reads `Vec_SqDist3D(hitter+0x30, hitter+0x40)` — the movement pass copies +0x30 →
+    /// +0x40 per object AFTER its anim/root-motion processing in the same walk [M 0x1336f8:212],
+    /// so a root-motion-carried step reads 0 (no drain) while the AI steering step shows in
+    /// +0x30−+0x40. [D task 750p + the port's instrumented run: pane 130 survives g0's scripted
+    /// walk-by (the port's replay demonstrably crosses the sheet at 0xB+23) yet the breach squad's
+    /// charge shatters it at 0xB+911.] Reset at the head of `Drones::tick_inner`, set in
+    /// `root_motion`.
+    pub scripted_move: bool,
 }
 
 /// Normalise a vector (the grenade throw direction helper).
@@ -1411,6 +1421,8 @@ impl Drone {
             // 0x14b300:801-811; the port keys it on the drone's weapon id — the datum byte's id space).
             weapon_swap: 0, pending_melee: None, pending_weapon_swap: false,
             recoil_weapon: weapon == 0x1c || weapon == 0x1d,
+            // glass-breach-guards-4 (own line — merge lesson 4).
+            scripted_move: false,
         };
         dr.init_properties(d, &param);
         dr.type_setup(d);
@@ -2297,6 +2309,12 @@ impl Drone {
         if let (Some([lx, lz]), Some(_)) = (delta, root) {
             let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
             let step = [lx * c + lz * s, -lx * s + lz * c];
+            // glass-breach-guards-4: the movement was carried by the anim root motion — the game's
+            // movement pass copies +0x30 → +0x40 AFTER the anim/root-motion processing in the same
+            // per-object walk [M 0x1336f8:212], so such a step reads SqDist(pos, prev) = 0 in the
+            // pane drain (Break_Update 0x12bfd8:26-27) and never damages the glass. The AI steering
+            // step (NDrone2_Move → the port's slide/steer moves) is the move that shows in the pair.
+            self.scripted_move = true;
             if self.free_root {
                 // Unblocked, with the vertical change; the slide target moves along.
                 let ly = match (root, self.root_prev, restarted, wrap_end) {
@@ -10209,6 +10227,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // positions; at the tick's tail every mover tests its squared step against the level's
         // glass (only on GameState+0x12 == 0x0700001, only kind 2 — crate::breakable).
         let drone_from: Vec<V3> = self.list.iter().map(|d| d.pos).collect();
+        // glass-breach-guards-4: the root-motion flag is this tick's movement-source mark — clear
+        // it before anything moves (root_motion sets it when it applies a delta).
+        for dr in self.list.iter_mut() { dr.scripted_move = false; }
         let _prof_all = crate::prof::scope("drones.tick (total)");
         let prof_pre = crate::prof::scope("drones: shared passes");
         self.frame += 1;
@@ -12306,7 +12327,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let level_01 = d.level == 0x0700_0001;
         for (dr, from) in self.list.iter().zip(drone_from) {
             if !dr.present || dr.corpse { continue; }
-            let kills = self.breaks.drone_step(from, dr.pos, level_01);
+            let kills = self.breaks.drone_step(from, dr.pos, level_01, dr.scripted_move);
             if !kills.is_empty() {
                 self.break_kills.extend(kills.into_iter().map(|k| (k.placement, k.kind, k.sound)));
             }
@@ -12418,6 +12439,7 @@ mod tests {
             elevator_latch: false,
             // fix-cover-remainder: the scary-object flee family (own line — merge lesson 4).
             scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
+            scripted_move: false,
         };
         dr
     }
