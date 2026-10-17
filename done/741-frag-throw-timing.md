@@ -19,3 +19,8 @@ say so in the report. Never weaken a decompile-backed test to make code pass.
 
 ---
 claimed-by: sandbox4 at 2026-10-16T23:28Z
+
+---
+## Report (done, 2026-10-17T00:30Z)
+
+Closed by the driver: the report is on `s/frag-throw-timing` (docs/reports/frag-throw-timing.md); the worker didn't run finish.sh.
