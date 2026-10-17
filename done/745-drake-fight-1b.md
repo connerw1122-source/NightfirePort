@@ -24,3 +24,7 @@ claimed-by: sandbox2 at 2026-10-17T00:00Z
 ## Report (done, 2026-10-17T01:15Z)
 
 Closed by the driver: the report is on `s/drake-fight-1b` (docs/reports/drake-fight-1b.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-17T01:15Z)
+
