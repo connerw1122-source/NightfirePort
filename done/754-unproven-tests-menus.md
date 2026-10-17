@@ -55,3 +55,8 @@ claimed-by: sandbox6 at 2026-10-17T05:19Z
 ---
 ## Report (done, 2026-10-17T07:07Z)
 
+
+---
+## Report from the worker (done, 2026-10-17T07:08Z)
+
+Closed by the driver: the report is on `s/unproven-tests-menus` (docs/reports/unproven-tests-menus.md); the worker didn't run finish.sh.
