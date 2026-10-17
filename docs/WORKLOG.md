@@ -17398,3 +17398,17 @@ through the real input path + a sister, run the touched crates + the full suite.
   port the award (event → progress count + chime + HUD flag). Test: one bond move on
   07000005 through the real path (count + sound id + HUD flag), sister: non-bond action
   awards nothing. Branch from origin/master 31dd6161.
+- bonus-007: the 007 bonus ("Bond moves") — the award chain was half-wired (fix-progress's
+  Trigger_Calc fold bumps PlrMissionStats+0x20 and fix-06-alarm's SoundTriggers play the chime)
+  but two user-visible pieces were missing: the HUD's 007-icon flash (PlrStat_DoneBondMoment
+  0x199448:25 writes glb_blokes+0x948 = 200 — unmodelled) and the pause SCORE tab, whose Bond
+  Moves / Dispatched / Subdued / Surrendered / 007 Bonus rows were hardcoded "0". Added
+  PlayerHealth.bond_moment_flash (BL+0x948, set on the award only, decayed 2/tick = the
+  HUD_UpdateHealthPane 0x19b9c8:232-260 countdown) + Progress::stats() public + the host-synced
+  pause_stats feeding menu::Stats [M C_GCPAUSE_Handler 0x204408:447-498]. Census
+  docs/systems/bond-moves.md: every story level's bond channels (101-110) with their trigger/
+  script setters and chime SoundTriggers (07000005: gate 101 → id 331 BM_CAS_BEAM, gate 105 →
+  332 BM_CAS_TRUCK; the ELF name→id table pinned). Tests bond_moves_live: the real-path truck
+  ride on 07000005 awards moment 101 exactly at the ch-0x65 tick (count 1, flash 200 → −2/tick,
+  chime 331 the same tick; sisters: no 0x69/332 on the ride, 600 ticks of idling award nothing)
+  — 2/2 pass in 9 s. Report: docs/reports/bonus-007.md.
