@@ -18600,3 +18600,8 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   walk_07000005 2, walkreal_07000005 2, mayhew_handover 2, level_carry 8, fix_truck 2, wire 1,
   casings16 2, fix_mission 4, levels_sweep 3, walk_07000008 4, walk_0700000a 3, mission_unlock_flow 3
   — 0 failures. Report: docs/reports/level-05-interactables-2.md.
+- 2026-10-17 s/level-09-interactables-2 (task 709c): STARTED. Re-doing the HELD 09 interactables work
+  (709a, 45c5dc5): scope its 19-line drone.rs change to what the game does (cite it), keep the
+  census/interact tests, make the four master tests pass again (ai_live drone 66 pulse,
+  fix_cutscenes2 drake flythrough, spawner_kill gate pair swap, kimiko_actors draw set). Sandbox
+  window ~18:08-20:08 UTC.
