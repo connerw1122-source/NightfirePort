@@ -7519,6 +7519,10 @@ pub struct Drones {
     /// `Create_SpaceMissile` [M 0x1a9ef0:62]: per missile 0 idle, 1 launch script playing,
     /// 2 disarmed, 3 launched [M 0x1aa118 disasm]. `HUD_UpdateSpacePane` 0x19d3b8 reads it.
     pub missile_deploy: [u8; 8],
+    /// The breakables (crate::breakable; placement 0x20 — `Break_Create` 0x12c230), created in
+    /// `attach_level` after the props like the game's `parsemap_create_dynamic_objects` 0x1d04f0
+    /// case 0x20. Fields on their own line — merge lesson 4.
+    pub breakables: crate::breakable::Breakables,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -7652,6 +7656,8 @@ impl Drones {
             driving_stats: Default::default(),
             driving_result: crate::ptp::DriveResult::Success,
             driving_return: None,
+            // glass-shatter: the breakables (own line — merge lesson 4).
+            breakables: Default::default(),
     };
         drones
     }
@@ -7697,6 +7703,9 @@ impl Drones {
         // Destroy_Create 0x12c318 — the game creates them in placement order in
         // parsemap_create_dynamic_objects 0x1d04f0].
         self.props = crate::props::Props::create(level);
+        // The breakables (0x20 → Break_Create 0x12c230, placement order; no RNG draw at create —
+        // parsemap_create_dynamic_objects 0x1d04f0 case 0x20).
+        self.breakables = crate::breakable::Breakables::create(level);
         // The Q-Worm PCs (0x35) and switches (0x29) of `Player_Activate` 0x1a5170 (map-tower;
         // `parsemap_create_dynamic_objects` 0x1d04f0 cases 0x35/0x29, crate::useobj).
         self.useobjs = crate::useobj::UseObjects::create(&level.maps[level.main_map().unwrap_or(0)].placements);
@@ -8292,6 +8301,21 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // $f12, 140($16)`] — the port keeps the historical scale = radius here (no disc
                 // contradiction surfaced; the green destroy test pins the script, not the scale).
                 self.pending_blasts.push((pos, radius, damage, usize::MAX, 0, script, radius));
+            }
+            // The breakables see the bullet this tick (`Collide_Update` 0x1ea398 mirrors the pick
+            // onto the pane's obj+0xD0 with the bullet at +0x58; `Break_Update` 0x12bfd8:15 filters
+            // with `Collide_FilterBullets(list, filter | 0x106)` — class-5 hitters whose
+            // `weapon_definition+0x10` word ANDs the mask are dropped [M 0x1ece30:24-33] — then
+            // subtracts `HITDATA+8` from the health and kills at < 0 [M 0x12bfd8:36-51]). The
+            // pane never stops the round: its collision surface byte is 0x10 and the handler's
+            // glass rule passes it [M 0x12ce80 disasm 0x12cf44..0x12cf64; D 07000008 panes]. The
+            // kind-2 shatter polys / debris are the draw layer's; the port plays `Break_Kill`'s
+            // sound id [M 0x12b970:65-76].
+            let weapon_mask = d.weapons.records.get(b.weapon as usize).map_or(0u16, |r| u16::from_le_bytes([r[0x10], r[0x11]]));
+            for ev in self.breakables.bullet_hit(b.pos, end, weapon_mask, b.damage, &mut self.rng) {
+                // `Sound_Play3D(100.0, -1.0, -1.0, id, obj+0x80, custom=0)` [M 0x12b970:69,75] —
+                // the bank's radii (custom = 0), like every direct game call.
+                self.audio.play3d(ev.sound, ev.pos, None);
             }
             // The fusebox wires see the bullet this tick (`Collide_Update` 0x1ea398 pushes the pick
             // onto the hit object's `obj+0xD0`; `FuseBox_Update` 0x1adfe8:88 filters the list with

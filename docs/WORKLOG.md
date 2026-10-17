@@ -17727,3 +17727,20 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   guards-smash-glass arm 0x12bfd8:23-34 (level 07000001) as it applies, reproduce fail-first
   through the real path (panes break + guards come in at the game's time), then fix.
   Branch created from origin/master 50d51ae7.
+- glass-shatter (s/glass-shatter): started. Task: breakable glass cannot be shattered — find the game's
+  breakable-glass objects and break path (pane object types/scripts, Bullet_CollisionHandler 0x12ce80 object-hit
+  arms, Bullet_handle_object_destruction, break script/effect/sound ids) on 07000005/06/08, port it, test on the
+  real path. Worklog started; branch pushed early per sandbox-expiry protocol.
+
+- glass-shatter (s/glass-shatter): the breakables ported (crate::breakable). Placement 0x20 →
+  Break_Create 0x12c230 (class 0x20, data {kind=param 0, health=f32 bits of param 1,
+  filter=~u16 param 2}); Break_Update 0x12bfd8's bullet damage (Collide_FilterBullets
+  0x1ece30 reject on weapon+0x10 & (filter|0x106), health -= HITDATA+8, kill < 0), Break_Kill
+  0x12b970's sounds (kind 2 → 0x2e; else Rand_Rand(100)<0x29 → 0x5f2/0x5f3 — the game's own
+  draw, on the shared stream only at a non-glass kill) wired into update_player_bullets beside
+  props.bullet_hit; panes never stop bullets (their collision tris are material 0x10 [D], the
+  0x12cf44 glass rule passes). Disc census: 443 breakables (259 kind 2); 08 has 3
+  Glass_Controlroom* panes, 06 one Window_Securityroom, 05 none. Tests: 4 unit tests green
+  (nf-game lib). NOT green yet: the live real-path test (crates/nf-view/tests/breakables_live.rs,
+  uncommitted-wip pattern committed as probe_glass_shot) — the harness fires (clip decrements)
+  but no player_bullets appear; needs the next window. Report: docs/reports/glass-shatter.md.
