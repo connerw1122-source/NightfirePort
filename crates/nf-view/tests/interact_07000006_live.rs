@@ -181,3 +181,39 @@ fn standing_away_leaves_the_body_armour_on_the_floor() {
     assert_eq!(sim.drones.health.armour, 0.0, "5 m west: the armour is not taken");
     assert!(!sim.drones.taken.iter().any(|(h, _)| *h == 0x0200047f || format!("{h}").contains("755")), "no #755 take");
 }
+
+/// KIND walk-in hazard: the courtyard well. The well's own Hurt volume #373 is GAME-INERT — its
+/// who-mask is param 4 = 1 and `Hurt_Update`'s state-0 scan collects only the class bits 0x10 (the
+/// player, class 2), 8 (class 3) and 2 (class 5) [M Hurt_Update 0x17e5d0: the `param4 & collected`
+/// AND; D #373 params [6, 1000, 0, 0xffff, 1, 0]] — 1 & {8, 0x10, 2} = 0, so the volume can never
+/// start. The port's shaft is OPEN: Bond over the mouth drops below the lip into the shaft and the
+/// measured ~5 m drop is survivable (health intact) — the depth/damage question is the report's
+/// live check (the real shaft's collision depth needs a PCSX2 measurement).
+#[test]
+fn the_well_shaft_is_open_and_the_hurt_volume_is_game_inert() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load_06(&iso, &[]);
+    // Over the well mouth (the well at (31.82, 39.79, 17.26) [D #65]).
+    settle_near(&mut scene, [31.82, 40.5, 17.26]);
+    for _ in 0..600 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    let sim = scene.sim.as_ref().unwrap();
+    eprintln!("[well] health {:.1} ch62 {} y {:.2}", sim.drones.health.health,
+        sim.drones.channels.on(0x62), sim.bond.pos[1]);
+    assert!(sim.bond.pos[1] < 38.0, "Bond over the mouth drops into the shaft (the mouth is open)");
+    // The inert-volume law: the hurt record never starts (its who-mask cannot match) — no damage
+    // rides #373 in the game either [M 0x17e5d0's AND]. The measured drop is survivable.
+    assert!(sim.drones.health.health > 0.0 && !sim.drones.channels.on(0x62),
+        "the ~5 m shaft drop costs nothing (fall threshold not reached)");
+}
+
+/// Sister: Bond 3 m east of the well mouth for the same duration — alive, no death channel.
+#[test]
+fn standing_beside_the_well_lives() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = load_06(&iso, &[]);
+    settle_near(&mut scene, [34.82, 40.5, 17.26]);
+    for _ in 0..600 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    let sim = scene.sim.as_ref().unwrap();
+    assert!(sim.drones.health.health > 0.0 && !sim.drones.channels.on(0x62),
+        "beside the well nothing happens");
+}

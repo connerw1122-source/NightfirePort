@@ -39,10 +39,22 @@ the tag's own +8 word, not a param].
 A state machine on `obj+0xF4`:
 
 - **state 0 (armed)**: compute the who-mask `uVar5`:
-  - param4 (+0x16) == 0 → `uVar5 = 1`;
-  - param4 != 0 with a gate channel → `uVar5 = switch_channels[gate]` (the channel byte IS the mask);
-  - param4 != 0 without a gate → walk the object's `obj+0xD0` HITDATA chain, OR-ing class bits
-    (class 3 → 8, class 2 → 0x10, class 5 → 2), then `uVar5 = param4 & collected`.
+  - gate channel set and LOW → stay armed;
+  - gate channel set and HIGH → `uVar5 = switch_channels[gate]` (the channel byte IS the mask) → start;
+  - no gate + param4 (+0x16) == 0 → `uVar5 = 1` → start;
+  - no gate + param4 != 0 → walk the object's `obj+0xD0` HITDATA chain, OR-ing the contact objects'
+    class bits (class 3 → 8, class 2 → 0x10, class 5 → 2; classes 1/4 collect nothing), then
+    `uVar5 = param4 & collected`.
+
+**THE #373 LAW [M 0x17e5d0 + D #373 params]**: the well's Hurt_A carries param4 = 1. The contact
+scan only ever collects bits {8, 0x10, 2}, so `1 & collected == 0` ALWAYS — the well volume can
+never start, on the disc as shipped. It is a configured-inert placement (the 1000-damage type-6
+row exists but the who-mask matches no class). The port must reproduce exactly this: create the
+record, never fire it. The well's player hazard is the plain fall path (`Player_HandlePain`
+type 6 [M]) — the port has that (`player.rs` `fall_damage`), and the measured shaft drop (~5 m to
+the shaft floor in the port's collision) is survivable (tests/interact_07000006_live.rs
+`the_well_shaft_is_open_and_the_hurt_volume_is_game_inert` pins the measured behaviour; the REAL
+shaft's depth needs the PCSX2 live check below).
   `uVar5 != 0` → state = 1 (the anim starts).
 - **state 1 (animating)**: at `t == 0` play the activation sound (id +0x1a) at `obj+0x30`;
   `Spline_Interp(framelist, 0, key_count, t, obj+0x90, 0, 2)` — the pose animates;
@@ -66,10 +78,20 @@ volumes).
    walk's test).
 3. Damage: `Player_Hurt(damage, …)`-shaped application through `health.pain_generic` with the
    type byte (the fusebox's live-wire hurt is the precedent: `player_hits` marker + `pain_generic`).
-4. Tests: #373's row pinned (type 6, 1000.0, mask 1, one-shot 0, keys 372 [D + M]); a real-path
-   test drops Bond into the well shaft (the well at (31.82, 39.79, 17.26) [D #65]) and asserts the
-   1000-damage death; the sister stands at the well lip and takes nothing.
+4. Tests: #373's row pinned (type 6, 1000.0, who 1, one-shot 0 [D + M]) and the INERT law above
+   (a who-1 volume never starts); a generic hurt placement (who = 0x10) takes the real-path
+   damage test. The well itself is covered by interact_07000006_live's measured pair.
 5. Evidence gap: the who-mask contact bits and the collide-pass reader are [M]-read above but the
    volume GEOMETRY resolution (which map object's tris) needs the disc dump — the census probe's
    `classify` path can print #373's glist object; a live PCSX2 check of `Hurt_GetDamage`'s caller
    settles the application point.
+
+## Live checks for the main agent
+
+1. PCSX2, fresh boot of 07000006: walk Bond over the well mouth and let him drop. Measure the
+   drop and the health after landing (does the REAL game's well shaft reach a kill depth, or is
+   the landing survivable there too?). The port's shaft floor sits ~5 m below the lip and the
+   drop is survivable [M the port's fall threshold].
+2. Watch `Hurt_GetDamage` 0x17ea18's caller during any hurt-volume touch on any level (e.g. the
+   0700000c fires/steam if they are Hurt placements) — settles the damage-application point the
+   port plan's step 3 needs.
