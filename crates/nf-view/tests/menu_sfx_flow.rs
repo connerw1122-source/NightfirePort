@@ -177,8 +177,9 @@ fn grid_moves_tick_only_on_change() {
         "the profile grid's tick is the same MENU_SOUND 7 → 0x1da");
 }
 
-/// The open pair rides the page transitions into the pair-playing pages, still under `menu_movie`
-/// [M the twelve handlers' 0x4c case; the port's page correspondence is docs/systems/menu-sfx.md §3].
+/// The credits' 0x4c is the SWAP, not a pair page: `SFXRemove(0,0x1d7); SFXRemove(0,0x470);
+/// menu_movie = 0; SFXStartMusic(0x27,0)` [M 0x2152b0:90-93 — the decomp; the pair restart is
+/// the LEAVE arm's, :58-63]. menu-audio-state corrected enter_page(Credits) to this.
 #[test]
 fn credits_open_swaps_the_pair_for_the_credits_track() {
     let mut fe = FrontEnd::new();
@@ -193,6 +194,25 @@ fn credits_open_swaps_the_pair_for_the_credits_track() {
     assert!(ev.iter().all(|e| e.id != SFX_MENU_OPEN_MOVE && e.id != SFX_MENU_OPEN_SELECT),
         "the credits open starts no menu-music pair: {ev:?}");
     assert!(!fe.menu_movie, "the static stays clear while the credits track plays [M 0x2152b0]");
+}
+
+/// menu-audio-state's variant: the pair static UP before the open (the options pages' state) is
+/// cleared by the swap [M 0x2152b0:92].
+#[test]
+fn credits_open_swaps_to_the_track_and_clears_the_pair_static() {
+    let mut fe = FrontEnd::new();
+    drain(&mut fe);
+    fe.page = menu::Page::CnAv;
+    fe.menu_movie = true; // the pair is up on the options pages [M §3 group C]
+    assert!(fe.open_credits(nf_view::credits::PAGE_CN_AV, 100, false), "the credits open");
+    // No pair starts on the enter — the swap removes the pair through the music channel
+    // (MenuMusic::page_enter(Credits) queues StopJingles + StartMusic(0x27)).
+    let ev = drain(&mut fe);
+    assert!(ev.is_empty(), "the credits 0x4c starts no pair [M 0x2152b0:90-93]");
+    assert!(!fe.menu_movie, "the static clears on the swap [M 0x2152b0:92]");
+    // (The music state's half of the swap — jingles down, the track up, the entry volume
+    // saved — is the page-enter hook's, asserted end to end in menu_audio_flows's
+    // the_credits_swap_to_track_0x27_and_back.)
 }
 
 
