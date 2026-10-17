@@ -17744,3 +17744,15 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   (nf-game lib). NOT green yet: the live real-path test (crates/nf-view/tests/breakables_live.rs,
   uncommitted-wip pattern committed as probe_glass_shot) — the harness fires (clip decrements)
   but no player_bullets appear; needs the next window. Report: docs/reports/glass-shatter.md.
+- glass-breach-guards: the Mayhew-start breach ported — the guards-smash-glass arm (Break_Update
+  0x12bfd8:23-34: level 0x7000001, class-2 hitters, kind-2 panes, health −= SqDist(pos,prev)·20,
+  Break_Kill at < 0) over the new Drone.prev_pos (obj+0x40, 0x1336f8:212) + Bond's player_pos
+  cache; Break_DoBreak 0x12c168 via NIS event 0x0a (Request::BreakAt, the previous-stream rule
+  0x1d94c0:94-96); the 0x20 panes left the static collision bake and inject via set_dynamic
+  (intact = solid, broken = gone [M 0x12b970:60]). The chain [D]: the intro 06000087's ch 11 →
+  the 0xF1 spawner #297 (mode 2, group 1, start 11) releases the 5-guard squad → they charge →
+  pane 130 shatters and a guard crosses at t911 (glass_breach_live, fail-first captured: 0/55
+  panes broke on master while the squad pressed the wall 3300 ticks). Tests: 6 breakable units
+  (the drain/gates/no-draw/order) + nf-game lib 267/267 + walk_07000001 3/3 + the stun trio.
+  NOT done: the full suite (the sandbox's background reaping + the window), the escort test's
+  new swarm interaction (the report), the 0x08 coder event. Report: docs/reports/glass-breach-guards.md.
