@@ -17885,3 +17885,12 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- 2026-10-17 s/level-01-interactables (task 701a): every interactive thing and every model on
+  07000001 (Paris Prelude, Castle A). Plan: census from the disc (nf-formats parse of
+  07000001.bin) into docs/levels/07000001.md (every touch/use/shoot/ride placement by type with
+  parameters + channel wiring, port status); drive Bond through the real input path to one
+  instance of every KIND and operate it (use key, gadget, shooting, walking in), one live test
+  per kind each asserting the game's effect with a sister that fails without the operation;
+  every model draws (no missing hash, NF_TEX_TRACE=1 for fallbacks, NPC skins, pickup/script
+  models). Known open items: the escort route and its doors; the shoji door drawn black during
+  play (GAPS G-050). No drawing (main agent renders). Branch from origin/master d628f01f.
