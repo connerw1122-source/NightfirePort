@@ -18410,3 +18410,12 @@ directly. Report: docs/reports/level-07-interactables.md.
   ticks, no falls. Ran: walkreal_07000007_live 2/2, nf-game 509/0, the six sibling 07 binaries
   34/0 (suite.py background-killed by the sandbox as before; the foreground runs stand in).
   Report: docs/reports/level-07-complete.md.
+- 2026-10-17 s/p2k-fire-07 (task 707c): started. Task: the P2K never fires on
+  07000007 after the disguise lock — after the hall walk-in releases the weapon
+  lock (ch 0x48, the P2K auto-drawn), holding fire through Sim::step_bond for
+  100 ticks never spawns a shot. Find the fire gate (suspects: the weapon-lock
+  auto-draw's switch state vs the fire path's lockout [M Player_Weapon
+  0x1a24c8:242-275]), fix it with a game address, un-ignore
+  the_party_vase_breaks_on_a_p2k_round (vase, statue #109, window #298 break on
+  the real path), sister: shot still refused while the lock channel holds.
+  In progress.
