@@ -158,6 +158,51 @@ fn the_end_hold_freezes_the_world_for_300_frames_then_the_next_level_loads() {
     }
 }
 
+/// Sister: the use-key arm runs the SAME `Trigger_Activate` tail [M 0x1b2318:89-96 via
+/// `Player_Activate` 0x1a5170:100-108] — E at the castle-gate door #118 (gate 0x1D still off →
+/// the fallback 0x1F write [D placement #118 p3]) starts the same 300-frame hold.
+#[test]
+fn the_use_key_exit_starts_the_same_hold() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
+    assert!(scene.sim.as_ref().unwrap().drones.exit_hold.is_none(), "no hold before the use");
+    let exit = scene.sim.as_ref().unwrap().drones.triggers.iter()
+        .find(|t| t.kind == nf_game::triggers::kind::LOAD_LEVEL && t.gate == 0x1D)
+        .expect("a LOAD_LEVEL trigger with gate 0x1D exists on 07000005").clone();
+    let centre = [
+        (exit.lo[0] + exit.hi[0]) * 0.5,
+        (exit.lo[1] + exit.hi[1]) * 0.5,
+        (exit.lo[2] + exit.hi[2]) * 0.5,
+    ];
+    // Bond at the door (the level_end_live route_b pattern), E through the real input path.
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        sim.bond.pos = [centre[0], centre[1], centre[2] - 0.5];
+        sim.bond.yaw = 0.0;
+        sim.bond.pitch = 0.0;
+        sim.step_bond(Default::default(), false, false, true);
+    }
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        assert_eq!(sim.drones.level_exit, Some(0x0700_0006),
+            "pressing E at the castle door loads the level [M 0x1b2318:64-88 — the gate-off fallback arm]");
+        let h = sim.drones.exit_hold
+            .expect("the use-key arm runs the same Trigger_Activate tail — GS_PauseGame(1) + the push [M 0x1b2318:90-92]");
+        assert_eq!((h.next, h.total), (0x0700_0006, 300), "the same 300-frame hold");
+    }
+    // The freeze begins the tick AFTER the use (the use tick itself completed — the game's
+    // Trigger_Activate sits mid-walk too): the clock stands still from here.
+    let frame0 = scene.sim.as_ref().unwrap().drones.frame;
+    for _ in 0..10 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    assert_eq!(scene.sim.as_ref().unwrap().drones.frame, frame0,
+        "the world froze on the use-key exit too [M 0x1c98c8:44-47]");
+    // And the hold runs its 300 frames here as well.
+    for _ in 0..301 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
+    let sim = scene.sim.as_ref().unwrap();
+    assert!(sim.drones.exit_hold.is_none() && sim.drones.level_exit == Some(0x0700_0006),
+        "the hold cleared with the exit request intact [M 0x1c98c8:173-189]");
+}
+
 /// Sister [M 0x1d94c0:194-199]: the script event-0x12 loadmap does NOT hold — 07000006's
 /// dressing exit (LoadPoint #746 → ch 0x83 → SP #810 `0x06000071` → event 0x12 → 07000007
 /// [D the placement; the walk_07000006 route]) posts `level_exit` with no hold, and the world
