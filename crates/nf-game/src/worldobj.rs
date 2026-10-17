@@ -274,11 +274,16 @@ impl Hurt {
             let tris = tris_of(p);
             let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
             for t in &tris { for v in t { for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); } } }
-            // The frame increment [M 0x17e870:47-50]: (count−1)·REC_FRAME_RATE·(FRAME_RATE/rate),
-            // REC_FRAME_RATE = 1/60 [M docs/fields/pickup.md +0x00], FRAME_RATE = 60 at play.
+            // The frame increment [M 0x17e870:47-50]: `(count−1)·REC_FRAME_RATE·(FRAME_RATE/rate)`.
+            // REC_FRAME_RATE is `GS_SetRefreshRate` 0x17d2b8's `1.0/FRAME_RATE` global, and the
+            // create runs during the level build — where the console's FRAME_RATE is 30, the value
+            // the doors' fallback speed preserves [L door.rs CREATE_FRAME_RATE, ee_start snapshot].
+            // The two factors cancel, so the step is (count−1)/rate in magnitude; the port keeps the
+            // game's exact op order (two multiplies at the load-time rate) for bit-faithful frames.
             let count = (p.extra[7] & 0xffff) as u16; // level_tag+0x02 [M 0x1d1b68:91]
             let rate = (p.extra[7] >> 16) as u16; // level_tag+0x04 [M 0x1d1b68:90]
-            let step = if count > 1 && rate != 0 { (count - 1) as f32 / rate as f32 } else { 0.0 };
+            let f = (count.saturating_sub(1)) as f32 * (1.0f32 / 30.0); // ·REC_FRAME_RATE @load
+            let step = if rate != 0 { f * (30.0f32 / rate as f32) } else { 0.0 }; // ·FRAME_RATE/rate @load
             let index = (p.extra[8] & 0xffff) as usize; // level_tag+0x08 = m_paths[placement+0x44]
             let keys = path_blocks.get(index).map(|b| crate::door::parse_keys(b)).unwrap_or_default();
             let channel = param(2) as u16;
@@ -336,6 +341,15 @@ impl Hurt {
             self.frame = 0.0;
             if self.oneshot == 1 { self.state = 2; } // the class byte drops next tick (0x17e5d0:42-45)
         }
+    }
+
+    /// This tick's pain from one volume: `(damage, type)` when the volume is live (not spent, gate
+    /// clear) and the player capsule contacts its triangles, `None` otherwise. The state machine has
+    /// to have ticked first (`WorldObjects::tick` — the game's update pass precedes the collision
+    /// pass).
+    pub fn pain(&self, toucher: &crate::triggers::Toucher) -> Option<(f32, u32)> {
+        if self.state == 2 || self.inactive || !self.touched_by(toucher) { return None; }
+        Some((self.damage, self.kind as u32))
     }
 
     /// The damage pass: whether the player's capsule contacts this volume's triangles — the port's
@@ -479,9 +493,6 @@ impl WorldObjects {
     /// `(Hurt_GetDamage, Hurt_GetType)` this tick. Spent one-shots left out: the game's state-2 write
     /// drops the class byte to 1, so `Player_DealWithObjHit` no longer matches 0x27 [M 0x17e5d0:42-45].
     pub fn hurt_pain(&self, toucher: &crate::triggers::Toucher) -> Vec<(f32, u32)> {
-        self.hurts.iter()
-            .filter(|h| h.state != 2 && !h.inactive && h.touched_by(toucher))
-            .map(|h| (h.damage, h.kind as u32))
-            .collect()
+        self.hurts.iter().filter_map(|h| h.pain(toucher)).collect()
     }
 }
