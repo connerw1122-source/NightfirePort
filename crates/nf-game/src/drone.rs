@@ -8332,7 +8332,11 @@ impl Drones {
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
     /// main map's drone placements), which orders the per-frame object updates.
-    pub fn attach_level(&mut self, level: &nf_formats::level::Level, level_hash: u32) {
+    /// The level attach without the level id (the world-fx level gates see 0) — every headless
+    /// caller's original form; the scene build passes the id through `attach_level_id`.
+    pub fn attach_level(&mut self, level: &nf_formats::level::Level) { self.attach_level_id(level, 0) }
+
+    pub fn attach_level_id(&mut self, level: &nf_formats::level::Level, level_hash: u32) {
         self.triggers = crate::triggers::build(level);
         // The AI points (`Drone_AIPoint` 0x137550; `parsemap_create_dynamic_objects` case 0xE9): type =
         // placement parameter 0 (the same word `Switch_Create` reads as the channel), position = the
