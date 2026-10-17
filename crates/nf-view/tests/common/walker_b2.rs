@@ -85,7 +85,9 @@ pub struct Walker {
     float_ticks: u32,
     sidestep: i32,
     max_y: f32,
-    lenient: bool,
+    /// Lenient walks bail (u32::MAX) at the 6000-tick cap instead of panicking — the caller
+    /// decides (walkreal_0700000b_live's deck leg keeps the interactions real on a wedge).
+    pub lenient: bool,
 }
 
 /// The stuck dump, public for the walkreal tests' own aim loops.
