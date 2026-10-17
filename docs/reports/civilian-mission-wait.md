@@ -85,17 +85,16 @@ Results on the branch: 2 passed. Pre-change: 0 passed / 2 failed.
 - `fix_drone4_live` (the party-guest walking gate, re-run directly on the final tree): 2 passed —
   the msg-0x22 arm does not disturb the normal CivilianMission walk.
 - The full fast runner (`tools/test/suite.py`, NF_ISO on the slim on-foot image) on the final
-  tree: build ok, 451 test binaries; the run was in flight at this report's deadline — see the
-  totals below.
+  tree: build ok, 451 test binaries, then the full run finished (48 min).
 
 ## Suite (final tree)
 
-- Total line: (see below — filled at the last push before the sandbox expired; if absent, the run
-  was still executing when this report was committed).
-- Failures observed while it ran: `probe_pylon_render::probe_render_pylon_only` (a pre-existing
-  probe failure, one of the allowed set the previous sessions' runs also list) and the slim-ISO
-  `disc_golden` trio. Nothing else up to the last poll; `civilian_mission_wait_live` itself
-  passed when run directly and inside the suite.
+- Total line: **1945 passed, 6 failed, 72 ignored (48 min)** — the 6 are the allowed set: the 3
+  slim-ISO `disc_golden` tests and the 3 pre-existing pylon probes
+  (`probe_pylon_render::probe_render_pylon_only`,
+  `fix_0c_pylon_live::the_0c_pylon_fills_the_view_from_the_closeup_spot`,
+  `fix_0c_pylon_live::the_0c_pylon_is_on_screen_at_the_user_spot`), the same set the previous
+  sessions' final runs list. `civilian_mission_wait_live` passed inside the suite.
 
 ## What's left / notes
 

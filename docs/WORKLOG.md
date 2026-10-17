@@ -16728,3 +16728,6 @@ suite.
   305/mux 25 raise it [D docs/systems/triggers.md] — the same number the DSTATE switch sees).
   Tests (nf-view/civilian_mission_wait_live.rs, 07000007's kind-8 guests, raw ids so they fail on
   master): pause+freeze+resume through the real Drone::send path, and the Bond-hold/re-arm sister.
+  Suite on the final tree: 1945 passed / 6 failed / 72 ignored (48 min) — the 6 are the allowed
+  set (3 disc_golden + 3 pre-existing pylon probes); civilian_mission_wait_live passed inside it.
+  Report: docs/reports/civilian-mission-wait.md.
