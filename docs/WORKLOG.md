@@ -17207,3 +17207,14 @@ through the real input path + a sister, run the touched crates + the full suite.
   formulas, the armed sister (hostile, no challenge), the unarmed challenge (0x5f + step 2), the
   restricted band → the fail reason 0xc + hostile, and the waiting pair activating through ch 21.
   3/3 pass. Report: docs/reports/door-guard-pairing.md.
+
+## droute-nearest-pullback (2026-10-16, branch s/droute-nearest-pullback) — start 23:00 UTC
+
+Task 734 (audit runner-up): port `AINetwork_AlterDestFor_DROUTE_Nearest` 0x156088 — when the
+chase route's A* ends at the FALLBACK node (CalcRoute 1 [M DoAStarPath 0x1571b0:222; the port's
+astar result 1]), the game's CalcRouteToPosition 0x15afe0:32 / CalcRouteToObject 0x15aee8 call
+the alter: cast the final leg from the route's LAST node (MoveTestFromNode), and when blocked
+pull the dest back to one unit before the hit (dest = hit − normalize(hit − node.pos) [M
+0x156088:33-56]), re-cel it, flag 0x40. Symptom: drones chasing a target behind cover stick or
+fail instead of closing to the nearest reachable point. Plan: the pull-back inside
+`Route::to_position` (both port chase callers ride it), a nav-level fail-first test + sisters.
