@@ -17885,3 +17885,12 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+
+## level-08-interactables (s/level-08-interactables)
+
+Task: every interactive thing and every model on 07000008 (Mayhew D: the gondola).
+Plan: census in docs/levels/07000008.md; then drive Bond through the real input path to one
+instance of every KIND on the level (use key, gadget, shooting, walking in) and fix what
+doesn't work — starting from the open items: Zoe shooting at Bond at the gondola (750r),
+the guards breaking the glass at the start (750p), the safe/briefcase, the rocket blast
+lighting (GAPS G-049). Then every model/mesh/skin/texture resolves.
