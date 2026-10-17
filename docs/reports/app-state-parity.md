@@ -42,7 +42,7 @@ candidates were stale and are fixed; the rest are already event-correct or have 
   the live handover.
 - **Suites run** (this sandbox kills background jobs — two nohup/setsid starts died with no
   output — so the runner went to the foreground; the full run cannot finish inside one tool
-  call and restarts from the first binary each chunk, so two targeted `--only` chunks over the
+  call and restarts from the first binary each chunk, so three targeted `--only` chunks over the
   touched systems stand in, on the final merged tree):
   - `mp_defaults_setup, mp_menu_flow, mp_core_live, mp_match_end_live, mp_host_match_live,
     difficulty_wiring_live, walk_07000004_ptp_live, level_end_live, fail_replay_level,
@@ -51,6 +51,9 @@ candidates were stale and are fixed; the rest are already event-correct or have 
   - `async_level_load_live, async_load_frame_loop, mp_bots_live, mp_screens, menus_flow,
     menu_audio_flows, menu_music_flow, mp_debriefing_flow, mp_defaults_setup, unlock_popups,
     mission_unlock_flow, save_progress_roundtrip` → **112 passed, 0 failed, 1 ignored**.
+  - `menus_e2e_mp, mp_menu_lists_live, codename_entry, settings_persist, memcard_save_flow,
+    mp_defaults_setup, mp_match_end_live, level_carry_live, level_reload_live,
+    fix_restart_target_live, fix_restart_health_live` → **78 passed, 0 failed, 0 ignored**.
   - Directly: `nf-game --lib ptp` 11 passed; `driving_mission_live` 5 passed;
     `walk_07000004_ptp_live` 4 passed; `mp_defaults_setup` 11 passed.
   - The full build (`cargo test --no-run` over the four crates) completed: **496 test binaries
