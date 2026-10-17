@@ -209,7 +209,7 @@ mod tests {
         let mut b = one(0, 50.0);
         for i in 0..5 {
             let kills = b.bullet_hit([5.0, 8.0, -4.0], [5.0, 8.0, -2.0], 0x1e, 10.0);
-            assert!(kills.is_empty() && !b.list[0].dead, "hit {i}: {50 - 10*(i+1)} left");
+            assert!(kills.is_empty() && !b.list[0].dead, "hit {}: {} left", i, 50 - 10 * (i + 1));
         }
         let kills = b.bullet_hit([5.0, 8.0, -4.0], [5.0, 8.0, -2.0], 0x1e, 10.0);
         assert_eq!(kills.len(), 1, "the 6th crosses below zero");

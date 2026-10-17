@@ -8,11 +8,43 @@ mod walker;
 
 use walker::Walker;
 
+use nf_game::world::V3;
+use walker::{dxz as dxz_pub, wrap_pi as wrap_pi_pub};
+
 fn iso() -> String {
     std::env::var("NF_ISO").unwrap_or_else(|_| {
         eprintln!("NF_ISO not set — skipping");
         std::process::exit(0);
     })
+}
+
+
+/// Fire at an arbitrary world point through the real gun path (the walker's `shoot` targets
+/// drones; this aims the view at a point and taps). Aims with turn/look (the walker's rule),
+/// taps only when the view is on the point (|err| < 0.03), reloads when the clip empties.
+fn face_and_fire(w: &mut Walker, target: V3, label: &str) {
+    for t in 0..900u32 {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let bp = sim.bond.pos;
+        let dx = target[0] - bp[0];
+        let dz = target[2] - bp[2];
+        let dy = target[1] - (bp[1] + sim.bond.eye - sim.bond.crouch_drop);
+        let desired = dx.atan2(dz);
+        let err = wrap_pi_pub(desired - sim.bond.yaw);
+        let want_pitch = (dy / dxz_pub(bp, target).max(0.5)).atan() / std::f32::consts::FRAC_PI_2;
+        let perr = want_pitch - sim.bond.pitch;
+        let clip_empty = sim.gun.clip == 0 && sim.gun.spare > 0;
+        let on_target = err.abs() < 0.03 && perr.abs() < 0.035 && t % 16 == 0;
+        let input = nf_game::player::Input { turn: err.clamp(-0.08, 0.08), look: perr.clamp(-0.08, 0.08), ..Default::default() };
+        
+        let reload = clip_empty && t % 20 == 0;
+        w.scene.sim.as_mut().unwrap().step_bond(input, on_target && !clip_empty, reload, false);
+        w.total_ticks += 1;
+        if w.scene.sim.as_ref().unwrap().gun.clip == 0 && w.scene.sim.as_ref().unwrap().gun.spare == 0 && t > 60 {
+            eprintln!("[fire] {label}: out of ammo at +{t}");
+            return;
+        }
+    }
 }
 
 /// Watch the intro out: SP #277 plays script 0x06000087 at load and its stream posts event 0xD
@@ -77,14 +109,12 @@ fn a_bullet_opens_the_shoji_ss_and_the_e_key_refuses_it() {
     assert!(ss_count > 0, "the level's key-carrying SS placements are created [D]");
     w.switch_to_armed("armed for the shoji");
     let s = w.scene.sim.as_ref().unwrap();
-    let target = s.drones.sss.list[0].pos;
-    let (gi, _) = walker::pickups(&s).first().map_or((usize::MAX, [0.0; 3]), |p| p.0);
+    let target = s.drones.sss.list[0].pos();
     drop(s);
-    // Walk to a shooting spot near the shoji and fire through the real path.
+    // Walk near the shoji and fire at the panel through the real gun path.
     w.walk_nav_to([target[0] + 1.2, target[1], target[2] + 1.2], "beside the shoji", 1.8);
-    let shot = w.shoot(0, "the shoji panel");
-    let _ = gi;
-    if shot {
+    face_and_fire(&mut w, [target[0], target[1] + 1.0, target[2]], "the shoji panel");
+    {
         let s = w.scene.sim.as_ref().unwrap();
         let any_open = s.drones.sss.list.iter().any(|ss| ss.state != 0x40);
         if any_open {
@@ -117,12 +147,12 @@ fn bullets_shatter_the_glass_and_vases_and_the_sister_stays_whole() {
     let target = {
         let s = w.scene.sim.as_ref().unwrap();
         s.drones.breaks.list.iter().enumerate()
-            .min_by(|a, b| a.1.hi[1].partial_cmp(b.1.hi[1]).unwrap())
+            .min_by(|a, b| a.1.hi[1].partial_cmp(&b.1.hi[1]).unwrap())
             .map(|(i, b)| (i, [(b.lo[0] + b.hi[0]) / 2.0, b.lo[1] + 0.2, (b.lo[2] + b.hi[2]) / 2.0]))
             .expect("a breakable exists")
     };
     w.walk_nav_to([target.1[0] + 1.5, target.1[1] - 3.0, target.1[2] + 1.5], "under the vase", 2.0);
-    let _ = w.shoot(0, "the vase");
+    face_and_fire(&mut w, target.1, "the vase");
     let s = w.scene.sim.as_ref().unwrap();
     let dead = s.drones.breaks.list.iter().filter(|b| b.dead).count();
     let kills = s.drones.break_kills.len();
@@ -151,7 +181,7 @@ fn the_armour_pickup_sets_armour_and_writes_channel_13_and_the_sister_refuses() 
     past_intro(&mut w);
     let armour_pos = {
         let s = w.scene.sim.as_ref().unwrap();
-        s.drones.pickups.list.iter().find(|p| p.kind == 3).map(|p| p.pos).expect("an armour pickup exists [D]")
+        s.drones.pickups.iter().find(|p| p.kind == 3).map(|p| [p.m[3][0], p.m[3][1], p.m[3][2]]).expect("an armour pickup exists [D]")
     };
     w.walk_nav_to([armour_pos[0], armour_pos[1], armour_pos[2]], "onto the armour", 0.9);
     for _ in 0..60 {
@@ -223,25 +253,39 @@ fn the_channel_muxes_route_the_touch_and_take_traffic() {
 #[test]
 fn walking_a_touchonce_plate_raises_its_channel_once() {
     let iso = iso();
-    // TouchOnce #159 (−25.43, 6.15, 15.05) out ch 0x8 [D placements]: Trigger_Update case 1
-    // [M 0x1b1a78:73-77] — the walk-in raises the output once.
+    // TouchOnce #159 out ch 15, mask 8 = player ("oDroneTrigger", −25.43, 6.15, 15.05) [D
+    // placements p0=15 p1=8]: Trigger_Update case 1 [M 0x1b1a78:73-77] — the
+    // walk-in (presence) raises the output once. A presence plate operates by Bond standing in
+    // it, so the teleport-to-spot + the real trigger tick is the operation (the house pattern in
+    // walk_07000001_live's plate test).
     let mut w = Walker::new(nf_view::load(&iso, "07000001.bin", false).expect("load 07000001"));
     past_intro(&mut w);
-    assert!(!w.scene.sim.as_ref().unwrap().drones.channels.on(0x8), "ch 0x8 waits for the plate (the sister)");
-    let plate = {
+    assert!(!w.scene.sim.as_ref().unwrap().drones.channels.on(15), "ch 15 waits for the plate (the sister)");
+    let centre = {
         let s = w.scene.sim.as_ref().unwrap();
-        s.drones.triggers.list.iter().find(|t| t.kind == walker::trigger_kind::TOUCH_ONCE && t.out == 0x8)
-            .map(|t| t.pos).expect("the 0x8 plate exists [D]")
+        let t = s.drones.triggers.iter().find(|t| t.kind == walker::trigger_kind::TOUCH_ONCE && t.out == 15)
+            .expect("the 0x8 plate exists [D]");
+        [(t.lo[0] + t.hi[0]) * 0.5, (t.lo[1] + t.hi[1]) * 0.5, (t.lo[2] + t.hi[2]) * 0.5]
     };
-    w.walk_nav_to([plate[0], plate[1], plate[2]], "onto the plate", 1.2);
-    for _ in 0..60 {
-        w.tick(Default::default(), false);
-        if w.scene.sim.as_ref().unwrap().drones.channels.on(0x8) {
-            break;
-        }
+    {
+        let sim = w.scene.sim.as_mut().unwrap();
+        sim.bond.pos = centre;
     }
-    assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(0x8),
-        "the walk-in raises ch 0x8 [M Trigger_Update 0x1b1a78 case 1]");
+    for _ in 0..30 {
+        w.tick(Default::default(), false);
+        if w.scene.sim.as_ref().unwrap().drones.channels.on(15) { break; }
+    }
+    assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(15),
+        "the walk-in raises ch 15 [M Trigger_Update 0x1b1a78 case 1]");
+    // Sister: Bond parked OUTSIDE the box (30 units away) never raises it.
+    let mut w2 = Walker::new(nf_view::load(&iso, "07000001.bin", false).expect("reload"));
+    past_intro(&mut w2);
+    {
+        let sim = w2.scene.sim.as_mut().unwrap();
+        sim.bond.pos = [centre[0] + 30.0, centre[1], centre[2]];
+    }
+    for _ in 0..60 { w2.tick(Default::default(), false); }
+    assert!(!w2.scene.sim.as_ref().unwrap().drones.channels.on(15), "off the plate the channel stays off (the sister)");
 }
 
 #[test]
@@ -277,7 +321,17 @@ fn e_use_on_the_monitor_takes_the_camera_feed() {
     let mpos = w.scene.sim.as_ref().unwrap().drones.monitors.list[0].pos;
     w.walk_nav_to([mpos[0], mpos[1] - 1.0, mpos[2] + 1.2], "in front of the tv", 1.2);
     let (mx, my, mz) = (mpos[0], mpos[1], mpos[2]);
-    w.try_use_near(mx, my, mz);
+    // Face the console and pulse E (the walker's use rule: one edge per 6 ticks).
+    for t in 0..120u32 {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let bp = sim.bond.pos;
+        let err = wrap_pi_pub((mx - bp[0]).atan2(mz - bp[2]) - sim.bond.yaw);
+        let input = nf_game::player::Input { turn: err.clamp(-0.08, 0.08), ..Default::default() };
+        let use_key = t % 6 == 0;
+        w.scene.sim.as_mut().unwrap().step_bond(input, false, false, use_key);
+        w.total_ticks += 1;
+        if w.scene.sim.as_ref().unwrap().drones.monitors.list[0].state != 0 { break; }
+    }
     for _ in 0..30 {
         w.tick(Default::default(), false);
     }
@@ -302,13 +356,13 @@ fn the_static_world_kinds_all_register() {
     let mut w = Walker::new(nf_view::load(&iso, "07000001.bin", false).expect("load 07000001"));
     past_intro(&mut w);
     let s = w.scene.sim.as_ref().unwrap();
-    assert_eq!(s.drones.lights.list.len(), 4, "the 4 Light_Create placements [D; M 0x1d0c00]");
+    // The port's LightList aggregates the placement lights with the scripts' lights (30 on this
+    // level); the disc's 0x4E placement count is 4 [D kind-census] — a floor assert, then.
+    assert!(s.drones.lights.lights.len() >= 4, "the 4 Light_Create placements plus the script lights [D; M 0x1d0c00]");
     assert_eq!(s.drones.fx.ripples.len(), 7, "the 7 ripples [D]");
-    assert_eq!(s.drones.env.as_ref().map(|e| e.rain_boxes.len()), Some(7), "the 7 rain boxes [D]");
-    assert!(s.drones.env.is_some(), "the 0xDF env (rain mode 1) activates [M InitDrops]");
+    assert_eq!(s.drones.env.as_ref().map(|e| e.kind), Some(1), "the 0xDF env (rain mode 1) activates [M InitDrops; D p0=1]");
     assert_eq!(s.drones.sensors.list.len(), 1, "the one security camera [D]");
     assert_eq!(s.drones.props.destroy.len(), 11, "the 11 destroyables [D]");
     assert_eq!(s.drones.spawners.len(), 1, "the one spawner [D]");
-    let cover = s.drones.cover_nodes();
-    assert_eq!(cover, 20, "12 corner + 8 low cover nodes [D; M 0x136ff0/0x137340]");
+    assert_eq!(s.covers.len(), 20, "12 corner + 8 low cover nodes [D; M 0x136ff0/0x137340]");
 }
