@@ -7170,9 +7170,11 @@ impl Scene {
                 return datum;
             }
             if a.flash.is_none() { return datum; }
-            // Bond's flash: 3 ticks after his shot (`BL+0x938` = 3), along the datum's +Z with a random roll and scale.
+            // Bond's flash: `BL+0x938` = 3 at the shot, and `Player_CollisionHandler` decrements it in the
+            // same tick before the draw test, so `Draw_MuzzleFlash` runs on 2 ticks [M 0x1949a8:192-202]
+            // (the port drew 3); along the datum's +Z with a random roll and scale.
             if self.sim.as_ref().and_then(|s| self.view_models.get(&s.gun.weapon)) == Some(&(a.character as usize)) {
-                return match self.sim.as_ref().and_then(|s| s.last_shot.filter(|&f| s.drones.frame.saturating_sub(f) < 3).map(|f| (s, f))) {
+                return match self.sim.as_ref().and_then(|s| s.last_shot.filter(|&f| s.drones.frame.saturating_sub(f) < 2).map(|f| (s, f))) {
                     Some((s, f)) => player_flash_matrix(&datum, s.drones.frame ^ f.wrapping_mul(0x9e37_79b9)),
                     None => collapse(&datum),
                 };
@@ -7642,6 +7644,26 @@ impl Scene {
                 let Some(c) = cols.get_mut((l.col_att + a as u32) as usize) else { continue };
                 if let Some(g) = s.drones.gas.puffs.get(gi as usize).filter(|g| g.mesh == gm) {
                     *c = [g.rgba[0] / 255.0, g.rgba[1] / 255.0, g.rgba[2] / 255.0, g.rgba[3] / 255.0];
+                }
+            }
+        }
+        // Bond's muzzle flash alpha: `Draw_MuzzleFlash` writes the object's alpha byte (`obj+0x106`) on
+        // every drawn tick as `wd[+0x51] + Rand_FRand(wd[+0x52] − wd[+0x51])` [M 0x1a3fe0:141-144], which
+        // `View_SetupRenderModes_Tweak` 0x1e5888:47-49 hands to `psiSetTweakARGB` as the draw's alpha
+        // factor (byte/255) — the launcher's 128..255, the P2K's 64..192 [L weapon_data]. The port drew
+        // every flash at alpha 1: a solid shape where the game's flash is a flickering, see-through one.
+        // (A render-side random like the roll/scale in `player_flash_matrix`, not the sim's RNG.)
+        if let Some(s) = self.sim.as_ref() {
+            if let (Some(&vm), Some(f)) = (self.view_models.get(&s.gun.weapon), s.last_shot) {
+                if let Some(r) = s.weapons.records.get(s.gun.weapon as usize) {
+                    let (lo, hi) = (r[0x51] as f32, r[0x52] as f32);
+                    let mut z = (s.drones.frame ^ f.wrapping_mul(0x9e37_79b9)).wrapping_mul(2_654_435_761).wrapping_add(0x6d2b_79f5);
+                    z ^= z >> 15; z = z.wrapping_mul(0x2c1b_3c6d); z ^= z >> 12;
+                    let alpha = (lo + (z >> 8) as f32 / (1u32 << 24) as f32 * (hi - lo).max(0.0)) / 255.0;
+                    for (a, att) in self.attachments.iter().enumerate() {
+                        if att.flash.is_none() || att.character as usize != vm { continue; }
+                        if let Some(c) = cols.get_mut((l.col_att + a as u32) as usize) { c[3] = alpha; }
+                    }
                 }
             }
         }

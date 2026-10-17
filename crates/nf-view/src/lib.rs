@@ -543,6 +543,8 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         }
     }
     phase_mark("03 level+levelbin parse, skeletons, 07F sequences", t); t = std::time::Instant::now();
+    // The level's own sleeve, before any merge lends foreign ones (see the substitution below).
+    let own_sleeve = SLEEVES.iter().copied().find(|h| level.by_hash.contains_key(h));
     merge_weapon_models(&iso, &read, &archive[..8], &mut level)?;
     phase_mark("04 weapon-models merge", t); t = std::time::Instant::now();
 
@@ -735,6 +737,14 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     // present → celglist 0 (nothing drawn). The port applies it once here, after the session
     // merges above, so every downstream reader (character_instances' mesh walk, the scene build,
     // the sim) sees exactly the hashes the game's runtime skin records carry.
+    // `AnimSleeveGetEntity(0)` picks the FIRST present entity of SleeveEnts, and the game's level only
+    // ever holds its own Bond's sleeve. The session/give merges can lend other levels' sleeves earlier
+    // in that list (they ride in on borrowed skins), which then won over the level's own: the 08
+    // launcher drew another level's grey glove instead of the tuxedo cuff and bare hand (PCSX2 side
+    // by side, 2026-10-17). A level with its own sleeve drops the borrowed ones before the pick.
+    if let Some(own) = own_sleeve {
+        for h in SLEEVES { if h != own { level.by_hash.remove(&h); } }
+    }
     {
         let present = |h: u32| level.by_hash.contains_key(&h);
         for sk in level.skins.values_mut() { sk.substitute_sleeves(present); }
