@@ -65,8 +65,10 @@ The mid cut-scene is the **truck hand-over**:
   and the chain exits through the real walked path.
 - `walk_07000005_live` 2/2, `fix_truck_live` 2/2 (the sisters — no interference).
 - `walkreal_07000001_live` 2/2 (the escort level, unchanged — the sanity side).
-- `nf-game --lib` 251 passed / 0 failed (the sim surface untouched by this session's
-  test-only changes; the branch is master 31dd6161 + test/doc commits).
+- `nf-game --lib` 251 passed / 0 failed; `nf-formats` lib 79 + carmodel_golden 2 passed
+  (disc_golden 11 passed / **3 failed = the slim ISO's allowed three**); `nf-audio --lib` 11;
+  `nf-view --lib` 17 — all 0 failed. The sim surface is untouched by this session's test/doc
+  commits; the branch is master 31dd6161 + test/doc commits only.
 - The fast suite (`tools/test/suite.py`) **could not run in this sandbox**: background jobs
   are reaped between tool calls here (setsid/nohup detached runs died within one tool call,
   twice — the empty `suite.out` stands as the record; the same was reported by
