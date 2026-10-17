@@ -35,6 +35,7 @@ pub mod casing;
 pub mod effect;
 pub mod lock;
 pub mod ss;
+pub mod sensor;
 pub mod mission;
 pub mod ptp;
 pub mod driving;

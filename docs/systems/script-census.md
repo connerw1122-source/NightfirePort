@@ -113,7 +113,7 @@ trigger placements (the 0xE8/0xEA-0xEF/0xF4 families plus raw 0xDC).
 | 07A00016.bin | 07000016 | 1 | 16 |
 
 
-Placement types the port handles (56 values: 48 simulated + 8 draw-only) and the game handles
+Placement types the port handles (57 values: 49 simulated + 8 draw-only) and the game handles
 (73 values, `parsemap_create_dynamic_objects` 0x1d04f0 — 72 spawn cases plus the 0xDC trigger
 raw-action form) overlap except for the rows below: 14 types the game handles and the port
 does not act on, plus 4 one-per-level marker types neither side touches. (The game's
@@ -129,7 +129,6 @@ has spawned them since — `nf-game/src/cover.rs` `from_placement`/`build`, `Dro
 | type | count | port | game spawn fn |
 |---|---|---|---|
 | 0x27 | 41 | — | GT_Create 0x17ffa0 |
-| 0x28 | 62 | — | Sensor_Create 0x1af010 |
 | 0x2b | 3 | — | LeafGen_Create 0x1acbd0 |
 | 0x2c | 15 | — | Lightning_Create 0x18cde8 |
 | 0x2d | 51 | — | Player_AddNewStartPos(,0) 0x195c00 |
@@ -297,7 +296,7 @@ player scripts, so its real gameplay reach is narrower than its 12,947 count.
 | 3 | placement 0xE6 cover low | 384 | `Drone_CoverLowNode` 0x137340 | guards crouch behind low cover |
 | 4 | placement 0xE9 AI point | 162 | `Drone_AIPoint` 0x137550 | patrol/waypoint graph points |
 | 5 | placement 0xE4 hurt volume | 64 | `worldobj::Hurt` (`Hurt_Create` 0x17e870) | DONE (hurt-volumes) |
-| 6 | placement 0x28 sensor | 62 | `Sensor_Create` 0x1af010 | channel trip volumes drive world logic |
+| — | placement 0x28 sensor | 62 | PORTED (sensor.rs, 2026-10-17): `Sensor_Create` 0x1af010 | security cameras; out channel after 2 s of player sight |
 | 7 | placement 0x2D start-pos slot 0 | 51 | `Player_AddNewStartPos(...,0)` 0x195c00 | second start-position set |
 | 8 | placement 0x27 GT | 41 | `GT_Create` 0x17ffa0 (+ Update/Activate/TakeControl) | controllable special object |
 | 9 | placement 0xFB music trigger | 15 | `MusicTrigger_Create` 0x1b30e0 / `_Update` 0x1b31a0 | `Music_Event(id,2)` countdown music |
@@ -334,9 +333,12 @@ records (165), NIS op none, anim ops 2/3 (0), event kinds 0x0e/0x10/0x13 (0), en
    `Player_HandlePain`), the 0x20 channel gate, the key-list state machine and the one-shot expiry.
    07000005's 13 are type-6 damage-1000 death planes; the gate test lives in
    crates/nf-game/tests/hurt_volumes_live.rs.
-4. **Sensor volumes (0x28, 62).** `Sensor_Create` 0x1af010: trip-by-anything volumes writing
-   switch channels (not player-only like 0xEA/0xEB). Verify: a drone walking through sets the
-   sensor's out channel; drives doors/alarm logic the port currently needs touch triggers for.
+4. ~~**Sensor volumes (0x28, 62).**~~ PORTED 2026-10-17 (branch s/sensor-volumes, crate::sensor).
+   Correction to the plan text: `Sensor_Update` 0x1af618 detects **glb_players[0] only**
+   (disasm 0x1af644 loads 0x2d88e0; both `Sensor_InCone` calls 0x1af97c/0x1afae0 pass it; no
+   switch_channels writer is NPC-driven) — a cone detector with range + `Intersect_ConeSphere`
+   0x1ee100 + LOS, alert after 32 in-cone ticks, out channel 1 after 2 s of continuous sight
+   (0x1af618:154-157), disable channel (param 4) parks it in state 3. Not "trip-by-anything".
 5. **Music triggers (0xFB, 15).** `MusicTrigger_Create` 0x1b30e0 + `MusicTrigger_Update`
    0x1b31a0: `Music_Event(id, 2)` while its countdown runs. Verify: entering the volume starts
    the combat music stinger; leaving lets it expire.
