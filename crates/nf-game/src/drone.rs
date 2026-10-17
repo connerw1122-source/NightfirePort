@@ -1381,7 +1381,7 @@ impl Drone {
         use nf_formats::ps2float::mul;
         let by_difficulty = match d.difficulty { 1 => self.prop(d, 9), 2 => self.prop(d, 5), 3 => self.prop(d, 8), _ => false };
         if by_difficulty {
-            let skin = match self.kind { 1 => Some(0x0500_0038), 2 => Some(0x0500_002f), 3 => Some(0x0500_0006), 6 => Some(0x0500_0093), 7 => Some(0x0500_00b2), _ => None };
+            let skin = captain_skin_of_kind(self.kind);
             if let Some(skin) = skin {
                 self.captain = true;
                 self.skin = skin;
@@ -7313,6 +7313,30 @@ pub fn drone_position_visible(player: &Player, world: &CollisionWorld, pos: V3) 
     l < 2.0 || (al > 1e-6 && (v[0] * a[0] + v[1] * a[1]) / (l * al) > 0.5
         && pts.iter().any(|&q| world.segment_bullet(player.eye, q).is_none())        // the cel byte +0xa0
         && world.segment_actor(player.eye, pos).is_none())                           // the game's 0xa27 ray
+}
+
+/// The captain skin by `kind` — `NDrone2_DefaultInit` 0x14b300:536-555's switch (`+0xe0`):
+/// kinds 1/2/3/6/7 get 0x05000038/0x0500002f/0x05000006/0x05000093/0x050000b2, every other kind
+/// keeps the placement's own hash. One source for `Drone::captain_setup` (the sim) and
+/// `captain_skin` (the draw side, which runs before `level_drones` creates the drones).
+pub fn captain_skin_of_kind(kind: u16) -> Option<u32> {
+    match kind { 1 => Some(0x0500_0038), 2 => Some(0x0500_002f), 3 => Some(0x0500_0006), 6 => Some(0x0500_0093), 7 => Some(0x0500_00b2), _ => None }
+}
+
+/// The skin `NDrone2_DefaultInit` 0x14b300:563-565 hands `AnimObjectNew`: the placement param 0
+/// after the captain swap — a captain by difficulty (property 9 on 1, 5 on 2, 8 on 3, reading the
+/// placement's behaviour words) of a swapped kind. Pure: the inputs are the placement's params +
+/// the property tables + the difficulty, so the draw side can ask for it without creating the
+/// drone (`Drone::new` draws the sight f0/fc frands — a pre-create probe would shift the RNG).
+pub fn captain_skin(skin: u32, param: &impl Fn(u32) -> u32, props: &nf_formats::drone::PropertyTables, level: u32, difficulty: u32) -> Option<u32> {
+    let by_difficulty = match difficulty {
+        1 => props.get(9, &nf_formats::drone::behaviour_words(&param).0) != 0,
+        2 => props.get(5, &nf_formats::drone::behaviour_words(&param).0) != 0,
+        3 => props.get(8, &nf_formats::drone::behaviour_words(&param).0) != 0,
+        _ => false,
+    };
+    if !by_difficulty { return None; }
+    captain_skin_of_kind(nf_formats::drone::drone_setup(skin, param(9), level).kind)
 }
 
 /// Every drone placement of the level's main map, in placement order (`Drone_Create`); spawner templates included

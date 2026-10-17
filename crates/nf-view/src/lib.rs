@@ -679,9 +679,28 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                 }
             }
         if !wanted.is_empty() {
-            static SKIN_ARCHIVES: std::sync::OnceLock<HashMap<u32, String>> = std::sync::OnceLock::new();
+            // G-021 (drone-skins-g021): the merge source must be a container the SESSION has
+            // already loaded. The skin table holds what the session's containers registered:
+            // `LoaderLoad` 0x1d4a00 opens a hash-named .bin container, walks its sub-file
+            // directory, and `LoaderProcess` 0x1d4880 case 3 hands each type-3 sub-file to
+            // `AnimLoadFile` 0x1bdf40, which registers it first-wins (`hashtable_additem` only
+            // when `hashtable_getitem` 0x1ca5b0 misses); NOTHING frees skins afterwards — the
+            // only table deletions are `LoadableLoad`/`LoadableReload` 0x1d69e8/0x1d6ab0's
+            // hashtype-4 wipe (0x1ca520 compares the hash top byte == 0x04, sequences) and
+            // `Script_FreeFromHashTable` 0x1daec0's single scripts. A fresh story session
+            // before level L therefore holds the front-end container (boot, 0x07000048) plus
+            // every earlier story level's container (mission::LEVELS order). A container the
+            // session has not loaded is NOT a source: 07000014's 0x050000b1 is carried only by
+            // 07000015/16's archives [D scan of all 99 containers — the only carriers], which
+            // the story loads AFTER 14, so the game's `hashtable_getitem` misses and
+            // `AnimObjectNew` 0x1be910:44-46 returns 0 — `NDrone2_DefaultInit` 0x14b300:563-565
+            // discards the return and the placement draws no character (skinless). The
+            // captains are the exception: 0x14b300:536-555 swaps a kind-6 captain's skin to
+            // 0x05000093 (kind 7 → 0x050000b2, …) before the request, which 14's own archive
+            // carries — the sim's `captain_setup` models that swap.
+            static SKIN_ARCHIVES: std::sync::OnceLock<HashMap<u32, Vec<String>>> = std::sync::OnceLock::new();
             let index = SKIN_ARCHIVES.get_or_init(|| {
-                let mut map = HashMap::new();
+                let mut map: HashMap<u32, Vec<String>> = HashMap::new();
                 for e in entries.iter().filter(|e| e.name.len() == 12 && e.name.ends_with(".bin")) {
                     let Ok(d) = iso.read_bytes(bin.lba as u64 * 2048 + e.offset as u64, e.size as u64) else { continue };
                     let Ok(l) = LevelBin::parse(&d) else { continue };
@@ -689,14 +708,35 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                         let raw = l.data(&d, pe);
                         if raw.len() < 4 { continue }
                         let h = u32::from_le_bytes(raw[0..4].try_into().unwrap());
-                        if (h & 0xff00_0000) == 0x0500_0000 { map.entry(h).or_insert_with(|| e.name.clone()); }
+                        if (h & 0xff00_0000) == 0x0500_0000 { map.entry(h).or_default().push(e.name.clone()); }
                     }
                 }
                 map
             });
+            let story_pos = |id: u32| nf_game::mission::LEVELS.iter().position(|l| l.level == id);
+            let cur = u32::from_str_radix(&archive[..8], 16).unwrap_or(0);
+            let cur_pos = story_pos(cur);
+            // The session gate: the front-end container (boot) and every story level BEFORE the
+            // current one. A story container loaded later, and the MP/bonus containers the SP
+            // story never opens, are not sources. For a non-story load (dev/packs) the story
+            // containers stay eligible [S — no retail path pins it].
+            let session_container = |name: &str| -> bool {
+                if name.eq_ignore_ascii_case("07000048.bin") { return true; }
+                let Some(id) = name.get(..8).and_then(|s| u32::from_str_radix(s, 16).ok()) else { return false };
+                match (story_pos(id), cur_pos) {
+                    (Some(p), Some(c)) => p < c,
+                    (Some(_), None) => true,
+                    (None, _) => false,
+                }
+            };
             let mut merged: Vec<String> = Vec::new();
             for want in wanted.iter() {
-                let Some(archive_name) = index.get(want) else { eprintln!("g-021: skin {want:08x} is on no archive of the disc"); continue };
+                let Some(carriers) = index.get(want) else { eprintln!("g-021: skin {want:08x} is on no archive of the disc"); continue };
+                let Some(archive_name) = carriers.iter().find(|n| session_container(n)) else {
+                    eprintln!("g-021: skin {want:08x} is carried only by {} — no container the session has loaded; the game's hashtable_getitem 0x1ca5b0 misses and the placement draws no character (AnimObjectNew 0x1be910:44-46)",
+                        carriers.join("/"));
+                    continue;
+                };
                 if merged.contains(archive_name) { continue; }
                 merged.push(archive_name.clone());
                 let Some(fd) = read(archive_name)? else { continue };
