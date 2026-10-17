@@ -16727,3 +16727,11 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+## sensor-volumes (2026-10-17, branch s/sensor-volumes) — started 01:05 UTC
+
+Task 749: sensor volumes (script type 0x28), 62 placements. `Sensor_Create` 0x1af010 and its
+update — trip volumes that anything (not only the player) can set, writing switch channels.
+Porting from the decompile [M]; test on real levels through the real path with a sister
+assertion (drone walking through sets the sensor's out channel; an empty volume doesn't).
+Update `crates/nf-formats/tests/script_census.rs`'s handled sets.
