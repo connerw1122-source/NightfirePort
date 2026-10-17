@@ -16851,3 +16851,26 @@ hit/death variants fire. Branch from origin/master 170bcf01.
   now routes through msg 9 in one delivery [M 0x146480:103-104], the pick guards health ≤ 0, and
   AstronautDeath ENTER sets the port's corpse model (the game's 0x200 rides SetAsDead, uncalled
   by 0xBF [M]). fix_finale 4/4 + astronaut 5/5 + fix_actors 4/4×2 green after the fix.
+
+## light-create-census — census of Light_Create call sites, port missing SIM-side lights
+
+Branch: s/light-create-census (cut from origin/master c8186aa1).
+Task: full census of Light_Create 0x1cc3d8 call sites in ACTION.ELF (arguments, condition,
+ported-or-not with file:line); port every missing light on the SIM side (LightList entries,
+with the game's RNG draw); tests for each newly ported site (light appears with game
+arguments on trigger tick). Known sites listed by the driver: Bullet_DoTrails 0x12d890,
+Bullet_update 0x12e7b0 (ported), GunImp_Update 0x1320d8, DroneWeap_FireWeapon 0x178f68,
+HUD_UpdateNightSightPane 0x19d218, Player_MuzzleFlash 0x1a4298, Player_WeaponFiring
+0x1a5460, Sub_Create 0x1ad6c0, AnimProcessScriptCmds 0x1c1b38, Searchlight_Create,
+parsemap_create_dynamic_objects, Script_LightStart. Explosions are priority (08 rocket
+corridor ~2.5x brighter on PS2).
+
+Work done (same session): full census of all 14 `jal Light_Create` sites (ABI pinned from the
+callee: a0 pos / a1-3 rgb / f12 radius / a4 channel / a5 life / a6 kind / f13 intensity /
+a7 period / stack+0 seed / +8 mask / +16 sound). Driver's list corrected: the site near
+Searchlight_Create is inside Light_SetAmbientRadiators; Searchlight_Create uses psiLight_Create
+directly. Fix: the 0x4E placement light's radius is `(float)(uint)` [M 0x1d0b8c-0x1d0bd0], not
+float bits — the old from_bits made every 0x4E light contribute nothing. Live test
+light_create_census_live.rs (1 passed); nf-game lib 241 passed. Report:
+docs/reports/light-create-census.md (incl. live checks for the radiator-radius discrepancy and
+site 5's rgb table).

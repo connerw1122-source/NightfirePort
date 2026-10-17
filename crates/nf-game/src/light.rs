@@ -394,7 +394,13 @@ pub fn placement_light(level: &nf_formats::level::Level, map: usize, index: usiz
     if p.flags & 0xff != 0x4e || p.flags & 0xa000 != 0 { return; }
     let e = |k: usize| p.extra.get(k).copied().unwrap_or(0);
     let b = |k: usize| (e(k) & 0xff) as u8;
-    lights.create_full(f32::from_bits(e(2)), 1.0, p.translation,
+    // The game converts the radius as an UNSIGNED INT, not float bits: `parsemap_create_dynamic_objects`
+    // 0x1d0b8c `lw $v0, 44($s1)` → `mtc1` → `cvt.s.w $f12, $f12`, with the `bltz` arm
+    // (0x1d0bb4: `srl v1, v0, 1` / `or v0, v0 & 1, v1` / cvt / `add.s f12, f12, f12`) the standard
+    // uint→float expansion for values ≥ 2^31 — the compiler's `(float)(unsigned)placement->radius`
+    // [M 0x1d0b8c-0x1d0bd0]. The old `f32::from_bits` made every 0x4E radius ~1e-44, so `1/radius²`
+    // overflowed and the light could never contribute (atten = max(0, 1/d² − 1/r²) stayed 0).
+    lights.create_full(e(2) as f32, 1.0, p.translation,
         [b(3), b(4), b(5)], (e(6) & 0xffff) as u16, -1, 0,
         (e(7) & 0xffff) as u16, (e(8) & 0xffff) as u16, (e(9) & 0xffff) as u16, rng);
 }
