@@ -17719,3 +17719,10 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+
+## movie-trigger-41 (2026-10-17, branch s/movie-trigger-41) — start 05:05 UTC
+
+Task: the movie-player trigger (Trigger_MoviePlayer 0x1b2a08, Trigger_Update case 0xd) wired into the
+port's resolve_exit_code path like LOAD_LEVEL, plus NIS events 0x08 (Drone_CoderCreate 0x13a108) and
+0x0a (Break_DoBreak 0x12c168) in script 0600005b (07000001). Tests for each, census handled sets
+updated. In progress.
