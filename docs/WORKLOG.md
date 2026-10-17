@@ -17391,3 +17391,9 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+- 2026-10-17 s/tranq-gun (task 750l): "tranq gun doesnt work" (playtest 1016-evening). Plan:
+  find the tranquilizer weapon record (USATxt + weapon_data; which levels carry it), its fire
+  path (bullet record, the dart's hit route on a guard — the msg it sends, e.g. a sleep/knock-out
+  state family like the taser's 0x4A-0x4C, timers and recovery) and port what is missing.
+  Reproduce on master through the real input path (equip it on a level that carries it, fire at
+  a guard) fail-first, then fix; same test passes. Branch created from origin/master 31dd6161.
