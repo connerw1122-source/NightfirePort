@@ -20,7 +20,8 @@
 //! - The decompile drops `Gas_Init`'s 11th argument (the life, a stack ushort) at EVERY call site — the
 //!   disassembly passes it [M 0x1aad24 `lhu 0xc0(sp)`; the searchlight site 0x1cbce0/0x1cbcb0 = 0x80].
 //! - Update (`gases_smoke` 0x1ab2d0) per type: 0 = vel damped ×0.95/frame + slight gravity, scale grows;
-//!   4 = pos += vel (+ gravity·0.01), vel damped; 7 = scale grows, pure buoyancy drift (no own velocity);
+//!   4 = pos += vel (+ gravity·0.01), vel damped; 7 = pos += vel + WldGravity·(REC·−0.02) — the wind
+//!   drift KEPT, a slight upward buoyancy [M 0x1ab2d0:47-65, rocket-trail-gas];
 //!   9/10 = hidden emitters (not ported); the tail fades rgba and kills at life ≤ 0 (obj+0xFE |= 1).
 //!
 //! RNG discipline: the game's draw count per puff is 1 (the caller's rotation draw) + 2 (spin, sign)
@@ -227,10 +228,13 @@ impl GasPool {
             * if jitter(n, 2) > 0.5 { 1.0 } else { -1.0 };
         // Velocity by type [M 0x1aacc8:89-141]: 4 = given · REC + ±0.05 x/z jitter; 7 = the wind
         // (Env_GetWindVel — the port's rooms carry no wind radiators for these sources [S]) + the
-        // (rand−0.1, rand, rand−0.1) spread over 0.2; else the decomp's (0, REC, 0) default.
+        // (rand−0.1, rand, rand−0.1) spread over 0.2, ALL × REC_FRAME_RATE [M 0x1aacc8:108-115:
+        // `(*pfVar1 + (fVar11 - 0.1)) * REC_FRAME_RATE` with fVar11 = Rand_FRand(0.2)]; else the
+        // decomp's (0, REC, 0) default. rocket-trail-gas: the old kind-7 arm dropped the ·REC —
+        // ~12× the game's drift on every generic kind-7 puff (the muzzle smoke included).
         let vel = match kind {
             4 => [vel[0] * REC_FRAME_RATE + (jitter(n, 3) - 0.025), vel[1] * REC_FRAME_RATE, vel[2] * REC_FRAME_RATE + (jitter(n, 4) - 0.025)],
-            7 => [(jitter(n, 3) - 0.1) * 0.2, jitter(n, 5) * 0.2, (jitter(n, 4) - 0.1) * 0.2],
+            7 => [(jitter(n, 3) * 0.2 - 0.1) * REC_FRAME_RATE, jitter(n, 5) * 0.2 * REC_FRAME_RATE, (jitter(n, 4) * 0.2 - 0.1) * REC_FRAME_RATE],
             _ => [0.0, REC_FRAME_RATE, 0.0],
         };
         let _ = yaw;
@@ -273,9 +277,14 @@ impl GasPool {
                     for k in 0..3 { g.pos[k] += g.vel[k] + WLD_GRAVITY[k] * 0.01 * REC_FRAME_RATE; }
                     for k in 0..3 { g.vel[k] *= 0.95 - REC_FRAME_RATE; }
                 }
-                // Case 7 [M 0x1ab2d0 case 7]: no own velocity; gravity·0.05 drift.
+                // Case 7 [M 0x1ab2d0 case 7 = the case-0 fallthrough body :47-65]: pos += vel +
+                // WldGravity·(REC_FRAME_RATE·−0.02·FRAME_RATE_MUL) — the puff KEEPS its own wind
+                // velocity and the negative gravity factor is an upward buoyancy (y +=
+                // 9.8·0.02/60 ≈ +0.0033/tick). rocket-trail-gas: the old arm sank the puff at
+                // gravity·0.05 and dropped vel entirely.
                 7 => {
-                    for k in 0..3 { g.pos[k] += WLD_GRAVITY[k] * 0.05 * REC_FRAME_RATE; }
+                    for k in 0..3 { g.pos[k] += g.vel[k]; }
+                    g.pos[1] += WLD_GRAVITY[1] * -0.02 * REC_FRAME_RATE;
                 }
                 _ => {}
             }

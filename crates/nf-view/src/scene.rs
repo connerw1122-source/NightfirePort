@@ -3671,8 +3671,12 @@ impl Sim {
                             // (the draw keeps the shared RNG's draw count bit-exact).
                             let _angle = self.drones.rng.frand(6.2831854820251465);
                             // The puff itself: models-misc's gas system (`Gas_Init(0.05, 0.1, …, 0x2000039, 7,
-                            // 0x48403080, 1)` [M 0x1a4298]); Gas_Init's own draws stay un-consumed (G-033). Life [S] 8 ticks.
-                            self.drones.gas.init(pos, 0.0, [0.0; 3], 0.05, 0.1, 7, [0x48, 0x40, 0x30, 0x80], 8.0);
+                            // 0x48403080, end 1)` [M 0x1a4298]); Gas_Init's own draws stay un-consumed (G-033).
+                            // rocket-trail-gas: the decomp-dropped 11th arg (the life) is 0x80 = 128 ticks
+                            // [M 0x1a43f8 `li $v0, 0x80` → 0x1a442c `sw $v0, 0($sp)`] — the old 8 was [S] —
+                            // and the packed END rgba is 1 = bytes (0,0,0,1), so the alpha rate is
+                            // (1−0x80)/128 [M 0x1a4440 delay slot `li $t3, 1`].
+                            self.drones.gas.init_ex(nf_game::gas::SMOKE_QUAD, pos, 0.0, [0.0; 3], 0.05, 0.1, 7, [0x48, 0x40, 0x30, 0x80], 1, 128.0);
                         }
                     }
                     if spawn_shot {

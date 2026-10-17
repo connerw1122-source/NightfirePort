@@ -335,8 +335,10 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2
 
 /// The muzzle smoke puff: `Gas_Init` 0x1aacc8 (the shot's `Rand_FRand(2π)` draw rides the shared
 /// RNG in the game's order) + `gases_smoke` 0x1ab2d0. The game's params for the shot: start scale
-/// 0.05, end scale 0.1, start ARGB 0x48/0x40/0x30/0x80, life 1 [M 0x1a4458 call]. The drift/growth
-/// model below is [S]: the exact `gases_smoke` velocity integration is not read.
+/// 0.05, end scale 0.1, start ARGB 0x48/0x40/0x30/0x80, packed END rgba 1 — bytes (0,0,0,1) [M
+/// 0x1a4298:100-102, 0x1a4440], the decomp-dropped stack life 0x80 = 128 ticks [M 0x1a43f8/0x1a442c,
+/// rocket-trail-gas]. The live spawn runs through `GasPool::init_ex` (scene.rs, the muzzle-flash
+/// tick); this struct is the older models-misc stand-in kept for the render slot type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Smoke {
     pub pos: [f32; 3],
