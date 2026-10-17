@@ -17782,3 +17782,9 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   passed, 6 failed, 73 ignored (479 binaries) — the 3 slim-ISO disc_golden + the pylon render
   trio (GPU-less sandbox, sim-side change cannot reach them; flagged for the main agent's
   render). Report: docs/reports/frag-throw-timing2.md.
+- 2026-10-17 s/tranq-gun (task 750l): "tranq gun doesnt work" (playtest 1016-evening). Plan:
+  find the tranquilizer weapon record (USATxt + weapon_data; which levels carry it), its fire
+  path (bullet record, the dart's hit route on a guard — the msg it sends, e.g. a sleep/knock-out
+  state family like the taser's 0x4A-0x4C, timers and recovery) and port what is missing.
+  Reproduce on master through the real input path (equip it on a level that carries it, fire at
+  a guard) fail-first, then fix; same test passes. Branch created from origin/master 31dd6161.
