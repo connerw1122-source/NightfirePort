@@ -17391,3 +17391,12 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+- 2026-10-17 s/frag-throw-timing2 (task 750k): Finish frag-throw-timing (task 741, HELD at the
+  2026-10-16 batch merge): on top of the batch, nf-view fix_grenade_types_live::
+  the_stun_grenade_whites_bond_out_at_the_games_time_and_alpha fails (alpha 0.673 vs the
+  formula's 0.758/0.379, tolerance 0.08 [M 0x12dfb0]) because the test reconstructs the blast
+  point from the last grenade position it saw while the new release timing leaves the grenade
+  still moving at the pop. Plan: expose what the game used (blast position, eye point, aim yaw
+  at the flash_amount call) and assert the test against exactly those; keep the branch's own
+  frag_throw_timing_live green. Branch = origin/s/frag-throw-timing 7f41e160 merged with
+  origin/master 31dd6161 (the frag-throw work is already an ancestor of master).
