@@ -36,3 +36,7 @@ claimed-by: sandbox6 at 2026-10-17T03:10Z
 ## Report (done, 2026-10-17T03:34Z)
 
 Closed by the driver: the report is on `s/frag-throw-timing2` (docs/reports/frag-throw-timing2.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-17T04:23Z)
+
