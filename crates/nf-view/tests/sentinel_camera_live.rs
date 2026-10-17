@@ -52,18 +52,22 @@ fn give_and_select(scene: &mut Scene, weapon: u8, spare: u32) {
     for _ in 0..10 { step(scene, Input::default(), false); }
 }
 
-/// The guided 0x2c's rocket flies at the MEASURED flight speed (0.2525 u/tick = the record's
-/// +0x20 0.25 [L] × the 0x200 quarter [M 0x12c5a0:207-211] × the measured 4.04 flight scale), and
-/// the unguided twin 0x2d at 0.33666 [L PCSX2] — not the init-only 0.0625/0.0833 the playtest
-/// called "way too slow". Sister: the two twins keep the records' own +0x20 ratio (3/4).
+/// The Sentinel rockets leave at the record's QUARTER speed (+0x6C & 0x200 [M Bullet_init 0x12c5a0:
+/// 207-211]) and gain 2% of +0x20 per tick while below it [M Bullet_DoTrails 0x12d890:134-138] —
+/// ending at the MEASURED flight speed: 0x2c 0.0625 + 38 × 0.005 = 0.2525 u/tick and 0x2d 0.0833 +
+/// 38 × 0.00667 = 0.33666 [L PCSX2 2026-10-14, BU+0xF8 in flight]. (rocket-ramp: the old pin read an
+/// early-flight displacement against a constant ×4.04 stand-in; the PS2's slow launch is the plume
+/// by the camera, PCSX2 side by side 2026-10-17.) Sister: the start is the quarter, not the cruise.
 #[test]
 fn the_sentinel_rockets_fly_at_the_measured_flight_speed() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
-    for (weapon, want) in [(0x2cu8, 0.25 * 0.25 * 4.04), (0x2du8, 0.333_333_3 * 0.25 * 4.04)] {
+    // After the fire tick the rocket has had its first update: the state-0 arm falls through to the
+    // shared tail that moves it and runs `Bullet_DoTrails` [M Bullet_update 0x12e7b0:115-148 → 374-475],
+    // so one ramp step is already in: quarter + 2% of +0x20.
+    for (weapon, start_want, want) in [(0x2cu8, 0.25f32 * 0.25 + 0.25 * 0.02, 0.2525f32), (0x2du8, 0.333_333_3 * 0.25 + 0.333_333_3 * 0.02, 0.336_666_6)] {
         let mut scene = nf_view::load_weapons(&iso, "07000005.bin", false, &[0x2c, 0x2d]).expect("load 07000005 with the Sentinel merged (the --give path)");
         for _ in 0..30 { step(&mut scene, Input::default(), false); }
         give_and_select(&mut scene, weapon, 0x2a);
-        // The weapon is drawn; fire once through the trigger lane.
         let sim = scene.sim.as_ref().unwrap();
         assert_eq!(sim.gun.weapon, weapon, "the switch lane landed on {weapon:#x}");
         let before = sim.drones.player_bullets.len();
@@ -72,25 +76,22 @@ fn the_sentinel_rockets_fly_at_the_measured_flight_speed() {
         assert!(sim.drones.player_bullets.len() > before, "the shot spawned a bullet");
         let b = sim.drones.player_bullets.last().unwrap();
         assert_eq!(b.weapon, weapon as u16);
-        // Ride a few ticks (the guided one steers — the displacement magnitude still carries the speed).
-        let start = b.pos;
+        assert!((b.speed - start_want).abs() < 1e-5, "the {weapon:#04x} rocket starts at the quarter speed + one ramp step {start_want:.5}, got {:.5}", b.speed);
+        // Ride until the ramp is done (38 ticks) or the rocket dies.
+        let mut last = b.speed;
         let mut steps = 0u32;
-        for _ in 0..8 {
+        for _ in 0..60 {
             step(&mut scene, Input::default(), false);
             let sim = scene.sim.as_ref().unwrap();
             match sim.drones.player_bullets.last() {
-                Some(bb) if !bb.dead => steps += 1,
+                Some(bb) if !bb.dead && bb.weapon == weapon as u16 => { last = bb.speed; steps += 1; }
                 _ => break,
             }
         }
-        let sim = scene.sim.as_ref().unwrap();
-        let b = sim.drones.player_bullets.last().unwrap();
-        let d = ((b.pos[0] - start[0]).powi(2) + (b.pos[1] - start[1]).powi(2) + (b.pos[2] - start[2]).powi(2)).sqrt();
-        assert!(steps >= 4, "the rocket flew {steps} ticks — too short to measure");
-        let per_tick = d / steps as f32;
-        eprintln!("[sentinel] weapon {weapon:#04x}: {per_tick:.5} u/tick over {steps} ticks (want {want:.5})");
-        assert!((per_tick - want).abs() < want * 0.05,
-            "the {weapon:#04x} rocket flies at {per_tick:.5} u/tick, the measured flight speed is {want:.5} (master's init-only speed was 5.4× slower)");
+        eprintln!("[sentinel] weapon {weapon:#04x}: speed {last:.5} after {steps} ticks (want {want:.5})");
+        assert!(steps >= 40, "the rocket flew {steps} ticks — too short to reach its cruise");
+        assert!((last - want).abs() < 1e-4,
+            "the {weapon:#04x} rocket cruises at {last:.5} u/tick, the measured flight speed is {want:.5}");
     }
 }
 

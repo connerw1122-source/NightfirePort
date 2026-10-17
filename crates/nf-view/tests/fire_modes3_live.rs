@@ -499,7 +499,11 @@ fn torpedo_is_homing_slow_and_cameraless() {
     let sim = scene.sim.as_ref().unwrap();
     let b = sim.drones.player_bullets.last().expect("the torpedo spawned");
     assert_eq!(b.weapon, 0x30, "the fired bullet is the torpedo's");
-    assert!((b.speed - rec_speed * 0.25).abs() < 1e-6,
-        "the torpedo spawned at QUARTER speed (record {rec_speed} × 0.25 [M 0x12c5a0:188-190]), got {}", b.speed);
+    // rocket-ramp: the fire tick and the 3 ticks after are 4 updates, each adding 2% of +0x20 while
+    // below it [M Bullet_DoTrails 0x12d890:134-138] — the spawn itself is the quarter.
+    assert!((b.speed - (rec_speed * 0.25 + 4.0 * rec_speed * 0.02)).abs() < 1e-6,
+        "the torpedo spawned at QUARTER speed (record {rec_speed} × 0.25 [M 0x12c5a0:188-190]) and ramped 4 ticks, got {}", b.speed);
+    // Sister: not the full record speed (the quarter bit took effect).
+    assert!(b.speed < rec_speed * 0.5, "the torpedo flies at {} — the quarter-speed start was lost", b.speed);
     assert!(scene.sim.as_ref().unwrap().missile_cam.is_none(), "no camera ride for the torpedo");
 }

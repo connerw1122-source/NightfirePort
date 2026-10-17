@@ -24,12 +24,15 @@ fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 // the game picks lights per object [M View_DrawObjList 0x1e69a0:73-81]) splits the shared character
 // groups, so ONLY the material count and the hash move; vertices, indices, char verts, characters,
 // attachments, colliders, cels, drones and pickups are unchanged on all 5 levels.
+// Re-pinned at rocket-look: the swoosh ribbon pools (2 meshes x 128 slots) and Bond's projectile slots
+// 8 -> 32 per projectile mesh add attachments (+496..+640) and their vertices, plus one material (the
+// ribbons' additive batch); characters, colliders, cels, drones and pickups are unchanged on all 5.
 const BASELINE: &[(&str, &str)] = &[
-    ("07000002.bin", "45e28bc78ef967f1 4303432 8995716 5506 4160642 81 9186 255 28 25 8"),
-    ("07000005.bin", "1c51c5202981ea45 4204127 8788635 3575 4119786 73 9235 106 19 16 6"),
-    ("0700000c.bin", "3bae6bfd545927f7 4687168 9851358 8176 4496344 96 10452 170 22 40 15"),
-    ("07000014.bin", "19942d45f2897e0b 7060774 14654658 7225 6907637 134 12845 176 41 37 32"),
-    ("07000001.bin", "a8ca9eb066a7c76e 4215988 8835732 3677 4133583 76 9200 156 11 20 6"),
+    ("07000002.bin", "c582e1cecfa95882 4477000 9358692 5507 4334210 81 9682 255 28 25 8"),
+    ("07000005.bin", "6a43ad2ce9dee894 4377695 9151611 3576 4293354 73 9731 106 19 16 6"),
+    ("0700000c.bin", "15de2f0294792a8a 4871632 10240830 8177 4680808 96 10996 170 22 40 15"),
+    ("07000014.bin", "507c3355ead4823c 7335190 15226002 7226 7182053 134 13485 176 41 37 32"),
+    ("07000001.bin", "8c9aa4f6a555441e 4389556 9198708 3678 4307151 76 9696 156 11 20 6"),
 ];
 
 #[test]
