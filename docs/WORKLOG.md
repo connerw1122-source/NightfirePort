@@ -17391,3 +17391,9 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+- 2026-10-17 s/mayhew-exit-walk (task 750c): Mayhew is bugged walking to the exit
+  before the mid cut-scene on the estate levels (07000005). Plan: reproduce on
+  master through the real path (nf_view::load + step_bond), record Mayhew's route
+  nodes and states per tick, port the game's scripted route/goal and the
+  cut-scene trigger with [M] citations. Branch created from origin/master
+  31dd6161.
