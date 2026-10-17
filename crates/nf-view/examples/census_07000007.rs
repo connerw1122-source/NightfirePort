@@ -35,11 +35,24 @@ fn main() {
             } else {
                 (main.objects.get(p.index as usize).map(|o| o.name.as_str()).unwrap_or("<obj-oob>"), format!("obj#{}", p.index))
             };
+            let bounds = |p: &nf_formats::placement::Placement| -> ([f32;3],[f32;3]) {
+                let (omap, oobj) = if p.by_hash() {
+                    match by_hash(p.hashcode) { Some(x) => x, None => return ([0.0;3],[0.0;3]) }
+                } else { (m, p.index as usize) };
+                let o = &level.maps[omap].objects[oobj];
+                let mx = nf_formats::placement::object_matrix(p.rotation, p.translation);
+                let mut lo = [f32::INFINITY;3]; let mut hi = [f32::NEG_INFINITY;3];
+                for x in [o.min[0], o.max[0]] { for y in [o.min[1], o.max[1]] { for z in [o.min[2], o.max[2]] {
+                    let v = nf_formats::placement::transform(&mx, [x,y,z]);
+                    for k in 0..3 { lo[k] = lo[k].min(v[k]); hi[k] = hi[k].max(v[k]); }
+                } } }
+                (lo, hi)
+            };
+            let (blo, bhi) = bounds(p);
             println!(
-                "#{i} {hash} {objname:<30} pos ({:.1},{:.1},{:.1}) rot({:.2},{:.2},{:.2}) params {:?} extra[7]={:#x} extra[8]={:#x}",
+                "#{i} {hash} {objname:<30} pos ({:.1},{:.1},{:.1}) params {:?} world bounds ({:.1},{:.1},{:.1})..({:.1},{:.1},{:.1})",
                 p.translation[0], p.translation[1], p.translation[2],
-                p.rotation[0], p.rotation[1], p.rotation[2],
-                p.params, p.extra[7], p.extra[8]
+                p.params, blo[0], blo[1], blo[2], bhi[0], bhi[1], bhi[2]
             );
         }
     }
