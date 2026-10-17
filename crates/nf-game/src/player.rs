@@ -441,23 +441,31 @@ impl Bond {
         // `!= SS_WALK` gate silently killed the swim-grab call swim_tick already made (the user's "I
         // can't latch onto it and climb it" at the 02 pond hut ladder).
         if matches!(self.substate, SS_CLIMB | SS_GRAPPLE) || self.regrab != 0 { return; }
-        // The pick shape follows the substate's HITTEST arm [M Player_Collision 0x194df0]: the swim
-        // capsule (case 3: the low short segment, radius 0.55), the WALK arm (case 0/6: radius
-        // +0x7CC = 0.275, segment A = pos + up·0.55, B = pos + up·(+0x7CC − cc)) and the DEFAULT
-        // arm (crouch 4 and the rest: radius 0.55, A = pos + up·0.275, B = pos + up·(0.55 − cc)) —
-        // and the swim stage-2 cut is the mesh-scale reach (Ladder::capsule_hits_swim), the
-        // dismount-into-water escape (the 109i infinite latch). The walk arm's own 0.275 is the
-        // walk grab's reach past the rung plane (fix-ladder-water2): the game's CollLadder fires
-        // from the walking HITTEST's mesh refine, so a stander 0.5+ off the plane never grabs.
+        // The pick shape follows the substate's HITTEST arm. The switch indexes on substate−1 [M
+        // disasm 0x19506c-0x195098: `lhu 0xf6($s3)`, `addiu −1`, the jump table — so 0x194df0's
+        // "case 0" is the CLIMB substate 1 (r 0.275, A = up·0.55, B = up·(0.275 − cc)) and its
+        // "case 3" is the CROUCH substate 4 (the LOW short segment A = up·(0.1 − (cc − 0.55)),
+        // B = up·(0.45 − cc), r 0.55); the switch's DEFAULT arm (r 0.55, A = up·0.275,
+        // B = up·(0.55 − cc)) covers every other substate — INCLUDING the walk 0 and the SWIM 3
+        // (both underwater and dry: the underwater path jumps past the gravity straight into this
+        // switch [M disasm 0x194f4c-0x194f70: `cel+0x90 > obj+0x34` → `bc1fl 0x195070`]). The
+        // underwater ladder softlock (750a): the swim grab ran the CROUCH arm here, whose LOW spine
+        // (A = −0.385) misses rungs the game's default arm reaches. The WALK grab keeps the shipped
+        // 0.275 arm (the walk-on reach fix-ladder-water2 pinned through playtests) — the arm-mapping
+        // question for the walk substate is a documented divergence, not changed here.
         let swim = self.substate == SS_SWIM;
         for (i, lad) in ctx.ladders.iter().enumerate() {
             let hit = if swim {
-                lad.capsule_hits_swim(self.pos, RADIUS, self.cc)
-            } else if self.substate == SS_WALK && !self.crouched {
+                // The swim substate 3 rides the switch's DEFAULT arm [M 0x195070 default].
+                lad.capsule_hits_default(self.pos, RADIUS, self.cc)
+            } else if self.crouched {
+                // The crouched walk is the game's substate 4 (the port folds the crouch into
+                // substate 0 + the flag) — the switch's case 3, the LOW arm [M 0x194df0 case 3].
+                lad.capsule_hits_crouch(self.pos, RADIUS, self.cc)
+            } else if self.substate == SS_WALK {
+                // [S] the shipped walk pick (fix-ladder-water2's 0.275 walk-on reach) — see above.
                 lad.capsule_hits(self.pos, WALK_PICK_RADIUS, self.cc)
             } else {
-                // The crouched walk is the game's substate 4 (the port folds the crouch into
-                // substate 0 + the flag) — the capsule switch's DEFAULT arm [M 0x194df0].
                 lad.capsule_hits_default(self.pos, RADIUS, self.cc)
             };
             if !hit { continue; }
@@ -597,7 +605,19 @@ impl Bond {
         // The climb velocity integrates first (the game's wish plumbing lands it in the position before
         // the collision pass).
         for k in 0..3 { self.pos[k] += self.vel[k] / 60.0; }
-        let (a, b) = self.capsule();
+        // The climb substate's OWN capsule [M Player_Collision 0x194df0 case 0 — the switch indexes
+        // on substate−1 (disasm 0x195070), so case 0 IS the climb 1]: radius +0x7CC = 0x3e8ccccd
+        // (0.275 — HALF the 0.55 stance radius), A = pos + up·0x3f0ccccd (0.55),
+        // B = pos + up·(+0x7CC − cc). The 750a softlock: the climb ran the fat 0.55 stance capsule
+        // and WEDGED in the undergarden shaft above 07000002's deep ladder (−50.35, 5.50 [D]) —
+        // head_bump every tick ate the up-push [M Player_Climb 0x196310:69-71] and Bond hung on the
+        // ladder forever, unable to climb out (the user's "ladder on 02 underwater … softlocks the
+        // game").
+        let a_off = 0.55f32;
+        let b_off = 0.275 - self.cc;
+        let a = [self.pos[0], self.pos[1] + a_off, self.pos[2]];
+        let b = [self.pos[0], self.pos[1] + b_off, self.pos[2]];
+        const CLIMB_RADIUS: f32 = 0.275; // 0x3e8ccccd [M 0x194df0 case 0]
         // The pass is the actor's own cel's object lists (fix-08-collision): `Player_Collision`
         // 0x194df0 stores obj+0x20 (the relinked cel) into the BLData+0x740 HITTEST's start-cel
         // field (`*(BLData+0x7c0) = *(obj+0x20)`, the function's first store), and `Collide_Pick`
@@ -605,7 +625,7 @@ impl Bond {
         // OWN list (`*(cel + 0x18)`) — walls hanging on other rooms' cels never block. `self.cel`
         // is that relink (obj+0x20; the Sim refreshes it off the position each tick, the
         // `build_LinkToRoom` 0x1c9680 order); `None` falls back to the flat world.
-        let (push, walkable) = world.capsule_push_scoped(self.cel, a, b, RADIUS);
+        let (push, walkable) = world.capsule_push_scoped(self.cel, a, b, CLIMB_RADIUS);
         self.head_bump = push[1] < -1e-4;
         for k in 0..3 { self.pos[k] += push[k]; }
         let ray = self.cc + 0.6;

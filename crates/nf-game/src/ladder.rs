@@ -128,14 +128,15 @@ impl Ladder {
         self.in_mesh_column(pos, capsule_radius)
     }
 
-    /// The SWIM form of the same pick (`Player_Collision` 0x194df0's substate-3 arm builds a different
-    /// HITTEST [M]: capsule radius +0x7CC = 0.55 and the segment A = pos + up·(0.1 − (cc − 0.55)),
-    /// B = pos + up·(0.45 − cc) — a short LOW capsule ~0.48 under the root at the stand height, unlike
-    /// the walk arm's 0.55..−0.76). Stage 1 is the same ×1.5 sphere test; stage 2 is the same mesh-
-    /// scale column (`in_mesh_column`). The low segment is what bounds the grab by DEPTH: the game's
-    /// swim pick reaches ~0.48 below the root, so a bed-hugging root too far under the bounds centre
-    /// misses the ×1.5 sphere — the game grabs swimmers in the water column, not off the pond bed.
-    pub fn capsule_hits_swim(&self, pos: V3, capsule_radius: f32, cc: f32) -> bool {
+    /// The CROUCH form of the pick (`Player_Collision` 0x194df0's capsule switch case 3 [M] — the
+    /// switch indexes on substate−1 [M disasm 0x195070], so case 3 IS the crouch substate 4): radius
+    /// `+0x7CC = 0x55` (0.55) and the segment A = pos + up·(0.1 − (cc − 0.55)), B = pos + up·(0.45 − cc)
+    /// — a short LOW capsule ~0.48 under the root at the stand height. (Named `capsule_hits_swim`
+    /// before 750a mis-read case 3 as the swim substate; the swim substate 3 rides the switch's
+    /// DEFAULT arm [M 0x195070 default].) Stage 1 is the same ×1.5 sphere test; stage 2 is the same
+    /// mesh-scale column (`in_mesh_column`). The low segment bounds the grab by DEPTH: a bed-hugging
+    /// root too far under the bounds centre misses the ×1.5 sphere.
+    pub fn capsule_hits_crouch(&self, pos: V3, capsule_radius: f32, cc: f32) -> bool {
         self.pick_hit(pos, 0.1 - (cc - 0.55), 0.45 - cc, capsule_radius)
     }
 
@@ -242,39 +243,36 @@ mod tests {
     }
 
     #[test]
-    fn swim_pick_is_the_game_swim_capsule_with_the_mesh_scale_reach() {
+    fn crouch_pick_is_the_game_low_capsule_with_the_mesh_scale_reach() {
         let l = ladder(0.0); // centre (10, 3, 20), r 1.5 → bottom 2.5, top 5.35
         let cc = 1.0347f32; // the stand root height [M Player_Collision 0x194df0 cc = AnimObj+0xCC]
-        // The swim segment [M 0x194df0 case 3]: A = pos + 0.1 − (cc − 0.55) = pos − 0.3847,
+        // The LOW (crouch) segment [M 0x194df0 case 3]: A = pos + 0.1 − (cc − 0.55) = pos − 0.3847,
         // B = pos + 0.45 − cc = pos − 0.5847. On the axis at the grab-snap distance (0.5, the game's
         // own snap offset 0x196118:36-44): stage 1 (dist ≈ 1.17 ≤ 1.5·1.5 + 0.55) and stage 2
-        // (0.5 ≤ 0.55) both hit — the pond-bed swimmer still grabs the ladder he swims INTO.
-        assert!(l.capsule_hits_swim([10.0, 3.0, 20.5], 0.55, cc));
-        // 0.62 off the plane: past the mesh-scale stage 2 (0.55) → no hit. This is the dismount
-        // escape: the back-stick drift (0.2/tick ramp [M 0x191dd0], ~0.2 over the swim entry's
-        // 5-tick regrab [M 0x195e50]) clears 0.5 + 0.2 > 0.55 and the cycle never re-latches.
-        assert!(!l.capsule_hits_swim([10.0, 3.0, 20.62], 0.55, cc));
-        // Sister: the WALK form at the same 0.62 is past its plane reach too — the walk arm's own
-        // radius 0.275 [M 0x194df0 case 0/6] bounds it (fix-ladder-water2).
-        assert!(!l.capsule_hits([10.0, 3.0, 20.62], crate::player::WALK_PICK_RADIUS, cc));
-        // Sister: at 0.5 (the grab snap's own offset [M 0x196118:36-44]) the SWIM form still reaches
-        // (the pond grab), but the WALK form must NOT — the game's walk capsule (r 0.275) parked at
-        // the dismount offset 0.5 does not touch the rungs, so a dry stander there never re-grabs
-        // (fix-ladder-water2; the pre-109i2 code passed 0.55 here and re-grabbed him).
-        assert!(l.capsule_hits_swim([10.0, 3.0, 20.5], 0.55, cc));
-        assert!(!l.capsule_hits([10.0, 3.0, 20.5], crate::player::WALK_PICK_RADIUS, cc),
-            "the dry stander at the dismount offset 0.5 re-grabbed through the walk arm (the pre-109i2 0.55 reach)");
-        // And the walk arm DOES grab the crossing walker at the plane (frontal ≤ 0.275).
-        assert!(l.capsule_hits([10.0, 3.0, 20.2], crate::player::WALK_PICK_RADIUS, cc));
-        // Sister: the lateral span — 2.0 to the SIDE of the axis is past the rails (0.4 + 0.275).
-        assert!(!l.capsule_hits([12.0, 3.0, 20.0], crate::player::WALK_PICK_RADIUS, cc));
-        // DEEP below the sphere bottom (the pond-bed swimmer at the root ~2.0): the low swim segment
-        // still reaches the ×1.5 sphere (dist ≈ 2.05 ≤ 2.8) — the climb-out assist keeps working.
-        assert!(l.capsule_hits_swim([10.0, 2.0, 20.3], 0.55, cc));
-        // Sister: a thin ladder stops the deep swim reach (the pick tracks the sphere): at the root
-        // 0.9 the swim segment (0.52..0.32) sits 2.49 from the sphere centre — past the thin ×1.5
+        // (0.5 ≤ 0.55) both hit.
+        assert!(l.capsule_hits_crouch([10.0, 3.0, 20.5], 0.55, cc));
+        // 0.62 off the plane: past the mesh-scale stage 2 (0.55) → no hit.
+        assert!(!l.capsule_hits_crouch([10.0, 3.0, 20.62], 0.55, cc));
+        // DEEP below the sphere bottom (a bed-hugging root ~2.0): the low segment still reaches
+        // the ×1.5 sphere (dist ≈ 2.05 ≤ 2.8).
+        assert!(l.capsule_hits_crouch([10.0, 2.0, 20.3], 0.55, cc));
+        // Sister: a thin ladder stops the deep reach (the pick tracks the sphere): at the root
+        // 0.9 the low segment (0.52..0.32) sits 2.49 from the sphere centre — past the thin ×1.5
         // reach 1.45, while the full ladder still reaches (2.49 ≤ 2.8).
         let thin = Ladder { radius: 0.6, ..ladder(0.0) };
-        assert!(!thin.capsule_hits_swim([10.0, 0.9, 20.0], 0.55, cc));
+        assert!(!thin.capsule_hits_crouch([10.0, 0.9, 20.0], 0.55, cc));
+    }
+
+    #[test]
+    fn swim_pick_is_the_game_default_arm_the_switch_indexes_substate_minus_one() {
+        let l = ladder(0.0); // centre (10, 3, 20), r 1.5 → bottom 2.5, top 5.35
+        let cc = 1.0347f32;
+        // The swim grab rides the switch's DEFAULT arm [M 0x195070 default — the switch value is
+        // substate−1, so the DEFAULT covers the swim 3]: r 0.55, A = up·0.275, B = up·(0.55 − cc).
+        // At the grab-snap offset 0.5 [M 0x196118:36-44] it reaches (stage 2: 0.5 ≤ 0.55).
+        assert!(l.capsule_hits_default([10.0, 3.0, 20.5], crate::player::RADIUS, cc));
+        // The dismount-into-water escape (109i): the back-stick drift (~0.2 over the swim entry's
+        // 5-tick regrab [M 0x195e50]) clears the plane cut: 0.5 + 0.2 > 0.55.
+        assert!(!l.capsule_hits_default([10.0, 3.0, 20.62], crate::player::RADIUS, cc));
     }
 }

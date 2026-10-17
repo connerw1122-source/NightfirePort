@@ -16737,3 +16737,25 @@ reproduce the softlock headless through the real input path (swim to ladder, cli
 climb down into it, release mid-water); port the ladder/water interplay from the decompile (Player_Ladder*,
 swim state, grab/release tests) with [M] citations; fix; the test must assert Bond regains control and
 reaches the bank. Branch s/ladder-underwater-02 from origin/master (bee8c129).
+
+## ladder-underwater-02 (task 750a)
+
+The 07000002 underwater-ladder softlock (the user's third report). Root causes found and fixed on
+s/ladder-underwater-02: (1) the climb substate's collision pass ran the fat 0.55 stance capsule —
+the game's climb arm is r 0.275, A = up·0.55, B = up·(0.275 − cc) [M Player_Collision 0x194df0
+case 0; the capsule switch indexes on substate−1 — disasm 0x19506c-0x195098 — so case 0 IS the
+climb] — the 0.55 capsule wedged in the undergarden shaft above the deep ladder (−50.35, 5.50
+[D]) and head_bump ate the up-push every tick: Bond hung on the ladder forever; (2) the swim grab
+pick ran the CROUCH arm (the same mis-index: 0x194df0's "case 3" is substate 4, not the swim 3) —
+the swim rides the switch's DEFAULT arm [M 0x195070 default] — fixed in ladder_grab; (3) the
+neutral-settle re-latch after the bottom dismount is GAME-FAITHFUL: the settle at 0.5 off the
+plane is inside the game's pick (mesh probe: the real glist triangles reach the settle capsule at
+seg-tri distance 0.19–0.22 < 0.55), resolving 691's live check 1 — the escape is the push-off /
+the climb-out, both now alive. Tests: crates/nf-view/tests/ladder_underwater_02_live.rs (5 tests,
+real input path: the disc ladder/water census, the hut full-bank escape, the deep swim-in climb
+out of the water, the deep climb-down + mid-water push-off clearing the grab column). Remaining
+gap: the deep ladder's final exit into the bathhouse is closed by the bath hatch (SimpleScript
+0xE2 #269, solid at y 4.74 [D probe], TouchOnce plates #352 at the ladder top) — the hatch-open
+path is the SS/USE subsystem's. Regression set green: nf-game lib 242, fix_ladder_water_live 4,
+fix_ladder2_live 4, fix_ladder_live 3, fix_swim_live 4, fix_swim_vent_live 2, fix_swim_entry_live
+2, walkreal_0700000c_live 1.
