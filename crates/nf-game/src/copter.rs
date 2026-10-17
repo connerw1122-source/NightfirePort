@@ -290,38 +290,54 @@ impl Copter {
             1 | 2 => {
                 self.move_tick();
                 if self.state == 2 { music_combat = true; }
-                self.timer = self.timer.saturating_add(1);
                 let dm = self.diff_mod();
-                let period = (240.0 / dm) as u16; // [M FRAME_RATE_INT << 2 = 240]
-                if let Some(pp) = player_pos {
-                    let spotting = if self.state == 1 {
-                        // Every 240/DiffMod ticks: the cone + the LOS [M case 1].
-                        self.timer >= period && self.spots(player_eye, los)
-                    } else {
-                        // Attack bail-outs [M case 2]: gone, 5·60·DiffMod ticks, recent > 100.
-                        let timeout = self.timer as f32 >= 5.0 * 60.0 * dm;
-                        let keep = self.recent <= 100.0 && self.spots(player_eye, los);
-                        !(keep && !timeout) || self.recent > 100.0
-                    };
-                    if spotting && self.state == 1 {
-                        self.state = 2;
-                        self.timer = 0;
-                        self.recent = 0.0;
-                        self.attackmode = rand(10);
-                        music_combat = true;
-                    } else if self.state == 2 {
-                        if spotting {
+                if self.state == 1 {
+                    // The patrol spot check lives inside the +0x74 != 100 conjunct [M 0x17dbb8:140]:
+                    // a copter whose record+0x74 is 100 — the ambient patrols (07000005's #241/#242,
+                    // 0700000b's #328, all +0x74 = 100 [L level params]) — never increments the
+                    // timer, never spots, so it never draws `Rand_Rand(10)`, never fires, never
+                    // plays 0x5df and never requests combat music. It just flies its loop forever.
+                    if self.arrival != 100 {
+                        self.timer = self.timer.saturating_add(1);
+                        let period = (240.0 / dm) as u16; // [M FRAME_RATE_INT << 2 = 240]
+                        if let Some(pp) = player_pos {
+                            // Every 240/DiffMod ticks: the cone + the LOS [M case 1]. The timer is
+                            // never reset on a failed check, so past the first period this tests
+                            // every tick ([M case 1's fall-through keeps the count]).
+                            if self.timer >= period && self.spots(player_eye, los) {
+                                self.state = 2;
+                                self.timer = 0;
+                                self.recent = 0.0;
+                                self.attackmode = rand(10);
+                                music_combat = true;
+                            }
+                        }
+                    }
+                } else {
+                    self.timer = self.timer.saturating_add(1);
+                    if let Some(pp) = player_pos {
+                        // The attack tick fires BEFORE the bail checks [M case 2 :191-198 → :199-242]:
+                        // even the tick that loses the sight has already fired.
+                        if self.attackmode & 1 == 0 {
+                            if let Some(m) = self.fire_missile(frame, rand, dm, player_eye) { missile = Some(m); }
+                        } else if let Some(g) = self.fire_gun(player_eye) {
+                            gun = Some(g);
+                        }
+                        // The bail checks [M :199-242]: the timeout (5·60·DiffMod, strict), or
+                        // recent > 100, or the sight lost → timer 0, back to patrol. A keep tick
+                        // does NOT reset the timer — the stint ends mid-sight at 5·60·DiffMod.
+                        let timeout = 5.0 * 60.0 * dm < self.timer as f32;
+                        let seen = self.recent <= 100.0 && self.spots(player_eye, los);
+                        if timeout || !seen {
                             self.state = 1;
                             self.timer = 0;
                             self.recent = 0.0;
-                        } else {
-                            // The attack tick: the missile/gun arms [M case 2].
-                            if self.attackmode & 1 == 0 {
-                                if let Some(m) = self.fire_missile(frame, rand, dm, player_eye) { missile = Some(m); }
-                            } else if let Some(g) = self.fire_gun(player_eye) {
-                                gun = Some(g);
-                            }
                         }
+                    } else {
+                        // The game's `iVar4 == 0` arm [M :199-201] lands in the same reset.
+                        self.state = 1;
+                        self.timer = 0;
+                        self.recent = 0.0;
                     }
                 }
             }
@@ -413,9 +429,12 @@ impl Copter {
     /// (`Rand_Rand(0x86e6) & 1` — even → +0x50 left), the weapon `0x6d`/`0x62`. Returns
     /// `(muzzle, aims_at)` — `aims_at` = the eye on the 07000008 direct-aim roll (:66-76).
     fn fire_missile(&mut self, frame: u32, rand: &mut dyn FnMut(u32) -> u32, dm: f32, player_eye: V3) -> Option<(V3, Option<V3>)> {
+        // The pod pick draws on EVERY call, before the launch gate [M 0x17d9f0:47 `Rand_Rand(0x86e6)`
+        // precedes :58-64's frame-divisibility early return] — every state-2 even-attackmode tick
+        // steps the shared stream even when nothing launches.
+        let left = rand(0x86e6) & 1 == 0;
         let period = (60.0 * dm) as u32;
         if period == 0 || frame % period != 0 { return None; }
-        let left = rand(0x86e6) & 1 == 0;
         let c = self.pos();
         // The pods ride the wings (the game's part cells; the body's ±2.2 lateral stands in [S]).
         let muzzle = if left { [c[0] - 2.2, c[1], c[2]] } else { [c[0] + 2.2, c[1], c[2]] };
