@@ -18214,3 +18214,34 @@ Stage Summary:
   sweeps, the monitor E-view, the Computer1/bunker-chain walk tests. Report:
   docs/reports/level-02-interactables.md. Suite: 2057 passed, 9 failed (3 disc_golden + 3 no-GPU
   pylons + 3 exit-−9 kills), 74 ignored.
+
+---
+Task ID: 703b
+Agent: level-03-complete
+Task: play 07000003 (Alpine Escape, Castle C) start to finish through the real input path; every objective (incl. optional); every blocker fixed; report.
+
+Work Log:
+- (started)
+- The disc census (walkreal_probe03): 13 doors, 1 E-plate (kind-1 mask-4, out 0x31) feeding the
+  locked front-gate door (ch_lock 0x31) + the one-shot gate SS #502 (2 keys, wrap disarm), 5
+  pickups, 1 ladder, 3 protected servants (skin 0x0500002b, team 3, death ch 0x60), 20 guards,
+  26 triggers, NO locks/monitors/cameras/searchlight placements. The mux family ON DISC:
+  AND(0x4f,0x50)→0x51 (obj1) and AND(0x4e,0x51)→0x52 (obj2's reveal AND the exit key gate) —
+  the level doc's "writers of 0x52 are not on the disc" was WRONG (a kind-3 AND at (0,0,0) is a
+  real disc writer); corrected in the walk test header. The level's scripts write only ch 0x96.
+- The tests (walkreal_07000003_live.rs, all 4 green): the full walk completes every objective —
+  the 0x4d spawn reveal announces obj0/obj1 [M 0x1827d8:55-67]; the gate plate E → 0x31 → SS pose
+  leaves rest + the locked door's E-refusal sister [M Door_Activate 0x135be0]; the servants visited
+  alive with 0x4f/0x50 handed (the mission layer's un-ported writers, the 01/0x47 + 02/0x4c
+  precedent) → AND(0x4f,0x50)→0x51 → obj1 COMPLETE; 0x4e handed → obj0 COMPLETE → AND(0x4e,0x51)
+  → 0x52 → obj2 announced; the exit loads 07000004 [D param 0]. Sister: one leaf alone never opens
+  the gate (the mux writes its output every tick — a direct 0x51/0x52 hand is overwritten, found
+  by the recon). Sister: killing a servant raises 0x60 → fail_label 0x0400_0034 "Killed Civilians"
+  + MissionState 2 + ch 99 [M 0x1827d8:98-104, 0x182c60 case 2].
+- Port gaps found and NOT fixed (documented): the mission_events vec drains per step in the
+  headless sim path too (hud_tick runs inside Sim::run) — tests pin the persistent mission globals
+  instead; Mission_Init zeroes its watch channels on the first tick [M 0x182270:106-107] — hands
+  must come after init. The gate approach needs the west lane (the moat ditch at (11.8,−34.5)
+  drops Bond into water — the swim path is the game's own alternative).
+- The sandbox (3 GB RAM) OOM-kills the fast suite (weapon_matrix_live, walkreal_probe13 crashed
+  exit -9); the four 03 tests run green single-threaded.
