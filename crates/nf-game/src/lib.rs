@@ -66,7 +66,6 @@ pub mod tuning;
 pub mod useobj;
 pub mod wire;
 pub mod world;
-pub mod hurt;
 pub mod worldobj;
 pub mod world_fx;
 pub mod subtitle;
