@@ -17391,3 +17391,12 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+- 2026-10-17 s/mayhew-end-transition (task 750o): the END of Mayhew (07000005) — Mayhew's route
+  to the level's exit and the hand-off to the next level (the end trigger, the outro/level-exit,
+  ResetMap_LevelToLoad). User 2026-10-16 evening: "end of mayhew still takes some work to
+  transition to the next level with mahews pathing." 750c mayhew-exit-walk covers his walk
+  before the MID cut-scene; this task reproduces the whole end sequence through the real path
+  on master, finds where his route stalls or the transition fails to fire, ports the game's
+  behaviour [M], and pins: the level ends and the next level loads without the player doing
+  anything the game doesn't require. Branch created from origin/master 31dd6161. Report:
+  docs/reports/mayhew-end-transition.md.
