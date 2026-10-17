@@ -17910,3 +17910,14 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   cloud puts a guard in the family until it clears and recovers to the stamped resume; the
   prop-0x34 guard never smokes; a firing-family guard staggers 0x54 → back to +0x118; a stunned
   guard dies 0x44. 4/4 pass. Report: docs/reports/guard-blast-smoke.md.
+- 2026-10-17 s/guard-blast-smoke2 (task 761): finish guard-blast-smoke (HELD at the 2026-10-16 merge):
+  s/guard-blast-smoke on master fails nf-game guard_drops_flashbang_live
+  frag_at_the_same_spot_kills_the_trio (a frag 1.9 u from placements 3/4/302 no longer kills) and
+  nf-view fix_actors_live killing_a_protected_guest_fails_the_mission_but_scaring_him_does_not
+  (the guest no longer dies, line 80 area). Its on_explosion drops msg 9 for any state impact_args
+  does not list; the GLOBAL base NDrone2_DSTATE_Global 0x15b830 returns 0 for msg 9, so the open
+  question is which DSTATEs really have a case 9 for the states the trio/guest are in. Branch from
+  origin/master d628f01f (briefing_plays_live.rs verified present), merged origin/s/guard-blast-smoke
+  (13ca8758): drone.rs conflicts resolved keep master's door-guard fn + the smoke fn both, and the
+  blast damage arm takes the smoke side (the msg-9 routing with its tip's GLOBAL-fallback damage
+  arm) — reproduce before any fix.
