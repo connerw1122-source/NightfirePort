@@ -5840,6 +5840,10 @@ pub fn level_drones(d: &Data, level: &nf_formats::level::Level, rng: &mut Rng, l
         let floor = d.world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
         let mut dr = Drone::new(d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, rng);
         dr.placement = i;
+        // `NDrone2_PostLoad_Init` 0x14d890:18-22: every drone's nav path (+0x954) is
+        // `AINetwork_NavPathForPosition(drone pos)` at level load — the path `ClosestAIPoint`
+        // matches the AI points against [M 0x151b18:130].
+        dr.nav_path = Some(d.nav.nav_path_for(dr.pos));
         Some(dr)
     }).collect()
 }

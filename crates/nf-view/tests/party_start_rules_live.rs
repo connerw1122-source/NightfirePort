@@ -141,7 +141,7 @@ fn cold_punch_a_bouncer_fails_with_the_game_fail_text() {
     let dir = [dir[0] / l, dir[1] / l, dir[2] / l];
     let snd = nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false };
     {
-        let d = nf_game::drone::Data { tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons, world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: None, models: &sim.models, surfaces: None, voices: None, difficulty: 1 };
+        let d = nf_game::drone::Data { tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons, world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: None, models: &sim.models, surfaces: None, voices: None, difficulty: 1, ai_points: &sim.ai_points };
         sim.drones.fire_player(&d, from, dir, 1, snd); // the fists = the punch [M 0x13fff0 case 5 → msg 6]
     }
     for _ in 0..12 { sim.step_bond(Default::default(), false, false, false); }
@@ -187,7 +187,7 @@ fn carry_punch_a_bouncer_fails_the_mission() {
     let dir = [dir[0] / l, dir[1] / l, dir[2] / l];
     let snd = nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false };
     {
-        let d = nf_game::drone::Data { tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons, world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: None, models: &sim.models, surfaces: None, voices: None, difficulty: 1 };
+        let d = nf_game::drone::Data { tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons, world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: None, models: &sim.models, surfaces: None, voices: None, difficulty: 1, ai_points: &sim.ai_points };
         sim.drones.fire_player(&d, from, dir, 1, snd);
     }
     for _ in 0..12 { sim.step_bond(Default::default(), false, false, false); }
@@ -219,7 +219,7 @@ fn gunfire_does_not_panic_the_deaf_guests_and_no_guest_fires() {
         let (bp, byaw) = (sim.bond.pos, sim.bond.yaw);
         let dir = [byaw.sin(), 0.05, byaw.cos()]; // into Bond's facing, level — the crowd is around him
         {
-            let d = nf_game::drone::Data { tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons, world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: None, models: &sim.models, surfaces: None, voices: None, difficulty: 1 };
+            let d = nf_game::drone::Data { tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons, world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: None, models: &sim.models, surfaces: None, voices: None, difficulty: 1, ai_points: &sim.ai_points };
             sim.drones.fire_player(&d, bp, dir, 2, snd);
         }
         for _ in 0..12 { sim.step_bond(Default::default(), false, false, false); }
@@ -262,7 +262,7 @@ fn tasing_a_guest_fails_the_mission_at_once() {
     let dir = [dir[0] / l, dir[1] / l, dir[2] / l];
     let snd = nf_formats::sfx::SfxHearing { id: 0x403, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false };
     {
-        let d = nf_game::drone::Data { tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons, world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: None, models: &sim.models, surfaces: None, voices: None, difficulty: 1 };
+        let d = nf_game::drone::Data { tables: &sim.tables, props: &sim.props, scripts: &sim.scripts, weapons: &sim.weapons, world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: None, models: &sim.models, surfaces: None, voices: None, difficulty: 1, ai_points: &sim.ai_points };
         sim.drones.fire_player(&d, from, dir, 0x4A, snd); // the Stunner dart = msg 7
     }
     for _ in 0..12 { sim.step_bond(Default::default(), false, false, false); }
