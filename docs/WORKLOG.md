@@ -17391,3 +17391,10 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+- 2026-10-17 s/bonus-007 (task 750): The 007 bonus ("Bond moves") awards are missing —
+  the game awards them (chime + HUD 007 icon, Mission Stats' Bond Moves row) for per-level
+  actions. Plan: find the award path in the decompile (PlrStat/bond-move log, the per-level
+  trigger that posts them, chime sound id + HUD flag), list every level's bond moves in docs,
+  port the award (event → progress count + chime + HUD flag). Test: one bond move on
+  07000005 through the real path (count + sound id + HUD flag), sister: non-bond action
+  awards nothing. Branch from origin/master 31dd6161.
