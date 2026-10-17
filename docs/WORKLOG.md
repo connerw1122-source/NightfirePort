@@ -17890,3 +17890,19 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
 Task: census + operate every interactive kind on 07000007 (Mayhew C: the party) through the real
 input path; every model draws; docs/levels/07000007.md census table; fix blockers with tests.
 Branch s/level-07-interactables from origin/master d628f01f. Sandbox window 13:21-15:21 UTC.
+
+## level-07-interactables
+Census of all 513 placements on 07000007 by type byte (docs/levels/07000007.md §7; the dump example
+census_07000007) with three §4 corrections: 15 doors not 18, the locked-200 set is #251–#256+#304+
+#342, and #443 is a 0xEB Touch ("Steve's Music Start", out 138) not 0xE9. Ported the missing
+interactive kind 0x20 Break (Break_Create 0x12c230 / Break_Update 0x12bfd8 / Break_Kill 0x12b970 →
+nf-game props.rs `Break`: instance[0]=param 0, instance+4=(float)param 1 pool, first bullet kills,
+no channel; the game's Rand_Rand(100) sound draw not taken [S]) with a props test + sister. Live
+tests per operated kind (interact_07000007_live, 5 pass): the armour pickup takes +50 at its
+PLACEMENT (the placed model's glist centre is local ~0 on world-baked meshes — the take-point bug),
+the free door #245 swings on E when Bond faces it (the look vector carries the yaw), the ch-200
+locked door refuses, sisters for both. Open, carried in the report: the P2K spawns no shot on this
+level through step_bond (last_shot None — the ignored live-shot test carries the diagnosis), the
+music/touch chain live test, the party AI rules, the NF_TEX_TRACE sweep, the renderer's dead-break
+skip, script event 10. Suite OOM-crashed sandbox-wide (exit -9); branch-touching crates run
+directly. Report: docs/reports/level-07-interactables.md.
