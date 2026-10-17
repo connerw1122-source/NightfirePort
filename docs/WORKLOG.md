@@ -17885,3 +17885,11 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+
+## level-05-interactables (2026-10-17)
+
+Branch `s/level-05-interactables` off master d628f01f. Task: 07000005 (Mayhew A, the castle
+approach) — the census of every interactive thing (buttons, doors, triggers, pickups, wires,
+ladders, vehicles...) with params + channel wiring + [M] behaviour + port status into
+docs/levels/07000005.md; then one real-input-path live test per KIND with a sister; then the
+model/texture sweep (every placement's mesh resolves, no white fallbacks). Working notes as I go.
