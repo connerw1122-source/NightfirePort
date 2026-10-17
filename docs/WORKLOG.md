@@ -17899,3 +17899,15 @@ Work Log:
 
 Stage Summary:
 - (in progress)
+- Audit table in docs/systems/app-state-parity.md: difficulty, mission row, ptp/entry save,
+  all, cheats, the sim's settings, the sound bank, the language — each with the game store,
+  the writers, and whether the port updates it on the same event.
+- Fixed (reproduce-first): the MP confirm never wrote the difficulty — P_MPCONFIRM 0x20ec00:150
+  sets GameState+0x28 = 1 before the level request; mp_confirm_start/mp_client_start now raise
+  requested_difficulty = Some(1) (the pre-fix test failed `left: None, right: Some(1)`).
+- Fixed: the driving return's difficulty restore — Boot_LoadPTPData 0x1c8560:35-36 writes the
+  PTP block's +0x144 back to GameState+0x28; DriveReturn now carries it and swap_in_scene
+  applies it to Progress::difficulty + Drones::difficulty.
+- Tests: mp_defaults_setup (new mp_confirm_start_writes_difficulty_1), ptp lib tests (the
+  round-trip pins), walk_07000004_ptp_live, driving_mission_live. Suite (foreground --only
+  chunks — this sandbox kills background jobs): 80 passed + 112 passed, 0 failed.
