@@ -286,6 +286,18 @@ fn frag_at_the_same_spot_kills_the_trio() {
     let rec = &d.weapons.records[0x34];
     let f32_at = |o: usize| f32::from_le_bytes(rec[o..o + 4].try_into().unwrap());
     assert_eq!(f32_at(0x0c), 100.0, "the frag's damage is 100 [L]");
+    // The as-loaded trio sits in WaitSwitch (0x15b960 handles only msgs 0/1/3/0xe — no case 8/9)
+    // after DSTATE_Global's ENTER pick [M 0x15b830 case 1], and a msg its DSTATE drops falls back
+    // to ProcessStateMachine(0) [M-dis RouteMsgDCV 0x171ec8-0x171ef0: the same fn-ptr re-called with
+    // the state arg 0] whose DSTATE_Global has no case 9 either [M 0x15b830: only msgs 0/1/10/0x1d].
+    // The game's own yard guards only leave WaitSwitch through the post-NIS EnableAll broadcast
+    // (msg 0xe [M 0x1383e8:27]) or their activation channel — switch_channels[0] is 0 [L the EE
+    // snapshot 0x26fc90], so a frag landing on the as-loaded trio kills nobody (the sister test
+    // pins that). The blast-path kill pin therefore primes the trio into Idle — a state whose
+    // case 9 forwards to DroneFunc_HandleImpact(0x56, 0) [M 0x15bf18 case 8/9 fall-through] — the
+    // same test-side priming the missile pod-pick pin uses on the level's own copter record.
+    for &i in idx.iter() { sim.list[i].set_state(nf_game::drone::state::IDLE); }
+    { let p0 = bond_at([blast[0] + 60.0, blast[1], blast[2]]); sim.tick(&d, &p0); }
     sim.grenades.push(nf_game::grenade::Grenade {
         pos: blast, velocity: [0.0; 3], speed: 0.0, travelled: 0.0, range: 210.0,
         damage: f32_at(0x0c), radius: f32_at(0x08), weapon_type: 0x34, mesh: 0,
@@ -296,19 +308,65 @@ fn frag_at_the_same_spot_kills_the_trio() {
     for _ in 0..320u32 { sim.tick(&d, &p); }
     for (k, pl) in trio.iter().enumerate() {
         let g = &sim.list[idx[k]];
-        assert!(matches!(g.state, state::DEATH_ANIM | state::DEAD | state::FADE | state::FADE_FAST),
+        // The kill lands through Idle's case 9 -> NDrone2_ExplosiveImpact -> the death selector:
+        // kind 0x0d/0x1b/0x1c/0x1d -> 0x44, everything else -> 0x45 DeathByExplosion
+        // [M 0x1465e4-0x14697c] — the port's roster carries the 0x44 stand-in for the unported
+        // 0x92/0xBF kinds, so both deaths are the selector's own outputs.
+        assert!(matches!(g.state, state::DEATH_ANIM | state::DEATH_BY_EXPLOSION | state::DEAD | state::FADE | state::FADE_FAST),
             "pl {pl}: the frag killed him, state {:#x} health {}", g.state, g.health);
         assert!(g.health <= 0.0, "pl {pl}: health {}", g.health);
     }
-    // The deaths drop the held guns — one per dead guard (the yard's pl 303 also sits within the
-    // frag's 8-unit radius and dies with them: 4 guards, 4 guns, the game's own geometry).
-    let dead = sim.list.iter().filter(|g| matches!(g.state, state::DEATH_ANIM | state::DEAD | state::FADE | state::FADE_FAST)).count();
+    // The deaths drop the held guns — one per dead guard (the yard's pl 303 sits within the frag's
+    // 8-unit radius but stays in WaitSwitch: its DSTATE drops msg 9 [M 0x15b960] and the GLOBAL
+    // fallback has no case 9 either [M 0x15b830], so the game's own routing leaves him standing —
+    // the sister test pins the drop).
+    let dead = sim.list.iter().filter(|g| matches!(g.state, state::DEATH_ANIM | state::DEATH_BY_EXPLOSION | state::DEAD | state::FADE | state::FADE_FAST)).count();
     assert!(dead >= 3, "the frag killed at least the trio, got {dead}");
     let guns = sim.pickups.iter().filter(|p| p.weapon == 0x16).count();
     assert_eq!(guns, dead, "one gun per dead guard: {:?}", sim.pickups.iter().map(|p| (p.weapon, p.rounds)).collect::<Vec<_>>());
     assert!(sim.pickups.iter().all(|p| p.weapon == 0x16), "no grenade pickups on 07000005");
 }
 
+/// The decompile-exact sister: the SAME frag at the AS-LOADED trio — WaitSwitch, the level's own
+/// pre-activation state — kills nobody and damages nobody. WaitSwitch's switch handles only msgs
+/// 0/1/3/0xe [M 0x15b960], the unhandled-msg fallback re-calls the dispatcher with the state arg 0
+/// [M-dis RouteMsgDCV 0x171ec8-0x171ef0], and DSTATE_Global handles only 0/1/10/0x1d [M 0x15b830] —
+/// msg 9 is dropped on both floors, and `Drone_ExplosiveHit` applies no damage outside msg 9
+/// [M 0x13aab8: the only work is drone+0x2b4 = impact+0x20, then SendMsgSelf(9)]. This is the
+/// assertion that fails if the port's GLOBAL damage arm ever swallows the drop.
+#[test]
+fn frag_at_the_waitswitch_trio_takes_nothing() {
+    use nf_game::drone::state;
+    let Some(l) = L::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    let (mut sim, _rng) = l.sim();
+    let trio = [3usize, 4, 302];
+    let mut idx = [0usize; 3];
+    for (k, pl) in trio.iter().enumerate() { idx[k] = sim.list.iter().position(|dr| dr.placement == *pl).unwrap(); }
+    { let p0 = bond_at([67.31, 26.5, 99.47]); sim.tick(&d, &p0); }
+    for &i in idx.iter() {
+        assert_eq!(sim.list[i].state, state::WAIT_SWITCH, "the yard guards' real state is WaitSwitch [M 0x15b830 case 1's +0x5a2 pick]");
+        assert_eq!(sim.list[i].health, 10.0, "the level's own health [D the placement]");
+    }
+    let rec = &d.weapons.records[0x34];
+    let f32_at = |o: usize| f32::from_le_bytes(rec[o..o + 4].try_into().unwrap());
+    let blast = { let p = sim.list[idx[0]].pos; [p[0] + 1.9, p[1] + 0.4, p[2]] };
+    sim.grenades.push(nf_game::grenade::Grenade {
+        pos: blast, velocity: [0.0; 3], speed: 0.0, travelled: 0.0, range: 210.0,
+        damage: f32_at(0x0c), radius: f32_at(0x08), weapon_type: 0x34, mesh: 0,
+        owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: true,
+        stuck: false, seek_target: None, phase: None,
+    });
+    let p = bond_at([blast[0] + 60.0, blast[1], blast[2]]);
+    for _ in 0..120u32 { sim.tick(&d, &p); }
+    for (k, pl) in trio.iter().enumerate() {
+        let g = &sim.list[idx[k]];
+        assert!(!matches!(g.state, state::DEATH_ANIM | state::DEATH_BY_EXPLOSION | state::DEAD | state::FADE | state::FADE_FAST | state::EXPLOSIVE_IMPACT),
+            "pl {pl}: the frag must not reach a WaitSwitch guard, got state {:#x} health {}", g.state, g.health);
+        assert_eq!(g.health, 10.0, "pl {pl}: the frag's damage never applied [M 0x15b960 + 0x15b830 + 0x13aab8]");
+    }
+    assert!(sim.pickups.is_empty(), "no deaths, no drops: {:?}", sim.pickups);
+}
 /// Sister: the flashed (disarmed) yard, killed DOWN by a frag while every guard holds the FISTS
 /// (1) — whose record has model 0 [L record 1], so `DropWeapon`'s `weapon_data[w]+0x80 != 0` gate
 /// [M 0x17a2a0] skips the drop — adds NO pickups to the flash drops. (A guard who RECOVERS first

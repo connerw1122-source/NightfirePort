@@ -135,6 +135,13 @@ pub struct SmokeCloud {
     pub ticks: i16,
 }
 
+/// The smoke grenade's cloud mesh (`Occlude_Create(pos, 1200, 1)` 0x17ea80's
+/// `hashtable_set_object_to_entity_gfx(obj, 0x2000273)` [M]; kinds 0/2/3 are 0x200026b/0x2000274/
+/// 0x2000275 and never spawn from the grenades). Its glist bounds in `Data.models` are the cloud's
+/// collision sphere — `Drone_CollisionHandler`'s per-tick hit list reaches the cloud and
+/// `NDrone2_DealWithObjHit` case 0x2A turns the touch into msg 0x17 [M disasm 0x1405a8].
+pub const SMOKE_CLOUD_MESH: u32 = 0x0200_0273;
+
 /// `WldGravity` (VECTOR at 0x2d8890): `(0, −9.8, 0)`. [L] docs/systems/pickups.md, player.md.
 pub(crate) const WLD_GRAVITY: V3 = [0.0, -9.8, 0.0];
 /// `REC_FRAME_RATE` (0x30d0cc) = 1/60.
