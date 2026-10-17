@@ -18872,3 +18872,10 @@ the report. The balcony→exec leg (the physical cab carry, no moving-platform f
 boardroom-row transits stay documented stand-ins. The full suite.py did not fit the window
 (the sandbox OOM-kills concurrent heavy tests); ran the task's two test binaries green on the
 slim ISO. Report: docs/reports/level-0b-complete.md.
+
+## level-0d-interactables (2026-10-17, branch s/level-0d-interactables) — started
+Task 713a: every interactive thing and every model on 0700000d (the power station, part 2).
+Census from the disc into docs/levels/0700000d.md, one live test per KIND through the real
+input path (use key, gadgets, shooting, walking) each with a sister, the models sweep, and
+fixes for every kind that fails. Known open items: the walk tests reach objective 5 only
+(the C5 mounted-laser chain is the level's blocker). Branch = origin/master 77c7bce6.
