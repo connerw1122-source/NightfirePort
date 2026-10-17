@@ -123,3 +123,60 @@ was and what fixed it:
    file offset 0x1d91e0].
 8. **Descriptions** — wrapped inside their 540px plates with `wrap_px` (the difficulty and mission
    descriptions ran off the right edge; the mission one was even re-joined into a single line).
+
+## G-048: the CloseIris delay, the per-page sound flags, the results order, the card check (fe-gaps-g048, 2026-10-17)
+
+**`Menu_ChangePageCloseIris(page, mgr, ctl)` 0x202190** [M, disasm 0x202190-0x20220c]: the page
+change is THREE sends — `Menu_StartIris(1, …)` (the close) at once, `__Menu_SendDelayedMessage(1,
+…, 0x68, 1, 0)` (the input block) at tick 1, and `__Menu_SendDelayedMessage(10, …, 0x44, page,
+DAT_002e1adc)` at tick 10; the 0x44's own processing lifts the block (`Manager_SendMessage(0x68, 0,
+0)` on the lparam bit-1-clear arm [M 0x21c858:314-315]). `DAT_002e1adc` reads 0 in .data [L
+ACTION.ELF file offset 0x1dbadc] and P_PARISENUM's 0x4c zeroes it [M 0x20a648:21] — lparam 0, so
+the arrival pushes the opener onto the manager's page stack [M 0x21c858:262-263]. Every caller
+[M the decompile's xrefs]: C_SBNFDFCTY 0x216ca8:16 (the difficulty confirm → the SP list),
+P_NFSELECT 0x20aec0:103/:108, C_SBNFCN 0x20b390:47 (→ the name entry), C_SBNFMAP 0x20b8d8:48 (□ →
+the Dossier), C_SBMPSCEN 0x20c600:45/:142, C_SBMPOPTIONS 0x20e818:116, C_SBBOTS 0x210a08:22,
+P_CNSELECT 0x212ad0:105/:112, C_SBCNSELECT 0x212f58:41, P_CNMENU 0x213288:49, C_SBCNOPTIONS
+0x213528:58, C_SBDOSSIER 0x216eb0:20/:26, C_SBMPMAP 0x217538:17. The port routes the walks it
+models through `FrontEnd::close_iris_page` (`CLOSE_IRIS_PAGE_TICKS = 10`, the block from the next
+tick, lifted at the arrival); the draw code reads `close_iris_in_flight()` for the iris window.
+The Back arms (the 0x5f pop) are NOT CloseIris and stay immediate.
+
+**`Menu_EnableSounds(page)` 0x1f31f0** [M]: `Manager_SendMessage` case 0x44 calls it with the new
+page's id when the page is found [M 0x21c858:267-268] — the flags are PER PAGE OPEN, not a boot
+constant. The switch: 0x40000002/09/15 → 1; 0x40000005/1c/25/4b → 0xb; 0x40000022 → 0xd;
+0x40000033 → 3; 0x40000036/38 → 7; 0x40000037/3a-3e → 8; default → 9. `Menu_PlaySound` 0x1f3278
+gates MENU_SOUND 0/1/2/8 on bits 0/1/2/3 — so on the title and Main (flags 1) only the ✕ select
+blips and □/○/△ are silent [M]. The port's `menu_enable_sounds(page)` runs in `enter_page`; the
+boot value is P_LANGUAGE's default-arm 9 (the manager-create 0x43 sends a direct 0x44 for the
+first page [M 0x21c858:252]). The ee_start snapshots' 0x0b [L ee_start 0x30d184] is the value a
+MISSION inherits from the SP list (0x4000001c → 0xb [M]), not a boot value.
+
+**The results order** [M]: `Mission_Update` 0x182c60 case 4's complete arm only sets
+GameState+0x1c = 0x40000036, runs `ResetMap_LevelToLoad(LevelToEndTo, 0, 0)` and pushes the
+60-frame fade (:72-75) — NO page opens; the results page comes up when the front-end map's load
+tail runs `MenuManager_Create(GameState+0x20, +0x28)` [M 0x1d6360:160-163]. The fail arm is the
+opposite: `MenuManager_Create(0x80000004, 0x40000042, …)` runs at once over the paused mission
+(:77-80). The MP match end mirrors the complete arm: `MP_Update` 0x184bd0 case 4 sets GameState+0x1c
+= 0x40000033 (P_MPDEBRIEFING [M the handler table 0x2029e0:434-437]), loads 0x7000048 and pushes
+the fade (:62-78) — the debriefing opens at the load's create, not over the arena. (The
+`MenuManager_Monitor` 0x21d508 case-3 create of 0x4000004b is the controller hot-swap monitor's
+page, a different path.) The port models the no-page window with `page_open`/`up_page()`; the
+load tail's `reopen_queued_page` lands the queued page.
+
+**The boot card check** [M unless noted]: P_PARISENUM's 0x4c sets the message-box mode 4 and runs
+`Menu_UpdateMessageBox(page, 0, 0)` [M 0x20a648:12-24] whose case 4 calls `Menu_EnumSaves(page, 1)`
++ `PS2_DoCardFlow` [M 0x1f7de8:53-58]; each 0x50 with `DAT_002e1b0a == 0` re-runs it [M
+0x20a648:36-38]. `Menu_EnumSaves` state 0 arms `psiStartSaveEnum` [M 0x110fe0 — push card state
+0xe, `GettingSaveGames = -1`] and state 1 polls `psiGetNextSave` [M 0x111038] until the card
+machine lands the dir read. `HandlePS2CardState` 0x110b98 is the stack machine `PS2PollMemoryCard`
+pumps every menu tick on the front-end map [M 0x21c3d8:45-47]: 0xe's sub 1 pushes GET_CARD_STATUS
+(10) [M 0x110188:27-29], 10's sub 0 starts `sceMcGetInfo` and pushes the sync waiter [M
+0x10e798:10-16], the waiter pops on completion [M 0x110b98 case 1], 0xe's sub 2 skips
+CHECK_FOR_CARD2 in one-codename mode [M 0x110188:31-33], sub 3 sets the 0xb message state and
+starts `sceMcGetDir` [M :37-43], sub 4 pops with the sync result [M :46-49]. The enum then
+completes to state 7 [M 0x1f7b78:27] and `PS2_DoCardFlow`'s state>3 arm sets
+`*(MENU_LS+0x3a) = DAT_002e1b0a = 1` [M 0x217bd8:68]; P_PARISENUM's next 0x50 sends the 0x44 to
+P_ESTHERO lparam 1 [M 0x20a648:39-47]. The port's `ParisCardCheck` walks the same states with one
+bounded loop per tick; the only unpinned number is the sceMc completion latency (`mc_ticks = 1`
+[S unverified] — see the report's live checks).
