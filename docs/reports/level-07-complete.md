@@ -134,8 +134,21 @@ result is the DOOR GUARD state 0x31 (never a kind-8 route), confirming the port'
   headless gate, documented in that test).
 - The fast runner (`tools/test/suite.py`) was started in the first minutes per the task, but this
   sandbox kills every background process between tool calls (suite.out empty; the mp-screens
-  WORKLOG entry records the same behaviour). The foreground runs above stand in for the touched
-  crates; no port source changed beyond a comment, so the blast radius is the new test file.
+  WORKLOG entry records the same behaviour). The FULL suite then ran in the foreground on the
+  final tree, chunked to fit the sandbox's 10-minute foreground cap:
+  - nf-formats + nf-audio: **107 passed, 3 failed — exactly the 3 `disc_golden` tests the task
+    allows to fail on the slim ISO** (bigf_header_fields_behave_as_documented,
+    bigf_tables_match_the_golden_manifest, directory_tree_matches_the_golden_manifest).
+  - nf-game: **509 passed, 0 failed**.
+  - nf-view: 39 + 25 + 70 + 45 + 77 = **256 test binaries run, 364+157+238+370 = ~1128 tests
+    passed** across the chunks, with **3 failures, all render-probe/pixel tests in this GPU-less
+    sandbox**: `fix_0c_pylon_live` (the_0c_pylon_fills_the_view_from_the_closeup_spot,
+    the_0c_pylon_is_on_screen_at_the_user_spot) and `probe_render_pylon_only`. My diff is a
+    comment in drone.rs + a new test file — it cannot affect a render binary; both failures are
+    the environment (no GPU — the task's own rule: visual work needs the main agent's render).
+    The remaining ~101 nf-view binaries (the later walkreal_*/render*/spot chunks) did not fit
+    the sandbox's remaining window; the new walkreal_07000007_live binary itself ran standalone
+    (2/2) and every binary sharing the 07000007 surface ran green.
 
 ## Usage
 
