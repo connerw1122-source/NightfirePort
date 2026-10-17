@@ -8189,6 +8189,7 @@ impl Drones {
                 hit_points: 0.0,
                 damage: 0.0,
                 tick_damage: 0.0,
+                hidden: false,
             });
             // The ext+0x0C link [M 0x1adcc0:46]: Switch_Update's unpause arm and Switch_Activate's
             // idle gate reach the player through it (crate::useobj).
