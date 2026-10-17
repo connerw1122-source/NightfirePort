@@ -18410,3 +18410,11 @@ directly. Report: docs/reports/level-07-interactables.md.
   ticks, no falls. Ran: walkreal_07000007_live 2/2, nf-game 509/0, the six sibling 07 binaries
   34/0 (suite.py background-killed by the sandbox as before; the foreground runs stand in).
   Report: docs/reports/level-07-complete.md.
+- 2026-10-17 s/level-01-complete-2 (task 701c): started. Task: the held
+  s/level-01-complete (701b, 9e842b6) merged onto master breaks
+  walkreal_07000001_live::walk_from_the_spawn_to_the_exit_with_the_contact
+  (walkreal_07000001_live.rs:308 "the contact must walk his route to the
+  LoadPointActivator plate") which passes without it (bisected). Merge newest
+  master, find which held change stalls the contact's route (the report mentions
+  an escort stall and a door wedge), fix with evidence, make that walk pass
+  alongside the held tests. In progress.
