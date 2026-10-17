@@ -18787,3 +18787,7 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   headless-runnable. The full suite.py did not fit the window (the sandbox kills background
   processes between tool calls; foreground 10-min tool windows cover ~77 of 522 binaries) — the
   foreground runs above are the verification. Report: docs/reports/level-0a-interactables.md.
+- 2026-10-17 s/level-0c-complete (task 712b): STARTED. The power station part 1 (0700000c)
+  walked start → finish through the real input path: every objective (optional ones too), every
+  scripted event, the exit the game's way (LOAD_LEVEL into 0700000d). Known open items to start
+  from: the yard ladder, the drawn gate, the latches, the sniper spots. Work in progress.
