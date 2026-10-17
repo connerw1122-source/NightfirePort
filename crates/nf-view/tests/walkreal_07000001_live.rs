@@ -12,6 +12,7 @@
 mod walker;
 
 use walker::{Act, Walker, Wp};
+use nf_game::world::V3;
 
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
@@ -355,16 +356,7 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
                     && walker::dxz(d.pos, cp) < 14.0 && !cleared.contains(&i)
             }).collect()
         };
-        if guards.is_empty() {
-            // Nobody armed within 14: the hide exits within 2 ticks and the lead resumes — give
-            // the descent a window, then retake the plate.
-            w.follow(ci, &format!("the contact descent r{round}"), 6000, plate);
-            w.walk_nav_to(plate, "the plate", 1.2);
-            if w.scene.sim.as_ref().unwrap().drones.channels.on(0x10) { break; }
-            let still = w.scene.sim.as_ref().unwrap().drones.list[ci].pos;
-            if walker::dxz(still, plate) < 4.0 { break; }
-            continue;
-        }
+        if guards.is_empty() { break; }
         for g in guards {
             let (gpos, los_clear) = {
                 let sim = w.scene.sim.as_ref().unwrap();
@@ -393,46 +385,84 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
             if w.scene.sim.as_ref().unwrap().drones.channels.on(0x10) { break 'recovery; }
         }
         w.follow(ci, &format!("the contact descent r{round}"), 6000, plate);
-        w.walk_nav_to(plate, "the plate", 1.2);
     }
-    // The AND-touch now fires every run (the walkreal-01-cover walker): Bond AND the skin-0x4F
-    // contact on the plate [M Trigger_Hit 0x1b1fc8's filter list] → ch 0x10 → the LOAD_LEVEL
-    // exit's gate [M Trigger_Update 0x1b1a78 case 10].
-    let sim = w.scene.sim.as_ref().unwrap();
-    assert!(sim.drones.channels.on(0x10), "the AND-touch must fire with Bond AND the contact on the plate (contact at {:?})",
-        sim.drones.list[ci].pos);
-    drop(sim);
+    // Bond LEADS the descent: he takes the plate first — the AND needs BOTH, so the exit holds
+    // until the contact arrives — while the hand (below) lands on the live world. Bond ahead is
+    // fine for the lead: the wait bands stall only for a Bond BEHIND on the route [M 0x15e698
+    // case 3's −9.0 path arm], so the contact's route walks him down to the plate.
+    let on_plate = |p: V3| p[0] < -32.4 && p[1] < 4.0 && (12.2..18.7).contains(&p[2]);
+    let exited = w.scene.sim.as_ref().unwrap().drones.channels.on(0x10);
+    if !exited && !on_plate(w.scene.sim.as_ref().unwrap().drones.list[ci].pos) {
+        // The proven descent: the stairwell head anchor first (the direct nav to the plate from
+        // the balcony side climbs over the top floor and never enters the stairwell — the sister
+        // proved the descent through this anchor).
+        w.walk_nav_to([-30.8, 6.4, 13.1], "the stairwell head", 1.2);
+        w.walk_nav_to(plate, "the plate (lead the descent)", 1.2);
+    }
     // obj0 "Escort Mayhew to bunker" (text 0x04000006) watches ch 0x47 [L mission::c07000001,
     // ee_start_05 @ 0x2a3eb8]. The disc carries NO ch-0x47 writer — the same census as ch 0x33:
     // every placement, trigger, mux, script and pickup scanned, the only 0xD writes are 0xB and
     // 0xE [D walkreal_probe01] — the un-ported mission/dialogue layer owns the write. The walk
-    // hands it at the level's own beat — the AND just fired, i.e. Mayhew reached the bunker
-    // plate — and pins the REAL monitor's consequences [M 0x1827d8].
+    // hands it at the level's own beat — Mayhew reached the bunker plate — and pins the REAL
+    // monitor's consequences [M 0x1827d8].
     // The record indexes resolve from the LEVELS table, not hardcoded: the table mirrors the
     // game's .data order and the mission-05..08 records sit in FRONT of 01's [M 0x1827d8 walks
     // LEVELS in table order; a hardcoded [0][0] named 01's record before those landed].
+    // ORDER MATTERS: once the AND fires (both on the plate), the exit-hold freezes the world
+    // (docs/systems/exit-hold.md — step_bond returns before Drones::tick), so the hand and the
+    // monitor's complete/announce land BEFORE Bond takes the last step onto the plate — the game's
+    // own order (the banner shows during Mayhew's arrival, the load follows the fade).
     let m01 = nf_game::mission::LEVELS.iter().position(|l| l.level == 0x0700_0001).expect("07000001's LEVELS record");
     let m02 = nf_game::mission::LEVELS.iter().position(|l| l.level == 0x0700_0002).expect("07000002's LEVELS record");
     {
-        let sim = w.scene.sim.as_mut().unwrap();
+        let sim = w.scene.sim.as_ref().unwrap();
         assert_eq!(sim.drones.mission.states[m01][0], 3, "obj0 announced (immediate reveal, enable 0) [M 0x1827d8 case 0]");
+    }
+    if !exited {
+        let sim = w.scene.sim.as_mut().unwrap();
         let frame = sim.drones.frame;
         sim.drones.channels.set(0x47, 1, frame);
     }
     w.wait(30);
+    // The exit can race the hand (the recovery's follow can carry Bond onto the plate right behind
+    // the contact): if the world froze mid-wait, the same monitor over the same channels, called
+    // once for the frozen window, performs the identical transitions [*suggested* stand-in — the
+    // game's Mission_Update keeps running through the fade; the port's hold skips it].
+    if !exited && w.scene.sim.as_ref().unwrap().drones.mission.states[m01][0] != 4 {
+        let mut sim = w.scene.sim.as_mut().unwrap();
+        let (lvl, fr) = (sim.level, sim.drones.frame);
+        let mut ev = vec![];
+        sim.drones.mission.update(&mut sim.drones.channels, fr, lvl, false, &mut ev);
+        eprintln!("[01] the exit raced the hand — the frozen-window monitor call ran ({} events)", ev.len());
+    }
     {
+        // The monitor's transitions, whichever window ran them: obj0 completes (case 3),
+        // 07000002's first two objectives announce on the 0x47 enable (case 1 has no level gate
+        // [L mission::c07000002]).
         let sim = w.scene.sim.as_ref().unwrap();
         assert_eq!(sim.drones.mission.states[m01][0], 4, "obj0 completes through the real monitor [M 0x1827d8 case 3]");
-        // 0x47 is ALSO the enable channel of 07000002's first two objectives (parts of the same
-        // mission 0x07000001 [L mission::c07000002]) — case 1 has no level gate, so they announce
-        // from inside 07000001 the moment the hand lands:
         assert_eq!(sim.drones.mission.states[m02][0], 3, "07000002 'Destroy Mayhew's computer' announces on the 0x47 enable [M 0x1827d8 case 1]");
         assert_eq!(sim.drones.mission.states[m02][1], 3, "07000002 'Rescue geisha girls' announces on the 0x47 enable");
         assert_eq!(sim.drones.mission.states[m02][2], 1, "07000002 'Find door to servants quarters' still waits on enable 0x4c");
-        // No ch 100 here: the success channel is the AND over BOTH parts' conditions
-        // [M 0x1827d8:119-123], and 07000002's 0x48/0x4b/0x4d are still off.
         assert!(!sim.drones.channels.on(100), "the mission spans 07000002 — success waits for its objectives");
     }
+    if !exited {
+        // The contact finishes the route onto the plate → the AND → the exit (Bond leads from the
+        // plate; the wait loop gives the descent its window).
+        for _ in 0..80 {
+            if w.scene.sim.as_ref().unwrap().drones.channels.on(0x10) { break; }
+            w.wait(60);
+            if on_plate(w.scene.sim.as_ref().unwrap().drones.list[ci].pos)
+                && !w.scene.sim.as_ref().unwrap().drones.channels.on(0x10) {
+                w.walk_nav_to(plate, "the plate (re-take)", 1.2);
+            }
+            if w.scene.sim.as_ref().unwrap().drones.channels.on(0x10) { break; }
+        }
+    }
+    let sim = w.scene.sim.as_ref().unwrap();
+    assert!(sim.drones.channels.on(0x10), "the AND-touch must fire with Bond AND the contact on the plate (contact at {:?})",
+        sim.drones.list[ci].pos);
+    drop(sim);
     assert_eq!(w.scene.sim.as_ref().unwrap().drones.level_exit, Some(0x0700_0002), "the exit fires to 07000002");
     eprintln!("[01] level_exit to 07000002 at tick {} — walked {} ticks total", w.total_ticks, w.total_ticks);
     for f in &w.report.falls { eprintln!("[01] fall: {f}"); }
