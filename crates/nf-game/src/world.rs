@@ -285,6 +285,13 @@ impl CollisionWorld {
         // Per pushed object: its own runtime cel (the pushed ordinal — see the doc above).
         let mut obj_cell: Vec<Option<u32>> = Vec::new();
         for inst in instances {
+            // The breakable panes (placement 0x20) do NOT bake into the static set: `Break_Kill`'s
+            // obj+0xFE |= 1 takes the pane out of the world — "the collision goes away"
+            // [M 0x12b970:60; glass-breach] — which a static bake can't undo. The Drones inject
+            // each INTACT pane every tick through `set_dynamic` (the doors' mechanism); a broken
+            // pane injects nothing. The obj_cell push below keeps its ordinal so the scope graph's
+            // k-th-cell alignment survives the skipped run.
+            if inst.placement.flags & 0xff == 0x20 { continue; }
             let Some(c) = &level.maps[inst.map].objects[inst.object].collision else { continue };
             // The node's bullet-pass flag: the placement's glist flags bit 0x40 (cel+0x94 [M
             // 0x1d1998:103]; Collide_Intersect 0x1ebaa8:143-145 turns every hit on the node into a

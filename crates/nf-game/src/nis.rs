@@ -63,6 +63,11 @@ pub enum Request {
     Event { kind: u8, params: Vec<u32> },
     /// Event 4: `Player_Disable` — the player stops (the script runs a cut-scene).
     PlayerDisable,
+    /// Event 0x0A: `Break_DoBreak(prev-stream object's +0xC0)` [M Script_EventHandler 0x1d94c0:147-151
+    /// → 0x12c168]: the scripted pane kill — the first intact breakable whose sphere contains the
+    /// point dies (the standard Break_Kill). The position is the previous stream's live animated
+    /// matrix translation (obj+0xC0; the same previous-stream rule as events 6/0xB/0xF [M :94-96]).
+    BreakAt { pos: crate::world::V3 },
     /// Event 9: `Player_Cam2Mode(0, mode)` [M Script_EventHandler 0x1d94c0 case 9 — player 0, the
     /// event's param 0]. Mode 3 → `Player_SetCamMode(BL, 2)` [M Player_Cam2Mode 0x195fc8:7-9] — the
     /// cut-scene behind-Bond orbit (`Player_PositionCamera` 0x18f5d8 case 2); anything else → the
@@ -820,6 +825,17 @@ impl Script {
                 if let Some(o) = prev { self.pending_weapon.push((o, w)); }
             }
             0xc => self.flags |= 0x10,
+            // Event 0x0A [M 0x1d94c0:147-151 → Break_DoBreak 0x12c168]: the previous stream's
+            // object's live position feeds the pane kill (the snapshot here, event() borrows
+            // `objs` immutably — the same shape as event 6).
+            0xa => {
+                let prev = i.checked_sub(1).map(|j| &self.streams[j]).filter(|s| matches!(s.kind, 1 | 2)).and_then(|s| s.obj);
+                let pos = prev.and_then(|o| match objs.list.get(o) {
+                    Some(Some(Obj::Entity { matrix, .. })) => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
+                    _ => None,
+                });
+                if let Some(pos) = pos { out.push(Request::BreakAt { pos }); }
+            }
             0xd => if g(0) != 0 { ch.set(g(0), g(1) as u8, frame); },
             0xe => self.streams[i].flags |= 1,
             0x10 => self.flags |= 0x20,

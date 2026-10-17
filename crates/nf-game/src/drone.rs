@@ -537,6 +537,11 @@ pub struct Drone {
     pub anim_set: u16,
     pub weapon: u32,
     pub pos: V3,
+    /// `obj+0x40` — the previous position: the movement pass copies +0x30..+0x3F after each move
+    /// [M 0x1336f8:212; docs/fields/obj-tag.md +0x40], so (pos − prev_pos) is the tick's movement.
+    /// The reader is `Break_Update`'s guards-smash-glass arm (level 0x7000001: the pane's health
+    /// loses `SqDist3D(+0x30, +0x40) × 20` per contact [M 0x12bfd8:23-34], glass-breach).
+    pub prev_pos: V3,
     /// obj+0x54 and `Drone+0x694`.
     pub yaw: f32,
     pub desired_yaw: f32,
@@ -1222,7 +1227,7 @@ impl Drone {
         let p1 = param(1);
         let start_script = match p1 { 0x6000000 | 0x6000892 | 0x600089c => 0, s => s };
         let mut dr = Drone {
-            skin, anim_set, weapon, pos, yaw, desired_yaw: yaw, aim_yaw: 0.0, alert, alert_floor: alert, props: normal, alert_props,
+            skin, anim_set, weapon, pos, prev_pos: pos, yaw, desired_yaw: yaw, aim_yaw: 0.0, alert, alert_floor: alert, props: normal, alert_props,
             sight_range: e8, half_fov: crate::trig::HALF_PI, engage_range: f0, combat_range: fc,
             // `drone_stats` for the guards' type is all zero at run time (07000005 snapshot) → defaults.
             accuracy: 5, aggression: 0, reaction: 0,
@@ -9096,6 +9101,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         fb.register_wire(obj, group);
                     }
                 }
+                // Event 0x0A's scripted pane kill [M Break_DoBreak 0x12c168 via Script_EventHandler
+                // 0x1d94c0:147-151] — the first intact breakable whose sphere contains the previous
+                // stream object's live position dies with the standard Break_Kill sound.
+                crate::nis::Request::BreakAt { pos } => {
+                    for ev in self.breakables.do_break(pos, &mut self.rng) {
+                        self.audio.play3d(ev.sound, ev.pos, None);
+                    }
+                }
                 // `Script_FFwd`'s `Music_Event(5, hash)` [M 0x1dac78:55] — the NIS-skipped pulse
                 // (the only `Request::Event` the script player pushes; other kinds ride this arm
                 // unused). `UpdateMusicalEvents` clears `NisPlaying` and arms `NisQuitten = 5`
@@ -9756,6 +9769,14 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // same set_dynamic now (the game's Collide_Update is post-walk [M 0x1336f8:238]). Id: high bit 40 + the door index.
             parts.extend(drones.doors.list.iter().enumerate().filter(|(_, x)| x.glist != 0)
                 .map(|(k, x)| (0x100_0000_0000 | k as u64, x.glist, x.matrix)));
+            // The breakable panes (glass-breach): the INTACT pane is a solid body this tick
+            // (`Collide_PickObj` walks the cel-linked objects whatever moved them); a BROKEN pane
+            // injects nothing — `Break_Kill`'s obj+0xFE |= 1 takes it out of the world, the
+            // collision "goes away" [M 0x12b970:60] and the guards walk through the opening.
+            // The static bake excludes the 0x20 placements (world.rs). Id: high bit 41 + placement.
+            parts.extend(drones.breakables.list.iter()
+                .filter(|s| !s.broken && s.shape_key != 0)
+                .map(|s| (0x200_0000_0000 | s.placement as u64, s.shape_key, s.matrix)));
             // The SimpleScripts too (fix-party-mission item 7): the safe door (ch 136) and the doorway
             // bolt (ch 137) are solid at their posed matrix, like the doors. Id: bit 41 + the ss index.
             parts.extend(drones.sss.list.iter().enumerate().filter(|(_, x)| x.hash != 0)
@@ -10081,6 +10102,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             let dr = &mut self.list[index];
             if !dr.present { continue; }
             if dr.spawn_frame == frame { continue; }   // spawned this tick: the game's walk already passed it
+            // `obj+0x40` = the pre-move position [M 0x1336f8:212 — the movement pass copies
+            // +0x30..+0x3F after the move]: captured before this tick's movement so
+            // (pos − prev_pos) is the tick's step (the smash-arm delta, glass-breach).
+            dr.prev_pos = dr.pos;
             if dr.target.stamp != self.target.stamp { dr.target = self.target.clone(); }
             dr.channel_on = self.channels.on(dr.switch_channel as u32);
             dr.wait_channel_on = dr.wait_channel != 0 && self.channels.on(dr.wait_channel as u32);
@@ -11144,6 +11169,25 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
         }
         self.health.flash = (self.health.flash - 1.0).max(0.0);
+        // The guards-smash-glass pass (glass-breach [M Break_Update 0x12bfd8:23-34]): after the
+        // control walk every class-2 body's tick — each present drone's (prev_pos → pos) and
+        // Bond's (player_pos → pos, the tick caches already hold the pre-move positions) — is
+        // the game's (+0x40, +0x30) pair against the kind-2 panes; level 0x7000001 only [M :24].
+        // The game's Break_Update runs in the breakable object's own control pass; the port folds
+        // it here over the same per-tick data [*suggested* order — the game's list order
+        // interleaves panes and drones]. Kind-2 kills draw NO RNG [M 0x12b970:65-76].
+        if d.level == 0x0700_0001 {
+            let mut breach_sounds: Vec<(u32, V3)> = Vec::new();
+            for dr in self.list.iter() {
+                if !dr.present { continue; }
+                breach_sounds.extend(self.breakables.drone_smash(dr.prev_pos, dr.pos, d.level).into_iter().map(|ev| (ev.sound, ev.pos)));
+            }
+            breach_sounds.extend(self.breakables.drone_smash(self.player_pos, player.pos, d.level).into_iter().map(|ev| (ev.sound, ev.pos)));
+            for (id, pos) in &breach_sounds {
+                // `Sound_Play3D(100.0, -1.0, -1.0, id, obj+0x80, custom=0)` [M 0x12b970:69,75].
+                self.audio.play3d(*id, *pos, None);
+            }
+        }
         // fix-grenade-types: the flashbang whiteout counts down ONE tick per tick (the game decrements
         // BL+0x91C per tick and fades at the half point — `Player_Update` 0x193600:328-336; the amount
         // was set to FRAME_RATE·f·10 = 600·f ticks [M 0x196040 + 0x12e0b8]). The old self-fraction
@@ -11236,7 +11280,7 @@ mod tests {
     /// gravity / down-ray tests. The hip height is the default 1.0 (`Drone::hip`).
     pub(crate) fn drone_at(pos: V3) -> Drone {
         let dr = Drone {
-            skin: 0, anim_set: 0, weapon: 0, pos, yaw: 0.0, desired_yaw: 0.0, aim_yaw: 0.0, alert: 0.0, alert_floor: 0.0,
+            skin: 0, anim_set: 0, weapon: 0, pos, prev_pos: pos, yaw: 0.0, desired_yaw: 0.0, aim_yaw: 0.0, alert: 0.0, alert_floor: 0.0,
             props: [0; 3], alert_props: None, sight_range: 0.0, half_fov: 0.0, engage_range: 0.0, combat_range: 0.0,
             accuracy: 0, aggression: 0, reaction: 0, los: false, seen: false, ever_seen: false, visibility: 0.0,
             seen_ticks: 0, unseen_ticks: 0, vision_on: false, dist: 0.0, yaw_to_opp: 0.0,

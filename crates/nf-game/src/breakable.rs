@@ -55,6 +55,14 @@ pub struct Breakable {
     /// `obj+0xFE & 1` — the death flag `Break_Kill` sets [M 0x12b970:60]; a dead pane registers no
     /// further hits (the object leaves the world).
     pub broken: bool,
+    /// The collision-shape key the World indexes the pane's tris under (the object's hashcode, or
+    /// the anonymous `(map, object)` synthetic [S — world.rs's own rule]) — `set_dynamic` looks the
+    /// intact pane up by it each tick (glass-breach: the intact pane blocks bodies, the broken one
+    /// injects nothing [M 0x12b970:60]).
+    pub shape_key: u32,
+    /// The placement's object matrix (rotation × translation — the same matrix `bounds` transformed
+    /// the corners with) for the per-tick `set_dynamic` injection.
+    pub matrix: [[f32; 4]; 4],
 }
 
 /// The tick's breaks, for the caller's sounds/debris/draw (the game's `Break_Kill` runs the sound
@@ -108,6 +116,11 @@ impl Breakables {
             let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map_or(0, |&(_, v)| v);
             let (lo, hi) = bounds(level, m, p);
             let raw = param(2);
+            // The collision-shape key: the target object's hashcode, or world.rs's anonymous
+            // (map, object) synthetic when it is u32::MAX [S — the shapes index's own rule].
+            let (om, oo) = if p.by_hash() { level.by_hash.get(&p.hashcode).copied().unwrap_or((m, p.index as usize)) } else { (m, p.index as usize) };
+            let hc = level.maps[om].objects[oo].hashcode;
+            let shape_key = if hc == u32::MAX { 0x8000_0000 | ((om as u32) << 16) | oo as u32 } else { hc };
             out.list.push(Breakable {
                 placement: i, lo, hi,
                 kind: param(0),
@@ -115,6 +128,8 @@ impl Breakables {
                 health: f32::from_bits(param(1)),
                 filter: if raw == 0 { 0 } else { !(raw as u16) },
                 broken: false,
+                shape_key,
+                matrix: object_matrix(p.rotation, p.translation),
             });
         }
         out
@@ -173,6 +188,71 @@ impl Breakables {
     pub fn broken_at(&self, placement: usize) -> bool {
         self.list.iter().any(|s| s.placement == placement && s.broken)
     }
+
+    fn seg_box_grow(a: V3, b: V3, lo: V3, hi: V3, grow: f32) -> bool {
+        let (mut mn, mut mx) = ([0.0; 3], [0.0; 3]);
+        for k in 0..3 {
+            mn[k] = a[k].min(b[k]);
+            mx[k] = a[k].max(b[k]);
+            if mx[k] < lo[k] - grow || mn[k] > hi[k] + grow { return false; }
+        }
+        true
+    }
+
+    fn centre(s: &Breakable) -> V3 {
+        [(s.lo[0] + s.hi[0]) / 2.0, (s.lo[1] + s.hi[1]) / 2.0, (s.lo[2] + s.hi[2]) / 2.0]
+    }
+
+    /// `Break_DoBreak` 0x12c168 (NIS event 0x0a, the scripted kill): walk the breakables in
+    /// placement order — the game walks the object list [M :39-51] — and kill the FIRST intact
+    /// one whose world sphere contains `pos` (the game's sphere: centre `obj+0x80`, radius
+    /// `obj+0x8c`; the port's stand-in is the bounds grown 0.2 [*suggested* — the glist
+    /// world-sphere radius for a flat pane sits between the thin axis and the long axis]).
+    /// The kill is the standard `Break_Kill` (obj+0xFE |= 1, the sound) [M :61; 0x12b970:60-76].
+    pub fn do_break(&mut self, pos: V3, rng: &mut crate::drone::Rng) -> Vec<BreakEvent> {
+        let mut events = Vec::new();
+        let Some(s) = self.list.iter_mut().find(|s| !s.broken && Self::seg_box_grow(pos, pos, s.lo, s.hi, 0.2)) else { return events };
+        s.broken = true;
+        let sound = if s.kind == 2 {
+            0x2e
+        } else if rng.rand(100) < 0x29 {
+            0x5f2
+        } else {
+            0x5f3
+        };
+        events.push(BreakEvent { pos: Self::centre(s), kind: s.kind, sound });
+        events
+    }
+
+    /// The guards-smash-glass arm [M `Break_Update` 0x12bfd8:23-34]: on level 0x0700001 alone,
+    /// every class-2 hitter (a drone or the player — the port passes each body's tick) whose
+    /// collision registered against a kind-2 pane drains `health -= SqDist3D(hitter+0x30,
+    /// hitter+0x40) × 20.0` — the tick's own movement, the movement pass copying +0x30 → +0x40
+    /// after the move [M 0x1336f8:212] — and the pane dies at health < 0 [M :49-51]. The Mayhew
+    /// kind-2 panes all carry health 0 [D placements], so any movement through the pane plane
+    /// shatters it; a motionless brush drains 0 and survives [M :27,49]. The game's contact is
+    /// the collision pass's mirrored hit list (the body against the pane's glist triangles); the
+    /// port's stand-in is the movement segment against the pane's bounds grown 0.7 [*suggested* —
+    /// the game's contact is the body surface reaching the pane's triangles, but the port's
+    /// `move_by` probe (the 0.4 ray overshoot) stops the charging body short of the plane, so the
+    /// port's blocked standoff (~0.4-0.7) IS the contact the game resolves]. Kind-2 kills play
+    /// 0x2e with NO RNG draw (the shared
+    /// stream is untouched by glass kills [M 0x12b970:65-76]).
+    pub fn drone_smash(&mut self, prev: V3, pos: V3, level: u32) -> Vec<BreakEvent> {
+        let mut events = Vec::new();
+        if level != 0x0700_0001 { return events; }
+        let d2 = (pos[0] - prev[0]).powi(2) + (pos[1] - prev[1]).powi(2) + (pos[2] - prev[2]).powi(2);
+        if d2 <= 0.0 { return events; }
+        for s in self.list.iter_mut().filter(|s| !s.broken && s.kind == 2) {
+            if !Self::seg_box_grow(prev, pos, s.lo, s.hi, 0.7) { continue }
+            s.health -= d2 * 20.0;
+            if s.health < 0.0 {
+                s.broken = true;
+                events.push(BreakEvent { pos: Self::centre(s), kind: s.kind, sound: 0x2e });
+            }
+        }
+        events
+    }
 }
 
 #[cfg(test)]
@@ -183,10 +263,10 @@ mod tests {
         Breakables {
             list: vec![
                 // The 07000008 glass: kind 2, health 0 (one hit kills), no filter [D placements].
-                Breakable { placement: 123, lo: [105.3, 34.2, -122.0], hi: [105.3, 36.4, -120.1], kind: 2, health: 0.0, filter: 0, broken: false },
-                Breakable { placement: 128, lo: [105.3, 34.2, -122.0], hi: [109.2, 36.4, -122.0], kind: 2, health: 0.0, filter: 0, broken: false },
+                Breakable { placement: 123, lo: [105.3, 34.2, -122.0], hi: [105.3, 36.4, -120.1], kind: 2, health: 0.0, filter: 0, broken: false, shape_key: 0, matrix: [[0.0; 4]; 4] },
+                Breakable { placement: 128, lo: [105.3, 34.2, -122.0], hi: [109.2, 36.4, -122.0], kind: 2, health: 0.0, filter: 0, broken: false, shape_key: 0, matrix: [[0.0; 4]; 4] },
                 // A generic breakable with a filter and pool health.
-                Breakable { placement: 5, lo: [0.0, 0.0, 0.0], hi: [2.0, 2.0, 2.0], kind: 0, health: 30.0, filter: 0xfff8, broken: false },
+                Breakable { placement: 5, lo: [0.0, 0.0, 0.0], hi: [2.0, 2.0, 2.0], kind: 0, health: 30.0, filter: 0xfff8, broken: false, shape_key: 0, matrix: [[0.0; 4]; 4] },
             ],
         }
     }
@@ -234,7 +314,7 @@ mod tests {
         // hit nothing.
         assert!(ev.is_empty());
         // Against the filtered pane itself: 0x0008 & (0xfff8 | 0x106) != 0 → rejected.
-        let mut b3 = Breakables { list: vec![Breakable { placement: 0, lo: [0.0, 0.0, 0.0], hi: [2.0, 2.0, 2.0], kind: 2, health: 0.0, filter: 0xfff8, broken: false }] };
+        let mut b3 = Breakables { list: vec![Breakable { placement: 0, lo: [0.0, 0.0, 0.0], hi: [2.0, 2.0, 2.0], kind: 2, health: 0.0, filter: 0xfff8, broken: false, shape_key: 0, matrix: [[0.0; 4]; 4] }] };
         let ev3 = b3.bullet_hit([1.0, 1.0, -1.0], [1.0, 1.0, 3.0], 0x0008, 10.0, &mut rng);
         assert!(ev3.is_empty(), "a filtered-out hitter never damages the pane [M 0x1ece30:24-33]");
         // A weapon word outside the mask (0xfff8|0x106 = 0xfffe covers bits 1..15; only bit 0
