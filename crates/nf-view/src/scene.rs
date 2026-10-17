@@ -5291,6 +5291,47 @@ impl Scene {
         // `instances(cels_only=true)` skips every placement without 0x8000).
         instances.retain(|i| !matches!(i.placement.flags & 0xff, 0x2a | 0x22 | 0xd4));
         let (mut char_instances, chars_missing) = level.character_instances();
+        // drone-skins-g021: the drone's object is built from the hash `NDrone2_DefaultInit`
+        // 0x14b300:563-565 hands `AnimObjectNew` — the placement param 0 as the captain swap
+        // (:536-555) left it in +0xe0 (the sim's `dr.skin`). `character_instances` keyed the
+        // raw param, so a placement whose raw skin no session container carries (07000014's
+        // 0x050000b1 — carried only by 07000015/16 [D], which the story loads after 14) drew
+        // nothing even for a captain, whose swapped skin (kind 6 → 0x05000093, kind 7 →
+        // 0x050000b2) the game resolves from the level's own archive. The non-captains stay
+        // skinless exactly like the game's `AnimObjectNew` 0x1be910:44-46 miss. Raw-present
+        // placements keep their pre-existing draw path untouched.
+        let mut drone_skins: HashMap<[u32; 3], u32> = HashMap::new();
+        if let (Some(d), Some(m)) = (drones, level.main_map()) {
+            // `captain_skin` is pure (params + property tables + difficulty): the drones do not
+            // exist yet at this point in the build (b9b creates them after the characters).
+            if let Some(props) = d.props.as_ref() {
+                for p in level.maps[m].placements.iter() {
+                    if p.flags & 0xff != 0x0f { continue; }
+                    let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map(|&(_, v)| v).unwrap_or(0);
+                    let raw = param(0);
+                    if raw >> 24 != 5 { continue; }
+                    let Some(swapped) = nf_game::drone::captain_skin(raw, &param, props, d.level_id, difficulty) else { continue; };
+                    if swapped == raw { continue; }
+                    // The game builds the captain's object from the swapped record: the draw
+                    // resolves the swapped hash (`NDrone2_DefaultInit` 0x14b300:563-565), so the
+                    // raw skin's meshes give way to the swapped skin's. When the raw skin is not
+                    // in the table (07000014's 0x050000b1 — carried only by 07000015/16 [D],
+                    // which the story loads after 14) `character_instances` built no instance at
+                    // all and the swapped skin's mains are ADDED; a swapped skin the table lacks
+                    // (the game's `AnimObjectNew` 0x1be910:44-46 miss) draws nothing.
+                    let bits = p.translation.map(f32::to_bits);
+                    char_instances.retain(|i| i.placement.translation.map(f32::to_bits) != bits);
+                    if let Some(sk) = level.skins.get(&swapped) {
+                        for h in sk.main.iter().flatten() {
+                            if let Some(&(map, object)) = level.by_hash.get(h) {
+                                char_instances.push(Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() });
+                            }
+                        }
+                    }
+                    drone_skins.insert(bits, swapped);
+                }
+            }
+        }
         // Dev NPC pool (the external dev panel's "spawn NPC"): for the first drone placement of each skin, NPC_POOL
         // hidden copies of all its meshes, far below the world. They are ordinary characters with their held weapon,
         // so a spawned drone is drawn exactly like a placed one once `Sim::char_drone` points them at it.
@@ -5512,7 +5553,12 @@ impl Scene {
         };
         for inst in &char_instances {
             let obj = &level.maps[inst.map].objects[inst.object];
-            let skin_hash = inst.placement.params.iter().find(|(i, _)| *i == 0).map(|&(_, v)| v).unwrap_or(0);
+            let raw_hash = inst.placement.params.iter().find(|(i, _)| *i == 0).map(|&(_, v)| v).unwrap_or(0);
+            // drone-skins-g021: the captain-swapped drone draws its swapped skin (`+0xe0`,
+            // `NDrone2_DefaultInit` 0x14b300:563-565) — `drone_skins` only carries the
+            // raw-missing 0x0f placements (see the extension above); everything else keeps
+            // the raw param.
+            let skin_hash = drone_skins.get(&inst.placement.translation.map(f32::to_bits)).copied().unwrap_or(raw_hash);
             let Some(skin) = level.skins.get(&skin_hash) else { continue };
             let Some(skeleton) = skeletons.get(&skin.skeleton) else { continue };
             if !obj.gfx.is_skinned() || skin.inverse_bind.is_empty() {
