@@ -143,7 +143,6 @@ start set with the game's kind 0 — `nf-game/src/player.rs` `starts_from_placem
 | 0xe4 | 64 | — | Hurt_Create 0x17e870 |
 | 0xe9 | 162 | — | Drone_AIPoint 0x137550 |
 | 0xf3 | 8 | — | Env_Tree_Create 0x17c200 |
-| 0xf4 | 1 | — | Trigger_MoviePlayer 0x1b2a08 |
 | 0xf6 | 33 | — | — none (game ignores) |
 | 0xf7 | 33 | — | — none (game ignores) |
 | 0xff | 39 | — | — none (game ignores) |
@@ -186,9 +185,9 @@ reads Marker's u16 but discards it [M 0x1d8548 case 6].
 | 0x05 | 35 | yes | Drone_EnableAll(0) |
 | 0x06 | 31 | yes | return-matrix snapshot |
 | 0x07 | 29 | yes | flag 0x80 |
-| 0x08 | 1 | **NO** | Drone_CoderCreate 0x13a108 |
+| 0x08 | 1 | yes (movie-trigger-41) | Drone_CoderCreate 0x13a108 |
 | 0x09 | 1 | yes (nis-event9-cnis) | Player_Cam2Mode 0x195fc8 — mode 3 = the behind-Bond orbit, else the exit arm; the disc's single firing is mode 1 (the exit) |
-| 0x0a | 1 | **NO** | Break_DoBreak 0x12c168 |
+| 0x0a | 1 | yes (movie-trigger-41) | Break_DoBreak 0x12c168 |
 | 0x0b | 23 | yes | weapon byte |
 | 0x0c | 65 | yes | flag 0x10 |
 | 0x0d | 195 | yes | switch channel write |
@@ -196,26 +195,38 @@ reads Marker's u16 but discards it [M 0x1d8548 case 6].
 | 0x11 | 10 | yes | conditional channel write |
 | 0x12 | 2 | yes | RamSave+level load |
 
-Event kinds 0x0e, 0x10 and 0x13 never occur on the disc. The three the port drops — 0x08, 0x09,
-0x0a — each occur exactly once, all in script **0600005b** of **07000001.bin** (12 streams):
+Event kinds 0x0e, 0x10 and 0x13 never occur on the disc. The three single-firing kinds of script
+**0600005b** of **07000001.bin** (12 streams) — 0x08, 0x09, 0x0a — are all ported now (0x09 since
+nis-event9-cnis; 0x08/0x0a since movie-trigger-41):
 
 - stream 9: `Event(0x08, [0x0500001b, 0x060000a6, 0x10, 1])` → `Drone_CoderCreate` 0x13a108 —
-  spawns the gadget/coder drone (the Q-claw drone intro of the first mission) at the stream's
-  object, with skin 0x0500001b and anim 0x060000a6.
+  spawns the gadget/coder drone (skin 0x0500001b, start script 0x060000a6, setup 1, state IDLE)
+  at the PREVIOUS stream object (0x1d96d4-0x1d96f4). For THIS firing the game itself no-ops: the
+  previous record is stream 8, which creates no object, and case 8 skips on a NULL object [M
+  0x1d94c0:75-96] — the coder drone never spawns from the disc's own firing. The port mirrors
+  the gate (and spawns through the same param map when an object exists [M 0x13a108: slot 0 =
+  skin, slot 1 = start script, slot 9 = setup; param 2 is dead]).
 - stream 4: `Event(0x09, [1])` → `Player_Cam2Mode(0, 1)` 0x195fc8 — the camera-mode override's
   exit arm (`SetCamMode(0)` + `ChangeSubState(0)` [M 0x195fc8:11-16]; mode 3 would enter the
   behind-Bond orbit, which no disc script fires [D nis_event9_census]).
-- stream 8: `Event(0x0a, [])` → `Break_DoBreak` 0x12c168 at the current object — script-driven
-  breakable trigger.
+- stream 8: `Event(0x0a, [])` → `Break_DoBreak(prev_obj+0xC0)` 0x12c168 at stream 7's anim
+  object's position [M 0x1d96bc-0x1d96c8] — the first class-0x20 object whose world sphere
+  contains it dies (Break_Kill 0x12b970: delete + the glass/wood sound + shatter/debris). The
+  port scans its script-entity store (the placed 0x20 glass panels are not simulated — the
+  disc's firing finds no script-side 0x20 either way).
 
 ### Trigger action codes (8 the game dispatches; port handles 7)
 
-The port's `triggers::kind` module (nf-game/src/triggers.rs:10-18) covers 1, 2, 3, 4, 5, 10
-(0xa), 12 (0xc). The game additionally dispatches **0xd (movie)** in `Trigger_Update` 0x1b1a78
-and `Trigger_Activate` 0x1b2318: when its input channel fires it clears the channel, latches
-the output channel into `GameState+0x16` and pushes GameFlow states 6/7 (movie + fade)
-[M 0x1b1a78 case 0xd]. On disc this is exactly one placement: type **0xF4** in **07000041.bin**
-(`Trigger_MoviePlayer` 0x1b2a08 writes action 0xd).
+The port's `triggers::kind` module covers 1, 2, 3, 4, 5, 10 (0xa), 12 (0xc) and — since
+movie-trigger-41 — **0xd (movie)**: `Trigger_Update` 0x1b1a78 case 0xd fires when the FIRST input
+slot is non-zero AND its channel is on, clears the channel, latches the OUT slot's full u32 into
+`GameState+0x10` (0x1b1f60-0x1b1f78) and pushes GameFlow states 6/8; `Trigger_Activate` 0x1b2318:53-61
+(the E-key path) gates on `mask & 4` and pushes the same states (fade 300.0f). NOTE: nothing on
+this path starts a movie or loads a level — state 6 pops the same tick when `BGFMVPlaying == 0`
+(psiMovieFinished 0x1082e8) and only `ResetMap_Load` phase 2 reads `GameState+0x10` (phase 0
+overwrites it first). On disc this is exactly one placement: type **0xF4** in **07000041.bin**
+(placement #81, params (0, 4, 0) [D] — out 0, mask 4, input 0 — so its update path is inert by
+design and only the E-path can push the request, with movie code 0).
 
 Action codes by occurrence (the placement families plus raw 0xDC with an authored param 0):
 
@@ -228,7 +239,7 @@ Action codes by occurrence (the placement families plus raw 0xDC with an authore
 | 5 OUT | 5 | 0xEE | yes | `Trigger_MultiplexOut` 0x1b2ed8 |
 | 10 (0xa) load level | 16 | 0xE8 | yes | `Trigger_LoadLevelCreate` 0x1b2950 |
 | 12 (0xc) OR | 28 | 0xEF | yes | `Trigger_MultiplexOrIn` 0x1b2d38 |
-| 13 (0xd) movie | 1 | 0xF4 (07000041) | **NO** | `Trigger_MoviePlayer` 0x1b2a08 |
+| 13 (0xd) movie | 1 | 0xF4 (07000041) | yes (movie-trigger-41) | `Trigger_MoviePlayer` 0x1b2a08 |
 
 Raw 0xDC triggers: 36 placed; only 3 carry an authored action param (value 2 = Touch, counted
 above); the other 33 have no param 0, so the game's zeroed param buffer gives them action 0 —

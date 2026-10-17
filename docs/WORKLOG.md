@@ -17945,3 +17945,30 @@ Census handled sets 61 → 62 (0x2D moved); doc tables + task 9 struck PORTED wi
 docs/systems/player-starts.md written; 07000007.md §1 lists the five 0x2D records. Live checks
 requested: PCSX2 fresh-boot spawn measurements on 07000007 (expect 33.4,44.5,−70.6) and 0700000b
 (expect 28.9,13.3,28.7, NOT the leading 0x2D at 9.9,48.5,21.5). Suite running.
+
+## movie-trigger-41 (2026-10-17, branch s/movie-trigger-41) — start 05:05 UTC
+
+Task: the movie-player trigger (Trigger_MoviePlayer 0x1b2a08, Trigger_Update case 0xd) wired into the
+port's resolve_exit_code path like LOAD_LEVEL, plus NIS events 0x08 (Drone_CoderCreate 0x13a108) and
+0x0a (Break_DoBreak 0x12c168) in script 0600005b (07000001). Tests for each, census handled sets
+updated. In progress.
+
+## movie-trigger-41 (2026-10-17, branch s/movie-trigger-41) — implemented 06:30 UTC
+
+The movie-player trigger (0xF4 → action 0xd) and NIS events 0x08/0x0a ported. The create
+wrapper's mapping measured from the disasm (slot 0 = 0xd, slot 1 = old p0 as the FULL u32 movie
+code, slot 2 = old p2, slot 9 = old p1 — not the mux shift) [M 0x1b2a08 + 0x1b1720:67-88];
+`Trigger_Update` case 0xd (first input slot non-zero + channel on → clear + GameState+0x10 =
+out + push 6/8, no spent latch) and `Trigger_Activate`'s mask&4 E-path arm [M 0x1b1f24-0x1b1f78,
+0x1b2318:53-61]. Key finding: the trigger path never loads a level — state 6 pops when
+BGFMVPlaying == 0 (0x1082e8) and nothing starts a movie; the disc's only record (07000041 #81,
+params (0,4,0) [D]) has input slot 0 → the update path is provably inert, and the E-path pushes
+movie code 0. The port carries `Drones::movie_request` and the view consumes-and-drops.
+Event 8 (Drone_CoderCreate 0x13a108): prev-stream-object gate + NULL skip + the param map
+{0: skin, 1: start script, 9: setup} + state IDLE (t2 = 4 hard-coded); param 2 is DEAD (t0 never
+read). The disc's own firing is a game no-op (stream 8 creates no object) — mirrored. Event 0xa
+(Break_DoBreak 0x12c168): the class-0x20 sphere scan over the port's script entities (placed
+glass unmodelled, 1.0 stand-in radius [S]); kill = delete + the 0x2e/0x5f2/0x5f3 sound.
+Census sets 15→17 / 7→8 / 61→62 + the doc tables. Verified: 2 trigger unit tests + 5 live tests
+(07000041 real path, 07000001 real script path with synthetic-script sisters) + 6 census tests.
+Suite running.

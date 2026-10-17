@@ -3684,6 +3684,18 @@ impl ApplicationHandler for App {
                                 self.pending_level = Some(resolved);
                             }
                         }
+                        // movie-trigger-41: the movie-player trigger's request (the game's
+                        // `GameState+0x10 = out` + GameFlow pushes 6/8, `Trigger_Update` case 0xd
+                        // 0x1b1f60-0x1b1f78 / `Trigger_Activate` 0x1b2318:56-61). The game's own
+                        // state-6 body pops the same tick when no movie is playing
+                        // (`psiMovieFinished` 0x1082e8 = `BGFMVPlaying == 0`) and NOTHING on this
+                        // path starts one — the movie code 0 the disc's only record carries [D
+                        // 07000041 #81] isn't even in `psiStartBackgroundMovie`'s whitelist. The
+                        // port therefore consumes and drops (the observable game effect is the
+                        // state-8 fade, a view concern — see the task report's live checks).
+                        if let Some(code) = sim.drones.movie_request.take() {
+                            eprintln!("level: movie trigger fired (code {code:08x}) — states 6/8 push and pop (no movie started on this path [M 0x1082e8])");
+                        }
                         if !self.noclip {
                             let h = sim.bond.head();
                             self.cam = Camera { pos: Vec3::new(h[0], h[1], h[2]), yaw: sim.bond.yaw, pitch: sim.bond.pitch * std::f32::consts::FRAC_PI_2, fov: GAME_FOV / sim.zoom };
