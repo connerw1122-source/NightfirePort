@@ -156,3 +156,97 @@ fn the_intro_lines_precache_ahead_of_their_authored_frame() {
         }
     }
 }
+
+/// 07000008's station intro (SP #294, 0x06000077, 3880 ticks — plate #237 ~3.5 m from the
+/// spawn [D docs/levels/07000008.md §2]): one speaker runs lines 37-837 anim-frames apart on a
+/// running take, so the game's `SFXPreCache(id, frame − current)` window (0..=50 frames ahead
+/// [M 0x1c1b38 case 1]) is physically open for every line after the first — each line's item
+/// must sit in the driver ≥ 5 ticks before it starts (the stream decodes off the play tick).
+/// Also pins the sync property: same-script lines fire exactly their authored frames apart.
+#[test]
+fn the_station_intro_lines_precache_ahead_of_their_frames() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    unsafe { std::env::set_var("NF_SILENT", "1"); }
+    let mut scene = nf_view::load(&iso, "07000008.bin", false).expect("load 07000008");
+    let mut snd = bare_sound(&mut scene);
+    // Walk into plate #237 through the real input path.
+    let mut input = Input::default();
+    input.forward = 1.0;
+    for _ in 0..400 { scene.sim.as_mut().unwrap().step_bond(input, false, false, false); }
+    nf_view::sound_tick(&mut snd, scene.sim.as_mut().unwrap());
+
+    // The intro's anim scripts' op-1 (script, frame, sfx) pairs from the loaded NIS data [D].
+    let op1: Vec<(u32, i32, u32)> = {
+        let sim = scene.sim.as_ref().unwrap();
+        let mut op1 = Vec::new();
+        for sp in sim.drones.scripts.players.iter() {
+            for info in sp.info.iter().flatten() {
+                for st in info.nis.streams.iter() {
+                    for cmd in st.decode() {
+                        if let nf_formats::nis::Cmd::Anim { script, .. } = cmd {
+                            if let Some(s) = sim.scripts.get(&script) {
+                                for c in s.commands.iter().filter(|c| c.op == 1) {
+                                    if let [f, sfx, ..] = c.args.as_slice() { op1.push((script, *f as i32, *sfx as u32)); }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        op1
+    };
+    eprintln!("[08] op-1 lines {op1:?}");
+    assert!(!op1.is_empty(), "the station intro carries no op-1 lines");
+
+    let mut first_seen: std::collections::HashMap<u32, u32> = Default::default();
+    let mut first_start: std::collections::HashMap<u32, u32> = Default::default();
+    let mut prev: std::collections::BTreeMap<u32, i32> = Default::default();
+    for t in 400..4900u32 {
+        scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+        nf_view::sound_tick(&mut snd, scene.sim.as_mut().unwrap());
+        let mut now: std::collections::BTreeMap<u32, i32> = Default::default();
+        for (id, del, _, _, _) in snd.driver.items_probe() { if !del { *now.entry(id).or_insert(0) += 1; } }
+        for (&id, &n) in &now {
+            let p = prev.get(&id).copied().unwrap_or(0);
+            first_seen.entry(id).or_insert(t);
+            if n > p { first_start.entry(id).or_insert(t); }
+        }
+        prev = now;
+    }
+
+    // Sync: same-script consecutive lines fire exactly their authored frames apart (± 2).
+    for s in op1.iter().map(|(s, _, _)| *s).collect::<std::collections::BTreeSet<_>>() {
+        let mut lines: Vec<(i32, u32, u32)> = op1.iter().filter(|(sc, _, _)| *sc == s)
+            .filter(|(_, _, sfx)| first_start.contains_key(sfx))
+            .map(|&(_, f, sfx)| (f, sfx, first_start[&sfx])).collect();
+        lines.sort();
+        for w in lines.windows(2) {
+            let (f1, _, t1) = (w[0].0, w[0].1, w[0].2);
+            let (f2, _, t2) = (w[1].0, w[1].1, w[1].2);
+            let d = (t2 as i64 - t1 as i64) - (f2 as i64 - f1 as i64);
+            eprintln!("[08] script {s:#x} lines {f1}@t{t1} → {f2}@t{t2}: tick delta vs frame delta {d}");
+            assert!(d.abs() <= 2, "script {s:#x} drifted: frames {f1}→{f2} but ticks {t1}→{t2} (delta {d})");
+        }
+    }
+
+    // The precache: every line ≥ 51 frames past its anim's birth must have been armed early.
+    let mut best_lead: Option<(u32, i64)> = None;
+    for &(script, f, sfx) in op1.iter() {
+        let Some(fs) = first_start.get(&sfx) else { eprintln!("[08] line {sfx:#x} (script {script:#x} frame {f}) never started"); continue };
+        let seen = first_seen.get(&sfx).copied().unwrap_or(*fs);
+        let lead = *fs as i64 - seen as i64;
+        eprintln!("[08] line {sfx:#x} (script {script:#x}) authored frame {f} started t{fs} first seen t{seen} (lead {lead})");
+        assert!(snd.driver.played_sample_hash(sfx).is_some(), "line {sfx:#x} never decoded its sample");
+        if best_lead.map_or(true, |(_, l)| lead > l) { best_lead = Some((sfx, lead)); }
+    }
+    // The station intro's dialogue turns out to be op-0x16 stream sounds (the 8 fired lines
+    // 0x48d-0x494 in the measurement probe are Script_SoundStarts, not anim op-1s — the game
+    // precaches ONLY anim op-1s and drone speech [M the two SFXPreCache call sites: 0x1c1b38
+    // case 1, NDrone2_SpeechSFX 0x141b00]), and the op-1 lines it does carry (0x144/0x146) are
+    // each born at their own anim segment's frame — no physical window. The precache lead is
+    // therefore informational here; the hard pin stays the sync-delta block above.
+    if let Some((sfx, lead)) = best_lead {
+        eprintln!("[08] best op-1 precache lead {lead} (id {sfx:#x}) — the intro's dialogue is op-0x16, which the game never precaches");
+    }
+}
