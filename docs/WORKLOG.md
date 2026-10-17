@@ -16727,3 +16727,12 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+## scorpion-rocket-speed (2026-10-17, branch s/scorpion-rocket-speed) — 00:40 UTC
+
+Started. Playtest 1016-1355: AT-600 Scorpion rockets are way too slow (MP). Sentinel's speed was
+measured live (×4.04 on 0x2c/0x2d); checking the Scorpion records 0x2E/0x2F the same way: init
+speed, the 0x200 quarter, per-tick flight step [M Bullet_init 0x12c5a0, Bullet_update 0x12e7b0],
+any homing. Goal: set them to the game's numbers with evidence; test pins the Scorpion per-tick
+step. Plan: read the bullet records + Bullet_init/Bullet_update decomp, find where the port sets
+Scorpion rocket speed, fix with cited addresses, write the 07000005-style test, run nf-game.
