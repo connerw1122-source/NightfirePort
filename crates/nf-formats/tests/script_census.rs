@@ -15,8 +15,11 @@ const HANDLED_NIS_OPS: usize = 20;
 const HANDLED_EVENT_KINDS: usize = 15;
 /// The trigger action codes nf-game/src/triggers.rs `kind` module handles (game dispatches 8).
 const HANDLED_TRIGGER_ACTIONS: usize = 7;
-/// Placement types with any handling: 48 simulated + 8 draw-only (game: 73 spawn cases).
-const HANDLED_PLACEMENT_TYPES: usize = 56;
+/// Placement types with any handling: 49 simulated + 8 draw-only (game: 73 spawn cases).
+/// music-triggers: 0xFB joined the simulated set (nf-game/src/worldobj.rs `MusicTrigger` — the
+/// port runs `MusicTrigger_Create` 0x1b30e0's gates and `MusicTrigger_Update` 0x1b31a0's
+/// countdown / `Music_Event(p2, 2)` per tick).
+const HANDLED_PLACEMENT_TYPES: usize = 57;
 
 fn census() -> Option<&'static Census> {
     static C: OnceLock<Option<Census>> = OnceLock::new();
@@ -185,15 +188,20 @@ fn trigger_action_census_matches_the_doc() {
 fn placement_type_census_matches_the_doc() {
     let Some(c) = census() else { eprintln!("skip: NF_ISO not set"); return };
     assert_eq!(c.placements, 7372, "dynamic-eligible placement records (flags bit 0xa000 clear)");
-    // The 18 unhandled-or-ignored types, most-occurring first (docs/systems/script-census.md).
+    // The 17 unhandled-or-ignored types, most-occurring first (docs/systems/script-census.md).
+    // music-triggers: 0xFB (15) moved out of this list — the port now creates the trigger and runs
+    // its update (nf-game/src/worldobj.rs `MusicTrigger`).
     let want: &[(u8, u64)] = &[(0xe5, 584), (0xe6, 384), (0xe9, 162), (0xe4, 64), (0x28, 62), (0x2d, 51),
-        (0xff, 39), (0x27, 41), (0xdd, 33), (0xf6, 33), (0xf7, 33), (0xfb, 15), (0x2c, 15), (0x39, 8),
+        (0xff, 39), (0x27, 41), (0xdd, 33), (0xf6, 33), (0xf7, 33), (0x2c, 15), (0x39, 8),
         (0xf3, 8), (0x2b, 3), (0x38, 1), (0xf4, 1)];
     for (t, n) in want { assert_eq!(c.placement_types.get(t), Some(n), "type 0x{t:02x}"); }
     let unhandled: u64 = want.iter().map(|(_, n)| n).sum();
-    assert_eq!(unhandled, 1537, "records on unhandled types (1399 game-handled + 138 neither side touches)");
+    assert_eq!(unhandled, 1522, "records on unhandled types (1399 game-handled + 138 neither side touches)");
+    // The music-trigger kind the port now acts on (still game-handled too): every 0xFB placement
+    // becomes a MusicTrigger unless the create gate drops it (nf-game/src/worldobj.rs).
+    assert_eq!(*c.placement_types.get(&0xfb).unwrap(), 15, "music trigger placements");
     assert_eq!(c.placement_types.values().sum::<u64>(), 7372, "type histogram covers every record");
-    assert_eq!(HANDLED_PLACEMENT_TYPES, 56, "48 sim + 8 draw-only (game: 73 spawn cases)");
+    assert_eq!(HANDLED_PLACEMENT_TYPES, 57, "49 sim + 8 draw-only (game: 73 spawn cases)");
 }
 
 #[test]

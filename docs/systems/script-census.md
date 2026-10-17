@@ -121,6 +121,10 @@ does not act on, plus 4 one-per-level marker types neither side touches. (The ga
 
 ### Placement types on the disc that the port does not act on
 
+(0xFB music trigger 15 was listed here by the original census; the port now creates the trigger
+and runs its update — `nf-game/src/worldobj.rs` `MusicTrigger`, `MusicTrigger_Create` 0x1b30e0 /
+`MusicTrigger_Update` 0x1b31a0 [task music-triggers, 2026-10-17].)
+
 | type | count | port | game spawn fn |
 |---|---|---|---|
 | 0x27 | 41 | — | GT_Create 0x17ffa0 |
@@ -139,7 +143,6 @@ does not act on, plus 4 one-per-level marker types neither side touches. (The ga
 | 0xf4 | 1 | — | Trigger_MoviePlayer 0x1b2a08 |
 | 0xf6 | 33 | — | — none (game ignores) |
 | 0xf7 | 33 | — | — none (game ignores) |
-| 0xfb | 15 | — | MusicTrigger_Create 0x1b30e0 |
 | 0xff | 39 | — | — none (game ignores) |
 
 ### NIS command opcodes (all 20 that occur are handled)
@@ -332,9 +335,11 @@ records (165), NIS op none, anim ops 2/3 (0), event kinds 0x0e/0x10/0x13 (0), en
 4. **Sensor volumes (0x28, 62).** `Sensor_Create` 0x1af010: trip-by-anything volumes writing
    switch channels (not player-only like 0xEA/0xEB). Verify: a drone walking through sets the
    sensor's out channel; drives doors/alarm logic the port currently needs touch triggers for.
-5. **Music triggers (0xFB, 15).** `MusicTrigger_Create` 0x1b30e0 + `MusicTrigger_Update`
-   0x1b31a0: `Music_Event(id, 2)` while its countdown runs. Verify: entering the volume starts
-   the combat music stinger; leaving lets it expire.
+5. **Music triggers (0xFB, 15).** ~~Port~~ **DONE (task music-triggers, 2026-10-17):** the
+   trigger is created with the game's gates and its update runs each control-object pass
+   (`worldobj.rs` `MusicTrigger`); 07000001 pins the real path — channel 13 on fires
+   `Music_Event(2, 2)` into the alarm hysteresis, clearing it lets the 0x1e countdown expire.
+   The original task text: `MusicTrigger_Create` 0x1b30e0 + `MusicTrigger_Update` 0x1b31a0.
 6. **Lightning (0x2C, 15; 07000001 ×11, 07000041 ×4).** `Lightning_Create` 0x18cde8: storm
    flashes. Visual — needs the main agent's render pass to confirm the flash/timing model.
 7. **NIS event kinds 0x08/0x09/0x0a (script 0600005b, 07000001).** Three single-line handlers:

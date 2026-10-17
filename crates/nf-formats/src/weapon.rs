@@ -9,6 +9,7 @@ use crate::elf::Elf;
 pub const RECORD: usize = 0x10c;
 
 #[derive(Clone, Debug)]
+#[derive(Default)]
 pub struct WeaponData {
     pub records: Vec<[u8; RECORD]>,
     /// `ammo_data` (0x2C69B8, 12-byte records) `+0x02`: the most rounds of each ammo type Bond carries

@@ -96,6 +96,15 @@ impl Music {
     /// `Music_Event(i, v)`.
     pub fn event(&mut self, i: usize, v: u32) { if i < 64 { self.events[i] = v; } }
 
+    /// Whether a level track entry is active (the `entry` gate `UpdateMusicalEvents`'s per-frame
+    /// logic runs under).
+    pub fn has_entry(&self) -> bool { self.entry.is_some() }
+
+    /// The alarm hysteresis the event-2 slot drives (`UpdateMusicalEvents`'s
+    /// `e[2] == 2 → bonus = 600, under_attack = true` and its decay — music.rs's port of
+    /// 0x114e70): `(under_attack, bonus)`.
+    pub fn alarm_state(&self) -> (bool, i32) { (self.under_attack, self.bonus) }
+
     /// The IOP's op-0x19 pair (`NisPlaying`, `NisQuitten`): `UpdateMusicalEvents` keeps `NisPlaying` while a
     /// script camera runs and counts `NisQuitten` down from 5 after the quit event [M sound.md §6 step 3].
     /// Read by the audio batch to drive `ES_HandleNisPauseSfx` and `ES_StopDucker`.
