@@ -17391,3 +17391,15 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+
+## cutscene-audio-sync (2026-10-17, branch s/cutscene-audio-sync) — 02:55 UTC
+
+The level start/end NIS cut-scenes (script players) drift from their audio — playtest
+2026-10-16: "ending and beginning cutscenes are not synced to their audio". Plan: measure on
+07000005/06/08/0c, for each voice line / music cue the script starts (op-1 sounds, stream
+sounds), the script clock at its start vs the line's length vs the frames the anims for that
+line take, and where it drifts; suspects: the script clock rate under the cut-scene
+(Script_Update adds FRAME_RATE_MUL — 2 under FMV / a 30 fps mode? 0x1da998:33), the port's
+frame pacing of script players vs the audio clock, stream start latency. Test: a line starting
+at script frame F ends within a frame or two of where the script expects (numbers only,
+NF_SILENT).
