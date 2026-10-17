@@ -28,8 +28,8 @@ are measured at the level the port draws them.
 | −0x08 NAME | 32 B string | msg 0x23 (wide → narrow if it matches DAT_0030d610) |
 | −0x09 SCRIPT | {u32 script id, u32 arg} | `Script_AddScript`; script+0x1c = arg |
 | −0x0a MSG | {u8 msg, u32 a, u32 b} | `__Menu_SendMessage`; **0x18 = Txt_BindLabel, 0x24 = texture hash, 0x1b/0x1c = colours**; 0x1a-0x1c with a == 0x7d6d59ff rewritten to 0x645a49ff [M :238-243] |
-| −0x0b KFRAME | 5×u16 + u32 | `FixupResolution` + `Script_AddKeyFrame` |
-| −0x0c KMSG | {u32 time, u8 msg, u32, u32} | `Script_AddMessage` |
+| −0x0b KFRAME | {u16 time, u16 x, y, w, h, u32 flags} | time is the FIRST u16, flags the trailing u32 [M disasm 0x115fbc-0x116004] → `FixupResolution` + `Script_AddKeyFrame` |
+| −0x0c KMSG | {u32 target, u8 msg, u32, u32} | `Script_AddMessage` — the first dword is the TARGET (M_MESSAGE+0x8, disasm 0x116028-0x116058), not a time; keyframe messages fire when their keyframe's time passes [M menu-def-runtime] |
 | −0x0d MGRMSG | {u8 msg, u32, u32} | manager message |
 | −0x03 SET | u16 | `Component_AddSet` — a sprite set begins |
 | −0x04 COMPONENT | 14 B {u16 count, 3×u16, u32 texture hash} | `Component_AddComponent` (stride 0x14); followed by `count` SPRITE records |
