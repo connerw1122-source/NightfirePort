@@ -209,6 +209,11 @@ pub mod state {
     pub const CIVILIAN_HIDING: u8 = 0x13;
     pub const CIVILIAN_PATROL: u8 = 0x14;
     pub const CIVILIAN_MISSION: u8 = 0x16;
+    /// The real `NDrone2_DSTATE_Hostage` (0x15cb78) — `NDrone2_StateFuncs[0x0a]` [L 0x29b300]; the
+    /// captive cower the castle geishas sit in while their captor lives.
+    pub const HOSTAGE: u8 = 0x0a;
+    /// The real `NDrone2_DSTATE_HostageSaved` (0x15ccf0) — `NDrone2_StateFuncs[0x0c]` [L 0x29b300].
+    pub const HOSTAGE_SAVED: u8 = 0x0c;
     /// The real `NDrone2_DSTATE_HostageIdle` (0x15ce60) — `NDrone2_StateFuncs[0x0d]` [L 0x29b300].
     pub const HOSTAGE_IDLE: u8 = 0x0d;
     /// `NDrone2_DSTATE_AllyLeadInit` (0x15e4f0) — `NDrone2_StateFuncs[0x1c]` [L 0x29b300] and
@@ -1126,6 +1131,13 @@ pub struct Drone {
     pub alpha: f32,
     /// A switch channel to raise after the drone's update (`SetDeathChannel`).
     pub raise: Option<u8>,
+    /// `DCVars+0x2B0`: the hostage's captor link (`NDrone2_SetupHostageKiller` 0x144030 — the
+    /// nearest armed guard; the save fires when it dies [M `NDrone2_DSTATE_Hostage` 0x15cb78:24-36]).
+    /// The port stores the captor's `Drones::list` index.
+    pub captor: Option<usize>,
+    /// The captor search ran once for this hostage entry (`SetupHostageKiller` runs once per
+    /// capture; a re-capture goes through WaitSwitch again).
+    pub hostage_searched: bool,
     /// `Drone+0x480`: per-tick velocity; gravity accumulates here and `pos += velocity · REC_FRAME_RATE` (`Drone_CollisionHandler`
     /// 0x140968, WORKLOG 0078). Zero on the ground; the down-ray (`Drone_FeetOnPoint`) sets the on-surface flag.
     pub velocity: V3,
@@ -1346,6 +1358,7 @@ impl Drone {
             switch_channel: param(3) as u8, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
             cover_rt: Vec::new(), others: Vec::new(), peers: Vec::new(), return_state: 0, second_channel: param(6) as u8, second_tag: param(8),
+            captor: None, hostage_searched: false,
             loudness: 0.0, sound_share: 0.0, heard_frame: 0, heard_peak: 0.0, sound_pos: pos, noise_level: 0, investigating: false, turned: false, resume_state: 0, home: pos,
             // `drone_stats[type]+8` is 0 for these guards → 10 (captains, difficulty ≥ 2 only, are not modelled).
             health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: !matches!(skin, 0x0500_003b | 0x0500_003c | 0x0500_0053), kind: setup.kind,
@@ -5869,6 +5882,36 @@ impl Drone {
                 true
             }
             (HOSTAGE_IDLE, msg::BULLET) => self.on_bullet_resume(d, rng, frame, 0, false),
+            // Hostage (0x15cb78 — state 0x0a [L NDrone2_StateFuncs 0x29b300]) ENTER:
+            // `Drone_AlertStatusSet(0)` [M 0x15cb78 enter arm] and the cower anim; the captor link
+            // (+0x2B0) is bound by `NDrone2_SetupHostageKiller` 0x144030 — the port binds it at the
+            // `Drones` tick (the nearest armed, alive guard; the `captor_pool` snapshot). UPDATE
+            // lives there too: captor gone or its health ≤ 0 → HostageSaved [M 0x15cb78:24-36].
+            (HOSTAGE, msg::ENTER) => {
+                self.alert = 0.0;
+                self.call_anim(d, anim_state::COWER, 0, 0);
+                true
+            }
+            // HostageSaved (0x15ccf0 — state 0x0c [L 0x29b300]) ENTER [M 0x15ccf0:16-44]:
+            // `Drone_AlertStatusSet(0)`, clear the captor link, `Music_Event(0x10, 1)` (the port
+            // has no music-event consumer in Sim — skipped), then `DroneFunc_HostageSaved`
+            // 0x1441c0: write the placement's out channel (+0x135 = placement param 6 — the port's
+            // `second_channel`) with the stamp and count the save [M 0x1441c0:11-18]. The raise
+            // rides `self.raise`, the `Drones` tick's channel writer. Then `FindRunToPoint` →
+            // state 0x64 HostageGoToGoalPosition; the resume-cower arm (0x5A4 ≠ 0 with the channel
+            // already on) is the WaitSwitch resume path — the port reaches the save only fresh.
+            (HOSTAGE_SAVED, msg::ENTER) => {
+                self.alert = 0.0;
+                self.captor = None;
+                if self.second_channel != 0 && self.raise.is_none() { self.raise = Some(self.second_channel); }
+                if self.find_run_to_point(d) {
+                    self.set_state(HOSTAGE_GO_TO_GOAL);
+                } else {
+                    self.call_anim(d, anim_state::COWER, 0, 0);
+                    self.set_state(HOSTAGE_IDLE);
+                }
+                true
+            }
             // AllyLead (0x15e4f0 / 0x15e698 / 0x15eda8 / 0x15f2e8): the escort lead — 07000001's Mayhew
             // (mode 12, `DroneTypeSettings[12].start` = 0x1c [L 0x29aee8]) leads Bond along the mission
             // AI path to the bunker plate. Minimal port: the entry, the lead loop (the port's
@@ -10544,6 +10587,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // NoBunching's candidate snapshot (present, enabled, non-corpse — the game's chain rides
         // +0x4F8 bits the port does not model), indexed by drone index.
         let bunching_ok: Vec<bool> = self.list.iter().map(|x| x.present && x.enabled && !x.corpse).collect();
+        // The hostage captors' pool snapshot (`NDrone2_SetupHostageKiller` 0x144030's nearest armed
+        // guard): health / corpse / armed (team 1) / position / usable (present+enabled) per drone,
+        // read before the mutable walk. `started` is NOT required — the captor guard often enables
+        // on the same channel tick as its hostage (07000002's geishas and their captors both ride
+        // ch 0x17/0x19).
+        let captor_pool: Vec<(f32, bool, bool, V3, bool)> = self.list.iter()
+            .map(|x| (x.health, x.corpse, x.team == 1, x.pos, x.present && x.enabled)).collect();
         // door-guard-pairing: `SetDronePartner` (0x141360) + `NDrone2_DoorGuardHandler` (0x1416d8)
         // for the CivilianDoorGuard pairs. The game pairs inside the 0x31 ENTER and runs the zone
         // read inside the 0x31 UPDATE; the port's pre-pass has the list access the per-drone
@@ -11063,6 +11113,33 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 dr.second_tag = 0;
                 dr.enabled = true;
                 dr.set_state(if dr.alt_state != 0 { dr.alt_state } else { state::ATTACK });
+            }
+            // `NDrone2_DSTATE_Hostage` (0x15cb78) case 3 [M 0x15cb78:24-36]: the per-frame captor
+            // check — the captor link (+0x2B0) empty or the captor's health (+0xAC) ≤ 0 →
+            // HostageSaved (0xC). The link is bound once per capture on the entering tick from
+            // `NDrone2_SetupHostageKiller` 0x144030's nearest armed, alive guard; a search that
+            // finds nobody leaves it empty, which the same rule reads as "no captor" → saved.
+            if dr.state == state::HOSTAGE {
+                if !dr.hostage_searched {
+                    dr.hostage_searched = true;
+                    let mut best: Option<(f32, usize)> = None;
+                    for (ci, c) in captor_pool.iter().enumerate() {
+                        let (chealth, ccorpse, carmed, cpos, cusable) = c;
+                        if *ccorpse || *chealth <= 0.0 || !*carmed || !cusable { continue; }
+                        if ci == index { continue; }
+                        let q = (cpos[0] - dr.pos[0]).powi(2) + (cpos[1] - dr.pos[1]).powi(2) + (cpos[2] - dr.pos[2]).powi(2);
+                        if best.map_or(true, |(bq, _)| q < bq) { best = Some((q, ci)); }
+                    }
+                    dr.captor = best.map(|(_, ci)| ci);
+                }
+                let freed = match dr.captor {
+                    None => true,
+                    // The captor's tick-head snapshot (the list itself is mutably borrowed); a
+                    // death this tick is seen on the next tick's check — the game reads +0xAC
+                    // directly, one frame of lag at most [*suggested* deviation, same effect].
+                    Some(ci) => captor_pool.get(ci).map_or(true, |c| c.0 <= 0.0 || c.1),
+                };
+                if freed { dr.set_state(state::HOSTAGE_SAVED); }
             }
             dr.voice_finished = dr.voice.is_none_or(|v| self.audio.finished(v.0));
             dr.patrol_cooldown = self.patrol_cooldown;
@@ -12201,6 +12278,7 @@ mod tests {
             switch_channel: 0, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: 0, present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
             cover_rt: Vec::new(), others: Vec::new(), peers: Vec::new(), return_state: 0, second_channel: 0, second_tag: 0,
+            captor: None, hostage_searched: false,
             loudness: 0.0, sound_share: 0.0, heard_frame: 0, heard_peak: 0.0, sound_pos: pos, noise_level: 0, investigating: false, turned: false, resume_state: 0, home: pos,
             health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: true, kind: 0,
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
