@@ -167,6 +167,22 @@ pub struct Player {
     rate: f64,
     #[cfg(feature = "movies")]
     _pcm: Option<PcmOut>,
+    /// Playback timing for `movie-timing.log` (written when the player drops).
+    timing: Timing,
+}
+
+/// Per-movie playback timing, one log line per movie (playtest 1016's lag report: real-path
+/// evidence from the user's own runs). Port diagnostics only.
+#[derive(Default)]
+struct Timing {
+    last_present: Option<std::time::Instant>,
+    presents: u32,
+    worst_gap_ms: f64,
+    gaps_over_50ms: u32,
+    shown: u32,
+    dropped: u32,
+    worst_behind: u32,
+    audio_clocked: bool,
 }
 
 impl Player {
@@ -205,7 +221,7 @@ impl Player {
                 Ok(s) => Some(s),
                 Err(e) => { eprintln!("movie: {code:08x}: {e}"); None }
             };
-            Ok(Player { code, looping, last: None, tick: 0, started: None, ended: stream.is_none(), stream, pcm: std::sync::Arc::new(pcm), rate, _pcm: None })
+            Ok(Player { code, looping, last: None, tick: 0, started: None, ended: stream.is_none(), stream, pcm: std::sync::Arc::new(pcm), rate, _pcm: None, timing: Timing::default() })
         }
     }
 
@@ -230,6 +246,17 @@ impl Player {
     pub fn present(&mut self) -> Option<(u32, u32, &[u8])> {
         let now = std::time::Instant::now();
         let start = *self.started.get_or_insert(now);
+        #[cfg(feature = "movies")]
+        {
+            let tm = &mut self.timing;
+            if let Some(l) = tm.last_present {
+                let gap = (now - l).as_secs_f64() * 1000.0;
+                tm.worst_gap_ms = tm.worst_gap_ms.max(gap);
+                if gap > 50.0 { tm.gaps_over_50ms += 1; }
+            }
+            tm.last_present = Some(now);
+            tm.presents += 1;
+        }
         #[cfg(feature = "movies")]
         if let Some(t) = self.audio_clock() {
             return self.present_on_audio(now, t);
@@ -258,6 +285,7 @@ impl Player {
                         if self.last.is_none() && self._pcm.is_none() {
                             self._pcm = open_pcm_out(self.pcm.clone(), self.rate, self.looping);
                         }
+                        self.timing.shown += 1;
                         let rgba = nf_formats::mpeg2::yuv420_to_rgb8(&f);
                         self.last = Some((f.width as u32, f.height as u32, rgba));
                     }
@@ -292,6 +320,8 @@ impl Player {
     #[cfg(feature = "movies")]
     fn present_on_audio(&mut self, now: std::time::Instant, t: f64) -> Option<(u32, u32, &[u8])> {
         let due = (t * 30.0) as u32 + 1;
+        self.timing.audio_clocked = true;
+        self.timing.worst_behind = self.timing.worst_behind.max(due.saturating_sub(self.tick + 1));
         let mut latest = None;
         if let Some(s) = self.stream.as_mut() {
             while self.tick < due {
@@ -300,10 +330,12 @@ impl Player {
                     break;
                 }
                 self.tick = self.tick.wrapping_add(1);
+                if latest.is_some() { self.timing.dropped += 1; }
                 latest = s.frame().cloned();
             }
         }
         if let Some(f) = latest {
+            self.timing.shown += 1;
             let rgba = nf_formats::mpeg2::yuv420_to_rgb8(&f);
             self.last = Some((f.width as u32, f.height as u32, rgba));
         }
@@ -315,6 +347,31 @@ impl Player {
     /// `psiStopBackgroundMovie__Fv` 0x00108328 — stops the decoder worker and the audio stream
     /// (both drop with the player).
     pub fn stop(self) {}
+}
+
+#[cfg(feature = "movies")]
+impl Drop for Player {
+    fn drop(&mut self) {
+        let tm = &self.timing;
+        if tm.presents < 2 || self.looping { return; }
+        let line = format!(
+            "{} movie {:08x}: {} pictures, {} shown, {} dropped to keep up, worst {} behind the audio, {} redraws, worst redraw gap {:.0} ms, {} gaps over 50 ms, clock {}{}
+",
+            chrono_now(), self.code, self.tick, tm.shown, tm.dropped, tm.worst_behind, tm.presents, tm.worst_gap_ms, tm.gaps_over_50ms,
+            if tm.audio_clocked { "audio" } else { "wall" }, if self.ended { "" } else { " (stopped early)" });
+        eprint!("{line}");
+        if nf_audio::silent() { return; } // tests never write next to their binaries
+        if let Some(dir) = std::env::current_exe().ok().and_then(|p| p.parent().map(|d| d.to_path_buf())) {
+            use std::io::Write;
+            if let Ok(mut f) = std::fs::OpenOptions::new().create(true).append(true).open(dir.join("movie-timing.log")) { let _ = f.write_all(line.as_bytes()); }
+        }
+    }
+}
+
+/// Seconds since the Unix epoch (the log's timestamp; no date crate in the tree).
+#[cfg(feature = "movies")]
+fn chrono_now() -> String {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| format!("t={}", d.as_secs())).unwrap_or_default()
 }
 
 /// movie-volume: the game's movie gain. `psiStartBackgroundMovie` stores `MovieVolume = SFXGetVolume()`
