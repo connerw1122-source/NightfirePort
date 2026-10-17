@@ -18791,3 +18791,26 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   walked start → finish through the real input path: every objective (optional ones too), every
   scripted event, the exit the game's way (LOAD_LEVEL into 0700000d). Known open items to start
   from: the yard ladder, the drawn gate, the latches, the sniper spots. Work in progress.
+- 2026-10-17 s/level-0a-complete (task 710b): STARTED. Tower B (0700000a) end-to-end play task:
+  the live walk test must complete EVERY objective (optional included) and exit the way the
+  game does. Branch created from origin/master (f53df46b) and merged s/level-0a-interactables
+  (the census, the un-ignored walkreal, the 7 kind tests, the level doc) — work continues from
+  there.
+- 2026-10-17 s/level-0a-complete (task 710b): the keyboard RESOLVED through the real input path.
+  (1) The prior "the game's own use ray has no target" premise was STALE: SP #60's mode-64
+  preload (SP_CreateScriptPlayer 0x1db9a8's load beat, the elevator-buttons-09 mechanism this
+  repo already ports) runs script 0x06000597's t=0 Entity op, so the keyboard prop (glist
+  0x020005E1, Script_EntityStart 0x1d8d78's obj+0xE4 = the owner SP, Control_BuildWorldSph
+  0x133070's baked-absolute model sphere) exists from level load at (−1.54, 1.33, 8.48) r 0.66 —
+  E-able from the corridor wedge at (−3.00, 1.10, 9.68) where the cab's east wall (x ≈ −2.0,
+  z 8.5–12.5 [D probe segments]) stops the walk. keyboard_0700000a_live pins it: walk → wedge →
+  pulse E → ch 0x3A on [M SP_Activate 0x1dc338 + SP_Update 0x1dbda8 state 1's toggle; pulses,
+  not holds — every dispatch toggles the out channel]. (2) The SP-write → AND-mux #741 (0x49)
+  follow did not fire within 6 ticks in the probe while the identical set_channel write fires it
+  — the open item carried in the report. (3) The Q-Worm PC cubicle stands: the wedge at
+  (−16.19, −30.42) is 1.87 from the PC and the standing eye-ray still clips the partition at
+  t 0.36, y 1.53 < 1.75 [D probe]; the install keeps the documented blocker + the live check.
+  (4) The exit route: nav from the lobby to the hatch was NOT verified this session (the probe
+  spent its window on the keyboard) — the walkreal's SW-office route with the ch-0x30 door drive
+  is unchanged and green. Suite: the touched crates' tests (interactables 7/0, keyboard 1/0,
+  walk 3/0, walkreal 1/0) on the final tree.
