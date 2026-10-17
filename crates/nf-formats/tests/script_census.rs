@@ -12,7 +12,7 @@ use std::sync::OnceLock;
 /// The NIS command opcodes `Script::run` (nf-game/src/nis.rs `Script_Run` 0x1d8548 port) dispatches.
 const HANDLED_NIS_OPS: usize = 20;
 /// The event kinds `Script::event` (`Script_EventHandler` 0x1d94c0 port) handles.
-const HANDLED_EVENT_KINDS: usize = 14;
+const HANDLED_EVENT_KINDS: usize = 15;
 /// The trigger action codes nf-game/src/triggers.rs `kind` module handles (game dispatches 8).
 const HANDLED_TRIGGER_ACTIONS: usize = 7;
 /// Placement types with any handling: 48 simulated + 8 draw-only (game: 73 spawn cases).
@@ -160,11 +160,13 @@ fn event_kind_census_matches_the_doc_and_the_handled_set() {
     assert_eq!(bmap(&c.event_kinds.iter().map(|(&k, &v)| (k as u64, v)).collect::<Vec<_>>().as_slice()),
         bmap(&[(3, 303), (4, 36), (5, 35), (6, 31), (7, 29), (8, 1), (9, 1), (10, 1), (11, 23), (12, 65), (13, 195), (15, 119), (17, 10), (18, 2)]),
         "per-kind counts (docs/systems/script-census.md)");
-    // The three kinds the port drops (game: Drone_CoderCreate 0x13a108 / Player_Cam2Mode 0x195fc8 /
-    // Break_DoBreak 0x12c168) occur exactly once each — all in script 0600005b of 07000001.
-    for kind in [8u8, 9, 10] { assert_eq!(*c.event_kinds.get(&kind).unwrap(), 1, "unhandled kind {kind:#x}"); }
-    assert_eq!(c.event_kinds.len(), 14, "14 distinct kinds seen; the port handles 11 of them");
-    assert_eq!(HANDLED_EVENT_KINDS, 14, "Script_EventHandler arms (8/9/0xa land in the default arm)");
+    // The two kinds the port still drops (game: Drone_CoderCreate 0x13a108 / Break_DoBreak
+    // 0x12c168) occur exactly once each — all in script 0600005b of 07000001. Kind 9 (the third
+    // of the old trio) is ported since nis-event9-cnis: `Player_Cam2Mode` 0x195fc8 — its single
+    // disc firing is that script's stream-4 `Event(9, [1])`, the exit arm [D; nis_event9_census].
+    for kind in [8u8, 10] { assert_eq!(*c.event_kinds.get(&kind).unwrap(), 1, "unhandled kind {kind:#x}"); }
+    assert_eq!(c.event_kinds.len(), 14, "14 distinct kinds seen; the port handles 12 of them");
+    assert_eq!(HANDLED_EVENT_KINDS, 15, "Script_EventHandler arms (8/0xa land in the default arm; 9 = Cam2Mode since nis-event9-cnis)");
 }
 
 #[test]

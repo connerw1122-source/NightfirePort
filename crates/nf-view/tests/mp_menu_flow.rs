@@ -250,8 +250,9 @@ fn quick_game_lands_on_confirm_with_three_bots() {
     assert_eq!(s.players[0].team, 1, "the quick start's slot-0 team is MI6 [M disasm 0x20c7f8]");
     assert_eq!(fe.requested_level, Some(fe.mp_level), "the arena request rides the loader");
     // The flow machine runs the load to the arena [M ResetMap_LevelToLoad + the phases; the
-    // confirm's fade hold (8 headless frames) sits on top of the load state].
-    for _ in 0..16 { fe.tick(); }
+    // confirm's fade hold sits on top of the load state: P_MPCONFIRM's PushState(84.0f, 7) — 84
+    // frames + the finished-frame pop (gameflow-state-stack) [M 0x20ec00, 0x1bada0]].
+    for _ in 0..=84 { fe.tick(); }
     while fe.flow.get_state() == nf_view::menu::ST_MAPLOAD { fe.flow.load_tick(); }
     assert_eq!(fe.flow.current_level, fe.mp_level, "the loader reaches the arena");
 }

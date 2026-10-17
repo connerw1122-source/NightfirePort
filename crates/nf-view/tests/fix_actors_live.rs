@@ -159,12 +159,22 @@ fn the_assassin_dies_and_completes_his_objective() {
     assert_ne!(st[i][0], 4, "a miss does not complete 'Defeat the assassin'");
     assert!(scene.sim.as_ref().unwrap().drones.list[boss].health <= hp0, "the blast reached him or not — the objective stays open either way");
     // The kill.
-    let bp = scene.sim.as_ref().unwrap().drones.list[boss].pos;
-    grenade_at(scene.sim.as_mut().unwrap(), [bp[0], bp[1] + 0.5, bp[2]]);
+    // batch-1016b (ninja-melee): the assassin is mode 0xd, whose DefaultInit arm sets health
+    // 100.0 [M 0x14b300:749, +0xB0 = +0xAC at :776] — one at-the-feet blast no longer kills him,
+    // so the harness repeats the blast at his current position until he falls.
     let mut dead = false;
-    for _ in 0..300u32 {
+    'blasts: for _ in 0..10 {
+        let bp = scene.sim.as_ref().unwrap().drones.list[boss].pos;
+        grenade_at(scene.sim.as_mut().unwrap(), [bp[0], bp[1] + 0.5, bp[2]]);
+        for _ in 0..60u32 {
+            scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+            if scene.sim.as_ref().unwrap().drones.list[boss].corpse { dead = true; break 'blasts; }
+        }
+    }
+    for _ in 0..240u32 {
+        if dead { break; }
         scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
-        if scene.sim.as_ref().unwrap().drones.list[boss].corpse { dead = true; break; }
+        if scene.sim.as_ref().unwrap().drones.list[boss].corpse { dead = true; }
     }
     assert!(dead, "the explosion kills the assassin");
     let mut done = false;

@@ -314,6 +314,24 @@ impl MpMatch {
         true
     }
 
+    /// `MP_ReSpawn` 0x185368 — the whole per-slot respawn the live host calls: the gates
+    /// ([`MpMatch::respawn_allowed`], [M 0x185368:16-20]), the spawn pick through the policy
+    /// ([`MpMatch::get_spawn_point`] [M 0x185368:31 — the game passes the slot's team word from
+    /// `MPSettings + slot·0x30 + 0x20`]) and the apply ([`MpMatch::do_respawn`] — the position
+    /// reset, the streak/last-shooter/status words, the alive flag). Returns
+    /// `Some((spawn_idx, health))` when the respawn ran, `None` on the gates. The caller moves the
+    /// body and ends its death sequence (the game's `Player_SetHealth`/`Player_ChangeState(0)`/
+    /// `obj+0xff = 3` half [M 0x185368:76-108] is the host's player pipeline).
+    pub fn mp_respawn(&mut self, slot: usize, rng: &mut Rng) -> Option<(u32, f32)> {
+        if !self.respawn_allowed(slot) {
+            return None;
+        }
+        let team = self.settings.players[slot].team as u16;
+        let idx = self.get_spawn_point(team, slot, rng);
+        let hp = self.do_respawn(slot, idx);
+        Some((idx, hp))
+    }
+
     /// `MP_ReSpawn` 0x185368:22-91 — applies the spawn reset at `spawn_idx` (chosen by the
     /// caller's `MP_GetSpawnPoint`) and returns the human health (`armor_bonus + 100.0` [M
     /// :65-73]).

@@ -90,9 +90,12 @@ fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     let neg = dot < 0.0;
     if neg { dot = -dot; }
     let (w0, w1) = if 0.01 < 1.0 - dot {
-        let angle = dot.acos();
-        let s = sinf(angle);
-        (sinf(angle - t * angle) / s, sinf(t * angle) / s)
+        // G-046: Spline_Interp 0x1e1858:285-300 [M] — acosf (0x232c48), wt = angle·t (mul.s), the weights
+        // PS2Sinf(wt)·(1/PS2Sinf(angle)) with the EE sub in sinf(angle − wt).
+        let angle = crate::trig::acosf_libm(dot);
+        let wt = nf_formats::ps2float::mul(angle, t);
+        let recip = nf_formats::ps2float::div(1.0, sinf(angle));
+        (sinf(crate::trig::ee_sub(angle, wt)) * recip, sinf(wt) * recip)
     } else { (1.0 - t, t) };
     let w0 = if neg { -w0 } else { w0 };
     [w0 * a[0] + w1 * b[0], w0 * a[1] + w1 * b[1], w0 * a[2] + w1 * b[2], w0 * a[3] + w1 * b[3]]

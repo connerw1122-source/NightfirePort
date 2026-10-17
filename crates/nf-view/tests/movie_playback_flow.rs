@@ -9,7 +9,7 @@
 //! case 6 (the level → outro-code switch, lui/ori pairs at 0x182e60-0x182eb4 [L ee_snapshot]),
 //! `UsingMovie__FUi` 0x107eb8 (the 23-hash whitelist), `psiStartBackgroundMovie__FUiScUi` 0x1081a8.
 
-use nf_view::menu::{self, Action, FrontEnd, Outcome, Page, Stats, ST_MAPLOAD, ST_MOVIE, ST_RUNNER};
+use nf_view::menu::{self, Action, FrontEnd, Outcome, Page, Stats, ST_FADE_HOLD, ST_MAPLOAD, ST_MOVIE, ST_RUNNER};
 use nf_view::movie::{self, StartError};
 
 /// Drives the boot path to the title the way `GameFlow_Main` + `ResetMap_Load` would.
@@ -97,6 +97,10 @@ fn a_menu_started_mission_rides_state6_back_to_the_level_load() {
     assert!(fe.action(Action::Confirm)); // The Exchange (0x07000005)
     assert_eq!(fe.flow.level_to_load, 0x0710_0005);
     assert!(fe.flow.movie_pending, "the host must hold the level load until phase 2 [M 0x1d6360 phase 0]");
+    // C_SBNFMAP's 84-frame fade rides the loader [M 0x20ba50]; the load starts when it pops.
+    assert_eq!(fe.flow.get_state(), ST_FADE_HOLD);
+    let fade_ticks = fe.flow.fade_frames + 1;
+    for _ in 0..fade_ticks { fe.flow.main_tick(); }
     assert!(!fe.flow.load_tick(), "phase 0: the movie wrap");
     assert_eq!(fe.flow.movie_code, 0x0710_0005, "GameState+0x10 [M 0x1d6360]");
     assert_eq!(fe.flow.get_state(), ST_MOVIE, "state 6 pushed [M]");

@@ -23,6 +23,26 @@ use nf_formats::iso9660::IsoImage;
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
 /// Killing the target (skin 0x0500001e) raises the objective channel ch 0x54 via its death channel.
+
+/// The lethal blast, repeated at the target's current position until he is a corpse (batch-1016b:
+/// the assassin is mode 0xd, health 100.0 [M NDrone2_DefaultInit 0x14b300:749, :776]).
+fn blast_until_dead(sim: &mut nf_view::scene::Sim, target_i: usize) {
+    for _ in 0..10 {
+        if sim.drones.list[target_i].corpse { return; }
+        let pos = sim.drones.list[target_i].pos;
+        sim.drones.grenades.push(nf_game::grenade::Grenade {
+            pos: [pos[0], pos[1] + 0.5, pos[2]], velocity: [0.0, 0.0, 0.0], speed: 0.0,
+            travelled: 0.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x34, mesh: 0x0200_0726, owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false,
+            stuck: false, seek_target: None,
+            phase: None,
+        });
+        for _ in 0..60u32 {
+            sim.step_bond(Default::default(), false, false, false);
+            if sim.drones.list[target_i].corpse { return; }
+        }
+    }
+}
+
 #[test]
 fn killing_the_target_raises_the_objective_channel() {
     let iso_v = iso();
@@ -46,13 +66,7 @@ fn killing_the_target_raises_the_objective_channel() {
     let target_i = sim.drones.list.iter().position(|d| d.skin == 0x0500_001e).expect("the target drone exists");
     assert_eq!(sim.drones.list[target_i].death_channel, 0x54, "the target's death channel is the objective's watch channel");
     // The grenade at his feet (the game's own Explode_Propagate → Drone_ExplosiveHit path [M 0x17c518]).
-    let pos = sim.drones.list[target_i].pos;
-    sim.drones.grenades.push(nf_game::grenade::Grenade {
-        pos: [pos[0], pos[1] + 0.5, pos[2]], velocity: [0.0, 0.0, 0.0], speed: 0.0,
-        travelled: 0.0, range: 60.0, damage: 100.0, radius: 3.0, weapon_type: 0x34, mesh: 0x0200_0726, owner: usize::MAX, state: 0, bounces: 0, smoke_popped: false, resting: false,
-        stuck: false, seek_target: None,
-        phase: None,
-    });
+    blast_until_dead(sim, target_i);
     let mut raised = false;
     let mut completed = false;
     for _ in 0..900u32 {

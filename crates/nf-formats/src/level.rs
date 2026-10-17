@@ -13,6 +13,9 @@ use crate::ps2gfx::GfxObject;
 use crate::texture::{self, Texture};
 use std::collections::HashMap;
 
+/// level-load-time: `Clone` (with `LevelMap`) so the session mesh merge can take maps from the
+/// parsed-archive cache — a clone is bit-identical to the move it replaced.
+#[derive(Clone)]
 pub struct MapObject {
     pub hashcode: u32,
     pub name: String,
@@ -85,6 +88,9 @@ impl PortalQuad {
     }
 }
 
+/// level-load-time: `Clone` so the session mesh merge can take maps from the parsed-archive cache
+/// (shared `&Level`) — a clone is bit-identical to the move it replaced.
+#[derive(Clone)]
 pub struct LevelMap {
     pub entry: usize,
     pub kind: u8,

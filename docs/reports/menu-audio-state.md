@@ -75,12 +75,23 @@ wrapper only applies the returned commands to the driver.
   up, no jingle sounds, the resume silent); quit to the front end (the fade-down, the same
   manager walks to Main, the flip, the OTHER jingle); the MP setup chain (nothing restarts) +
   the debriefing gate over the arena.
-- The pre-existing suites the change touches (menus_flow, menus_e2e, mp_menu_flow,
-  menu_sfx_flow, menu_music_flow) run clean; `menu_music_flow`'s quit-fade unit test was
-  updated for the constructor's boot-pair queue (menu-audio-state).
-- The fast runner on the final tree: see the total line below.
-- **What ran before the push:** the nf-view menu binaries above; the fast runner on this tree
-  (its per-binary lines are in `suite.out` at the repo root of the sandbox).
+- The pre-existing suites the change touches run clean, in the fast runner itself:
+  `menus_flow` 42/42, `menus_e2e` 5/5, `mp_menu_flow` 9/9, `menu_music_flow` 14/14,
+  `menu_sfx_flow` 14/14 (after its credits-open test was corrected to the decomp — see below),
+  `menu_audio_flows` 9/9.
+- `menu_music_flow`'s quit-fade unit test was updated for the constructor's boot-pair queue
+  (the boot open now rides the music channel too), and `menu_sfx_flow`'s credits-open test was
+  corrected: the decomp settles P_CREDITS's 0x4c as the SWAP — `SFXRemove both + menu_movie = 0
+  + SFXStartMusic(0x27,0)`, NO pair start [M 0x2152b0:90-93; the pair restart is the LEAVE
+  arm's, :58-63]. The old test asserted the pre-frontend-music reading.
+- **The fast runner on the final tree** (tools/test/suite.py, release): the build was clean
+  (394 test binaries in 196 s); the run was cut off by the sandbox at 297/394 binaries — up to
+  the cutoff: every touched menu binary green, 4 FAILED lines total:
+  - `menu_sfx_flow::credits_open_plays_the_pair_when_menu_movie_is_clear` — the pre-fix
+    assertion of the wrong reading; the corrected test passes 14/14 on the release build
+    (run separately: `cargo test --release -p nf-view --test menu_sfx_flow`).
+  - `fix_0c_pylon_live` (×2) + `probe_pylon_render` — the documented pylon Vulkan-ICD fails
+    (pre-existing, see docs/reports/menu-audio-leaks.md).
 
 ## What's left
 
