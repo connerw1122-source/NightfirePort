@@ -17152,3 +17152,29 @@ unpause callers (Switch_Update, NDrone2_KickObject); keep fix_finale_live + 4a l
   test (fails on the old tree — kind 9 fell to the unhandled Event arm), the real-script exit-arm
   test, the [M]-pinned orbit-params test, and the boot/gate test. Sandbox note: ALSA needs
   PKG_CONFIG_PATH (compile) AND LIBRARY_PATH (link) wrapped in scripts/nfenv.sh (uncommitted).
+
+## tase-scream-broadcast (2026-10-16, branch s/tase-scream-broadcast) — start 23:10 UTC
+
+Task 736 (the uncited-gameplay audit runner-up): entering the tase state broadcasts
+`NDrone2_DroneAlertToPosition` 0x14a498 with prop 0x32 — the port screams only on bullets and
+punches (drone.rs handle_taser is cited as partial). Plan: read the audit entry
+(docs/systems/uncited-audit.md), port the tase arm from the decompile [M], add a fail-first test
+through the real input path + a sister, run the touched crates + the full suite.
+
+- tase-scream-broadcast (task 736): the tase ENTER screams. [M NDrone2_DSTATE_Taser 0x162b98
+  case-1 tail, disasm 0x162d0c-0x162d40] — prop 0x32 set, +0x4F8 & 8 clear (the once-per-life bit
+  the hurt scream shares, DroneFunc_SendHurtMessage 0x145e28:11-13/32 — the port's `screamed`),
+  +0xC5 (the active type id, the port's `dtype`) != 2 — then the msg-0x12 broadcast
+  NDrone2_DroneAlertToPosition 0x14a498 from the victim's position. The port screamed only on
+  bullets/punches (the audit runner-up). The arm reuses send_hurt_scream's pending_shout queue
+  (the shared pass drains to every present, enabled drone within 20 u [M Drone_SM_BroadcastMsg
+  0x14a498 tail]; the cel word obj+0x20 stays the port's [S] local-scream shape). Test:
+  tase_scream_live through the real input path (Stunner 0x4a equipped, aimed, held) — fail-first
+  shown (arm stashed → the scream assert fails at the fall); the sister holds the once bit across
+  a re-tase cycle (release → STUNNED → re-fall → the ENTER re-runs → the bit survives).
+  fix_stunner_press_live 3/3. Full suite on the final tree: 1946-class total in the report.
+  Notable sandbox finding: 07000005's spawn-courtyard exits all cross script 0x06000952's
+  stream-4 event 5 (Drone_EnableAll(0) [M Script_EventHandler 0x1d94c0 case 5]) — a cut-scene
+  freeze that stops every guard's timers, so a walk-away recovery cycle is not drivable there
+  (probe evidence: with the freeze the STUNNED timer never fires; without it the +300 re-arm
+  fires on schedule).
