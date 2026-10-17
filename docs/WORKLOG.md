@@ -16737,3 +16737,14 @@ the real path (nf_view load + step_bond inputs) until Rook walks his route, repr
 doorway stall with a per-tick position/state/route-node log, then port what the game does at
 that door (NDrone2 door/wait states, AI-net door links) with [M] citations. Test: Rook passes
 the doorway and reaches his next scripted point within the game's time.
+
+(rook-door-06 addendum, 03:15 UTC) — session-window end: the probe is in
+(crates/nf-view/tests/rook_door_06_live.rs, pushed 48b0c8c3): with the real truck carry,
+after the ch-185 plates NO drone enters a lead state or moves for 70k ticks — Rook's walk
+never starts in the port. The two ch-185 NPCs: #15 = the driver (skin 0x05000035,
+TruckDriverIdle, kind-8 route path 10), #12 = skin 0x0500002e at the truck (escort
+candidate). The full game door chain (ReachedDestNode 0x153358 → DSTATE_OpenDoor 0x1681f8 →
+Door_Activate 0x135be0 → poll door+0xF4==4) is already ported (drone.rs 1443/4766/8580) —
+the gap is upstream. 06's door pairs: path 7 n0-n1 → door #1 (courtyard→interior), path 3
+n11-n14 → door #4 (upper). Report: docs/reports/rook-door-06.md (resume notes + live
+checks).
