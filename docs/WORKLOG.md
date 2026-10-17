@@ -17885,3 +17885,10 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- 2026-10-17 s/elevator-buttons-09 (task 700): "09 level elevator buttons dont work". Plan: from
+  the disc, census every elevator-related interactable on 07000009 (the call buttons, the
+  activation, any panel; placements, types, params, channels) + the game's operate code [M] into
+  docs/levels/07000009.md; drive Bond through the real input path (Sim::step_bond walk + use) to
+  operate each; make the activation chain reach ch 0x39, the LIFTDOORS open, the cab ride script
+  0x0600059B, TOUCH_ONCE #67, and the LOAD_LEVEL #63 into 0700000a with objective 2 done. Live
+  walk test + sister (no operate => doors stay shut). Branch from origin/master d628f01f.
