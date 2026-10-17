@@ -8141,6 +8141,8 @@ impl Drones {
                 tick_damage: 0.0,
                 // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
                 hidden: false,
+                // The fusebox wire SP: no placement model of its own.
+                model: 0,
             });
         }
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {
@@ -9272,8 +9274,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // `Player_Activate`'s remaining classes the Tower levels need (map-tower): the mask-4
         // ScriptPlayers (`SP_Activate` 0x1dc338 — the elevator, the security keyboard), the
         // switches (0x29, `Switch_Activate` 0x1b02a8) and the Q-Worm PCs (0x35,
-        // `PCQWorm_Activate` 0x1b0840) — crate::useobj.
-        self.useobjs.player_activate(&mut self.scripts, &mut self.channels, head, look, frame);
+        // `PCQWorm_Activate` 0x1b0840) — crate::useobj. The SP reach is the class-0 ENTITY path
+        // [M 0x1a5170:121-122]: `w` supplies the glist spheres (elevator-buttons-09).
+        self.useobjs.player_activate(&mut self.scripts, &mut self.channels, head, look, frame, d);
     }
 
     /// The class-0x1D trigger half of `Player_Activate` (0x1a5170:134-137). Bond's use sphere (radius 1.0 at
