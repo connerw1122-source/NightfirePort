@@ -335,14 +335,16 @@ fn firing_spawns_a_muzzle_smoke_puff_that_fades_and_dies() {
     // The spawn y is the eye at spawn time (pos + 1.5) minus the aim drop; Bond keeps settling after
     // the shot, so compare against the pre-fire pos with a unit window.
     assert!((g0.pos[1] - (spawn_y + 1.45)).abs() < 1.0, "the puff sits at the muzzle height, got {} vs {}", g0.pos[1], spawn_y + 1.45);
-    // It fades and dies (8 ticks [S], the decomp drops the game's life arg).
+    // It fades and dies: life 128 ticks [M Player_MuzzleFlash 0x1a4298 — the decomp drops Gas_Init's 11th
+    // argument; the disassembly loads it at 0x1a43f8 `li $v0, 0x80` and stores it at 0x1a442c] (the old
+    // 8 here was [S], the test audit's UNPROVEN row; rocket-trail-gas measured the real value).
     let mut ticks = 0;
     while sim.drones.gas.puffs.iter().any(|g| g.kind == 7) {
         sim.step_bond(Input::default(), false, false, false);
         ticks += 1;
-        assert!(ticks < 20, "the puff outlived its life");
+        assert!(ticks < 200, "the puff outlived its life");
     }
-    assert_eq!(ticks, 7, "life 8, one tick spent before capture: gone after 7 more");
+    assert_eq!(ticks, 127, "life 128, one tick spent before capture: gone after 127 more");
     // The sister: not firing spawns no muzzle smoke (fix-world-fx: the pool legitimately carries
     // the ripples' type-6 rings, so the check is the type-7 count).
     for _ in 0..30 { sim.step_bond(Input::default(), false, false, false); }
