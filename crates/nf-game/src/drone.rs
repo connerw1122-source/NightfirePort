@@ -1558,7 +1558,13 @@ impl Drone {
                 _ => if self.prop(d, 0x24) || self.prop(d, 0x25) { 6 } else { 4 },
             }
         };
-        if self.alert >= 1.0 {
+        // [M NDrone2_FindOpponent 0x1424e0:101] a team-2 (ally) drone's opponent is never the
+        // player — the game's alert fold would hand her a DRONE opponent from FindOpponent's
+        // object walk, and the port has no drone opponents, so the fold is dropped for team 2:
+        // she keeps her base start state (the playtest's "Zoe shooting at Bond at the gondola"
+        // — the 07000008 ally's alert reached 1.0 on the guards' gunfire and the fold put her
+        // into the player-hunting ATTACK).
+        if self.alert >= 1.0 && self.team != 2 {
             return match s { 4 | 5 | 6 | 0x30 | 0x31 | 0x36 | 0x56 => 0x56, 0x10 | 0x12 | 0x2e | 0x32 | 0xb5 => 0x12, 0x29 | 0x2a => 0x2a, 0xa6 | 0xa7 => 0xa7, x => x as u8 };
         }
         s as u8
@@ -6754,9 +6760,14 @@ impl Drone {
     /// Friendly drones (`+0x44 == 3`, team 3: civilians, hostages, allies — dtype 10/0xb/0xd/0xe) never attack:
     /// the game returns 0 before the sight check [M 0x177ed0:31-38].
     fn look_for_opponent(&mut self, d: &Data) -> Option<u8> {
-        if self.team == 3 {
+        // [M NDrone2_FindOpponent 0x1424e0:101] the opponent-vs-player set is gated on
+        // `+0x44 != 2`: a team-2 (ally) drone NEVER takes the player as its opponent — its
+        // opponents come from FindOpponent's object walk (the enemy drones). The port's LOS is
+        // player-only, so the sight→ATTACK entry must refuse team 2 (the playtest's "Zoe shooting
+        // at Bond at the gondola" — the 07000008 ally entered combat against Bond through here).
+        if self.team == 2 || self.team == 3 {
             if std::env::var_os("NF_AILOG").is_some() {
-                eprintln!("[ailog] guard {} look_for_opponent: team 3 — no opponent", self.index);
+                eprintln!("[ailog] guard {} look_for_opponent: team {} — no player opponent", self.index, self.team);
             }
             return None;
         }
