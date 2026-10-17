@@ -17487,3 +17487,29 @@ The full suite could not run (suite.py killed between tool calls twice, 0-byte o
 next message should run it on this branch. Left: the zero-g move family (s/astronaut-guards-1b's
 scope), the HUD pane's MissileDeploy switch (visual), the 0xc2 launch-order writer (absent from
 the disc data), live checks in the report.
+
+## cover-nodes (2026-10-17, branch s/cover-nodes) — started 00:24 UTC
+
+Task 746: the AI cover node placements — `Drone_CoverCornerNode` 0x136ff0 and
+`Drone_CoverLowNode` 0x137340 (968 placements on mission levels the port doesn't
+spawn). Reading the script census and the drone cover system first; port from the
+decompile [M], test on 07000006 through the real path, update script_census.rs
+handled sets. In progress.
+
+## cover-nodes (2026-10-17, branch s/cover-nodes) — finished ~01:55 UTC
+
+The AI cover node placements (0xE5 corner 584 / 0xE6 low 384) now spawn from EVERY map entry of
+the level archive, the game's way: the loader dispatches each type-0/1/2/11 entry to
+`parsemap_parsemap` (0x1d4880 case 0/1/2/0xb — docs/formats/level-bin.md), whose block walk runs
+`parsemap_block_map_data_dynamic` 0x1d1b68 per placement and `parsemap_create_dynamic_objects`
+0x1d04f0 case 0xe5/0xe6 — the main map is only one entry among them. `cover::build` previously
+walked the main map only; it now walks `level.maps` in directory order. Every mission level's
+shared sub-map 010000f3 adds one corner + one low template pair ("Cover Corner/Low Node", origin,
+no params — flags 0x1EC, angle 45°, idle 0x11/aim 0xA through the default arms [M 0x136ff0,
+0x137340]); 07000004/09/0a/1b/23/25/26/27/28/4a have NO main-map nodes, so the pair is their whole
+cover graph. 07000006 pins 81+35 (was 114); fail-first verified by stashing the change (3/3 fail)
+and re-applying (3/3 pass): the two spawn tests + `a_06_guard_under_fire_takes_a_game_cover_node`
+(real path: sound → sighting → COMBAT_OUT_OF_RANGE 0x5a → RUN_FOR_COVER 0x8c claims a game node;
+UnderCoverIdle 0x94 within 1.5 of the in-cover point [M]). Census handled sets updated
+(HANDLED_PLACEMENT_TYPES 56 → 58; 0xE5/0xE6 were still listed unhandled since cover.rs landed in
+232f5392 — the pin was stale); both census docs updated.

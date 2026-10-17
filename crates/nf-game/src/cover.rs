@@ -126,13 +126,26 @@ impl CoverNode {
     }
 }
 
-/// Every cover node of the level's main map, with its emitter (navigation path for its position, distance bytes).
-pub fn build(placements: &[Placement], nav: &Network, world: &CollisionWorld) -> Vec<CoverNode> {
-    placements.iter().filter_map(CoverNode::from_placement).map(|mut n| {
-        n.path = nav.nav_path_for(n.pos);
-        if let Some(p) = n.path { n.dist = nav.emit(world, p, n.pos); }
-        n
-    }).collect()
+/// Every cover node of the level, with its emitter (navigation path for its position, distance bytes).
+///
+/// The game creates the nodes from EVERY map entry of the level archive, in directory order: the
+/// loader dispatches each type-0/1/2/11 entry to `parsemap_parsemap` (0x1d4880 case 0/1/2/0xb,
+/// docs/formats/level-bin.md), whose block walk runs `parsemap_block_map_data_dynamic` 0x1d1b68
+/// per placement and `parsemap_create_dynamic_objects` 0x1d04f0 case 0xe5 →
+/// `Drone_CoverCornerNode` 0x136ff0 / case 0xe6 → `Drone_CoverLowNode` 0x137340 — the main map
+/// (type 1) is only one entry among them. On the disc every mission level's shared sub-map
+/// 010000f3 carries one corner + one low template node ("Cover Corner/Low Node", placement
+/// translation (0,0,0), no params), and 07000004/07000009/0700000a/0700001b/07000023/07000025/
+/// 07000026/07000027/07000028/0700004a have NO main-map nodes: without the sub-map scan those
+/// levels' guards have no cover at all.
+pub fn build(level: &nf_formats::level::Level, nav: &Network, world: &CollisionWorld) -> Vec<CoverNode> {
+    level.maps.iter().flat_map(|m| m.placements.iter())
+        .filter_map(CoverNode::from_placement)
+        .map(|mut n| {
+            n.path = nav.nav_path_for(n.pos);
+            if let Some(p) = n.path { n.dist = nav.emit(world, p, n.pos); }
+            n
+        }).collect()
 }
 
 /// Cover types (`Drone+0xBBB`).

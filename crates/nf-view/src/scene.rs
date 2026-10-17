@@ -6362,7 +6362,7 @@ impl Scene {
             }
             crate::phase_mark("b9a collision world + scope", t); let mut t9 = std::time::Instant::now();
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
-            let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
+            let covers = nf_game::cover::build(level, &nav, &world);
             let hitboxes = d.hitboxes.clone()?;
             let volumes = nf_game::aivolume::build(level, d.level_id);
             let models = nf_game::pickup::models(level);

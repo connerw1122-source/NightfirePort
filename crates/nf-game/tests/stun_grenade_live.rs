@@ -75,7 +75,7 @@ impl Level01 {
         let weapons = WeaponData::from_action_elf(&elf).unwrap();
         let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
         let nav = nf_game::nav::Network::build(level.maps[level.main_map().unwrap()].ai_network.as_ref().unwrap(), &world, 0x0700_0001);
-        let covers = nf_game::cover::build(&level.maps[level.main_map().unwrap()].placements, &nav, &world);
+        let covers = nf_game::cover::build(&level, &nav, &world);
         let hitboxes = nf_formats::hitbox::CollisionBones::from_action_elf(&elf).unwrap();
         let volumes = nf_game::aivolume::build(&level, 0x0700_0001);
         let models = nf_game::pickup::models(&level);

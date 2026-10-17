@@ -121,6 +121,11 @@ does not act on, plus 4 one-per-level marker types neither side touches. (The ga
 
 ### Placement types on the disc that the port does not act on
 
+(0xE5 cover corner 584 and 0xE6 cover low 384 were listed here by the original census; the port
+has spawned them since — `nf-game/src/cover.rs` `from_placement`/`build`, `Drone_CoverCornerNode`
+0x136ff0 / `Drone_CoverLowNode` 0x137340, from EVERY map entry per the loader dispatch
+[task cover-nodes, 2026-10-17].)
+
 | type | count | port | game spawn fn |
 |---|---|---|---|
 | 0x27 | 41 | — | GT_Create 0x17ffa0 |
@@ -132,8 +137,6 @@ does not act on, plus 4 one-per-level marker types neither side touches. (The ga
 | 0x39 | 8 | — | Create_SpaceMissile 0x1a9ef0 |
 | 0xdd | 33 | — | — none (game ignores) |
 | 0xe4 | 64 | — | Hurt_Create 0x17e870 |
-| 0xe5 | 584 | — | Drone_CoverCornerNode 0x136ff0 |
-| 0xe6 | 384 | — | Drone_CoverLowNode 0x137340 |
 | 0xe9 | 162 | — | Drone_AIPoint 0x137550 |
 | 0xf3 | 8 | — | Env_Tree_Create 0x17c200 |
 | 0xf4 | 1 | — | Trigger_MoviePlayer 0x1b2a08 |
@@ -318,11 +321,11 @@ records (165), NIS op none, anim ops 2/3 (0), event kinds 0x0e/0x10/0x13 (0), en
 
 ## Top 10 ready-to-queue tasks
 
-1. **AI cover nodes (0xE5 + 0xE6, 968 placements, every mission level).** Port
-   `Drone_CoverCornerNode` 0x136ff0 and `Drone_CoverLowNode` 0x137340 into the drone AI: nodes
-   bind to the cover graph guards query when engaging. Verify: guard in 07000006 (81+35 nodes)
-   retreats to a corner node when fired on instead of standing in the open. Highest occurrence
-   count of any placement family the game spawns for.
+1. **AI cover nodes (0xE5 + 0xE6, 968 placements, every mission level).** ~~Port~~ **DONE
+   (task cover-nodes, 2026-10-17):** the nodes spawn from every map entry (`cover.rs` `build`),
+   07000006 pins 81+35, and a guard under fire takes a game cover node (`cover_nodes_live.rs`).
+   The original task text: port `Drone_CoverCornerNode` 0x136ff0 and `Drone_CoverLowNode`
+   0x137340 into the drone AI: nodes bind to the cover graph guards query when engaging.
 2. **AI waypoints (0xE9, 162).** `Drone_AIPoint` 0x137550: patrol graph points. Port the record
    (params unknown — check `Drone_AIPoint` reads) and wire into patrol pathing. Verify: 07000007
    has 34; guards patrol through them.
