@@ -16,6 +16,13 @@ raises ch 243 in the port and when (no placement writes it [D], so a script even
 compare with the game (when is 243 up relative to ch 0x90 / ch 100 / Mission state 6 [M 0x182c60]), and fix
 the real divergence. Do not zero the damage.
 
+**Read first: `docs/systems/hurt-volumes.md`** (from `s/level-06-interactables`, task 706a — merged into the
+main agent's local master). It traces `Hurt_Update` 0x17e5d0's start law [M]: param 4 is a WHO-mask over the
+contact classes {8, 0x10, 2}; who 1 with no gate never starts (05's #328–330/#334–340 are configured-inert,
+only #331–333 with who 0 are live); a gated volume starts when its channel rises and the channel VALUE is
+the mask. Port that state machine (and the contact gate it implies) rather than a plain "inside → damage"
+test: it decides whether 16's #309 (gate 0xf3) can hurt during the chaser fight at all.
+
 **Two hurt systems.** The main agent's master (not yet on origin: pushes are blocked) already has
 `crates/nf-game/src/hurt.rs` on `Sim.hurts` (scene.rs, with hurt_02_live). The held merge kept that ONE
 system with your param map and your capsule-vs-mesh contact, and dropped the copy on `Drones`. If
