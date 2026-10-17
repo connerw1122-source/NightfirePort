@@ -83,7 +83,7 @@ fn setup_through(fe: &mut FrontEnd, team: bool) {
     if team {
         assert!(act(fe, Action::Confirm), "the team");
         assert_eq!(fe.mp_setup_state, 3, "then the character [M 2 → 3]");
-        assert_eq!(fe.mp_join[0].team, 0, "the selection IS the team [M mpjoin+4]");
+        assert_eq!(fe.mp_join[0].team, 1, "the selection IS the team [M mpjoin+4] — and the fresh join page's default team is MI6 [M P_MPJOIN 0x20ca00's 0x4c: DAT_002dee6c = 1]");
     }
     assert!(act(fe, Action::Confirm), "the character");
     assert_eq!(fe.mp_setup_state, 4, "then the Health Handicap [M 3 → 4]");
@@ -353,7 +353,7 @@ fn every_options_subpage_moves_its_values_and_rides_them() {
     assert_eq!(s.bot_count, 2);
     assert_eq!(s.human_count, 1);
     assert_eq!(s.team_game, 0, "Arena is FFA [M MP_Init's (scenario >> 29) & 1]");
-    assert_eq!(s.players[0].team, 0, "the setup's team pick rides");
+    assert_eq!(s.players[0].team, 1, "the setup's team pick rides — the re-seated default MI6 [M P_MPJOIN 0x20ca00's 0x4c: DAT_002dee6c = 1]");
     assert_eq!(s.players[0].skin, 0, "the setup's character pick rides");
     assert_eq!(fe.mp_envmods[2], 0, "the stale locked node masks off at start [M 0x20f708 andi 1]");
     assert_eq!(fe.mp_bots[0].character, 11, "Ninja stays in slot 1");
@@ -367,19 +367,19 @@ fn every_options_subpage_moves_its_values_and_rides_them() {
 fn back_out_of_every_page_and_walk_forward_again_team() {
     let mut fe = FrontEnd::new();
     to_scenario(&mut fe);
-    // The scenario page's Back returns to Main on the Multiplayer row [M P_MPSCENARIO:29]. The
-    // join page re-entry: an already-ready panel's ✕ does nothing and ✕ un-joins [M C_RBMPSTART's
-    // state arms], so the walk forward re-joins through the codename list.
+    // The scenario page's Back returns to Main on the Multiplayer row [M P_MPSCENARIO:29].
     assert!(act(&mut fe, Action::Back), "scenario Back → Main");
     assert_eq!(fe.page, Page::Main);
     assert_eq!(fe.cursor, 1, "back on the Multiplayer row");
     assert!(act(&mut fe, Action::Confirm), "Multiplayer");
     assert!(act(&mut fe, Action::Confirm), "Local");
     assert_eq!(fe.page, Page::MpJoin);
-    assert!(!act(&mut fe, Action::Confirm), "a ready panel's ✕ falls through");
-    assert!(act(&mut fe, Action::Back), "✕ un-joins [M C_RBMPSTART's 0x6b arm]");
-    assert_eq!(fe.mp_join[0].state, 0);
-    assert!(act(&mut fe, Action::Confirm), "join again");
+    // The re-entered join page is a FRESH join [M P_MPJOIN 0x20ca00's 0x4c — the enter memsets
+    // the mpjoin array and zeroes the per-agent states on every 0x4c]: the stale ready panel a
+    // back-out left must not survive it (playtest 1015-2231's forward-again walk).
+    assert_eq!(fe.mp_join[0].state, 0, "the re-entered page resets the agent");
+    assert!(!fe.mp_join[0].ready);
+    assert!(act(&mut fe, Action::Confirm), "the fresh panel's ✕ joins");
     assert_eq!(fe.mp_join[0].state, 1);
     assert!(act(&mut fe, Action::Right), "the codename list moves");
     assert_eq!(fe.mp_join[0].codename_row, 1);
@@ -404,9 +404,12 @@ fn back_out_of_every_page_and_walk_forward_again_team() {
     assert_eq!(fe.page, Page::MpSetup);
     assert_eq!(fe.mp_setup_state, 2, "the team bit re-enters on the team prompt");
     // Back at the character prompt returns to the team list in a team game [M 0x6b's 3 → 2];
-    // forward again.
+    // forward again. The prompt re-seats on the stored (default MI6) team — step left to pick
+    // Phoenix so the Alura bot below supplies the other side [M C_SBMPOPTIONS' both-sides check].
+    assert!(act(&mut fe, Action::Left), "◀ to Phoenix");
     assert!(act(&mut fe, Action::Confirm), "the team (Phoenix)");
     assert_eq!(fe.mp_setup_state, 3);
+    assert_eq!(fe.mp_join[0].team, 0, "the pick is Phoenix [M mpjoin+4]");
     assert!(act(&mut fe, Action::Back), "the character prompt's Back");
     assert_eq!(fe.mp_setup_state, 2, "a team game walks back to the team list");
     assert!(act(&mut fe, Action::Confirm), "the team again");
@@ -491,7 +494,7 @@ fn back_out_of_every_page_and_walk_forward_again_team() {
     let s = fe.mp_match_settings.as_ref().unwrap();
     assert_eq!(s.scenario, 0x2000_0002, "Team Arena's word rides");
     assert_eq!(s.team_game, 1, "the team bit derives [M MP_Init 0x183438:41]");
-    assert_eq!(s.players[0].team, 0, "the human's Phoenix pick rides");
+    assert_eq!(s.players[0].team, 0, "the human's Phoenix pick rides (◀ from the re-seated MI6 default [M P_MPJOIN 0x20ca00's 0x4c: DAT_002dee6c = 1])");
     assert_eq!(s.bot_count, 1);
 }
 

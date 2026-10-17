@@ -16787,3 +16787,38 @@ level-load-time (final)
   nf-formats/hud, nf-game/drone, nf-view/gpu+hud — all lib tests green). Render asks for the
   main agent (bed-grate E-open, pavillion grill, the intro's pearl) in the report.
 - Report: docs/reports/hatch-02-intro.md.
+
+mp-backout-after-character (queue 716, branch s/mp-backout-after-character)
+- Started 19:19 UTC 2026-10-16. Task: local MP setup breaks after backing out after setting a
+  character for player 1 (playtest 1015-2231). Walk menus_e2e-style back-out sequences (1 then 2
+  joined players: character pick -> back one page -> main MP menu -> forward again), find the
+  wrong state (enter_mp_setup states 2/3 join slots/cursor/team-character prompts, pair or
+  overlay stack), compare with the game's character page handler Back case, fix, add back-out
+  tests + match-starts-afterwards test.
+
+mp-backout-after-character (queue 716, branch s/mp-backout-after-character)
+- Done 20:45 UTC 2026-10-16. The playtest 1015-2231 walk (pick a character, back out one page,
+  back to the main MP menu, forward again; a match still starts) failed on master in two states,
+  both now fixed and pinned by tests/menus_backout_after_character.rs (actions-only, 1 human FFA
+  + the 2-human host lobby):
+  1. enter_mp_setup kept the agents' ready bytes: the hub's Back re-runs the setup page's enter,
+     and the game clears mpjoin+0x01 for every agent there [M P_MPSETUP 0x20d7a8's 0x4c loop,
+     `pcVar5[1] = '\0'` per slot]. The port now clears all four.
+  2. The re-entered Join Game page kept the stale records: the game memsets the whole mpjoin
+     array on EVERY 0x4c (the DAT_002e1b09 gate is set to 2 in the same arm) and re-seats the
+     defaults — skins 0/1/2/3 (DAT_002dee70/80/90/a0), teams MI6/Phoenix/MI6/Phoenix
+     (DAT_002dee6c/7c/8c/9c) [M P_MPJOIN 0x20ca00's 0x4c]. The port's MpMode-Local route now
+     runs enter_mp_join(): fresh records + defaults every time. The stale ready panel is what
+     made the forward-again walk look broken (its ✕ fell through).
+- Consequential test updates in menus_e2e_mp.rs: the re-seated default team for agent 1 is MI6
+  (1) now [M DAT_002dee6c = 1], so the blind team-Confirm picks MI6 — the team-walk test picks
+  Phoenix explicitly (◀) to keep Alura supplying the other side of C_SBMPOPTIONS' both-sides
+  check; three "team rides" assertions updated with the citation. The old "a ready panel's ✕
+  falls through" assertion became the fresh-join assertions (that behaviour contradicted
+  P_MPJOIN's enter memset).
+- Verification: full 4-crate suite via tools/test/suite.py in 7 foreground chunks on the final
+  tree (merge origin/master = already up to date, branch cut from c8186aa1): 1911 passed, 6
+  failed, 72 ignored — the 6 are exactly the 3 allowed slim-ISO disc_golden + the 3 pre-existing
+  pylon render probes (the master baseline). nf-view alone: 180 passed / 0 failed. No live
+  checks needed: the walk is fully headless and deterministic.
+- Report: docs/reports/mp-backout-after-character.md.
