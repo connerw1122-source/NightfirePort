@@ -17885,3 +17885,8 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+
+## level-07-interactables (start)
+Task: census + operate every interactive kind on 07000007 (Mayhew C: the party) through the real
+input path; every model draws; docs/levels/07000007.md census table; fix blockers with tests.
+Branch s/level-07-interactables from origin/master d628f01f. Sandbox window 13:21-15:21 UTC.
