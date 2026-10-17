@@ -17668,6 +17668,31 @@ fix_ladder2_live 4, fix_ladder_live 3, fix_swim_live 4, fix_swim_vent_live 2, fi
   walked ride parks at (29.86, 37.93, 52.4) at t 5687 with no falls, ch 0x70/0x1D and the exit
   through the real walked path. The whole truck-exit chain is now double-pinned (the walkreal
   harness + mayhew_handover_live).
+- 2026-10-17 s/mayhew-end-transition (task 750o): the END of Mayhew (07000005) — Mayhew's route
+  to the level's exit and the hand-off to the next level (the end trigger, the outro/level-exit,
+  ResetMap_LevelToLoad). User 2026-10-16 evening: "end of mayhew still takes some work to
+  transition to the next level with mahews pathing." 750c mayhew-exit-walk covers his walk
+  before the MID cut-scene; this task reproduces the whole end sequence through the real path
+  on master, finds where his route stalls or the transition fails to fire, ports the game's
+  behaviour [M], and pins: the level ends and the next level loads without the player doing
+  anything the game doesn't require. Branch created from origin/master 31dd6161. Report:
+  docs/reports/mayhew-end-transition.md.
+- mayhew-end-transition: the gap was the EXIT HOLD — Trigger_Activate's GS_PauseGame(1) +
+  GameFlow_PushState(300.0f, 7, 0xff) [M 0x1b2318:90-92] was cited but never modelled: the
+  viewer drained level_exit into the loading screen the same frame. Ported: Drones::exit_hold
+  (ExitHold{next,fade_frames,total}) set by BOTH Trigger_Activate arms (auto-fire + use key;
+  NOT the event-0x12 loadmap [M 0x1d94c0:194-199]); Sim::step/step_bond tick the hold and skip
+  the world (the clock stops while paused [M 0x1c98c8:44-47; 0x1c9790:30-38; 0x10cd80:36]);
+  the viewer defers the drain until the hold clears (state 8 pops onto state 3 [M
+  0x1c98c8:173-189]); Drones::exit_fade() = the draw code's (left,total) read (alpha
+  1−left/total [M 0x1bbdd8]) — the overlay itself is the main agent's draw. Master repro
+  through the real path: the sim clock ran 100 ticks past the end trigger (5687→5787) pre-fix.
+  Tests mayhew_end_transition_live 3/3 (the walked end chain → the 300-frame freeze → the
+  carried load at #496; the use-key hold; the 0x12 no-hold sister). On the merged tree
+  (50d51ae7): nf-game lib 261, nf-view lib 18, nf-formats 79, nf-audio 11, the nine touched
+  live binaries 26 passed + the pre-existing cable ignore. The fast suite cannot run here
+  (background reaping — as 750c/pause-music-1b reported); foreground slices stand in. Doc:
+  docs/systems/exit-hold.md.
 - 2026-10-17 s/zoe-gondola-08 (task 750d): user: "zoe shoots at you when you get to the
   gondola" — Zoe is an ally (07000007/08; the gondola is on 07000008) and an ally must
   never target Bond. Plan: reproduce on the real path (walk to the gondola, log Zoe's

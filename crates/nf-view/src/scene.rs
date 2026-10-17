@@ -1860,6 +1860,9 @@ impl Sim {
     /// height (stand-in for the game's player object and `Drone_View_Bones`).
     /// `trigger`: the fire button (action 9) held; `aiming`: aim mode (L1).
     pub fn step(&mut self, camera: [f32; 3], look: [f32; 3], trigger: bool, aiming: bool) {
+        // mayhew-end-transition: the exit hold freezes the free-camera path too (the game's whole
+        // sim is paused [M 0x1c98c8:44-47]; docs/systems/exit-hold.md).
+        if self.drones.tick_exit_hold() { return; }
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
         self.first_person = false;
         let ground = [camera[0], floor + 0.4, camera[2]];
@@ -1899,6 +1902,14 @@ impl Sim {
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
+        // mayhew-end-transition: the exit hold — `Trigger_Activate`'s `GS_PauseGame(1)` +
+        // `GameFlow_PushState(300.0f, 7, 0xff)` [M 0x1b2318:90-92]. While it stands the game's
+        // clock stops [M 0x1c98c8:44-47], the player input dies [M `psiInput_MapInputs`
+        // 0x10cd80:36] and the world sections of `Game_Run` are behind the pause gate
+        // [M 0x1c9790:30-38] — but the fade itself advances every frame [M 0x1c9790 tail].
+        // The port ticks the hold and skips the world (docs/systems/exit-hold.md); the host
+        // defers the level load until it clears.
+        if self.drones.tick_exit_hold() { return; }
         // mp-core: `MP_Update` 0x184bd0 runs per frame in the gameplay flow state [M 0x184bd0:17-21];
         // the port's fixed tick stands in for the game's wall-clock delta (the module doc's
         // *Deviation*). Arena loads only — `None` on every campaign level.
