@@ -17751,3 +17751,12 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   joined the shared stream [M]); difficulty_gates's create calls updated. Ran: nf-game 289,
   helicopter_live 4, fix_objects2 5, campaign_flow 5, enemies/walk_07000012 7, walkreal_0700000b
   1, fix_missing_objects 5, fix_drone3 3, oddjob_hat 2 — green. Report: docs/reports/helicopter.md.
+- 2026-10-17 s/helicopter-2 (task 750h2): finish the helicopter (HELD at the batch merge):
+  s/helicopter merged onto master breaks nf-game guard_reaction_live
+  sight_to_first_shot_for_the_three_sighting_paths (panic at guard_reaction_live.rs:216) and
+  nf-view fix_weapon_sounds_live every_weapon_on_07000005_draws_fires_and_reloads_with_sounds
+  ("0x3a: missing sounds [1093, 1094] never played; 0x41: [639] never played"). 07000005
+  carries two copters (map50 #241 flies from load, #242 gate 0x42) — the copter's RNG draws /
+  sound voices / tick order are the suspects. Branch from origin/master 50d51ae7, merged
+  origin/s/helicopter (3d877686). Reproduce first, fix with the game address, never loosen a
+  measured test.
