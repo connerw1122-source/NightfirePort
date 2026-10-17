@@ -17391,3 +17391,11 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+- 2026-10-17 s/laser-scripts (task 750i): The user: "lasers arent accurate to the port look
+  closely at their scripts". Plan: list every laser object (placement type, script ids — the
+  beam's on/off cycle, sweep, colour/alpha keys, sound), decode those scripts fully
+  (docs/formats/ + docs/systems/), compare against what the port runs today (timings, cycle,
+  which beams exist, extents, sweep, damage/alarm on touch), fix every difference with
+  [M]/[D] citations. Deliver the per-beam state (endpoints, on/off, alpha, colour) as a getter
+  for the main agent's draw code + a per-beam change table in the report. No drawing.
+  Branch created from origin/master 31dd6161.
