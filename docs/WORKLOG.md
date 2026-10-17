@@ -17885,3 +17885,11 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- 2026-10-17 s/movie-volume-options (task 756): movie audio volume follows the options' SFX
+  volume. Plan: psiStartBackgroundMovie stores MovieVolume = SFXGetVolume() (= SfxMasterVolume,
+  100 at boot [L 0x30c95c]); audioDecStart 0x107360:9 calls changeInputVolume(MovieVolume * 100)
+  which sceSdSetParam's both cores' input volume (0xf80 / 0x1080) [M 0x1078c8]. Decompile the
+  scale, mirror the options-page SFX mapping in Player::start(.., volume), apply the gain in
+  open_pcm_out's callback, document docs/systems/movies.md, tests (boot gain == today's
+  MOVIE_GAIN; options N -> N*100 input volume; sister assertions; NF_SILENT). Branch from
+  origin/master 3456a72f.
