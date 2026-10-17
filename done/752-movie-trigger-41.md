@@ -33,3 +33,7 @@ claimed-by: sandbox3 at 2026-10-17T04:58Z
 ## Report (done, 2026-10-17T06:26Z)
 
 Closed by the driver: the report is on `s/movie-trigger-41` (docs/reports/movie-trigger-41.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-17T06:42Z)
+
