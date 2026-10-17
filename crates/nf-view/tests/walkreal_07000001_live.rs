@@ -143,6 +143,14 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
             .collect()
     };
     assert_eq!(named.len(), 3, "three guards carry death channels 0x11/0x12/0x13 [D]");
+    // Stage into the hall through its east door first. From the meet room the routes to the
+    // west-half guards run through door #2 (−14.1,5.3,13.1) — the level's known walker wedge
+    // (docs/reports/level-01-complete.md: the solo approach wedges at the 3000-tick cap) — and a
+    // guard fought through that wall never exposes a part (he stands behind the hall's south
+    // structure). A player enters the hall by its main door and fights inside; the east hop is
+    // the route the guard-11 approach already proves (nav reached (2.97,6.38,16.27) from the
+    // same start), and from the stage the named guards are short in-hall hops.
+    w.walk_nav_to([2.9, 6.3, 16.3], "stage into the hall (east door)", 3.0);
     for g in named {
         let gpos = w.scene.sim.as_ref().unwrap().drones.list[g].pos;
         w.walk_nav_to(gpos, &format!("approach hall guard {g}"), 3.0);
@@ -316,9 +324,81 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
     let sim = w.scene.sim.as_ref().unwrap();
     let on_plate = sim.bond.pos[0] < -32.0 && sim.bond.pos[2] > 12.0;
     assert!(on_plate, "Bond must walk onto the LoadPointActivator plate (at {:?})", sim.bond.pos);
+    {
+        let d = &sim.drones.list[ci];
+        eprintln!("[01] at the AND-touch: contact at ({:.2},{:.2},{:.2}) state {:#x} route_idx {:?} blocked {} seen {}",
+            d.pos[0], d.pos[1], d.pos[2], d.state, d.route.as_ref().map(|r| (r.index, r.nodes.len())), d.route_blocked, d.seen);
+        for (i, o) in sim.drones.list.iter().enumerate() {
+            if i == ci || o.team != 1 || !o.started || o.corpse || !o.enabled { continue; }
+            let dd = walker::dxz(o.pos, d.pos);
+            if dd < 16.0 {
+                eprintln!("[01] peer {i} skin {:#x} at ({:.1},{:.1},{:.1}) d {dd:.1} state {:#x} health {:.0}",
+                    o.skin, o.pos[0], o.pos[1], o.pos[2], o.state, o.health);
+            }
+        }
+    }
+    // The stairwell guards (the west-side combat-steppers, plus the balcony skin-0x36) hide the
+    // contact at the head — in the game the hide runs him to cover (`NDrone2_FindRunToPoint`
+    // 0x15168, the half the port does not model) while the player fights. The walk fights them
+    // the same way: clear every started, armed guard within 14 of the CONTACT (the hide exit
+    // needs the visible armed peer beyond 14.0 [M `NDrone2_NotNearArmedDrone` 0x177640]), let the
+    // lead finish the route's descent, then take Bond back onto the plate for the AND.
+    'recovery: for round in 0..12 {
+        if w.scene.sim.as_ref().unwrap().drones.channels.on(0x10) { break; }
+        let guards: Vec<usize> = {
+            let sim = w.scene.sim.as_ref().unwrap();
+            let cp = sim.drones.list[ci].pos;
+            (0..sim.drones.list.len()).filter(|&i| {
+                let d = &sim.drones.list[i];
+                i != ci && d.team == 1 && d.started && !d.corpse && d.enabled && d.health > 0.0
+                    && ((2..0x47).contains(&d.weapon) || (0x6a..=0x71).contains(&d.weapon))
+                    && walker::dxz(d.pos, cp) < 14.0 && !cleared.contains(&i)
+            }).collect()
+        };
+        if guards.is_empty() {
+            // Nobody armed within 14: the hide exits within 2 ticks and the lead resumes — give
+            // the descent a window, then retake the plate.
+            w.follow(ci, &format!("the contact descent r{round}"), 6000, plate);
+            w.walk_nav_to(plate, "the plate", 1.2);
+            if w.scene.sim.as_ref().unwrap().drones.channels.on(0x10) { break; }
+            let still = w.scene.sim.as_ref().unwrap().drones.list[ci].pos;
+            if walker::dxz(still, plate) < 4.0 { break; }
+            continue;
+        }
+        for g in guards {
+            let (gpos, los_clear) = {
+                let sim = w.scene.sim.as_ref().unwrap();
+                let d = &sim.drones.list[g];
+                let bp = sim.bond.pos;
+                let eye = [bp[0], bp[1] + sim.bond.eye - sim.bond.crouch_drop, bp[2]];
+                (d.pos, sim.world.segment(eye, [d.pos[0], d.pos[1] + 0.3, d.pos[2]]).is_none())
+            };
+            let bpos = w.scene.sim.as_ref().unwrap().bond.pos;
+            if walker::dxz(gpos, bpos) > 9.0 || !los_clear {
+                w.walk_nav_to(gpos, &format!("approach stairwell guard {g}"), 3.0);
+            }
+            {
+                let sim = w.scene.sim.as_ref().unwrap();
+                if sim.gun.clip + sim.gun.spare < 8 { drop(sim); w.resupply("ammo"); }
+            }
+            let ammo_now = w.scene.sim.as_ref().unwrap().gun.clip + w.scene.sim.as_ref().unwrap().gun.spare;
+            if ammo_now == 0 { eprintln!("[01] stairwell guard {g}: skipped — dry"); continue; }
+            let mut killed = w.shoot(g, &format!("stairwell guard {g}"));
+            if !killed {
+                if w.resupply("ammo retry") { killed = w.shoot(g, &format!("stairwell guard {g}")); }
+            }
+            let dead = w.scene.sim.as_ref().unwrap().drones.list[g].corpse
+                || w.scene.sim.as_ref().unwrap().drones.list[g].health <= 0.0;
+            if killed || dead { cleared.insert(g); }
+            if w.scene.sim.as_ref().unwrap().drones.channels.on(0x10) { break 'recovery; }
+        }
+        w.follow(ci, &format!("the contact descent r{round}"), 6000, plate);
+        w.walk_nav_to(plate, "the plate", 1.2);
+    }
     // The AND-touch now fires every run (the walkreal-01-cover walker): Bond AND the skin-0x4F
     // contact on the plate [M Trigger_Hit 0x1b1fc8's filter list] → ch 0x10 → the LOAD_LEVEL
     // exit's gate [M Trigger_Update 0x1b1a78 case 10].
+    let sim = w.scene.sim.as_ref().unwrap();
     assert!(sim.drones.channels.on(0x10), "the AND-touch must fire with Bond AND the contact on the plate (contact at {:?})",
         sim.drones.list[ci].pos);
     drop(sim);
@@ -327,23 +407,28 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
     // every placement, trigger, mux, script and pickup scanned, the only 0xD writes are 0xB and
     // 0xE [D walkreal_probe01] — the un-ported mission/dialogue layer owns the write. The walk
     // hands it at the level's own beat — the AND just fired, i.e. Mayhew reached the bunker
-    // plate — and pins the REAL monitor's consequences [M 0x1827d8]:
+    // plate — and pins the REAL monitor's consequences [M 0x1827d8].
+    // The record indexes resolve from the LEVELS table, not hardcoded: the table mirrors the
+    // game's .data order and the mission-05..08 records sit in FRONT of 01's [M 0x1827d8 walks
+    // LEVELS in table order; a hardcoded [0][0] named 01's record before those landed].
+    let m01 = nf_game::mission::LEVELS.iter().position(|l| l.level == 0x0700_0001).expect("07000001's LEVELS record");
+    let m02 = nf_game::mission::LEVELS.iter().position(|l| l.level == 0x0700_0002).expect("07000002's LEVELS record");
     {
         let sim = w.scene.sim.as_mut().unwrap();
-        assert_eq!(sim.drones.mission.states[0][0], 3, "obj0 announced (immediate reveal, enable 0) [M 0x1827d8 case 0]");
+        assert_eq!(sim.drones.mission.states[m01][0], 3, "obj0 announced (immediate reveal, enable 0) [M 0x1827d8 case 0]");
         let frame = sim.drones.frame;
         sim.drones.channels.set(0x47, 1, frame);
     }
     w.wait(30);
     {
         let sim = w.scene.sim.as_ref().unwrap();
-        assert_eq!(sim.drones.mission.states[0][0], 4, "obj0 completes through the real monitor [M 0x1827d8 case 3]");
+        assert_eq!(sim.drones.mission.states[m01][0], 4, "obj0 completes through the real monitor [M 0x1827d8 case 3]");
         // 0x47 is ALSO the enable channel of 07000002's first two objectives (parts of the same
         // mission 0x07000001 [L mission::c07000002]) — case 1 has no level gate, so they announce
         // from inside 07000001 the moment the hand lands:
-        assert_eq!(sim.drones.mission.states[1][0], 3, "07000002 'Destroy Mayhew's computer' announces on the 0x47 enable [M 0x1827d8 case 1]");
-        assert_eq!(sim.drones.mission.states[1][1], 3, "07000002 'Rescue geisha girls' announces on the 0x47 enable");
-        assert_eq!(sim.drones.mission.states[1][2], 1, "07000002 'Find door to servants quarters' still waits on enable 0x4c");
+        assert_eq!(sim.drones.mission.states[m02][0], 3, "07000002 'Destroy Mayhew's computer' announces on the 0x47 enable [M 0x1827d8 case 1]");
+        assert_eq!(sim.drones.mission.states[m02][1], 3, "07000002 'Rescue geisha girls' announces on the 0x47 enable");
+        assert_eq!(sim.drones.mission.states[m02][2], 1, "07000002 'Find door to servants quarters' still waits on enable 0x4c");
         // No ch 100 here: the success channel is the AND over BOTH parts' conditions
         // [M 0x1827d8:119-123], and 07000002's 0x48/0x4b/0x4d are still off.
         assert!(!sim.drones.channels.on(100), "the mission spans 07000002 — success waits for its objectives");

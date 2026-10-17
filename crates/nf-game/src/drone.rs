@@ -5946,8 +5946,12 @@ impl Drone {
                 // An armed, started hostile within 10 → LeadHide (the cower) [M 0x15e698's armed-drone
                 // branch + 0x15ec08; the port's armed_peer_dist snapshot. `NDrone2_FindRunToPoint`
                 // 0x15168 — the branch's run-to-a-point half → AllyGoToGoalPosition 0x28 — is not
-                // ported; the hide arm only, as fix-actors].
-                if self.armed_peer_dist <= 10.0 {
+                // ported; the hide arm only, as fix-actors]. The game calls
+                // `NDrone2_NearArmedDrone(…, flag=1)` [M 0x15e698:30], whose flag-1 arm requires the
+                // drone's OWN behaviour prop 0x50 too [M 0x177420:57-61,
+                // `behaviour_util_getProperty` 0x1c7d98 — the port's `prop`] — without it the cower
+                // arm is dead in the game, so the port gates the enter on the same bit.
+                if self.prop(d, 0x50) && self.armed_peer_dist <= 10.0 {
                     if std::env::var_os("NF_AILOG").is_some() { eprintln!("[ailog] escort {} → LeadHide (peer {:.1})", self.index, self.armed_peer_dist); }
                     self.set_state(LEAD_HIDE);
                     return true;
@@ -5982,10 +5986,11 @@ impl Drone {
             (ALLY_LEAD_WAIT, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15eda8 case 1: 0x21]
             (ALLY_LEAD_WAIT, msg::UPDATE) => {
                 // [M 0x15eda8 case 3]: an armed hostile within 10 → hide (the FindRunToPoint stand-in,
-                // as Lead's arm); else the path bands: ≤ −7.0 (Bond still over 7 behind on the route)
-                // stays, and 0.0 with Bond ≥ 5.0 straight-line stays; anything else resumes the lead
-                // (the game's −9.0 enter / −7.0 resume hysteresis).
-                if self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
+                // as Lead's arm; the flag-1 prop-0x50 gate applies here too, as in Lead [M
+                // 0x15eda8:30 + 0x177420:57-61]); else the path bands: ≤ −7.0 (Bond still over 7
+                // behind on the route) stays, and 0.0 with Bond ≥ 5.0 straight-line stays; anything
+                // else resumes the lead (the game's −9.0 enter / −7.0 resume hysteresis).
+                if self.prop(d, 0x50) && self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
                 let pd = self.object_mission_path_distance(d, 5.0, self.player_pos);
                 self.mission_path_dist = pd;
                 if pd > -7.0 && (pd != 0.0 || crate::nav::dist2d(self.pos, self.player_pos) < 5.0) { self.set_state(ALLY_LEAD); }
@@ -5998,10 +6003,11 @@ impl Drone {
             // parks him in PlayerInWay.
             (PLAYER_IN_WAY, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15ea28 case 1: 0x21]
             (PLAYER_IN_WAY, msg::UPDATE) => {
-                // An armed hostile within 10 → hide (the FindRunToPoint stand-in, as Lead's arm);
+                // An armed hostile within 10 → hide (the FindRunToPoint stand-in, as Lead's arm; the
+                // flag-1 prop-0x50 gate applies here too [M 0x15ea28:30 + 0x177420:57-61]);
                 // otherwise resume the lead once Bond leaves the stay band — inside the π/3
                 // (0x3f860a92) facing cone AND 3.5 [M 0x15ea28 case 3].
-                if self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
+                if self.prop(d, 0x50) && self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
                 if !self.bond_band(3.5, 1.047_197_6) { self.set_state(ALLY_LEAD); }
                 true
             }
@@ -6032,12 +6038,13 @@ impl Drone {
             }
             // AllyLeadBondCombat 0x22 (0x15f120): Bond is fighting near the escort — hold the alert
             // idle. UPDATE [M 0x15f120 case 3]: an armed hostile within 10 → hide (the FindRunToPoint
-            // stand-in); else the path distance: < 0 (Bond still behind on the route) stays;
+            // stand-in; the flag-1 prop-0x50 gate applies here too [M 0x15f120:26 +
+            // 0x177420:57-61]); else the path distance: < 0 (Bond still behind on the route) stays;
             // `DAT_00298f80 != 0` stays (no decomp writer — reads 0, docs/fields/
             // hitdata-spawner-ally.md §3); otherwise Lead.
             (LEAD_BOND_COMBAT, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f120 case 1: 0x21]
             (LEAD_BOND_COMBAT, msg::UPDATE) => {
-                if self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
+                if self.prop(d, 0x50) && self.armed_peer_dist <= 10.0 { self.set_state(LEAD_HIDE); return true; }
                 let pd = self.object_mission_path_distance(d, 5.0, self.player_pos);
                 self.mission_path_dist = pd;
                 if pd >= 0.0 { self.set_state(ALLY_LEAD); }
@@ -10621,12 +10628,30 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
         }
         let positions: Vec<Option<V3>> = self.list.iter().map(|x| x.enabled.then_some(x.pos)).collect();
-        // The armed-peer distances for `NDrone2_NearArmedDrone`'s calls (fix-actors): the nearest
-        // started, alive, team-1 drone (positions only here; the per-drone team/started filter runs
-        // on the same list before the mutable borrow below).
+        // The armed-peer distances for `NDrone2_NearArmedDrone`/`NDrone2_NotNearArmedDrone`'s calls
+        // (fix-actors): the nearest started, alive, team-1 drone that ALSO passes the game's weapon
+        // and sight gates:
+        // - weapon [M `NDrone2_NearArmedDrone` 0x177420:89-104, disasm 0x177538-0x177578;
+        //   `NDrone2_NotNearArmedDrone` 0x177640:76-92]: the candidate's weapon byte (obj+0xdc →
+        //   +0x62; the port's `weapon`) ∈ [2..0x46] ∪ [0x6a..0x71] — the same predicate as
+        //   `NDrone2_ObjectIsArmed` 0x178768 (`Drone::obj_armed`); 0, 1, 0x47 and ≥0x72 are no peers;
+        // - sight [M 0x177420:110-128 / 0x177640:94-115: `DroneVision_CanSeeObjectFrom` 0x176f18,
+        //   bone 5 = the head, a head-to-head `Collide_LineOfSight`(0xa27) behind an
+        //   `AINetwork_TestRayCels` AI-cel pretest]. The port's stand-in is the shared head-to-head
+        //   `world.line_of_sight` (the shape the shout pass already uses).
+        // The scan stops at 20.0: every consumer branches at 10.0 (the Lead enters), 14.0 (the hide
+        // exit) or 20.0 (the hostage sites 0x15ce60:29 / 0x15cfe0:24), so a peer beyond 20.0 can
+        // never flip any of those comparisons (min > 20 ≡ MAX at each).
+        // Without the sight gate a guard parked on the balcony 13.7 from the escort counted forever
+        // — the hide exit needs > 14.0 — and the walk's contact never reached the plate.
         let armed_peer_dist: Vec<f32> = self.list.iter().enumerate().map(|(i, dr)| {
             self.list.iter().enumerate()
-                .filter(|&(j, o)| j != i && o.team == 1 && o.started && !o.corpse && o.enabled)
+                .filter(|&(j, o)| {
+                    j != i && o.team == 1 && o.started && !o.corpse && o.enabled
+                        && o.health > 0.0 && o.obj_armed()
+                        && (o.pos[0] - dr.pos[0]).powi(2) + (o.pos[1] - dr.pos[1]).powi(2) + (o.pos[2] - dr.pos[2]).powi(2) <= 400.0
+                        && d.world.line_of_sight(dr.head(), o.head())
+                })
                 .map(|(_, o)| ((o.pos[0] - dr.pos[0]).powi(2) + (o.pos[1] - dr.pos[1]).powi(2) + (o.pos[2] - dr.pos[2]).powi(2)).sqrt())
                 .fold(f32::MAX, f32::min)
         }).collect();
