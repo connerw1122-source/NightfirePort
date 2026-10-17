@@ -18600,6 +18600,29 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   walk_07000005 2, walkreal_07000005 2, mayhew_handover 2, level_carry 8, fix_truck 2, wire 1,
   casings16 2, fix_mission 4, levels_sweep 3, walk_07000008 4, walk_0700000a 3, mission_unlock_flow 3
   — 0 failures. Report: docs/reports/level-05-interactables-2.md.
+- 2026-10-17 s/level-09-interactables (task 709a): "every interactive thing and every model on
+  07000009 (Night of the Agent (Tower A))". Plan: (1) the census from the disc (nf-formats parse
+  of 07000009.bin) into docs/levels/07000009.md — every touch/use/shoot/ride placement by type
+  with parameters + channel wiring, [M] game behaviour, port status; known open items: the
+  ELEVATOR BUTTONS (task 700 owns them — reuse s/elevator-buttons-09 findings), the lobby laser
+  grid art (s/laser-scripts, held for a render check), the security-room monitor. (2) one
+  real-input live test per KIND (nf_view::load + Sim::step_bond), each with a sister that fails
+  without the operation. (3) every placement's mesh/skin resolves (no white fallback,
+  NF_TEX_TRACE=1). Branch from origin/master 0603094e.
+- level-09-interactables progress: the all-map census probe (census_07000009.rs --ignored;
+  40 maps, main m39 = 288 placements / 23 kinds) and the doc rewrite — 0x20 is breakable GLASS
+  (17 Break_Create placements, kind 2, bullets + sound 0x2E [M 0x12b970]), the six 0xdb doors,
+  NO 0x30 Monitor anywhere on the disc, 0x71 = rotor_init (not a spawner), the four
+  SoundTriggers, the pickups (armour kind 3 + two BOND_BONUS kind 6). The real find: the
+  guards' WAIT_SWITCH channel is drone param 3 = 0x51 = the arrival plate #248's out
+  [M 0x15b830/0x15b960 case 3] and the port never re-sampled it for frozen drones — two guards
+  froze forever, unkillable (15 rounds, zero damage through Drone_CollisionHandler 0x140968:62's
+  enabled gate); fixed by sampling the channel for waiting frozen drones in tick_inner. 12 live
+  kind tests green (alarm switch E → ch 0x7C → 0x61 → fail; glass shot; door E + the locked
+  shutter; armour walk-over; liftside touch plate ch 0xAB; guard stands) + sisters. Left: two
+  lobby guards re-freeze after the frame-1 wake (gdbwatch ask), the E-route pick runs from the
+  camera not the player head [M 0x1a5170:101-106] (ignored test + live check), the
+  NF_TEX_TRACE sweep test. docs/reports/level-09-interactables.md.
 - 2026-10-17 s/level-09-interactables-2 (task 709c): STARTED. Re-doing the HELD 09 interactables work
   (709a, 45c5dc5): scope its 19-line drone.rs change to what the game does (cite it), keep the
   census/interact tests, make the four master tests pass again (ai_live drone 66 pulse,
