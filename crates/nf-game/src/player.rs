@@ -1606,7 +1606,7 @@ impl RamSave {
     }
 }
 
-/// One registered player start (`player_start` entry, 0xE0 bytes): position, yaw, and the gate switch
+/// One registered player start (`player_start` entry, 0xE0 bytes): position, yaw, the gate switch
 /// channel — placement type 0x24's parameter 0 [M `parsemap_create_dynamic_objects` 0x1d04f0 case 0x24 →
 /// `Player_AddNewStartPos` 0x195c00: param block +0x2C lands at entry+0x50].
 #[derive(Clone, Copy, Debug)]
@@ -1617,15 +1617,60 @@ pub struct LevelStart {
     /// The placement's param 3 (level_tag+0x38) — the zero-g selector `Player_Init` 0x1910f8
     /// switches on (== 2 → `Vec_Zero(&WldGravity)`; else the default (0, −9.8, 0)) [M].
     pub p3: u32,
+    /// The registration kind — `Player_AddNewStartPos`'s u16 third argument, stored at entry+0x22
+    /// [M 0x195c00:33]: type-0x24 placements pass 1, type-0x2D pass 0 [M 0x1d04f0 case 0x24 →
+    /// disasm 0x1d0a00 `addiu a2,$zero,1`; case 0x2d → disasm 0x1d0e98 `move a2,$zero`].
+    /// `Player_Start` 0x190fd0 only ever picks kind-1 entries (disasm 0x191028/0x1910b0:
+    /// `bne v0, 1` skips the entry); the kind-0 records are written but never read by the game's
+    /// on-foot runtime — no other function touches `player_start` in the decompile.
+    pub kind: u16,
 }
 
-/// `Player_Start` (0x190fd0) [M]: pass 1 — the first entry with kind 1 whose gate is 0 or whose channel is
-/// on; pass 2 (fallback) — the first kind-1 entry (the game zeroes its gate so a later `Player_Start` in
-/// the same level cannot re-pick it; the port runs one `Player_Start` per load). Index order = placement
-/// order [M 0x195c00 appends]. Returns the entry index, or None with no entries.
+/// The registration: the main map's placements, in parse order, through
+/// `parsemap_create_dynamic_objects` 0x1d04f0's start-pos arms [M]. The game parses the main map's
+/// dynamic block with `n != 0` (`ResetMap_Load` 0x1d6360:150 — `parsemap_block_map_data_dynamic
+/// (0x30cfe8, DynamicPtr, 1)`; `n != 0` = the main parse, the port's `main_map` convention), only
+/// records with `(flags & 0xa000) == 0` reach the dispatch [M 0x1d1b68:93], and both arms sit
+/// behind the MP gate `MPSettings._384_4_ == 0` [M disasm 0x1d09e0-0x1d09e8 / 0x1d0e78-0x1d0e80 —
+/// the port's single-player path is that case]:
+/// - case 0x24 → `Player_AddNewStartPos(pos, rot, 1, level_tag)` [M 0x1d04f0:91-98, disasm 0x1d0a00];
+/// - case 0x2d → the same with 0 [M 0x1d04f0:154-161, disasm 0x1d0e98].
+///
+/// The game also skips placements whose object lookup failed (`beqz a3` before the call
+/// [M 0x1d1c90]) — every 0x24/0x2d placement on the disc's main maps resolves in the port's
+/// assembly (checked by start_slot_0x2d_live's sweep), so the port keeps the data-level rule.
+/// Yaw = the placement's rotation[1], the pinned convention (party07-start-rules); gate = param 0,
+/// p3 = param 3 (level_starts' parse, unchanged).
+pub fn starts_from_placements(placements: &[nf_formats::placement::Placement]) -> Vec<LevelStart> {
+    placements.iter()
+        .filter(|p| p.flags & 0xa000 == 0)
+        .filter_map(|p| match p.flags & 0xff {
+            0x24 => Some((1u16, p)),
+            0x2d => Some((0u16, p)),
+            _ => None,
+        })
+        .map(|(kind, p)| LevelStart {
+            pos: p.translation,
+            yaw: p.rotation[1],
+            gate: p.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v as u16),
+            p3: p.params.iter().find(|(i, _)| *i == 3).map_or(0, |&(_, v)| v),
+            kind,
+        })
+        .collect()
+}
+
+/// `Player_Start` (0x190fd0) [M]: pass 1 — the first kind-1 entry whose gate is 0 or whose channel is
+/// on; pass 2 (fallback) — the first kind-1 entry (the game zeroes its gate so a later `Player_Start`
+/// in the same level cannot re-pick it; the port runs one `Player_Start` per load). Kind-0 entries
+/// (the 0x2D set) never win either pass [M disasm 0x191028 and 0x1910b0: both loops `bne v0, 1` on
+/// entry+0x22]. Index order = placement order [M 0x195c00 appends]. Returns the entry index, or None
+/// with no kind-1 entry (the MP maps' human spawns come from `MP_Start` 0x183a50's `MP_GetSpawnPoint`,
+/// not `player_start` [M 0x183a50:118-128]).
 pub fn pick_start(starts: &[LevelStart], ch: &Channels) -> Option<usize> {
-    if let Some(i) = starts.iter().position(|s| s.gate == 0 || ch.on(s.gate as u32)) { return Some(i); }
-    starts.iter().position(|_| true)
+    if let Some(i) = starts.iter().position(|s| s.kind == 1 && (s.gate == 0 || ch.on(s.gate as u32))) {
+        return Some(i);
+    }
+    starts.iter().position(|s| s.kind == 1)
 }
 
 /// `Player_InitAmmoWeapons` (0x1a17f8) with the boot flag `DAT_002a373c == 0`: carried = 0, clip = 0,

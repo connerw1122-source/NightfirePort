@@ -947,12 +947,14 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     match &scene.sound_bank { Some((slot, b, _)) => eprintln!("sound bank slot {slot}: {} samples, {} effects", b.samples.len(), b.effects.len()), None => eprintln!("no sound bank") }
     eprintln!("{archive} (+ {anim_name}): {}", scene.stats);
     // ── Player_Start (0x190fd0) + Player_InitWeapon (0x1a7ef8) ─────────────────────────────────────
-    // The game registers every type-0x24 placement as a player start in placement order (param 0 = the
-    // gate switch channel, `Player_AddNewStartPos` 0x195c00), picks the first whose gate is 0 or on with
-    // the channels as the previous level's exit left them (they survive the warm reset,
-    // `Init_SwitchChannels` runs only when `IsWarmReset == 0` [M 0x1d5080]), then runs the per-level
-    // loadout switch. The port used to stand Bond at the first "Player1" placement with the [L] 07000005
-    // loadout at EVERY level (playtest F1/F2/F4).
+    // The game registers BOTH start sets from the main map's placements in parse order — type 0x24
+    // as kind 1, type 0x2D as kind 0 (`Player_AddNewStartPos` 0x195c00 via
+    // `parsemap_create_dynamic_objects` 0x1d04f0 case 0x24/0x2d [M disasm 0x1d0a00/0x1d0e98]) — and
+    // `Player_Start` picks the first kind-1 entry whose gate is 0 or on with the channels as the
+    // previous level's exit left them (they survive the warm reset, `Init_SwitchChannels` runs only
+    // when `IsWarmReset == 0` [M 0x1d5080]); the kind-0 entries never win either pass [M 0x190fd0
+    // disasm 0x191028/0x1910b0]. Then the per-level loadout switch. The port used to stand Bond at
+    // the first "Player1" placement with the [L] 07000005 loadout at EVERY level (playtest F1/F2/F4).
     if let Some(sim) = scene.sim.as_mut() {
         // The mission globals ride the RamSave (the game keeps them in `.data` across the load; the
         // port restores them at the `Mission_Init` latch — map-tower2).
@@ -1202,20 +1204,16 @@ pub fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     Ok(())
 }
 
-/// 0x195c00 → `Player_Start` 0x190fd0]. Yaw = the placement's rotation[1], the same convention the
-/// "Player1" stand-in uses (scene.rs).
-fn level_starts(level: &Level) -> Vec<nf_game::player::LevelStart> {
+/// The registration + pick: `Player_AddNewStartPos` 0x195c00 → `Player_Start` 0x190fd0. The game
+/// registers BOTH start sets from the main map's placements in parse order — type 0x24 as kind 1,
+/// type 0x2D as kind 0 (`parsemap_create_dynamic_objects` 0x1d04f0 case 0x24/0x2d [M disasm
+/// 0x1d0a00/0x1d0e98]) — and picks the first kind-1 entry whose gate is open, else the first
+/// kind-1 [M 0x190fd0; the kind-0 records never win either pass]. The mapping lives in
+/// `nf_game::player::starts_from_placements` (the same fn the tests call); yaw = the placement's
+/// rotation[1], the same convention the "Player1" stand-in uses (scene.rs).
+pub fn level_starts(level: &Level) -> Vec<nf_game::player::LevelStart> {
     let Some(m) = level.main_map() else { return Vec::new() };
-    level.maps[m].placements.iter()
-        .filter(|p| p.flags & 0xff == 0x24)
-        .map(|p| nf_game::player::LevelStart {
-            pos: p.translation,
-            yaw: p.rotation[1],
-            gate: p.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v as u16),
-            // The zero-g selector (level_tag+0x38 = placement param 3) [M Player_Init 0x1910f8].
-            p3: p.params.iter().find(|(i, _)| *i == 3).map_or(0, |&(_, v)| v),
-        })
-        .collect()
+    nf_game::player::starts_from_placements(&level.maps[m].placements)
 }
 
 /// The level archive for a hashcode, `LoaderLoad` (0x1d4a00) style [M]: `sprintf("%s%8.8x.bin", …,
