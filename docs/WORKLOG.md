@@ -17397,3 +17397,19 @@ through the real input path + a sister, run the touched crates + the full suite.
   nodes and states per tick, port the game's scripted route/goal and the
   cut-scene trigger with [M] citations. Branch created from origin/master
   31dd6161.
+- mayhew-exit-walk findings (02:15-03:40 UTC): the "mid cut-scene" on 07000005 is SP #38
+  (script 0x060008C8, 143-tick camera scene, Bond skin 0x05000007 anim 0x06000A24) — the
+  hand-over onto the truck. Its trigger is the SCRIPT TouchOnce ch 0x5C created by the truck
+  script 0x06000A22 stream 8 at t 1882, gone t 2312 [D script decode + live sim trace], a static
+  plate at (98.49, 27.05, 106.36) — the gatehouse walkway edge, ~1.2 above the walked lane.
+  The port's trigger machinery fires it when Bond stands at the edge within the window (probe:
+  ch 0x5C at t ~2173 → SP #38 re-places Bond on the truck bed → ch 0x71 → the ride climbs).
+  The REAL-INPUT walk from the spawn stalls at x≈101.2, y 24.94 (manual walker + the ignored
+  walkreal_07000005 note) — ~3 units short of the plate; the window closes and the whole
+  truck-exit chain (0x5C → SP #38 → bed 0x71 → park 0x70 → guard 0x72 → mux #316 → SP #320 →
+  ch 0x1D → #118 → 07000006) never runs. No Mayhew drone exists on 07000005 (16 drones are all
+  guards 0x0500002e/2f/30 [D]; the user's "mayhew" = the level name Mayhew A). The untouched
+  evidence: floor probes show the walkway at 27.05 only in Room_Road_A1's edge (nearest tri
+  vertex 2.59 away) — the plate hangs over the arch void; the game's contact is the sphere
+  overlap [M Trigger_Hit 0x1b1fc8 = pure chain classification; the port's capsule (b = feet+1.86
+  + r 0.55) crosses the plate plane at the edge].
