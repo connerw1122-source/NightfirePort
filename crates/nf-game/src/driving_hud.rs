@@ -91,9 +91,15 @@ impl CarReadout {
 
 /// The mission timer, modelled at its command level: `ESetTimer` (507/509) sets the value,
 /// `EStartTimer` (381/383) / `EStopTimer` (357/359) run/hold it, `ETimerDrawOn` (309/311) /
-/// `ETimerDrawOff` (315/317) toggle the HUD draw [M ids]. The game's value/draw state struct
-/// is not decompiled yet [S]; the field semantics here are the commands', ticked at the fixed
-/// 1/60 s ([M 0x2d6b90's {60,60,50,60} table] NTSC).
+/// `ETimerDrawOff` (315/317) toggle the HUD draw [M ids]. The game's value/draw state struct is
+/// DRIVING.ELF's 6-word timer slot at `world+0x150+index*0x18` {+0 state, +4 beep flag, +8 start
+/// tick, +0xc value ticks, +0x10 rate, +0x14 last-beep second} [M `FUN_00209c88` 0x209c88:9-24]:
+/// a running timer's value = `value + rate*(tick_now - t0)` with NO clamp — a countdown
+/// (`rate = -1`, `FUN_00209c08` 0x209c08) decrements linearly PAST ZERO and keeps going until
+/// `EStopTimer` freezes it; only the DISPLAY is gated (`FUN_0023e580` 0x23e580:58 draws nothing
+/// at `integer seconds <= 0`) and the per-second beeps stop at 0 (:19 `0 < iVar1`). The port
+/// models the same shape: `remaining` holds the raw signed value, `display_seconds` is the
+/// gated view. Ticked at the fixed 1/60 s ([M 0x2d6b90's {60,60,50,60} table] NTSC).
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub struct MissionTimer {
     /// The timer's current value in seconds [S — the unit is not pinned; see the live checks].
@@ -126,12 +132,20 @@ impl MissionTimer {
     /// `ETimerDrawOn` (on) / `ETimerDrawOff` (off) [M ids 309/311, 315/317].
     pub fn set_draw(&mut self, on: bool) { self.draw = on; }
 
-    /// One fixed tick: a running timer counts down, floored at zero [S — the countdown
-    /// semantic is the race missions' visible behaviour; the exact game field is open].
+    /// One fixed tick: a running timer counts down linearly, NOT floored — the game's value
+    /// `value + rate*Δticks` keeps descending past zero with no clamp [M DRIVING.ELF
+    /// `FUN_00209c88` 0x209c88:9-24]; only the display hides it (`display_seconds`).
     pub fn update(&mut self, dt: f32) {
         if self.running {
-            self.remaining = (self.remaining - dt).max(0.0);
+            self.remaining -= dt;
         }
+    }
+
+    /// The clock face's integer seconds: the game draws the timer only while this is positive
+    /// [M `FUN_0023e580` 0x23e580:58 — `if (0 < iVar2)` around the whole sprintf/draw], and the
+    /// red final-countdown beeps run only above 0 too ([M `FUN_00209c88` 0x209c88:19]).
+    pub fn display_seconds(&self) -> i32 {
+        (self.remaining as i32).max(0)
     }
 }
 
@@ -282,5 +296,24 @@ mod tests {
         assert_eq!(hud.weapon, WeaponReadout { weapon: 0, ammo: 0 });
         assert_eq!(hud.timer, MissionTimer { remaining: 0.0, initial: 0.0, running: false, draw: false });
         assert!(hud.objectives.is_empty() && hud.beacons.is_empty());
+    }
+
+    /// The countdown does NOT floor: the game's value `value + rate*Δticks` descends past zero
+    /// with no clamp [M DRIVING.ELF FUN_00209c88 0x209c88:9-24] and only the display is gated
+    /// (`0 < integer seconds`, FUN_0023e580 0x23e580:58). A later EAddTimer on a negative timer
+    /// therefore recovers real time in the game — the old max(0.0) floor broke that.
+    #[test]
+    fn the_countdown_descends_past_zero_and_the_display_gates_it() {
+        let mut t = MissionTimer::new(2.0);
+        t.start();
+        t.update(0.5);
+        assert_eq!(t.display_seconds(), 1, "the face is integer seconds (C trunc) [M 0x23e580:56]");
+        for _ in 0..150 { t.update(1.0 / 60.0); }
+        assert!((t.remaining - (-1.0)).abs() < 1e-3, "2.5 s more of countdown reads −1.0, got {}", t.remaining);
+        assert_eq!(t.display_seconds(), 0, "the display gate hides the overdrawn clock [M 0x23e580:58]");
+        // Sister: the raw value keeps descending while hidden — no sticky 0 floor.
+        let r = t.remaining;
+        t.update(1.0 / 60.0);
+        assert!(t.remaining < r, "still descending past zero [M 0x209c88:9-24]");
     }
 }

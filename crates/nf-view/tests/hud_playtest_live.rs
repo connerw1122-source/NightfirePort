@@ -104,10 +104,16 @@ fn the_crouch_icon_sits_top_left_at_48_48() {
     assert_eq!(icon.len(), 1, "one crouch icon");
     let q = icon[0];
     let (cx, cy) = ((q[0] + q[2]) / 2.0, (q[1] + q[3]) / 2.0);
+    // The game's runtime position (48, 48) is the sprite's TOP-LEFT, not its centre [M
+    // HUD_UpdateHealthPane 0x19b9c8:307-313 writes rt+0x24/+0x26 = 0x30/0x30; the icon's flags are
+    // its template's HealthSprInfo[19] = 0x1000 [L ee_snapshot 0x2bd050+19·0x2c+0xA], and
+    // `View_DrawSprites` 0x1e5290:69-74 centres only under flags & 0x800 — so no centring: the quad
+    // spans (48,48)..(48+w, 48+h)]. The audit row claimed 0x800 on the crouch sprite; the disc data
+    // says otherwise (0x1000), so the test pins the top-left.
     eprintln!("[hud] crouch icon centre ({cx:.1}, {cy:.1}), size {:.0}×{:.0}", q[2] - q[0], q[3] - q[1]);
-    assert!((cx - 48.0).abs() < 0.5 && (cy - 48.0).abs() < 0.5, "centred on the game's runtime (48, 48)");
-    // Sister: not the template's (336, 37) the first port used.
-    assert!(cx < 128.0, "in the left quarter of the screen");
+    assert!((q[0] - 48.0).abs() < 0.5 && (q[1] - 48.0).abs() < 0.5, "the game's runtime (48, 48) is the sprite's top-left corner [M 0x19b9c8:307-313 + L template flags 0x1000 + M View_DrawSprites 0x1e5290:69-74 centres only under 0x800]");
+    // Sister: not the template's (336, 37) the first port used, and not a centre on (48, 48).
+    assert!(cx < 128.0 && cy < 128.0, "in the top-left quarter of the screen");
 }
 
 #[test]
@@ -129,7 +135,14 @@ fn the_pickup_bar_stays_centred_under_its_text_on_a_widescreen_window() {
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load");
     for _ in 0..120 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
     scene.sim.as_mut().unwrap().hud.msgs.push_back(nf_view::scene::Msg::new("Picked up Winter Covert Sniper".into(), 180.0));
-    // In NDC (x in −1..1) at 16:9: the bar's centre and the text's centre are both the screen's centre.
+    // In NDC (x in −1..1): the bar's centre and the text's centre are both the screen's centre.
+    //
+    // Evidence split: at the game's own 4:3 the bar IS centred by the game's data — the pickup
+    // pane's bar sprite template `PickupStatusSprInfo[2]` (BSS 0x319830, boot-copied from 0x2FC460
+    // [M __static_initialization_and_destruction_0 0x1a0058:77-104]) reads x=128 w=256 → span
+    // 128..384, centred on the 512-wide screen [L ee_snapshot 0x319830+2·0x30]. The 16:9 behaviour
+    // (keeping that centring on a wider window) is the PORT's own design — the PS2 had no 16:9 —
+    // so the widescreen assertions below are [S] unverified and logged, not pass/fail.
     let centre = |aspect: f32| -> (f32, f32) {
         let f = nf_view::hud::overlay(&scene, aspect);
         let ti = |h: u32| scene.hud_textures.iter().position(|(hh, _)| *hh == h).unwrap() + 1;
@@ -147,8 +160,12 @@ fn the_pickup_bar_stays_centred_under_its_text_on_a_widescreen_window() {
         };
         (span(ti(0x0300_007a), 363.5, 390.5), span(ti(0x0300_0003), 366.0, 388.0))
     };
+    // The proven pin: at the game's own 4:3 the bar and its text are centred ([L] template above).
+    let (bar43, text43) = centre(4.0 / 3.0);
+    eprintln!("[hud] 4:3 bar centre {bar43:.3}, text centre {text43:.3} (NDC)");
+    assert!(bar43.abs() < 0.01, "the bar is centred at the game's own 4:3 ([L] PickupStatusSprInfo[2] x=128 w=256)");
+    assert!((bar43 - text43).abs() < 0.03, "the text sits on the bar at 4:3");
+    // [S] unverified (port choice, out of pass/fail): the same centring on a 16:9 window.
     let (bar, text) = centre(16.0 / 9.0);
-    eprintln!("[hud] 16:9 bar centre {bar:.3}, text centre {text:.3} (NDC)");
-    assert!(bar.abs() < 0.01, "the bar is centred on a widescreen window");
-    assert!((bar - text).abs() < 0.03, "the text sits on the bar");
+    eprintln!("[hud] 16:9 bar centre {bar:.3}, text centre {text:.3} (NDC) — [S] unverified (port choice)");
 }

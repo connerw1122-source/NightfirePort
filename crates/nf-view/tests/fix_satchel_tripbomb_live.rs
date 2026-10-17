@@ -232,9 +232,15 @@ fn tripbomb_arms_draws_the_beam_and_a_guard_crossing_sets_it_off() {
     assert!(!sim.drones.list[gi].corpse, "the off-beam guard is untouched");
 }
 
-/// The 6-placed cap [M `Bullet_CollisionHandler` 0x12ce80:335-370]: never more than 6 placed
-/// tripbombs — the 7th placement removes the oldest (the port trims to the last 6 in spawn order
-/// [*suggested*, obj+0xEC]).
+/// The 6-placed cap [M `Bullet_CollisionHandler` 0x12ce80:336-371]: never more than 6 placed
+/// tripbombs — the walk collects the class-5 objects matching the same weapon record (+0xe0→+0x44)
+/// and owner (+0xe0→+0x30), counts them (`bVar4 = iVar20 < 6`), and on the 7th marks the OLDEST
+/// dead (`+0xfe |= 1` — the same "dead" bit `Explode_Propagate` 0x17c518:78 and
+/// `MP_isPlayerOrBotDead` 0x18abc0:20 skip on). "Oldest" = the minimum `obj+0xEC`, which is the
+/// object's birth tick: `Pickup_Handler` 0x18e650:347 writes `obj+0xEC = GameState+0x34` (the
+/// global tick counter [L ee_start_05: 0x2a3768+0x34 = 55165 mid-game]; the MP spawner
+/// `MP_ReSpawn` 0x185368:90 stamps the same field). The port trims to the last 6 in spawn order —
+/// the same ordering the birth tick gives [S for the exact tie-break].
 #[test]
 fn the_seventh_tripbomb_removes_the_oldest() {
     let Some(iso) = iso() else { eprintln!("skip: NF_ISO not set"); return };

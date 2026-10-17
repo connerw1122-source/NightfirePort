@@ -134,10 +134,15 @@ fn the_beam_points_its_negative_z_at_the_hit() {
 }
 
 /// The held meter: a 0–100 charge drained while the beam runs [M HUD_UpdateAmmoPane 0x19a7f0:160-176
-/// — the state-0xb pane is NOT the clip percent; D the measured ~31/s ≈ 0.5/frame], while the clip
-/// itself keeps its own 1/tick spend [M Player_RoundToFire 0x1a18e0, +0x91 = 1]. On the release the
-/// beam stops and the fire script rings out into the release script [M Player_SetWeaponAnimObj
-/// 0x1a2e38 case 0xb].
+/// — the state-0xb pane is NOT the clip percent; it sprintfs the beam instance's u16 +0x110 and f32
+/// +0x104 walked through the hashtable 0x2000194 cel list; D the measured ~31/s ≈ 0.5/frame], while
+/// the clip itself keeps its own 1/tick spend [M Player_RoundToFire 0x1a18e0, +0x91 = 1]. The state
+/// 0xb itself is written by `Player_WeaponFiring` 0x1a5460's `weapon_data+0x6C & 0x400` arm
+/// [M disasm 0x1a6538-0x1a6568: `andi $v0,$v0,0x400` → `sh 0xb, 0xf4(view obj)` — and that arm's
+/// `swc1 1.5f, 0x98(anim instance)` is the held-fire ANIM's play speed (AnimScriptAddSpeed 0x1c6e20:31
+/// writes +0x98 as its speed param), NOT the charge; the charge field's writer stays unlocated — see
+/// the report's live checks]. On the release the beam stops and the fire script rings out into the
+/// release script [M Player_SetWeaponAnimObj 0x1a2e38 case 0xb].
 #[test]
 fn the_held_meter_drains_31_per_second() {
     let iso = iso();
@@ -154,7 +159,7 @@ fn the_held_meter_drains_31_per_second() {
     assert_eq!(clip, 499 - 60, "the clip keeps its own 1/tick spend [M Player_RoundToFire]");
     // The release: the beam stops, the fire script rings out, and the meter refills while idle
     // (the game's gadget regen shape [M Player_Update 0x193600 clip +1 per 4 frames] — [S] for the
-    // charge's own refill, live check in the report).
+    // charge's own refill: the game's charge writer is unlocated, live check in the report).
     for _ in 0..40 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
     {
         let sim = scene.sim.as_ref().unwrap();

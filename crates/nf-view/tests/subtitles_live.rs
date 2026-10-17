@@ -13,8 +13,12 @@
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
 /// The briefing track is the pack's script walked on `Script_Run`'s clock: a command after
-/// `Wait(t)` fires on tick t+1 (the pre-increment clock — `Script_Update` 0x1da998 adds
-/// FRAME_RATE_MUL after `Script_Run`), the FIFO chain queues same-tick texts behind each other
+/// `Wait(t)` fires on tick t+1 (the pre-increment clock — `Script_Update` 0x1da998:33,39 adds
+/// FRAME_RATE_MUL to the script and per-stream timers after `Script_Run`), the FIFO chain queues
+/// same-tick texts behind each other. Parity [M]: `FRAME_RATE_MUL = 60.0/FRAME_RATE`
+/// (`GS_SetRefreshRate` 0x17d2b8:15) = 1.0 at the game's 60 Hz [L ee_snapshot 0x30d0d8 = 1.0], so
+/// the port's fixed-60 Hz 1 tick = +1.0 matches the game's fresh-boot rate; the game's FMV path
+/// runs MUL 2.0 (GS_SetRefreshRate 30), which the port's fixed 60 Hz clock does not model [S].
 /// (`Text_UpdateMsg` 0x1b11d8 advances only the displayed head).
 #[test]
 fn briefing_track_is_pinned_to_the_disc_script() {

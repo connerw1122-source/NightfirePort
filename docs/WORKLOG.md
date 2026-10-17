@@ -18023,3 +18023,31 @@ switch-channel write is cleared within one tick by some port system (game channe
 not fixed. Suite (background): build ok, the 3 allowed disc_golden failures + pre-existing master
 probe_pylon_render failure; foreground: cutscene_guard_models_live 3/3. Report:
 docs/reports/cutscene-guard-models.md.
+
+## unproven-tests-gameplay (2026-10-17, branch s/unproven-tests-gameplay) — started 06:32 UTC
+
+Task 755: settle the gameplay tests' unproven numbers — every audited row gets evidence
+([M] decompile address, [D] disc bytes, [L] documented live measurement) or `// [S] unverified`
+and leaves pass/fail. Contradictions fix the test. 12 rows from the 2026-10-16 audit.
+In progress.
+
+## unproven-tests-gameplay (2026-10-17, branch s/unproven-tests-gameplay) — done 08:25 UTC
+
+All 12 audit rows settled (table in docs/reports/unproven-tests-gameplay.md). Two real fixes:
+the crouch icon draws top-left at (48,48) — the audit's 0x800-centred claim is contradicted by
+HealthSprInfo[19]'s flags 0x1000 [L] and View_DrawSprites 0x1e5290:69-74 [M]; the driving
+MissionTimer keeps the game's raw signed value (no floor — DRIVING.ELF FUN_00209c88 0x209c88:9-24
+[M]) with a display_seconds() getter modelling the FUN_0023e580:58 gate. The rest are evidence
+upgrades: pickup-bar close 16/tick = HUD_CreatePickupStatusPane 0x1a1140:10 + 0x19c310:331 [M],
+fade = life*17 while life<15 [M], life 180 = Pickup_Handler 0x18e650:326 [M]; dots = VBlankInt
+0x124088:18-29 (BlobTime 0x30d721 reload 10, BlobToDraw 0x30d720) [M]; muzzle smoke life 128
+re-verified in the 0x1a4298 disassembly; satchel obj+0xEC = the GameState+0x34 birth tick
+(0x18e650:347 [M], 55165 [L]), the 7th marks the min-0xEC oldest +0xfe|=1 [M 0x12ce80:336-378];
+16:9 bar centring and the fps 4-tick cap labelled port choices [S]; 4:3 bar centring pinned [L
+PickupStatusSprInfo[2] x=128 w=256]; laser state-0xb writer cited (0x1a6538-68 [M]), the charge
+writer checked and NOT there (the 1.5f is the anim speed) — live check listed; ch 0x45's writer
+narrowed to the script stream (Script_EventHandler 0x1d94c0:166,187 [M]; Mission_Init
+0x182270:106-116's 07000005 record only clears 0x46 [L]). driving_hud unit tests 2/2 pass; the
+full suite could not finish (sandbox ALSA link env fixed at 08:09, no time to rerun) — see the
+report. Live checks for the main agent: laser charge writer, ch 0x45 gdbwatch, crouch render,
+driving EAddTimer on an overdrawn timer.

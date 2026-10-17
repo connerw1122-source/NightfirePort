@@ -193,7 +193,10 @@ fn one_p2k_shot_spawns_exactly_the_game_effect_set() {
         for l in &sim.drones.lights.lights {
             if (l.radius - 7.0).abs() < 1e-3 && l.rgb == [255, 138, 0] { saw_light = true; }
         }
-        // The puff's life is ~8 ticks [*suggested*]; assert inside the window.
+        // The puff's life is 128 ticks [M Player_MuzzleFlash 0x1a4298 — the decomp drops Gas_Init's
+        // 11th argument; the disassembly loads it at 0x1a43f8 `addiu $v0,$zero,0x80` and stores it at
+        // 0x1a442c `sw $v0,($sp)`; models_misc_live pins the 127-more-ticks death]. Assert inside the
+        // window only — the life itself is pinned in models_misc_live.rs.
         if !sim.drones.gas.puffs.is_empty() { saw_smoke = true; }
     }
     let sim = scene.sim.as_ref().unwrap();
@@ -202,6 +205,7 @@ fn one_p2k_shot_spawns_exactly_the_game_effect_set() {
     assert!(alive_casings(&scene) >= 1, "exactly the shot's casing ejected [M Bullet_init_casing 0x12fde0]");
     assert!(sim.drones.explosions.is_empty(), "no blast: +0x70 = 0x12 has no bit 2 [L]");
     // Sister: the smoke puff (the P2K's +0x68 = 0x1004 clears the 0x2000 no-smoke bit) — the gas
-    // system held a live puff in the shot's window (its ~8-tick life [*suggested*] expires after).
+    // system held a live puff in the shot's window (life 128 ticks [M 0x1a4298 disasm 0x1a43f8/0x1a442c],
+    // far longer than this 30-tick window).
     assert!(saw_smoke, "the muzzle smoke puff spawned (Gas_Init, the 0x2000 bit clear) [M 0x1a4298]");
 }
