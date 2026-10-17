@@ -17422,3 +17422,11 @@ through the real input path + a sister, run the touched crates + the full suite.
   at (101.2, 24.94) oscillating (probe trace) while the walker's nav walk crosses — pin the
   exact collision feature there, then decide whether the sim's step/climb needs the game's
   Player physics [M]; walkreal_07000005's two #[ignore]d tests park on the same spot.
+- mayhew-exit-walk (03:12 UTC): the pin extended to the FULL chain — the hand-over test now
+  crouches after the hand-over [D fix-truck's ride stance] and asserts level_exit 0x07000006
+  through the walked path: walk → the gatehouse edge → ch 0x5C at t 1884 → SP #38 → the bed →
+  the crouched ride → ch 0x70 → mux #316 → SP #320 → ch 0x1D → #118 → 07000006. GREEN, plus
+  the sisters walk_07000005_live 2/2 and fix_truck_live 2/2. The port's truck-exit chain is
+  functional on master when Bond reaches the gatehouse edge inside the t 1882..2312 window;
+  the open item stays the manual beeline stall at (101.2, 24.94) — the walkway lip / arch
+  face there, and what the player actually steers in play (the live checks in the report).
