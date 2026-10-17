@@ -17885,3 +17885,11 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- 2026-10-17 s/level-03-interactables (task 703a): every interactive thing and every model on
+  07000003 (Alpine Escape, Castle C). Plan: census from the disc parse (nf-extract placements
+  07000003.bin) by kind with the 0x1d04f0 dispatch semantics and port status into
+  docs/levels/07000003.md; drive one instance of every kind through the real input path
+  (walk/aim/E/fire/gadgets via step_bond) in interact_07000003_live.rs, one live test per KIND
+  with a sister that fails without the operation; fix every kind that does not do what the game
+  does; model/skin audit (no missing hash, no white fallback — NF_TEX_TRACE=1). Known open item:
+  the key-gated route (walk tests note a key gate ch 0x52). Branch from origin/master d628f01f.
