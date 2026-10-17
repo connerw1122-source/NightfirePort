@@ -18863,3 +18863,12 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   spent its window on the keyboard) — the walkreal's SW-office route with the ch-0x30 door drive
   is unchanged and green. Suite: the touched crates' tests (interactables 7/0, keyboard 1/0,
   walk 3/0, walkreal 1/0) on the final tree.
+
+## level-01-complete-3 (2026-10-17, branch s/level-01-complete-3) — started
+Task 701d: the held level-01-complete-2 (701c, a141125d) merged onto origin/master d56aceb6
+breaks escort_follow_07000001_live::escort_at_walking_speed_keeps_the_games_distance_and_the_exit_opens
+(line 289: the AND plate must fire with Bond AND the contact inside [M Trigger_Hit 0x1b1fc8]),
+which passes on master. Find which part of the 53-line drone.rs change moves the contact
+(follow distance / stop rule / the plate approach), keep it to what the game does [M], make
+both the escort test and walkreal_07000001_live pass. Branch = the held tree + master d56aceb6
+(both WORKLOG sides kept).
