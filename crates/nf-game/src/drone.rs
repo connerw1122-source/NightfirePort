@@ -7473,6 +7473,14 @@ impl crate::nis::World for Data<'_> {
             _ => None,
         }).collect()).unwrap_or_default()
     }
+    /// The same scan paired with each op-1's distance ahead of `from` — `SFXPreCache`'s (id,
+    /// frames) arguments [M 0x1c1b38 case 1, disasm 0x1c1ea8-0x1c1ed0: `a1 = frame − current`].
+    fn anim_ops1_precache(&self, script: u32, from: i32, to: i32) -> Vec<(u32, i32)> {
+        self.scripts.get(&script).map(|s| s.commands.iter().filter(|c| c.op == 1).filter_map(|c| match c.args.as_slice() {
+            [f, sfx, ..] if (*f as i32) > from && (*f as i32) <= to => Some((*sfx as u32, (*f as i32) - from)),
+            _ => None,
+        }).collect()).unwrap_or_default()
+    }
 }
 
 impl Data<'_> {
@@ -8918,6 +8926,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         }
                         None => { self.audio.play(id); }
                     }
+                }
+                // `SFXPreCache(id, frames)` (RPC cmd 0x26 [M 0x117118]) from the case-1 precache:
+                // the IOP sets `SFXKeyOnFrameDelay = frames + 5` and starts the item at once
+                // (silent, its sample decoded now); the real start on the authored frame takes the
+                // countdown item over (sound.md §3.2 step 3) — the line keys on with no decode
+                // hitch on the play tick. Only 1-sample streams accept a precache start
+                // [M §3.2 step 3, sfx.rs start's kd gate]; the driver refuses the rest.
+                crate::nis::Request::PreCache { id, frames } => {
+                    self.audio.precache(id, frames);
                 }
                 // Event 0x12: the script-driven level transition. No NIS script on 07000005 fires kind 0x12 (the truck
                 // script 0x06000A22 fires only 0xC and 0xD) — the actual level exit on 07000005 is the placement-0xE8

@@ -23,6 +23,9 @@ pub enum Cmd {
     Remove { handle: Handle },
     /// The listener: eye position and the camera's row 0 (`Norm`, the screen-left axis), up and forward rows.
     Listener { pos: V3, norm: V3, up: V3, dir: V3 },
+    /// `SFXPreCache(id, frames)` (RPC cmd 0x26 [M 0x117118]): arm the line's item
+    /// `frames + 5` ticks early so its stream decodes off the play tick [M 0x1c1b38 case 1].
+    PreCache { id: u32, frames: i32 },
 }
 
 #[derive(Clone, Debug)]
@@ -294,6 +297,10 @@ impl Sounds {
 
     /// The driver commands since the last call.
     pub fn take_commands(&mut self) -> Vec<Cmd> { std::mem::take(&mut self.out) }
+
+    /// `SFXPreCache` (RPC cmd 0x26): queued straight through — the EE keeps no precache state
+    /// [M 0x117118 batches the command only].
+    pub fn precache(&mut self, id: u32, frames: i32) { self.out.push(Cmd::PreCache { id, frames }); }
 
     /// Live nodes (tests, debugging).
     pub fn live(&self) -> usize { self.nodes.iter().flatten().count() }

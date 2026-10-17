@@ -54,6 +54,12 @@ pub enum Request {
     /// voice lines and one-shot effects are baked into their animation scripts this way. `at` is the owning
     /// `Obj::Anim`'s object index (the sound's position, read each drain).
     AnimSound { id: u32, at: Option<usize> },
+    /// `SFXPreCache(id, frames)` (RPC cmd 0x26 [M 0x117118]): the cut-scene line's item is armed
+    /// while its authored frame is within 0x33 (51) of the anim's current frame
+    /// [M 0x1c1b38 case 1 + disasm 0x1c1ea8-0x1c1ed0: the call passes the frames still ahead],
+    /// so the stream decodes off the play tick and the voice keys on exactly on its authored
+    /// frame (`KeyOnFrameDelay = frames + 5`, sound.md §3.2 step 3).
+    PreCache { id: u32, frames: i32 },
     /// The stream's sound ends (`Script_SoundEnd` / `Script_KillStream` → `Sound_Stop`).
     SoundStop { src: (u32, u8) },
     /// `Text_FlushAllSubtitles()` (0x1b15c8) from `Script_FFwd`'s skip arm [M 0x1dac78:28-29, the
@@ -237,6 +243,9 @@ pub trait World {
     /// An animation script's op-1 sound ids with frame in `(from, to]` — the interval `AnimProcessScriptCmds`
     /// (0x1c1b38 case 1) fires, in command order. Empty default: only the runtime's `Data` holds the scripts.
     fn anim_ops1(&self, script: u32, from: i32, to: i32) -> Vec<u32> { let _ = (script, from, to); Vec::new() }
+    /// The op-1 sounds of `script` with authored frame in `(from, to]`, paired with each one's
+    /// distance ahead of `from` — the `SFXPreCache` arguments (`AnimProcessScriptCmds` case 1).
+    fn anim_ops1_precache(&self, script: u32, from: i32, to: i32) -> Vec<(u32, i32)> { let _ = (script, from, to); Vec::new() }
     /// The running level (fix-finale-blockers: the 0700004a lift stand-in keys on it).
     fn level(&self) -> u32 { 0 }
     /// fix-script-objects: a glist's LOCAL bounding sphere (the map object's centre and radius —
@@ -914,6 +923,16 @@ impl Script {
                     *ticked = true;
                     for id in w.anim_ops1(*script, from, *frame as i32) {
                         out.push(Request::AnimSound { id, at: o });
+                    }
+                    // `AnimProcessScriptCmds` case 1's precache [M 0x1c1b38 case 1, disasm
+                    // 0x1c1ea8-0x1c1ed0]: every op-1 sitting 0..=50 frames ahead of the anim's
+                    // current frame arms `SFXPreCache(id, frame − current)` this tick — the IOP
+                    // holds the item with `KeyOnFrameDelay = frames + 5` and the real start takes
+                    // it over on the authored frame (sound.md §3.2 step 3), so the stream's decode
+                    // happens off the play tick. The game re-arms every frame the line stays in
+                    // the window; the port's per-tick emit is the same cadence.
+                    for (id, frames) in w.anim_ops1_precache(*script, *frame as i32 - 1, *frame as i32 + 50) {
+                        out.push(Request::PreCache { id, frames });
                     }
                 }
             }
