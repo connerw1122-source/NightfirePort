@@ -17391,6 +17391,45 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+
+## frag-throw-timing (741)
+
+- Symptom (playtest 1016-1355, 07000014): frag grenades leave the hand before the throw animation
+  finishes — the port spawns them too early. Goal: the game's release frame for the frag throw
+  (the fire script's spawn frame / the release-frame family [M Player_WeaponFiring 0x1a5460,
+  +0x44]) and a fix that spawns the grenade on exactly that tick, measured from the press.
+- Started: reading the decompile.
+- The release path audited end to end [M]: `Player_WeaponFiring` 0x1a5460 tail — the fire tick
+  queues the fire script, and for the `+0x6C & 0x400` + `+0xB4` family (the hand grenades
+  [L ee_start_05.bin 0x34: +0x6C 0x8c08, +0xB4 0x0600049e]) stores view state 0xb and the script
+  rate 1.5 (`AnimList+0x98 = 0x3fc00000`, disasm 0x1a6250 area); case 9's release check
+  (0x1a2e38:411-422) never runs for the family — the state leaves 9 inside the fire tick. Case 0xb
+  (0x1a2e38:499-507) waits `AnimScriptIsStopped` (the ended bit `+0x78 & 0x10000000`, set by
+  `AnimScriptEnd` 0x1c1930:30) then queues the +0xB4 script; case 0xc (0x1a2e38:505-519, disasm
+  0x1a3268-0x1a32c4) carries the release check `+0x44 <= AnimList(4)+0x90` — the +0xB4 playhead,
+  which starts at 1.0 [M AnimScriptInit 0x1c1600:37] and advances 1.0/tick [M AnimScriptTick
+  0x1c2630 mode 0].
+- Frag facts [L ee_start_05.bin record 0x34 / the port's script parse]: +0x44 = 26, fire
+  0x0600049d = 70 frames (pin sound 0x1e4 at frame 16), fire_last 0x0600049e = 35 frames. Release
+  = 46 ticks of fire script at 1.5× + 25 ticks of the +0xB4 = press+71. The port released at
+  press+17 (the case-9 check on the fire script's playhead-26 crossing) — the repro test measured
+  exactly 17 before the fix.
+- Bisect: fix-player2 eb1564b7 introduced the release check against the FIRE script's playhead
+  (release +25 at 1.0×; the playtest 1014-1725 "released while I'm still pulling the pin");
+  f986a6b3 (the 1.5× throw-cadence commit, Oct 15) moved the same wrong-gate check to +17 — the
+  playtest 1016-1355 "way too soon, opposite direction". grenade-rattle2 (693b) touched the
+  bounce-speed cap, not the release. The root error in both: the check ran during the fire script;
+  the game's check for this family lives in the post-script state 0xc against the +0xB4 playhead.
+- Fix: scene.rs's release block gates the family on `view_script == +0xB4` (the case-0xc phase)
+  before running `release_frame_reached`. Test: frag_throw_timing_live (press+71, not the
+  playhead-26 crossing, the fire script still playing at tick ≤20, one grenade per press, the
+  record speed); the sister pins the fire script uninterrupted past the old crossing.
+- The three tests that pinned the old gate (fix_grenade_release_live's release + launch-position,
+  remote_mine_detonate's release frame) contradicted the decompile — fixed per the task rule, with
+  the addresses in the assertions: the release is the +0xB4 playhead reaching +0x44 (case 0xc
+  [M 0x1a2e38:505-519]), the frag at press+71, the mine (fire 40 frames at 1.5× = 26 ticks) at
+  press+51. All four grenade-family test files green on the fixed tree.
+
 - 2026-10-17 s/frag-throw-timing2 (task 750k): Finish frag-throw-timing (task 741, HELD at the
   2026-10-16 batch merge): on top of the batch, nf-view fix_grenade_types_live::
   the_stun_grenade_whites_bond_out_at_the_games_time_and_alpha fails (alpha 0.673 vs the
