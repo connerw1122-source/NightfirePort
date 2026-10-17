@@ -62,10 +62,17 @@ the census tool + the parsemap main-map rule).
   gadget_grapple_live, copter_patrol_latch_live, fix_ladder_live/2/water, fix_wallhug_prompt/camera,
   fix_fusebox_cut, gadget_carry, ai_traces_live, cover_nodes_live, fix_ai_remainder_live,
   anim_events_live, fix_objects2_live, fix_script_objects_live, world_fx_live, simplescript_live,
-  music_triggers_live, plus the walk slices for 01/02/03/04/06. **Not run: the full remaining
-  nf-view suite** (≈90 binaries) — the sandbox kills background jobs between tool calls, so
-  tools/test/suite.py cannot run here; the foreground budget went to the touched crates. The
-  next message should run the remaining chunks (tools/test/suite.py or chunked foreground).
+  music_triggers_live, then the widened foreground sweep: levels_sweep_live, weapon_matrix_live,
+  world_fx_live, textures_live, models_world/characters/weapons_live, weapon_assets_live,
+  drone_skins_all_levels_live, fix_switch_after_cold_load_live, fix_restart_health_live,
+  level_reload_live, level_end_live, fix_level_chain_live, hold_npcs_live, fix_npcs_live,
+  inert_guards_02_live, npc_doors_live, fix_pickups_ammo/trace_live, pickups08_live,
+  fix_armour_ring_live, start_crouch_live, input_ramp_live, rng_live, fix_mission_live,
+  triggers/trig_live, and the walkreals for 01/02/03/04/09 — **0 failures across every binary
+  run**. **Not run: the rest of the nf-view suite** (menus/movies/net/most walk_* binaries) — the
+  sandbox kills background jobs between tool calls, so tools/test/suite.py cannot run here; the
+  foreground budget went to the touched crates and their dependents. The next message should run
+  the remaining chunks (tools/test/suite.py or chunked foreground).
 
 ## What's left
 
