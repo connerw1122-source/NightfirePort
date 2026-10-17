@@ -83,6 +83,45 @@ pub struct RippleFx {
     counter: u32,
 }
 
+/// One 0x2b placement (`LeafGen_Create` 0x1acbd0 — an invisible object linked to room 0;
+/// `LeafGen_Update` 0x1acc48: every tick `Rand_Rand(FRAME_RATE_INT >> 1) == 0` → one
+/// `Leaf_Create` 0x1abc88 particle: `Rand_FRand(0.02f)` x/z velocity jitter slots, a
+/// `Rand_FRandHalf_Vec(0.1f)` spin — a falling leaf by the generator). The port keeps the gate on
+/// the counter-hash (the RNG discipline — the game's leaf draws come out of the shared stream) and
+/// records the spawn's jittered position for the draw code; the leaf's own motion integrator is not
+/// ported [S unverified].
+#[derive(Clone, Debug, PartialEq)]
+pub struct LeafGenFx {
+    pub placement: usize,
+    pub pos: V3,
+    counter: u32,
+    /// Ticks since load (a spawn count the tests and the draw code read).
+    pub spawned: u32,
+    /// The last spawn's jittered offset (± the `Leaf_Create` 0.02 velocity band, counter-hash).
+    pub last_offset: [f32; 2],
+}
+
+/// One 0xf3 placement (`Env_Tree_Create` 0x17c200 — an object at the placement pose,
+/// `AnimObjectNew` + `AnimScriptAdd(anim)`: the sway animation; on every level but 0x7000043 the
+/// script's +0x78 gets 0x80000000 and a random start phase `Rand_FRand(anim length)` [M
+/// 0x17c200:38-52]). The port records the placement and its hashes; the sway animation itself (the
+/// world-object anim-script runtime) is not ported [S unverified].
+#[derive(Clone, Debug, PartialEq)]
+pub struct TreeFx {
+    pub placement: usize,
+    pub pos: V3,
+    pub yaw: f32,
+    /// param 0 — the model hash (the game reads `cel+0x2c` [M 0x17c200:33]; the placement's param
+    /// 0 feeds it [S — parseentity_fixup_entity's param→cel write order untraced]). 07000004's two
+    /// carry 0x05000043 "Tree" [D].
+    pub model: u32,
+    /// param 1 — the anim script hash (the game reads `cel+0x30`; 07000004: 0x06000474 [D]).
+    pub anim: u32,
+    /// `Env_Tree_Create` 0x17c200:44-52: level == 0x7000043 keeps the script unpaused, every other
+    /// level pauses +0x78 bit 0x80000000 and takes a random phase. 07000004 != 0x7000043 → paused.
+    pub paused: bool,
+}
+
 /// One 0xd4 placement.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CloudFx {
@@ -189,6 +228,8 @@ pub struct ParticleSprite {
 pub struct WorldFx {
     pub flickers: Vec<FlickerFx>,
     pub ripples: Vec<RippleFx>,
+    pub leafgens: Vec<LeafGenFx>,
+    pub trees: Vec<TreeFx>,
     pub clouds: Vec<CloudFx>,
     pub apocalypses: Vec<ApocalypseFx>,
     pub emitters: Vec<EmitterFx>,
@@ -198,8 +239,9 @@ pub struct WorldFx {
 impl WorldFx {
     /// Every FX placement of the main map, in placement order (the game creates the dynamic objects
     /// in the same `parsemap_create_dynamic_objects` 0x1d04f0 walk). The emitter defs merge from
-    /// every map's block 0x30 (the game's hashtable is global).
-    pub fn attach_level(level: &Level) -> WorldFx {
+    /// every map's block 0x30 (the game's hashtable is global). `level_hash` = the archive hash
+    /// (GameState+8; `Env_Tree_Create` 0x17c200:44 compares it for the tree anim's pause arm).
+    pub fn attach_level(level: &Level, level_hash: u32) -> WorldFx {
         let mut defs = std::collections::HashMap::new();
         for map in &level.maps {
             for d in &map.emitter_defs { defs.insert(d.hash, d.clone()); }
@@ -217,6 +259,18 @@ impl WorldFx {
                     let (spread, period) = (param(0) as u16 as i16, param(1) as u16 as i16);
                     let (spread, period) = if period == 0 && spread == 0 { (1.0, 0x1e) } else { (spread as f32, period as i32) };
                     fx.ripples.push(RippleFx { placement: i, pos, spread, period, counter: i as u32 });
+                }
+                0x2b => {
+                    // `LeafGen_Create` 0x1acbd0 — the generator, no placement params read.
+                    fx.leafgens.push(LeafGenFx { placement: i, pos, counter: i as u32, spawned: 0, last_offset: [0.0; 2] });
+                }
+                0xf3 => {
+                    // `Env_Tree_Create` 0x17c200: the model/anim hashes from the placement's params
+                    // 0/1 [D 07000004 #30/#31]; the pause arm — every level but 0x7000043.
+                    fx.trees.push(TreeFx {
+                        placement: i, pos, yaw: p.rotation[1],
+                        model: param(0), anim: param(1), paused: level_hash != 0x0700_0043,
+                    });
                 }
                 0xe3 => {
                     // `Flicker_Create` 0x1acb00: data+4 = param 0 (the u16 spark gate — unreachable),
@@ -331,6 +385,15 @@ impl WorldFx {
             let jz = jitter(r.counter, 2) * (r.spread + r.spread) - r.spread;
             let s = jitter(r.counter, 3) * 0.05 + 0.05;
             gas.init([r.pos[0] + jx, r.pos[1], r.pos[2] + jz], 0.0, [0.0; 3], s, s + s, 6, [0x7f, 0x7f, 0x7f, 0xff], r.period as f32);
+        }
+        // LeafGens [M 0x1acc48]: the gate (counter-hash for Rand_Rand(30)), one leaf spawn — the
+        // 0.02-band x/z velocity jitter the draw code reads; the leaf's own integrator is not ported.
+        for l in &mut self.leafgens {
+            l.counter = l.counter.wrapping_add(0x9e37_79b9);
+            if jitter(l.counter, 11) * 30.0 < 1.0 {
+                l.spawned += 1;
+                l.last_offset = [jitter(l.counter, 12) * 0.04 - 0.02, jitter(l.counter, 13) * 0.04 - 0.02];
+            }
         }
         // Clouds [M 0x18d768]: fmod-wrapped phases, position = player + (phase_x, height, phase_z).
         for c in &mut self.clouds {
@@ -488,6 +551,21 @@ mod tests {
         for _ in 0..600 { fx.tick(&mut ch, [0.0; 3], 0, &mut crate::gas::GasPool::default(), &mut rng); }
         assert_eq!(fx.flickers[0].rgb, [255; 3], "the tint reaches white");
         assert_eq!(ch.v[0x55], 0, "the stubbed FindMapLight keeps the light-on path");
+    }
+
+    /// `LeafGen_Update` 0x1acc48: the Rand_Rand(30) gate fires on the counter-hash, each spawn
+    /// bumps `spawned` and jitters the last offset inside the 0.02 band.
+    #[test]
+    fn leafgens_spawn_on_the_period_gate() {
+        let mut fx = WorldFx::default();
+        fx.leafgens.push(LeafGenFx { placement: 0, pos: [1.0, 5.0, 2.0], counter: 0, spawned: 0, last_offset: [0.0; 2] });
+        let mut gas = crate::gas::GasPool::default();
+        let mut ch = Channels::default();
+        let mut rng = crate::drone::Rng::new(1);
+        for f in 0..600 { fx.tick(&mut ch, [0.0; 3], f, &mut gas, &mut rng); }
+        let l = &fx.leafgens[0];
+        assert!(l.spawned >= 5, "600 ticks at the 30-tick gate → several leaf spawns, got {}", l.spawned);
+        assert!(l.last_offset[0].abs() <= 0.02 && l.last_offset[1].abs() <= 0.02, "the jitter stays in the 0.02 band");
     }
 
     /// `Ripples_Update` 0x1ac028: with the default period 30 the gate fires (counter-hash) roughly

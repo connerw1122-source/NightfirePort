@@ -17885,3 +17885,12 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- 2026-10-17 s/level-04-interactables (task 704a): level 07000004 "Enemies Vanish (Castle D)" —
+  census of every interactive placement (buttons/switches, lifts+call buttons+doors, doors,
+  SimpleScripts, ScriptPlayers, triggers, pickups/racks, safes, keypads, monitors, lasers,
+  glass/destroyables, searchlights, cameras, turrets, fuseboxes, vents, hatches, ladders, grapple
+  points, vehicles) into docs/levels/07000004.md; drive one instance of every KIND through the real
+  input path (nf_view::load, Sim::step_bond, use key, gadgets, weapons) with one live test per kind +
+  failing sister; every placement's mesh/skin resolves (no missing hash, no white fallback);
+  key-gated route + cable car pieces are the known open items. Suite: tools/test/suite.py in the
+  background from the first minutes.
