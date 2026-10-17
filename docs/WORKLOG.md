@@ -17695,3 +17695,27 @@ fix_ladder2_live 4, fix_ladder_live 3, fix_swim_live 4, fix_swim_vent_live 2, fi
   10-min tool cap mid-alphabet, 0 failures) + the 4 neighbour live binaries. The full suite
   died 3x in this sandbox (background procs are reaped between tool calls) — the foreground
   crate runs stand in (pause-music-1b precedent). Report: docs/reports/zoe-gondola-08.md.
+## music-triggers (2026-10-17, branch s/music-triggers) — started 01:55 UTC
+
+Task 750: the music trigger placements (0xFB, 15 on the disc) — `MusicTrigger_Create` 0x1b30e0 +
+`MusicTrigger_Update` 0x1b31a0 (`Music_Event(id, 2)` while its countdown runs). Porting into the
+music system from the decompile [M]; test through the real path (entering the volume raises the
+game's music event; leaving lets it expire at the game's tick); update the census handled sets.
+In progress.
+
+## music-triggers (2026-10-17, branch s/music-triggers) — implemented 02:15 UTC
+
+The music trigger placements (0xFB, 15 on the disc, all on main maps) ported: `worldobj.rs`
+`MusicTrigger` created through the game's gates (`MusicTrigger_Create` 0x1b30e0:12-16 — p2 == 0xff
+or p0 == 0 → no object; 07000011's (18, 0, 255, 0) record is inert by design [D]) and ticked in the
+control-object pass with `MusicTrigger_Update` 0x1b31a0's order: p1's flag arm, the p0 re-arm
+(countdown = 0x1e), the drain (countdown ≠ 0 → decrement, `Music_Event(p2, 2)`, the p3 flag).
+`WorldObjects::tick` now carries `&mut Music` (the game's EventList write lands before
+`UpdateMusicalEvents`'s same-tick consume). Verified fail-first (arm disabled → 3/3 fail,
+restored → 3/3 pass): two unit tests (gates + param map; re-arm/fire/expiry — the event stops 0x1e
+ticks after the re-arm stops) and the 07000001 live test through the real path: channel 13 on →
+`under_attack` + bonus pinned (599 after the set-then-decay frame), cleared → the countdown
+expires and bonus decays below the pin. Observation: the intro leaves `nis_playing` latched on 01,
+and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
+`Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
+56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.

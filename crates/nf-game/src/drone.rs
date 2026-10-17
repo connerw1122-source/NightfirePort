@@ -9428,6 +9428,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         let wo_viewer = [player.eye[0], player.eye[1], player.eye[2]];
         crate::worldobj::WorldObjects::tick(
             &mut self.worldobjs, &mut self.channels, wo_viewer, d.weapons, &mut self.rng, &mut self.bullets, frame,
+            &mut self.music,
         );
         // `Drone_InitComms`: corpses (0x0F, 0x47, 0x48 + 300, 0xBF by the time their state began); beyond 3
         // (`DAT_00298F5C`) the oldest fades fast (`DroneFunc_DeadDrone`).
