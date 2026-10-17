@@ -266,6 +266,34 @@ fn drive_08(w: &mut Walker) -> String {
             w.scene.sim.as_mut().unwrap().drones.channels.set(5, 1, frame);
             note.push_str("ch 5 at the warm-load pack-cinematic gap (cold runs it, probe); ");
         }
+        // The copter: ch 0x4B is the DESTRUCTION output [M Copter_Update 0x17dbb8 cases 4/5/6 —
+        // the flight never writes it], so once ch 5 has started the Hind, ride alongside and shoot
+        // it down through the game's damage (the real bullet pass → the Bits sums).
+        if ch83_seen && !rode {
+            let sim = w.scene.sim.as_mut().unwrap();
+            let Some(ci) = sim.drones.copters.iter().position(|c| c.gate == 5) else { break };
+            let cp = sim.drones.copters[ci].pos();
+            sim.bond.pos = [cp[0] + 9.0, cp[1], cp[2]];
+            sim.bond.vel = [0.0; 3];
+            sim.drones.health.health = 100.0; // the walker's post-tick health allowance
+            let (bp, eye) = (sim.bond.pos, sim.bond.eye - sim.bond.crouch_drop);
+            let (dx, dz, dy) = (cp[0] - bp[0], cp[2] - bp[2], cp[1] - (bp[1] + eye));
+            let desired = dx.atan2(dz);
+            let mut err = desired - sim.bond.yaw;
+            while err > std::f32::consts::PI { err -= std::f32::consts::TAU; }
+            while err < -std::f32::consts::PI { err += std::f32::consts::TAU; }
+            let want_pitch = (dy / ((dx * dx + dz * dz).sqrt().max(0.5))).atan() / std::f32::consts::FRAC_PI_2;
+            let perr = want_pitch - sim.bond.pitch;
+            let on_target = err.abs() < 0.28 && perr.abs() < 0.28 && t % 3 == 0;
+            let input = Input { turn: err.clamp(-0.08, 0.08), look: perr.clamp(-0.08, 0.08), ..Default::default() };
+            sim.step_bond(input, on_target, false, false);
+            if t % 60 == 0 {
+                let wd = sim.weapons.clone();
+                let w2 = sim.gun.weapon;
+                sim.drones.inventory.equip_ammo(&wd, w2 as usize, 200);
+            }
+            w.total_ticks += 1;
+        }
         if w.scene.sim.as_ref().unwrap().drones.channels.on(0x4b) { rode = true; break; }
     }
     {

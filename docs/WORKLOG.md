@@ -17719,3 +17719,35 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+- 2026-10-17 s/helicopter (task 750h): The user: "we still havent added the
+  helicopter" — the helicopter actor is missing from the port. Plan: find every
+  helicopter in the single-player levels (placements/actor types + the
+  decompile's helicopter class: create/update, script, weapons), list them in
+  docs with levels and roles; port the actor (spawn, flight path, attacks,
+  damage/destruction, sounds); deliver state + getter, no drawing. Docs first
+  (docs/systems/helicopter.md), tests numbers/ids only with sister assertions.
+  Branch created from origin/master 31dd6161.
+- 2026-10-17 s/helicopter (task 750h): "we still havent added the helicopter" — the actor
+  ported. Inventory [D probes]: five SP copters (05 map50 #241 gate 0 + #242 gate 0x42, 08 map51
+  #45 gate 5, 0b map50 #328 gate 0x2A, 12 map38 #707 gate 0x25) + the part templates (05/08/0b/12
+  + the 46 MP pad). The level-tag build (parsemap_block_map_data_dynamic 0x1d1b68) maps the
+  placement's params to Copter_Create's record (tag+0x2c+4k = param k): the framelist =
+  the main map's 0x19 blocks indexed by extra[8] low (count = extra[7] low = the key count [D all
+  five]; dt = count/divisor per tick, divisor = param 10 or extra[7] high → the route takes
+  `divisor` ticks [M 0x17d340:33-41 + GS_SetRefreshRate 0x17d2b8]), the wrap to param 3, the
+  +0x74 == 100 wrap latch [M 0x17d740]. Copter_Move 0x17d628 via the ported Spline_Interp
+  (door::interp — the tail clamps to the key list for last = the count). Copter_Update 0x17dbb8:
+  the gate early-return, the countdown pulse, states 0/1/2 (the 45° cone COPT_COS/SIN = 0.7071
+  [M 0x17e468], the 1e6 radius, the LOS) → FireGun 0x71/0x61 + Sound_Play3D 0x5df [M 0x17d828:85]
+  / FireMissile 0x6d/0x62 every 60·DiffMod [M 0x17d9f0]; the Bits damage [L ELF 0x2a37e8: mult
+  2/3/1/2/100/1, Bits[4] filter 16] through the real bullet pass (the body sphere at the record's
+  spline position — the per-part routing is the documented gap: the flight script's part entities
+  play on a static base in the port); the destruction = the ONLY +0x72 writer [M cases 4/5/6] —
+  state 4/5 or the 0x0b/0x12 Explode_Create arm. Tests: helicopter_live 4/4 (the 05 framelist
+  flight, the 0b gate park, the 0x12 cone fire, the 0b shoot-down → ch 0x66); fix_objects2's
+  gondola + campaign_flow's 08 chain corrected to the destruction-driven 0x4B (the old 299-tick
+  arrival pinned the flight script's length [S] the decompile contradicts) and pass with the
+  shoot-down; ai_live re-seeded 4 → 13 (the copter's decompile-mandated Rand_Rand(10) spot draw
+  joined the shared stream [M]); difficulty_gates's create calls updated. Ran: nf-game 289,
+  helicopter_live 4, fix_objects2 5, campaign_flow 5, enemies/walk_07000012 7, walkreal_0700000b
+  1, fix_missing_objects 5, fix_drone3 3, oddjob_hat 2 — green. Report: docs/reports/helicopter.md.

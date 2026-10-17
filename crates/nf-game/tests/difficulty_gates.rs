@@ -52,7 +52,7 @@ fn lock_param6_tag_auto_unlocks_on_operative_only() {
 fn copter_hp_scales_299_by_difficulty() {
     let placements = [placement(0x2f, &[])];
     for (difficulty, hp) in [(1u32, 299.0), (2, 448.5), (3, 598.0), (4, 1196.0)] {
-        let copters = nf_game::copter::Copter::create(&placements, difficulty);
+        let copters = nf_game::copter::Copter::create(&placements, difficulty, &[]);
         assert_eq!(copters.len(), 1);
         assert!(
             (copters[0].hp - hp).abs() < 1e-4,
@@ -60,7 +60,7 @@ fn copter_hp_scales_299_by_difficulty() {
         );
     }
     // Sister: an off-table difficulty (0) falls back to the decomp's 1.0 default.
-    let copters = nf_game::copter::Copter::create(&placements, 0);
+    let copters = nf_game::copter::Copter::create(&placements, 0, &[]);
     assert!((copters[0].hp - 299.0).abs() < 1e-4);
 }
 
