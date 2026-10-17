@@ -108,7 +108,7 @@ fn kick_node_pair_enters_kick_object_and_unpauses_the_scripted_prop() {
     let d = l.data(L12);
     let (drones, rng) = l.drones(L12);
     let mut sim = Drones::new(drones, rng);
-    sim.attach_level(&l.level);
+    sim.attach_level_id(&l.level, L12);
     let sp = sim.scripts.players.iter().position(|p| p.scripts[0] == 0x0600_05bb || p.scripts[1] == 0x0600_05bb).expect("the 0x60005bb ScriptPlayer (#662) must exist");
     // The guard nearest the pair drives the route through it.
     let (gi, start) = sim.list.iter().enumerate()
@@ -190,7 +190,7 @@ fn kick_pair_level_0c_data() {
     // + the attached SP set] — the game's node+0x28 binding is null, `NDrone2_KickObject` no-ops.
     let (drones2, rng2) = l.drones(L0C);
     let mut full = Drones::new(drones2, rng2);
-    full.attach_level(&l.level);
+    full.attach_level_id(&l.level, L0C);
     assert!(!full.scripts.players.iter().any(|sp| sp.scripts[0] == 0x0600_05bb || sp.scripts[1] == 0x0600_05bb),
         "0700000c has no 0x60005bb ScriptPlayer — the game's binding is null");
     // A start guard DOES pin the DoorOpen path — but its in-play route to the pair is DIRECT
@@ -245,7 +245,7 @@ fn dbg_0c_sp() {
     let Some(l) = LevelX::load(L0C) else { return };
     let (drones, rng) = l.drones(L0C);
     let mut sim = Drones::new(drones, rng);
-    sim.attach_level(&l.level);
+    sim.attach_level_id(&l.level, L0C);
     for (i, sp) in sim.scripts.players.iter().enumerate() {
         if sp.scripts[0] == 0x0600_05bb || sp.scripts[1] == 0x0600_05bb {
             let t = sp.matrix;
@@ -278,7 +278,7 @@ fn drone_directly_ahead_parks_the_mover_in_0x5e() {
     let oi = drones.iter().position(|dr| dr.present && dr.enabled && (dr.pos[0] - 50.85).abs() < 0.05).expect("the patroller at x 50.85");
     drones[oi].pos = [drones[mi].pos[0] + 1.7, mover_y, mover_z];
     let mut sim = Drones::new(drones, rng);
-    sim.attach_level(&l.level);
+    sim.attach_level_id(&l.level, L05);
     let gi = mi;
     let player = bond_at([67.31, mover_y, mover_z - 0.03]);
     let mut parked = None;

@@ -583,7 +583,7 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     let mut lights = nf_game::light::LightList::default();
     let drones = nf_game::drone::level_drones(&d, &level, &mut rng, &mut lights);
     let mut sim = Drones::new(drones, rng);
-    sim.attach_level(&level);
+    sim.attach_level_id(&level, level_id);
     // NF_SWITCHES=22,a4: switch channels on from the start (hex).
     for c in std::env::var("NF_SWITCHES").unwrap_or_default().split(',').filter_map(|c| u8::from_str_radix(c.trim(), 16).ok()) { sim.set_channel(c); }
     // NF_AIM_YAW: Bond's facing (radians; the game's obj+0x54), else −x.

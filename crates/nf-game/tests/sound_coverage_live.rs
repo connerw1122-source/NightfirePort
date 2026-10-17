@@ -92,7 +92,7 @@ impl Level02 {
         let mut lights = nf_game::light::LightList::default();
         let drones = nf_game::drone::level_drones(&d, &self.level, &mut rng, &mut lights);
         let mut s = Drones::new(drones, rng);
-        s.attach_level(&self.level);
+        s.attach_level_id(&self.level, 0x0700_0002);
         s
     }
 }

@@ -76,7 +76,7 @@ impl Level05 {
     }
 
     fn sim(&self, drones: Vec<Drone>, rng: Rng) -> Drones {
-        let mut s = Drones::new(drones, rng); s.attach_level(&self.level);
+        let mut s = Drones::new(drones, rng); s.attach_level_id(&self.level, 0x0700_0005);
         s.difficulty = 1; // the measured sessions ran at difficulty 1 (ai_live harness note)
         s
     }

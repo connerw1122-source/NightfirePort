@@ -84,7 +84,7 @@ impl Fixture {
         let mut lights = nf_game::light::LightList::default();
         let drones = nf_game::drone::level_drones(&d, &self.level, &mut rng, &mut lights);
         let mut s = Drones::new(drones, rng);
-        s.attach_level(&self.level);
+        s.attach_level_id(&self.level, self.level_id);
         s
     }
 }
@@ -226,7 +226,7 @@ fn combat_no_route_toggle_follows_0x164c08() {
         let mut lights = nf_game::light::LightList::default();
         (nf_game::drone::level_drones(&dd, &l.level, &mut r, &mut lights), r) };
     let mut sim = Drones::new(drones, rng);
-    sim.attach_level(&l.level);
+    sim.attach_level_id(&l.level, l.level_id);
     let far = bond_at([0.0, -1000.0, 0.0]);
     for _ in 0..5 { sim.tick(&d, &far); }
     let gi = sim.list.iter().position(|x| x.present && !x.corpse).expect("a live guard");
@@ -275,7 +275,7 @@ fn under_cover_idle_retries_three_times() {
         let mut lights = nf_game::light::LightList::default();
         (nf_game::drone::level_drones(&dd, &l.level, &mut r, &mut lights), r) };
     let mut sim = Drones::new(drones, rng);
-    sim.attach_level(&l.level);
+    sim.attach_level_id(&l.level, l.level_id);
     let far = bond_at([0.0, -1000.0, 0.0]);
     for _ in 0..5 { sim.tick(&d, &far); }
     let gi = sim.list.iter().position(|x| x.present && !x.corpse).expect("a live guard");

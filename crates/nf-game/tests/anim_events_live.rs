@@ -75,7 +75,7 @@ impl Fixture {
     }
 
     fn sim(&self, drones: Vec<Drone>) -> Drones {
-        let mut s = Drones::new(drones, Rng::new(1)); s.attach_level(&self.level);
+        let mut s = Drones::new(drones, Rng::new(1)); s.attach_level_id(&self.level, self.level_id);
         s.difficulty = 1;
         s
     }

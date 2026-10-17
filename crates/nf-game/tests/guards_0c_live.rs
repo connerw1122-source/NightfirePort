@@ -93,7 +93,7 @@ fn patrol_trace() {
             dr.route.is_some(), dr.croute.is_some(), dr.sm_id, dr.anim.state, dr.anim.danim);
     }
     let mut sim = Drones::new(drones, rng);
-    sim.attach_level(&l.level);
+    sim.attach_level_id(&l.level, 0x0700_000c);
     sim.difficulty = 1;
     let bond = bond_far(sim.list.first().unwrap());
     // Per-drone accumulators.
