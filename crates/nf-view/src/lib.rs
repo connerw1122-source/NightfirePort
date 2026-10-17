@@ -3434,7 +3434,17 @@ impl ApplicationHandler for App {
                                 && self.fe.as_ref().map_or(true, |fe| fe.mp_debriefing.is_none())
                             {
                                 let m = sim.mp.as_ref().unwrap();
-                                let fe = self.fe.get_or_insert_with(menu::FrontEnd::new);
+                                let fe = self.fe.get_or_insert_with(|| {
+                                    let mut fe = menu::FrontEnd::new();
+                                    // batch-1016b: the re-created manager inherits the music statics
+                                    // and the option file like the pause's create (menu-audio-state
+                                    // [M 0x1dceb8:94-101]; settings-persist).
+                                    Self::inherit_music_statics(&mut fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
+                                    let (opts, warn) = settings::load_default();
+                                    if let Some(w) = warn { eprintln!("[settings] {w}"); }
+                                    fe.opts = opts;
+                                    fe
+                                });
                                 fe.open_mp_debriefing(m);
                                 debrief_opened = true; // the grab waits for the sim borrow (below)
                             }
