@@ -17719,3 +17719,11 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+
+## mp-bots-spawn (2026-10-17, branch s/mp-bots-spawn) — started 04:32 UTC
+
+Task: the user's "bots wont spawn" through the real front-end path. Reading mp-bots-in-match
+704's handoff: bots spawn as entities but the brains starve in BotIdle (no pickups fed to the
+goal picker, find_opponent never acquires, no meshes). Plan: reproduce RED via
+mp_bots_live::quick_game_bots_play_the_match un-ignored, then feed pick_goal + find_opponent,
+then the human-damages-bots half. In progress.
