@@ -16727,3 +16727,13 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+## rook-door-06 (2026-10-17, branch s/rook-door-06) — 01:45 UTC
+
+Rook (the ally who leads Bond) gets stuck in a doorway on 07000006 — user playtest 2026-10-15
+("rook gets stuck on a door") and 2026-10-16 ("rook gets stuck in the doorway on 06. again");
+the 663 npc-doors merge did not fix it. Plan: find Rook's placement and route in the level, run
+the real path (nf_view load + step_bond inputs) until Rook walks his route, reproduce the
+doorway stall with a per-tick position/state/route-node log, then port what the game does at
+that door (NDrone2 door/wait states, AI-net door links) with [M] citations. Test: Rook passes
+the doorway and reaches his next scripted point within the game's time.
