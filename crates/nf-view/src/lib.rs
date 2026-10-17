@@ -2358,8 +2358,13 @@ impl App {
         // [M 0x182270:20-22], so the Boot-set status stands).
         if let Some(ret) = ptp_return {
             if let Some(sim) = self.scene.sim.as_mut() {
-                ret.apply(&mut sim.drones.mission, &mut sim.drones.driving_stats);
-                eprintln!("[ptp] return applied: MissionState {} (status byte {}), 12 slots carried", sim.drones.mission.status(), ret.status_byte);
+                ret.apply(&mut sim.drones.mission, &mut sim.drones.driving_stats, &mut sim.drones.progress.difficulty);
+                // app-state-parity: `Boot_LoadPTPData` writes the block's +0x144 back to
+                // GameState+0x28 on EVERY driving return [M 0x1c8560:35-36]; the tick code reads
+                // the `Drones::difficulty` mirror, so it follows the Progress store here (the
+                // same pair every `load_with_carry_difficulty` build seeds).
+                sim.drones.difficulty = sim.drones.progress.difficulty;
+                eprintln!("[ptp] return applied: MissionState {} (status byte {}), 12 slots carried, difficulty {}", sim.drones.mission.status(), ret.status_byte, sim.drones.difficulty);
             }
         }
         // mission-unlock-flow: the game's sp_level+0x10 flags are ONE global that survives every

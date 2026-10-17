@@ -130,6 +130,37 @@ fn quick_start_writes_helicopters_and_clears_explosive() {
     assert_eq!(fe.mp_player_mods, [0, 0], "+0x1BC/+0x1C8 untouched — the boot 0/1 persist");
 }
 
+/// app-state-parity: the confirm arm writes GameState+0x28 = 1 BEFORE the level request
+/// [M P_MPCONFIRM 0x20ec00:150 — `GameState._40_4_ = 1` sits between `MPSettings._384_4_ = 1`
+/// and `GameState._8_4_ = MPSettings._424_4_`]. Every MP match runs at difficulty 1 and the
+/// value persists after the match until the difficulty page [M 0x216ca8:15] or a driving
+/// return [M 0x1c8560:36] rewrites it. The front end asks through the same channel the
+/// difficulty page's pick rides (`requested_difficulty`; the App's `menu_after` takes it).
+#[test]
+fn mp_confirm_start_writes_difficulty_1() {
+    let mut fe = FrontEnd::new();
+    fe.tick(); // the flow machine must be live for the confirm [M mp_menu_flow's harness]
+    fe.page = Page::MpMap;
+    fe.mp_scenario = 1; // Arena, FFA
+    fe.mp_map_row = 0;
+    assert!(fe.action(Action::Confirm));
+    assert_eq!(fe.page, Page::MpSetup);
+    fe.mp_join[0].joined = true;
+    assert!(fe.mp_confirm_start());
+    // The write under test [M 0x20ec00:150].
+    assert_eq!(fe.requested_difficulty, Some(1), "the MP confirm sets GameState+0x28 = 1");
+    // Sister: the request pair on the same arm — each assertion can fail alone (the
+    // pre-task code left requested_difficulty None with the level request still set).
+    assert_eq!(fe.requested_level, Some(fe.mp_level));
+    // The client's handover mirrors the same tail [S — the game has no net client]: it asks
+    // for difficulty 1 too, without disturbing the host arm's own take order.
+    let mut fe = FrontEnd::new();
+    fe.tick();
+    fe.mp_client_start(nf_game::mp::MpSettings::deathmatch(0x0700_0041));
+    assert_eq!(fe.requested_difficulty, Some(1), "the client handover mirrors the host tail");
+    assert!(fe.requested_level.is_some());
+}
+
 #[test]
 fn team_setup_three_prompts_with_labels_images_values() {
     let mut fe = team_setup_fe();

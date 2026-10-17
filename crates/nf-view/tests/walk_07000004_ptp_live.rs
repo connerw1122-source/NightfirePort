@@ -143,10 +143,16 @@ fn the_twelve_stat_slots_ride_the_handover() {
     // The apply mirror (lib.rs runs it after the reload): MissionState + the slots.
     let mut mission = nf_game::mission::Mission::new();
     let mut carried = nf_game::ptp::DrivingStats::default();
-    ret.apply(&mut mission, &mut carried);
+    let mut difficulty = 0u32;
+    ret.apply(&mut mission, &mut carried, &mut difficulty);
     assert_eq!(mission.status(), 6);
     assert_eq!(carried.values[0], 12, "the slots survive the round trip [M 0x199ac8/0x199b18]");
     assert_eq!(carried.values[11], 3);
+    // app-state-parity: the return carries the leaving sim's difficulty (the block's +0x144)
+    // and apply restores it [M 0x1c8198:15-20, 0x1c8560:35-36] — the handover built the block
+    // from this sim's Drones::difficulty.
+    assert_eq!(ret.difficulty, sim.drones.difficulty);
+    assert_eq!(difficulty, ret.difficulty);
 }
 
 /// The interlude map is the one `Mission_Update` case 6 emits [M 0x182c60:88-116] — a live walk
