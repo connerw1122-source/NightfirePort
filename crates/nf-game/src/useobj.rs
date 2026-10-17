@@ -332,6 +332,8 @@ mod tests {
         hit_points: 0.0,
         damage: 0.0,
         tick_damage: 0.0,
+        // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
+        hidden: false,
         };
         let mut scripts = crate::nis::Scripts::default();
         scripts.players = vec![sp(0x39, 0, 4), sp(0x40, 0x50, 4)];

@@ -1088,6 +1088,11 @@ pub struct Player {
     /// `SP_GetHitDamage` 0x1dc5f8 sums them). Cleared at the bullet pass's head (the game's
     /// Collide_Update clears every hit list each frame), consumed by `update_player`.
     pub tick_damage: f32,
+    /// `SCRIPTPLAYER_tag+0x36` — the disabled byte [M SP_Update 0x1dbda8:57-59 returns while it is
+    /// set; its only writer is `SP_HideObj` 0x1dcbf0 (the campaign copter's hide channel)]. The
+    /// game's one level-load-hidden SP is 07000005's 0x16ddb40 looping pair (+0x36 = 1 [L]; setter
+    /// unknown, a live check) — the port keys that stand-in on the SP's own identity below.
+    pub hidden: bool,
 }
 
 impl Player {
@@ -1106,6 +1111,8 @@ impl Player {
             hit_points: g(7) as i32 as f32,
             damage: 0.0,
             tick_damage: 0.0,
+            // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
+            hidden: false,
         })
     }
 
@@ -1138,11 +1145,19 @@ impl Player {
     /// the 07000005 EndLevel SP (script 0x6000A23, mode 64) is primed in state 1 with its clock at 2.0 at level
     /// start, and the disabled looping pair (modes 8, mask 0) already plays].
     fn prime(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>) {
-        // Mask 0 (state 6) SPs also load at create in the game — the disabled looping pair on 07000005
-        // (0x16ddb40, modes 8,8, mask 0) is loaded and playing behind its `+0x36` freeze [L]. The port has
-        // no disabled byte (port-check §9), so priming those would set a frozen-in-the-game script running;
-        // only mask ≠ 0 SPs are primed (the live EndLevel case: mask 1, mode 64, state 1, clock 2.0 [L]).
-        if self.mask == 0 { return; }
+        // `SP_CreateScriptPlayer` 0x1db9a8 primes EVERY placed SP whose mode A ∉ {0, 1} at create,
+        // regardless of the trigger mask: mask 0 only selects the state word (0x2e == 0 → state 6,
+        // :72-76 — "mask 0 → state 6" [L ee_start_05.bin, both looping pairs]) and `SP_LoadScript`
+        // 0x1dbc08 then loads + `Script_Play`s the looping pair. `SP_Update` 0x1dbda8 ticks
+        // `Script_Update` for every state — the ONLY thing that stops it is the +0x36 disabled byte
+        // (:57-59), which nothing in the level-load path sets (`SP_HideObj` 0x1dcbf0 is its only
+        // writer and only the campaign copter calls it). The port used to skip mask-0 SPs here
+        // (pickup-port-check §9's disabled-byte stand-in), which froze the multiplayer gondolas:
+        // Skyrail's carriage (placement [4], script 0x06000058, mode 8, mask 0) never loaded and
+        // the playtest 1016-1355 sees no gondolas. The one SP the game really keeps frozen is
+        // 07000005's 0x16ddb40 looping pair (+0x36 = 1 [L], setter unknown — its twin 0x16df360
+        // reads 0 and plays); that pair's freeze is the hidden-field stand-in below.
+        if self.hidden { return; }
         if self.state != 0 && self.state != 6 { return; }
         let m = self.modes[0];
         if m == 0 || m == 1 { return; }
@@ -1174,7 +1189,8 @@ impl Player {
     /// objects (2, 8, 0x10, `SP_Hit`) are not modelled yet. `skip` is the game's `Input_Action(-1, 0x19, 1)` —
     /// any player pressed the skip action this tick (`Scripts::skip_request`, set by the viewer's key handler).
     pub fn update(&mut self, lib: &HashMap<u32, Arc<Nis>>, objs: &mut Objects, ch: &mut Channels, w: &dyn World, frame: u32, out: &mut Vec<Request>, skip: bool, gate: SpStart) {
-        if self.deleted || (self.gate != 0 && !ch.on(self.gate as u32)) { return; }
+        // The disabled byte gates the WHOLE update — including `Script_Update` [M 0x1dbda8:57-59].
+        if self.hidden || self.deleted || (self.gate != 0 && !ch.on(self.gate as u32)) { return; }
         if let Some(s) = self.info[self.cur].as_mut() {
             s.update(&mut self.subs, lib, objs, ch, w, frame, out);
             // `Script_Interp` 0x1d9a08:106-133 keys the SP object's `obj+0x90` from stream 0 every
@@ -1431,6 +1447,8 @@ impl Scripts {
                 hit_points: 0.0,
                 damage: 0.0,
                 tick_damage: 0.0,
+                // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
+                hidden: false,
             });
         }
         Scripts { lib, players, objects: Objects::default(), requests: Vec::new(), primed: false, skip_request: false }
@@ -1511,6 +1529,8 @@ impl Scripts {
             hit_points: 0.0,
             damage: 0.0,
             tick_damage: 0.0,
+            // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
+            hidden: false,
         });
     }
 
@@ -1753,6 +1773,8 @@ mod tests {
             hit_points: 0.0,
             damage: 0.0,
             tick_damage: 0.0,
+            // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
+            hidden: false,
         };
         let mut lib = HashMap::new();
         lib.insert(0x0600_0421u32, nis);
@@ -1793,6 +1815,8 @@ mod tests {
             hit_points: 0.0,
             damage: 0.0,
             tick_damage: 0.0,
+            // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
+            hidden: false,
         };
         let mut objs2 = Objects::default();
         p2.load(&lib, &mut objs2, &mut ch, &world, 0, &mut out);

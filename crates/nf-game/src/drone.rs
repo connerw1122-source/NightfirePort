@@ -7736,6 +7736,8 @@ impl Drones {
                 hit_points: 0.0,
                 damage: 0.0,
                 tick_damage: 0.0,
+                // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
+                hidden: false,
             });
         }
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {

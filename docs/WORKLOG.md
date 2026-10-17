@@ -17422,3 +17422,42 @@ failures are the slim ISO's allowed set, the wgpu-adapter failures are this sand
 GPU (render tests are the main agent's surface). Left: the ×4.04's internal source (the same
 unpinned gap the Sentinel task left — live checks 1-2 in the report settle it); the drone-fired
 path's raw +0x20 (lands within ~1% by coincidence for these records, out of scope).
+- 2026-10-16 s/mp-map-objects (task 744): MP maps' dynamic objects — playtest 1016-1355: Gondola is
+  missing the actual gondolas; remote tanks and helicopters that should be pilotable are not.
+  Plan: census every MP map's dynamic objects from disc placements [D] (movers, usables, the
+  remote tank/helicopter), port movement + the pilot/remote-vehicle control mechanics from the
+  decompile [M]. Drawing is the main agent's; sim and controls are mine. Tests per map: gondolas
+  move on their routes; a player can take control of a remote tank/helicopter and drive it.
+  Branch created from origin/master f09f3c6c.
+- mp-map-objects research: census of all 8 arenas [D, scratch mp_census] — the "remote tanks"
+  are 4x kind-0xDA Car_Create (RCCar 0x020003d6) on every arena except Sub Pen; no 0x2F copter
+  on any arena (Snow Blind's "helicopter" is static decoration cels; the playtest's helicopters
+  are the Car's Enviro-Mods variant — P_MPENVIROMODS option 2 swaps the gfx to 0x2000194 [M
+  Car_Create 0x1305b0:29-43]). Skyrail's gondola = placement [4] kind-0xD9 script player,
+  script 0x06000058, mode 8 loop, MASK 0 [D]. Ravine has 4x 0xE2 SS cable cars (25 keys, rate
+  8500, paths 0-3 in block 0x19) [D]. Root cause found [M SP_CreateScriptPlayer 0x1db9a8 +
+  SP_Update 0x1dbda8 + SP_HideObj 0x1dcbf0]: the game primes mask-0 mode-8 SPs at create
+  (+0x36 = 0, only SP_HideObj — copter-only — ever sets it, and SP_Update ticks Script_Update
+  while +0x36 == 0), but the port's nis::Player::prime skips mask==0, so the gondola never
+  loads: probe test shows info[0] = None. Fix: prime mask-0 SPs like the game.
+- mp-map-objects fix 1 (gondolas): nis::Player::prime no longer skips mask-0 SPs — the game
+  primes every placed SP with mode A >= 2 at create regardless of mask [M SP_CreateScriptPlayer
+  0x1db9a8:72-76 (mask 0 -> state 6) + SP_LoadScript 0x1dbc08; SP_Update 0x1dbda8:57-59 stops
+  only on the +0x36 disabled byte, whose sole writer SP_HideObj 0x1dcbf0 only the copter calls].
+  New Player.hidden field (+0x36, defaults false, gates the whole update) models the byte; the
+  one level-load-hidden SP (07000005's 0x16ddb40 pair, +0x36 = 1 [L], setter unknown) is a live
+  check — it is NOT a placed 0xD9 (07000005's main map has no mask-0 mode>=2 placement), so the
+  change cannot unhide it. Probe: Skyrail gondola now loads (play 0x9) and the two carriages
+  (0x0200037a + sub 0x0200038a) ride the loop phase-shifted [D placement 4]. nf-game suite:
+  470 passed / 0 failed.
+- mp-map-objects fix 2 (remote vehicles): car.rs — the Car_* family (class 0x28) as a data +
+  state-machine module [M Car_Create 0x1305b0 (gates: MP on, option != Off, Ravine blocked,
+  NumTanks < 8; variant byte 0x112: 1->tank / 2->heli model 0x2000194 / 3->Rand_Rand(100)<0x33),
+  Car_Activate 0x131c48 (state 5, cam 0xD, pilot slot, sounds 0x60a/0x10b, spin 10/4, heat
+  reset), Car_Deactivate 0x131d88 (state 99, Explode 10/10/50 script 0x6000052, pose restore
+  from TankSpawns[slot], timer 0x708), Car_Update 0x1307d8 (state-99 countdown, heat cooling,
+  heli input conditioning: yaw +in*0.05*FRM, pitch negated, throttle/steer lerp 0.15 clamp
+  0.125/0.1, shell +10 heat / 6 s cooldown / overheat latch > 100)]. Tests car_state_machine:
+  5 tests, all addresses cited; the tank drive branch + matrix composition are next-session.
+  NOT wired into the sim walk yet (phase 1 drives no MP objects; the hook list is in the
+  module header + report). nf-game: 475 passed / 0 failed; all four crates compile (release).
