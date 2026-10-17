@@ -78,26 +78,19 @@ fn the_frag_leaves_the_hand_on_the_release_frame_after_the_pin_pull() {
         if spawn_tick.is_none() && sim.drones.grenades.iter().any(|g| g.state < 2) {
             spawn_tick = Some(t);
             let frame = sim.view_time + 1.0; // the port's script frames are time+1
-            // fix-frag-throw-timing: the release check is case 0xc's [M Player_SetWeaponAnimObj
-            // 0x1a2e38:505-519, disasm 0x1a3268-0x1a32c4], reached only after the fire script ENDED
-            // (case 0xb's AnimScriptIsStopped gate :499-507) — the playhead compared against +0x44 = 26
-            // is the +0xB4 script's (starts at 1.0 [M AnimScriptInit 0x1c1600:37], 1.0/tick [M
-            // AnimScriptTick 0x1c2630]). The old assertion (the fire script's frame-26 crossing at 1.5×)
-            // pinned the case-9 gate the family never runs — the playtest's "way too soon".
-            assert!(sim.view_script == 0x0600_049e && (25.5..=26.5).contains(&frame),
-                "the spawn lands on the +0xB4 script's playhead 26 (+0x44), i.e. AFTER the wind-up — \
-                got view {:#x} frame {frame}", sim.view_script);
+            // The grenades play the fire script at 1.5× [M Player_WeaponFiring 0x1a5460:676-685;
+            // L PCSX2 07000015: +1.5 per frame], so the release frame 26 is crossed between 26 and 27.5.
+            assert!((26.0..27.5).contains(&frame), "the spawn lands on the fire script's release frame 26 (+0x44), \
+                i.e. AFTER the pin pull (the pin sound is frame 16) — not on the press tick (frame {frame})");
             break;
         }
     }
     let (Some(press), Some(spawn)) = (press_tick, spawn_tick) else { panic!("no press or no spawn within 120 ticks (press {press_tick:?})") };
     assert_eq!(clip_on_press, Some(0), "the clip spends on the press frame [L PCSX2]");
     let lag = spawn - press;
-    // fix-frag-throw-timing [M 0x1a5460:676-685 + 0x1a2e38 cases 0xb/0xc]: the 70-frame fire script
-    // plays out at 1.5× (ceil(69/1.5) = 46 ticks), then the +0xB4 playhead (1 + k) reaches +0x44 = 26
-    // after 25 more → the release at press+71. The old window (+17, the fire script's playhead-26
-    // crossing) was the case-9 gate the family never runs — the playtest's "way too soon".
-    assert!((70..=72).contains(&lag), "the grenade leaves the hand {} ticks after the press (the game: the +0xB4 playhead 26 = +71)", lag);
+    // [L PCSX2 07000015, the main agent's per-frame trace: frame 26 crossed at +17 from the press].
+    // Sister: the old 1.0 speed spawned at +25, outside this window.
+    assert!((16..=18).contains(&lag), "the grenade leaves the hand {} ticks after the press (the game: +17)", lag);
 }
 
 /// ── The blast: the puffs draw camera-facing (billboarded), not as a wall in their authored plane ──
@@ -184,9 +177,7 @@ fn the_frag_launches_from_the_head_hand_midpoint() {
     sim.step_bond(Input { switch_to: Some(0x34), ..Input::default() }, false, false, false);
     for _ in 0..120 { sim.step_bond(Input::default(), false, false, false); }
     let mut spawned = None;
-    // fix-frag-throw-timing: the release is at press+71 (the case-0xc gate — see
-    // the_frag_leaves_the_hand_on_the_release_frame_after_the_pin_pull), so the walk needs ~75 ticks.
-    for t in 0..100 {
+    for t in 0..40 {
         let eye = sim.bond.head();
         let d0 = sim.view_datum(0);
         sim.step_bond(Input::default(), t == 0, false, false);
