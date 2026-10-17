@@ -182,7 +182,7 @@ fn the_scorpion_fire_modes_through_the_real_input_path() {
     assert!(locked, "the heat-seeker locked the guard (BU+0x40) [M 0x12f3b4]");
     assert!(curved, "the round's direction curved toward the guard [M 0x12f614]");
     assert!(scene.sim.as_ref().unwrap().drones.list[guard].health < hp0,
-        "the heat-seeker hit the guard (the homing rocket reaches him at the 0.0625 u/tick quarter speed [L +0x6C & 0x200])");
+        "the heat-seeker hit the guard (the homing rocket reaches him at the measured flight 0.2525 u/tick = 0.25 [L +0x20] × the 0x200 quarter [M Bullet_init 0x12c5a0:207-211] × 4.04 — scorpion-rocket-speed)");
     let _ = rocket_died;
 
     // ── phase D: the unguided twin, the same off-axis shot, flies straight and misses ──
