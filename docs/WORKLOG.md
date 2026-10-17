@@ -16733,3 +16733,12 @@ start payload for 120 polls (the client keeps the first). Gaps left: G-048.
 Task: hurt volumes (script op 0xE4), Hurt_Create 0x17e870 and its update — 64 placements.
 Damage kind and rate from the params. Test: standing in one damages Bond at the game's rate
 and type; outside, nothing. Sister assertion on real levels, script census handled-sets update.
+
+- hurt-volumes: the 0xE4 family ported — Hurt_Create 0x17e870 (params p0..p5 = type/damage/channel/
+  sound/mask/one-shot + the key header) as worldobj::Hurt, Hurt_Update 0x17e5d0's gate/state/frame
+  machine, and the damage pass (Player_DealWithObjHit 0x194458:94-101 case 0x27 → pain_generic,
+  hitdata+8 = the never-written ground HITTEST+0x90 so the param damage is whole). Disc: 05 has 13
+  type-6 ×1000 death quads/box, 02 one channel-141 trickle, 46 seven bullet-armed one-shots. Tests:
+  hurt_volumes_live 4/4 (05 Sim death + outside-nothing, 02 gate, 46 sweep), census moved 56→57 /
+  1537→1473. Ran nf-game lib 241, nf-formats lib 79 + census 6, the 05 Sim set (42) — all green;
+  the full four-crate suite did not fit the sandbox window (report has the detail + live checks).
