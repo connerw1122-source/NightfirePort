@@ -229,3 +229,4 @@ One line per finished queue task: merged into master or not, and why. Written by
 - 2026-10-17 14:28 MST: merged batch 1018a: level-0a-interactables (710a — 0a interactables + walk tests). Suite 2253 passed, 0 failed, 84 ignored (on f53df46b; the chain-owner fix on top is suite-green on its own).
 - 2026-10-17 14:58 MST: merged batch 1018b: level-0a-complete (710b — the 0a keyboard + walk tests). Suite 2255 passed, 0 failed, 84 ignored.
 - 2026-10-17 15:34 MST: merged batch 1018d: level-0b-complete (711b — the 0b walk test). Suite 2256 passed, 0 failed, 84 ignored.
+- 2026-10-17 15:51 MST: merged batch 1018e: level-0b-interactables (711a — the 0b interactables + models sweep tests). Suite 2266 passed, 0 failed, 84 ignored (on d56aceb6; 1018d on top touched only the 0b walk test).
