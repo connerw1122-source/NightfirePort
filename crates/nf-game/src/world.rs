@@ -658,9 +658,14 @@ impl CollisionWorld {
         let d = sub(to, from);
         let mut best = None::<(f32, V3)>;
         let stat = &self.stat;
+        // The water planes (mat 0xE) never ground the player — the same rule as the flat
+        // grounding ray `segment_hit` (the cel scoping of `Player_FeetOnPoint` 0x194188 [M]; see
+        // `capsule_push`). G-052's bucket alignment put 07000002's pond surface in the pond cel's
+        // own bucket, which the bank's floor ray straddles, so the scoped ray must drop it too.
         for r in runs {
             let o = &stat.objects[r as usize];
             for k in o.tris.clone() {
+                if stat.mats[k] & 0x3f == 0xE { continue; }
                 let t = &stat.tris[k];
                 let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
                 if dot(cross(e1, e2), d) >= 0.0 { continue; } // back face [M 0x10a8c8:168]

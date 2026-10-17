@@ -171,14 +171,16 @@ fn water_ladder_bottom_dismount_does_not_relatch() {
     let dy = dismount_y.expect("climbing down never left the ladder (no dismount)");
     assert!(dy < lad.top(), "the dismount fired above the top threshold: y {dy}");
     // The dismount lands Bond in the pond (the ladder's bottom is under the surface) — the swim
-    // entry runs InWater's regrab=5 overwrite [M 0x195e50]. The CEL-SCOPED hit-below ray [M
-    // Player_FeetOnPoint 0x194188 → Collide_StraddleCels 0x1eac98] lets the climb-down keep going
-    // UNDER the surface to the bottom threshold — the flat read dismounted the climb on the deep
-    // pond bed (material 10, y≈2.09 under the ladder) mid-column, 0.44 above `bottom`, which is
-    // the divergence this task fixed (the game's cel-scoped climb scan does not see the water
-    // cel's bed from the garden cel).
-    assert!(dy <= lad.bottom() + 1e-3, "the dismount fired above the bottom threshold: y {dy:.3} vs bottom {}",
-        lad.bottom());
+    // entry runs InWater's regrab=5 overwrite [M 0x195e50]. Either climb branch may fire [M
+    // 0x196310:63-86]: the bottom threshold, or the hit-below on the deep pond bed (material 10,
+    // y≈2.09 under the ladder) once the climber's cel is the pond cel. G-052: the earlier pin
+    // (bottom threshold only) leaned on the pond's collision sitting in the wrong scope bucket —
+    // `Geo::push_flags` dropped empty collision meshes and shifted every later owner, so the
+    // pond cel's bed was in no straddled bucket at all. With the buckets aligned the bed is the
+    // pond cel's own geometry; the user-facing guarantee is the no-re-latch below.
+    let bed = sim.world.segment_hit_scoped(sim.bond.cel, [sim.bond.pos[0], dy + 0.5, sim.bond.pos[2]], [sim.bond.pos[0], dy - 1.2, sim.bond.pos[2]]);
+    assert!(dy <= lad.bottom() + 1e-3 || bed.is_some(),
+        "the dismount fired above the bottom threshold with no bed below: y {dy:.3} vs bottom {}", lad.bottom());
     let push_off = nf_game::player::Input { forward: -1.0, ..Default::default() };
     let mut in_water = false;
     for _ in 0..240 {
