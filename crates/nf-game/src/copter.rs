@@ -126,8 +126,11 @@ pub struct Copter {
     pub recent: f32,
     /// record+0x78: the same-id route node count (state 0's walk) [M 0x17dbb8 case 0].
     pub route_nodes: u16,
-    /// obj+0xFE bit 0: done (the +0x74 == 100 wrap arm / the state-5 finish).
+    /// obj+0xFE bit 0: the destruction finish (the state-5/6 arms; the wrap arm's flag is
+    /// `wrap_flag` — the route loops forever, the +0x74 == 100 latch only marks the lap).
     pub done: bool,
+    /// obj+0xFE bit 0 from the +0x74 == 100 wrap arm [M 0x17d740] — a per-lap latch, not terminal.
+    pub wrap_flag: bool,
     /// `obj+0x68` = 299.0 x the difficulty multiplier [M `Copter_Create` 0x17d340:76-94]:
     /// d1 x1.0 (the decomp's fall-through default), d2 x1.5, d3 x2.0, d4 x4.0.
     pub hp: f32,
@@ -204,6 +207,7 @@ impl Copter {
                 recent: 0.0,
                 route_nodes: 0,
                 done: false,
+                wrap_flag: false,
                 hp: copter_hp_mult(difficulty) * 299.0,
                 level: 0,
                 part_hashes: [0; 9],
@@ -239,8 +243,8 @@ impl Copter {
         }
         self.t += path.dt;
         if self.t > path.count as f32 {
-            // The +0x74 channel number of 100 sets obj+0xFE bit 0 [M 0x17d740].
-            if self.arrival == 100 { self.done = true; }
+            // The +0x74 channel number of 100 sets obj+0xFE bit 0 [M 0x17d740] — the lap latch.
+            if self.arrival == 100 { self.wrap_flag = true; }
             self.t = path.wrap as f32;
         }
         true

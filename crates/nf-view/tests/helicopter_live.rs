@@ -33,7 +33,8 @@ fn shoot_at(sim: &mut nf_view::scene::Sim, target: V3, t: u32) {
     };
     let want_pitch = (dy / ((dx * dx + dz * dz).sqrt().max(0.5))).atan() / std::f32::consts::FRAC_PI_2;
     let perr = want_pitch - sim.bond.pitch;
-    let on_target = err.abs() < 0.03 && perr.abs() < 0.03 && t % 14 == 0;
+    // The body sphere is ~8 units [D the probe's part radius] — a loose window still hits it.
+    let on_target = err.abs() < 0.28 && perr.abs() < 0.28 && t % 3 == 0;
     let input = Input { turn: err.clamp(-0.08, 0.08), look: perr.clamp(-0.08, 0.08), ..Default::default() };
     sim.step_bond(input, on_target, false, false);
 }
@@ -177,14 +178,25 @@ fn the_tower_copter_is_destroyed_by_the_games_damage() {
     assert!((hp0 - 299.0).abs() < 0.01, "hp = 299 x d1 [M Copter_Create 0x17d340:76-94]");
     // Shoot the body: the rifle's ~30 damage × Bits[2] = 1.0 [L the Bits table] — ~11 hits.
     let mut hit_any = false;
-    for t in 0..4000u32 {
+    for t in 0..16000u32 {
         let target = match copter_body_pos(sim, ci) { Some(p) => p, None => break };
-        if t % 60 == 0 { sim.gun.spare += 48; } // the ammo top-up (the walker's health top-up allowance)
+        if t % 60 == 0 { // the ammo top-up (the walker's health top-up allowance) — through the inventory
+            let wd = sim.weapons.clone();
+            let w = sim.gun.weapon;
+            sim.drones.inventory.equip_ammo(&wd, w as usize, 200);
+        }
+        { // ride alongside the flying body every tick, just outside its sphere (no falls)
+            let cp = sim.drones.copters[ci].pos();
+            sim.bond.pos = [cp[0] + 9.0, cp[1], cp[2]];
+            sim.bond.vel = [0.0; 3];
+        }
         shoot_at(sim, target, t);
+        sim.drones.health.health = 100.0; // the health top-up AFTER the tick (the walker's exact allowance)
         hit_any |= sim.drones.copters[ci].damage > 0.0;
         if t % 400 == 0 {
             let c = &sim.drones.copters[ci];
-            eprintln!("[copter] t={t} dmg {:.1}/{:.0} state {} clip {} spare {} bullets {}", c.damage, c.hp, c.state, sim.gun.clip, sim.gun.spare, sim.drones.player_bullets.len());
+            eprintln!("[copter] t={t} dmg {:.1}/{:.0} state {} clip {} spare {} bullets {} bond {:?} disabled {} health {:.0} gun {}",
+                c.damage, c.hp, c.state, sim.gun.clip, sim.gun.spare, sim.drones.player_bullets.len(), &sim.bond.pos, sim.disabled, sim.drones.health.health, sim.gun.weapon);
         }
         if sim.drones.copters[ci].done { break; }
     }

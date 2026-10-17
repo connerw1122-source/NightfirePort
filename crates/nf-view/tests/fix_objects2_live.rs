@@ -209,11 +209,57 @@ fn the_gondola_ride_runs_and_the_helicopter_completes_the_mission() {
     // The ride runs to tick 1410 of 1420 [D s46], then the cinematic (342 ticks) plays out to its
     // own ch-5 event — the budget covers both.
     assert!(wait(sim, 2600, |s| s.drones.channels.on(5)), "the ride's end cinematic (0x06000078) writes ch 5 [D script s10]");
-    // The helicopter: gate ch 5 → the flight (0x06000050, 299 ticks) → ch 0x4B [M Copter_Update].
-    assert!(wait(sim, 900, |s| s.drones.channels.on(0x4b)), "the copter's arrival writes ch 0x4B");
-    assert!(wait(sim, 200, |s| s.drones.mission.status() == 6), "mux #276 → ch 100 → the mission completes");
-    let i8 = nf_game::mission::LEVELS.iter().position(|l| l.level == 0x0700_0008).unwrap();
-    assert_eq!(sim.drones.mission.states[i8][1], 4, "the ride objective completes [L record 3]");
+    // The helicopter: gate ch 5 starts it [M 0x17dbb8 head]. ch 0x4B is the DESTRUCTION output
+    // [M Copter_Update 0x17dbb8 cases 4/5/6 — the only +0x72 writers; the flight itself never
+    // writes it], so the flight alone must NOT end the level (the sister below), and shooting the
+    // Hind down through the game's damage (the real bullet pass → the Bits sums → hp = 299·DiffMod
+    // [M Copter_Create 0x17d340:76-94]) completes the objective.
+    let ci = sim.drones.copters.iter().position(|c| c.gate == 5).expect("the gate-5 copter");
+    assert!(wait(sim, 120, |s| s.drones.copters[ci].started), "ch 5 starts the copter [M the gate]");
+    assert!(!wait(sim, 600, |s| s.drones.channels.on(0x4b)), "the flight alone never writes 0x4B [M cases 4/5/6]");
+    // Ride alongside the flying body and shoot it down (the real bullet pass; the aim-and-tap loop
+    // of walkreal's shoot, the body's read sphere = the record's spline position [helicopter.md §4]).
+    let mut last_tap = 0u32;
+    for t in 0..16000u32 {
+        {
+            let sim = scene.sim.as_mut().unwrap();
+            if sim.drones.channels.on(0x4b) { break; }
+            let cp = sim.drones.copters[ci].pos();
+            sim.bond.pos = [cp[0] + 9.0, cp[1], cp[2]];
+            sim.bond.vel = [0.0; 3];
+            sim.drones.health.health = 100.0; // the walker's post-tick health allowance
+            let (bp, eye) = (sim.bond.pos, sim.bond.eye - sim.bond.crouch_drop);
+            let (dx, dz, dy) = (cp[0] - bp[0], cp[2] - bp[2], cp[1] - (bp[1] + eye));
+            let desired = dx.atan2(dz);
+            let mut err = desired - sim.bond.yaw;
+            while err > std::f32::consts::PI { err -= std::f32::consts::TAU; }
+            while err < -std::f32::consts::PI { err += std::f32::consts::TAU; }
+            let want_pitch = (dy / ((dx * dx + dz * dz).sqrt().max(0.5))).atan() / std::f32::consts::FRAC_PI_2;
+            let perr = want_pitch - sim.bond.pitch;
+            let on_target = err.abs() < 0.28 && perr.abs() < 0.28 && t.saturating_sub(last_tap) > 2;
+            if on_target { last_tap = t; }
+            let input = Input { turn: err.clamp(-0.08, 0.08), look: perr.clamp(-0.08, 0.08), ..Default::default() };
+            sim.step_bond(input, on_target, false, false);
+            if t % 60 == 0 {
+                let wd = sim.weapons.clone();
+                let w = sim.gun.weapon;
+                sim.drones.inventory.equip_ammo(&wd, w as usize, 200);
+            }
+        }
+    }
+    let (done, ch4b, status, state1) = {
+        let sim = scene.sim.as_mut().unwrap();
+        for _ in 0..10 { sim.step_bond(Input::default(), false, false, false); } // the state-5 latch tick
+        let done = sim.drones.copters[ci].done;
+        let ch4b = sim.drones.channels.on(0x4b);
+        let status = wait(sim, 200, |s| s.drones.mission.status() == 6);
+        let i8 = nf_game::mission::LEVELS.iter().position(|l| l.level == 0x0700_0008).unwrap();
+        (done, ch4b, status, sim.drones.mission.states[i8][1])
+    };
+    assert!(done, "the Hind destroyed through the game's damage [M the scan's tail]");
+    assert!(ch4b, "the destruction writes ch 0x4B [M case 4/5's +0x72 write]");
+    assert!(status, "mux #276 → ch 100 → the mission completes");
+    assert_eq!(state1, 4, "the ride objective completes [L record 3]");
 }
 
 /// Sister: boarding without the briefcase never starts the ride — mux #235 needs BOTH channels
