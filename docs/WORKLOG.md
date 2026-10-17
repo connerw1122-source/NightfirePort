@@ -17892,3 +17892,12 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   one of each kind through the real input path (Sim::step_bond + use key/gadget/shot), fix what fails;
   every placement's model resolves (no missing hash, no white fallback). Known open items: pond hut,
   deep-water ladders, the bath hatch, the grates. Started from origin/master d628f01f.
+- level-02-interactables: the 07000002 interactables census (docs/levels/07000002.md — every kind,
+  disc counts, [M] behaviour, port status; zero-instances listed), two doc/test corrections (the
+  "kind-3 keys" were armour [M 0x18e650:220-225]; ch 0x4C's writer IS on disc — AND #480
+  AND(0x48,0x4B)), the model audit (785/785 placements, 25/25 skins, 0/5507 white fallbacks), and
+  the Hurt volume (0xE4) port (hurt.rs + the step_bond hook; hurt_02_live drives the real
+  smash→0x82→emitter-out-0x8D chain end to end). Remaining: breakable shatter, SS mask-2 deco
+  sweeps, the monitor E-view, the Computer1/bunker-chain walk tests. Report:
+  docs/reports/level-02-interactables.md. Suite: 2057 passed, 9 failed (3 disc_golden + 3 no-GPU
+  pylons + 3 exit-−9 kills), 74 ignored.
