@@ -18628,3 +18628,28 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   census/interact tests, make the four master tests pass again (ai_live drone 66 pulse,
   fix_cutscenes2 drake flythrough, spawner_kill gate pair swap, kimiko_actors draw set). Sandbox
   window ~18:08-20:08 UTC.
+- 2026-10-17 s/level-09-interactables-2 (task 709c): DONE. The held 09 work un-held. (1) The
+  tick-head frozen-wait wake loop is DROPPED, not scoped: the game's wake poll rides the drone's
+  OWN control run (ControlSTANDARD 0x1490f0:81 self-sends msg 3 every frame; Drone_Control
+  0x139268 has no enable gate) and the port's per-slot channel_on sampling + the WAIT_SWITCH
+  UPDATE arm already are that mechanism in the game's newest-first order — the head loop was an
+  earlier out-of-order poll that saw 07000005's mux-270-rewritten 0xA4 pulse (ai_live drone 66)
+  and woke the Drake/gate-pair casts (the other three tests). All four now pass on master's
+  drone.rs: ai_live 36/0, fix_cutscenes2_live 5/0, spawner_kill_live 5/0, kimiko_actors_live
+  2/0. (2) The 709a re-freeze was the loop's own artifact (its frame-1 wake raced the intro's
+  start path, which re-entered WaitSwitch on the woken drones); with the loop gone all six
+  ch-0x51 drones sit enabled through the intro (3000-tick trace), so the gdbwatch ask is
+  withdrawn. (3) The kill test un-ignored and passing: its zero damage was its own K5-darts
+  weapon (0x43 — DealWithObjHit case 5 0x13fff0:269-306 routes 0x43/0x44 to the zero-damage
+  dart msg 0x19; switch_to_armed stops at the first gun with ammo); cycle_to_lethal walks to
+  the P2K (0x2) and the car-park guard dies to the real fire path (hp 10 → −1.8, corpse).
+  interact_07000009_live 13/0/1 ignored (the E-route camera pick, pre-existing). (4) Docs:
+  drone-ai.md (dispatcher wiring, self-msg-3 wake, the DefaultInit +0x134/+0x136 at-creation
+  snapshot and Global 0x15b830's snapshot-read, Patrol 0x15c498's msg-1 consume, the
+  disasm-corrected NDrone2_Enable masks [M-dis 0x149dd0]) and 07000009.md's guard section
+  rewritten. Census + kind tests from 709a kept. Neighbours: walk_09 3/0, walkreal_09 2/0,
+  elevator_buttons_09 3/0, drone_portcheck_live 5/0, fix_ai_remainder_live 2/0, spawner_kill
+  9/0, fix_portonly_review_live 3/0, fix_party_mission_live 9/0, cutscene_08_actors_live 2/0,
+  nf-game lib 278/0. The full suite.py did not fit: the sandbox kills background processes
+  between tool calls (two starts died in the build phase); the foreground runs above are the
+  verification. Report: docs/reports/level-09-interactables-2.md.
