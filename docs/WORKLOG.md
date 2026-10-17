@@ -16734,3 +16734,14 @@ suite.
   change cannot unhide it. Probe: Skyrail gondola now loads (play 0x9) and the two carriages
   (0x0200037a + sub 0x0200038a) ride the loop phase-shifted [D placement 4]. nf-game suite:
   470 passed / 0 failed.
+- mp-map-objects fix 2 (remote vehicles): car.rs — the Car_* family (class 0x28) as a data +
+  state-machine module [M Car_Create 0x1305b0 (gates: MP on, option != Off, Ravine blocked,
+  NumTanks < 8; variant byte 0x112: 1->tank / 2->heli model 0x2000194 / 3->Rand_Rand(100)<0x33),
+  Car_Activate 0x131c48 (state 5, cam 0xD, pilot slot, sounds 0x60a/0x10b, spin 10/4, heat
+  reset), Car_Deactivate 0x131d88 (state 99, Explode 10/10/50 script 0x6000052, pose restore
+  from TankSpawns[slot], timer 0x708), Car_Update 0x1307d8 (state-99 countdown, heat cooling,
+  heli input conditioning: yaw +in*0.05*FRM, pitch negated, throttle/steer lerp 0.15 clamp
+  0.125/0.1, shell +10 heat / 6 s cooldown / overheat latch > 100)]. Tests car_state_machine:
+  5 tests, all addresses cited; the tank drive branch + matrix composition are next-session.
+  NOT wired into the sim walk yet (phase 1 drives no MP objects; the hook list is in the
+  module header + report). nf-game: 475 passed / 0 failed; all four crates compile (release).
