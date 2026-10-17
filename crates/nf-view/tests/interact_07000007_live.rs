@@ -73,6 +73,12 @@ fn fire_until_aimed(sim: &mut nf_view::scene::Sim, done: impl Fn(&nf_view::scene
 /// on the table/room geometry before the vase box, or the P2K's fire path on this level; the sim
 /// level of the kind is proven by props.rs `one_bullet_kills_the_zero_pool_breakable`). The sisters
 /// below pin the no-shot side.
+/// [ignore] OPEN (level-07-interactables): the P2K never spawns a shot through `step_bond` on this
+/// level — `last_shot` stays `None` after 100 fire ticks (weapon 2 out, lock released, trigger
+/// held) — so the live bullet-kill can't run yet. The sim level of the kind is proven by
+/// props.rs `one_bullet_kills_the_zero_pool_breakable` [M 0x12bfd8/0x12b970]; the disc pools are
+/// all (float)0 [D census]. Next session: find the fire gate (suspect the weapon_lock auto-draw's
+/// switch state vs the fire path's lockout).
 #[test]
 #[ignore]
 fn the_party_vase_breaks_on_a_p2k_round() {
@@ -92,18 +98,20 @@ fn the_party_vase_breaks_on_a_p2k_round() {
     // few ticks, then fire while holding the aim.
     sim.bond.pos = [60.25, 43.0, -38.0];
     sim.bond.yaw = 0.0;
-    // The vase sits on a table above the eye: sweep the aim up while firing (the look stick + the
-    // trigger, the way a player finds a target), across the table-top band.
+    // The statue #109 (104.9..105.5, 44.1..44.9, -64.7..-64.3 [D census]) stands in the open hall:
+    // sweep the aim up while firing (the look stick + the trigger, the way a player finds a target).
+    sim.bond.pos = [105.2, 43.0, -61.5];
+    sim.bond.yaw = std::f32::consts::PI; // face -z toward the statue
     let mut broke_at = None;
-    for (k, pitch) in [0.06f32, 0.1, 0.14, 0.18, 0.22].iter().enumerate() {
+    for (k, pitch) in [0.02f32, 0.06, 0.1, 0.14, 0.18].iter().enumerate() {
         sim.bond.pitch = *pitch;
         for t in 0..20 {
             sim.step_bond(Input { fire: true, ..Input::default() }, true, false, false);
-            if sim.drones.props.breaks[0].dead { broke_at = Some((k, t)); break; }
+            if sim.drones.props.breaks[2].dead { broke_at = Some((k, t)); break; }
         }
         if broke_at.is_some() { break; }
     }
-    assert!(broke_at.is_some(), "the vase never broke across the aim sweep");
+    assert!(broke_at.is_some(), "the statue never broke across the aim sweep (vase: {:?})", sim.drones.props.breaks[0].dead);
     assert!(sim.drones.props.breaks[0].dead, "the P2K round killed the vase [M Break_Kill 0x12b970:41]");
     // The glass in the same room: kind 2 — the same 0x20 kind, the shatter route.
     assert_eq!(sim.drones.props.breaks[4].kind, 2, "window #298 is the glass type (param 0 = 2 [D])");
@@ -132,7 +140,6 @@ fn walking_the_party_breaks_nothing() {
 /// ray after a teleport, or the fall/rest state). The sister pins the no-reach side; the take code
 /// itself is proven on other levels (level_carry/pickup tests).
 #[test]
-#[ignore]
 fn the_armour_pickup_takes_for_fifty() {
     let Some(mut scene) = load() else { eprintln!("NF_ISO not set — skipping"); return };
     {
@@ -142,16 +149,13 @@ fn the_armour_pickup_takes_for_fifty() {
         assert!(!sim.drones.pickups[idx].gone, "the armour sits before Bond");
         assert_eq!(sim.drones.pickups[idx].rounds, 50, "the armour amount [D #507 param 2]");
         assert_eq!(sim.drones.health.armour, 0.0, "the party starts armour 0 [M Player_InitWeapon case 0x7000007]");
-        // Walk onto it (the player way: step on the pickup).
-        let b = sim.drones.pickups[idx].bounds.centre;
+        // Walk onto it (the player way: step on the pickup). The take point is the pickup's
+        // placement translation (obj+0x90 row 3) — the model bounds' centre is the glist's LOCAL
+        // centre (world-baked meshes carry ~0) [D census; the placement is at (92.0,43.7,-33.2)].
+        let b = sim.drones.pickups[idx].m[3];
+        assert!((b[0] - 92.0).abs() < 0.5 && (b[2] + 33.2).abs() < 0.5, "the armour sits at its placement, got {b:?}");
         sim.bond.pos = [b[0], 43.0, b[2]];
-        for t in 0..40 {
-            sim.step_bond(Input::default(), false, false, false);
-            let p = &sim.drones.pickups[idx];
-            eprintln!("tick {t}: gone={} state={} pc=({:.2},{:.2},{:.2}) bond=({:.2},{:.2},{:.2}) cel={:?} armour={}",
-                p.gone, p.state, p.centre()[0], p.centre()[1], p.centre()[2], sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2], sim.bond.cel, sim.drones.health.armour);
-            if p.gone { break; }
-        }
+        for _ in 0..40 { sim.step_bond(Input::default(), false, false, false); if sim.drones.pickups[idx].gone { break; } }
         assert!(sim.drones.pickups[idx].gone, "the armour took on contact");
         assert_eq!(sim.drones.health.armour, 50.0, "armour +50 [M Pickup_Handler armour arm]");
         // The kind-6 bonuses: same take path, delete-on-take [D #502/#503 respawn 0].
@@ -178,7 +182,6 @@ fn the_armour_sits_until_bond_reaches_it() {
 /// [M 0x1a5170]) does not swing the free door — the pick needs its blocker found. The locked half
 /// (the ch-200 boundary refuses) is pinned by the passing sister test below.
 #[test]
-#[ignore]
 fn the_free_door_opens_on_the_use_key_and_the_locked_one_refuses() {
     let Some(mut scene) = load() else { eprintln!("NF_ISO not set — skipping"); return };
     {
@@ -188,12 +191,12 @@ fn the_free_door_opens_on_the_use_key_and_the_locked_one_refuses() {
         // (door_placements), #242 is the first → #245 is list index 3.
         let door_i = sim.drones.doors.list.iter().position(|d| d.placement == 245).expect("door #245 created");
         assert!(sim.drones.doors.closed_flags()[door_i], "the free door starts closed");
-        // Stand against it and press E.
+        // Stand against it and press E (face +z — the intro leaves Bond facing +x, the look
+        // vector carries the yaw [M Bond::look]).
         sim.bond.pos = [80.0, 43.0, -51.5];
-        for t in 0..30 {
+        sim.bond.yaw = 0.0;
+        for _ in 0..30 {
             sim.step_bond(Input::default(), false, false, true);
-            let d = &sim.drones.doors.list[door_i];
-            eprintln!("tick {t}: state={:#x} pos01={:.2} bond=({:.2},{:.2},{:.2}) substate={}", d.state, d.pos01, sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2], sim.bond.substate);
             if !sim.drones.doors.closed_flags()[door_i] { break; }
         }
         assert!(!sim.drones.doors.closed_flags()[door_i], "the use key opens the free door [M Door_Activate]");
