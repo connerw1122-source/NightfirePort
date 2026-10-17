@@ -4,9 +4,11 @@
 //! the executive floor → the Pheonix keycard lock (1.34, 48.03, −2.64; E → ch 9 → the bridge and
 //! terminal scripts write ch 10/11 [D nis]) → the terminal-room plate (−1.0, 47.5, −5.5; ch 0x4D
 //! objective 8) → the Q-Worm C install (SCOMP_QWORM_C, ch 0x4C objective 7) → the files (ch 0x4E
-//! driven — the doc's open writer) → objective 10's channel (driven, same note) → the roof route
-//! (the lift is the port's known gap — the ScriptPlayers do not carry Bond, the doc's walkthrough
-//! teleports; driven here as the documented stand-in) → the parachute pickup (the real pickup
+//! driven — the doc's open writer) → THE ROOF CUT-SCENE (SP wedge #177 → 060004FA, 2450 ticks:
+//! the game's real lift ride up — event 6 re-places Bond on the helipad deck at key 448
+//! [−14.71, 58.00, −2.06] [D] — and its tail writes ch 0x2A (the helicopter gate) + ch 0x57 +
+//! ch 0x59 (objective 10) [D pack 0790000b]; only its start gate ch 0x2D is driven — the disc
+//! writer of ch 0x2D is the level's remaining open item) → the parachute pickup (the real pickup
 //! touch, ch 0x3F) → the roof-outside volume (ch 0x40) → SEQ #281 → ch 0x41 → ch 0x5A + ch 100
 //! → mission complete [M 0x182c60].
 
@@ -18,13 +20,11 @@ use walker::{Walker, Wp};
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
 fn load_warm() -> Walker {
-    let cold = nf_view::load_with_carry(&iso(), "0700000b.bin", false, None).expect("load cold");
-    let save = {
-        let sim = cold.sim.as_ref().unwrap();
-        nf_game::player::RamSave::capture(&sim.drones.health, sim.gun.switch_request, &sim.drones.inventory, &sim.drones.channels)
-    };
-    // The carried channels of the real run (objectives 3-6 + the hatch unlock) [M 0x195670:13].
-    let mut w = Walker::new(nf_view::load_with_carry(&iso(), "0700000b.bin", false, Some(&save)).expect("load warm"));
+    // Single load: the level's own boot state IS the carried state (health 100, the 0a
+    // loadout [L loadout print]) — the old cold-load capture applied the boot's own values
+    // back and doubled the memory peak (the sandbox OOM-kills the second load). The carried
+    // channels of the real run (objectives 3-6 + the hatch unlock) [M 0x195670:13].
+    let mut w = Walker::new(nf_view::load_with_carry(&iso(), "0700000b.bin", false, None).expect("load"));
     for c in [0x46u8, 0x47, 0x48, 0x49, 0x4a] { w.scene.sim.as_mut().unwrap().drones.set_channel(c); }
     w
 }
@@ -121,23 +121,57 @@ fn walk_balcony_to_the_roof_jump() {
     assert!(installed, "the Q-Worm C install never landed [M 0x1aee20]");
     assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(0x4c), "ch 0x4C (objective 7) [M 0x1aee20]");
 
-    // The files (ch 0x4E's writer is the doc's open question) and objective 10's channel —
-    // driven as the doc's walkthrough does.
+    // The files (ch 0x4E's writer is the doc's open question) — driven as the doc's
+    // walkthrough does.
     w.scene.sim.as_mut().unwrap().drones.set_channel(0x08);
     w.wait(6);
     assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(0x4e), "OR #295 → ch 0x4E (objective 9) [D]");
     assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(0x4f), "AND #299 reveals objective 10 [D]");
-    w.scene.sim.as_mut().unwrap().drones.set_channel(0x59);
-    w.wait(6);
 
-    // The roof: the lift ScriptPlayer does not carry Bond (the port's known gap, the doc's
-    // walkthrough teleports) — the roof route stands in here, then the parachute + the jump are
-    // the REAL object paths.
+    // THE LIFT RIDE UP = the roof cut-scene (SP wedge #177 → script 060004FA, 2450 ticks). The
+    // game's real ride: event 4 PlayerDisable at its start, the camera, the lift-doors entity
+    // (2000668), then event 6 at tick 0x98f re-places Bond on the helipad deck (key 448:
+    // [−14.71, 58.00, −2.06] [D pack 0790000b]) — INSIDE lift_stop_trigger #245's volume
+    // (x −18.9..−9.1, y 56.8..63.8, z −1.9..2.2 [D trig dump]) → ch 0x75. Its tail writes
+    // ch 0x2A (the helicopter's gate) at 0x990 and ch 0x57 + ch 0x59 (objective 10) at 0x991
+    // [D streams 6/13/14]. The gate (mask 1 = the SP's own out ch 0x2D on [M 0x1dbda8 tail +
+    // 0x1dc470 bit 1]) is the ONE driven value: the disc writer of ch 0x2D is the level's
+    // remaining open item (the report). Everything after the gate is the real disc script.
+    w.scene.sim.as_mut().unwrap().drones.set_channel(0x2d);
+    w.wait(2900);
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!(sim.drones.channels.on(0x59), "060004FA stream 13 @0x991 → ch 0x59 (objective 10) [D]");
+        assert!(sim.drones.channels.on(0x57), "060004FA stream 6 @0x991 → ch 0x57 (the fall-web AND #324) [D]");
+        assert!(sim.drones.channels.on(0x2a), "060004FA stream 14 @0x990 → ch 0x2A (the helicopter gate) [D]");
+        assert!(sim.drones.channels.on(0x66), "the helicopter flew (gate 0x2A, flight 060008BE 299 ticks) → out ch 0x66 [M 0x17dbb8:249-268]");
+        // Observation, not a pin: the deck point sits inside #245's volume, but the port's touch
+        // did not raise ch 0x75 in this window in the walkthrough run (the focused test shows the
+        // re-place itself works). Follow-up item in the report.
+        eprintln!("[0b] ch 0x75 after the re-place: {} (lift_stop_trigger #245)", sim.drones.channels.on(0x75));
+        let p = sim.bond.pos;
+        assert!((-20.0..=-8.0).contains(&p[0]) && (54.0..62.0).contains(&p[1]) && (-8.0..4.0).contains(&p[2]),
+            "the event-6 re-place parks Bond at the deck key [−14.71, 58.00, −2.06], got {p:?}");
+    }
+
+    // The parachute + the jump are the REAL object paths. Bond walks the deck east from the
+    // re-place point toward the pickup (the guards' fire is suppressed by the walker's
+    // top_up_health); the stances loop finishes the approach around the helicopter body.
     let parachute = w.scene.sim.as_ref().unwrap().drones.pickups.iter()
         .find(|p| p.switch_channel == 0x3f).expect("OBJECT_Parachute (0xF0, ch 0x3F)").clone();
     let pp = [parachute.m[3][0], parachute.m[3][1], parachute.m[3][2]];
-    w.scene.sim.as_mut().unwrap().bond.pos = [pp[0], pp[1] - 1.2, pp[2] + 1.2];
-    w.wait(30);
+    // Walk the deck east from the re-place point; on a wedge, the documented transit (the
+    // helicopter's blocking volume — the report's open item) and the INTERACTIONS stay real.
+    w.lenient = true;
+    let leg = w.walk_to(Wp::new(pp[0], pp[1] - 1.4, pp[2] - 5.0).r(1.6), "the deck below the parachute");
+    if leg == u32::MAX {
+        let sim = w.scene.sim.as_mut().unwrap();
+        sim.bond.pos = [pp[0], pp[1] - 1.2, pp[2] + 1.2];
+        sim.bond.vel = [0.0; 3];
+        eprintln!("[0b] the deck walk wedged — the documented transit to the parachute side");
+    }
+    w.lenient = false;
+    w.wait(10);
     // Take the parachute: the real pickup touch (stances around it; the helicopter's blocking
     // volume may need the offset — the teleport test's own approach).
     let mut taken = false;
@@ -205,6 +239,49 @@ fn walk_balcony_to_the_roof_jump() {
         assert_eq!(sim.drones.mission.to_end, 0x0730_000b, "the hand-off latches");
     }
     eprintln!("[0b] mission complete in {} ticks; stuck {}; falls {}", w.total_ticks, w.report.stuck_events.len(), w.report.falls.len());
+}
+
+/// The roof cut-scene's channel tail, alone: the disc's writer of objective 10's ch 0x59, the
+/// fall-web's ch 0x57 and the helicopter's gate ch 0x2A [D pack 0790000b, 060004FA streams
+/// 6/13/14/15], played end-to-end through the port's real SP machinery (PlayerDisable at the
+/// start, the event-6 re-place at 0x98f, the channel writes at 0x990/0x991, then the parked
+/// helicopter's flight → out ch 0x66 [M 0x17dbb8:249-268]). Sister assertion: the pre-gate
+/// baseline — none of the tail channels rise while the gate is off (fails on any tree that
+/// boots the script unprompted or drives the channels at load).
+#[test]
+fn the_roof_cutscene_060004fa_writes_ch59_ch57_and_arms_the_helicopter_gate() {
+    let mut w = load_warm();
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let sp = sim.drones.scripts.players.iter()
+            .find(|p| p.scripts[0] == 0x0600_04fa).expect("SP wedge #177 (script 060004FA)");
+        assert_eq!(sp.out, 45, "the SP's out channel = 0x2D [D #177 param 6]");
+        assert_eq!(sp.scripts[1], 0, "no second script [D #177 param 1]");
+        assert!(sim.drones.scripts.lib.contains_key(&0x0600_04fa), "the pack script is in the load lib [D 0790000b]");
+    }
+    // The pre-gate baseline (the sister): 300 ticks, none of the tail channels.
+    w.wait(300);
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!(!sim.drones.channels.on(0x59) && !sim.drones.channels.on(0x57) && !sim.drones.channels.on(0x2a)
+            && !sim.drones.channels.on(0x66) && !sim.drones.channels.on(100),
+            "the tail channels stay off while the gate is off");
+    }
+    // The gate drive (ch 0x2D's disc writer is the open item) → the real script.
+    w.scene.sim.as_mut().unwrap().drones.set_channel(0x2d);
+    w.wait(2900);
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!(sim.drones.channels.on(0x59), "stream 13 @0x991 → ch 0x59 [D]");
+        assert!(sim.drones.channels.on(0x57), "stream 6 @0x991 → ch 0x57 [D]");
+        assert!(sim.drones.channels.on(0x2a), "stream 14 @0x990 → ch 0x2A [D]");
+        assert!(sim.drones.channels.on(0x66), "the copter's flight → ch 0x66 [M 0x17dbb8]");
+        assert!(!sim.drones.channels.on(100), "no mission-complete leak (the copter's countdown pulse is unarmed: param 9 = 0 [D #328])");
+        // The event-6 re-place: Bond on the helipad deck at key 448 [−14.71, 58.00, −2.06] [D].
+        let p = sim.bond.pos;
+        assert!((-20.0..=-8.0).contains(&p[0]) && (54.0..62.0).contains(&p[1]) && (-8.0..4.0).contains(&p[2]),
+            "the re-place parks Bond at the deck key, got {p:?}");
+    }
 }
 
 /// Fire the held weapon at a static point through the real trigger path (the 0a walker's aim
