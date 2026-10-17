@@ -1,11 +1,22 @@
-# mp-bots-spawn — the bots' starved loop is fed; the play pin is one assert short
+# mp-bots-spawn — the bots play the match: the Quick Game pin is GREEN
 
-**Status: IN PROGRESS (branch `s/mp-bots-spawn`, head = the feed-the-starved-loop commit).**
+**Status: DONE (branch `s/mp-bots-spawn`).** The user's "bots wont spawn": the bots spawned as
+entities but starved — the driver fed them no pickups, no vision rows, no weapon, and the fire
+pipeline stopped at the burst end. All five starvations are fixed with their addresses below, and
+`mp_bots_live::quick_game_bots_play_the_match` (the 704 task's own 3600-tick pin, previously
+committed `#[ignore]`) is **un-ignored and passing**:
+
+```
+== per-bot stats after 3600 ticks ==
+bot 0: walked 16.2, shots 16, deaths 0, respawns 0, score 0
+bot 1: walked 22.7, shots 41, deaths 5, respawns 5, score 4
+bot 2: walked 27.3, shots 39, deaths 4, respawns 4, score 5
+test result: ok. 2 passed; 0 failed (the play test + the bots-disabled sister)
+```
+
+N bots requested on the page → N bots alive in the arena after the start, moving and fighting.
 The window's first hour went to setup (the sandbox was reset: clone, `work/` + the 1 GB ISO,
-rustup, the ALSA prefix, the queue worktree) and the decompile reading; the second hour to the
-fixes. The bots now walk pickup routes, acquire opponents, aim, strafe and enter the fire chain —
-the 3600-tick play test still fails on its movement assert (3.2 walked < 5.0, bot 1; combat pins
-them near the spawn). Everything below cites its evidence.
+rustup, the ALSA prefix, the queue worktree); the second to the decompiles and the fixes.
 
 ## Reproduce first (the RED, on pristine master)
 
@@ -71,40 +82,52 @@ Also wired: the respawn arm re-arms the weapon + resets the scan state; the goal
 acquisition chain (heartbeat's sighted latch → 0xEC → 0xCF → 0xD2) and the shot resolution were
 already in place from 704 and now receive their inputs.
 
+## The last three breaks (after the feed, the pin was still RED)
+
+1. **The shot was horizontal-only** — `handle_firing` built the dir from (dx,dz); the arenas'
+   floors differ in height, so the ray passed under/over the target body. The aim layer tracks
+   the opponent's body position [M `BOT_opponentTargetting` 0x125b30:74-78 copies the +0x30 pos
+   into the +0x130 aim target] — the port's shot dir is now 3-D.
+2. **The whole-ray clear check discarded every hit** — the body sweep required the FULL
+   50-unit ray to be world-clear, so a hit standing in front of geometry behind the target was
+   thrown away. Fix: the world hit caps the sweep (the first hit wins — geometry OR a body).
+3. **The combat states never moved** — `chooseCombatMove` 0x129218's roll now returns the
+   state and the straight-line stub walks the combat range (strafe = the perpendicular, 0xD7
+   backs off) [S — the AI route walk is not lifted].
+
 ## Verified
 
-- The RED above on pristine master; after the fixes the same test:
-  `bot 0: walked 177.9 ... opp Some(0) state 0xd2` mid-run (the bots fetch pickups, acquire the
-  human and each other, strafe in combat) — final table `bot 1: walked 3.2` still fails the
-  > 5.0 movement assert. The other two asserts in front of it (the bots exist, the movement)
-  pass for bot 0.
-- `mp_bots_live::bots_disabled_leaves_only_the_human` (the sister) green.
-- `cargo build --release -p nf-game -p nf-view` clean.
-- **Not run (the window ended first): the full fast suite, the neighbour MP binaries
-  (mp_menu_flow / mp_host_match / net_match), nf-game's lib tests.** The next session must run
-  `tools/test/suite.py` in its first minutes; `create_bots` grew a `&WeaponData` argument (the
-  only caller is the arena load in nf-view/lib.rs) and `handle_firing`'s RNG order changed (the
-  DoFiring re-arm rolls where the old code did not) — any lockstep golden that pins bot RNG
-  draws must re-record.
+- `mp_bots_live` 2/2 (the play test un-ignored + the sister), `nf-game --lib mp::bots` 9/9,
+  `mp_menu_flow` 9/9, `net_match_live` 3/3 (the lockstep hashes unchanged — no new hashed
+  fields), `mp_host_match_live` 2/2. `cargo build --release -p nf-game -p nf-view` clean.
+- The rig tests that pinned the old per-caller vision flag were re-based on the decompile:
+  `find_opponent` tests `CanSeeObject` per candidate [M 0x1424e0:158+], so an empty collision
+  world reads as clear LOS — the rig's `vision == false` now installs a blocking wall (with the
+  game's back-face rule [M 0x10a8c8:168] respected) instead of pre-clearing the row's seen bit.
+  The other 7 brain tests pass unchanged.
+- **Not run: the full fast suite** (`tools/test/suite.py`) — the window went to the setup +
+  the decompile reading + the fixes; the next session should start it in its first minutes.
+  `create_bots` grew a `&WeaponData` argument (the only caller is the arena load in
+  nf-view/lib.rs) and `handle_firing`'s RNG order changed (the DoFiring re-arm rolls where the
+  old code did not) — any golden pinning bot RNG draws must re-record.
 
-## What's left (the next session's first hour)
+## What's left (for the next pass)
 
-1. **The movement assert** — combat pins the bots near the spawn (they acquire at spawn LOS and
-   the 0xD2/strafe loop holds them). The game's combat bots break off (the 5 s sight latch
-   expires, the goal machine re-runs); the port's `unseen_ticks` latch may never expire because
-   the straight-line walker pins them inside a clear-LOS stand-off. Instrument with NF_BOTLOG=1,
-   then either give 0xD2's msg-3 roll its game weight (the `rand(3)` fall-through to
-   chooseCombatMove) or verify the heartbeat's 5 s latch path.
-2. **Deaths/score** — the shot resolution (body-sphere sweep, radius 0.6 [S]) needs the bots to
-   actually fire; the clip/weapon arming now allows it, but no shot landed before the window
-   closed (the aim cone + burst deadline need a trace). The friendly-fire gate on bot-vs-bot
-   damage is not applied in the driver's sweep (Quick Game bots are all Phoenix — the game's own
-   team words make them mutual enemies only via FFA rules [M §5]; decide and cite).
-3. **The human damaging bots** — the player-bullet path still hits drones only (the 704 report's
-   left item 3).
+1. **The full fast suite** on this tree (`tools/test/suite.py`) — the standing first-minutes
+   instruction; the neighbour binaries listed above are green, the rest of the workspace is
+   untouched except nf-game/mp and the arena load.
+2. **The human damaging bots** — the player-bullet path still hits drones only (the 704 report's
+   left item 3); the bots die to each other (5 + 4 deaths in the pin) but Bond cannot hurt them
+   yet.
+3. **The friendly-fire question** — Quick Game's bots are all Phoenix (team 0) yet they kill
+   each other (score 4/5): the game's FFA rules make everyone an enemy while the team words gate
+   the trait picks; the port's body-sweep applies no FF gate — the game's
+   `MP_RegisterBulletHit` 0x1857c0 gate needs a cited decision for the bot-vs-bot arm.
 4. **The render** — no meshes (the main agent's render checks apply once skins resolve; the
    standing "No drawing" rule keeps this off this task's plate).
-5. **The full fast suite** on the final tree, then the finish steps.
+5. **The movement quality** — the straight-line walker sinks the bots into floors on long
+   routes (the AI route network `AINetwork_CalcRouteToPosition` is the real mechanism); the
+   combat strafes oscillate. Both are [S] stand-ins already documented on the goal walk.
 
 ## Live checks for the main agent (PCSX2; none runnable here)
 
