@@ -534,6 +534,10 @@ pub struct Sim {
     /// aim-bit arm] and this latch with it. Port-only input ([S] the playtest request); the
     /// game's pad zoom has no wheel and keeps the plain ramp.
     pub zoom_wheel: bool,
+    /// nis-event9-cnis: the C_NIS_Handler route's booted cut-scene script (`FMVScript` [M
+    /// `C_NIS_Handler` 0x205f10:71,87]) — the hash `nis_page_boot` started, `None` when the
+    /// page hasn't booted one. The msg-0x4b gate re-checks `Script_IsPlaying(FMVScript)`.
+    pub fmv_script: Option<u32>,
 }
 
 /// A status-pane message (`Text_AddMsg` 0x1b0c30's `TXT_MSG` node): the bound text, its remaining ticks,
@@ -2615,6 +2619,22 @@ impl Sim {
         for e in std::mem::take(&mut self.drones.player_events) {
             match e {
                 nf_game::nis::Request::PlayerDisable => self.disabled = true,
+                // nis-event9-cnis: `Player_Cam2Mode` 0x195fc8 [M — mode 3 → `Player_SetCamMode(BL, 2)`
+                // 0x195928 (the cut-scene behind-Bond orbit, `Player_PositionCamera` 0x18f5d8 case 2);
+                // anything else → `BL+0x8a8 = 0` + `SetCamMode(0)` + `Player_ChangeSubState(player, 0)`
+                // 0x195fc8:11-16 — the walk substate, the exit hand-off]. The game's SetCamMode(2) arm
+                // also runs `HUD_Reset(BL)` + `viewer[BL+0x94e]+0x236 = 0` [M 0x195928 default] — HUD
+                // state the port does not draw; `BL+0x8a8` has no port model (the game's GunImp writes
+                // it, `Player_Move` 0x191dd0:151 reads it in the aim re-heading) so the zero is a no-op
+                // here.
+                nf_game::nis::Request::Cam2Mode { mode } => {
+                    if mode == 3 {
+                        self.bond.cam_mode = 2;
+                    } else {
+                        self.bond.cam_mode = 0;
+                        self.bond.substate = nf_game::player::SS_WALK;
+                    }
+                }
                 nf_game::nis::Request::PlayerEnable { at, .. } => {
                     if let Some(m) = at {
                         self.bond = nf_game::player::Bond::stand_at(&self.world, [m[3][0], m[3][1], m[3][2]], m[2][0].atan2(m[2][2]));
@@ -2719,6 +2739,80 @@ impl Sim {
         let yaw = d[0].atan2(d[2]);
         let pitch = (d[1] / horiz.max(1e-4)).clamp(-1.0, 1.0).asin();
         Some((cam, yaw, pitch, 1.0))
+    }
+
+    /// nis-event9-cnis: NIS event 9's cut-scene camera (`Player_PositionCamera` 0x18f5d8 case 2),
+    /// Some while `BL+0x950 == 2` — the mode `Player_Cam2Mode` 0x195fc8's mode-3 arm set. The game,
+    /// per tick [M 0x18f5d8 case 2:145-156]:
+    /// 1. `camera_track_XZ_pos_behind(1.0, 10.0, obj+0x30, obj+0x50, viewer)` [M 0x1bc260] — the
+    ///    camera sits 10 units behind Bond on the XZ plane: `pos − 10·(sin(yaw), cos(yaw))`, the
+    ///    yaw read at `obj+0x54` (the second word of the spherical orientation at `obj+0x50` [M
+    ///    `Player_Enable` 0x195498:69 fills `obj+0x50..0x5b` from the matrix's direction]) plus the
+    ///    BSS debug global `debug_cam_ry`; the lerp factor is 1.0 (0x3f800000), so it snaps;
+    /// 2. `camera_track_Y_pos(1.0, 0.0, obj, viewer)` [M 0x1bc1f0] — `cam.y ← obj+0x34 + 0 +
+    ///    debug_cam_posy`, Bond's own Y anchor (the debug globals are BSS with no non-debug writer
+    ///    in ACTION.ELF's decompile — 0.0 in play);
+    /// 3. `Camera_PosYRot`/`Camera_PosXRot(1.0, obj+0x30, viewer)` [M 0x1bc0c0/0x1bc148] — the view
+    ///    snaps to look at Bond's position: yaw `atan2(dx, dz)`, pitch `−atan2(dy, √(dx²+dz²))`
+    ///    (both lerped by 1.0);
+    /// 4. `viewer+0x108 = 1.0` (the FOV factor — the unzoomed value; the zoomed modes 0/0xe feed
+    ///    `BL+0x8D0` there [M :129, :154]) and `viewer+4 = 0` [M :155 — the extra rotation the port
+    ///    does not model].
+    /// The game also draws Bond's body (`View_SetDrawInAllViews`) and hides the view model
+    /// (`View_SetDrawInNoViews(BL+0x7e8)`) [M :146-148] — no player body mesh in the port; the
+    /// view-model hide rides the cutscene flag in lib.rs.
+    pub fn cam2_camera(&self) -> Option<([f32; 3], f32, f32, f32)> {
+        if self.bond.cam_mode != 2 { return None; }
+        let pos = self.bond.pos;
+        let yaw = self.bond.yaw;
+        let cam = [pos[0] - 10.0 * yaw.sin(), pos[1], pos[2] - 10.0 * yaw.cos()];
+        let d = [pos[0] - cam[0], pos[1] - cam[1], pos[2] - cam[2]];
+        let horiz = (d[0] * d[0] + d[2] * d[2]).sqrt();
+        let look_yaw = d[0].atan2(d[2]);
+        let look_pitch = -(d[1]).atan2(horiz);
+        Some((cam, look_yaw, look_pitch, 1.0))
+    }
+
+    /// nis-event9-cnis: the `C_NIS_Handler` route's boot — the mission-driven cut-scene entry the
+    /// SP placements don't cover (`C_NIS_Handler` 0x205f10, the IN-GAME NIS page 0x1000003e's
+    /// handler [M `Handler_HandleMessage` 0x2029e0:223-227]). The game's msg-0x4b tail [M
+    /// 0x205f10:92-112]: when the page's bound FMV script is NOT already playing, resolve the
+    /// current level's script hash (the page's list item value, `Menu_SendMessage(msg 0x35)` —
+    /// only `List_SendMessage` 0x2196e8:463 answers 0x35), `LoadableLoad` it if the isLoadable
+    /// table names a pack, then `Script_Load` + `Player_Disable(glb_players, 0)` + `Script_Play`
+    /// + `Camera_PushStates` + `Camera_Enable(7,0,0,0)`; `show_frame_count = 1` [M :88] is the
+    /// debug frame counter the port doesn't draw.
+    ///
+    /// Port mapping: the pack streaming is the load path's own type-0xC pass (`isLoadable`/
+    /// `LoadableLoad` — the pack's scripts already sit in `drones.scripts.lib`); `Script_Load` +
+    /// `Script_Play(…, 0)` is the once-mode script player (`Scripts::spawn_once`, identity matrix
+    /// [S] — the game's Script_Load carries no placement); `Player_Disable` rides the same
+    /// `player_events` hand-off event 4 uses; `Camera_Enable(7,0,0,0)` selects the cut-scene
+    /// viewer whose view the script's kind-4 camera stream drives — the port's single
+    /// `script_camera()` path. The route's `msg 0x51` bindings (≈70 `Menu_SendMessage(0x10,
+    /// control, hash)` pairs [M 0x205f10:7-70]) set runtime M_CONTROL heap pointers' values — the
+    /// disc census found NO authored def for page 0x1000003e anywhere on NTSC-U (the census test),
+    /// so no level resolves a binding today: the boot takes the resolved hash as its argument.
+    pub fn nis_page_boot(&mut self, script_hash: u32) -> bool {
+        // The FMVScript gate [M 0x205f10:92 — `Script_IsPlaying(FMVScript) == 0`]: the page
+        // re-shown while its cut-scene runs is a no-op.
+        if let Some(h) = self.fmv_script {
+            if self.drones.scripts.players.iter().any(|p| {
+                p.scripts[0] == h && p.state == 2 && p.info[p.cur].as_ref().is_some_and(nf_game::nis::Script::playing)
+            }) {
+                return false;
+            }
+            self.fmv_script = None;
+        }
+        // `hashtable_getitem(hash)` [M 0x205f10:104-106] — the port's lib; a hash neither the
+        // level nor its packs carry (the game's `Script_Load` would have nothing to load).
+        if !self.drones.scripts.lib.contains_key(&script_hash) { return false; }
+        let ident = [[1.0f32, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]];
+        self.drones.scripts.spawn_once(self.drones.scripts.players.len(), script_hash, ident);
+        self.fmv_script = Some(script_hash);
+        // `Player_Disable(glb_players, 0)` [M 0x205f10:102] — the same hand-off event 4 rides.
+        self.drones.player_events.push(nf_game::nis::Request::PlayerDisable);
+        true
     }
 
     /// The clip slot the held weapon reads and writes: the BASE's when the record is a twin (+0x05
@@ -6397,6 +6491,7 @@ impl Scene {
                 view_aspect: 4.0 / 3.0,
                 zoom_wheel: false,
                 laser_sight: None,
+                fmv_script: None,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));

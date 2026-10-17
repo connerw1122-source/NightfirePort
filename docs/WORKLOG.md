@@ -17133,3 +17133,22 @@ unpause callers (Switch_Update, NDrone2_KickObject); keep fix_finale_live + 4a l
   A*-through-scary-link sister, the record-switch table.
 - Left: the class-0x2a ('*') gas objects' 3.0/0x200 flagging (the port has no gas object walk
   here yet) and the LinkCreep 0x10 marker (write-only, no reader) — both documented [S].
+
+- 2026-10-16 nis-event9-cnis (task 733): NIS event 9 (cam2mode) and the C_NIS_Handler
+  mission-driven cut-scene route aren't ported (uncited-audit gap 10). Plan: read the
+  docs/systems/uncited-audit.md entry, port event 9 and the C_NIS_Handler route from the
+  decompile [M], find every script/level that uses them [D], add a test that fails without
+  the change plus a sister, run the touched crates + the fast suite.
+  Branch created from origin/master f09f3c6c.
+- nis-event9-cnis: ported NIS event 9 (cam2mode) end to end — `Script_EventHandler` 0x1d94c0 case 9
+  → `Player_Cam2Mode` 0x195fc8 (`Request::Cam2Mode`, drained on the view side), `Player_PositionCamera`
+  0x18f5d8 case 2's behind-Bond orbit as `Sim::cam2_camera()` (10 units behind on the XZ at Bond's Y,
+  the atan2 look, `viewer+0x108 = 1.0`), the view-model hide, and the C_NIS_Handler 0x205f10 msg-0x4b
+  boot as `Sim::nis_page_boot` (+ `fmv_script`). Census [D] (nf-formats/tests/nis_event9_census.rs):
+  event 9 fires exactly once on the disc — 07000001's 0600005b stream 4, mode 1 (the EXIT arm; no
+  disc script enters the orbit) — and NO authored def for page 0x1000003e exists anywhere on NTSC-U,
+  so the C_NIS route is data-dead (the boot is ready; only the resolver is missing). script_census
+  pin + docs updated (kind 9 handled: 12 of 14, HANDLED_EVENT_KINDS 15). Tests: the event-9 unit
+  test (fails on the old tree — kind 9 fell to the unhandled Event arm), the real-script exit-arm
+  test, the [M]-pinned orbit-params test, and the boot/gate test. Sandbox note: ALSA needs
+  PKG_CONFIG_PATH (compile) AND LIBRARY_PATH (link) wrapped in scripts/nfenv.sh (uncommitted).
