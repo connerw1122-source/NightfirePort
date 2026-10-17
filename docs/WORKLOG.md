@@ -17461,3 +17461,29 @@ path's raw +0x20 (lands within ~1% by coincidence for these records, out of scop
   5 tests, all addresses cited; the tank drive branch + matrix composition are next-session.
   NOT wired into the sim walk yet (phase 1 drives no MP objects; the hook list is in the
   module header + report). nf-game: 475 passed / 0 failed; all four crates compile (release).
+
+## drake-fight-1b (2026-10-17, branch s/drake-fight-1b) — started 00:07 UTC
+
+Task 745: port the 0700001b final fight's mechanics [M + D] — Drake's AI and phases, the missile
+launch sequence (channels 1..8, MissileDeploy, SpaceMissile_Update's states), win/fail conditions.
+Tests: a scripted headless run reaches each phase on the game's triggers; the mission completes or
+fails on the game's conditions. Reading the decompile first.
+
+## drake-fight-1b (2026-10-17, branch s/drake-fight-1b) — 01:20 UTC
+
+Task 745, done on its own evidence: the 0700001b missile launch sequence ported from the
+disassembly (the decompile's C dropped every store) — `SpaceMissile_Update` 0x1aa118's five
+states [M 0x1aa1c8/0x1aa23c/0x1aa25c/0x1aa33c/0x1aa3e0], `MissileDeploy` (0x30cd70) as
+`Drones::missile_deploy`, the eight kind-0x39 placements attached with the [M 0x1a9ef0] param
+map, and the p0 scripts' [D] in-stream writes at their decoded ticks. Drake's playtest symptom
+fixed at the init: skins 0x05000078/94/ba set skin kind 0x18 [M 0x14b300:236-243] → mode 0x1d +
+start 0xbd AstronautLaunch + TakeXHits(0x33) health ×3 for Drake [M :722-739, 0x14d928] — the
+port had him as a generic mode-0 guard falling through the station. `AstronautLaunch` 0xbd arms
+[M 0x16dd28] and `SpaceDrake` 0xc2 verbatim [M 0x16dee0]. Win/fail pinned by tests: AND #139
+(21&22&27) → ch 9 → objective 1; the state-2 launch branch → ch 199 → FailLabel 0x0200_005a
+[M 0x1827d8:113-115]; the defeat NIS path re-verified (fix_finale 4/4). Tests:
+`drake_fight_live` 3/3 + regressions (nf-game lib 241, level_live, drone_portcheck 35, ai_live 5).
+The full suite could not run (suite.py killed between tool calls twice, 0-byte output) — the
+next message should run it on this branch. Left: the zero-g move family (s/astronaut-guards-1b's
+scope), the HUD pane's MissileDeploy switch (visual), the 0xc2 launch-order writer (absent from
+the disc data), live checks in the report.

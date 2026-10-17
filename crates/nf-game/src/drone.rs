@@ -183,6 +183,11 @@ pub mod state {
     pub const FOLLOW_WAIT: u8 = 0x26;
     pub const FOLLOW_DONE: u8 = 0x27;
     pub const GO_TO_GOAL_ALLY: u8 = 0x28;
+    /// `NDrone2_DSTATE_SpaceDrake` 0x16dee0 = `NDrone2_StateFuncs[0xC2]` [L 0x29b300 + 0xC2·4,
+    /// docs/fields/dronetype-tables.md:377]. Drake's own state (0700001b): the zero-g float —
+    /// idle anims while prop 0x46 is set, impacts only once the fight gate ch 10 is on, and the
+    /// ch-10 UPDATE → 0xb4 DeleteMe (the pre-fight instance despawns when the fight opens).
+    pub const SPACE_DRAKE: u8 = 0xc2;
     /// `NDrone2_DSTATE_OpenDoor` (0x1681f8) = `NDrone2_StateFuncs[0x81]` [L 0x29b300 + 0x81·4]. The
     /// route's door node parked the drone here: work the door (+0xBA8) until `DoorIsOpen`, then back
     /// to the saved return state `Drone+0x5A6`.
@@ -4545,6 +4550,46 @@ impl Drone {
             (WAIT_SWITCH, msg::ENTER) => { self.enabled = false; self.vision_on = false; self.watching = false; true }
             (WAIT_SWITCH, msg::UPDATE) => { if self.channel_on { self.enabled = true; let s = self.start_state(d); self.set_state(s) } true }
             (WAIT_SWITCH, msg::ENABLE) => { self.enabled = true; let s = self.start_state(d); self.set_state(s); true }
+            // `NDrone2_DSTATE_SpaceDrake` 0x16dee0 — Drake's zero-g state (0700001b, task
+            // drake-fight-1b). Messages: 1 ENTER, 3 UPDATE, 4 the idle timeout, 5 anim done, 8 bullet.
+            (SPACE_DRAKE, msg::ENTER) => {
+                // [M 0x16dee0 case 1]: obj+0xAC (health) = 10.0; obj+0x4f8 |= 0x10000 (sight
+                // processing) | 0x2000 (may-notice); SetStandIdleAnim(0); prop 0x46 →
+                // SetIdleTimeOut(0x2d, 5) — the port's (45, 5) arms, the same call the IDLE ENTER makes.
+                self.health = 10.0;
+                self.vision_on = true;
+                self.watching = true;
+                self.request_anim(d, anim_state::STAND_IDLE);
+                if self.prop(d, 0x46) { self.set_idle_timeout(rng, frame, 45, 5) }
+                true
+            }
+            (SPACE_DRAKE, msg::UPDATE) => {
+                // [M 0x16dee0 case 3]: switch_channels[10] set → SetState(0xb4). Drake's wait
+                // channel IS 10 [D placement #186 p3 = 10], so the per-tick cached
+                // wait_channel_on (Drones::tick) is that channel's live value.
+                if self.wait_channel_on { self.set_state(crate::kiko::DELETE_ME); }
+                true
+            }
+            (SPACE_DRAKE, msg::IDLE_TIMEOUT) => {
+                // [M 0x16dee0 case 4]: prop 0x46 → CallAnim(0, 0x4b, Rand_Rand(3), …) + re-arm
+                // (0x2d, 5). The Rand_Rand(3) is the game's own shared-stream draw [M].
+                if self.prop(d, 0x46) {
+                    let variant = rng.rand(3) as u16;
+                    self.call_anim_variant(d, 0x4b, variant, 0, 0);
+                    self.set_idle_timeout(rng, frame, 45, 5);
+                }
+                true
+            }
+            (SPACE_DRAKE, msg::ANIM_DONE) => {
+                // [M 0x16dee0 case 5 → LAB_0016dfc0]: SetStandIdleAnim(0).
+                self.request_anim(d, anim_state::STAND_IDLE);
+                true
+            }
+            (SPACE_DRAKE, msg::BULLET) => {
+                // [M 0x16dee0 case 8]: DroneFunc_HandleImpact only while switch_channels[10] is on.
+                if self.wait_channel_on { self.on_bullet(d, rng, frame, s); }
+                true
+            }
             (INIT_PATROL, msg::ENTER) => {
                 let patrols = (self.prop(d, 0x24) || self.prop(d, 0x25)) && self.assign_path(d, 4);
                 self.set_state(if patrols { PATROL } else { IDLE });
@@ -7432,6 +7477,12 @@ pub struct Drones {
     /// game's `Text_AddMsg` 0x1b0c30 drops type-4 adds while it is 0, so the port gates both this
     /// track and the `script_msgs` drain on it (the fresh profile's default is Off [M profile.rs]).
     pub subtitle_track: crate::subtitle::SubtitleTrack,
+    /// The 0700001b SpaceMissiles — the kind-0x39 placements (`Create_SpaceMissile` 0x1a9ef0).
+    pub space_missiles: Vec<crate::space_missile::SpaceMissile>,
+    /// `MissileDeploy` — the 8 bytes at 0x30cd70 [M 0x1aa218/0x1aa2c8/0x1aa324], zeroed by
+    /// `Create_SpaceMissile` [M 0x1a9ef0:62]: per missile 0 idle, 1 launch script playing,
+    /// 2 disarmed, 3 launched [M 0x1aa118 disasm]. `HUD_UpdateSpacePane` 0x19d3b8 reads it.
+    pub missile_deploy: [u8; 8],
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -7515,6 +7566,8 @@ impl Drones {
             // subtitles-data: the fresh profile's Subtitles byte is Off [M profile.rs]; the host
             // wires the AV row (control 0x10000136) / profile flag into `subtitle_track.enabled`.
             subtitle_track: crate::subtitle::SubtitleTrack::new(false),
+            space_missiles: Vec::new(),
+            missile_deploy: [0; 8],
             death: Default::default(), bond_fire: false, aims_idle: 0, auto_restart: true, level_exit_cold: false,
             // fix-aims20-modes-lights: BL+0x93e starts at the refill value [L ee_start_05].
             aims_raise: 1200,
@@ -7752,6 +7805,29 @@ impl Drones {
         // The presentation FX (0x21/0xe3/0xd4/0x4a/0xf2 placements, fix-world-fx): the same
         // placement-order walk `parsemap_create_dynamic_objects` 0x1d04f0 runs.
         self.fx = crate::world_fx::WorldFx::attach_level(level);
+        // The SpaceMissiles (0700001b): the kind-0x39 placements, the same placement walk
+        // `parsemap_create_dynamic_objects` 0x1d04f0 runs for the dynamic creators [M 0x1d1b68].
+        self.space_missiles.clear();
+        self.missile_deploy = [0; 8];
+        if let Some(mi) = level.main_map() {
+        for (i, p) in level.maps[mi].placements.iter().enumerate() {
+            if p.flags & 0xff != 0x39 { continue; }
+            let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map(|&(_, v)| v).unwrap_or(0);
+            // Create_SpaceMissile's param map [M 0x1a9ef0]: p0 = +0x2c script, p1 = +0x30 → ext+4,
+            // p2 = +0x34 → ext+8, p3 = +0x38 → ext+0x14 f32, p4..p7 = +0x3c..+0x48 u16 → ext+0x0c..0x12.
+            self.space_missiles.push(crate::space_missile::SpaceMissile {
+                placement: i,
+                index: param(4) as u16,
+                fail_channel: param(5) as u16,
+                done_channel: param(6) as u16,
+                gate_channel: param(7) as u16,
+                countdown: param(3) as i32 as f32,
+                state: 0, // obj+0xf4 = 0 at creation [M 0x1a9ef0:60]
+                launch_flag: 0,
+                timer: 0,
+            });
+        }
+        }
         for dr in &mut self.list {
             if let Some(i) = level.maps[m].placements.iter().position(|p| p.flags & 0xff == 0x0f
                 && (p.translation[0] - dr.pos[0]).abs() < 1e-3 && (p.translation[2] - dr.pos[2]).abs() < 1e-3) { dr.placement = i; }
@@ -9187,6 +9263,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // at tick N is first ticked here at N+1: exactly the game's first `Emitter_Update`, before
         // the bullets and the AI of that frame — the interleave the game itself produces.
         self.fx.tick(&mut self.channels, player.pos, frame, &mut self.gas, &mut self.rng);
+        // The SpaceMissiles tick in the same control pass (the game's object handler runs
+        // `SpaceMissile_Update` per frame [M 0x1aa118]).
+        {
+            let chans = &mut self.channels;
+            let deploy = &mut self.missile_deploy;
+            for m in &mut self.space_missiles {
+                m.tick(chans, deploy, frame);
+            }
+        }
         // Music: `Drone_InitComms` resets the attack gate; `DroneFunc_CheckAlarmRaised` (07000005 / 06) posts event 2 = 3
         // for the first 58 frames of channel 0xA4, then = 1 for the first 598 of channel 0x37 or 0x61; Bond dead →
         // event 6 (`Player_CheckForDeath`, a player-side call — runs during cut-scenes, not gated).
