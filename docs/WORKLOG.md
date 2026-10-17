@@ -18461,3 +18461,10 @@ directly. Report: docs/reports/level-07-interactables.md.
   current master lineage; reverted before the window closed (67bd4c6f holds the sketch for the
   follow-up). Eight breakers all green + nf-game lib 276/276 + examples build; the full suite
   is the follow-up. Report: docs/reports/glass-breach-guards-2.md.
+
+- glass-breach-guards-3 (s/glass-breach-guards-3): continuing the held 705c. The merge breaker
+  was `interact_07000001_live::bullets_shatter_the_glass_and_vases_and_the_sister_stays_whole`
+  line 171 "unshot scenery stays whole (the sister)" — the guard-contact breach path broke 01
+  breakables nobody shot. Work in progress: merged origin/master, reproducing, then scoping the
+  breach to the game's rule [M Break_Update 0x12bfd8: class-0x02 contacts damage only on
+  0x70000001 kind 2] so the sister passes alongside the breach tests.
