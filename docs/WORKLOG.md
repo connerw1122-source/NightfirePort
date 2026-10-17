@@ -17391,3 +17391,8 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+
+- glass-shatter (s/glass-shatter): started. Task: breakable glass cannot be shattered — find the game's
+  breakable-glass objects and break path (pane object types/scripts, Bullet_CollisionHandler 0x12ce80 object-hit
+  arms, Bullet_handle_object_destruction, break script/effect/sound ids) on 07000005/06/08, port it, test on the
+  real path. Worklog started; branch pushed early per sandbox-expiry protocol.
