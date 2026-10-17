@@ -25,7 +25,23 @@ Global (enter) → WaitSwitch (1) / PlayScript (3) / `Drone+0x5A2` = Idle (4), o
 (no path → Idle). WaitSwitch ENTER calls `NDrone2_Enable(0)` [M 0x15b960:14-17 → 0x149dd0:8-15: `obj+0xF0 |= 0x10|0x20`
 (not drawn, not picked — Collide_PickObj 0x1eae80:26-30, View_AddObjects 0x1e62d8:33), `+0x4F8 &= ~0x1801A0` (no anim/AI)] —
 **a ch-waiter is an invisible statue until its channel fires** (its UPDATE polls the live channel, 0x15b960:21-37; the
-wake re-enables and starts 0x32/3/`+0x5A2`). A level NIS freezes every drone the same way: `Drone_EnableAll(0)` walks the
+wake re-enables and starts 0x32/3/`+0x5A2`).
+
+The freeze does not stop the poll: the per-frame wake message is the drone's own — `NDrone2_ControlSTANDARD` 0x1490f0:81
+self-sends **msg 3** every frame, and `Drone_Control` 0x139268 gates only on `NPCGlobals`/`Drone_bDisableSystem`/the MP
+slot, never on the enable flag — so a frozen waiter still samples `switch_channels[+0x134]` from its own control run every
+frame. (The dispatcher is one function per state: `Drone_SM_InitObject` 0x175838 wires `NDrone2_ProcessStateMachine`
+0x175778 at smi+0x28, which indexes `NDrone2_StateFuncs[state]`; an unconsumed message retries with state index 0 —
+`NDrone2_DSTATE_Global` — which is the port's `handle(state)` → `handle(GLOBAL)` fallback.)
+
+Two facts pin the entry and the re-entry. `NDrone2_DefaultInit` 0x14b300:466-468 latches `+0x134` = the placement's
+switch channel and `+0x136` = **`switch_channels[+0x134]` at creation time**; `NDrone2_DSTATE_Global` 0x15b830 msg-1
+sends a channel-armed drone to WaitSwitch only while `+0x136 == 0` — the snapshot, not the live channel — so a drone
+created with its channel already on skips WaitSwitch entirely. And the states a wake lands in consume msg-1 (Patrol
+0x15c498 case 1 falls to `caseD_0` → returns 1), which is why Global's msg-1 WaitSwitch entry does not re-fire on the
+post-wake state change. `NDrone2_Enable(1)` (the wake's re-enable) proceeds only while `+0x4F8 & 0x200` is CLEAR and
+restores `+0x4F8 |= 0x801A0` + `obj+0xF0 &= ~0x30` [M-dis 0x149dd0-0x149e4c — the decompile's masks and its
+`0x4f8 & 0x200 == 0` early-return are inverted]. A level NIS freezes every drone the same way: `Drone_EnableAll(0)` walks the
 llist calling `NDrone2_Enable(0)` per drone and clears `NPCGlobals` [M 0x1383e8:13-23]; `Script_Free`'s 0x80 flag
 re-enables all EXCEPT state-1 drones [M 0x1da880:41-43, 0x1383e8:14], and `Drone_CollisionHandler` returns while
 `NPCGlobals == 0` — frozen drones take no damage [M 0x140968:62]. Idle/Alert/Patrol on msg 3 call

@@ -18629,6 +18629,51 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   2/2, doors_live 2/2, npc_doors_live 7/7, walkreal_0700004a 1 ignored (pre-existing),
   walkreal_07000001 2/2, fix_truck 2/2, walk_07000005 2/2. Report:
   docs/reports/channel-persistence.md.
+- 2026-10-17 s/level-08-interactables-2 (task 708c): started. Task: finish the 08
+  interactables re-land — ONE hurt system from origin/master's hurt.rs +
+  docs/systems/hurt-volumes.md (Sim.hurts), porting 708a's fuller semantics
+  (Hurt_Update 0x17e5d0, drone victims), passing the four master tests
+  (fix_finale_live, spurious_complete_16_live, hurt_02_live:83,
+  interact_07000006_live) plus hurt_07000008_live; coordinate with 705d on the
+  ShuttleLaunch ch 0xf3 / Mission state 6 timing [M 0x182c60]. In progress.
+
+---
+
+## level-08-interactables (s/level-08-interactables)
+
+Task: every interactive thing and every model on 07000008 (Mayhew D: the gondola).
+Plan: census in docs/levels/07000008.md; then drive Bond through the real input path to one
+instance of every KIND on the level (use key, gadget, shooting, walking in) and fix what
+doesn't work — starting from the open items: Zoe shooting at Bond at the gondola (750r),
+the guards breaking the glass at the start (750p), the safe/briefcase, the rocket blast
+lighting (GAPS G-049). Then every model/mesh/skin/texture resolves.
+
+### level-08-interactables — session result
+
+Census §7 in docs/levels/07000008.md (the per-kind interactables table, disc probe
+census_07000008.rs). The Hurt kind (0xE4) implemented (hurt.rs + the sim tick; 07000008's
+#42-44 are the y −24.1 valley kill floor — live at load, who 0x18). Models: 4486 materials /
+562 textures / 0 white fallbacks, all placed drones skinned. Finding: the plunge death NIS
+holds the falling body forever (no post-death-NIS mission fail) — blocks the kill-floor fall
+end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interactables.md.
+- 2026-10-17 s/level-08-interactables-2 (task 708c): DONE. The re-land: ONE hurt
+  system on master's Sim.hurts — the drone victims added via Hurt::update_touch
+  (class 3 → who bit 8 [M 0x17e5d0:57-95]; the trigger-walk drone capsule r 0.4;
+  the explosion path's flat-subtract delivery; a one-shot retires for all
+  victims), Hurt.hits = the port's mechanism witness; 708a's Drones::hurts
+  variant retired; the 08 tests moved onto sim.hurts; the system doc's
+  merged-port section + the 705d ShuttleLaunch live check. The four master tests
+  the held branch broke all pass unchanged (fix_finale 4/0, spurious_complete_16
+  2/0 — #309 stays disabled through the fight, hurt_02 1/0, interact_07000006
+  9/0 — #373 inert). Ran (foreground; background jobs die in this sandbox):
+  nf-game lib 279/0 + integration 0 FAIL; hurt_07000008_live 2/0, census_07000008
+  2/0, models_sweep_07000008_live 2/0, interact_07000005_live 11/0, the
+  interact/walk families green (01 10/0 incl. the escort, 03/04/06/07, walks
+  01/08/16/03-real), ~66 more nf-view binaries 0 FAIL; nf-formats green but the
+  3 expected slim-ISO disc_golden failures; nf-audio 15/0. Left: the death-NIS
+  terminal fail (708a's finding) still blocks the kill-floor landing pin; the
+  drone-side delivery needs the live check. Report:
+  docs/reports/level-08-interactables-2.md.
 - 2026-10-17 s/level-09-complete (task 709b): started. Task: the live walk of
   07000009 (Night of the Agent, Tower A) start to finish through the real input
   path — every objective (the optional ones too), every cut-scene (skipped only
@@ -18660,6 +18705,60 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   walkreal_07000009_live 3/3, elevator_buttons_09_live 3/3, the four-crate
   suite build + the run in flight on this tree (the 3 allowed disc_golden
   failures only, so far). Report: docs/reports/level-09-complete.md.
+- 2026-10-17 s/level-09-interactables (task 709a): "every interactive thing and every model on
+  07000009 (Night of the Agent (Tower A))". Plan: (1) the census from the disc (nf-formats parse
+  of 07000009.bin) into docs/levels/07000009.md — every touch/use/shoot/ride placement by type
+  with parameters + channel wiring, [M] game behaviour, port status; known open items: the
+  ELEVATOR BUTTONS (task 700 owns them — reuse s/elevator-buttons-09 findings), the lobby laser
+  grid art (s/laser-scripts, held for a render check), the security-room monitor. (2) one
+  real-input live test per KIND (nf_view::load + Sim::step_bond), each with a sister that fails
+  without the operation. (3) every placement's mesh/skin resolves (no white fallback,
+  NF_TEX_TRACE=1). Branch from origin/master 0603094e.
+- level-09-interactables progress: the all-map census probe (census_07000009.rs --ignored;
+  40 maps, main m39 = 288 placements / 23 kinds) and the doc rewrite — 0x20 is breakable GLASS
+  (17 Break_Create placements, kind 2, bullets + sound 0x2E [M 0x12b970]), the six 0xdb doors,
+  NO 0x30 Monitor anywhere on the disc, 0x71 = rotor_init (not a spawner), the four
+  SoundTriggers, the pickups (armour kind 3 + two BOND_BONUS kind 6). The real find: the
+  guards' WAIT_SWITCH channel is drone param 3 = 0x51 = the arrival plate #248's out
+  [M 0x15b830/0x15b960 case 3] and the port never re-sampled it for frozen drones — two guards
+  froze forever, unkillable (15 rounds, zero damage through Drone_CollisionHandler 0x140968:62's
+  enabled gate); fixed by sampling the channel for waiting frozen drones in tick_inner. 12 live
+  kind tests green (alarm switch E → ch 0x7C → 0x61 → fail; glass shot; door E + the locked
+  shutter; armour walk-over; liftside touch plate ch 0xAB; guard stands) + sisters. Left: two
+  lobby guards re-freeze after the frame-1 wake (gdbwatch ask), the E-route pick runs from the
+  camera not the player head [M 0x1a5170:101-106] (ignored test + live check), the
+  NF_TEX_TRACE sweep test. docs/reports/level-09-interactables.md.
+- 2026-10-17 s/level-09-interactables-2 (task 709c): STARTED. Re-doing the HELD 09 interactables work
+  (709a, 45c5dc5): scope its 19-line drone.rs change to what the game does (cite it), keep the
+  census/interact tests, make the four master tests pass again (ai_live drone 66 pulse,
+  fix_cutscenes2 drake flythrough, spawner_kill gate pair swap, kimiko_actors draw set). Sandbox
+  window ~18:08-20:08 UTC.
+- 2026-10-17 s/level-09-interactables-2 (task 709c): DONE. The held 09 work un-held. (1) The
+  tick-head frozen-wait wake loop is DROPPED, not scoped: the game's wake poll rides the drone's
+  OWN control run (ControlSTANDARD 0x1490f0:81 self-sends msg 3 every frame; Drone_Control
+  0x139268 has no enable gate) and the port's per-slot channel_on sampling + the WAIT_SWITCH
+  UPDATE arm already are that mechanism in the game's newest-first order — the head loop was an
+  earlier out-of-order poll that saw 07000005's mux-270-rewritten 0xA4 pulse (ai_live drone 66)
+  and woke the Drake/gate-pair casts (the other three tests). All four now pass on master's
+  drone.rs: ai_live 36/0, fix_cutscenes2_live 5/0, spawner_kill_live 5/0, kimiko_actors_live
+  2/0. (2) The 709a re-freeze was the loop's own artifact (its frame-1 wake raced the intro's
+  start path, which re-entered WaitSwitch on the woken drones); with the loop gone all six
+  ch-0x51 drones sit enabled through the intro (3000-tick trace), so the gdbwatch ask is
+  withdrawn. (3) The kill test un-ignored and passing: its zero damage was its own K5-darts
+  weapon (0x43 — DealWithObjHit case 5 0x13fff0:269-306 routes 0x43/0x44 to the zero-damage
+  dart msg 0x19; switch_to_armed stops at the first gun with ammo); cycle_to_lethal walks to
+  the P2K (0x2) and the car-park guard dies to the real fire path (hp 10 → −1.8, corpse).
+  interact_07000009_live 13/0/1 ignored (the E-route camera pick, pre-existing). (4) Docs:
+  drone-ai.md (dispatcher wiring, self-msg-3 wake, the DefaultInit +0x134/+0x136 at-creation
+  snapshot and Global 0x15b830's snapshot-read, Patrol 0x15c498's msg-1 consume, the
+  disasm-corrected NDrone2_Enable masks [M-dis 0x149dd0]) and 07000009.md's guard section
+  rewritten. Census + kind tests from 709a kept. Neighbours: walk_09 3/0, walkreal_09 2/0,
+  elevator_buttons_09 3/0, drone_portcheck_live 5/0, fix_ai_remainder_live 2/0, spawner_kill
+  9/0, fix_portonly_review_live 3/0, fix_party_mission_live 9/0, cutscene_08_actors_live 2/0,
+  nf-game lib 278/0. The full suite.py did not fit: the sandbox kills background processes
+  between tool calls (two starts died in the build phase); the foreground runs above are the
+  verification. Report: docs/reports/level-09-interactables-2.md.
+
 - 2026-10-17 s/glass-breach-guards (task 750p): "beginning of mayhew level guards are supposed
   to break through the glass" (playtest 1016-evening). 750e glass-shatter ported the breakables
   core on s/glass-shatter (Break_Create 0x12c230 / Break_Update 0x12bfd8 / Break_Kill 0x12b970,
