@@ -10,9 +10,10 @@
 //! enables 3 guards [D] AND locks the plates — their lock is 0x81), so the plates are only
 //! reachable by sneaking past the sensor; once all three are touched the AND closes 0x66, which
 //! LOCKS #389 (dead) — the walk back through the doorway fires nothing.
-//! ch 0x4C's writer is NOT on the disc (the un-ported mission/dialogue layer [D the level scan]) —
-//! the walk proves the route to the exit and the refusal, then hands the channel the way the
-//! mission layer would and loads 07000003.
+//! ch 0x4C's writer IS on the disc — AND #480 (out 0x4C = AND(0x48, 0x4B) [D; census correction,
+//! docs/levels/07000002.md]) — but the 0x49/0x4A inputs of 0x4B belong to the un-ported mission layer,
+//! so the walk drives the gate channel directly: it proves the route to the exit and the refusal,
+//! then loads 07000003.
 
 #[path = "common/walker.rs"]
 mod walker;

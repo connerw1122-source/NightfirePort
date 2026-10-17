@@ -23,6 +23,7 @@ pub mod env;
 pub mod explode;
 pub mod gun;
 pub mod grenade;
+pub mod hurt;
 pub mod ladder;
 pub mod kiko;
 pub mod input;

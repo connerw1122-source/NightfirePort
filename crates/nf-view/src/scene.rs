@@ -369,6 +369,9 @@ pub struct Sim {
     /// The fire trigger's last-tick state — the press edge the watch pair 0x54/0x55's mode toggle ORs
     /// in (`Player_Weapon` 0x1a24c8's `Input_Action(slot, 9, 4)`) (fix-weapon-modes).
     pub prev_trigger: bool,
+    /// Hurt volumes (placement 0xE4, `Hurt_Create` 0x17e870): the contact damage volumes
+    /// (level-02-interactables — 07000002's `electrocute` under the bunker arc).
+    pub hurts: Vec<nf_game::hurt::Hurt>,
     /// fix-weapon-anims: the idle-alert substate (`BLData+0x959`, value 1 while the +0xCC fidget
     /// script plays) [M `Player_SetWeaponAnimObj` 0x1a2e38:79-136]. Set when the idle counter
     /// (`drones.aims_idle`, `+0x93a`) crosses the game's 0x14*FRAME_RATE_INT threshold and the
@@ -2528,6 +2531,18 @@ impl Sim {
                 // The drown tick's sound rides the same 30-tick cadence [M Player_MonitorAir
                 // 0x191a70:135-143: every FRAME_RATE·0.5 ticks, Sound_Play(100, 0x60b) + HandlePain].
                 self.drones.audio.play(0x60b);
+            }
+            // Hurt volumes (0xE4): the collide contact `Player_DealWithObjHit` 0x194458:94-101 — a
+            // class-0x27 hit calls `Player_HandlePain(pain + Hurt_GetDamage, …, Hurt_GetType, −1)`,
+            // the same full pipeline as the drown tick (difficulty factor, no armour for types 1..7
+            // [M 0x1902c8:84-104]). The gate follows `Hurt_Update` 0x17e5d0's disabled bit.
+            for h in self.hurts.iter_mut() {
+                if let Some((dmg, ty)) = h.update(self.drones.channels.on(h.gate as u32), self.bond.pos) {
+                    if self.drones.health.pain_generic(&mut self.drones.rng, dmg, self.drones.difficulty, self.level, ty as u32) {
+                        let p = self.bond.pos;
+                        self.drones.play_pain_grunt(p);
+                    }
+                }
             }
             // `Player_MonitorAir` 0x191a70:101-124 [M]: the head crossing cel+0x90 starts the dive
             // loop (`Sound_Stop()` of the old handle, then `Sound_Play3D(100, −1, −1, 0x27, objPos)`
@@ -6539,6 +6554,9 @@ impl Scene {
             let wires = nf_game::wire::all(level);
             // The creepwalls (`CreepWall_Create` 0x196fc8, placement type 0x3F): the crawlable vents.
             let creepwalls = nf_game::creepwall::all(level);
+            // The hurt volumes (`Hurt_Create` 0x17e870, placement type 0xE4): the contact damage
+            // volumes (level-02-interactables).
+            let hurts = nf_game::hurt::Hurt::create(level);
             // The wires' owning cels (see `wire_cels`): the game's pick pass tests a dynamic object
             // only in the cels its query straddles [M 0x1eb320], and the object lives in the cel
             // whose creation block carried it [M 0x1d04f0].
@@ -6645,6 +6663,7 @@ impl Scene {
                 zoom_wheel: false,
                 laser_sight: None,
                 fmv_script: None,
+                hurts,
             })
         });
         let fog = drones.and_then(|d| fog_for(d.level_id));

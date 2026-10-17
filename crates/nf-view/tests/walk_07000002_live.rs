@@ -13,10 +13,10 @@
 //!    [M 0x1b2318:76-90]; then `ResetMap_LevelToLoad` + `Player_RamSave` [M 0x1b2318:111-121].
 //! 4. The mission's three objectives (the table 0x2a3ed0) watch ch 0x48 / 0x4B / 0x4D; the AND trigger
 //!    #303 (MultiplexIn out 0x4B = AND(0x49, 0x4A)) builds one of them from touchplate chains. The
-//!    writers of ch 0x4C (the key gate) and 0x48/0x49/0x4A/0x4D are NOT on the disc (scripts, triggers,
-//!    drone death channels, pickups, doors and locks all scanned — see docs/levels/07000002.md): they
-//!    belong to the un-ported mission/dialogue layer. The test drives the gate channel directly and
-//!    asserts the real refusal + load behaviour both ways.
+//!    writer of ch 0x4C (the key gate) IS on the disc — AND #480 (out 0x4C = AND(0x48, 0x4B); the
+//!    correction and the census are in docs/levels/07000002.md) — but 0x48's other half (the 0x4B
+//!    chain's 0x49/0x4A inputs) belongs to the un-ported mission/dialogue layer, so the test drives
+//!    the gate channel directly and asserts the real refusal + load behaviour both ways.
 
 use nf_formats::iso9660::IsoImage;
 
