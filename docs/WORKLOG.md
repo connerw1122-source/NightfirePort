@@ -17719,3 +17719,14 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+
+## headless-app-harness (2026-10-17, branch s/headless-app-harness) — started 06:36 UTC
+
+Task 758: make the window host `App` (crates/nf-view/src/lib.rs) testable without a window or
+GPU — split the per-frame logic (RedrawRequested: movie_tick, menu_music_tick, the async load,
+the net poll, the front-end clock, the sim tick gate) and the key handling (KeyboardInput arms:
+Esc/pause, menu keys) into methods with no winit/wgpu objects; a `HeadlessApp` (gfx: None,
+silent sound) exposes frame(dt) and key(KeyCode). Tests (NF_ISO-gated): boot to The Exchange
+(briefing holds while the movie plays, then the load, level_code 0x07000005), Esc→pause→Esc→resume
+never requesting exit, Pause>Quit→mission list [M 0x204408:141-152], and an online session polled
+through a fake 6 s load. Each with a sister that fails on the old behaviour. In progress.
