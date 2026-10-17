@@ -17727,3 +17727,17 @@ Task: the user's "bots wont spawn" through the real front-end path. Reading mp-b
 goal picker, find_opponent never acquires, no meshes). Plan: reproduce RED via
 mp_bots_live::quick_game_bots_play_the_match un-ignored, then feed pick_goal + find_opponent,
 then the human-damages-bots half. In progress.
+
+## mp-bots-spawn (2026-10-17, branch s/mp-bots-spawn) — done 05:50 UTC
+
+The "bots wont spawn" chain, all five starvations fixed with addresses (the report has the
+full list): the driver fed no MPpickups (pick_goal starved), never ran BOT_setOtherPlayerInfo
+0x125390 (no dist2/candidate/seen rows), never armed the weapon (BOTWEAP_InitWeapon 0x129e48 —
+weapon_id 0, clip 0), the fire pipeline stopped at the burst end (DoFiring 0x17a080's re-arm
+missing), and find_opponent over-gated on the rows' seen bit where the game tests CanSeeObject
+per candidate (0x1424e0). Plus: the shot is 3-D (the aim layer tracks the body), the world hit
+caps the bullet's sweep, and the combat movement states walk the range. The 704 play pin
+(quick_game_bots_play_the_match) is un-ignored and GREEN — bot 1: walked 22.7, 41 shots, 5
+deaths, score 4. mp_bots_live 2/2, nf-game mp::bots 9/9, mp_menu_flow 9/9, net_match_live 3/3,
+mp_host_match_live 2/2. Left: the full fast suite, the human damaging bots, the FF decision,
+the render (main agent).
