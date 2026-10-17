@@ -7882,6 +7882,10 @@ pub struct Drones {
     /// be reached by a bullet that dies on it). Merged into the `SS_Operate` contacts by the tick's
     /// SS block; cleared each tick at the flight pass's head.
     pub ss_bullet_contacts: Vec<u8>,
+    /// level-0c-complete: the use key's class-0x1D trigger half, deferred from the scene's use
+    /// block to this tick's post-`Trigger_Calc` slot (the game runs it at Bond's turn in the
+    /// object walk — see `player_use_doors`'s note). `(head, look)`.
+    pub use_trigger_request: Option<(V3, V3)>,
     pub player_impacts: Vec<PlayerImpact>,
     /// fix-gas-rng4 (111d3's deferral onto the G-041 walk): the world-hit draws' ride record — one
     /// entry per player bullet whose flight segment ended on the world this tick, `(bullet index,
@@ -8296,6 +8300,8 @@ impl Drones {
             sound_triggers: Default::default(),
             // fix-0c-hatch-latches2: the per-tick player-bullet SS Operate contacts (see the field).
             ss_bullet_contacts: Vec::new(),
+            // level-0c-complete: the deferred use-key trigger half (see the field).
+            use_trigger_request: None,
             node_doors: None,
             // fix-nav-remainder (fields on their own lines — merge lesson 4).
             node_kicks: None,
@@ -9820,7 +9826,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         // `Player_Activate`'s class-0x1D trigger path: for every trigger within the use sphere, call
         // `Trigger_Activate` — for LOAD_LEVEL, request the level load; for TouchOnce, set the output channel.
-        self.player_use_triggers(head, look, frame);
+        // level-0c-complete: the TRIGGER half defers to the sim tick's post-`Trigger_Calc` slot — the
+        // game's E press runs at Bond's turn in the OBJECT WALK [M Player_Activate 0x1a5170 called
+        // from the walk], so the written channel is read by later-in-the-walk muxes in the SAME
+        // frame, and the next frame's `Trigger_Calc` clear (0x1b1900's type-2 zero pass) only
+        // follows the consumption. The port's use path ran BEFORE `tick_inner` — the clear+rescan
+        // wiped the write before the mux walk ever saw it (0700000c's secret-door E plate #558
+        // [D: mask 4, out 3] never reached its AND). The doors' half stays here (the events feed
+        // the scene's sound path); the request carries (head, look).
+        self.use_trigger_request = Some((head, look));
         // `Player_Activate`'s remaining classes the Tower levels need (map-tower): the mask-4
         // ScriptPlayers (`SP_Activate` 0x1dc338 — the elevator, the security keyboard), the
         // switches (0x29, `Switch_Activate` 0x1b02a8) and the Q-Worm PCs (0x35,
@@ -10761,6 +10775,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             .collect();
         drop(prof_pre);
         { let _p = crate::prof::scope("drones: Trigger_Calc"); crate::triggers::calc(d.level, &mut self.triggers, &mut self.channels, &touchers, frame); }
+        // level-0c-complete: the deferred use-key trigger half — the game's E press fires at
+        // Bond's turn in the object walk, AFTER Trigger_Calc's touch clear and BEFORE the later
+        // muxes' updates in the same walk [M 0x1336f8's loop; Player_Activate 0x1a5170]. Consumed
+        // here so the written channel survives to the mux walk (0700000c's secret door).
+        if let Some((head, look)) = self.use_trigger_request.take() {
+            self.player_use_triggers(head, look, frame);
+        }
         // `switch_channels_prev` is snapshotted right after `Trigger_Calc`, BEFORE the object walk [M 0x1336f8:52-53
         // — `prev ← hold; hold ← channels` at 0x1337cc/0x1337dc] — so `Door_Update`'s lock rising edge
         // (`prev == 0 && now != 0`, 0x136550-0x136608) sees a channel a trigger or script pulsed earlier this

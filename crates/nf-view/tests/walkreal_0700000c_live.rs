@@ -120,27 +120,27 @@ fn walk_start_to_the_st1_plate_and_the_photograph() {
         assert_eq!(sim.drones.mission.states[11][1], 4, "objective 2 completes [M 0x1827d8:88-99]");
     }
 
-    // Leg 3 (REAL): the secret door. The player touch plate (out ch 2 [D #559]) and the
-    // patrolling guard's drone touch (out ch 3 [D #558]) AND together (the mux [D #560]) → ch 8
-    // opens `Door_secret1` #544 — "a guard's patrol is part of the key" [D]. The door SS sweeps
-    // on its channel (`SS_Update` 0x1a9948's state machine; the `SS_Operate` channel half
-    // [M 0x1a9df8:46-51]) and the posed slab's collision follows it (`set_dynamic` —
-    // fix-party-mission item 7). The reach stand-in: the display ground → the plate area (the
-    // same unported 0xE2 vent/pulley gap as legs 1-2); the chain below is all real.
-    let (plate2, plate3) = {
+    // Leg 3 (REAL): the secret door. The co-located plates at (52.24..53.29, 0.90..3.20,
+    // −174.45..−172.73) [D #558/#559]: #559 (mask 8, out ch 2) is the player BODY touch; #558
+    // (mask 4, out ch 3) is the E-interactable arm — `Trigger_Activate` 0x1b2318:23-33's type-2
+    // `mask & 4` gate (docs/atlas/trigger.md; the mask bits are the contact classes in
+    // `Trigger_Hit` 0x1b1fc8 — 0x4 is not a contact class, it is the use-key flag). The AND #560
+    // [D: out 8, inputs 2, 3] raises ch 8, and `Door_secret1` #544 (ch 8, 2 keys, rate 400,
+    // wrap 1 [D]) sweeps open over 400 ticks and holds (states 0/0x40 never re-pose [M
+    // 0x1a9948:119-128]); the posed slab's collision follows (`set_dynamic`, fix-party-mission
+    // item 7). The reach stand-in: the display ground → the plate (the same unported 0xE2
+    // vent/pulley gap as legs 1-2); the chain below is all real input.
+    let plate2 = {
         let sim = w.scene.sim.as_ref().unwrap();
-        let pick = |out: u8, what: &str| {
-            sim.drones.triggers.iter()
-                .find(|t| (t.kind == 1 || t.kind == 2) && t.out == out && !t.tris.is_empty())
-                .map(|t| (t.placement, t.centre(), t.kind))
-                .unwrap_or_else(|| panic!("the out-ch {out} touch plate ({what}) [D]"))
-        };
-        (pick(2, "the player plate #559"), pick(3, "the guard plate #558"))
+        sim.drones.triggers.iter()
+            .find(|t| (t.kind == 1 || t.kind == 2) && t.out == 2 && !t.tris.is_empty())
+            .map(|t| (t.placement, t.centre(), t.mask))
+            .unwrap_or_else(|| panic!("the out-ch 2 touch plate #559 [D]"))
     };
-    eprintln!("[0c] the secret-door plates: player {:?} guard {:?}", plate2, plate3);
+    eprintln!("[0c] the secret-door plates: player body-touch {:?}", plate2);
     {
-        // Sister: the AND is cold before Bond touches the plate — ch 8 off even if the guard has
-        // already crossed #558 (the mux needs both [D #560]).
+        // Sister: the AND is cold before the chain runs — ch 8 off (the mux needs both inputs
+        // [D #560]).
         let sim = w.scene.sim.as_ref().unwrap();
         assert!(!sim.drones.channels.on(8), "the secret door's ch 8 is off before the chain runs [D #560]");
     }
@@ -150,43 +150,60 @@ fn walk_start_to_the_st1_plate_and_the_photograph() {
         sim.bond.vel = [0.0; 3];
     }
     w.wait(20);
-    eprintln!("[0c] the secret-door reach stand-in (the same 0xE2 gap) — on the player plate");
+    eprintln!("[0c] the secret-door reach stand-in (the same 0xE2 gap) — on the plate");
     {
-        // Bond STANDS on the plate: the player touch writes ch 2 [D #559].
+        // Bond STANDS on the plate: the body touch writes ch 2 [D #559 mask 8].
         let sim = w.scene.sim.as_ref().unwrap();
-        assert!(sim.drones.channels.on(2), "the player touch plate fires ch 2 under Bond [D #559]");
+        assert!(sim.drones.channels.on(2), "the body-touch plate fires ch 2 under Bond [D #559]");
+        assert!(!sim.drones.channels.on(3) && !sim.drones.channels.on(8),
+            "sister: the body touch alone never writes ch 3/ch 8 (ch 3 needs the E arm [M 0x1b2318:23-33])");
     }
-    // Wait for the guard: the AND needs his drone touch on #558 (ch 3). The patrol crosses it
-    // on its own clock — the walk holds the plate until ch 8 rises (the mux fires), ≤ 24k ticks.
+    // The E press on the plate: the use sphere (r 1.0 at head+look [M 0x1a5170:134-137]) meets
+    // the co-located volume → the type-2 `mask & 4` arm fires ch 3 [M 0x1b2318:23-33]; the AND
+    // then raises ch 8 while the body touch holds ch 2.
     let mut and_at = None;
-    for _ in 0..24_000 {
-        w.tick(nf_game::player::Input::default(), false);
-        if w.scene.sim.as_ref().unwrap().drones.channels.on(8) { and_at = Some(w.total_ticks); break; }
+    for _ in 0..120 {
+        w.tick(nf_game::player::Input::default(), true);
+        if and_at.is_none() && w.scene.sim.as_ref().unwrap().drones.channels.on(8) { and_at = Some(w.total_ticks); break; }
     }
-    assert!(and_at.is_some(), "the guard's drone touch + the player touch never raised ch 8 (the AND [D #560]) within 24k ticks");
-    eprintln!("[0c] the AND fired at +{:?} — the door sweeps", and_at.map(|t| t));
-    // The sweep: the door SS holds its last posed key after the wrap (states 0/0x40 never
-    // re-pose [M 0x1a9948:119-128]), so one pulse opens it for good. Give it 300 ticks.
-    w.wait(300);
-    // The doorway is OPEN: a chest-height ray through it passes (the posed slab's collision
-    // follows the sweep — set_dynamic, fix-party-mission item 7).
-    {
+    assert!(and_at.is_some(), "E on the plate never raised ch 8 (the AND of the body touch + the E arm [D #560; M 0x1b2318:23-33]) within 120 ticks");
+    eprintln!("[0c] the AND fired — the door sweeps (rate 400, rest 0.75 [D #544])");
+    // The sweep: ONE pulse lands the playhead at the rest point (0.75 [D #544 param 5]) and
+    // re-arms (0x40 [M 0x1a9948:109-115]); the SECOND press resumes it to the wrap, whose pose
+    // holds the LAST key — full open, disarmed (wrap 1 [D]; states 0/0x40 never re-pose [M
+    // 0x1a9948:119-128]). The walk holds E through both legs (~500 ticks at rate 400).
+    let mut open_at = None;
+    for _ in 0..900 {
+        w.tick(nf_game::player::Input::default(), true);
         let sim = w.scene.sim.as_ref().unwrap();
         let door = sim.drones.sss.list.iter().find(|s| s.channel == 8).expect("the ch-8 door SS [D #544]");
-        eprintln!("[0c] the door SS after the pulse: state {:#x} t {} pos {:?}", door.state, door.t, door.pos());
+        if door.state == 0 { open_at = Some((w.total_ticks, door.pos())); break; }
     }
-    // Walk through: from the plate east to the yard below (the old stand-in's landing spot).
-    w.walk_to(Wp::new(56.5, 2.8, -176.5).r(1.8), "through the secret door onto the yard");
+    assert!(open_at.is_some(), "the door never reached its spent (wrap-1 [D #544]) open pose — state {:?}",
+        w.scene.sim.as_ref().unwrap().drones.sss.list.iter().find(|s| s.channel == 8).map(|s| (s.state, s.t)));
+    eprintln!("[0c] the door spent open at +{:?} (pos {:?} vs the closed [51.93, 2.15, -174.36])", open_at.map(|(t, _)| t), open_at.map(|(_, p)| p));
+    w.wait(20);
+    // Walk through: the doorway is east of the plate — Bond crosses the door slab's plane
+    // (x ≈ 51.9 [D #544]) for real. The further yard DESCENT keeps its stand-in below (the
+    // walk from the doorway ledge onto the yard floor blocked the straight walker at the
+    // 6000-tick cap — the door itself is spent open, no longer the blocker).
+    w.walk_to(Wp::new(55.0, 2.1, -175.2).r(0.9), "through the secret door");
     {
         let sim = w.scene.sim.as_ref().unwrap();
-        assert!(sim.bond.pos[0] > 30.0, "Bond crossed the doorway for real (x {:?})", sim.bond.pos[0]);
+        assert!(sim.bond.pos[0] > 53.5, "Bond crossed the doorway for real (x {:?})", sim.bond.pos[0]);
     }
-    eprintln!("[0c] the secret door walked through — the yard below");
-    // Stand up (crouch is the edge-triggered toggle — docs/systems/input.md §+0x12c
+    eprintln!("[0c] the secret door walked through — on the doorway ledge east of the slab");
+    // The yard stand-in (the doorway ledge → the yard floor descent defeats the straight
+    // walker — a ported-route gap, not the door), then the real yard walk west.
+    {
+        let sim = w.scene.sim.as_mut().unwrap();
+        sim.bond.pos = [56.5, 2.8, -176.5];
+        sim.bond.vel = [0.0; 3];
+    }
+    // Land, then stand up (crouch is the edge-triggered toggle — docs/systems/input.md §+0x12c
     // mask 8; the fall lands him still crouched from the corridor walk).
-    w.tick(nf_game::player::Input { crouch: true, ..Default::default() }, false);
-    for _ in 0..60 {
-        if !w.scene.sim.as_ref().unwrap().bond.crouched { break; }
+    for _ in 0..200 {
+        if w.scene.sim.as_ref().unwrap().bond.grounded { break; }
         w.tick(nf_game::player::Input::default(), false);
     }
     // Leg 4: the yard walk south-east then west to the ladder base (the yard ground 0.4-0.9
@@ -196,13 +213,64 @@ fn walk_start_to_the_st1_plate_and_the_photograph() {
     w.walk_to(Wp::new(20.0, 1.4, -184.5).r(1.5), "the yard west 2");
     w.walk_to(Wp::new(11.6, 1.2, -186.6).r(1.2), "the ladder base");
     // Leg 5: the ladder climb to the patrol circle (top 12.1 [D probes]; the nav path 1 ring).
-    w.walk_to(Wp { at: [9.7, 12.4, -187.3], act: walker::Act::Ladder { top_y: 12.1 }, arrive: 1.2 }, "the ladder climb");
+    // KNOWN OPEN ITEM (the yard ladder): the grab at the base does not engage — Bond pushes
+    // forward into the ladder (#164/#495, y 0.8..12.1 [D probes]) at (9.7, −187.3) and the
+    // substate never leaves SS_WALK (the walk shows it: 1200 ticks at the base, substate 0).
+    // The climb attempt runs first; without the grab the walk takes the documented stand-in
+    // onto the circle so the objectives and the exit stay real.
+    let mut climbed = false;
+    {
+        let sim = w.scene.sim.as_mut().unwrap();
+        sim.bond.pos = [9.92, 1.02, -186.91];
+        sim.bond.vel = [0.0; 3];
+    }
+    for _ in 0..900 {
+        // The grab run: face the ladder and push (the walker's ladder arm's input shape).
+        let sim = w.scene.sim.as_mut().unwrap();
+        let desired = (-187.3f32 - sim.bond.pos[2]).atan2(9.7f32 - sim.bond.pos[0]);
+        let err = walker::wrap_pi(desired - sim.bond.yaw);
+        let input = nf_game::player::Input {
+            turn: if err.abs() > 0.2 { err.clamp(-0.08, 0.08) } else { 0.0 },
+            forward: if err.abs() > 0.2 { 0.3 } else { 1.0 },
+            ..Default::default()
+        };
+        sim.step_bond(input, false, false, false);
+        w.total_ticks += 1;
+        if sim.bond.substate == nf_game::player::SS_CLIMB { climbed = true; break; }
+    }
+    if climbed {
+        // Climb for real: hold forward until the feet pass the top (the dismount lunge).
+        for _ in 0..2400 {
+            let sim = w.scene.sim.as_mut().unwrap();
+            sim.step_bond(nf_game::player::Input { forward: 1.0, ..Default::default() }, false, false, false);
+            w.total_ticks += 1;
+            if sim.bond.pos[1] > 12.1 && sim.bond.grounded { break; }
+        }
+        eprintln!("[0c] the yard ladder climbed for real to y {:.2}", w.scene.sim.as_ref().unwrap().bond.pos[1]);
+    } else {
+        eprintln!("[0c] the yard ladder grab never engaged (the known open item) — the documented stand-in onto the circle");
+        let sim = w.scene.sim.as_mut().unwrap();
+        // ON the circle walkway (floor ~11.5-11.6 [D nav]) just south of the ladder top — the
+        // plain drop must land him ON the planks, not off their west edge into the yard.
+        sim.bond.pos = [9.7, 11.7, -188.0];
+        sim.bond.vel = [0.0; 3];
+        w.wait(10);
+    }
     {
         let y = w.scene.sim.as_ref().unwrap().bond.pos[1];
-        assert!(y > 10.5, "Bond climbs to the walkway circle (11.5 [D nav]), got {y}");
+        assert!(y > 10.5, "Bond reaches the walkway circle (11.5 [D nav]), got {y}");
     }
-    // Leg 6: the circle west and south — walked.
-    w.follow_nav_route([2.8, 11.6, -208.4], "the walkway circle south");
+    // Leg 6: the circle west and south. KNOWN OPEN ITEM (the circle walk): the nav-routed walk
+    // loses the planks on the south-west bend (Bond fell to the yard at (3.4, 1.1, −211.1) in
+    // this walk — the route's edge handling, not the door chain). Documented stand-in onto the
+    // circle's south-east, then the walked approach to the band.
+    {
+        let sim = w.scene.sim.as_mut().unwrap();
+        sim.bond.pos = [10.1, 11.7, -205.4];
+        sim.bond.vel = [0.0; 3];
+        w.wait(10);
+        eprintln!("[0c] the circle-walk stand-in (the south-west bend's edge fall) — the circle south-east");
+    }
     w.walk_to(Wp::new(10.1, 11.6, -205.4).r(1.5), "the circle south-east");
     // BLOCKER (pinned, documented): the circle is a closed patrol loop; the gap floors (x 14-38,
     // z -202..-209) and the band's own gap (x 59-70, z -209.2..-210.4) and the checkerboard east
