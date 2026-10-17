@@ -17719,3 +17719,10 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+
+## unproven-tests-gameplay (2026-10-17, branch s/unproven-tests-gameplay) — started 06:32 UTC
+
+Task 755: settle the gameplay tests' unproven numbers — every audited row gets evidence
+([M] decompile address, [D] disc bytes, [L] documented live measurement) or `// [S] unverified`
+and leaves pass/fail. Contradictions fix the test. 12 rows from the 2026-10-16 audit.
+In progress.
