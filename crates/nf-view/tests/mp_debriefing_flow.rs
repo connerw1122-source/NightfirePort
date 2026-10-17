@@ -10,7 +10,7 @@
 use nf_game::drone::Rng;
 use nf_game::mp::debrief::{MpDebriefName, RESULT_DRAW_LABEL, RESULT_WINS_LABEL, TEAM_MI6_LABEL};
 use nf_game::mp::{MpMatch, MpSettings, scenario};
-use nf_view::menu::{
+use nf_view::menu::{self,
     Action, FrontEnd, Page, MP_BOTS_ROWS, MP_CHARACTERS_SMALL, MP_DEBRIEFING_COLS,
     MP_DEBRIEFING_HEADER, MP_DEBRIEFING_HINT,
 };
@@ -51,6 +51,11 @@ fn the_handover_opens_the_page_with_the_rows() {
     let mut fe = FrontEnd::new();
     fe.page = Page::MpScenario; // anywhere in the MP flow; the handover sets the page itself
     fe.open_mp_debriefing(&m);
+    // G-048(3): the match end only QUEUES the page [M MP_Update 0x184bd0:62-78]; the load tail's
+    // MenuManager_Create lands it [M 0x1d6360:160-163].
+    assert_eq!(fe.flow.page, menu::PAGE_MP_DEBRIEFING, "case 4 queues +0x1c = 0x40000033 [M 0x184bd0:63]");
+    assert_eq!(fe.up_page(), None, "nothing is up over the paused arena");
+    assert!(fe.reopen_queued_page(), "the load tail's create opens the debriefing");
     assert_eq!(fe.page, Page::MpDebriefing, "the case-4 navigation lands on 0x40000033 [M 0x184bd0:63]");
     assert_eq!(fe.page.id(), 0x4000_0033);
     let rows = fe.mp_debriefing_rows();
@@ -89,6 +94,7 @@ fn confirm_returns_to_the_scenario_page() {
     let m = finished_match();
     let mut fe = FrontEnd::new();
     fe.open_mp_debriefing(&m);
+    assert!(fe.reopen_queued_page()); // the load tail's create [G-048(3), M 0x1d6360:160-163]
     assert!(fe.action(Action::Confirm), "Confirm (~A) is handled [M C_MPDBG 0x4b]");
     assert_eq!(fe.page, Page::MpScenario, "C_MPDBG msg 0x44 -> 0x4000001a [M 0x217860:8-11]");
     assert_eq!(fe.page.id(), 0x4000_001a);
@@ -103,6 +109,7 @@ fn extra_rematch_rerequests_the_arena() {
     let m = finished_match();
     let mut fe = FrontEnd::new();
     fe.open_mp_debriefing(&m);
+    assert!(fe.reopen_queued_page()); // the load tail's create [G-048(3), M 0x1d6360:160-163]
     fe.mp_level = 0x0700_0027; // Fort Knox was the arena [L mp_level row 1]
     fe.mp_match_settings = Some(nf_game::mp::MpSettings::deathmatch(0x0700_0027));
     fe.tick(); // the flow machine must be live for the load push [M the confirm-start's pattern]
