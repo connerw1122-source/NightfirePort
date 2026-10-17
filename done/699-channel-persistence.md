@@ -37,3 +37,8 @@ say so in the report. Never weaken a decompile-backed test to make code pass.
 
 ---
 claimed-by: sandbox1 at 2026-10-17T16:43Z
+
+---
+## Report (done, 2026-10-17T17:50Z)
+
+Closed by the driver: the report is on `s/channel-persistence` (docs/reports/channel-persistence.md); the worker didn't run finish.sh.
