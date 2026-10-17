@@ -157,3 +157,8 @@ No RNG draws added (determinism); no shared file reordered; the new enum variant
 
 not visible to me — this session shows no token, context-window or cost figures anywhere in
 its interface.
+
+---
+## Report from the worker (done, 2026-10-17T03:54Z)
+
+Closed by the driver: the report is on `s/cutscene-audio-sync` (docs/reports/cutscene-audio-sync.md); the worker didn't run finish.sh.
