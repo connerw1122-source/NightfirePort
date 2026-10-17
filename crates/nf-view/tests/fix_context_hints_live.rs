@@ -174,8 +174,12 @@ fn the_control_panel_hint_stays_silent_from_the_safe_spot() {
 /// game shows NO "Press Action" and NO context icon — only the orange 007 ring (a different
 /// system, see the report). The spot is 8.17 from the ctx-6 icon[3] (24.20, 31.93, 60.01) and in
 /// the same port cel 15, so the old cel-set gate (and the old flat 12.0 window) armed it; the
-/// game's chain does not. The arm window is now 6.0 [S] between the two live pins (this 8.17-out,
-/// the vent crawl 3.9-in).
+/// game's chain does not. The chain [M]: `ThirdIcon_Update` 0x196e80:20-26 walks the icon obj's
+/// +0xd0 contact list and writes the type into `BLData+0x95F` (+ the once-only 0xb4 "Press Action"
+/// post at :42); the list is `Collide_Update` 0x1ea398:138-148's per-tick sort of the collision
+/// nodes by their distance field (+0xc, 1e8 = miss) — so the arm window is the collision sphere
+/// test against the icon's own level radius, NOT a flat constant: no `6.0` exists in the chain.
+/// The 6.0 window stays [S] between the two live pins (this 8.17-out, the vent crawl 3.9-in).
 #[test]
 fn the_grapple_spot_shows_no_press_action_prompt() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
@@ -193,7 +197,8 @@ fn the_grapple_spot_shows_no_press_action_prompt() {
     let f = nf_view::hud::overlay(&scene, 16.0 / 9.0);
     assert!(!run_for(&scene, &f, 0x0300_006a), "no context icon draws at the grapple spot");
     // Sister (positive): beside the icon itself (~1.7 from icon[3]) the ctx-6 arm still reads and
-    // the figure icon draws [M 0x196e80 writes the type from the chain; the 6.0 window [S]].
+    // the figure icon draws [M 0x196e80:20-26 writes the type from the Collide_Update 0x1ea398:138-148
+    // contact list; the exact arm radius is the icon's level sphere [D], the 6.0 window [S]].
     let mut scene = load(&iso, "07000005.bin");
     {
         let sim = scene.sim.as_mut().unwrap();

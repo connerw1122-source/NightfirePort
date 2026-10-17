@@ -86,7 +86,17 @@ fn taking_an_armour_pickup_shows_the_message_bar_then_it_fades() {
     assert!((sim.hud.bar_close - 256.0).abs() < 1e-4);
     let f = nf_view::hud::overlay(&scene, 4.0 / 3.0);
     assert!(!tex_runs(&scene, &f, 0x0300_007a).is_empty(), "the bar quad draws while the message is up");
-    // 180 ticks of text (fade = the last 15), then the 16 px/tick close.
+    // 180 ticks of text, then the close. Evidence [M]: the pickup message's life 180 is
+    // `Pickup_Handler` 0x18e650's `fVar22 = 180.0` → `Text_AddMsg(...,6,str,0,180)` (90 in MP); the
+    // life float drains 1/tick (`Text_UpdateMsg` 0x1b11d8:49, −FRAME_RATE_MUL; = 1.0 at 60 Hz [M
+    // GS_SetRefreshRate 0x17d2b8:15, L ee_snapshot 0x30d0d8]); the pane fades alpha = life·17 while
+    // life < 15 (`HUD_UpdateStatusPane` 0x19c310:262-268) — so the fade is the LAST 15 ticks; and the
+    // close is the pane state +0xc decrement: `HUD_CreatePickupStatusPane` 0x1a1140:10 writes 0x10
+    // (16) into the pickup pane's rate (`HUD_CreateInfoStatusPane` 0x1a10b8:10 and
+    // `HUD_CreateObjectiveStatusPane` 0x1a1070:10 write the same 0x10; the mission pane 0x1a1028:10
+    // writes 0x20), which `HUD_UpdateStatusPane` 0x19c310:331 (the field read at :37, `piVar4[3]`)
+    // subtracts from the bar's countdown ushort each state-4 tick — 16 per tick, the port's
+    // `bar_close`.
     for _ in 0..185 { scene.sim.as_mut().unwrap().step_bond(Default::default(), false, false, false); }
     let sim = scene.sim.as_ref().unwrap();
     assert!(sim.hud.msgs.is_empty(), "the message expired");

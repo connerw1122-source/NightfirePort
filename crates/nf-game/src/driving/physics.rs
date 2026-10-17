@@ -454,8 +454,14 @@ impl Car {
         self.steer_angle = steer_input * p.maxsteering * scale;
     }
 
-    /// The engine's drive acceleration [M 0x18cef8:414-431]: MAXACC·RATIO[gear] per unit
-    /// throttle, minus brake·MAXBRAKE; reverse decays MAXREVACC by the speed cutoff.
+    /// The engine's drive acceleration [M DRIVING.ELF 0x18cef8:414-431]: MAXACC·RATIO[gear] per
+    /// unit throttle, minus brake·MAXBRAKE; reverse decays MAXREVACC by the speed cutoff —
+    /// `MAXREVACC − max(0, |v| − SPEED_CUTOFF_REVERSE)·SPEED_CUTOFF_RATE_REVERSE`, floored at 0
+    /// [M 0x18cef8:397-407, the `+0x420 < 0 → 0` floor at :406]. There is NO hard reverse speed
+    /// cap and no runaway: reverse only ENGAGES from near standstill (brake held > 29 ticks with
+    /// longitudinal vel ≤ 0, [M :184-208]), the decay zeroes the reverse thrust by |v| ≈ 42 m/s
+    /// for the vanquish (2.4/10/0.075 [D vanquish.atr]), and the VU0 integrator clamps every
+    /// body to |v| ≤ 100·scale [M FUN_001f89e0 0x1f89e0:73-79,145-164].
     pub fn drive_accel(&mut self, input: &CarInput) -> f32 {
         let p = &self.params;
         if self.reversing {

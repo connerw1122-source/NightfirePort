@@ -122,7 +122,11 @@ impl HintPick {
 pub fn strip_hint(s: &str) -> &str { s.split_once(' ').map_or(s, |(_, rest)| rest) }
 
 /// The lit-dot count for `ticks` 60 Hz vblanks into the load: BlobToDraw steps every 11 vblanks and ping-pongs
-/// 0→6→0 [M VBlankInt 0x124088].
+/// 0→6→0 [M `VBlankInt` 0x124088:18-29 — per vblank the u8 `BlobTime` (0x30d721) decrements and on
+/// underflow reloads 10 and steps the u8 `BlobToDraw` (0x30d720) by the s8 `BlobDir` (0x30d722); the
+/// direction flips at `BlobToDraw == 0` (→ 1) and `== 6` (→ −1); `ResetLoadingBlobs` 0x1249c0:6-8
+/// seeds BlobToDraw 0 — so 10 countdown ticks + the underflow tick = one step per 11 vblanks, a
+/// 12-step 0→6→0 ping-pong].
 pub fn dots_lit(ticks: u32) -> u32 {
     let step = ticks / 11;
     let p = step % 12;

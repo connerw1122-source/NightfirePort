@@ -54,6 +54,13 @@ fn render_loop_rate_does_not_change_the_simulation() {
 /// The catch-up cap (fix-perf-level, `NF_MAXTICKS` = 4): a 5 fps loop asks for 12 ticks per frame
 /// and is dropped to 4 — under load the game slows down (like the original), it never bursts.
 /// The dropped ticks are gone (total < wall-time ticks), and the same loop is deterministic.
+///
+/// PORT CHOICE [S]: the 4-tick cap is the port's own scheduler design, not the game's. The game's
+/// main loop runs AT MOST ONE `GameFlow_Main` (one sim step) per iteration and advances `GameCount`
+/// by `PS2FramesToSkip`, clamped to [1, 2] with a resync (`GameCount = VBlankCount`) when the
+/// backlog exceeds 2 [M `main` 0x109080:71-79, 95; the BGFMV path clamps at :64-67] — the game
+/// catches up by speeding the clock (MUL = 2), never by bursting ticks. The port instead bursts up
+/// to 4 and drops the rest; both never burst past their cap, which is what this test pins.
 #[test]
 fn slow_frames_drop_ticks_never_burst() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };

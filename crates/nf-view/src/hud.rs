@@ -730,14 +730,18 @@ pub fn overlay(scene: &crate::scene::Scene, aspect: f32) -> HudFrame {
     // 0x03000174 for 60 ticks, alpha 0xFF then fading over the last 30 (alpha = timer·255/30). The game writes
     // the sprite's screen position (+0x24 / +0x26) as 0x30, 0x30 on every crouch, overriding the template's
     // (320, −300), and +0x38 = 0x1D is the LAYER (29), not alpha [M HUD_UpdateHealthPane 0x19b9c8:305-328].
-    // Drawn at the texture's size centred on (48, 48) [S: the centring; the user's PCSX2 play puts it top left].
+    // The position is the sprite's TOP-LEFT, not its centre: the icon's flags come from its template
+    // HealthSprInfo[19] = 0x1000 (clip-to-screen) [L ee_snapshot 0x2bd050+19·0x2c+0xA], and the game only
+    // centres a sprite when its flags carry 0x800 — `View_DrawSprites` 0x1e5290:69-74 subtracts w/2, h/2
+    // solely under `+0x22 & 0x800` (the crosshair/blips carry it; the crouch icon does not). Drawn at the
+    // texture's size with (48, 48) as the top-left corner.
     {
         let (crouched, timer) = (s.bond.crouched, s.hud.crouch_icon_timer);
         if crouched || timer > 0 {
             let (tex, a) = if crouched || timer >= 30 { (if crouched { 0x0300_0173u32 } else { 0x0300_0174u32 }, 0xFFu32) }
                 else { (0x0300_0174u32, (timer as u32 * 255 / 30).max(1)) };
             let (tw, th) = h.tex_dims(tex);
-            h.quad(Anchor::Left, 29, tex, 0, 48.0 - tw / 2.0, 48.0 - th / 2.0, tw, th, [0.0, 0.0, tw, th], (false, false), gs(0x7f7f7f, a));
+            h.quad(Anchor::Left, 29, tex, 0, 48.0, 48.0, tw, th, [0.0, 0.0, tw, th], (false, false), gs(0x7f7f7f, a));
         }
     }
     // The context icon (health pane sprite 18, `HUD_UpdateHealthPane` 0x19b9c8:273-303 —

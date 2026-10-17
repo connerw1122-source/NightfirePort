@@ -63,8 +63,15 @@ fn the_truck_park_announces_the_first_objective_and_exits_to_the_castle() {
     let mut scene = nf_view::load(&iso, "07000005.bin", false).expect("load 07000005");
     let sim = scene.sim.as_mut().unwrap();
     sim.bond = Bond::new([100.0, 26.0, 108.0], sim.bond.yaw);
-    // ch 0x45 reveals the first objective; its writer is not on disc ([S] the mission layer's own
-    // init on 07000005 — see docs/levels/07000005.md §2). Set it the way the game's HUD implies.
+    // ch 0x45 reveals the first objective. The game's channel writers are the trigger out-channels
+    // (Trigger_Activate 0x1b2318:30), the SCRIPT event ops (Script_EventHandler 0x1d94c0:166,187 —
+    // switch_channels[ch] = value straight from the script stream) and the mission init
+    // (Mission_Init 0x182270:106-116 writes switch_channels[rec+0xc] = rec+0xd from the mission's
+    // init records; 07000005's single record [L ee_start_05: mission entry at 0x2a4354 → records
+    // 0x2a3e28, count 0x2a4360 = 1] clears ch 0x46 — it does NOT set 0x45). So 0x45's setter is the
+    // level's script stream — the mechanism is [M], the exact script/op is not extracted yet [S]
+    // (see docs/levels/07000005.md §2). Until the script extraction lands the test drives the
+    // channel the way the game's HUD implies.
     sim.drones.channels.set(0x45, 1, sim.drones.frame);
     let mut prev_dis = sim.disabled;
     let mut crouch_armed = false;
