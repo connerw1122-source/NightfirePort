@@ -17885,3 +17885,10 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+
+## level-05-complete (2026-10-17, branch s/level-05-complete) — started 12:10 UTC
+Task: play 07000005 (Mayhew A, castle approach) from start to finish through the real input
+path (Sim::step_bond + level scripts/triggers), complete every objective including optional
+ones, exit the way the game does; fix every blocker the walk hits (each with a focused test
+that fails on the old code); report objectives/route/remaining gaps. Known open items:
+the #[ignore]d walkreal_07000005_live test, the truck hand-over to 06, the helicopters.
