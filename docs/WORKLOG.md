@@ -17668,6 +17668,31 @@ fix_ladder2_live 4, fix_ladder_live 3, fix_swim_live 4, fix_swim_vent_live 2, fi
   walked ride parks at (29.86, 37.93, 52.4) at t 5687 with no falls, ch 0x70/0x1D and the exit
   through the real walked path. The whole truck-exit chain is now double-pinned (the walkreal
   harness + mayhew_handover_live).
+- 2026-10-17 s/mayhew-end-transition (task 750o): the END of Mayhew (07000005) — Mayhew's route
+  to the level's exit and the hand-off to the next level (the end trigger, the outro/level-exit,
+  ResetMap_LevelToLoad). User 2026-10-16 evening: "end of mayhew still takes some work to
+  transition to the next level with mahews pathing." 750c mayhew-exit-walk covers his walk
+  before the MID cut-scene; this task reproduces the whole end sequence through the real path
+  on master, finds where his route stalls or the transition fails to fire, ports the game's
+  behaviour [M], and pins: the level ends and the next level loads without the player doing
+  anything the game doesn't require. Branch created from origin/master 31dd6161. Report:
+  docs/reports/mayhew-end-transition.md.
+- mayhew-end-transition: the gap was the EXIT HOLD — Trigger_Activate's GS_PauseGame(1) +
+  GameFlow_PushState(300.0f, 7, 0xff) [M 0x1b2318:90-92] was cited but never modelled: the
+  viewer drained level_exit into the loading screen the same frame. Ported: Drones::exit_hold
+  (ExitHold{next,fade_frames,total}) set by BOTH Trigger_Activate arms (auto-fire + use key;
+  NOT the event-0x12 loadmap [M 0x1d94c0:194-199]); Sim::step/step_bond tick the hold and skip
+  the world (the clock stops while paused [M 0x1c98c8:44-47; 0x1c9790:30-38; 0x10cd80:36]);
+  the viewer defers the drain until the hold clears (state 8 pops onto state 3 [M
+  0x1c98c8:173-189]); Drones::exit_fade() = the draw code's (left,total) read (alpha
+  1−left/total [M 0x1bbdd8]) — the overlay itself is the main agent's draw. Master repro
+  through the real path: the sim clock ran 100 ticks past the end trigger (5687→5787) pre-fix.
+  Tests mayhew_end_transition_live 3/3 (the walked end chain → the 300-frame freeze → the
+  carried load at #496; the use-key hold; the 0x12 no-hold sister). On the merged tree
+  (50d51ae7): nf-game lib 261, nf-view lib 18, nf-formats 79, nf-audio 11, the nine touched
+  live binaries 26 passed + the pre-existing cable ignore. The fast suite cannot run here
+  (background reaping — as 750c/pause-music-1b reported); foreground slices stand in. Doc:
+  docs/systems/exit-hold.md.
 - 2026-10-17 s/zoe-gondola-08 (task 750d): user: "zoe shoots at you when you get to the
   gondola" — Zoe is an ally (07000007/08; the gondola is on 07000008) and an ally must
   never target Bond. Plan: reproduce on the real path (walk to the gondola, log Zoe's
@@ -17719,3 +17744,144 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+## frag-throw-timing (741)
+
+- Symptom (playtest 1016-1355, 07000014): frag grenades leave the hand before the throw animation
+  finishes — the port spawns them too early. Goal: the game's release frame for the frag throw
+  (the fire script's spawn frame / the release-frame family [M Player_WeaponFiring 0x1a5460,
+  +0x44]) and a fix that spawns the grenade on exactly that tick, measured from the press.
+- Started: reading the decompile.
+- The release path audited end to end [M]: `Player_WeaponFiring` 0x1a5460 tail — the fire tick
+  queues the fire script, and for the `+0x6C & 0x400` + `+0xB4` family (the hand grenades
+  [L ee_start_05.bin 0x34: +0x6C 0x8c08, +0xB4 0x0600049e]) stores view state 0xb and the script
+  rate 1.5 (`AnimList+0x98 = 0x3fc00000`, disasm 0x1a6250 area); case 9's release check
+  (0x1a2e38:411-422) never runs for the family — the state leaves 9 inside the fire tick. Case 0xb
+  (0x1a2e38:499-507) waits `AnimScriptIsStopped` (the ended bit `+0x78 & 0x10000000`, set by
+  `AnimScriptEnd` 0x1c1930:30) then queues the +0xB4 script; case 0xc (0x1a2e38:505-519, disasm
+  0x1a3268-0x1a32c4) carries the release check `+0x44 <= AnimList(4)+0x90` — the +0xB4 playhead,
+  which starts at 1.0 [M AnimScriptInit 0x1c1600:37] and advances 1.0/tick [M AnimScriptTick
+  0x1c2630 mode 0].
+- Frag facts [L ee_start_05.bin record 0x34 / the port's script parse]: +0x44 = 26, fire
+  0x0600049d = 70 frames (pin sound 0x1e4 at frame 16), fire_last 0x0600049e = 35 frames. Release
+  = 46 ticks of fire script at 1.5× + 25 ticks of the +0xB4 = press+71. The port released at
+  press+17 (the case-9 check on the fire script's playhead-26 crossing) — the repro test measured
+  exactly 17 before the fix.
+- Bisect: fix-player2 eb1564b7 introduced the release check against the FIRE script's playhead
+  (release +25 at 1.0×; the playtest 1014-1725 "released while I'm still pulling the pin");
+  f986a6b3 (the 1.5× throw-cadence commit, Oct 15) moved the same wrong-gate check to +17 — the
+  playtest 1016-1355 "way too soon, opposite direction". grenade-rattle2 (693b) touched the
+  bounce-speed cap, not the release. The root error in both: the check ran during the fire script;
+  the game's check for this family lives in the post-script state 0xc against the +0xB4 playhead.
+- Fix: scene.rs's release block gates the family on `view_script == +0xB4` (the case-0xc phase)
+  before running `release_frame_reached`. Test: frag_throw_timing_live (press+71, not the
+  playhead-26 crossing, the fire script still playing at tick ≤20, one grenade per press, the
+  record speed); the sister pins the fire script uninterrupted past the old crossing.
+- The three tests that pinned the old gate (fix_grenade_release_live's release + launch-position,
+  remote_mine_detonate's release frame) contradicted the decompile — fixed per the task rule, with
+  the addresses in the assertions: the release is the +0xB4 playhead reaching +0x44 (case 0xc
+  [M 0x1a2e38:505-519]), the frag at press+71, the mine (fire 40 frames at 1.5× = 26 ticks) at
+  press+51. All four grenade-family test files green on the fixed tree.
+
+- 2026-10-17 s/frag-throw-timing2 (task 750k): Finish frag-throw-timing (task 741, HELD at the
+  2026-10-16 batch merge): on top of the batch, nf-view fix_grenade_types_live::
+  the_stun_grenade_whites_bond_out_at_the_games_time_and_alpha fails (alpha 0.673 vs the
+  formula's 0.758/0.379, tolerance 0.08 [M 0x12dfb0]) because the test reconstructs the blast
+  point from the last grenade position it saw while the new release timing leaves the grenade
+  still moving at the pop. Plan: expose what the game used (blast position, eye point, aim yaw
+  at the flash_amount call) and assert the test against exactly those; keep the branch's own
+  frag_throw_timing_live green. Branch = origin/s/frag-throw-timing 7f41e160 merged with
+  origin/master 31dd6161 (the frag-throw work is already an ancestor of master).
+- frag-throw-timing2 completion: restored the held 741 work by reverting the batch's revert
+  (the case-0xc release gate [M 0x1a2e38:505-519] + frag_throw_timing_live + the family test
+  windows), reproducing the hold's failure exactly (alpha 0.6732224 vs the reconstruction's
+  0.7584983/0.37924916), then fixing it the task's way: the sim now records the flash's exact
+  inputs at the flash_amount call (Drones::flash_probe = FlashProbe{blast, head, px, pz, yaw,
+  los, f} [M 0x12dfb0-0x12e0b8]; port-side instrumentation, no game counterpart) and both stun
+  tests assert against exactly those — alpha == flash_amount(recorded) at 1e-6, the total
+  600·f exact, the remaining count within one countdown tick (the pop step's own decay [M
+  0x193600]), plus the sister that the recorded blast is the grenade's own pop position (the
+  record dies the same tick; measured drift 0.615 u — the pop does catch the grenade in
+  flight). Doc: docs/systems/stun-flash.md. Binaries green: fix_grenade_types_live 3+1
+  ignored (107a's pre-existing ignore), frag_throw_timing_live 1, fix_grenade_release_live 4,
+  fix_grenade_throw_live 4, remote_mine_detonate 3. Full suite on the final tree: 2008
+  passed, 6 failed, 73 ignored (479 binaries) — the 3 slim-ISO disc_golden + the pylon render
+  trio (GPU-less sandbox, sim-side change cannot reach them; flagged for the main agent's
+  render). Report: docs/reports/frag-throw-timing2.md.
+- 2026-10-17 s/tranq-gun (task 750l): "tranq gun doesnt work" (playtest 1016-evening). Plan:
+  find the tranquilizer weapon record (USATxt + weapon_data; which levels carry it), its fire
+  path (bullet record, the dart's hit route on a guard — the msg it sends, e.g. a sleep/knock-out
+  state family like the taser's 0x4A-0x4C, timers and recovery) and port what is missing.
+  Reproduce on master through the real input path (equip it on a level that carries it, fire at
+  a guard) fail-first, then fix; same test passes. Branch created from origin/master 31dd6161.
+- 2026-10-17 s/create-save (task 750j): The user cannot create a save (playtest
+  1016): Select Codename -> New Codename should open the name entry (P_CNNAME
+  0x40000020, the C_KEYBOARD 0x213a98 grid), confirm with the check mark, save the
+  codename (the port's stand-in: the settings/save files under %APPDATA%/NightfirePort)
+  and list/select it on the next boot; finishing a mission under it saves progress.
+  Plan: walk the real window input path (arrows/Enter/Esc/Tab + typed letters, lib.rs's
+  name-page key handling) on a fresh profile, find the failure, fix to the game's flow
+  with [M] citations, pin create "BOND" -> saved to disk -> offered next boot. Branch
+  created from origin/master 31dd6161.
+- create-save: root cause found — the WINDOW layer never wired the card (every
+  set_profile_dir call in the tree was in a test): the name page's ✓ refused silently
+  (request_create without a dir returns false — no box, no save), Select Codename listed
+  nothing, and the results handover's fresh fe dropped the session. Reproduced through the
+  real action path (create_save_live: boot fe, Main -> Codename -> row 0 -> the ✓ returned
+  false on master). Fixes (docs/systems/profile-session.md): menu::ProfileSession (the game's
+  session globals 0x2e1ae0/0x2e1ae8 [M C_KEYBOARD 0x213a98:53-57; P_NFRESULTS 0x208e78:30/145/
+  194] + the card dir) stashed on the App at every fe drop and inherited at every create (the
+  music statics' pattern); the boot seeds the card from settings::config_dir() + cn_reserved
+  from the lang binds (0x29b/0x211); menu::cnname_char_key + the window's CnName typing
+  branch (letters/digits -> the grid cell press [M 0x213a98 msg 0x4b], Backspace -> 1000);
+  demo_results inherits the session + sync_profile_progress (the game writes its MSSN from
+  the live state the results read). 4/4 create_save_live pass.
+- create-save: fixed + pinned. menu::ProfileSession (the session globals 0x2e1ae0/0x2e1ae8
+  [M C_KEYBOARD 0x213a98:53-57; P_NFRESULTS 0x208e78:30/145-152/194] + the card dir)
+  stashed on the App at every fe drop (menu_after, the pause resume, close_front_end, the
+  mission-load drop, the results/debriefing handovers) and inherited at every create (boot,
+  pause, debriefing, mp_results, demo_results, net_fail) — the music statics' pattern. The
+  boot seeds the card from settings::config_dir() + cn_reserved from the lang binds
+  (0x29b/0x211 [M 0x1f9930; D USATxt.dat]); menu::cnname_char_key maps typed letters/digits
+  to the grid's cell press [M 0x213a98 msg 0x4b] (Backspace = cell 1000), wired into the
+  window's key handler before key_action; demo_results inherits the session and runs
+  sync_profile_progress after results_enter (the game writes its MSSN from the live state
+  the results read). Profile: +Clone. Tests create_save_live 4/4 (the create through the
+  real action path, the typed letters, the next-boot offer + load, the mission-end save
+  through the handover — ASK_OVERWRITE then the disk nightfire_status 0b111). Regressions:
+  codename_entry 14, memcard_save_flow 7, save_progress_roundtrip 2, options_persist 3,
+  menus_flow 42, front_end_chain 2, pause_results_flows 4, fix_save_profile_live 2,
+  menu_graph_walk 2, menus_e2e/menu_sp_e2e/menu_movies/menus_backout 20, nf-game profile
+  lib 6, nf-formats 79 + nf-audio 79 lib — all pass. Full suite (all 4 crates, resumable
+  per-binary batches, every binary ran): 2012 passed, 6 failed, 73 ignored — the 6 are the
+  3 disc_golden (allowed on the slim ISO) + fix_0c_pylon_live 2 / probe_pylon_render 1
+  (wgpu request_adapter NotFound, active_backends 0x0 — no GPU in this sandbox; the tests
+  never construct a FrontEnd, unrelated to this task). Report:
+  docs/reports/create-save.md.
+- 2026-10-17 s/mp-screens (task 750): "Missing mp screens" (2026-10-16 evening). Plan: list every
+  multiplayer front-end page (the ACTION.ELF .data page table, the P_MP* handlers, the menu-def
+  pages) and which the port lacks or leaves blank (character select, team setup, scenario options,
+  map select, bot setup, the per-player confirm/ready screens, the results/debriefing pages);
+  port each missing page's data/state/flow in menu.rs with [M] citations (no drawing — the main
+  agent draws); plus the F12 spot_shot all-dark-image bug on front-end pages (nf-shots/
+  001-07000048.png). Report the page list ported/missing. Branch from origin/master 31dd6161.
+- mp-screens: the census (research agent + spot reads) — the MP front end is 13 pages bound by
+  Handler_HandleMessage 0x2029e0's dispatch (no static table): P_MAIN 0x20a7b0 → P_MPJOIN
+  0x20ca00 → P_MPSCENARIO 0x217348 (Quick Game = row 0) → P_MPMAP 0x217468 → P_MPSETUP
+  0x20d7a8 → P_MPOPTIONS 0x217678 → {P_MPRULES 0x20f790, P_MPPLAYERMODS 0x2104d0,
+  P_MPENVIROMODS 0x210030, P_MPBOTS 0x217790 → P_MPBOTCHOOSE 0x210cd8 → P_MPBOTSETUP 0x211270}
+  → P_MPCONFIRM 0x20ec00 (launch: +0x180=1, ×60, ResetMap_LevelToLoad) → (pause quit routes
+  0x40000033) P_MPDEBRIEFING 0x212198. The port had the ids/flow already (mp-menu-flow); the
+  DRAW left exactly two pages empty — menu_overlay's `MpSetup | MpConfirm => {}`. Data now in
+  FrontEnd::mp_setup_panels (the 0x37c/0x37d prompts, states 2/3/4/5, the handicap defaults
+  1/3/2/0 [M 0x20d7a8:20-23]) and FrontEnd::mp_confirm_summary (the six summary rows with the
+  exact label ids — MAP 0x3d4, SCENARIO 0x3d5, WEAPON SET 0x24d + the 0x1a0..0x1b2 switch, TIME
+  0x3d8/LIVES 0x3d7/NONE 0x3ca, POINTS 0x3d6, FF 0x3da + 0x1b6/0x1b7, the blue/red panels, the
+  bots' portrait columns [M 0x20ec00:143-389]); no drawing (the main agent draws). The census +
+  field map: docs/systems/mp-screens.md. The F12 all-dark shot (nf-shots/001-07000048.png):
+  spot_shot passed no movie frame while fe.backdrop_live stood — plate skipped, plane empty,
+  the front-end level's void rendered black; now spot_movie_gates mirrors the redraw's movie_up
+  (briefing Always / intro+attract WithFrame / page backdrop Never) and the live frame rides to
+  the plane. Tests mp_screens 5/5 (they caught a real getter bug: the bots' columns counted
+  disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
+  (suite.py background-killed as in prior sandboxes; the foreground run stands in).
+  Report: docs/reports/mp-screens.md.
