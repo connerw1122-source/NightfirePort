@@ -18600,3 +18600,10 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   walk_07000005 2, walkreal_07000005 2, mayhew_handover 2, level_carry 8, fix_truck 2, wire 1,
   casings16 2, fix_mission 4, levels_sweep 3, walk_07000008 4, walk_0700000a 3, mission_unlock_flow 3
   — 0 failures. Report: docs/reports/level-05-interactables-2.md.
+- 2026-10-17 s/level-08-interactables-2 (task 708c): started. Task: finish the 08
+  interactables re-land — ONE hurt system from origin/master's hurt.rs +
+  docs/systems/hurt-volumes.md (Sim.hurts), porting 708a's fuller semantics
+  (Hurt_Update 0x17e5d0, drone victims), passing the four master tests
+  (fix_finale_live, spurious_complete_16_live, hurt_02_live:83,
+  interact_07000006_live) plus hurt_07000008_live; coordinate with 705d on the
+  ShuttleLaunch ch 0xf3 / Mission state 6 timing [M 0x182c60]. In progress.
