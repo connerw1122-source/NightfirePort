@@ -17885,3 +17885,33 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- 2026-10-17 s/laser-scripts (task 750i): The user: "lasers arent accurate to the port look
+  closely at their scripts". Plan: list every laser object (placement type, script ids — the
+  beam's on/off cycle, sweep, colour/alpha keys, sound), decode those scripts fully
+  (docs/formats/ + docs/systems/), compare against what the port runs today (timings, cycle,
+  which beams exist, extents, sweep, damage/alarm on touch), fix every difference with
+  [M]/[D] citations. Deliver the per-beam state (endpoints, on/off, alpha, colour) as a getter
+  for the main agent's draw code + a per-beam change table in the report. No drawing.
+  Branch created from origin/master 31dd6161.
+- 2026-10-17 s/laser-scripts (task 750i): "lasers arent accurate to the port look closely at
+  their scripts". Root cause: the level laser-grid beams are driven by each level's laser SWITCH
+  (0x29) whose param 1 is a NIS script — Switch_Create 0x1adcc0:44-45 ends with
+  SP_Create(pos, rot, p1, 0, 8, 0, obj, 0), a looping embedded ScriptPlayer; the port never read
+  param 1, so no beams existed anywhere. The shows: 07000009 switch #71 SCRIPTPLAYER_Lasers →
+  0x06000667 (art SCRIPT_Lasers_ON 0x020005ed / OFF 0x020005ec / AMBER 0x02000a29, world-space
+  glists on origin 0x2031 placements, map 0100009f), 0700000a switch #643 → 0x06000664
+  (SCRIPT_KeyboardLasers_ON 0x020005e0 / OFF 0x020005df / DURING 0x02000a2d). Both scripts create
+  the ON art at t0 and HOLD at t2 (event kind 3, p0 = 0 → SCRIPTINFO+0x9c = −1, Script_Update
+  0x1da998:17-18 runs only at 0); the switch's channel-change arm unpauses (Switch_Update
+  0x1adea8:19-24, SP_UnPause 0x1dca58) and one full cycle plays (ON→AMBER@31→OFF@496→AMBER@527→
+  EntityEnd@985, Script_CreateEntity 0x1d8968:92-101 re-points the stream object's gfx).
+  Implemented: the mounts in Drones::attach_level, SwitchObj.ext+0x0C link + unpause arms +
+  Switch_Activate 0x1b02a8:23's script-idle gate, the switch scripts in nf-view's attachment
+  sweep, Scripts::entities() (the per-beam state getter: script, stream, art hash, matrix,
+  alpha). Docs: docs/systems/laser-scripts.md. Tests: laser_scripts_live.rs (fail-first: both
+  panicked "no embedded ScriptPlayer" on the pre-fix tree; 2/2 pass after), nf-game lib 251/251,
+  the 7 nf-view script/fusebox/truck/cutscene suites 21/21, script_census 6/6 (no handled-set
+  constant moved — 0x29/NIS ops were already counted). Fast runner on the pre-merge tree: 2009
+  passed / 6 failed (3 tolerated slim-ISO disc_golden + 3 GPU-less pylon render probes); the
+  final merged-tree re-run did not fit the sandbox window. Report:
+  docs/reports/laser-scripts.md.

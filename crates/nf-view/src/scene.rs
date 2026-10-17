@@ -5679,6 +5679,17 @@ impl Scene {
             let mut seen = BTreeSet::new();
             let players: Vec<nf_game::nis::Player> = level.maps[m].placements.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0xd9)
                 .filter_map(|(i, p)| nf_game::nis::Player::from_placement(i, p)).collect();
+            // laser-scripts: the switches' embedded players (`Switch_Create` 0x1adcc0:44-45,
+            // `SP_Create(pos, rot, param 1, 0, 8, 0, obj, 0)`) — the laser-grid show on 07000009
+            // (switch #71 "SCRIPTPLAYER_Lasers", script 0x06000667) and the keyboard lasers on
+            // 0700000a (switch #643, script 0x06000664) draw through them; the sim mounts the
+            // same players (Drones::attach_level), so their entity streams need attachment slots
+            // exactly like a placed player's. Param 1 < 0x06000000 is a model id, not a script —
+            // skipped the same way the sim skips it.
+            let switch_scripts = level.maps[m].placements.iter()
+                .filter(|p| p.flags & 0xff == 0x29)
+                .filter_map(|p| p.params.iter().find(|(k, _)| *k == 1).map(|&(_, v)| v))
+                .filter(|&v| v >= 0x0600_0000);
             // The explosion scripts (`Explode_Create` 0x17cbd0 loads a per-source effect script —
             // its `Script_Load` arg a3): 0x6000052 from the fuse/contact call sites [M 0x12cd98/
             // 0x12ce80 disasm], 0x60007c4 from the Samurai bolt's 0x100000/0x200000 arms [M
@@ -5691,6 +5702,7 @@ impl Scene {
             // (0x020003cc/cd/ce/c7...). Walk the op-0x1b hashes recursively (the runtime `src` is
             // the sub's own lib key, so the attachment's script tuple must carry the sub's hash).
             let mut hashes: Vec<u32> = players.iter().flat_map(|p| p.scripts).filter(|&h| h != 0)
+                .chain(switch_scripts)
                 .chain([0x0600_0052u32, 0x0600_0027, 0x0600_004f, 0x0600_07c4]).collect();
             let mut queued: std::collections::HashSet<u32> = hashes.iter().copied().collect();
             while let Some(h) = hashes.pop() {

@@ -8143,6 +8143,59 @@ impl Drones {
                 hidden: false,
             });
         }
+        // laser-scripts: `Switch_Create` 0x1adcc0:44-45 ends with `SP_Create(pos, rot, param 1,
+        // 0, 8, 0, obj, 0)` — every switch owns a ScriptPlayer whose script A is **param 1** and
+        // whose mode is **8 = play looping** (`SP_Create` 0x1dc7e0:72-76 puts param 3 into the
+        // tag's script-A slot +0x2C and param 5 into both mode slots +0x34/+0x38; the mask word
+        // tag+0x40 stays 0). `SP_CreateScriptPlayer` 0x1db9a8:74-86 + `SP_LoadScript` 0x1dbc08:46-49
+        // then load the script and `Script_Play(loop=1)` it — the laser-grid show on 07000009
+        // (switch #71 "SCRIPTPLAYER_Lasers", param 1 = 0x06000667) and the keyboard lasers on
+        // 0700000a (switch #643, param 1 = 0x06000664) run from level start through THIS player:
+        // its entity streams create/swap the laser art objects (`Script_CreateEntity` 0x1d8968:92-101
+        // re-points a same-class stream object's gfx, `Script_KillStream` deletes at op 9), and the
+        // script's event kind 3 with p0 = 0 parks `SCRIPTINFO+0x9c = -1` — the show freezes two
+        // ticks in with the ON art alive until `SP_UnPause` (the switch's channel-change arm,
+        // `Switch_Update` 0x1adea8:19-24) clears the delay. The port skipped param 1 entirely
+        // (useobj's SwitchObj never read it), so the beams never existed. Param 1 < 0x06000000 is
+        // a model id, not a script (`SP_CreateScriptPlayer` 0x1db9a8:18 refuses both-zero scripts;
+        // the non-hash ids simply fail `isLoadable`/lib lookup → state 5, the game's own path) —
+        // the port only mounts players for hash scripts, matching `Scripts::new`'s lib keys.
+        for (i, p) in ps.iter().enumerate().filter(|(_, p)| p.flags & 0xff == 0x29) {
+            let script = p.params.iter().find(|(k, _)| *k == 1).map_or(0, |&(_, v)| v);
+            if script < 0x0600_0000 { continue; }
+            let m = nf_formats::placement::object_matrix(p.rotation, p.translation);
+            let idx = self.scripts.players.len();
+            self.scripts.players.push(crate::nis::Player {
+                placement: i,
+                scripts: [script, 0],
+                modes: [8, 0],
+                stay: false,
+                // `SP_Create`'s tag mask word is param_6 = 0 [M 001dc7e0:114]; the port's prime()
+                // skips mask-0 SPs (port-check §9), so the player carries mask 1 — the load beat
+                // is what matters (the fusebox player above carries it for the same reason).
+                mask: 1,
+                out: 0,
+                gate: 0,
+                scale: 1.0,
+                matrix: m,
+                cur: 0,
+                state: 0,
+                activated: false,
+                countdown: 0,
+                info: [None, None],
+                deleted: false,
+                live_matrix: m,
+                subs: Vec::new(),
+                hit_points: 0.0,
+                damage: 0.0,
+                tick_damage: 0.0,
+            });
+            // The ext+0x0C link [M 0x1adcc0:46]: Switch_Update's unpause arm and Switch_Activate's
+            // idle gate reach the player through it (crate::useobj).
+            for sw in &mut self.useobjs.switches {
+                if sw.placement == i { sw.sp = Some(idx); }
+            }
+        }
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {
             let kind = p.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v as u8);
             let boxes = level.instances(false).0.iter().filter(|i| i.placement.flags & 0xff == 0x32).map(|i| {
@@ -9758,7 +9811,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // segments are this tick's paths — the game reads the class-5 contact list the same pass.
         let (paths, weapons) = self.bullet_paths();
         let shots: Vec<(V3, V3, u16)> = paths.iter().zip(weapons).map(|(&(a, b), &w)| (a, b, w)).collect();
-        self.useobjs.tick(&shots, &mut self.channels, frame);
+        self.useobjs.tick(&shots, &mut self.channels, frame, &mut self.scripts);
         // The world objects' update pass (`control_movement_object_handler` 0x1336f8 pass 4:
         // `control_funcs[+0xFF].update` — InverterTrigger 0x1b30a8, Shooter 0x17d0c0 (fires one
         // `Bullet_init` bullet into this tick's list), DynamicObject 0x18d3b8; the camera splines
