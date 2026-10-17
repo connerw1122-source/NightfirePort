@@ -17885,3 +17885,17 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+
+---
+
+Task ID: app-state-parity
+Branch: s/app-state-parity
+Agent: app-state-parity worker
+Task: Audit App fields (crates/nf-view/src/lib.rs) initialised from args/startup that the game updates per load or per menu choice; update them on the same events, pin with tests, document in docs/systems/.
+
+Work Log:
+- Branch created from origin/master (contains briefing_plays_live.rs, verified).
+- Background suite started at 06:59 UTC.
+
+Stage Summary:
+- (in progress)
