@@ -49,11 +49,14 @@ Branch `s/level-07-interactables` (from origin/master d628f01f). Sandbox window 
 
 ## Open (for the next message)
 
-1. **The P2K never spawns a shot on this level through `step_bond`** — `last_shot` stays `None`
-   after 100 fire ticks (weapon 2 out, lock released via the walk path, trigger held). The
-   bullet-kill of the breakables is proven at the sim level; the live shot needs the fire gate found
-   (suspect: the `weapon_lock_auto_draw` direct `switch_request` vs the fire path's lockout/raise).
-   The ignored test carries this diagnosis.
+1. **The P2K never spawns a shot on this level through `step_bond`** — measured: pre-fire weapon 2,
+   clip 7, spare 41, switch_state 3, idle script 0x0600082b; after 100 fire ticks the fire script IS
+   selected (view_script 0x06000825) but **view_time stays 0.0** — the view anim never advances, the
+   release frame never arrives, `last_shot` stays None. The bullet-kill of the breakables is proven
+   at the sim level; next session: why the view anim freezes (the draw never completing from
+   `weapon_lock_auto_draw`'s direct switch_request, or the P2K fp seq missing from this archive —
+   "36 weapon-model hashes still missing" in the mesh merge log). The ignored test carries the
+   diagnosis and the DIAG prints.
 2. **Music/touch chain untested live** (#443 Touch → ch 138 → MusicTrigger #444 event 13 [D]): the
    pieces are ported (triggers, worldobj MusicTrigger [M 0x1b30e0/0x1b31a0]) but no live test was
    written in the window.

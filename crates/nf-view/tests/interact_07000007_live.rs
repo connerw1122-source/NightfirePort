@@ -74,11 +74,15 @@ fn fire_until_aimed(sim: &mut nf_view::scene::Sim, done: impl Fn(&nf_view::scene
 /// level of the kind is proven by props.rs `one_bullet_kills_the_zero_pool_breakable`). The sisters
 /// below pin the no-shot side.
 /// [ignore] OPEN (level-07-interactables): the P2K never spawns a shot through `step_bond` on this
-/// level — `last_shot` stays `None` after 100 fire ticks (weapon 2 out, lock released, trigger
-/// held) — so the live bullet-kill can't run yet. The sim level of the kind is proven by
+/// level. Measured (the DIAG prints below): pre-fire weapon 2, clip 7, spare 41, `switch_state = 3`,
+/// idle script 0x0600082b; after 100 fire ticks the fire script **is selected** (view_script
+/// 0x06000825) but `view_time` stays **0.0** — the view anim never advances, so the release frame
+/// never arrives and `last_shot` stays None. The sim level of the bullet kill is proven by
 /// props.rs `one_bullet_kills_the_zero_pool_breakable` [M 0x12bfd8/0x12b970]; the disc pools are
-/// all (float)0 [D census]. Next session: find the fire gate (suspect the weapon_lock auto-draw's
-/// switch state vs the fire path's lockout).
+/// all (float)0 [D census]. Next session: why the view anim freezes (suspects: the draw never
+/// completes from `weapon_lock_auto_draw`'s direct switch_request — switch_state rests at 3 — or
+/// the P2K's fp seq missing from this archive: "36 weapon-model hashes still missing" in the
+/// session mesh merge log).
 #[test]
 #[ignore]
 fn the_party_vase_breaks_on_a_p2k_round() {
@@ -98,6 +102,8 @@ fn the_party_vase_breaks_on_a_p2k_round() {
     // few ticks, then fire while holding the aim.
     sim.bond.pos = [60.25, 43.0, -38.0];
     sim.bond.yaw = 0.0;
+    eprintln!("DIAG pre-fire: weapon={} clip={} spare={} fire_state={} view_script={:#x} switch_state={} reload_state={}",
+        sim.gun.weapon, sim.gun.clip, sim.gun.spare, sim.gun.fire_state, sim.view_script, sim.gun.switch_state, sim.gun.reload_state);
     // The statue #109 (104.9..105.5, 44.1..44.9, -64.7..-64.3 [D census]) stands in the open hall:
     // sweep the aim up while firing (the look stick + the trigger, the way a player finds a target).
     sim.bond.pos = [105.2, 43.0, -61.5];
@@ -111,6 +117,8 @@ fn the_party_vase_breaks_on_a_p2k_round() {
         }
         if broke_at.is_some() { break; }
     }
+    eprintln!("DIAG post-fire: view_script={:#x} view_time={:.1} clip={} fire_state={} last_shot={:?}",
+        sim.view_script, sim.view_time, sim.gun.clip, sim.gun.fire_state, sim.last_shot);
     assert!(broke_at.is_some(), "the statue never broke across the aim sweep (vase: {:?})", sim.drones.props.breaks[0].dead);
     assert!(sim.drones.props.breaks[0].dead, "the P2K round killed the vase [M Break_Kill 0x12b970:41]");
     // The glass in the same room: kind 2 — the same 0x20 kind, the shatter route.
