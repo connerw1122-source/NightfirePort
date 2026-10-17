@@ -18388,3 +18388,25 @@ level through step_bond (last_shot None — the ignored live-shot test carries t
 music/touch chain live test, the party AI rules, the NF_TEX_TRACE sweep, the renderer's dead-break
 skip, script event 10. Suite OOM-crashed sandbox-wide (exit -9); branch-touching crates run
 directly. Report: docs/reports/level-07-interactables.md.
+- 2026-10-17 s/level-07-complete (task 707b): started. Task: live walk test
+  walkreal_07000007_live.rs playing 07000007 (Mayhew C: the party) start to
+  finish via the real input path — every objective (0x4000002 on ch 0x48; 0x4000003
+  completes on 07000008's intro plate ch 0x49), every cut-scene (SP #419 Drake
+  reveal 0x06000072, SP #420 the control-taking 0x06000073), the scripted events,
+  then the exit #418 → 07000008. Known open items to start from: the guests'/guards'
+  party rules; Mayhew's walk to the exit before the mid cut-scene (user report).
+  Census basis: docs/levels/07000007.md (level-07-interactables). In progress.
+- 2026-10-17 s/level-07-complete (task 707b): DONE. walkreal_07000007_live.rs (new, 2 tests):
+  the full 07000007 party walk through the real input path — spawn plate ch 0x47 → the hall
+  plate ch 0x48 (objective 1 → 4; the control-taking scene 0x06000073 skipped with the game's
+  skip action, the stream-6 hand-back pinned) → the west stairs → Drake's reveal ch 0x15 (the
+  fly-through 0x06000072) → down/across/up to the exit LOAD_LEVEL #418 → 07000008 → the carried
+  intro plate ch 0x49 → objective 2 → 4. The zone test pins the party's zoning: 12 guests in
+  WaitSwitch on ch 6 wake when plate #476 fires, the prop-0x1D walkers take their kind-8 routes
+  (14.6/9.9 units walked), zero combat states against unarmed Bond. The "Mayhew's walk" report
+  item resolved from the disc: the hall dtype-1 figures are CivilianDoorGuard 0x31 [L
+  StateFuncs 0x29b300+0x31·4; DroneTypeSettings[0x16].start 0x29b0a8 = 0x0031; M 0x14c938],
+  standing is correct; the wrong "no kind-8 paths" [S] note struck in drone.rs. 4734 walked
+  ticks, no falls. Ran: walkreal_07000007_live 2/2, nf-game 509/0, the six sibling 07 binaries
+  34/0 (suite.py background-killed by the sandbox as before; the foreground runs stand in).
+  Report: docs/reports/level-07-complete.md.

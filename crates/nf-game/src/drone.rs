@@ -1595,7 +1595,12 @@ impl Drone {
     /// *Deviation*: "in the drone's cel" is replaced by "within 2 units of the feet in height".
     /// `NDrone2_ClosestAIPoint` (0x151b18) — the typed registry lives in `aipoint` now; the
     /// AssignAIPath alarm-point store and `NDrone2_FindAlarmPoint` (0x153008) still degrade to
-    /// this generic path assignment [S deviation — 07000007 has no group-8 points or kind-8 paths].
+    /// this generic path assignment. 07000007 DOES carry group-8 points and six kind-8 paths
+    /// ([D the archive's nav dump: paths 2-7, kind 0x8, first nodes (42.98,−59.37)/(79.75,−50.45)/
+    /// (76.28,−50.30)/(77.76,−48.60)/(89.76,−57.67)/(88.26,−55.60)]; the party's walkers run them
+    /// via PartyGirlInit/CivilianInit prop 0x1D → here — walkreal_07000007_live's zone test walks
+    /// two of them 14.6/9.9 units once plate #476 raises ch 6) — the old "[S] no kind-8 paths"
+    /// note was wrong and is struck.
     fn assign_path(&mut self, d: &Data, mask: u32) -> bool {
         let feet = self.feet();
         let mut best: Option<(f32, usize, u16)> = None;
