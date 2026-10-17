@@ -7721,6 +7721,14 @@ pub struct Drones {
     /// The photograph targets and breakable doors (crate::props; placements 0xFD / 0xE1 —
     /// `CamSubject_Create` 0x1bc5d8, `Destroy_Create` 0x12c318), created in `attach_level`.
     pub props: crate::props::Props,
+    /// The breakable scenery (crate::breakable; placement 0x20 — `Break_Create` 0x12c230),
+    /// created in `attach_level`; bullets and (on 07000001) walking guards damage it.
+    pub breaks: crate::breakable::Breaks,
+    /// The monitor consoles (crate::monitor; placement 0x30 — `Monitor_Create` 0x1b08b0).
+    pub monitors: crate::monitor::Monitors,
+    /// The breakable kills this tick (`(placement, kind, sound)` — `Break_Kill` 0x12b970's
+    /// observable outputs; the view consumes them for the shatter/debris + sound presentation).
+    pub break_kills: Vec<(usize, u8, u16)>,
     mission_inited: bool,
     /// The mission layer's events this tick (`Text_AddMsg` types 2/3, the FailLabel writes, the
     /// level-end/reset decisions) — drained by the view each tick.
@@ -7873,7 +7881,7 @@ impl Drones {
         let mut drones = Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), player_pos: [0.0; 3], bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), shake: 0.0, health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), link_flags: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, mission_end: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, hold_npcs: false, hold_active: false,
             npc_system_disabled: false,
-            spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), ai_points: Vec::new(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
+            spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), breaks: Default::default(), break_kills: Vec::new(), monitors: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), ai_points: Vec::new(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
             // fix-06-alarm (fields on their own lines — merge lesson 4).
             sound_triggers: Default::default(),
             node_doors: None,
@@ -8006,6 +8014,10 @@ impl Drones {
         // Destroy_Create 0x12c318 — the game creates them in placement order in
         // parsemap_create_dynamic_objects 0x1d04f0].
         self.props = crate::props::Props::create(level);
+        // The breakable scenery (0x20) [M Break_Create 0x12c230 — placement order, same pass].
+        self.breaks = crate::breakable::Breaks::create(level);
+        // The monitor consoles (0x30) [M Monitor_Create 0x1b08b0 — same pass].
+        self.monitors = crate::monitor::Monitors::create(level);
         // The Q-Worm PCs (0x35) and switches (0x29) of `Player_Activate` 0x1a5170 (map-tower;
         // `parsemap_create_dynamic_objects` 0x1d04f0 cases 0x35/0x29, crate::useobj).
         self.useobjs = crate::useobj::UseObjects::create(&level.maps[level.main_map().unwrap_or(0)].placements);
@@ -8635,6 +8647,19 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // 0x600004f, other non-zero → 0x6000052 [M 0x12bc50-0x12bd20]; damage = tag+0x08, the
             // placement's param 5 [M 0x12bd04]; attacker = the bullet's owner, the player here →
             // usize::MAX; no weapon record → weapon_type 0 in the explosion record).
+            // The breakable scenery takes the bullet this tick ([M Break_Update 0x12bfd8:44-48 —
+            // the class-5 contact subtracts its damage; Break_Kill 0x12b970 sets obj+0xFE bit 0
+            // and plays the kill sound; no channel is written]). The kill records queue for the
+            // view (sound + shatter/debris presentation).
+            self.break_kills.extend(self.breaks.bullet_hit(b.pos, end, b.weapon, b.damage)
+                .into_iter().map(|k| (k.placement, k.kind, k.sound)));
+            // The monitor consoles take the bullet too (`Monitor_ApplyDamage` — state 3 +
+            // `Explode_Create` 0x6000027; the game's r·6 radius reads the placed sphere, the
+            // port's blast queue takes the historical radius stand-in).
+            if self.monitors.bullet_hit(b.pos, end, b.damage) {
+                let m = self.monitors.list.iter().find(|m| m.state == 3).map(|m| m.pos);
+                if let Some(p) = m { self.pending_blasts.push((p, 3.0, 200.0, usize::MAX, 0, 0x0600_0027, 3.0)); }
+            }
             for (pos, radius, damage, kind) in self.props.bullet_hit(b.pos, end, b.weapon, b.damage, &mut self.channels, frame) {
                 let script = match kind { 1 => 0x0600_0027, 2 => 0x0600_004f, _ => 0x0600_0052 };
                 // fix-blast-scripts2: Destroy_Smash's f12 reads the tag's +0x8c [M 0x12bcdc `lwc1
@@ -9274,6 +9299,17 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // switches (0x29, `Switch_Activate` 0x1b02a8) and the Q-Worm PCs (0x35,
         // `PCQWorm_Activate` 0x1b0840) — crate::useobj.
         self.useobjs.player_activate(&mut self.scripts, &mut self.channels, head, look, frame);
+        // `Player_Activate`'s class-0x38 monitor path (`Monitor_Activate` 0x1b0058): the use
+        // sphere's nearest monitor within reach activates (or, while viewing, the same 0xE edge
+        // cycles/exits). Reach: the door rule (head+look sphere 1.0 vs the object's sphere) —
+        // 2.2 like the SS arm in the view.
+        for (mi, m) in self.monitors.list.iter().enumerate() {
+            let dx = m.pos[0] - head[0]; let dy = m.pos[1] - head[1]; let dz = m.pos[2] - head[2];
+            if dx*dx + dy*dy + dz*dz <= 2.2f32*2.2f32 {
+                self.monitors.activate(mi, &self.sensors);
+                break;
+            }
+        }
     }
 
     /// The class-0x1D trigger half of `Player_Activate` (0x1a5170:134-137). Bond's use sphere (radius 1.0 at
@@ -9769,6 +9805,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             &mut self.worldobjs, &mut self.channels, wo_viewer, d.weapons, &mut self.rng, &mut self.bullets, frame,
             &mut self.music,
         );
+        // `Monitor_Update` 0x1afcc8: the viewing monitors latch the watched sensor's
+        // monitor-view channel and set its +0x60 unhide; the exit cooldown drains.
+        self.monitors.tick(&mut self.sensors, &mut self.channels, frame);
         // `Drone_InitComms`: corpses (0x0F, 0x47, 0x48 + 300, 0xBF by the time their state began); beyond 3
         // (`DAT_00298F5C`) the oldest fades fast (`DroneFunc_DeadDrone`).
         let mut corpses = 0;

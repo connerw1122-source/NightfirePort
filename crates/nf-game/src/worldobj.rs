@@ -214,8 +214,33 @@ pub struct MusicTrigger {
     pub playing: bool,
 }
 
+/// Rotor (placement 0x71 → `rotor_init` 0x18f4b8, `rotor_update` 0x18f568, class 7): a spinning
+/// fan. inst+0x00..0x0B holds the placement's ROT vector (spin per tick per axis — 07000001's
+/// `comroom_fanblades` carry rot y = 0.0349 rad [D placements]); inst+0x10 = param 1 (u8) is the
+/// gate channel. `rotor_update` 0x18f568: when the gate is 0 or the channel reads 0, the object
+/// matrix rotation (obj+0x50) += spin·FRAME_RATE_MUL (1.0 at the port's fixed 60 Hz) and
+/// obj+0xFA |= 0x20 (redraw). Param 0's slot is decompiler-dropped at the 0x1d04f0 call [S].
+#[derive(Clone, Debug)]
+pub struct Rotor {
+    /// The placement ROT vector (radians per tick per axis).
+    pub spin: V3,
+    /// inst+0x10 — param 1: the gate channel (0 = always spins).
+    pub gate: u16,
+    /// The accumulated obj+0x50 rotation — the getter the draw code applies to the fan object.
+    pub angle: V3,
+}
+
+impl Rotor {
+    /// `rotor_update` 0x18f568.
+    pub fn tick(&mut self, channels: &crate::triggers::Channels) {
+        if self.gate != 0 && channels.on(self.gate as u32) { return; }
+        for k in 0..3 { self.angle[k] += self.spin[k]; }
+    }
+}
+
 #[derive(Clone, Default)]
 pub struct WorldObjects {
+    pub rotors: Vec<Rotor>,
     pub inverters: Vec<Inverter>,
     pub shooters: Vec<Shooter>,
     pub dynobjs: Vec<DynObject>,
@@ -282,6 +307,10 @@ impl WorldObjects {
                     let keys = path_blocks.get(index).map(|b| crate::door::parse_keys(b)).unwrap_or_default();
                     w.thirdcams.push(ThirdCam { cam_id: param(0) as u16, keys, key_count: count, flag: param(1) as u8 });
                 }
+                0x71 => {
+                    // rotor_init 0x18f4b8: the ROT vector is the spin, param 1 (u8) the gate.
+                    w.rotors.push(Rotor { spin: p.rotation, gate: param(1) as u16, angle: [0.0; 3] });
+                }
                 0xfb => {
                     // MusicTrigger_Create 0x1b30e0:12-16: p2 == 0xff or p0 == 0 → no object
                     // (07000011's placement, params (18, 0, 255, 0), is inert by this gate
@@ -319,6 +348,9 @@ impl WorldObjects {
     ) {
         for inv in &self.inverters {
             inv.tick(channels, frame);
+        }
+        for r in &mut self.rotors {
+            r.tick(channels);
         }
         for sh in &mut self.shooters {
             sh.tick(channels, weapons, rng, bullets);
