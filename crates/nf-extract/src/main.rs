@@ -568,7 +568,7 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
     let skeletons: HashMap<u8, nf_formats::character::Skeleton> = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&data, e)).ok()).map(|k| (k.id as u8, k)).collect();
     let m = level.main_map().context("no main map")?;
     let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, level_id);
-    let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
+    let covers = nf_game::cover::build(&level, &nav, &world);
     let mut tuning = nf_formats::tuning::Tuning::from_action_elf(&elf)?;
     nf_game::tuning::read_tuning_vars(&mut tuning, level_id);
     let hitboxes = nf_formats::hitbox::CollisionBones::from_action_elf(&elf)?;
@@ -1210,7 +1210,7 @@ fn covers(iso: &IsoImage, level_name: &str) -> Result<()> {
     let m = level.main_map().context("no main map")?;
     let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
     let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, u32::from_str_radix(&level_name[..8], 16)?);
-    for (i, c) in nf_game::cover::build(&level.maps[m].placements, &nav, &world).iter().enumerate() {
+    for (i, c) in nf_game::cover::build(&level, &nav, &world).iter().enumerate() {
         println!("cover {i}: kind {} pos ({:.3}, {:.3}, {:.3}) yaw {:.4} flags {:#x} angle {:.3} depth {:.1} offset {:.1} on {:#x} off {:#x} path {:?} reachable {}/{}",
             c.kind, c.pos[0], c.pos[1], c.pos[2], c.yaw, c.flags, c.angle, c.depth, c.offset, c.on, c.off, c.path, c.dist.iter().filter(|&&x| x != 0xff).count(), c.dist.len());
     }

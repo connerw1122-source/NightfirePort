@@ -6104,7 +6104,7 @@ impl Scene {
                 world.attribute_scope(&instance_cell);
             }
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
-            let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
+            let covers = nf_game::cover::build(level, &nav, &world);
             let hitboxes = d.hitboxes.clone()?;
             let volumes = nf_game::aivolume::build(level, d.level_id);
             let models = nf_game::pickup::models(level);
