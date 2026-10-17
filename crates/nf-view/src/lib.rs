@@ -44,6 +44,23 @@ use glam::{Mat4, Vec3};
 use nf_formats::{disc, iso9660::IsoImage, level::Level};
 use std::collections::HashSet;
 use std::sync::Arc;
+
+/// ── Load-phase timing (level-load-time probe) ───────────────────────────────────────────────────
+/// `load_impl` and `Scene::build` mark their phases here; the probe test reads them back.
+/// Collection is always on but costs one `Instant::now` + a Vec push per phase (a few dozen per
+/// load — noise against multi-second loads); it never feeds the Sim (no wall-clock in game state).
+pub(crate) fn phase_mark(name: &'static str, t: std::time::Instant) {
+    LOAD_PHASES.with(|p| p.borrow_mut().push((name, t.elapsed().as_secs_f64())));
+}
+/// Clears the phase log for the calling thread (the probe calls it before each timed load).
+pub fn phases_reset() { LOAD_PHASES.with(|p| p.borrow_mut().clear()); }
+/// Takes the phase log the calling thread accumulated since the last reset/clear.
+pub fn phases_take() -> Vec<(&'static str, f64)> {
+    LOAD_PHASES.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+thread_local! {
+    static LOAD_PHASES: std::cell::RefCell<Vec<(&'static str, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -483,13 +500,16 @@ pub fn entry_checkpoint_save(sim: &scene::Sim) -> nf_game::player::RamSave {
 fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8], mp: bool, mp_settings: Option<nf_game::mp::MpSettings>, difficulty: u32) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
+    let mut t = std::time::Instant::now();
     let iso = IsoImage::open(iso_path)?;
     let (entries, bin) = disc::files_bin_entries(&iso)?;
+    phase_mark("01 iso open + FILES.BIN", t); t = std::time::Instant::now();
     let read = |name: &str| -> Result<Option<Vec<u8>>> {
         let Some(fe) = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)) else { return Ok(None) };
         Ok(Some(iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?))
     };
     let data = read(archive)?.with_context(|| format!("no {archive} in FILES.BIN"))?;
+    phase_mark("02 archive read", t); t = std::time::Instant::now();
     let mut level = Level::parse(&data)?;
     // ── The session object table (`models-weapons-items`) ───────────────────────────────────────────
     // `hashtable_delete_hashtype` is called from the loadable-pack path ONLY (`LoadableLoad`
@@ -519,7 +539,9 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             sequences.entry(s.skeleton).or_default().push(s);
         }
     }
+    phase_mark("03 level+levelbin parse, skeletons, 07F sequences", t); t = std::time::Instant::now();
     merge_weapon_models(&iso, &read, &archive[..8], &mut level)?;
+    phase_mark("04 weapon-models merge", t); t = std::time::Instant::now();
 
     // The dev view models (folded 190-fix-dev2): each level archive ships only its own weapons'
     // first-person skins (+0xDC), so the dev panel's "no 1st-person model here" covers most weapons.
@@ -590,7 +612,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
         },
     };
-
+    phase_mark("05 weapon_data (ACTION.ELF)", t); t = std::time::Instant::now();
 
     // G-021 (models-characters): drone placements whose skin (placement param 0) is not in their
     // level's archive — 33 of them on 2 levels [D scan]. TWO mechanisms, read off the decompile:
@@ -758,6 +780,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         eprintln!("loadable pack {pack_name}: {} scripts, {} sequences (for {hash:08x})", plb.entries.iter().filter(|e| e.kind == 7).count(), plb.entries.iter().filter(|e| e.kind == 4).count());
     }
     // Drone start animations: ACTION.ELF's tables (read through its symbols) and the level's scripts (type 5).
+    phase_mark("06 skin merge + loadable packs", t); t = std::time::Instant::now();
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let drones = scene::DroneContext {
         tables: nf_formats::drone::DroneAnimData::from_action_elf(&elf)?,
@@ -786,6 +809,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         mp_seed: mp_settings.as_ref().map_or(0, |st| st.seed),
     };
     let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones), difficulty);
+    phase_mark("07 scene build (Scene::build)", t); t = std::time::Instant::now();
     // The pause/fail menus' burning woman [M `psiDecompressWoman` 0x1202a8]: the archive's kind-16 "woman" run-length
     // mask filled from the fire texture 0x030000da, drawn into 0x030000db's texels through 0x030000da's CLUT (the
     // disc's 0x030000db is a placeholder). The HUD texture starts on the first decoded frame.
@@ -860,6 +884,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         eprintln!("animated textures: {anim}");
     }
     // The level's sound bank (`Sound_Ready`): its hash's slot in SBINFO.SBI, then SB_<slot>.{SHF,SFX,SBF}.
+    phase_mark("08 woman + lang", t); t = std::time::Instant::now();
     let mut scene = scene;
     let level_id = u32::from_str_radix(&archive[..8], 16).unwrap_or(0);
     scene.sound_bank = (|| -> Option<(usize, nf_formats::soundbank::Bank, Vec<u8>)> {
@@ -899,6 +924,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     })();
     // Music (`Sound_Ready` → `Music_Event(0, level)`; docs/systems/music.md): the MapMusic / MapDroneData tables, and
     // the level's track through MFXINFO.MXI to PS2/MUSIC/MFX_<n>.{SMF,SSD}.
+    phase_mark("09 sound banks + streams", t); t = std::time::Instant::now();
     scene.music_tables = nf_formats::music::tables(&elf).map_err(|e| eprintln!("music tables: {e}")).ok();
     // The music logic rides every load (the game's `Sound_Ready` runs before the first frame whether or
     // not an output device exists); the audio driver takes the tables later in `build_sound`.
@@ -1036,6 +1062,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         eprintln!("loadout: level {level_id:08x} switch request {req} ({} owned weapons, health {:.0}, armour {:.0})",
             sim.drones.inventory.owned.iter().filter(|&&o| o).count(), sim.drones.health.health, sim.drones.health.armour);
     }
+    phase_mark("10 music + starts + loadout", t);
     Ok(scene)
 }
 
@@ -1088,9 +1115,9 @@ fn casing_meshes(elf: &[u8]) -> Vec<u32> {
     nf_formats::sfx::AmmoData::from_action_elf(elf).map(|a| a.casing_mesh).unwrap_or_default()
 }
 
-/// Moves the foreign maps that hold any of `hashes` into `level` (appended; `by_hash` first-wins, so a
+/// Clones the foreign maps that hold any of `hashes` into `level` (appended; `by_hash` first-wins, so a
 /// hash the level resolves locally keeps its (map, object)). Returns how many maps moved.
-fn take_maps_holding(level: &mut Level, foreign: Level, hashes: &[u32]) -> usize {
+fn take_maps_holding(level: &mut Level, foreign: &Level, hashes: &[u32]) -> usize {
     let mut take: std::collections::HashSet<usize> = Default::default();
     for (mi, m) in foreign.maps.iter().enumerate() {
         if m.objects.iter().any(|o| hashes.contains(&o.hashcode)) { take.insert(mi); }
@@ -1098,16 +1125,29 @@ fn take_maps_holding(level: &mut Level, foreign: Level, hashes: &[u32]) -> usize
     if take.is_empty() { return 0; }
     let base = level.maps.len();
     let mut moved = 0;
-    for (mi, m) in foreign.maps.into_iter().enumerate() {
+    for (mi, m) in foreign.maps.iter().enumerate() {
         if !take.contains(&mi) { continue; }
         let idx = base + moved;
         for (oi, o) in m.objects.iter().enumerate() {
             level.by_hash.entry(o.hashcode).or_insert((idx, oi));
         }
-        level.maps.push(m);
+        // level-load-time: the caller's parsed-archive cache hands shared `&Level`s now, so the
+        // taken maps CLONE out (bit-identical data — load_scene_digest pins it) instead of moving.
+        level.maps.push(m.clone());
         moved += 1;
     }
     moved
+}
+
+/// level-load-time: the parsed-foreign-archive cache behind `merge_weapon_models`. The session mesh
+/// merge used to re-parse every earlier story archive on EVERY load (5-7 `Level::parse` per level,
+/// ~6.7 s of the 27-level probe total). Entries are immutable after parse; a hit's taken maps clone
+/// out bit-identically. Bounded FIFO of 4 entries (the parsed maps can be tens of MB each — keep
+/// the resident set small); the scan order (STORY_ORDER descending per load) re-visits the same
+/// archives across consecutive levels, so the small window still hits.
+fn foreign_level_cache() -> &'static std::sync::Mutex<(std::collections::VecDeque<String>, std::collections::HashMap<String, std::sync::Arc<Level>>)> {
+    static C: std::sync::OnceLock<std::sync::Mutex<(std::collections::VecDeque<String>, std::collections::HashMap<String, std::sync::Arc<Level>>)>> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new((Default::default(), Default::default())))
 }
 
 /// The session object table (`models-weapons-items`, see the caller's comment): every weapon-model mesh
@@ -1123,9 +1163,23 @@ pub fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     for code in STORY_ORDER.iter().rev().filter(|&&c| c < level_id) {
         if needed.is_empty() { break; }
         let name = format!("{code:08x}.bin");
-        let fd = match read(&name) { Ok(Some(d)) => d, _ => continue };
-        let Ok(foreign) = Level::parse(&fd) else { continue };
-        let moved = take_maps_holding(level, foreign, &needed);
+        let foreign: std::sync::Arc<Level> = {
+            let mut c = foreign_level_cache().lock().unwrap();
+            if let Some(l) = c.1.get(&name) { l.clone() } else {
+                drop(c);
+                let fd = match read(&name) { Ok(Some(d)) => d, _ => continue };
+                let Ok(l) = Level::parse(&fd) else { continue };
+                let l = std::sync::Arc::new(l);
+                let mut c = foreign_level_cache().lock().unwrap();
+                if !c.1.contains_key(&name) {
+                    c.0.push_back(name.clone());
+                    c.1.insert(name.clone(), l.clone());
+                    while c.1.len() > 4 { if let Some(old) = c.0.pop_front() { c.1.remove(&old); } }
+                }
+                l
+            }
+        };
+        let moved = take_maps_holding(level, &foreign, &needed);
         if moved > 0 {
             needed.retain(|h| !level.by_hash.contains_key(h));
             eprintln!("session mesh merge: {moved} map(s) from {name} ({} weapon-model hashes still missing)", needed.len());

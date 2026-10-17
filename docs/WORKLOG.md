@@ -14180,6 +14180,14 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
 - Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
   (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
   attract page draws the movie fullscreen over black, no controls, no plate.
+
+---
+level-load-time
+- Started: measure and cut nf_view::load build time. Probe test times every SP level cold+warm
+  by phase (archive read/decompress, mesh/material decode, characters/attachments, effect pools,
+  cel/portal graph, Sim create); then cut top costs scene-preserving; prove equality on >=4 levels.
+- Setup: sandbox had repo+work/+ISO+queue worktree from the prior task; created
+  s/level-load-time from origin/master (4bdf7678). Progress pushed as checkpoints below.
 ## unlock-popups2 (2026-10-15, branch s/unlock-popups2) — DONE 01:10 UTC
 
 Work Log (unlock-popups2):
@@ -16727,3 +16735,22 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+
+---
+level-load-time (final)
+- Probe: load_time_probe.rs times nf_view::load for all 27 on-foot levels cold+warm by phase
+  (marks in load_impl + Scene::build via thread-local nf_view::phase_mark). Baseline warm build
+  total 17.61 s/27 levels: pools 8.18, assembly 7.65, session mesh merge 6.95.
+- Cuts (load-side only): pool-slot replay (projectile/tracer/gas/decal/casing/debris — slot 0
+  decodes, slots 1..N replay bit-exactly), reserved final scene arrays, parsed-foreign-archive
+  cache (FIFO 4) for merge_weapon_models with LevelMap/MapObject Clone derives in nf-formats.
+  Build 17.61 → 13.36 s; 07000014 1.469 → 1.236 s, 07000005 0.696 → 0.448 s warm.
+- Proof: load_scene_digest.rs FNV digests captured pre-change on 5 levels (02/05/0c/14/01),
+  pinned as constants in load_scene_equality.rs — all identical after every cut (the harness
+  caught + reverted one wrong "no-op" removal: the assembly bbox re-scan is the only sound cull
+  radius for merged non-World groups; proof commented at the site).
+- Tests: load_scene_equality PASS, async_level_load_live 3/3, nf-view lib 15/15, nf-formats
+  11 passed / 3 failed = the slim ISO's 3 allowed disc_golden. suite.py not runnable here
+  (background jobs reaped between tool calls) — flagged in the report.
+- Report: docs/reports/level-load-time.md; finish.sh 652 done; ntfy sent (curl, EXIT=0).
