@@ -74,8 +74,9 @@ stall (steps do not abort on sight, [M 0x1676a0 case 3]).
     model 0.750, tolerance 0.12 — the failing run landed 0.125).
 - On the final merged tree (origin/master, 36a7f3b9): `ai_live` 35/35, `walkreal_07000001_live` 2/2 (260.8 s),
   `searchlight_live` 3/3, and `guard_reaction_live` reproduces the identical table (161/114/382 — master's
-  drone.rs batch did not shift the streams). The full merged-tree suite was re-started and is still running at
-  report time (this sandbox's window closes first); its failures so far are the same slim-ISO set.
+  drone.rs batch did not shift the streams). The full merged-tree suite was re-started and reached binary 197 of 384
+  before this sandbox's window closed, with the same 5 failures and nothing new (the run's per-binary log is
+  `../suite.log`; the total line never landed in the window — the next session should re-run to completion).
 
 **Finding for the next task (pre-existing, not this branch):** `fix_guard_weapons_live`'s measured streams vary
 between PROCESSES of the same binary — the same cell measured 125/200 (suite run) vs 153/200 (standalone) with
