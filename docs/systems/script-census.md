@@ -135,7 +135,7 @@ has spawned them since — `nf-game/src/cover.rs` `from_placement`/`build`, `Dro
 | 0x38 | 1 | — | Create_SpaceLaser 0x1aa8b8 |
 | 0x39 | 8 | — | Create_SpaceMissile 0x1a9ef0 |
 | 0xdd | 33 | — | — none (game ignores) |
-| 0xe4 | 64 | nf-game `worldobj::Hurt` | Hurt_Create 0x17e870 |
+| 0xe4 | 64 | — | Hurt_Create 0x17e870 |
 | 0xe9 | 162 | — | Drone_AIPoint 0x137550 |
 | 0xf3 | 8 | — | Env_Tree_Create 0x17c200 |
 | 0xf4 | 1 | — | Trigger_MoviePlayer 0x1b2a08 |
@@ -295,7 +295,7 @@ player scripts, so its real gameplay reach is narrower than its 12,947 count.
 | 2 | placement 0xE5 cover corner | 584 | `Drone_CoverCornerNode` 0x136ff0 | guards take corner cover in firefights |
 | 3 | placement 0xE6 cover low | 384 | `Drone_CoverLowNode` 0x137340 | guards crouch behind low cover |
 | 4 | placement 0xE9 AI point | 162 | `Drone_AIPoint` 0x137550 | patrol/waypoint graph points |
-| 5 | placement 0xE4 hurt volume | 64 | `worldobj::Hurt` (`Hurt_Create` 0x17e870) | DONE (hurt-volumes) |
+| 5 | placement 0xE4 hurt volume | 64 | `Hurt_Create` 0x17e870 | damage volumes (hazards) |
 | — | placement 0x28 sensor | 62 | PORTED (sensor.rs, 2026-10-17): `Sensor_Create` 0x1af010 | security cameras; out channel after 2 s of player sight |
 | 7 | placement 0x2D start-pos slot 0 | 51 | `Player_AddNewStartPos(...,0)` 0x195c00 | second start-position set |
 | 8 | placement 0x27 GT | 41 | `GT_Create` 0x17ffa0 (+ Update/Activate/TakeControl) | controllable special object |
@@ -328,11 +328,9 @@ records (165), NIS op none, anim ops 2/3 (0), event kinds 0x0e/0x10/0x13 (0), en
 2. **AI waypoints (0xE9, 162).** `Drone_AIPoint` 0x137550: patrol graph points. Port the record
    (params unknown — check `Drone_AIPoint` reads) and wire into patrol pathing. Verify: 07000007
    has 34; guards patrol through them.
-3. **Hurt volumes (0xE4, 64).** DONE (hurt-volumes, `worldobj::Hurt`): `Hurt_Create` 0x17e870 +
-   `Hurt_Update` 0x17e5d0 + the damage pass (`Player_DealWithObjHit` 0x194458:94-101 case 0x27 →
-   `Player_HandlePain`), the 0x20 channel gate, the key-list state machine and the one-shot expiry.
-   07000005's 13 are type-6 damage-1000 death planes; the gate test lives in
-   crates/nf-game/tests/hurt_volumes_live.rs.
+3. **Hurt volumes (0xE4, 64).** `Hurt_Create` 0x17e870: damage volumes (params carry damage
+   kind/rate — read the decomp). Verify: standing in one drains Bond's armour/health; 07000005
+   has 13 (the Alpine incursion? verify level name at render time).
 4. ~~**Sensor volumes (0x28, 62).**~~ PORTED 2026-10-17 (branch s/sensor-volumes, crate::sensor).
    Correction to the plan text: `Sensor_Update` 0x1af618 detects **glb_players[0] only**
    (disasm 0x1af644 loads 0x2d88e0; both `Sensor_InCone` calls 0x1af97c/0x1afae0 pass it; no
