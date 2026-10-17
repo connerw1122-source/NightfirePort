@@ -96,7 +96,10 @@ fn mission_timer_follows_the_commands_and_the_fixed_tick() {
     for _ in 0..30 * 60 + 60 {
         t.update(DT);
     }
-    assert_eq!(t.remaining, 0.0, "the countdown floors at zero [S]");
+    // unproven-tests-gameplay: the old "floors at zero" was [S]; the game's running timer is
+    // `value + rate*(tick_now - t0)` with NO clamp — only the display is gated [M DRIVING.ELF the
+    // timer slot at world+0x150+index*0x18; FUN_0023e580 0x23e580:58]. 30 s + 1 s of ticks past it.
+    assert!((t.remaining + 1.0).abs() < 1e-2, "the countdown runs past zero unclamped [M]: {}", t.remaining);
 }
 
 /// The objective records keep the game's 4-param shape [M 00151510_FUN_00151510.c: the record
