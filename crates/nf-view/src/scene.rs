@@ -7410,7 +7410,14 @@ impl Scene {
             let nb = c.skeleton.bones as usize;
             if fs.hidden[ci] { for k in 0..=nb { p[base + k] = collapse(&c.matrix); } continue; }
             let cpos = fs.posed[ci].as_ref().map_or(c.matrix[3], |(_, _, m)| m[3]);
-            if !live_drone(ci) && !vis_room([cpos[0], cpos[1], cpos[2]]) { for k in 0..=nb { p[base + k] = FAR; } continue; }
+            // The first-person view model is never room-culled: the game draws it in its own list-2
+            // pass after the world, not through any cel's object list [M Game_Draw: the view model's
+            // list-2 draw after psiLight_SetLights(0); View_SetDrawInNoViews is its only hide]. The
+            // room test here sent the hands/gun to FAR whenever the point in front of the camera fell
+            // in a cel the walk had not marked (doorways, room edges) — the user's "room culling
+            // fucking up the player model / my hands missing", reported 5+ times.
+            let view_model = self.view_models.values().any(|&v| v == ci);
+            if !live_drone(ci) && !view_model && !vis_room([cpos[0], cpos[1], cpos[2]]) { for k in 0..=nb { p[base + k] = FAR; } continue; }
             match &fs.posed[ci] {
                 Some((mats, _, m)) => {
                     p[base] = *m;
