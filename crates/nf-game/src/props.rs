@@ -67,7 +67,7 @@ pub struct Props {
 /// One placement's target object's bounds placed by the placement transform (the game's contact
 /// is against the placed glist), in placement order. Objects whose gfx bounds are unset (anim-only
 /// meshes: min/max stay at the parser's ±1e7 sentinel) fall back to their collision triangles.
-fn bounds(level: &Level, m: usize, p: &nf_formats::placement::Placement) -> (V3, V3) {
+pub fn bounds(level: &Level, m: usize, p: &nf_formats::placement::Placement) -> (V3, V3) {
     let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
         else { level.maps[m].objects.get(p.index as usize) };
     let Some(o) = obj else { return ([0.0; 3], [0.0; 3]) };
