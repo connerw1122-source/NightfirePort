@@ -18410,3 +18410,11 @@ directly. Report: docs/reports/level-07-interactables.md.
   ticks, no falls. Ran: walkreal_07000007_live 2/2, nf-game 509/0, the six sibling 07 binaries
   34/0 (suite.py background-killed by the sandbox as before; the foreground runs stand in).
   Report: docs/reports/level-07-complete.md.
+- 2026-10-17 s/channel-persistence: started. Task: switch-channel values written
+  from outside the channel's own owners are cleared by some port system within
+  one tick (Channels::set(0x33,1) then one step_bond reads it back 0) where the
+  game's switch_channels array (0x26fc90) persists until written [M: find every
+  writer]. Fix so only the game's writers write; persistence test (600 ticks) +
+  a census across all on-foot levels (port rewrites vs the game's writer set);
+  re-run the level walks and the lift/door tests. Found by 750q
+  (docs/reports/cutscene-guard-models.md, "Open port bug"). In progress.
