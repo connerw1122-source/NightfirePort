@@ -18418,3 +18418,24 @@ directly. Report: docs/reports/level-07-interactables.md.
   a census across all on-foot levels (port rewrites vs the game's writer set);
   re-run the level walks and the lift/door tests. Found by 750q
   (docs/reports/cutscene-guard-models.md, "Open port bug"). In progress.
+- 2026-10-17 s/channel-persistence: DONE. The 750q "open port bug" (a hand-written
+  switch-channel cleared within one tick) resolved as the disc's own OUT copy: 07000001's
+  placement #296 (out 0x32 → input 51 = 0x33 [D]) rewrites ch 0x33 from ch 0x32 EVERY tick
+  [M Trigger_Update 0x1b1a78 case 5] — the channel was owned all along; the port is faithful.
+  The writer inventory audited against the decompile (docs/systems/channel-persistence.md):
+  touch clear+OR [0x1b1900/0x1b1a78 case 2], the TOUCH_ONCE case-1 fall-through `|= hit`
+  every tick (the port's hit-only write lands the same values), the mux recompute (cases
+  3/4/0xC), the OUT copy (case 5), the sensors [0x1af618], flickers [0x1ab960], emitters
+  [0x17b080], doors [0x135618 transition-only], switches, Mission_Init [0x182270 load-time],
+  the level latches [0x1b1900:21-26], Drone_InitComms ch 0x97 unstamped [0x139520], script
+  events 0xD/0x11 + SP outs [0x1d94c0], script-created triggers [0x1d8968] — no port-only
+  per-tick writer. New tests (channel_persist_live.rs, 3): ch 0x3c (census-verified unowned
+  on 01) holds 600 real-input ticks; the 0x33 OUT-copy pin (tracks ch 0x32 within one tick
+  both ways); the census across all 23 on-foot levels — every recorded per-tick write's
+  channel must be a live game owner (or the documented [S] stand-ins 4a 0x22/0x4a), script
+  writes tagged at the source. Channels gained the None-gated census probes (`writes`,
+  `script_channels`) and `set_script`; the door's transition mirror routes through `set`
+  (identical stamps [0x135618]). Ran: channel_persist_live 3/3 over all levels, doors_01
+  2/2, doors_live 2/2, npc_doors_live 7/7, walkreal_0700004a 1 ignored (pre-existing),
+  walkreal_07000001 2/2, fix_truck 2/2, walk_07000005 2/2. Report:
+  docs/reports/channel-persistence.md.
