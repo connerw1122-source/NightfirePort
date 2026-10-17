@@ -87,6 +87,13 @@ glass-breach.md, docs/reports/glass-{shatter,breach-guards}.md, docs/reports/lev
 
 ## What's left
 
+- **`escort_follow_07000001_live` FAILS on this branch** (the contact parks at closed door 1,
+  state 0x2, at (7.9, 11.1) for 12 rounds; Bond E-opens it each round and the contact does not
+  cross — trace in the WORKLOG). The stall point is a DOOR, not a pane, and no master baseline
+  could be run in this sandbox (background jobs die between tool calls), so master-vs-branch is
+  unproven. First job of the next message: run it on a clean master worktree; if master passes,
+  suspect the escorts' hearing of the now-playing break sounds (the game plays them in-world
+  [M 0x12b970:69,75]) or a doubled body at a pane that shares a map object with door 1.
 - The env-gated pane-shot walks (`breakables_live`, the NF_INTERACT03_ALL walks) need the
   fire-at-pane harness proven on the current tree (they were WIP on 703a; the 07000001/07000003
   gun paths now work, so they are worth un-gating next task).

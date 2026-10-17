@@ -18477,3 +18477,28 @@ directly. Report: docs/reports/level-07-interactables.md.
   NF_TEX_TRACE fallbacks on load. Ran: nf-game lib, interact/walk/walkreal 07000003, glass_breach +
   breakables — all green; the full suite did not fit the window (background reaping). Report:
   docs/reports/level-03-interactables.md.
+- 2026-10-17 s/level-03-interactables-2 (task 703c): DONE. The re-land merge:
+  ONE breakables system — master's Breaks (Drones::breaks) with the level-03 features ported:
+  the evidenced Collide_FilterBullets reject (weapon_definition+0x10 word vs filter | 0x106,
+  [M 0x1ece30:24-33]; replaces the [S] shift-rule stopgap), the Break_Kill sound roll
+  (Rand_Rand(100) < 0x29 → 0x5f2 else 0x5f3, drawn only on non-glass kills [M 0x12b970:65-76];
+  replaces the deterministic-0x5f3-no-draw deviation), do_break (Break_DoBreak 0x12c168) wired
+  into NIS event 0xa before master's script-entity scan (the control list's placed panes precede
+  script entities [M 0x12c168:39-51]), broken_at + shape_key + the intact-pane set_dynamic
+  injection (id 0x300_0000_0000|placement — level-03's pick collided with the SimpleScripts'),
+  Bond in the level-01 class-2 contact pass, drone_step internals = the movement segment vs the
+  kind-2 bounds grown 0.7 [S], the 443-placement census [D] in the module doc. level-03's
+  Breakables/prev_pos/drone_smash/BreakAt dropped. Tests moved onto breaks/dead; the 07000003
+  pane test's index-vs-placement bug fixed (broken_at(241), was the list index); the 07000001
+  sister re-pinned to the game's breach scene (intro guards kill kind-2 glass only [M
+  0x12bfd8:23-34,25]) — the breach REPRODUCES: pane 130 ~t300, guard 18 crosses t911, east pane
+  121 intact (glass_breach_live 1/1). Ran (foreground; the suite runner dies in this sandbox —
+  background jobs are killed between tool calls): nf-game lib 282/0, nf-game integration 0 FAIL,
+  nf-audio 15/0, nf-formats green but the 3 expected slim-ISO disc_golden failures,
+  nf-view: interact_07000003_live 9/9, interact_07000001_live 10/10, glass_breach_live 1/1,
+  drone_skins_all_levels_live 1/0, door_portal 2/0, fail_replay 1/0, explode 2/0, fire_modes3
+  5/0+4 ignored, and the alphabetical a–cutscene_guard_models run (31 binaries, 0 FAIL).
+  OPEN: escort_follow_07000001_live FAILS (the contact parks at closed door 1 for 12 rounds;
+  door, not glass; no master baseline runnable here — first check for the next message). The
+  env-gated pane-shot walks stay un-gated for a next task. Report:
+  docs/reports/level-03-interactables-2.md.
