@@ -54,3 +54,7 @@ claimed-by: sandbox7 at 2026-10-17T14:51Z
 ## Report (done, 2026-10-17T16:54Z)
 
 Closed by the driver: the report is on `s/level-05-interactables-2` (docs/reports/level-05-interactables-2.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-17T16:54Z)
+
