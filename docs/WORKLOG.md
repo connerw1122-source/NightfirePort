@@ -18445,3 +18445,19 @@ directly. Report: docs/reports/level-07-interactables.md.
   panes broke on master while the squad pressed the wall 3300 ticks). Tests: 6 breakable units
   (the drain/gates/no-draw/order) + nf-game lib 267/267 + walk_07000001 3/3 + the stun trio.
   NOT done: the full suite (the sandbox's background reaping + the window), the escort test's
+
+- glass-breach-guards-2 (s/glass-breach-guards-2): the held 750p merge redone properly. Root
+  cause of the eight batch failures: the union-resolved drone.rs kept BOTH breakables systems —
+  master's Breaks (deterministic, no RNG at kills) AND the held Breakables whose bullet_hit
+  draws the shared RNG for non-glass kills; the first bullet-to-breakable contact on 07000001
+  (55 placements) diverged the stream under every death/drop/hit-rate/pickup test. Resolution:
+  master's Breaks lineage wins, the held sim is dropped (prev_pos, BreakAt, the injection, the
+  bake exclusion), its tests/docs/probes adapted (breaks/dead). Fixed on top: the real-path
+  guard-smash contact (master's point-in-box never fires on the disc's flat pane sheets —
+  grown-by-body-radius 0.55 hull-touch rule [M 0x12bfd8:15's shared contact list]); the breach
+  test green (panes 130+136 shatter, east 121 intact). Built AND reverted: the dead-pane
+  collision hole mechanism (bake exclusion + set_dynamic injection, shape_key) — it reproduced
+  the held branch's t911 crossing exactly but stalled walkreal_07000001's contact walk on the
+  current master lineage; reverted before the window closed (67bd4c6f holds the sketch for the
+  follow-up). Eight breakers all green + nf-game lib 276/276 + examples build; the full suite
+  is the follow-up. Report: docs/reports/glass-breach-guards-2.md.
