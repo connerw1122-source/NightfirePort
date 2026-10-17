@@ -17730,3 +17730,25 @@ silent sound) exposes frame(dt) and key(KeyCode). Tests (NF_ISO-gated): boot to 
 (briefing holds while the movie plays, then the load, level_code 0x07000005), Esc→pause→Esc→resume
 never requesting exit, Pause>Quit→mission list [M 0x204408:141-152], and an online session polled
 through a fake 6 s load. Each with a sister that fails on the old behaviour. In progress.
+
+## headless-app-harness (2026-10-17, branch s/headless-app-harness) — done 07:56 UTC
+
+The window host `App` (crates/nf-view/src/lib.rs) is testable without a window or GPU:
+`App::frame(dt)` carries the whole non-draw half of RedrawRequested (movie glue, menu
+music, the async load, the net poll + events, the sound hold, the 60 Hz sim tick gate,
+the mission-end/debrief handovers) plus the fe-60Hz clock moved in from the draw half;
+`App::draw_frame(dt)` is the GPU half unchanged; `App::app_key(k, state, repeat) -> bool`
+is the whole KeyboardInput arm (true = the old `el.exit()` arm); `App::bare(...)` is the
+neutral skeleton the window run() and the harness share; `App::movie_plane_up()` is the
+movie-plane decision. cfg(test) `HeadlessApp` (gfx: None, silent sound) drives
+frame(dt)/key(KeyCode) and 4 NF_ISO-gated tests: the boot walk to The Exchange (the
+briefing state-6 hold pinned with movies on a movie-bearing image; the slim on-foot ISO's
+PSS are stubs so there the countdown model runs — [D] /MOVIES/30_FPS), Esc→pause→Esc→
+resume never requesting exit, Pause>QUIT→YES→the mission list [M 0x204408:141-152], and
+a real loopback session surviving a fake 6 s load ([M] nf-net timeout_ms 5000). Sister
+demo: suppressing the async-load net poll fails the 6 s test at the session assertions;
+restored, it passes. Ran nf-view --lib 22/22 (--test-threads=1, NF_ISO); the other
+crates are untouched by the diff. The fast suite could not run in this sandbox
+(background procs are reaped between tool calls — pause-music-1b precedent) and the
+foreground full run exceeds the 10-min tool cap. Report:
+docs/reports/headless-app-harness.md; system notes: docs/systems/headless-app.md.
