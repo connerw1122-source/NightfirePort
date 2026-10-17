@@ -2701,6 +2701,7 @@ impl Sim {
             self.drones.driving_result,
             block.drive_index as u8,
             self.drones.driving_stats,
+            block.mission_state_1, // the block's +0x144 — the difficulty Boot_LoadPTPData restores [M 0x1c8198:20, 0x1c8560:36]
         );
         eprintln!(
             "[ptp] drive handover: map {map_id:08x} index {} key '{}' → result {} (MissionState {}), resume {:08x}",

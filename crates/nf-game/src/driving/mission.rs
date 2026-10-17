@@ -463,13 +463,16 @@ impl Mission {
     }
 
     /// The mission end → the PTP return [M crates/nf-game/src/ptp.rs's mapping: Success →
-    /// result 1 → Mission_SetStatus(6); Fail → result 0 → status 3].
-    pub fn drive_return(&self, stats: crate::ptp::DrivingStats) -> crate::ptp::DriveReturn {
+    /// result 1 → Mission_SetStatus(6); Fail → result 0 → status 3]. `difficulty` is the PTP
+    /// difficulty the drive session is running with — the block's +0x144 byte, which DRIVING
+    /// preserves and `Boot_LoadPTPData` writes back to GameState+0x28 [M 0x1c8198:15-20,
+    /// 0x1c8560:35-36].
+    pub fn drive_return(&self, stats: crate::ptp::DrivingStats, difficulty: u32) -> crate::ptp::DriveReturn {
         let result = match self.state {
             MissionState::Complete => DriveResult::Success,
             _ => DriveResult::Fail,
         };
-        drive_exit(result, self.drive_index, stats)
+        drive_exit(result, self.drive_index, stats, difficulty)
     }
 }
 
@@ -583,7 +586,7 @@ mod tests {
         assert_eq!(ev, vec![MissionEvent::ObjectiveProgress(1)]);
         m.fail(&mut Vec::new());
         let stats = crate::ptp::DrivingStats { ids: [7; 12], values: [1234; 12] };
-        let ret = m.drive_return(stats);
+        let ret = m.drive_return(stats, 2);
         assert_eq!((ret.result, ret.status_byte), (0, 4)); // FUN_00300058(0x100000, 0) [M]
         assert_eq!(ret.mission_state(), 3); // Mission_SetStatus(3) [M 0x1c8560]
     }
@@ -606,7 +609,7 @@ mod tests {
         let (r2, k2) = m.rules[2];
         m.fire(2, &r2, k2, &mut ev); // ch3 completes → no channel 4 → mission complete
         assert!(ev.contains(&MissionEvent::Complete));
-        let ret = m.drive_return(crate::ptp::DrivingStats::default());
+        let ret = m.drive_return(crate::ptp::DrivingStats::default(), 2);
         assert_eq!((ret.result, ret.status_byte), (1, 0)); // FUN_00300058(0x100000, 1) [M]
         assert_eq!(ret.mission_state(), 6); // Mission_SetStatus(6) [M 0x1c8560]
         assert_eq!(ret.next_key, crate::ptp::key_for_index(0));

@@ -6117,6 +6117,14 @@ impl FrontEnd {
             s.players[i] = nf_game::mp::MpPlayer { team: slot.team, skin: slot.skin, armor_bonus: 0, radar_on: 1, codename: slot.codename.clone() };
         }
         self.mp_match_settings = Some(s.clone());
+        // app-state-parity: the confirm arm writes GameState+0x28 = 1 BEFORE the level request
+        // [M P_MPCONFIRM 0x20ec00:150 — between `MPSettings._384_4_ = 1` and
+        // `GameState._8_4_ = MPSettings._424_4_`]: every MP match starts at difficulty 1 and the
+        // value PERSISTS after the match until the difficulty page or a driving return rewrites
+        // it (the other writers: boot 0x1c7e78:25 = 2, C_SBNFDFCTY 0x216ca8:15,
+        // Menu_RunMiniMission 0x1ffb90:22, Boot_LoadPTPData 0x1c8560:36). The App adopts it
+        // through the same channel the difficulty page's pick rides (`menu_after`'s take).
+        self.requested_difficulty = Some(1);
         // net-online-lobby: while hosting, the settings ride the session — the clients' poll
         // turns them into their own handover [S docs/systems/net-online-lobby.md §2.1].
         if self.mp_hosting {
@@ -6506,9 +6514,14 @@ impl FrontEnd {
     }
 
     /// The client's match handover — the host's confirm-page tail [M mp_confirm_start's
-    /// handover] with the settings as the host published them [S §2.2].
-    fn mp_client_start(&mut self, s: nf_game::mp::MpSettings) {
+    /// handover] with the settings as the host published them [S §2.2]. Pub for the
+    /// app-state-parity test (the arm's difficulty write is pinned there).
+    pub fn mp_client_start(&mut self, s: nf_game::mp::MpSettings) {
         self.mp_match_settings = Some(s.clone());
+        // app-state-parity: the host's confirm tail writes GameState+0x28 = 1 before the load
+        // [M 0x20ec00:150]; the client's handover mirrors that tail, so the difficulty rides it
+        // too [S — the game has no net client; the port choice keeps both arms' loads equal].
+        self.requested_difficulty = Some(1);
         self.requested_level = Some(s.level_code);
         self.flow.reset_map_level_to_load(s.level_code, false, false);
         // P_MPCONFIRM's 84-frame fade [M 0x20ec00's PushState site — 0x42a00000 = 84.0f].

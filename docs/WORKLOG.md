@@ -18082,3 +18082,29 @@ driving EAddTimer on an overdrawn timer.
   verified on pure master too (no GPU in this sandbox); briefing_plays_live + 3 backdrop tests
   need the full ISO (07100005/07330048 are stubs on the slim image). Report:
   docs/reports/movie-volume-options.md.
+
+---
+
+Task ID: app-state-parity
+Branch: s/app-state-parity
+Agent: app-state-parity worker
+Task: Audit App fields (crates/nf-view/src/lib.rs) initialised from args/startup that the game updates per load or per menu choice; update them on the same events, pin with tests, document in docs/systems/.
+
+Work Log:
+- Branch created from origin/master (contains briefing_plays_live.rs, verified).
+- Background suite started at 06:59 UTC.
+
+Stage Summary:
+- (in progress)
+- Audit table in docs/systems/app-state-parity.md: difficulty, mission row, ptp/entry save,
+  all, cheats, the sim's settings, the sound bank, the language — each with the game store,
+  the writers, and whether the port updates it on the same event.
+- Fixed (reproduce-first): the MP confirm never wrote the difficulty — P_MPCONFIRM 0x20ec00:150
+  sets GameState+0x28 = 1 before the level request; mp_confirm_start/mp_client_start now raise
+  requested_difficulty = Some(1) (the pre-fix test failed `left: None, right: Some(1)`).
+- Fixed: the driving return's difficulty restore — Boot_LoadPTPData 0x1c8560:35-36 writes the
+  PTP block's +0x144 back to GameState+0x28; DriveReturn now carries it and swap_in_scene
+  applies it to Progress::difficulty + Drones::difficulty.
+- Tests: mp_defaults_setup (new mp_confirm_start_writes_difficulty_1), ptp lib tests (the
+  round-trip pins), walk_07000004_ptp_live, driving_mission_live. Suite (foreground --only
+  chunks — this sandbox kills background jobs): 80 passed + 112 passed, 0 failed.

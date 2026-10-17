@@ -185,6 +185,11 @@ pub struct DriveReturn {
     /// PTP+0x154/+0x184: the stats the drive session returns (the port carries them unchanged
     /// through the skipped drive — the dev stand-in draws nothing) [S].
     pub stats: DrivingStats,
+    /// PTP+0x144: the difficulty carried in (`DAT_0031c1d4` ← `DAT_0031ca14` ←
+    /// `GameState+0x28` [M Boot_GetPTPData 0x1c8198:15-20]) and written BACK to
+    /// `GameState+0x28` on the return [M Boot_LoadPTPData 0x1c8560:35-36]. The block's
+    /// `mission_state_1` mirrors it [M ptp.rs +0x144]. app-state-parity.
+    pub difficulty: u32,
 }
 
 impl DriveReturn {
@@ -211,11 +216,14 @@ impl DriveReturn {
     }
 
     /// The `Boot_LoadPTPData` mirror [M 0x1c8560]: set the mission status, hand the 12 slots to
-    /// the new session's stats (`PlrStats_SetDrivingData`). The resume level itself is always
-    /// [`RESUME_LEVEL`] [M 0x1c8560 tail] — the caller loads it.
-    pub fn apply(&self, mission: &mut crate::mission::Mission, stats: &mut DrivingStats) {
+    /// the new session's stats (`PlrStats_SetDrivingData`), and write the carried difficulty
+    /// back to the mirror the caller hands in ([M 0x1c8560:35-36 `GameState._40_4_ =
+    /// DAT_0031c1d4`] — the caller owns the `GameState+0x28` mirror). The resume level itself is
+    /// always [`RESUME_LEVEL`] [M 0x1c8560 tail] — the caller loads it.
+    pub fn apply(&self, mission: &mut crate::mission::Mission, stats: &mut DrivingStats, difficulty: &mut u32) {
         mission.set_state(self.mission_state()); // [M 0x1c8560:12-20]
         stats.set_from(&self.stats.ids, &self.stats.values); // [M 0x1c8560 `PlrStats_SetDrivingData(0x31c1e4, 0x31c214)`]
+        *difficulty = self.difficulty; // [M 0x1c8560:35-36]
     }
 }
 
@@ -478,7 +486,7 @@ impl PtpBlock {
         // [M 0x174bf0:82-190, 315-323; S — the port does not run DRIVING.ELF].
         b.game_ended = 1; // FUN_00300058's gate [M 0x300058:7-10]
         b.level_key = key_bytes(key_for_index(b.drive_index as u8));
-        let ret = drive_exit(input.result, b.drive_index as u8, input.stats);
+        let ret = drive_exit(input.result, b.drive_index as u8, input.stats, b.mission_state_1); // [M 0x1c8198:20 — +0x144 carries game_state_40]
         b.return_status = ret.status_byte;
         b.result_flag = ret.result;
         b.drive_index = ret.next_index as u32;
@@ -522,7 +530,7 @@ fn key_bytes(key: &str) -> [u8; KEY_MAX + 1] {
 /// The DRIVING-side exit stand-in [M 0x174bf0:310-323 + 0x300058]: pick the result flag and the
 /// next handover the drive leaves behind. `next_index` = `DAT_0032e6ac` (the dev stand-in keeps
 /// the current drive's index — the hub menu re-arms whatever comes next) [S].
-pub fn drive_exit(result: DriveResult, index: u8, stats: DrivingStats) -> DriveReturn {
+pub fn drive_exit(result: DriveResult, index: u8, stats: DrivingStats, difficulty: u32) -> DriveReturn {
     match result {
         DriveResult::Success => DriveReturn {
             result: 1, // FUN_00300058(0x100000, 1) [M 0x174bf0:322]
@@ -530,6 +538,7 @@ pub fn drive_exit(result: DriveResult, index: u8, stats: DrivingStats) -> DriveR
             next_index: index,
             next_key: key_for_index(index),
             stats,
+            difficulty,
         },
         DriveResult::Fail => DriveReturn {
             result: 0, // FUN_00300058(0x100000, 0) [M 0x174bf0:316]
@@ -537,6 +546,7 @@ pub fn drive_exit(result: DriveResult, index: u8, stats: DrivingStats) -> DriveR
             next_index: index,
             next_key: key_for_index(index),
             stats,
+            difficulty,
         },
     }
 }
@@ -650,7 +660,7 @@ mod tests {
     /// The return mapping [M 0x1c8560:12-20 + tail].
     #[test]
     fn return_maps_the_status_byte() {
-        let mut ret = drive_exit(DriveResult::Success, 1, DrivingStats::default());
+        let mut ret = drive_exit(DriveResult::Success, 1, DrivingStats::default(), 2);
         assert_eq!(ret.result, 1);
         assert_eq!(ret.mission_state(), 6); // 0 → 6
         assert_eq!(ret.game_state_28(0x0900_0001, true), Some(0x4000_0036)); // 0 → 0x40000036
@@ -666,7 +676,7 @@ mod tests {
         // The 0x9000001 base-with-flag branch [M 0x1c8560's first if].
         assert_eq!(ret.game_state_28(0x0900_0001, false), Some(0x4000_0043));
         // The abort path [M 0x174bf0:316].
-        let fail = drive_exit(DriveResult::Fail, 6, DrivingStats::default());
+        let fail = drive_exit(DriveResult::Fail, 6, DrivingStats::default(), 3);
         assert_eq!(fail.result, 0);
         assert_eq!(fail.mission_state(), 3);
         assert_eq!(fail.next_key, "snow2a_mis4");
@@ -694,22 +704,29 @@ mod tests {
             result: DriveResult::Success,
         };
         let b = PtpBlock::build(&input);
-        let ret = drive_exit(DriveResult::Success, b.drive_index as u8, b.driving_stats());
+        let ret = drive_exit(DriveResult::Success, b.drive_index as u8, b.driving_stats(), b.mission_state_1);
         let mut mission = crate::mission::Mission::new();
         let mut carried = DrivingStats::default();
-        ret.apply(&mut mission, &mut carried);
+        let mut difficulty = 0u32; // the fresh session's mirror starts at 0 — the return must overwrite it
+        ret.apply(&mut mission, &mut carried, &mut difficulty);
         assert_eq!(mission.status(), 6); // [M 0x1c8560:12-20]
         assert_eq!(carried.values[3], 0x2a); // [M 0x1c8560's PlrStats_SetDrivingData]
+        // app-state-parity: the return carries the block's +0x144 (the difficulty the leaving
+        // side saved from GameState+0x28 [M 0x1c8198:15-20]) and apply writes it back
+        // [M 0x1c8560:35-36]. The block carried game_state_40 = 1 (the BuildInputs above).
+        assert_eq!(ret.difficulty, b.mission_state_1);
+        assert_eq!(difficulty, 1, "the driving return restores GameState+0x28");
     }
 
     /// The resume target is the front end for every drive [M 0x1c8560 tail].
     #[test]
     fn resume_is_always_the_front_end() {
         for i in 1u8..=8 {
-            let ret = drive_exit(DriveResult::Success, i, DrivingStats::default());
+            let ret = drive_exit(DriveResult::Success, i, DrivingStats::default(), 2);
             let mut mission = crate::mission::Mission::new();
             let mut stats = DrivingStats::default();
-            ret.apply(&mut mission, &mut stats);
+            let mut difficulty = 0u32;
+            ret.apply(&mut mission, &mut stats, &mut difficulty);
             // The caller's load target [M 0x1c8560 `ResetMap_LevelToLoad(0x7000048, 0, 0)`].
             assert_eq!(RESUME_LEVEL, 0x0700_0048);
             assert_eq!(mission.status(), 6);

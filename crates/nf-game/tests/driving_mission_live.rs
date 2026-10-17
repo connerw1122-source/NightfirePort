@@ -173,7 +173,7 @@ fn headless_scripted_run_over_paris_channel_data_completes_and_fails() {
         }
     }
     assert!(failed, "the fail path must be reachable");
-    let ret = m.drive_return(Default::default());
+    let ret = m.drive_return(Default::default(), 2);
     assert_eq!((ret.result, ret.status_byte), (0, 4));
     assert_eq!(ret.mission_state(), 3);
 }
