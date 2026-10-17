@@ -17573,3 +17573,21 @@ Update `crates/nf-formats/tests/script_census.rs`'s handled sets.
   0x1afae0); the pinned test drives the PLAYER through sensor 164's sweep cone on 0700000b
   (ch 0x28 sets at >=152 ticks; sister 172 never sets). Unported: lens/mount meshes (visual),
   the monitor pairing (0x30), sensor sounds, the posed-head draw (main agent's side).
+
+## zero-g-movement-1b (2026-10-17, branch s/zero-g-movement-1b) — started 00:3x UTC
+
+Playtest 1016-1355: "we're in space ... there's a different movement system that you're missing"
+(on 0700001b, master 2026-10-16). Porting Bond's zero-G substate: Player_ZeroG 0x192ab0 (dispatch
+cases 8/9), thruster controls, inertia, the auto-stabilisers and the camera rules [M]. The level
+starts in zero-g gravity (p3 == 2). Tests only pin proven behaviour ([M]/[D]/[L] cited); sister:
+on-foot levels unchanged.
+
+zero-g-movement-1b done (same session, ~02:05 UTC): Player_ZeroG 0x192ab0 ported as dispatch
+cases 8/9 — the body-frame matrix (RotMatrix/Concat), the three thruster smoothers (0.04 ease,
+±0.05 cap, no dead-zone), pos += M·(+0x10 quad), BL+0x50 zeroed per tick, the 90-tick
+auto-stabiliser (Mat_Align2Up + Quat_Slerp_Acc t=0.05), MonitorAir's 8/9 refill gate, the held
+lift/stabilise input lanes (local-only, net format unchanged). Entry is still test-driven (the
+C_CHCHZEROG 0x216388 msg-0x4b wire is the main gap; report + live checks in
+docs/reports/zero-g-movement-1b.md). Suite: 542 passed / 0 real failures across foreground
+chunks (the sandbox kills all background processes; the two sweep TIMEOUTs are chunk-limit
+artifacts). Merged origin/master (G-046 look() conflict resolved keeping both).

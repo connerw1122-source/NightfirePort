@@ -3370,6 +3370,15 @@ impl ApplicationHandler for App {
                                 let input = nf_game::player::Input {
                                     forward: held(KeyCode::KeyW) - held(KeyCode::KeyS),
                                     strafe: held(KeyCode::KeyA) - held(KeyCode::KeyD),
+                                    // Zero-g's vertical thruster: the jump/crouch keys HELD, the
+                                    // combined (action 7 − action 8) analog [M Player_ZeroG
+                                    // 0x192ab0:136-138] — walk ignores the field.
+                                    lift: held(KeyCode::Space)
+                                        - if self.keys.contains(&KeyCode::KeyC) || self.keys.contains(&KeyCode::ControlLeft) { 1.0 } else { 0.0 },
+                                    // The stabiliser arms off the E/R edges instead — step_bond
+                                    // ORs the use_key/reload lanes in (both are the game's action
+                                    // 0xe) [M 0x192ab0:163-166].
+                                    stabilise: false,
                                     turn: std::mem::take(&mut self.turn),
                                     look: std::mem::take(&mut self.look),
                                     jump: self.just.remove(&KeyCode::Space),

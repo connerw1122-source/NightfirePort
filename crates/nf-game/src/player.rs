@@ -55,6 +55,105 @@ pub const SS_CREEP: u8 = 7;
 /// `Player_Zipline` 0x197f50 — the zipline ride (wire type 2) [M dispatch case 0xF].
 pub const SS_ZIPLINE: u8 = 0xf;
 
+/// The zero-g substates (dispatch cases 8/9 share the `Player_ZeroG` 0x192ab0 body [M 0x193600:
+/// 238-241]). 9 is the one the game ever sets: the 0700001b spacewalk's script handler answers its
+/// 0x4b event with `ChangeSubState(glb_players, 9 | 0)` [M C_CHCHZEROG 0x216388 — 9 when its msg
+/// 0x40 query returns nonzero, else 0]; no caller or store writes 8 anywhere in ACTION.ELF. Only
+/// substate 9 runs the movement anim set [M 0x192ab0:201 `if (obj+0xF6 == 9)`], so 8 is the anim
+/// quiet twin the dispatch still honours.
+pub const SS_ZEROG_8: u8 = 8;
+pub const SS_ZEROG_9: u8 = 9;
+
+/// `RotMatrix` 0x1e2368 for the zero-g rate vector (x pitch, y yaw, z roll — ZeroG always passes
+/// roll 0 [M 0x192ab0:91 `BL+0x38 = 0`]): the row-major rows of Rx(x)·Ry(y)·Rz(z) in the game's
+/// row-vector basis (rows = right/up/forward, `Bond::look`'s convention). The sine/cosines go
+/// through the port's PS2Sinf/PS2Cosf — `RotMatrix` calls PS2Sinf3/PS2Cosf3 [M 0x1e2368:28-40].
+fn rot_matrix(pitch_x: f32, yaw_y: f32, roll_z: f32) -> [[f32; 3]; 3] {
+    let (sx, cx) = (crate::trig::sinf(pitch_x), crate::trig::cosf(pitch_x));
+    let (sy, cy) = (crate::trig::sinf(yaw_y), crate::trig::cosf(yaw_y));
+    let (sz, cz) = (crate::trig::sinf(roll_z), crate::trig::cosf(roll_z));
+    [
+        [cy * cz, sx * sy * cz + cx * sz, sx * sz - cx * sy * cz],
+        [-cy * sz, cx * cz - sx * sy * sz, sx * cz + cx * sy * sz],
+        [sy, -sx * cy, cx * cy],
+    ]
+}
+
+/// `Concat(a, ab)` 0x1e4a90 ⇒ ab := a·ab [M 0x1e4a90:13-49] — Player_ZeroG calls it as
+/// `Concat(obj+0x90, R)`, so each tick's look rotation lands in the BODY frame.
+fn mat3_mul(a: &[[f32; 3]; 3], b: &[[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    let mut out = [[0.0f32; 3]; 3];
+    for i in 0..3 {
+        for j in 0..3 {
+            out[i][j] = a[i][0] * b[0][j] + a[i][1] * b[1][j] + a[i][2] * b[2][j];
+        }
+    }
+    out
+}
+
+fn cross3(a: [f32; 3], b: [f32; 3]) -> [f32; 3] {
+    [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]]
+}
+
+fn norm3(v: [f32; 3]) -> [f32; 3] {
+    let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
+    if l > 0.0 { [v[0] / l, v[1] / l, v[2] / l] } else { v }
+}
+
+/// `Mat_Align2Up(m, up, dir)` 0x1df4b0: rebuild the rotation with the up row = `up` and the
+/// forward row over `dir` — row0 = norm(up × dir), row2 = norm(row0 × up) [M 0x1df4b0; the ZeroG
+/// caller passes CONSTANT_UP1 = (0,1,0), .data 0x2d6210 written at boot 0x1c7e78].
+fn mat_align_up(dir: [f32; 3]) -> [[f32; 3]; 3] {
+    let up = [0.0f32, 1.0, 0.0];
+    let r0 = norm3(cross3(up, dir));
+    [r0, up, norm3(cross3(r0, up))]
+}
+
+/// `Quat_MatrixToQuaternion` 0x1e0600 — q = [w, x, y, z]; the trace branch's w = −√/2 sign and the
+/// per-diagonal branches verbatim (the decompile's param_2 floats i·4+j = m[i][j]).
+fn quat_from_matrix(m: &[[f32; 3]; 3]) -> [f32; 4] {
+    let (m00, m11, m22) = (m[0][0], m[1][1], m[2][2]);
+    let tr = m00 + m11 + m22;
+    if tr >= 0.0 {
+        let s = (tr + 1.0).sqrt();
+        let k = 0.5 / s;
+        [-0.5 * s, (m[2][1] - m[1][2]) * k, (m[0][2] - m[2][0]) * k, (m[1][0] - m[0][1]) * k]
+    } else if m00 >= m11 && m00 >= m22 {
+        let s = (m00 - (m11 + m22) + 1.0).sqrt();
+        let k = 0.5 / s;
+        [(m[1][2] - m[2][1]) * k, 0.5 * s, (m[0][1] + m[1][0]) * k, (m[2][0] + m[0][2]) * k]
+    } else if m11 >= m22 {
+        let s = (m11 - (m22 + m00) + 1.0).sqrt();
+        let k = 0.5 / s;
+        [(m[2][0] - m[0][2]) * k, (m[0][1] + m[1][0]) * k, 0.5 * s, (m[1][2] + m[2][1]) * k]
+    } else {
+        let s = (m22 - (m00 + m11) + 1.0).sqrt();
+        let k = 0.5 / s;
+        [(m[0][1] - m[1][0]) * k, (m[2][0] + m[0][2]) * k, (m[1][2] + m[2][1]) * k, 0.5 * s]
+    }
+}
+
+/// `Quat_QuaternionToMatrix` 0x1e02a0 — the rotation floats in the game's row-major slots.
+fn quat_to_matrix(q: &[f32; 4]) -> [[f32; 3]; 3] {
+    let (w, x, y, z) = (q[0], q[1], q[2], q[3]);
+    [
+        [2.0 * (x * x + w * w) - 1.0, 2.0 * (x * y + z * w), 2.0 * (x * z - y * w)],
+        [2.0 * (x * y - z * w), 2.0 * (y * y + w * w) - 1.0, 2.0 * (y * z + x * w)],
+        [2.0 * (x * z + y * w), 2.0 * (y * z - x * w), 2.0 * (z * z + w * w) - 1.0],
+    ]
+}
+
+/// `Mat_Normalize` 0x1df5f8 — orthonormalise the rows: fwd = norm(row2); right = norm(up × fwd);
+/// up = norm(fwd × right). Each cross result is normalized, so the VU0 pair's doubled cross terms
+/// wash out; a zero row stays zero (the game's degenerate arm).
+fn mat_normalize(mut m: [[f32; 3]; 3]) -> [[f32; 3]; 3] {
+    m[2] = norm3(m[2]);
+    m[1] = norm3(m[1]);
+    m[0] = norm3(cross3(m[1], m[2]));
+    m[1] = norm3(cross3(m[2], m[0]));
+    m
+}
+
 /// The per-tick ladder/wire/water context the Sim hands `Bond::tick_ctx` (the game reads the ladder and
 /// the wire through `BLData+0x884` and the water surface through the player's cel, `obj+0x20 → cel+0x90`).
 pub struct LadderCtx<'a> {
@@ -130,6 +229,18 @@ pub struct Input {
     /// zoom pipeline; `Sim::step_net_remotes` ticks `Bond::tick_ctx` only), so the wire format
     /// is unchanged and `unpack_input` always yields 0.
     pub zoom_cycle: i8,
+    /// The zero-g vertical thruster: the combined (action 7 − action 8) analog [M Player_ZeroG
+    /// 0x192ab0:136-138 — `Input_Action(7,1) − Input_Action(8,1)`, a HELD read, not the walk
+    /// edges: jump thrusts up, crouch thrusts down]. The walk/swim paths ignore it. Local view
+    /// state, not net-encoded (the `zoom_cycle` precedent — substate 8/9 never runs on the
+    /// remote tick path today).
+    pub lift: f32,
+    /// The action-0xe read this tick (the pad's R2 — the game's "Action"): arms the zero-g
+    /// auto-stabiliser's 90-tick window [M Player_ZeroG 0x192ab0:163-166; the game reads flag 4
+    /// per tick, so a hold keeps re-arming]. The Sim ORs its use-key and reload edges into it
+    /// (both are action 0xe on the pad). Local view state, not net-encoded (the `zoom_cycle`
+    /// precedent).
+    pub stabilise: bool,
 }
 
 #[derive(Clone, Debug)]
@@ -259,6 +370,23 @@ pub struct Bond {
     /// into `drones.audio` (the Sim's sound list) and cleared there. Field on its own line
     /// (merge lesson 4).
     pub sfx_out: Vec<(u32, V3)>,
+    /// The zero-g orientation: obj+0x90's rotation rows (right/up/forward, the game's row-vector
+    /// convention). `Player_ZeroG` composes the look rates body-frame (`m := m·R`, Concat [M
+    /// 0x1e4a90]) and the auto-stabiliser slerps it world-up [M 0x192ab0:160-199]; the walk
+    /// yaw/pitch scalars build it on entry (ChangeSubState 9 touches no rotation [M 0x190630]).
+    /// Field on its own line (merge lesson 4).
+    pub zero_g_rot: [[f32; 3]; 3],
+    /// `BL+0x24`: the vertical thruster's smoother — the (action 7 − action 8)·0.1 target eased
+    /// at the game's 0.04 factor [M Player_ZeroG 0x192ab0:136-159]; the third lane the walk's
+    /// `local` pair (+0x20/+0x28) doesn't cover. Field on its own line (merge lesson 4).
+    pub zero_g_lift: f32,
+    /// `BL+0xd0`: the auto-stabiliser's tick window, armed to FRAME_RATE·1.5 = 90 by the
+    /// action-0xe read [M Player_ZeroG 0x192ab0:163-168]. Field on its own line (merge lesson 4).
+    pub stabiliser: u16,
+    /// Port bookkeeping [S]: whether `zero_g_rot` is live for the current 8/9 spell (built from
+    /// the walk yaw/pitch on the first zero-g tick, dropped on leaving the substates). Field on
+    /// its own line (merge lesson 4).
+    pub zero_g_active: bool,
 }
 
 impl Bond {
@@ -273,6 +401,10 @@ impl Bond {
             prev_pos: pos,
             creep: None,
             world_gravity: [0.0, -9.8, 0.0],
+            zero_g_rot: [[0.0; 3]; 3],
+            zero_g_lift: 0.0,
+            stabiliser: 0,
+            zero_g_active: false,
             // audit-sound-calls: the jump launch / head-bump sounds outbox (drained by the Sim
             // into `drones.audio`); `Player_HandleJump` 0x1916b0 plays 0xA3 at launch (:184) and
             // 0xA3/0x5FB at the head bump (:195-198).
@@ -313,8 +445,13 @@ impl Bond {
         [self.pos[0] + LOCAL[0] * c + LOCAL[2] * s, self.pos[1] + LOCAL[1], self.pos[2] - LOCAL[0] * s + LOCAL[2] * c]
     }
 
-    /// The view direction (pitch applied to the forward axis).
+    /// The view direction (pitch applied to the forward axis). In the zero-g substates the whole
+    /// orientation lives in the object matrix — ZeroG zeroes the scalar pitch BL+0x8a8 EVERY tick
+    /// [M Player_ZeroG 0x192ab0:74] — so the view rides the matrix's forward row.
     pub fn look(&self) -> V3 {
+        if self.zero_g_active {
+            return self.zero_g_rot[2];
+        }
         // G-046: the game's dir is RotMatrixX(view pitch) · Mat_GetDir — PS2Sinf2 lanes, EE products
         // [M RotMatrixX 0x1e46a0:16-24; the pitch arg `BL+0x8a8·π/2` a mul.s].
         let p = nf_formats::ps2float::mul(self.pitch, crate::trig::HALF_PI);
@@ -366,9 +503,21 @@ impl Bond {
             SS_WIRE => self.wire_tick(world, ctx, input),
             SS_CREEP => self.creep_tick(world, ctx, input),
             SS_ZIPLINE => self.zipline_tick(world, ctx, input),
+            SS_ZEROG_8 | SS_ZEROG_9 => self.zerog_tick(world, ctx, input),
             _ => self.walk_tick(world, ctx, input),
         }
+        if !(SS_ZEROG_8..=SS_ZEROG_9).contains(&self.substate) {
+            self.zero_g_active = false;
+        }
         self.monitor_air(ctx);
+    }
+
+    /// `Player_ZeroG` 0x192ab0 — the spacewalk substate (the dispatch runs cases 8 and 9 into the
+    /// same body [M 0x193600:238-241]; the script only ever sets 9 [M C_CHCHZEROG 0x216388], and
+    /// only 9 plays the movement anim set [M 0x192ab0:201]). The body rides `physics_tick`'s
+    /// collision tail with the walk/swim move + gravity replaced.
+    fn zerog_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
+        self.physics_tick(world, ctx, input, false, true);
     }
 
     /// `Player_SSWalk` 0x192310 / `Player_SSCrouch` 0x1924c0 (the walk/crouch substates share this body in
@@ -379,7 +528,7 @@ impl Bond {
     /// 0x2D to `Player_CollLadder` 0x196118.
     fn walk_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
         if self.enter_water(ctx) { return; }
-        self.physics_tick(world, ctx, input, false);
+        self.physics_tick(world, ctx, input, false, false);
         self.ladder_grab(ctx);
     }
 
@@ -408,7 +557,7 @@ impl Bond {
     /// Bond's y is below the water surface [M the default case jumps past `WldGravity` to the substate
     /// capsule switch when `cel+0x90 > obj+0x34`].
     fn swim_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
-        self.physics_tick(world, ctx, input, true);
+        self.physics_tick(world, ctx, input, true, false);
         let Some(w) = ctx.water else { self.substate = SS_WALK; return };
         if self.grounded && w <= self.pos[1] - 0.3 {
             // Leave the water [M case 3: `(AnimObj+0x60 & 8) && cel+0x90 <= pos.y − 0.3` → substate 0].
@@ -504,7 +653,7 @@ impl Bond {
     fn climb_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
         let li = match self.ladder {
             Some(li) if ctx.ladders.get(li).is_some() => li,
-            _ => { self.substate = SS_WALK; self.ladder = None; self.physics_tick(world, ctx, input, false); return; }
+            _ => { self.substate = SS_WALK; self.ladder = None; self.physics_tick(world, ctx, input, false, false); return; }
         };
         let lad = &ctx.ladders[li];
         // The yaw clamp+ease [M 0x196310:18-33]: target = ladder.yaw + π (facing the ladder). The ease
@@ -751,7 +900,7 @@ impl Bond {
     fn wire_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
         let wi = match self.wire {
             Some(wi) if ctx.wires.get(wi).is_some() => wi,
-            _ => { self.substate = SS_WALK; self.wire = None; self.physics_tick(world, ctx, input, false); return; }
+            _ => { self.substate = SS_WALK; self.wire = None; self.physics_tick(world, ctx, input, false, false); return; }
         };
         let wire = ctx.wires[wi].clone();
         let hang = 1.0207f32;
@@ -951,7 +1100,7 @@ impl Bond {
     fn zipline_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, _input: &Input) {
         let wi = match self.wire {
             Some(wi) if ctx.wires.get(wi).is_some() => wi,
-            _ => { self.substate = SS_WALK; self.wire = None; self.physics_tick(world, ctx, _input, false); return; }
+            _ => { self.substate = SS_WALK; self.wire = None; self.physics_tick(world, ctx, _input, false, false); return; }
         };
         let wire = ctx.wires[wi].clone();
         if self.mode == 9 {
@@ -1025,13 +1174,16 @@ impl Bond {
         self.underwater = head < surface && surface > -400.0;
         self.water_fade = if self.underwater { (self.water_fade + (1.0 - self.water_fade) / 60.0).min(1.0) }
             else { (self.water_fade - self.water_fade / 120.0).max(0.0) };
-        if self.underwater {
+        if self.underwater && !(SS_ZEROG_8..=SS_ZEROG_9).contains(&self.substate) {
             self.air -= 5.0 / 60.0;
             if self.air < 1.0 {
                 self.air_tick += 1;
                 if self.air_tick >= 30 { self.air_tick = 0; self.drown_damage = Some(2.0); }
             }
         } else {
+            // The zero-g substates never drain: `Player_MonitorAir`'s drain enable is false for
+            // 7 < substate < 10, so the suit's air refills even under the surface [M 0x191a70:57,
+            // :98 the refill].
             self.air = (self.air + 20.0 / 60.0).min(100.0);
             self.air_tick = 0;
         }
@@ -1041,7 +1193,7 @@ impl Bond {
     /// One 60 Hz physics tick (the port's `Player_Move` + `Player_Collision` walk body). `swimming`
     /// selects the swim-substate differences: no `Player_HandleJump` (case 3 doesn't call it [M]) and no
     /// gravity (`Player_Collision`'s water path skips `WldGravity` [M]).
-    fn physics_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input, swimming: bool) {
+    fn physics_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input, swimming: bool, zero_g: bool) {
         let prev = self.pos;
         self.fall_damage = None;
         // `Player_SSWalk` / `Player_SSCrouch`: the lockout runs down (*deviation*: the transition animation that may
@@ -1062,10 +1214,22 @@ impl Bond {
             if target.abs() <= 0.0002 && v.abs() < 0.01 { v = 0.0; }
             v.clamp(-0.1, 0.1)
         };
-        let (vs, vf0) = (axis(self.local[0], target_s) * k, axis(self.local[1], target_f) * k);
+        let (vs, vf0) = if zero_g {
+            // Zero-g eases its own smoothers below (the 0.04 factor, the ±0.05 cap [M 0x192ab0:
+            // 92-159]) — the walk's `Player_Move` ease (0.2, the ±0.1 cap, the dead-zone) must
+            // not touch the shared BL+0x20/+0x28 slots this tick.
+            (0.0, 0.0)
+        } else {
+            (axis(self.local[0], target_s) * k, axis(self.local[1], target_f) * k)
+        };
         // `Player_HandleJump`: crouch (toggle) and jump. Case 3 (swim) doesn't call it [M].
         let headroom = |w: &CollisionWorld| w.line_of_sight(self.pos, [prev[0], prev[1] + 0.95, prev[2]]);
         if swimming {
+        } else if zero_g {
+            // No `Player_HandleJump` here: the jump/crouch actions ARE the vertical thruster in
+            // zero-g (the held analog pair) [M 0x192ab0:136-138]; the crouch toggle, the jump grab
+            // and the headroom checks are walk-only [M 0x193600 dispatch — HandleJump is
+            // SSWalk's; case 8/9 reads none of it].
         } else if !self.crouched && self.jump == 0 && input.crouch && self.lockout == 0 {
             self.crouched = true;
             self.cc = CROUCH_ROOT_HEIGHT;
@@ -1101,6 +1265,88 @@ impl Bond {
         // local-forward push (Player_Climb's ±0x18 write) rides along once.
         let vf = vf0 + self.push_fwd;
         self.push_fwd = 0.0;
+        if zero_g {
+            // ===== Player_ZeroG 0x192ab0 (the spacewalk body) =====
+            // First tick of the spell builds the orientation from the walk yaw/pitch:
+            // ChangeSubState 9 touches no rotation [M 0x190630:59-63]; the walk matrix is
+            // RotMatrix(−pitch·π/2, yaw, 0) [M 0x1e2368 — Bond::look's rows].
+            if !self.zero_g_active {
+                self.zero_g_rot =
+                    rot_matrix(-self.pitch * std::f32::consts::FRAC_PI_2, self.yaw, 0.0);
+                self.zero_g_active = true;
+                self.stabiliser = 0;
+            }
+            // :71 `Vec_Zero(BLData+0x50)` — the world velocity zeroes EVERY tick: no gravity, no
+            // momentum in `vel`; the whole move is the local thruster quad through the object
+            // matrix (the caller's `pos += M·(+0x10 quad)` [M 0x193600:284-295]). :72-74 zero
+            // BL+0x957 / +0x130 (the weapon-raise re-trigger) / +0x8a8 — the scalar view pitch is
+            // dead here (`Bond::look` returns the matrix's forward row instead).
+            self.vel = [0.0; 3];
+            // The look rates [M :76-90]: the pitch action → the x angle, the turn action → the y
+            // angle, roll 0 — `RotMatrix` then `Concat(obj, R)` ⇒ m := m·R [M 0x1e4a90:13-49],
+            // the BODY frame (a pitched yaw drifts the up — what the auto-stabiliser repairs).
+            // The port's `turn`/`look` are already per-tick deltas (mouse-direct, pad-ramped,
+            // D-002); the game's own pad constant is 1.2566371·REC_FRAME_RATE rad/tick, `look`
+            // riding in π/2 units.
+            let r = rot_matrix(-input.look * std::f32::consts::FRAC_PI_2, turn, 0.0);
+            self.zero_g_rot = mat3_mul(&self.zero_g_rot, &r);
+            // The thruster smoothers [M :92-159]: targets strafe = action 1·0.1, forward =
+            // action 2·0.1, vertical = (action 7 − action 8)·0.1; each eases
+            // `v += (target − v)·FRAME_RATE_MUL·0.04` (FRAME_RATE_MUL = 1.0 at 60 Hz [M .sdata
+            // 0x30d0d8]) with an overshoot snap and a ±FRAME_RATE_MUL·0.05 clamp — and NO
+            // Player_Move dead-zone (the walk's `target≈0 → v=0` snap is 0x191dd0's; ZeroG has
+            // none). The smoothers are BL+0x20/+0x28 — walk's own `local` slots — and +0x24, and
+            // nothing clears them on the way in or out [M ChangeSubState 0x190630]: releasing the
+            // thrust decays at 0.96^n — the drift inertia the playtest missed.
+            let ease = |last: f32, target: f32| -> f32 {
+                let mut v = last + (target - last) * 0.04;
+                if (target - last) * (target - v) < 0.0 { v = target; }
+                v.clamp(-0.05, 0.05)
+            };
+            self.local[0] = ease(self.local[0], input.strafe * 0.1);
+            self.zero_g_lift = ease(self.zero_g_lift, input.lift * 0.1);
+            self.local[1] = ease(self.local[1], input.forward * 0.1);
+            // The auto-stabilisers [M :163-199]: the action-0xe read ("Press Action to activate
+            // spacesuit auto-stabilizers") arms BL+0xd0 = FRAME_RATE·1.5 = 90; while it counts
+            // down, the orientation slerps toward `Mat_Align2Up(m, (0,1,0), fwd − (0,1,0)·
+            // (fwd·(0,1,0)))` — world up, same heading (the ±0.995 degenerate arms swap in
+            // ∓up [M :177-184]) — at Quat_Slerp_Acc t = REC_FRAME_RATE·3.0 = 0.05 per tick [M
+            // :196], then `Mat_Normalize` [M :199].
+            if input.stabilise { self.stabiliser = 90; }
+            if self.stabiliser != 0 {
+                self.stabiliser -= 1;
+                let fwd = self.zero_g_rot[2];
+                let d = fwd[1];
+                let dir = if d > 0.995 {
+                    [-self.zero_g_rot[1][0], -self.zero_g_rot[1][1], -self.zero_g_rot[1][2]]
+                } else if d < -0.995 {
+                    self.zero_g_rot[1]
+                } else {
+                    [fwd[0], fwd[1] - d, fwd[2]]
+                };
+                let target = mat_align_up(dir);
+                let q = crate::anim::slerp(
+                    quat_from_matrix(&self.zero_g_rot),
+                    quat_from_matrix(&target),
+                    0.05,
+                );
+                self.zero_g_rot = mat_normalize(quat_to_matrix(&q));
+            }
+            // The move [M 0x193600:284-295]: pos += local.x·row0 + local.y·row1 + local.z·row2 —
+            // the +0x10 quad's lanes (x strafe, y the vertical thruster, z forward) against the
+            // matrix's right/up/forward rows. Pitched forward + forward thrust FLIES along the
+            // look.
+            let v = [self.local[0], self.zero_g_lift, self.local[1]];
+            for k in 0..3 {
+                self.pos[k] += v[0] * self.zero_g_rot[0][k]
+                    + v[1] * self.zero_g_rot[1][k]
+                    + v[2] * self.zero_g_rot[2][k];
+            }
+            // The port keeps obj+0x54's heading in `yaw` for the readers outside the substate
+            // (sphere_centre, the death pick) [S — the game derives it elsewhere; only the matrix
+            // is authoritative in zero-g].
+            self.yaw = self.zero_g_rot[2][0].atan2(self.zero_g_rot[2][2]);
+        } else {
         self.yaw += turn;
         self.pitch = (self.pitch + input.look).clamp(-1.0, 1.0);
         let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw)); // G-046: View_RotTransMatrix 0x1e5168:33-36 / RotMatrixX 0x1e46a0 PS2Sinf2 lanes [M]
@@ -1122,11 +1368,16 @@ impl Bond {
             self.pos[0] += c * vs + s * vf;
             self.pos[2] += -s * vs + c * vf;
         }
-        self.local = [vs / k, vf / k];
+self.local = [vs / k, vf / k];
+        }
         // `Player_Collision`: gravity unless standing on a gentle floor (jumping keeps the velocity).
         // The water path skips `WldGravity` entirely [M 0x194df0 default case]. The vertical velocity
         // integration is also the swim tail's job alone (it clamps first) — skip it here when swimming.
         if swimming {
+        } else if zero_g {
+            // `vel` (BL+0x50) is zeroed every zero-g tick [M 0x192ab0:71] — WldGravity has no
+            // reader left and nothing integrates; the tick's whole move was the matrix·thruster
+            // add above.
         } else if !self.grounded || self.floor_ny < 0.5 {
             // The fall rides the level's `WldGravity` [M Player_Collision 0x194df0:107/161,
             // `vel += WldGravity · REC_FRAME_RATE`] — −9.8/60 per tick on the default levels,
@@ -1895,6 +2146,129 @@ mod tests {
         // Sister: stopping takes ~11 ticks, not one.
         for _ in 0..5 { b.tick(&w, &Input::default()); }
         assert!(b.local[0] != 0.0);
+    }
+
+    #[test]
+    fn zero_g_thrusts_along_the_look_and_glides_when_the_thruster_stops() {
+        let w = room();
+        let mut b = Bond::stand_at(&w, [0.0, 0.0, -14.0], 0.0);
+        b.substate = SS_ZEROG_9;
+        b.pitch = 0.5; // the entry matrix takes the walk pitch [M ChangeSubState 9: no rotation]
+        let entered_look = b.look();
+        let start = b.pos;
+        for _ in 0..60 { b.tick(&w, &Input { forward: 1.0, ..Default::default() }); }
+        let moved = [b.pos[0] - start[0], b.pos[1] - start[1], b.pos[2] - start[2]];
+        let n = (moved[0] * moved[0] + moved[1] * moved[1] + moved[2] * moved[2]).sqrt();
+        assert!(n > 1.0, "moved along the look: {:?}", b.pos);
+        // The move rides the matrix [M 0x193600:284-295]: parallel to the entry look (up +
+        // forward at pitch 0.5), never straight up or straight ahead.
+        let c = cross3(moved, entered_look);
+        assert!(c[0].abs() < 1e-3 && c[1].abs() < 1e-3 && c[2].abs() < 1e-3,
+            "parallel to the look: {:?} vs {:?}", moved, entered_look);
+        assert!(moved[1] > 0.0 && moved[2] > 0.0);
+        // The ±0.05 smoother cap [M 0x192ab0:110-112].
+        let p0 = b.pos;
+        b.tick(&w, &Input { forward: 1.0, ..Default::default() });
+        let step = dist3_sq(b.pos, p0).sqrt();
+        assert!(step <= 0.05 + 1e-4, "smoother cap: {}", step);
+        // Inertia [M :92-135 — the 0.04 ease, no Player_Move dead-zone]: 30 released ticks later
+        // Bond is STILL gliding (the walk ease snaps inside ~11); and decaying, not holding.
+        for _ in 0..30 { b.tick(&w, &Input::default()); }
+        let p1 = b.pos;
+        b.tick(&w, &Input::default());
+        let step2 = dist3_sq(b.pos, p1).sqrt();
+        assert!(step2 > 0.01, "still gliding: {}", step2);
+        assert!(step2 < step, "decaying: {} < {}", step2, step);
+    }
+
+    #[test]
+    fn zero_g_vertical_thruster_rides_the_body_up_and_vel_stays_zero() {
+        let w = room();
+        let mut b = Bond::stand_at(&w, [0.0, 0.0, -14.0], 0.0);
+        b.substate = SS_ZEROG_9;
+        // Level attitude: the lift thruster rides the body's UP row [M 0x193600:284-295, the y
+        // lane against row1] — straight up at pitch 0. The rise saturates at the ±0.05 smoother
+        // cap [M 0x192ab0:110-112].
+        for _ in 0..40 { b.tick(&w, &Input { lift: 1.0, ..Default::default() }); }
+        assert!(b.pos[1] > 2.0, "risen: {:?}", b.pos);
+        assert!(b.pos[0].abs() < 1e-4 && (b.pos[2] + 14.0).abs() < 1e-4,
+            "no horizontal drift: {:?}", b.pos);
+        // BL+0x50 zeroes every tick [M 0x192ab0:71] — hanging in the air, nothing integrates.
+        assert_eq!(b.vel, [0.0; 3]);
+        // Released, the lift smoother's own inertia keeps the drift decaying [M :92-159 — the
+        // 0.04 ease, no dead-zone]: it settles, and then Bond HANGS (no gravity pulls him).
+        for _ in 0..120 { b.tick(&w, &Input::default()); }
+        let p = b.pos;
+        b.tick(&w, &Input::default());
+        assert!(dist3_sq(b.pos, p) < 1.0e-6, "settled: {:?} vs {:?}", b.pos, p);
+        assert_eq!(b.vel, [0.0; 3]);
+        // Pitched down, the same lift pushes along the TILTED body up (forward + up), not world
+        // up — the matrix basis, not a scalar vertical.
+        let mut b = Bond::stand_at(&w, [0.0, 0.0, -14.0], 0.0);
+        b.substate = SS_ZEROG_9;
+        b.pitch = -0.5;
+        let start = b.pos;
+        for _ in 0..40 { b.tick(&w, &Input { lift: 1.0, ..Default::default() }); }
+        let moved = [b.pos[0] - start[0], b.pos[1] - start[1], b.pos[2] - start[2]];
+        assert!(moved[2] > 0.5 && moved[1] > 0.5 && moved[0].abs() < 1e-3,
+            "body-up with pitch: {:?}", moved);
+    }
+
+    #[test]
+    fn zero_g_stabiliser_slerps_world_up_for_its_window_then_stops() {
+        let w = room();
+        let mut b = Bond::stand_at(&w, [0.0, 0.0, -14.0], 0.0);
+        b.substate = SS_ZEROG_9;
+        b.pitch = 0.5;
+        b.tick(&w, &Input::default()); // the entry matrix is live now
+        let heading = b.yaw;
+        let f0 = b.look()[1];
+        // Sister: without the Action read the attitude holds [M :163-168 — the window only arms
+        // on it].
+        for _ in 0..30 { b.tick(&w, &Input::default()); }
+        assert!((b.look()[1] - f0).abs() < 1e-5,
+            "no drift without the press: {}", b.look()[1]);
+        // One press arms 90 ticks [M :165]; the slerp parameter is REC_FRAME_RATE·3.0 = 0.05 per
+        // tick [M :196], so the pitch angle decays ×0.95 exactly (same-axis slerp) and the
+        // heading is preserved [M Mat_Align2Up 0x1df4b0].
+        b.tick(&w, &Input { stabilise: true, ..Default::default() });
+        for k in 1..=89 {
+            b.tick(&w, &Input::default());
+            let want = (0.5f32 * std::f32::consts::FRAC_PI_2 * 0.95f32.powi(k as i32 + 1)).sin();
+            assert!((b.look()[1] - want).abs() < 0.003,
+                "slerp tick {}: {} vs {}", k, b.look()[1], want);
+            assert!((b.yaw - heading).abs() < 1e-4, "heading kept: {}", b.yaw);
+        }
+        let fy = b.look()[1];
+        for _ in 0..20 { b.tick(&w, &Input::default()); }
+        assert!((b.look()[1] - fy).abs() < 1e-5,
+            "the 90-tick window expired: {} vs {}", b.look()[1], fy);
+    }
+
+    #[test]
+    fn zero_g_refills_air_even_underwater_like_the_game() {
+        let w = room();
+        let ctx = LadderCtx { water: Some(2.0), ..Default::default() }; // the head sits under 2.0
+        let mut b = Bond::stand_at(&w, [0.0, 0.0, -14.0], 0.0);
+        b.air = 50.0;
+        b.substate = SS_ZEROG_9;
+        b.tick_ctx(&w, &ctx, &Input::default());
+        assert!((b.air - (50.0 + 20.0 / 60.0)).abs() < 1e-4, "refill in zero-g: {}", b.air);
+        // Sister: the walk substate still drains — the gate is the substate, not the suit [M
+        // Player_MonitorAir 0x191a70:57, :98].
+        let mut b = Bond::stand_at(&w, [0.0, 0.0, -14.0], 0.0);
+        b.air = 50.0;
+        b.tick_ctx(&w, &ctx, &Input::default());
+        assert!((b.air - (50.0 - 5.0 / 60.0)).abs() < 1e-4, "walk drains: {}", b.air);
+    }
+
+    #[test]
+    fn walk_ignores_the_zero_g_lift_and_stabilise_bits() {
+        let w = room();
+        let mut b = Bond::stand_at(&w, [0.0, 0.0, -14.0], 0.0);
+        for _ in 0..30 { b.tick(&w, &Input { lift: 1.0, stabilise: true, ..Default::default() }); }
+        assert_eq!(b.substate, SS_WALK);
+        assert!(b.grounded && b.pos[1] < 1.2, "no lift on foot: {:?}", b.pos);
     }
 
     #[test]
