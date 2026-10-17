@@ -16713,3 +16713,14 @@ suite.
   decompile [M]. Drawing is the main agent's; sim and controls are mine. Tests per map: gondolas
   move on their routes; a player can take control of a remote tank/helicopter and drive it.
   Branch created from origin/master f09f3c6c.
+- mp-map-objects research: census of all 8 arenas [D, scratch mp_census] — the "remote tanks"
+  are 4x kind-0xDA Car_Create (RCCar 0x020003d6) on every arena except Sub Pen; no 0x2F copter
+  on any arena (Snow Blind's "helicopter" is static decoration cels; the playtest's helicopters
+  are the Car's Enviro-Mods variant — P_MPENVIROMODS option 2 swaps the gfx to 0x2000194 [M
+  Car_Create 0x1305b0:29-43]). Skyrail's gondola = placement [4] kind-0xD9 script player,
+  script 0x06000058, mode 8 loop, MASK 0 [D]. Ravine has 4x 0xE2 SS cable cars (25 keys, rate
+  8500, paths 0-3 in block 0x19) [D]. Root cause found [M SP_CreateScriptPlayer 0x1db9a8 +
+  SP_Update 0x1dbda8 + SP_HideObj 0x1dcbf0]: the game primes mask-0 mode-8 SPs at create
+  (+0x36 = 0, only SP_HideObj — copter-only — ever sets it, and SP_Update ticks Script_Update
+  while +0x36 == 0), but the port's nis::Player::prime skips mask==0, so the gondola never
+  loads: probe test shows info[0] = None. Fix: prime mask-0 SPs like the game.
