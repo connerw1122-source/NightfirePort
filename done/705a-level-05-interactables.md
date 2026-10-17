@@ -156,3 +156,7 @@ the census tool + the parsemap main-map rule).
 
 not visible to me — the environment shows no token, credit or context-window figures for this
 session.
+
+---
+## Report addendum (2026-10-17T13:17Z): the widened sweep — 0 failures across every binary run (levels/models sweeps, level-flow/AI, pickups/progress, triggers, the walkreals 01/02/03/04/09). Still not run: the menus/movies/net + most walk_* nf-view binaries.
+
