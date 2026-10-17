@@ -18845,3 +18845,25 @@ interactable placement on 0700000c (the power station, part 1) into docs/levels/
 then drive Bond through the real input path to one instance of every KIND and fix what does
 not work, plus the every-model-draws sweep. Known open items to start from: the yard ladder,
 the drawn gate, the latches, the sniper spots. Branch cut from origin/master 0c455572.
+
+---
+level-0c-interactables (branch s/level-0c-interactables): DONE (task 712a). (1) The census —
+docs/levels/0700000c.md §7: 574 placements, every kind → its parsemap_create_dynamic_objects
+creator [M 0x1d04f0], params/channel wiring [D] and port status; the absent kinds listed (no
+switches/lifts/safes/keypads/monitors/terminals/searchlights/turrets/glass/vehicles on this
+map). (2) Nine per-kind live tests green (interact_0700000c_live), each with a failing sister:
+the static census counts; door2turbine E-open; TouchOnce #551 walk-over → ch 0x43 (fires from
+the spawn capsule — the sister is the far-teleport load); the armour walk-over → 50.0; the oil
+barrel under fire dies; the param-less fuseboxes proven inert by disc data (no script hash →
+FuseBox_Create makes nothing [M 0x1b0448], E writes nothing [M 0x1a7ef8 has no 0x3C arm]);
+the zipline (icon #509 arms ctx 3, the action-edge jump scan grabs [M 0x1916b0:126-147],
+strafe rides [M 0x19806c]); the Q-Claw grapple latch + reel (the claw is in the 0c loadout
+[M 0x1a7ef8]; pull advances [M 0x192860:79-104]; the reel window is the first held ticks —
+the hang releases on dropped fire); the music trigger #502 re-arm in the ch-0x24 zone (the
+event board is a per-frame mailbox, so the pin is the trigger's own countdown). The already-
+pinned kinds re-run: fix_level_0c 4/4, walk_0700000c 4/4, walkreal_0700000c 1/1. (3) Models:
+textures_live green (every texture/mesh resolves, all levels incl. 0c); the NF_TEX_TRACE GPU
+sweep is not headless-runnable. Suite.py did not complete (OOM kills: load_time_probe,
+weapon_matrix_live; the only FAILED lines are the wgpu pylon render probes — no GPU adapter in
+this sandbox, pre-existing master tests, my diff is one test file + docs). Report:
+docs/reports/level-0c-interactables.md.
