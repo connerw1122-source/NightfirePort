@@ -18515,3 +18515,29 @@ fix_truck 2, level_carry 8, mayhew_handover 2, nf-game units 276. The full suite
   blockers in their headers. Suite: the 06 binaries green (walk 2/2, interact 9/9, fusebox 4/4);
   the full four-crate suite did not fit the window (the background runner dies between tool
   calls here) — next session runs it on this branch.
+- 2026-10-17 s/level-08-complete (task 708b): started. Task: live walk test
+  walkreal_07000008_live.rs playing 07000008 (Mayhew D: the gondola) start to finish via the
+  real input path — every objective (0x4000004 the safe/briefcase ch 0x4a; 0x4000005 the
+  gondola escape ch 0x4b; the intro plate #237 ch 0x49 completes 07's carried objective),
+  every cut-scene (SP #294 the station intro, SP #295 the ride 0x0600004C, SP #296 the
+  bottom cinematic), the scripted chain to the helicopter → ch 100 → level_exit 0x07300008.
+  Known open items: Zoe shooting at Bond at the gondola (750r), the guards breaking the glass
+  at the start (750p), the safe/briefcase, the rocket blast lighting (GAPS G-049).
+  Census basis: docs/levels/07000008.md (level-08-interactables). In progress.
+- 2026-10-17 s/level-08-complete (task 708b): DONE. walkreal_07000008_live.rs (new, 3 tests, all
+  passing): the full 07000008 gondola walk through the real input path — the intro plate ch 0x49
+  (07's carried objective folds) + the station scene → the descent → the LASER-cut fusebox wires
+  (ch 137; the wire filter drops guns, keeps the Laser [M 0x1ece30]) → the safe bolts burned
+  (ch 134/135 → mux ch 136) → the briefcase (ch 0x4a = objective 1 → 4) → the descent along the
+  level's own nav chain → the WEST boarding (the east face is the script-glass, obj_type 0x20 =
+  Break_Create [M 0x1d8968]) → the floor plate ch 4 → mux ch 1 → SP #295 the ride — the carriage
+  CARRIES Bond down the whole cable (y 27.9 → 13.5, no falls; set_dynamic movers +
+  Control_InheritVelocity) → ch 83 at script tick 1410 → the bottom cinematic ch 5 → the copter
+  ch 0x4b (objective 2 → 4) → ch 100 → the mission end (6, 0x0730008, the driving hand-off).
+  THE FIX (drone.rs): team-2 allies never take the player as opponent [M FindOpponent 0x1424e0:101]
+  — look_for_opponent refuses team 2 and the alert-fold keeps the ally's base state; the
+  reproduction was the playtest's "Zoe shooting at Bond" (the ally reached alert 1.0 on the
+  guards' gunfire and the fold put her into the player-hunting ATTACK). Ran: walkreal_07000008_live
+  3/3, nf-game 534/0, the ally siblings 14/0 (escort_follow/fix_actors/mayhew_handover/
+  mayhew_end_transition/fix_npcs; suite.py background-killed by the sandbox as before).
+  Report: docs/reports/level-08-complete.md.
