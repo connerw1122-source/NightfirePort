@@ -67,7 +67,7 @@ impl Level05 {
 
     /// The simulation over these drones with the level's triggers.
     fn sim(&self, drones: Vec<Drone>, rng: Rng) -> Drones {
-        let mut s = Drones::new(drones, rng); s.attach_level(&self.level);
+        let mut s = Drones::new(drones, rng); s.attach_level(&self.level, 0x0700_0005);
         // The live sessions this file's measured values come from ran at difficulty 1 (the old
         // hardcoded `DIFFICULTY` const; fix-progress made it runtime with the game's boot default
         // 2 [M 0x1c7e78:25]) — pin the harness to 1 so the measured columns stay valid.

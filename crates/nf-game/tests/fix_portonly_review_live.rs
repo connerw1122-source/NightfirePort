@@ -72,7 +72,7 @@ impl Level05 {
     }
 
     fn sim(&self, drones: Vec<Drone>, rng: Rng) -> Drones {
-        let mut s = Drones::new(drones, rng); s.attach_level(&self.level);
+        let mut s = Drones::new(drones, rng); s.attach_level(&self.level, 0x0700_0005);
         s.difficulty = 1;
         s
     }

@@ -90,7 +90,7 @@ fn sensor_trips_after_two_seconds_of_sight_and_the_empty_sister_does_not() {
     let mut lights = nf_game::light::LightList::default();
     let drones = nf_game::drone::level_drones(&d, &l.level, &mut rng, &mut lights);
     let mut sim = Drones::new(drones, rng);
-    sim.attach_level(&l.level);
+    sim.attach_level(&l.level, 0x0700_000b);
     sim.difficulty = 1;
 
     // The two main-map sensors of 0700000b [D probe of the disc placements].

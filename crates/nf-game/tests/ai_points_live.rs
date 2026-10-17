@@ -84,7 +84,7 @@ impl Level07 {
         (list, guest, rng)
     }
 
-    fn sim(&self, drones: Vec<Drone>, rng: Rng) -> Drones { let mut s = Drones::new(drones, rng); s.attach_level(&self.level); s }
+    fn sim(&self, drones: Vec<Drone>, rng: Rng) -> Drones { let mut s = Drones::new(drones, rng); s.attach_level(&self.level, LEVEL); s }
 }
 
 /// The disc's records: 33 on the main map (the level's 34th is the empty-params map-1 record the
