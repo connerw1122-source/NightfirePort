@@ -17719,3 +17719,15 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+
+## zoe-gondola-08b (2026-10-17, branch s/zoe-gondola-08b) — started 04:40 UTC
+Task: finish zoe-gondola-08 (750d), HELD at the 2026-10-16 batch merge: on top of the batch it
+breaks three tests that pass without it (cover_nodes_live a_06 guard-under-fire cover states;
+npc_doors_live escort DSTATE_OpenDoor at the courtyard shoji; rocket_origin_live rocket
+launcher-origin). Fix must be scoped to what the game does for Zoe (her team/target rule) without
+changing the other drones' targeting, cover or door behaviour, nor Bond's aim.
+
+Start: rebuilt the held content by reverting the revert 6445bd0f on top of origin/master
+50d51ae7 (batch 1016c) — origin/s/zoe-gondola-08's commits are already ancestors of master but
+their content was reverted there. Branch s/zoe-gondola-08b pushed with this entry before any
+analysis. Next: reproduce the three failures, then scope the fix.
