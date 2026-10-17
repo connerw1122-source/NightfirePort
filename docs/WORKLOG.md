@@ -17391,3 +17391,185 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+
+## scorpion-rocket-speed (2026-10-17, branch s/scorpion-rocket-speed) — 00:40 UTC
+
+Started. Playtest 1016-1355: AT-600 Scorpion rockets are way too slow (MP). Sentinel's speed was
+measured live (×4.04 on 0x2c/0x2d); checking the Scorpion records 0x2E/0x2F the same way: init
+speed, the 0x200 quarter, per-tick flight step [M Bullet_init 0x12c5a0, Bullet_update 0x12e7b0],
+any homing. Goal: set them to the game's numbers with evidence; test pins the Scorpion per-tick
+step. Plan: read the bullet records + Bullet_init/Bullet_update decomp, find where the port sets
+Scorpion rocket speed, fix with cited addresses, write the 07000005-style test, run nf-game.
+
+## scorpion-rocket-speed (2026-10-17, branch s/scorpion-rocket-speed) — 02:05 UTC
+
+Done. Playtest 1016-1355 (MP): "Scorpion rockets are way too slow" — the port flew the AT-600's
+twins at the quartered init speed only (0x2e 0.0625 / 0x2f 0.0833 u/tick). Evidence: the live
+records [L ee_start_05/ee_start_07000001/ee_start_0700000a/ee_snapshot @0x2bf150+w·0x10C] give
+0x2e +0x20 0.25 / +0x6C 0x32200 (the 0x200 quarter + the 0x20000 homing, no 0x4) and 0x2f
+0.3333 / 0x1a200 — byte-identical flags to the MEASURED 0x2d (fix-sentinel-camera-play's ×4.04
+flight scale, 0.33666 u/frame [L PCSX2]); the mover reads neither 0x20000 nor 0x4 [M Bullet_update
+0x12e7b0:157,380-474; Bullet_homing 0x12f358 steers the direction only, 0x12f358:126-166; the
+guided cam is init-time, 0x12c5a0:234-254]. So the twins join the scale: 0x2e 0.2525, 0x2f
+0.336667 u/tick. Fix: one line in fire_player (drone.rs), cited. Failing first: the new
+scorpion_rocket_speed_live read 0.06248 on the pre-fix src. scorpion_modes_live was calibrated
+on the slow flight (24° @ 18 u passes the guard by ~0.9 u at the game's own speed — the sweep
+beats the ±0.01/component steer near arrival; the pursuit rides a ~17° equilibrium); recalibrated
+to 12 u at 17°, the curve detector now the heading rotation ≥ 0.15 rad (spread ≤ 0.0028, no
+gravity bit) — lock/hit asserts unchanged, no game pin weakened. Suite: 5 interleaved foreground
+chunks on the final tree + a 250 s re-run of the limit-timed-out heavies; the 3 disc_golden
+failures are the slim ISO's allowed set, the wgpu-adapter failures are this sandbox's missing
+GPU (render tests are the main agent's surface). Left: the ×4.04's internal source (the same
+unpinned gap the Sentinel task left — live checks 1-2 in the report settle it); the drone-fired
+path's raw +0x20 (lands within ~1% by coincidence for these records, out of scope).
+- 2026-10-16 s/mp-map-objects (task 744): MP maps' dynamic objects — playtest 1016-1355: Gondola is
+  missing the actual gondolas; remote tanks and helicopters that should be pilotable are not.
+  Plan: census every MP map's dynamic objects from disc placements [D] (movers, usables, the
+  remote tank/helicopter), port movement + the pilot/remote-vehicle control mechanics from the
+  decompile [M]. Drawing is the main agent's; sim and controls are mine. Tests per map: gondolas
+  move on their routes; a player can take control of a remote tank/helicopter and drive it.
+  Branch created from origin/master f09f3c6c.
+- mp-map-objects research: census of all 8 arenas [D, scratch mp_census] — the "remote tanks"
+  are 4x kind-0xDA Car_Create (RCCar 0x020003d6) on every arena except Sub Pen; no 0x2F copter
+  on any arena (Snow Blind's "helicopter" is static decoration cels; the playtest's helicopters
+  are the Car's Enviro-Mods variant — P_MPENVIROMODS option 2 swaps the gfx to 0x2000194 [M
+  Car_Create 0x1305b0:29-43]). Skyrail's gondola = placement [4] kind-0xD9 script player,
+  script 0x06000058, mode 8 loop, MASK 0 [D]. Ravine has 4x 0xE2 SS cable cars (25 keys, rate
+  8500, paths 0-3 in block 0x19) [D]. Root cause found [M SP_CreateScriptPlayer 0x1db9a8 +
+  SP_Update 0x1dbda8 + SP_HideObj 0x1dcbf0]: the game primes mask-0 mode-8 SPs at create
+  (+0x36 = 0, only SP_HideObj — copter-only — ever sets it, and SP_Update ticks Script_Update
+  while +0x36 == 0), but the port's nis::Player::prime skips mask==0, so the gondola never
+  loads: probe test shows info[0] = None. Fix: prime mask-0 SPs like the game.
+- mp-map-objects fix 1 (gondolas): nis::Player::prime no longer skips mask-0 SPs — the game
+  primes every placed SP with mode A >= 2 at create regardless of mask [M SP_CreateScriptPlayer
+  0x1db9a8:72-76 (mask 0 -> state 6) + SP_LoadScript 0x1dbc08; SP_Update 0x1dbda8:57-59 stops
+  only on the +0x36 disabled byte, whose sole writer SP_HideObj 0x1dcbf0 only the copter calls].
+  New Player.hidden field (+0x36, defaults false, gates the whole update) models the byte; the
+  one level-load-hidden SP (07000005's 0x16ddb40 pair, +0x36 = 1 [L], setter unknown) is a live
+  check — it is NOT a placed 0xD9 (07000005's main map has no mask-0 mode>=2 placement), so the
+  change cannot unhide it. Probe: Skyrail gondola now loads (play 0x9) and the two carriages
+  (0x0200037a + sub 0x0200038a) ride the loop phase-shifted [D placement 4]. nf-game suite:
+  470 passed / 0 failed.
+- mp-map-objects fix 2 (remote vehicles): car.rs — the Car_* family (class 0x28) as a data +
+  state-machine module [M Car_Create 0x1305b0 (gates: MP on, option != Off, Ravine blocked,
+  NumTanks < 8; variant byte 0x112: 1->tank / 2->heli model 0x2000194 / 3->Rand_Rand(100)<0x33),
+  Car_Activate 0x131c48 (state 5, cam 0xD, pilot slot, sounds 0x60a/0x10b, spin 10/4, heat
+  reset), Car_Deactivate 0x131d88 (state 99, Explode 10/10/50 script 0x6000052, pose restore
+  from TankSpawns[slot], timer 0x708), Car_Update 0x1307d8 (state-99 countdown, heat cooling,
+  heli input conditioning: yaw +in*0.05*FRM, pitch negated, throttle/steer lerp 0.15 clamp
+  0.125/0.1, shell +10 heat / 6 s cooldown / overheat latch > 100)]. Tests car_state_machine:
+  5 tests, all addresses cited; the tank drive branch + matrix composition are next-session.
+  NOT wired into the sim walk yet (phase 1 drives no MP objects; the hook list is in the
+  module header + report). nf-game: 475 passed / 0 failed; all four crates compile (release).
+
+## drake-fight-1b (2026-10-17, branch s/drake-fight-1b) — started 00:07 UTC
+
+Task 745: port the 0700001b final fight's mechanics [M + D] — Drake's AI and phases, the missile
+launch sequence (channels 1..8, MissileDeploy, SpaceMissile_Update's states), win/fail conditions.
+Tests: a scripted headless run reaches each phase on the game's triggers; the mission completes or
+fails on the game's conditions. Reading the decompile first.
+
+## drake-fight-1b (2026-10-17, branch s/drake-fight-1b) — 01:20 UTC
+
+Task 745, done on its own evidence: the 0700001b missile launch sequence ported from the
+disassembly (the decompile's C dropped every store) — `SpaceMissile_Update` 0x1aa118's five
+states [M 0x1aa1c8/0x1aa23c/0x1aa25c/0x1aa33c/0x1aa3e0], `MissileDeploy` (0x30cd70) as
+`Drones::missile_deploy`, the eight kind-0x39 placements attached with the [M 0x1a9ef0] param
+map, and the p0 scripts' [D] in-stream writes at their decoded ticks. Drake's playtest symptom
+fixed at the init: skins 0x05000078/94/ba set skin kind 0x18 [M 0x14b300:236-243] → mode 0x1d +
+start 0xbd AstronautLaunch + TakeXHits(0x33) health ×3 for Drake [M :722-739, 0x14d928] — the
+port had him as a generic mode-0 guard falling through the station. `AstronautLaunch` 0xbd arms
+[M 0x16dd28] and `SpaceDrake` 0xc2 verbatim [M 0x16dee0]. Win/fail pinned by tests: AND #139
+(21&22&27) → ch 9 → objective 1; the state-2 launch branch → ch 199 → FailLabel 0x0200_005a
+[M 0x1827d8:113-115]; the defeat NIS path re-verified (fix_finale 4/4). Tests:
+`drake_fight_live` 3/3 + regressions (nf-game lib 241, level_live, drone_portcheck 35, ai_live 5).
+The full suite could not run (suite.py killed between tool calls twice, 0-byte output) — the
+next message should run it on this branch. Left: the zero-g move family (s/astronaut-guards-1b's
+scope), the HUD pane's MissileDeploy switch (visual), the 0xc2 launch-order writer (absent from
+the disc data), live checks in the report.
+
+## cover-nodes (2026-10-17, branch s/cover-nodes) — started 00:24 UTC
+
+Task 746: the AI cover node placements — `Drone_CoverCornerNode` 0x136ff0 and
+`Drone_CoverLowNode` 0x137340 (968 placements on mission levels the port doesn't
+spawn). Reading the script census and the drone cover system first; port from the
+decompile [M], test on 07000006 through the real path, update script_census.rs
+handled sets. In progress.
+
+## cover-nodes (2026-10-17, branch s/cover-nodes) — finished ~01:55 UTC
+
+The AI cover node placements (0xE5 corner 584 / 0xE6 low 384) now spawn from EVERY map entry of
+the level archive, the game's way: the loader dispatches each type-0/1/2/11 entry to
+`parsemap_parsemap` (0x1d4880 case 0/1/2/0xb — docs/formats/level-bin.md), whose block walk runs
+`parsemap_block_map_data_dynamic` 0x1d1b68 per placement and `parsemap_create_dynamic_objects`
+0x1d04f0 case 0xe5/0xe6 — the main map is only one entry among them. `cover::build` previously
+walked the main map only; it now walks `level.maps` in directory order. Every mission level's
+shared sub-map 010000f3 adds one corner + one low template pair ("Cover Corner/Low Node", origin,
+no params — flags 0x1EC, angle 45°, idle 0x11/aim 0xA through the default arms [M 0x136ff0,
+0x137340]); 07000004/09/0a/1b/23/25/26/27/28/4a have NO main-map nodes, so the pair is their whole
+cover graph. 07000006 pins 81+35 (was 114); fail-first verified by stashing the change (3/3 fail)
+and re-applying (3/3 pass): the two spawn tests + `a_06_guard_under_fire_takes_a_game_cover_node`
+(real path: sound → sighting → COMBAT_OUT_OF_RANGE 0x5a → RUN_FOR_COVER 0x8c claims a game node;
+UnderCoverIdle 0x94 within 1.5 of the in-cover point [M]). Census handled sets updated
+(HANDLED_PLACEMENT_TYPES 56 → 58; 0xE5/0xE6 were still listed unhandled since cover.rs landed in
+232f5392 — the pin was stale); both census docs updated.
+
+## ai-points (2026-10-17, branch s/ai-points) — started 01:10 UTC
+
+Task 747: port the `Drone_AIPoint` script entity (0xE9, `Drone_AIPoint` 0x137550 [M], 162
+placements) and wire it into the guards' route/patrol logic the way the game uses it. Test on
+07000007 (34 points). Plan: read the script-census entry, port the record from the decompile,
+write a test that fails without the fix, update script_census.rs handled sets, run the touched
+crates + the suite. Branch created from origin/master bee8c129.
+
+- ai-points: ported the 0xE9 AI-point record (`Drone_AIPoint` 0x137550 → crates/nf-game/src/aipoint.rs):
+  group = param 0 (u16, rec+0x2c), accuracy = param 1 (rec+0x30 — cvt.s.w ≥ 0, the srl/andi/or ×2 form for
+  negatives [M disasm 0x1375d4-614]), owner = param 2 (rec+0x34, matched against Drone+0x144 = placement
+  param 0x11 [M DefaultInit 0x14b300:472]), pos = +0x20 (the placement translation), the level_tag→param
+  mapping pinned off the ported `Drone_AIVolume_Create` 0x1376c0 (`+0x2c+4k` ↔ param k). The emitter binds
+  `NavPathForPosition` at creation [M 0x15b1e8] and `Drone_PostLoad_Init` 0x136938:78-86 emits the per-node
+  Dijkstra bytes — the port builds both at load (`aipoint::build`, the cover-node pattern). Wired:
+  `NDrone2_ClosestAIPoint` 0x151b18 (group filter, path match vs Drone+0x954 — now set at load per
+  `NDrone2_PostLoad_Init` 0x14d890:18-22, cost byte at the drone's nearest node, min-cost/first-tie, the
+  owner-match blocking [M 0x151b18:128-181]); `NDrone2_FindRunToPoint` 0x153168 (groups: prop 0x56→8,
+  0x4e→1, class 1→0/2→9/3→2); `DSTATE_EnemyRunToPoint` 0x168910 (prop 0x56 → 0x89; found → +0x5A0=+0x5A2,
+  class 1 → GoToGoalPosition 0x63, else HostageGoToGoalPosition 0x64 — newly ported 0x165a68);
+  `DSTATE_CivilianScared` 0x15d3a0's mode-7 arm (the +0xC6=7 marker, `scared_run` — the game sets it in
+  `DroneFunc_HandleImpact` 0x1469b8 on 07000009/0A only [M gate]). Tests (nf-game/tests/ai_points_live.rs,
+  NF_ISO): 07000007's 33 main-map records (group 2 / accuracy 1 / owner 0 [D]; the level's 34th is the
+  empty-params map-1 record), the selection rules, and the scared-guest run through the real router to the
+  closest point then CivilianHiding. script_census: 0xE9 handled (57 sim types). Left: the alarm-side wiring
+  (`FindAlarmPoint` 0x153008 found-arm → `DSTATE_PressAlarm` 0x168ea8/0x8A, `AssignAIPath`'s group-8 store
+  0x154190:55-66), the route-accuracy float (route+0x8c), the `+0xC6=7` msg attribution is [S] (all four
+  HandleImpact sites carry the same 09/0A level gate).
+
+## hurt-volumes (2026-10-17, branch s/hurt-volumes) — started 00:52 UTC
+
+Task: hurt volumes (script op 0xE4), Hurt_Create 0x17e870 and its update — 64 placements.
+Damage kind and rate from the params. Test: standing in one damages Bond at the game's rate
+and type; outside, nothing. Sister assertion on real levels, script census handled-sets update.
+
+- hurt-volumes: the 0xE4 family ported — Hurt_Create 0x17e870 (params p0..p5 = type/damage/channel/
+  sound/mask/one-shot + the key header) as worldobj::Hurt, Hurt_Update 0x17e5d0's gate/state/frame
+  machine, and the damage pass (Player_DealWithObjHit 0x194458:94-101 case 0x27 → pain_generic,
+  hitdata+8 = the never-written ground HITTEST+0x90 so the param damage is whole). Disc: 05 has 13
+  type-6 ×1000 death quads/box, 02 one channel-141 trickle, 46 seven bullet-armed one-shots. Tests:
+  hurt_volumes_live 4/4 (05 Sim death + outside-nothing, 02 gate, 46 sweep), census moved 56→57 /
+  1537→1473. Ran nf-game lib 241, nf-formats lib 79 + census 6, the 05 Sim set (42) — all green;
+  the full four-crate suite did not fit the sandbox window (report has the detail + live checks).
+## sensor-volumes (2026-10-17, branch s/sensor-volumes) — started 01:05 UTC
+
+Task 749: sensor volumes (script type 0x28), 62 placements. `Sensor_Create` 0x1af010 and its
+update — trip volumes that anything (not only the player) can set, writing switch channels.
+Porting from the decompile [M]; test on real levels through the real path with a sister
+assertion (drone walking through sets the sensor's out channel; an empty volume doesn't).
+Update `crates/nf-formats/tests/script_census.rs`'s handled sets.
+  — completed 02:35 UTC: crate::sensor (Sensor_Create 0x1af010 / Sensor_Update 0x1af618 /
+  Sensor_InCone 0x1af4f0 / Intersect_ConeSphere 0x1ee100 ported; the disable-channel state 3,
+  the 32-tick alert, the 2 s trip write, the 0.1-return slerp); wired into the control walk as
+  class 0x37 (what==6). Census handled sets updated (57 handled / 1475 unhandled). TEST
+  CORRECTION: the census plan's "a drone walking through sets the out channel" is not what the
+  binary does — Sensor_Update 0x1af618 detects glb_players[0] only (disasm 0x1af644/0x1af97c/
+  0x1afae0); the pinned test drives the PLAYER through sensor 164's sweep cone on 0700000b
+  (ch 0x28 sets at >=152 ticks; sister 172 never sets). Unported: lens/mount meshes (visual),
+  the monitor pairing (0x30), sensor sounds, the posed-head draw (main agent's side).

@@ -75,7 +75,7 @@ impl Level01 {
         let weapons = WeaponData::from_action_elf(&elf).unwrap();
         let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
         let nav = nf_game::nav::Network::build(level.maps[level.main_map().unwrap()].ai_network.as_ref().unwrap(), &world, 0x0700_0001);
-        let covers = nf_game::cover::build(&level.maps[level.main_map().unwrap()].placements, &nav, &world);
+        let covers = nf_game::cover::build(&level, &nav, &world);
         let hitboxes = nf_formats::hitbox::CollisionBones::from_action_elf(&elf).unwrap();
         let volumes = nf_game::aivolume::build(&level, 0x0700_0001);
         let models = nf_game::pickup::models(&level);
@@ -86,7 +86,9 @@ impl Level01 {
     }
 
     fn data(&self) -> Data<'_> {
-        Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0001, sequences: &self.sequences, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: None, voices: None, difficulty: 1 }
+        Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0001, sequences: &self.sequences, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: None, voices: None, difficulty: 1,
+            ai_points: &[],
+        }
     }
 
     fn sim(&self) -> Drones {

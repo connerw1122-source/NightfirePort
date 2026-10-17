@@ -72,7 +72,7 @@ fn rigid_inverse(m: &Mat4) -> Mat4 {
 }
 
 /// Quaternion → matrix (`Spline_Interp`'s tail): `m00 = 1−(2y·y+2z·z)` and so on, translation in row 3 [L].
-fn quat_matrix(q: [f32; 4], t: V3) -> Mat4 {
+pub(crate) fn quat_matrix(q: [f32; 4], t: V3) -> Mat4 {
     let (x, y, z, w) = (q[0], q[1], q[2], q[3]);
     let (yy, zz, xx) = (y + y, z + z, x + x);
     [

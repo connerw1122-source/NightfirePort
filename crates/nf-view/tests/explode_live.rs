@@ -141,7 +141,8 @@ fn stun_grenade_stuns_without_damage_and_a_shot_kills_the_stunned() {
         world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins,
         skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
         hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
-        surfaces: None, voices: None, difficulty: 1 
+        surfaces: None, voices: None, difficulty: 1,
+        ai_points: &sim.ai_points,
     };
     sim.drones.list[gi].send(&data, &mut sim.drones.rng, sim.drones.frame, nf_game::drone::msg::BULLET);
     assert_eq!(sim.drones.list[gi].state, nf_game::drone::state::DEATH_ANIM, "the stunned guard shot → 0x44 [M 0x172bb0 case 8/9]");
