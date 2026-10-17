@@ -67,9 +67,11 @@ fn the_sp_run_stack_matches_the_game() {
     assert!(fe.action(Action::Confirm));  // the box arms
     assert!(fe.action(Action::Back));     // cancel
     assert!(fe.action(Action::Confirm));  // arm again
-    assert!(fe.action(Action::Confirm));  // through → Difficulty
+    assert!(fe.action(Action::Confirm));  // through → Difficulty [G-048(1): CloseIris, M 0x20aec0:103]
+    for _ in 0..menu::CLOSE_IRIS_PAGE_TICKS + 2 { fe.tick(); }
     assert_eq!(fe.page, menu::Page::Difficulty);
-    assert!(fe.action(Action::Confirm));  // Difficulty → Single Player
+    assert!(fe.action(Action::Confirm));  // Difficulty → Single Player [M 0x216ca8:16 CloseIris]
+    for _ in 0..menu::CLOSE_IRIS_PAGE_TICKS + 2 { fe.tick(); }
     assert_eq!(fe.page, menu::Page::MissionSelect);
     assert_eq!(fe.flow.stack, vec![ST_BOOT, ST_RUNNER], "menus ride state 2 — the MenuManager is not a flow state");
     fe.unlock_all = true;
@@ -123,6 +125,9 @@ fn the_sp_run_stack_matches_the_game() {
     fe.requested_level = None;   // the host takes the request when it schedules the load
     assert_eq!(fe.flow.stack, vec![ST_BOOT, ST_RUNNER]);
     assert_eq!(fe.flow.page, menu::PAGE_RESULTS, "the results page [M 0x1d6360's MenuManager_Create on 0x7000048]");
+    // G-048(3): the create lands the page — nothing was open before it [M 0x182c60:72-75].
+    assert!(fe.reopen_queued_page());
+    assert_eq!(fe.page, menu::Page::Results);
 
     // --- next level from the results page: Confirm opens the mission list [M 0x208e78:39-44 —
     // a page change, not a load], then the row pick runs the same push sequence as before. Row 2

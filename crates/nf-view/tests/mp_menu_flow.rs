@@ -8,7 +8,7 @@
 //! confirm (P_MPCONFIRM 0x20ec00:53-94) hands the match over. Each step keeps a sister assertion
 //! that can fail.
 
-use nf_view::menu::{Action, FrontEnd, Page, MP_MAP_ROWS, MP_OPTIONS_ROWS, MP_SCENARIO_ROWS};
+use nf_view::menu::{self, Action, FrontEnd, Page, MP_MAP_ROWS, MP_OPTIONS_ROWS, MP_SCENARIO_ROWS};
 
 /// Main menu → Multiplayer → Local → Join (the main menu's row 1 confirm; net-online-lobby put
 /// the port's Local / Host Online / Join Online choice between them, and row 0 Local keeps the
@@ -28,6 +28,12 @@ fn enter_mp(fe: &mut FrontEnd) {
 }
 
 /// The keyboard join: agent 1 joins, picks the default codename, readies.
+
+/// G-048(1): the CloseIris walks land 10 ticks after the action [M 0x202190:8-9].
+fn iris_wait(fe: &mut FrontEnd) {
+    for _ in 0..menu::CLOSE_IRIS_PAGE_TICKS + 2 { fe.tick(); }
+}
+
 fn join_agent1(fe: &mut FrontEnd) {
     fe.cursor = 0;
     assert!(fe.action(Action::Confirm), "✕ joins agent 1");
@@ -61,6 +67,7 @@ fn scenario_confirm_moves_to_map_and_back_out() {
     // Walk to a real scenario (row 1 = Arena / Deathmatch) and confirm.
     fe.mp_scenario_row = 1;
     assert!(fe.action(Action::Confirm), "the scenario confirm navigates");
+    iris_wait(&mut fe); // [M C_SBMPSCEN 0x20c600:45 Menu_ChangePageCloseIris — G-048(1)]
     assert_eq!(fe.page, Page::MpMap, "C_SBMPSCEN's confirm opens the map page [M → 0x40000013]");
     assert_eq!(fe.mp_scenario, 1, "the confirm stores the scenario word [M MPSettings+0x1A4]");
     // Sister: the map confirm stores the level code and lands on the setup page.
@@ -135,6 +142,7 @@ fn locked_scenario_and_ravine_bots_gate() {
     // Sister: the unlock_all shortcut opens Uplink [M the gate's other arm].
     fe.unlock_all = true;
     assert!(fe.action(Action::Confirm));
+    iris_wait(&mut fe); // [M C_SBMPSCEN 0x20c600:45]
     assert_eq!(fe.page, Page::MpMap);
     fe.unlock_all = false;   // back to the fresh profile for the Ravine checks
     // Ravine (row 7) hides the AI Bots row.

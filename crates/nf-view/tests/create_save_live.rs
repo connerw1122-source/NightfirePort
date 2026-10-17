@@ -225,6 +225,10 @@ fn finishing_a_mission_under_the_codename_saves_progress() {
     session.apply_to(&mut fe2);
     fe2.mission_ended(Outcome::Complete, Stats { shots_fired: 30, shots_hit: 20, accuracy_pct: 66, time_s: 100 });
     fe2.requested_level = None; // the headless leg skips the outro wrap
+    // G-048(3): the results page opens at the load tail's MenuManager_Create, not at the end
+    // [M 0x182c60:72-75 + 0x1d6360:160-163].
+    assert!(fe2.reopen_queued_page(), "the queued results page lands");
+    assert_eq!(fe2.page, Page::Results);
     let mut progress = nf_game::progress::Progress::default();
     progress.stats[0].dispatched = 2;
     progress.stats[0].shots_fired = 10;

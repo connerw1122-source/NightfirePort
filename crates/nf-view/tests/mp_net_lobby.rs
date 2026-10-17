@@ -15,7 +15,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use nf_game::mp::MpSettings;
-use nf_view::menu::{
+use nf_view::menu::{self,
     mp_net_addr_ok, Action, FrontEnd, MpNetAgent, MpNetChoices, MpNetError, MpNetLink, MpSession,
     MpNetState, Page, MP_MAP_ROWS, MP_NET_TIMEOUT_TICKS, PAGE_MP_HOST, PAGE_MP_LOBBY, PAGE_MP_MODE,
     PAGE_MP_NETJOIN,
@@ -184,6 +184,7 @@ fn host_flow_listen_agents_choices_and_start() {
     // The usual flow: Scenario → Map → Setup → Options → Confirm.
     fe.mp_scenario_row = 1; // Arena / Deathmatch
     assert!(fe.action(Action::Confirm), "the scenario confirm navigates");
+    for _ in 0..menu::CLOSE_IRIS_PAGE_TICKS + 2 { fe.tick(); } // [M C_SBMPSCEN 0x20c600:45, G-048(1)]
     assert_eq!(fe.page, Page::MpMap);
     assert!(fe.action(Action::Confirm), "the map confirm navigates");
     assert_eq!(fe.page, Page::MpSetup);
