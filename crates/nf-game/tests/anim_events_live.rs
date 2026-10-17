@@ -48,7 +48,7 @@ impl Fixture {
         let skeletons = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&data, e)).ok()).map(|k| (k.id as u8, k)).collect();
         let m = level.main_map().unwrap();
         let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap(), &world, level_id);
-        let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
+        let covers = nf_game::cover::build(&level, &nav, &world);
         let volumes = nf_game::aivolume::build(&level, level_id);
         Some(Fixture {
             tables: drone::DroneAnimData::from_action_elf(&elf).unwrap(),

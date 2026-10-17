@@ -59,7 +59,7 @@ impl Fixture {
         let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
         let main = level.main_map().unwrap();
         let nav = nf_game::nav::Network::build(level.maps[main].ai_network.as_ref().unwrap_or(&Default::default()), &world, level_id);
-        let covers = nf_game::cover::build(&level.maps[main].placements, &nav, &world);
+        let covers = nf_game::cover::build(&level, &nav, &world);
         let hitboxes = nf_formats::hitbox::CollisionBones::from_action_elf(&elf).unwrap();
         let volumes = nf_game::aivolume::build(&level, level_id);
         let models = nf_game::pickup::models(&level);
