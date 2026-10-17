@@ -17893,3 +17893,14 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   lag/artifacts. (2) one real-input live test per KIND (nf_view::load + Sim::step_bond), each
   with a sister that fails without the operation. (3) every placement's mesh/skin resolves (no
   white fallback, NF_TEX_TRACE=1). Branch from origin/master d628f01f.
+- level-06-interactables progress: the census probe (`census_07000006.rs --ignored`) dumped all
+  813 main-map placements by kind; docs/levels/07000006.md rewritten as the full interaction
+  census (fixes the old doc's wrong fusebox script hash: #747's script is 0x0600004B, params
+  57/55/103/55 — group 0 cuts → ch 57+103, group 1 → ch 55+55, no hurt since +0x56=55). Live
+  tests added, all green: fusebox_06_live (4 — laser cuts both bundles through the real aim/fire
+  path; sisters hold fire / press E), interact_07000006_live (7 — #47 E-door opens + no-E sister,
+  #369 lock ch 200 refusal + carried-open pair, radio #807 is the mode-8 ambient SP (plays from
+  load; mask 2 = not E-usable), #810 mode-0 differential, #755 armour walk-over + 5 m sister),
+  models_sweep_07000006_live (2 — 5940 materials / 447 textures / 0 white fallback; all drone
+  skins present). The one unported interactive KIND on this level: Hurt volumes (0xE4, the well
+  shaft's #373 type-6 1000-damage kill volume [M Hurt_Create 0x17e870]).
