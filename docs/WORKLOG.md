@@ -18814,3 +18814,17 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   spent its window on the keyboard) — the walkreal's SW-office route with the ch-0x30 door drive
   is unchanged and green. Suite: the touched crates' tests (interactables 7/0, keyboard 1/0,
   walk 3/0, walkreal 1/0) on the final tree.
+- 2026-10-17 s/level-0c-complete (task 712b): the walk is GREEN end-to-end (2917 ticks, stuck 0,
+  falls 0) with the secret door REAL: the E-interactable plate #558 (mask 4 = the use-key flag
+  [M Trigger_Activate 0x1b2318:23-33] — the level doc's guard-patrol key was wrong, corrected),
+  the deferred use half (the game runs the E at Bond's object-walk turn — the old pre-Trigger_Calc
+  write was wiped by the touch clear 0x1b1900), the AND #560 → ch 8, Door_secret1 #544 (rate 400,
+  rest 0.75, wrap 1 [D]) opens over two presses and Bond crosses the slab plane for real. The
+  SS_Operate presence half ported [M 0x1a9df8:12-45 + the latch write 0x1a9948:18-23]: the mask-0x2
+  winch (#351, ch 0) sweeps on a real sniper shot (fix_ss_operate_0c_live, with the idle sister).
+  Known open items left as documented stand-ins with reasons: the vent/pulley descent (the ascent
+  leg unknown), the yard ladder grab (never enters SS_CLIMB — live check filed), the circle's
+  south-west bend edge fall, the doorway-ledge yard descent. Ran: nf-game lib 537/0; nf-view
+  targeted 11 binaries all 0 failed (the E-deferral + SS blast radius); the full suite.py did not
+  fit the window (baseline killed at ~40 %; the next message should rerun it fresh). Report:
+  docs/reports/level-0c-complete.md.
