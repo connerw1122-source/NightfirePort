@@ -304,12 +304,34 @@ fn parked_in_the_lobby_the_liftside_plate_stays_silent() {
 /// shooter is the walkreal's own (exposed-part aim, flank sidesteps — the Phoenix van blocks
 /// the spawn-side line). Sister: the guard stands while unfired-at (Bond's health topped up —
 /// the guard SHOOTS back, that is the level's own behaviour).
+///
+/// The weapon matters: 09's loadout opens on the K5 sleep darts (0x43, 5+10 — the level's
+/// stealth start), whose hits are the zero-damage STUN_DART msg [M DealWithObjHit case 5
+/// 0x13fff0:269-306: 0x43/0x44 → msg 0x19, the dart route never reaches HitDamage], so the
+/// cycle walks to the P2K (0x2, 7+41 — the first lethal gun in Bond's owned set) before the
+/// first tap. `NDrone2_HitDamage` 0x145558 applies the damage; a darted guard only stuns
+/// (the STUN_DART states 0x50-0x52).
+fn cycle_to_lethal(scene: &mut nf_view::scene::Scene) -> bool {
+    for _ in 0..12 {
+        {
+            let sim = scene.sim.as_ref().unwrap();
+            // Lethal = the port's armed set minus the dart/taser ids (0x43/0x44 the K5 darts,
+            // 0x4A/0x4C the taser — DealWithObjHit case 5 routes them to msg 0x19/7, not damage).
+            let lethal = (2..0x47).contains(&sim.drones.bond_weapon) && !matches!(sim.drones.bond_weapon, 0x43 | 0x44);
+            if lethal && sim.gun.clip + sim.gun.spare > 0 { return true; }
+        }
+        scene.sim.as_mut().unwrap().step_bond(Input { weapon_cycle: 1, ..Default::default() }, false, false, false);
+        for _ in 0..60 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    }
+    false
+}
+
 #[test]
-#[ignore = "the 09 guards re-freeze after the wake: the ch-0x51 wake lands at frame 1 [M 0x15b960 case 3 — the port fix in drone.rs], but both lobby-side guards end enabled=false state=WAIT_SWITCH again by the intro's end, and bullets then pass through them [M Drone_CollisionHandler 0x140968:62's enabled gate]. The re-freeze path needs the main agent's gdbwatch (see the report's live checks); the sister (the guard stands while unfired-at) is the pinned half."]
 fn the_car_park_guard_dies_to_the_real_fire() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = load_09(&iso);
     settle_near(&mut scene, [-1.5, -377.0, 37.8]);
+    assert!(cycle_to_lethal(&mut scene), "a lethal gun is in Bond's 09 owned set (the P2K 0x2)");
     let (di, skin, health) = {
         let sim = scene.sim.as_ref().unwrap();
         let (i, d) = sim.drones.list.iter().enumerate()
@@ -321,7 +343,6 @@ fn the_car_park_guard_dies_to_the_real_fire() {
     };
     assert_eq!(skin, 0x0500_0027, "the car-park guard's skin [D #261 param 0]");
     let mut w = Walker::new(scene);
-    assert!(w.switch_to_armed("guard test"), "an armed weapon is available on 09");
     let killed = w.shoot(di, "the car-park guard");
     let sim = w.scene.sim.as_ref().unwrap();
     eprintln!("[guard] killed {killed} health {:.1} corpse {}", sim.drones.list[di].health, sim.drones.list[di].corpse);
