@@ -44,9 +44,14 @@
 //! the glist `Control_SetGList` links at create [M 0x17e870:44], resolved like the trigger
 //! builder's (the same source) and tested with the trigger walk's capsule-vs-mesh contact
 //! (triggers::capsule_hits_tris). The exact BL object-collision pick is the port's approximation
-//! [S]; the class arm and the numbers are [M]. Only the player's damage pass is wired here (the
-//! game's drone-side pass is `NDrone2_DealWithObjHit` 0x13fff0 — the who masks that name drone
-//! classes, e.g. 07000008's #42–44 who 0x18, are delivered for it [D survey]).
+//! [S]; the class arm and the numbers are [M]. Both victim passes are wired: the player's
+//! (`Player_DealWithObjHit` 0x194458) and the drones' (`NDrone2_DealWithObjHit` 0x13fff0 gives
+//! NPCs the same treatment) — the who masks that name the drone class bit 8, e.g. 07000008's
+//! #42–44 who 0x18 (classes 3+2, the kill-floor quads, type 6, 1000 damage [D params]), are
+//! delivered for it. The drone contact capsule is the trigger walk's drone body
+//! ([pos−1.0 … head], r 0.4 — the Toucher law drone.rs builds for `Trigger_Calc`); the delivery
+//! is the explosion path's flat subtract (`health -= damage · damage_taken`, `last_damage`
+//! stamped — the drones' own update's health ≤ 0 selector picks the death).
 use crate::triggers::capsule_hits_tris;
 use crate::world::V3;
 use nf_formats::level::Level;
@@ -85,6 +90,10 @@ pub struct Hurt {
     pub disabled: bool,
     /// The one-shot spent (the state-2 retire) [M 0x17e5d0:41-47].
     pub fired: bool,
+    /// The port's mechanism witness: the damage applications this volume made (the live tests'
+    /// "the volumes stay armed" pin reads it; the game's equivalent is the mirrored hit on
+    /// obj+0xD0).
+    pub hits: u32,
 }
 
 impl Hurt {
@@ -121,6 +130,7 @@ impl Hurt {
                 // switch channels start zeroed, so a gated volume always loads disabled.
                 disabled: gate != 0,
                 fired: false,
+                hits: 0,
             });
         }
         out
@@ -144,6 +154,18 @@ impl Hurt {
     /// a disabled volume (the 0x20 bit the gate maintenance keeps) and an ungated who whose mask
     /// no contact class satisfies produce no contact, so no damage.
     pub fn update(&mut self, gate_on: bool, bond_pos: V3) -> Option<(f32, u8)> {
+        // The standing player capsule [M Player_DealWithObjHit 0x194458 — the body the collide
+        // pass tests]: feet at the position, 1.8 tall, r 0.55 [M Player_CollLadder's +0x7CC].
+        let a = [bond_pos[0], bond_pos[1], bond_pos[2]];
+        let b = [bond_pos[0], bond_pos[1] + 1.8, bond_pos[2]];
+        self.update_touch(gate_on, a, b, 0.55, false)
+    }
+
+    /// The victim-generic contact law: `update` for the player (class 2 → who bit 0x10), the
+    /// drones' pass for a drone (class 3 → who bit 8) [M 0x17e5d0:57-95's class bits;
+    /// `NDrone2_DealWithObjHit` 0x13fff0 on the drone side]. `a`..`b` is the victim's capsule,
+    /// `r` its radius.
+    pub fn update_touch(&mut self, gate_on: bool, a: V3, b: V3, r: f32, drone: bool) -> Option<(f32, u8)> {
         // The gate maintenance [M 0x17e5d0:26-37 — the live every-tick level: the channel low
         // sets obj+0xF0|0x20, the channel up clears it; a zero gate never disables].
         if self.gate != 0 { self.disabled = !gate_on; }
@@ -153,16 +175,14 @@ impl Hurt {
         // player brings 0x10 (class 2), so who 1 collects nothing and never starts (the
         // configured-inert volumes). Gated volumes: the channel VALUE is the who-mask
         // [M :97-99] — the live channel above is the start.
-        if self.gate == 0 && self.who != 0 && self.who & 0x10 == 0 { return None; }
-        // The collide contact: the standing capsule (r 0.55 [M Player_CollLadder's +0x7CC],
-        // 1.8 tall) against the volume's glist tris.
-        let a = [bond_pos[0], bond_pos[1], bond_pos[2]];
-        let b = [bond_pos[0], bond_pos[1] + 1.8, bond_pos[2]];
-        if !self.contains(a, b, 0.55) { return None; }
+        if self.gate == 0 && self.who != 0 && self.who & if drone { 0x8 } else { 0x10 } == 0 { return None; }
+        // The collide contact: the victim's capsule against the volume's glist tris.
+        if !self.contains(a, b, r) { return None; }
         // The one-shot expiry [M 0x17e5d0:129-132 → :41-47]: state 2 retires the volume. The
         // anim-clock path (the state-1 t/inc advance) is presentation — the port parks on the
         // first contact pass [S for the timing; no survey level sets param 5 [D]].
         if self.one_shot { self.fired = true; }
+        self.hits += 1;
         Some((self.damage, self.kind))
     }
 }
@@ -185,7 +205,7 @@ mod tests {
             [[-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0]],
             [[-1.0, 0.0, -1.0], [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]],
         ];
-        Hurt { placement: 0, kind: 1, damage: 1.0, gate, sound: 0xffff, who: 0, one_shot: false, tris, lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], disabled: gate != 0, fired: false }
+        Hurt { placement: 0, kind: 1, damage: 1.0, gate, sound: 0xffff, who: 0, one_shot: false, tris, lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], disabled: gate != 0, fired: false, hits: 0 }
     }
 
     #[test]
@@ -240,6 +260,26 @@ mod tests {
         h.who = 1;
         assert!(h.update(false, [0.0, 0.0, 0.0]).is_none(), "the low channel parks it");
         assert!(h.update(true, [0.0, 0.0, 0.0]).is_some(), "the channel up starts it despite who 1");
+    }
+
+    #[test]
+    fn the_drone_class_bit_is_8_and_the_kill_floor_who_0x18_takes_both_victims() {
+        // [M 0x17e5d0:57-95's class bits: class 3 (a drone) → 8, class 2 (the player) → 0x10;
+        // NDrone2_DealWithObjHit 0x13fff0 gives NPCs the same treatment. 07000008's #42-44 carry
+        // who 0x18 = 8|0x10 [D params] — the kill floor kills drones AND the player.]
+        let mut h = hurt(0);
+        assert!(h.update_touch(true, [0.0, 0.0, 0.0], [0.0, 1.8, 0.0], 0.4, true).is_some(),
+            "who 0x18 takes a drone (bit 8) [M]");
+        assert_eq!(h.hits, 1, "the witness counts the application (the port's mechanism witness)");
+        let mut h2 = hurt(0);
+        h2.who = 0x10; // player-only: a drone never starts it
+        assert!(h2.update_touch(true, [0.0, 0.0, 0.0], [0.0, 1.8, 0.0], 0.4, true).is_none(),
+            "a mask without bit 8 is drone-inert [M 0x17e5d0:57-95]");
+        // Sister: who 1 stays inert for drones too (07000006 #373's law covers every class).
+        let mut h3 = hurt(0);
+        h3.who = 1;
+        assert!(h3.update_touch(true, [0.0, 0.0, 0.0], [0.0, 1.8, 0.0], 0.4, true).is_none(),
+            "who 1 collects nothing, drone included [M :57-95]");
     }
 
     #[test]

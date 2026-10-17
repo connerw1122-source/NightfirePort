@@ -2544,6 +2544,32 @@ impl Sim {
                     }
                 }
             }
+            // The drone victims: `NDrone2_DealWithObjHit` 0x13fff0 gives NPCs the same class-0x27
+            // treatment — the who masks naming the drone class bit 8 (07000008's kill-floor quads
+            // #42-44, who 0x18 = classes 3+2, type 6, 1000 damage [D params]) are delivered for
+            // it. The capsule is the trigger walk's drone body ([pos−1.0 … head], r 0.4 — the
+            // Toucher law drone.rs builds for `Trigger_Calc`); the delivery is the explosion
+            // path's flat subtract (`health -= damage · damage_taken`, `last_damage` stamped —
+            // the drones' own update's health ≤ 0 selector picks the death). A one-shot volume
+            // fired by any victim retires for all of them (the shared obj state [M 0x17e5d0:41-47]).
+            let drone_capsules: Vec<(usize, [f32; 3], [f32; 3])> = self.drones.list.iter().enumerate()
+                .filter(|(_, x)| x.enabled)
+                .map(|(i, x)| (i, [x.pos[0], x.pos[1] - 1.0, x.pos[2]], x.head()))
+                .collect();
+            let mut drone_apps: Vec<(usize, f32)> = Vec::new();
+            for h in self.hurts.iter_mut() {
+                let gate_on = self.drones.channels.on(h.gate as u32);
+                for (i, a, b) in &drone_capsules {
+                    if let Some((dmg, _ty)) = h.update_touch(gate_on, *a, *b, 0.4, true) {
+                        drone_apps.push((*i, dmg));
+                    }
+                }
+            }
+            for (i, dmg) in drone_apps {
+                let x = &mut self.drones.list[i];
+                x.last_damage = dmg;
+                x.health -= dmg * x.damage_taken;
+            }
             // `Player_MonitorAir` 0x191a70:101-124 [M]: the head crossing cel+0x90 starts the dive
             // loop (`Sound_Stop()` of the old handle, then `Sound_Play3D(100, −1, −1, 0x27, objPos)`
             // saved at BL+0x89C) and, on surfacing, stops it and plays the gasp `Sound_Play(100,
