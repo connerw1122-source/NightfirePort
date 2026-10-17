@@ -17885,3 +17885,9 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- 2026-10-17 s/level-02-complete (task 702b): "play 07000002 (The Exchange Castle B) start to finish —
+  EVERY objective, optional ones too, cut-scenes played, exit the way the game does". Branch from
+  origin/master d628f01f. Start: the walkreal route (bunker start → ladder → garden → west wing →
+  bunker door → sensor 0x81 → locked plates → Load Point → refuse → hand-set 0x4C → exit) is already on
+  master but the objective channels 0x48/0x49/0x4A/0x4C/0x4D have no writers on disc per the level scan —
+  this task digs for the real writers (mission/dialogue layer, script packs) and ports what the walk needs.
