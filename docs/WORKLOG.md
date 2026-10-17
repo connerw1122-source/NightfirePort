@@ -18600,3 +18600,11 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   walk_07000005 2, walkreal_07000005 2, mayhew_handover 2, level_carry 8, fix_truck 2, wire 1,
   casings16 2, fix_mission 4, levels_sweep 3, walk_07000008 4, walk_0700000a 3, mission_unlock_flow 3
   — 0 failures. Report: docs/reports/level-05-interactables-2.md.
+- 2026-10-17 s/level-09-complete (task 709b): started. Task: the live walk of
+  07000009 (Night of the Agent, Tower A) start to finish through the real input
+  path — every objective (the optional ones too), every cut-scene (skipped only
+  with the game's own skip), every scripted event, the exit the game's way.
+  Known open items to start from: the elevator buttons (task 700's findings,
+  s/elevator-buttons-09), the lobby laser grid art (s/laser-scripts, held for a
+  render check), the security-room monitor. walkreal_07000009_live.rs is to be
+  un-ignored and extended. In progress.
