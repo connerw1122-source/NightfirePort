@@ -34,6 +34,7 @@ pub mod copter;
 pub mod casing;
 pub mod effect;
 pub mod lock;
+pub mod hurt;
 pub mod ss;
 pub mod sensor;
 pub mod mission;

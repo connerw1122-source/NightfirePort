@@ -7678,6 +7678,9 @@ pub struct Drones {
     /// The helicopter (`Copter_Create` 0x17d340, placement 0x2F; fix-objects2): 07000008's
     /// extraction copter — gated on ch 5, its arrival writes ch 0x4B (the last mission objective).
     pub copters: Vec<crate::copter::Copter>,
+    /// The hurt volumes (`Hurt_Create` 0x17e870, placement 0xE4; level-08-interactables):
+    /// 07000008's kill-floor quads #42-44 (type 6, 1000, who 0x18 [D]) — docs/systems/hurt-volumes.md.
+    pub hurts: Vec<crate::hurt::Hurt>,
     /// The locks (`Lock_Create` 0x1ae1f8, placement 0x2E; fix-objects2): the laser-burn targets —
     /// 07000008's safe bolts (chs 134/135 → mux 136 → the safe door).
     pub locks: Vec<crate::lock::Lock>,
@@ -7873,7 +7876,7 @@ impl Drones {
         let mut drones = Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), player_pos: [0.0; 3], bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), shake: 0.0, health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), link_flags: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, mission_end: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, hold_npcs: false, hold_active: false,
             npc_system_disabled: false,
-            spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), ai_points: Vec::new(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
+            spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), ai_points: Vec::new(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0, hurts: Vec::new(),
             // fix-06-alarm (fields on their own lines — merge lesson 4).
             sound_triggers: Default::default(),
             node_doors: None,
@@ -7977,6 +7980,7 @@ impl Drones {
     /// main map's drone placements), which orders the per-frame object updates.
     pub fn attach_level(&mut self, level: &nf_formats::level::Level) {
         self.triggers = crate::triggers::build(level);
+        self.hurts = crate::hurt::build(level);
         // The AI points (`Drone_AIPoint` 0x137550; `parsemap_create_dynamic_objects` case 0xE9): type =
         // placement parameter 0 (the same word `Switch_Create` reads as the channel), position = the
         // placement translation, yaw = rotation y (AIPoint+0x44, the panel facing [M-dis 0x1530c8]),
@@ -10060,6 +10064,33 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             .collect();
         drop(prof_pre);
         { let _p = crate::prof::scope("drones: Trigger_Calc"); crate::triggers::calc(d.level, &mut self.triggers, &mut self.channels, &touchers, frame); }
+        // The hurt volumes (`Hurt_Update` 0x17e5d0, placement 0xE4; level-08-interactables): the
+        // contact scan + state machine, then the damage pass — Bond through `Drones::health`
+        // (`Player_Hurt` → `Player_HandlePain`), a drone through its own health. 07000008's
+        // #42-44 (the y −24.1 kill-floor quads, who 0x18 [D]) become lethal falls like the game's.
+        let hurt_apps = { let _p = crate::prof::scope("drones: Hurt_Update"); crate::hurt::update(&mut self.hurts, &self.channels, &touchers) };
+        for (_hix, tix, dmg, dtype) in hurt_apps {
+            if touchers[tix].drone {
+                let mut seen = 0usize;
+                for x in self.list.iter_mut().filter(|x| x.enabled) {
+                    if seen + 1 == tix {
+                        // The drone victim: the same shape the explosion path applies
+                        // (`Drone_ExplosiveHit`'s flat subtract; the death selector rides the
+                        // health <= 0 check in the drones' own update).
+                        x.last_damage = dmg;
+                        x.health -= dmg * x.damage_taken;
+                        break;
+                    }
+                    seen += 1;
+                }
+            } else {
+                let before = self.health.health;
+                if self.health.pain_generic(&mut self.rng, dmg, self.difficulty, d.level, dtype as u32) {
+                    self.play_pain_grunt(player.pos);
+                }
+                self.player_hits.push((frame, usize::MAX, before - self.health.health));
+            }
+        }
         // `switch_channels_prev` is snapshotted right after `Trigger_Calc`, BEFORE the object walk [M 0x1336f8:52-53
         // — `prev ← hold; hold ← channels` at 0x1337cc/0x1337dc] — so `Door_Update`'s lock rising edge
         // (`prev == 0 && now != 0`, 0x136550-0x136608) sees a channel a trigger or script pulsed earlier this
