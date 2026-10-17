@@ -18367,3 +18367,12 @@ Work Log:
   models_sweep_07000006_live (2 — 5940 materials / 447 textures / 0 white fallback; all drone
   skins present). The one unported interactive KIND on this level: Hurt volumes (0xE4, the well
   shaft's #373 type-6 1000-damage kill volume [M Hurt_Create 0x17e870]).
+- 2026-10-17 s/level-08-complete (task 708b): started. Task: live walk test
+  walkreal_07000008_live.rs playing 07000008 (Mayhew D: the gondola) start to finish via the
+  real input path — every objective (0x4000004 the safe/briefcase ch 0x4a; 0x4000005 the
+  gondola escape ch 0x4b; the intro plate #237 ch 0x49 completes 07's carried objective),
+  every cut-scene (SP #294 the station intro, SP #295 the ride 0x0600004C, SP #296 the
+  bottom cinematic), the scripted chain to the helicopter → ch 100 → level_exit 0x07300008.
+  Known open items: Zoe shooting at Bond at the gondola (750r), the guards breaking the glass
+  at the start (750p), the safe/briefcase, the rocket blast lighting (GAPS G-049).
+  Census basis: docs/levels/07000008.md (level-08-interactables). In progress.
