@@ -48,17 +48,48 @@
 //! NinjaStand, 0xa7, control 0x14b0f8} [L 0x29aee8+13·12]; alert ≥ 1 remaps 0xa6/0xa7 → 0xa7 [M
 //! 0x14cbd8:128-155]. `NinjaStand 0xa6` (0x16b990) ENTER: ranges 3.0/5.0, the glowing-eyes datum,
 //! then SetState(0xa7) unless the BLIND_DRONES cheat [M]. **NinjaAttack 0xa7** (0x16bb50) ENTER:
-//! alert = 1.0; by distance `+0x1a0`: >12 → 0xa8, >6 → 0xa9, >2 → 0xaa; ≤2 → 10% side-flip (0xaf
+//! alert = 1.0, `+0x4F8 |= 0x80000000` (bounded); by distance `+0x1a0`: >12 → 0xa8, >6 → 0xa9,
+//! >2 → 0xaa; < `+0xEC` (the melee band, 2.0 for mode 0xd [M 0x14b300:751]) → 10% sideflip (0xaf
 //! via CanMoveToRelativePos ±3), else backflip test (0xae), else Rand(2): ≤2 → 0xac, else 0xb2.
-//! UPDATE: SeenAndAttacking + SetAngleToObj + the same re-route [M]. 0xa8 LongRange (0x16bfc0):
-//! anim 0x67 + `DroneWeap_Fire(1)`, UPDATE dist ≤ 12 → 0xa7 else MoveToObject(2.0), arrived →
-//! 0xb2, no-route → 0xb3. 0xa9 MidRange (0x16c248) / 0xaa ShortRange (0x16c650): the same shape
-//! with their band. Death/pain → alive ? PainTalk : 0x42/0x44 [M].
+//! UPDATE: SeenAndAttacking + SetAngleToObj + the same re-route; the close band backflips first,
+//! then rolls the 10% sideflip [M]. 0xa8 LongRange (0x16bfc0): ENTER anim 0x67 + `DroneWeap_Fire(1)`;
+//! UPDATE dist ≤ 12 → 0xa7, MoveToObject(2.0) arrived → 0xb2, moving → anim 0x67 (+0x2C8/rolls
+//! evasion chain), no-route → 0xb3. 0xa9 MidRange (0x16c248): ENTER alert 1.0, TIMER_C at +60,
+//! Fire(1); UPDATE 6<≤12 MoveToObject: moving → anim 0x67, arrived → 0xb2, no-route → 0xb3, else
+//! 0xa7; TIMER_C seen & Rand(3) → 0xb2, then the somersault/sideflip alternatives. 0xaa ShortRange
+//! (0x16c650): ENTER anim 0x6b, TIMER_C at +120+FRand(120), Fire(1), 1/3 → 0xab; EXIT +0x3B = 0;
+//! UPDATE the same re-route with the +0x2C8 Rand(2) evasion chain, fire or 0xac ≤ 2; TIMER_C
+//! Rand(2) → 0xab else the evasion chain. Death/pain → alive ? PainTalk : 0x42/0x44 [M].
 //!
-//! The port implements the dispatcher and the three band substates as advance-and-re-dispatch
-//! (the exact melee/throwing-star behaviour needs the anim set; the fight's CHANNEL effects —
-//! the assassin's death ch 0x54 on 07000004 [D], the chaser's 0x90 stand-in — are the mission's
-//! business and are death-path driven).
+//! **The melee chain, ported as of this task** — the state-id ↔ function table is `NDrone2_StateFuncs`
+//! (EE 0x29b300, 4-byte fn pointers) [L ee_snapshot: 0xab → 0x16cb70, 0xac → 0x16d100, 0xad →
+//! 0x16d298, 0xae → 0x16d430, **0xaf → 0x173e08 Sideflip (the ±3 router)**, **0xb0 → 0x16cdd0
+//! (anim 0x68)**, **0xb1 → 0x16cf68 (anim 0x69)**, 0xb2 → 0x16d5b8, **0xb3 → 0x16d878 NoRoute**]
+//! — note `uncited-audit.md` gap ③ lists 0xaf/0xb0/0xb1/0xb3 shifted by one state; the table wins.
+//! - **NinjaGetCloseToPlayer 0xab** (0x16cb70): ENTER anim 0x6b, TIMER_C at +180, Fire(1).
+//!   UPDATE: ≤2 → 0xac; else MoveToObject(2.0): direct(2) with a clear 5.0 forward hop and
+//!   5<dist<7 → 0xad somersault, moving → anim 0x67 + the fire gate, 10 → stay, else → 0xa7.
+//!   TIMER_C → 0xaa.
+//! - **NinjaSword 0xac** (0x16d100): ENTER ≤2 → anim 0x6d slash (done → 0xa7; the decompiler
+//!   dropped CallAnim's blend 0 — the sibling states all pass next 0xa7/0xac and a stuck sword
+//!   state would never exit), else → 0xa7. UPDATE: seen + angle. The slash's damage rides the
+//!   anim's melee event (`DroneWeap_CloseCombatImpact`, already ported).
+//! - **NinjaSomersault 0xad** (0x16d298): ENTER invalidate route, anim 0x6a (done → 0xac), Fire(1).
+//! - **NinjaBackflip 0xae** (0x16d430): anim 0x66, variant Rand(3)!=0, done → 0xa7, Fire(1).
+//! - **NinjaSideflip 0xaf** (0x173e08): ENTER-only router — ±3 clear → Rand(2) between 0xb0/0xb1,
+//!   only +3 → 0xb0, only −3 → 0xb1, neither → 0xa7.
+//! - **NinjaSideflipLeft 0xb0** (0x16cdd0): anim 0x68, variant Rand(3)==0, done → 0xa7, Fire(1);
+//!   EXIT +0x3B = 0. **NinjaSideflipRight 0xb1** (0x16cf68): anim 0x69, variant Rand(3)!=0.
+//! - **NinjaStandFire 0xb2** (0x16d5b8): ENTER anim 0x6b, TIMER_C at +180, Fire(1); UPDATE the
+//!   somersault/sideflip alternatives after the first held tick, else re-fire; TIMER_C → 0xa7.
+//! - **NinjaNoRoute 0xb3** (0x16d878): ENTER alert 1.0, TIMER_C at +30, anim 0x6b, Fire(1); UPDATE
+//!   re-fire + angle + `+0x3B = (+0x228 >> 2) & 1`; TIMER_C MoveToObject(2.0): a route again (≤3)
+//!   → 0xa7, else re-arm at +30. The star throws ARE `DroneWeap_Fire(1)` — the ninja's weapon.
+//! The fight's CHANNEL effects — the assassin's death ch 0x54 on 07000004 [D], the chaser's 0x90
+//! stand-in — are the mission's business and stay death-path driven.
+//! `Drone+0x2C8` (the +0x2A-gated attack-hold counter, `NDrone2_PreDroneControl` 0x148db0:29-34)
+//! is ported as `attack_hold`, incremented while the opponent is seen [S — the +0x2A writer is
+//! untraced].
 //!
 //! ## The unported start states (fix-levels-sweep's table)
 //!
@@ -84,13 +115,34 @@ pub const KIKO_MISSION: u8 = 0x19;
 pub const KIKO_MISSION_RUN: u8 = 0x1a;
 pub const STAND_BLIND: u8 = 0x18;
 pub const RUN_TO_ALARM: u8 = 0x89;
+/// The alarm chain's second/third states (`docs/fields/dronetype-tables.md` rows 8A/8B) and the two
+/// DonePressAlarm destinations (100 HostageGoToGoalPosition 0x165a68; 0xb6 JustStand 0x173fc0).
+pub const PRESS_ALARM: u8 = 0x8a;
+pub const DONE_PRESS_ALARM: u8 = 0x8b;
+pub const HOSTAGE_GO_TO_GOAL: u8 = 0x64;
+pub const JUST_STAND: u8 = 0xb6;
 pub const NINJA_ATTACK: u8 = 0xa7;
 pub const NINJA_LONG_RANGE: u8 = 0xa8;
 pub const NINJA_MID_RANGE: u8 = 0xa9;
 pub const NINJA_SHORT_RANGE: u8 = 0xaa;
+pub const NINJA_GET_CLOSE: u8 = 0xab;
+pub const NINJA_SWORD: u8 = 0xac;
+pub const NINJA_SOMERSAULT: u8 = 0xad;
+pub const NINJA_BACKFLIP: u8 = 0xae;
+pub const NINJA_SIDEFLIP: u8 = 0xaf;
+pub const NINJA_SIDEFLIP_LEFT: u8 = 0xb0;
+pub const NINJA_SIDEFLIP_RIGHT: u8 = 0xb1;
 pub const NINJA_STAND_FIRE: u8 = 0xb2;
+pub const NINJA_NO_ROUTE: u8 = 0xb3;
 pub const ENEMY_RUN_TO_POINT: u8 = 0x85;
 pub const DELETE_ME: u8 = 0xb4;
+
+/// Every ninja AI state the fight can reach (the state-id ↔ function table [L 0x29b300+st·4]).
+pub const NINJA_FIGHT_STATES: [u8; 13] = [
+    NINJA_ATTACK, NINJA_LONG_RANGE, NINJA_MID_RANGE, NINJA_SHORT_RANGE, NINJA_GET_CLOSE, NINJA_SWORD,
+    NINJA_SOMERSAULT, NINJA_BACKFLIP, NINJA_SIDEFLIP, NINJA_SIDEFLIP_LEFT, NINJA_SIDEFLIP_RIGHT,
+    NINJA_STAND_FIRE, NINJA_NO_ROUTE,
+];
 
 /// 07000016's chaser: skin 0x0500001e, dtype 0xf, not in the death-ch 23..26 squad (#294–297 [D]).
 /// Her init death channel becomes 0x90 so her defeat raises the objective's channel (the stand-in
@@ -102,8 +154,9 @@ pub fn chaser_death_channel(level: u32, skin: u32, dtype: u8, death_channel: u8)
 /// The state arms for this module live in `drone.rs`'s state `match` (the Drone methods they call
 /// are private to that impl); `drone.rs` cites this module's doc for every address. The band router
 /// stays here as the one piece of shared logic.
-/// NinjaAttack's ENTER/UPDATE distance router [M 0x16bb50]: >12 → 0xa8, >6 → 0xa9, >2 → 0xaa,
-/// ≤2 → 0xac/0xb2 melee (the port's stand: 0xb2).
+/// NinjaAttack's ENTER/UPDATE distance router for the outside bands [M 0x16bb50]: >12 → 0xa8,
+/// >6 → 0xa9, >2 → 0xaa. The ≤2 close band never routes here — `Drone::ninja_attack_route`
+/// runs the game's inline evasion / sword / stand-fire choice.
 pub fn ninja_band(dist: f32) -> u8 {
     if dist > 12.0 {
         NINJA_LONG_RANGE

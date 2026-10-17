@@ -170,7 +170,7 @@ reads Marker's u16 but discards it [M 0x1d8548 case 6].
 | 0x07 | Entity | 4985 | nf-game `Script::run` arm | `Script_Run` 0x1d8548 |
 | 0x09 | EntityEnd | 3038 | nf-game `Script::run` arm | `Script_Run` 0x1d8548 |
 
-### NIS event kinds (851 events across 14 kinds; 11 handled, 3 unhandled; the game's table has 17 slots)
+### NIS event kinds (851 events across 14 kinds; 12 handled, 2 unhandled; the game's table has 17 slots)
 
 | event kind | count | port | game behavior |
 |---|---|---|---|
@@ -180,7 +180,7 @@ reads Marker's u16 but discards it [M 0x1d8548 case 6].
 | 0x06 | 31 | yes | return-matrix snapshot |
 | 0x07 | 29 | yes | flag 0x80 |
 | 0x08 | 1 | **NO** | Drone_CoderCreate 0x13a108 |
-| 0x09 | 1 | **NO** | Player_Cam2Mode 0x195fc8 |
+| 0x09 | 1 | yes (nis-event9-cnis) | Player_Cam2Mode 0x195fc8 — mode 3 = the behind-Bond orbit, else the exit arm; the disc's single firing is mode 1 (the exit) |
 | 0x0a | 1 | **NO** | Break_DoBreak 0x12c168 |
 | 0x0b | 23 | yes | weapon byte |
 | 0x0c | 65 | yes | flag 0x10 |
@@ -195,7 +195,9 @@ Event kinds 0x0e, 0x10 and 0x13 never occur on the disc. The three the port drop
 - stream 9: `Event(0x08, [0x0500001b, 0x060000a6, 0x10, 1])` → `Drone_CoderCreate` 0x13a108 —
   spawns the gadget/coder drone (the Q-claw drone intro of the first mission) at the stream's
   object, with skin 0x0500001b and anim 0x060000a6.
-- stream 4: `Event(0x09, [1])` → `Player_Cam2Mode(0, 1)` 0x195fc8 — player camera mode override.
+- stream 4: `Event(0x09, [1])` → `Player_Cam2Mode(0, 1)` 0x195fc8 — the camera-mode override's
+  exit arm (`SetCamMode(0)` + `ChangeSubState(0)` [M 0x195fc8:11-16]; mode 3 would enter the
+  behind-Bond orbit, which no disc script fires [D nis_event9_census]).
 - stream 8: `Event(0x0a, [])` → `Break_DoBreak` 0x12c168 at the current object — script-driven
   breakable trigger.
 
@@ -301,7 +303,7 @@ player scripts, so its real gameplay reach is narrower than its 12,947 count.
 | 13 | placement 0xF3 tree | 8 | `Env_Tree_Create` 0x17c200 | trees in 07000002/07000004 |
 | 14 | placement 0x2B leaf gen | 3 | `LeafGen_Create` 0x1acbd0 | leaf particle emitters |
 | 15 | NIS event 0x08 coder drone | 1 | `Drone_CoderCreate` 0x13a108 | 07000001 gadget-drone intro |
-| 16 | NIS event 0x09 cam mode | 1 | `Player_Cam2Mode` 0x195fc8 | 07000001 camera mode |
+| 16 | NIS event 0x09 cam mode | 1 | `Player_Cam2Mode` 0x195fc8 | 07000001 camera mode — **ported (nis-event9-cnis)** |
 | 17 | NIS event 0x0a break | 1 | `Break_DoBreak` 0x12c168 | 07000001 script breakable |
 | 18 | placement 0x38 space laser | 1 | `Create_SpaceLaser` 0x1aa8b8 | 0700001b set piece |
 | 19 | trigger action 0xD movie | 1 | `Trigger_MoviePlayer` 0x1b2a08 / 0x1b1a78 case 0xd | 07000041 movie push |

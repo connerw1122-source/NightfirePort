@@ -101,21 +101,29 @@ pub fn orthonormal_basis_sum(n: V3) -> V3 {
     [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 }
 
-/// `Bullet_CollisionHandler` 0x12ce80's penetration arm [M 0x12cfd0..0x12cfe4]: the roll decides
-/// whether a bullet PASSES THROUGH the surface it hit (a pierce keeps the bullet alive — state 1,
-/// the handler walks the trace's NEXT HITDATA and spawns the exit-hole effects — while a stop
-/// dies with `BU+0xF0 |= 0x10` [M 0x12d81c..0x12d82c]). The decision:
-/// - `weapon_data+2` (the weapon id) 0x50/0x51 skip the arm entirely — no draw [M 0x12cfbc
-///   `if (uVar2 - 0x50 < 2)`];
-/// - `HITDATA+0x51` bit 1 — set by `Collide_Intersect` 0x1ebaa8 when the triangle's surface byte
-///   carries 0x40 or 0x80 [M 0x1ebf2e..0x1ebf3c] — forces pierce (bit 0x40 = always);
-/// - surface byte `& 0x40` → forced pierce, no draw [M 0x12cfd0];
+/// `Bullet_CollisionHandler` 0x12ce80's per-hit pass rules [M disasm 0x12cee0..0x12cfb8]: the walk
+/// decides whether a bullet PASSES THROUGH the surface it hit (a pierce keeps the bullet alive —
+/// state 1, the handler walks the trace's NEXT HITDATA and spawns the exit-hole effects — while a
+/// stop dies with `BU+0xF0 |= 0x10` [M 0x12d81c..0x12d82c]). In the game's order:
+/// - `HITDATA+0x51` bit 1 — set by `Collide_Intersect` 0x1ebaa8 when the glist node's flags carry
+///   the pass bit — forces pierce (the caller's `node_pass`);
+/// - the object-hit rules (`obj+0xf0 & 0x60`, the shooter skip, class-0x28 windows vs
+///   `weapon_data+0x70 & 0x100` [M 0x12cf10..0x12cf3c]) — the port's world walk sees world hits
+///   only, no object arm;
+/// - **the glass rule [M 0x12cf44..0x12cf64]**: `if (!(weapon_data+0x6c & 0x800) &&
+///   (HITDATA+0x50 & 0x3f) == 0x10) pass = 1` — material index 0x10 (the 07000008 corridor
+///   windows' surface byte) lets ANY bullet through unless the weapon's `+0x6c` carries 0x800
+///   (the Laser 0x4E's +0x6c = 0x900 [L] burns the pane instead); no RNG draw;
+/// - `weapon_data+2` (the weapon id) 0x50/0x51 (the Q-Claw) then skip the surface-byte rules —
+///   no draw [M 0x12cf68 `if (uVar2 - 0x50 < 2)`];
+/// - surface byte `& 0x40` → forced pierce, no draw [M 0x12cf7c];
 /// - surface byte `& 0x80` → ONE `Rand_Rand(0x3f)` draw; bit 0 of the roll ORs into pierce
-///   [M 0x12cfd8 `bVar6 = Rand_Rand(0x3f); bVar7 = bVar7 | bVar6 & 1`].
+///   [M 0x12cf9c `Rand_Rand(0x3f)`, `bVar7 = bVar7 | bVar6 & 1`].
 /// The material's 0x40/0x80 bits are per-triangle bytes in the level collision blob
 /// (`Intersect_RayGeom` 0x10a8c8:326 copies the whole byte to `HITDATA+0x50`).
-pub fn penetration_roll(rng: &mut Rng, material: u8, weapon_id: u16) -> bool {
-    penetration_roll_node(rng, material, weapon_id, false)
+/// `flags6c` is the shooter's `weapon_data+0x6c` word (the glass-rule gate). fix-rocket-glass-08.
+pub fn penetration_roll(rng: &mut Rng, material: u8, weapon_id: u16, flags6c: u32) -> bool {
+    penetration_roll_node(rng, material, weapon_id, false, flags6c)
 }
 
 /// The roll with the hit's node pass flag (`HITDATA+0x51` bit 1's glist-flags source —
@@ -123,9 +131,13 @@ pub fn penetration_roll(rng: &mut Rng, material: u8, weapon_id: u16) -> bool {
 /// walk sets the pass from the flag and the 0x40 byte before any roll), and the surface byte's
 /// 0x80 roll is drawn exactly when the byte carries the bit — even on a node-flagged hit, whose
 /// result is then OR'd in (`Collide_Update` 0x1ea398:216-220). fix-foliage-bullets.
-pub fn penetration_roll_node(rng: &mut Rng, material: u8, weapon_id: u16, node_pass: bool) -> bool {
-    if weapon_id == 0x50 || weapon_id == 0x51 { return false; }
-    let mut pierce = node_pass || material & 0x40 != 0;
+pub fn penetration_roll_node(rng: &mut Rng, material: u8, weapon_id: u16, node_pass: bool, flags6c: u32) -> bool {
+    let mut pierce = node_pass
+        // the glass rule [M 0x12cf44..0x12cf64]: material 0x10 passes before the Q-Claw's
+        // type-word check, so even the grapple bolt flies through a pane (no draw).
+        || flags6c & 0x800 == 0 && material & 0x3f == 0x10;
+    if weapon_id == 0x50 || weapon_id == 0x51 { return pierce; }
+    pierce |= material & 0x40 != 0;
     if material & 0x80 != 0 {
         pierce |= rng.rand(0x3f) & 1 != 0;
         if std::env::var_os("NF_RNGLOG").is_some() {

@@ -97,6 +97,18 @@ pub struct UseObjects {
 }
 
 impl UseObjects {
+    /// `Switch_GetNearest` (0x1b0398) + `Switch_GetSwitchChannel` (0x1b0430): the nearest switch
+    /// object's channel (squared 3-D distance to the given position; the game walks the SwitchList in
+    /// creation order). 0 when there is no switch.
+    pub fn nearest_switch_channel(&self, pos: V3) -> u8 {
+        let mut best = None;
+        for s in &self.switches {
+            let d = (s.pos[0] - pos[0]).powi(2) + (s.pos[1] - pos[1]).powi(2) + (s.pos[2] - pos[2]).powi(2);
+            if best.is_none_or(|(b, _)| d < b) { best = Some((d, s.ch)); }
+        }
+        best.map_or(0, |(_, ch)| ch)
+    }
+
     /// `Switch_Create` 0x1adcc0:39-43's load beat: `switch_channels[param0] = param3` (+ the time
     /// stamp) at level load. The Tower switches all carry rest 0 (no-op) — ported for fidelity.
     pub fn init_channels(&self, ch: &mut Channels, frame: u32) {
@@ -317,6 +329,9 @@ mod tests {
             cur: 0, state: 1, activated: false, countdown: 0, info: [None, None], deleted: false,
             live_matrix: [[1.0, 0.0, 0.0, 0.0], [0.0, 1.0, 0.0, 0.0], [0.0, 0.0, 1.0, 0.0], [0.0, 0.0, 0.0, 1.0]],
         subs: Vec::new(),
+        hit_points: 0.0,
+        damage: 0.0,
+        tick_damage: 0.0,
         };
         let mut scripts = crate::nis::Scripts::default();
         scripts.players = vec![sp(0x39, 0, 4), sp(0x40, 0x50, 4)];

@@ -352,6 +352,41 @@ impl Network {
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct TargetNodes { pub found: Option<u16>, pub fallback: Option<u16> }
 
+/// The game's per-link flag halfword (`MAPLINK+4`): the dynamic hazard flags 0x100 / 0x200
+/// (`AINetwork_SetLinksFlagInCircle` 0x15b548) and the creep marker 0x10 (`LinkCreep_ForNodes`
+/// 0x159810). The game keeps them on the shared links array next to the used counter (`MAPLINK+6`,
+/// the port's `used` slices); the port mirrors the same per-path slices swapped into the active
+/// drone (`Drones.link_flags` / `Drone.link_flags`).
+pub type LinkFlags = Vec<Vec<u16>>;
+
+impl Network {
+    /// `AINetwork_ClearLinkFlags(mask)` (0x15b498): clear `mask` from every link of every path. The
+    /// game's walk also zeroes each link's used counter in the same pass [M 0x15b498:24-27]; the
+    /// port resets those in the `Drones.used` rebuild at the InitComms pass (drone.rs).
+    pub fn clear_link_flags(&self, flags: &mut LinkFlags, mask: u16) {
+        for fl in flags.iter_mut() { for f in fl.iter_mut() { *f &= !mask; } }
+    }
+
+    /// `AINetwork_SetLinksFlagInCircle(pos, net, radius, set, clear)` (0x15b548, float in f12, masks
+    /// in a2/a3 — call sites 0x138d58/0x138ddc/0x138e4c): clear `clear` from EVERY link first (when
+    /// non-zero [M 0x15b548:31-33]), then set `set` on each link whose height range overlaps
+    /// pos.y ± 2 [M 0x15b548:51-63] and whose closest point on the segment is within `radius`
+    /// squared, 2D [M 0x15b548:65-77]. Walks every path (the game loops the per-cel networks at
+    /// 0x2c7964; the port is one cel — the header's deviation note).
+    pub fn set_links_flag_in_circle(&self, flags: &mut LinkFlags, pos: V3, radius: f32, set: u16, clear: u16) {
+        if clear != 0 { self.clear_link_flags(flags, clear); }
+        for (p, fl) in self.paths.iter().zip(flags.iter_mut()) {
+            for (li, l) in p.links.iter().enumerate() {
+                let (a, b) = (p.nodes[l.a as usize].pos, p.nodes[l.b as usize].pos);
+                let (lo, hi) = if a[1] < b[1] { (a[1], b[1]) } else { (b[1], a[1]) };
+                if lo > pos[1] + 2.0 || pos[1] - 2.0 > hi { continue; }
+                let q = closest_on_segment(a, b, pos);
+                if (q[0] - pos[0]).powi(2) + (q[2] - pos[2]).powi(2) <= radius * radius { fl[li] |= set; }
+            }
+        }
+    }
+}
+
 fn closest_on_segment(a: V3, b: V3, p: V3) -> V3 {
     let d = [b[0] - a[0], b[1] - a[1], b[2] - a[2]];
     let len2 = d[0] * d[0] + d[1] * d[1] + d[2] * d[2];
@@ -678,6 +713,51 @@ mod tests {
         assert_eq!(nodes, vec![0, 4, 2]);
         // No goal → 4.
         assert_eq!(n.astar(&w, 0, [0.0; 3], [1.0; 3], &TargetNodes::default(), &[0; 6]).unwrap_err(), 4);
+    }
+
+    /// `AINetwork_SetLinksFlagInCircle` 0x15b548 + `AINetwork_ClearLinkFlags` 0x15b498: the flag
+    /// lands on the links whose closest point is inside the radius (2D), the ±2 height gate holds
+    /// [M 0x15b548:51-63], the clear-then-set order of one call holds [M 0x15b548:31-33], and the
+    /// cycle reset (0x310 = 0x100 | 0x200 [M `Drone_InitComms` 0x139520:125]) wipes both bits.
+    #[test]
+    fn scary_links_flag_inside_the_radius_and_the_cycle_clears_them() {
+        let n = net(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0], [0.0, 0.0, 10.0]], &[(0, 1), (1, 2), (2, 3), (3, 0)], 2);
+        // A hazard at the midpoint of link 0-1, radius 4: only that link is inside.
+        let mut flags: LinkFlags = vec![vec![0; 4]];
+        n.set_links_flag_in_circle(&mut flags, [5.0, 0.0, 0.0], 4.0, 0x100, 0);
+        assert_eq!(flags[0], vec![0x100, 0, 0, 0]);
+        // Height gate: 3.0 above the link (|3.0| > 2.0) → nothing flagged.
+        let mut flags: LinkFlags = vec![vec![0; 4]];
+        n.set_links_flag_in_circle(&mut flags, [5.0, 3.0, 0.0], 4.0, 0x100, 0);
+        assert_eq!(flags[0], vec![0, 0, 0, 0]);
+        // Closest-point gate: the hazard sits 5 from the whole segment although node 1's x is close.
+        let mut flags: LinkFlags = vec![vec![0; 4]];
+        n.set_links_flag_in_circle(&mut flags, [5.0, 0.0, -5.0], 4.0, 0x100, 0);
+        assert_eq!(flags[0], vec![0, 0, 0, 0]);
+        // Clear-then-set: clear 0x100 everywhere, set 0x200 in-circle, in ONE call.
+        let mut flags: LinkFlags = vec![vec![0x100; 4]];
+        n.set_links_flag_in_circle(&mut flags, [5.0, 0.0, 0.0], 4.0, 0x200, 0x100);
+        assert_eq!(flags[0], vec![0x200, 0, 0, 0]);
+        // The cycle reset with the game's mask.
+        n.clear_link_flags(&mut flags, 0x310);
+        assert_eq!(flags[0], vec![0, 0, 0, 0]);
+    }
+
+    /// Sister: the A* must NOT avoid scary-flagged links — the game's route search reads only the
+    /// link's used counter (+6), endpoints (+8/+0xa) and length (+0xc) [M `AINetwork_DoAStarPath`
+    /// 0x1571b0 edge loop, disasm 0x1575e4-0x1575e8; the write-only census covers every net+0x3c
+    /// accessor in ACTION.ELF]. A future "honour the flags" change to the A* contradicts the
+    /// decompile and fails here.
+    #[test]
+    fn astar_still_walks_a_scary_flagged_link() {
+        let n = net(&[[0.0, 0.0, 0.0], [10.0, 0.0, 0.0], [10.0, 0.0, 10.0], [0.0, 0.0, 10.0], [-20.0, 0.0, 30.0]], &[(0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (4, 2)], 2);
+        let w = CollisionWorld::empty();
+        let goal = TargetNodes { found: Some(2), fallback: None };
+        let mut flags: LinkFlags = vec![vec![0; 6]];
+        n.set_links_flag_in_circle(&mut flags, [5.0, 0.0, 0.0], 4.0, 0x100, 0);
+        assert_eq!(flags[0][0], 0x100, "the short way is the flagged way");
+        let (res, nodes, _) = n.astar(&w, 0, [0.0, 0.0, -1.0], [10.0, 0.0, 9.5], &goal, &[0; 6]).unwrap();
+        assert_eq!((res, nodes), (0, vec![0, 1, 2]), "through the 0x100 link, like the game");
     }
 
     #[test]

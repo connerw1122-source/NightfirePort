@@ -256,9 +256,17 @@ impl Searchlights {
                 let dx = player.pos[0] - pos[0];
                 let dy = player.pos[1] - pos[1];
                 let dz = player.pos[2] - pos[2];
-                // libm atan2f (not ATAN2_APPROX); last-ulp differences only steer a frame differently.
-                let t_yaw = dx.atan2(dz);
-                let t_pitch = -(dy - 1.0).atan2((dx * dx + dz * dz).sqrt());
+                // G-046: the game's steer targets are the PS2 libm atan2f [M Searchlight_Update 0x1cb900:150
+                // atan2f(dx, dz); :166 atan2f((py − sy) − 1.0, SQRT(dx² + dz²)) — the products/sums EE, the √
+                // sqrt.s] — not host atan2, and not ATAN2_APPROX.
+                let t_yaw = crate::trig::atan2f_libm(dx, dz);
+                let t_pitch = -crate::trig::atan2f_libm(
+                    crate::trig::ee_sub(dy, 1.0),
+                    nf_formats::ps2float::sqrt(crate::trig::ee_add(
+                        nf_formats::ps2float::mul(dx, dx),
+                        nf_formats::ps2float::mul(dz, dz),
+                    )),
+                );
                 h.yaw += angle_difference(h.yaw, t_yaw) * STEER;
                 h.pitch += angle_difference(h.pitch, t_pitch) * STEER;
                 // Clamped to the sweep cone: yaw within base ± half, pitch within mid ± half.

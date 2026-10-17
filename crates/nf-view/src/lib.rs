@@ -44,6 +44,23 @@ use glam::{Mat4, Vec3};
 use nf_formats::{disc, iso9660::IsoImage, level::Level};
 use std::collections::HashSet;
 use std::sync::Arc;
+
+/// ── Load-phase timing (level-load-time probe) ───────────────────────────────────────────────────
+/// `load_impl` and `Scene::build` mark their phases here; the probe test reads them back.
+/// Collection is always on but costs one `Instant::now` + a Vec push per phase (a few dozen per
+/// load — noise against multi-second loads); it never feeds the Sim (no wall-clock in game state).
+pub(crate) fn phase_mark(name: &'static str, t: std::time::Instant) {
+    LOAD_PHASES.with(|p| p.borrow_mut().push((name, t.elapsed().as_secs_f64())));
+}
+/// Clears the phase log for the calling thread (the probe calls it before each timed load).
+pub fn phases_reset() { LOAD_PHASES.with(|p| p.borrow_mut().clear()); }
+/// Takes the phase log the calling thread accumulated since the last reset/clear.
+pub fn phases_take() -> Vec<(&'static str, f64)> {
+    LOAD_PHASES.with(|p| std::mem::take(&mut *p.borrow_mut()))
+}
+thread_local! {
+    static LOAD_PHASES: std::cell::RefCell<Vec<(&'static str, f64)>> = const { std::cell::RefCell::new(Vec::new()) };
+}
 use winit::application::ApplicationHandler;
 use winit::event::{DeviceEvent, ElementState, MouseButton, MouseScrollDelta, WindowEvent};
 use winit::event_loop::{ActiveEventLoop, EventLoop};
@@ -223,6 +240,9 @@ fn view_model_entries(scene: &scene::Scene, l: &scene::SkinLayout) -> Option<Vec
     // `Player_PositionCamera` 0x18f5d8 case 0xb: `View_SetDrawInNoViews(BLData+0x7e8)`; the entry
     // holsters the weapon, `Player_WeaponNone` 0x196758:114].
     if s.bond.substate == nf_game::player::SS_CREEP { return None; }
+    // nis-event9-cnis: the event-9 cut-scene orbit hides the view model with the same call [M
+    // `Player_PositionCamera` 0x18f5d8 case 2: `View_SetDrawInNoViews(BLData+0x7e8)`, :148].
+    if s.bond.cam_mode == 2 { return None; }
     let ci = *scene.view_models.get(&s.gun.weapon)?;
     let base = *l.char_base.get(ci)? as usize;
     let nb = scene.characters.get(ci)?.skeleton.bones as usize;
@@ -483,13 +503,16 @@ pub fn entry_checkpoint_save(sim: &scene::Sim) -> nf_game::player::RamSave {
 fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::player::RamSave>, dev: bool, give: &[u8], mp: bool, mp_settings: Option<nf_game::mp::MpSettings>, difficulty: u32) -> Result<scene::Scene> {
     use nf_formats::{anim::Sequence, character, levelbin::LevelBin};
     use std::collections::HashMap;
+    let mut t = std::time::Instant::now();
     let iso = IsoImage::open(iso_path)?;
     let (entries, bin) = disc::files_bin_entries(&iso)?;
+    phase_mark("01 iso open + FILES.BIN", t); t = std::time::Instant::now();
     let read = |name: &str| -> Result<Option<Vec<u8>>> {
         let Some(fe) = entries.iter().find(|e| e.name.eq_ignore_ascii_case(name)) else { return Ok(None) };
         Ok(Some(iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?))
     };
     let data = read(archive)?.with_context(|| format!("no {archive} in FILES.BIN"))?;
+    phase_mark("02 archive read", t); t = std::time::Instant::now();
     let mut level = Level::parse(&data)?;
     // ── The session object table (`models-weapons-items`) ───────────────────────────────────────────
     // `hashtable_delete_hashtype` is called from the loadable-pack path ONLY (`LoadableLoad`
@@ -519,7 +542,9 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             sequences.entry(s.skeleton).or_default().push(s);
         }
     }
+    phase_mark("03 level+levelbin parse, skeletons, 07F sequences", t); t = std::time::Instant::now();
     merge_weapon_models(&iso, &read, &archive[..8], &mut level)?;
+    phase_mark("04 weapon-models merge", t); t = std::time::Instant::now();
 
     // The dev view models (folded 190-fix-dev2): each level archive ships only its own weapons'
     // first-person skins (+0xDC), so the dev panel's "no 1st-person model here" covers most weapons.
@@ -590,7 +615,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             Err(e) => { eprintln!("weapon_data: {e} — drones drawn unarmed"); None }
         },
     };
-
+    phase_mark("05 weapon_data (ACTION.ELF)", t); t = std::time::Instant::now();
 
     // G-021 (models-characters): drone placements whose skin (placement param 0) is not in their
     // level's archive — 33 of them on 2 levels [D scan]. TWO mechanisms, read off the decompile:
@@ -758,6 +783,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         eprintln!("loadable pack {pack_name}: {} scripts, {} sequences (for {hash:08x})", plb.entries.iter().filter(|e| e.kind == 7).count(), plb.entries.iter().filter(|e| e.kind == 4).count());
     }
     // Drone start animations: ACTION.ELF's tables (read through its symbols) and the level's scripts (type 5).
+    phase_mark("06 skin merge + loadable packs", t); t = std::time::Instant::now();
     let elf = iso.read_file(iso.find("/ACTION.ELF").context("no ACTION.ELF on the disc")?)?;
     let drones = scene::DroneContext {
         tables: nf_formats::drone::DroneAnimData::from_action_elf(&elf)?,
@@ -786,6 +812,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         mp_seed: mp_settings.as_ref().map_or(0, |st| st.seed),
     };
     let mut scene = scene::Scene::build(&level, !all, &skeletons, sequences, Some(&drones), difficulty);
+    phase_mark("07 scene build (Scene::build)", t); t = std::time::Instant::now();
     // The pause/fail menus' burning woman [M `psiDecompressWoman` 0x1202a8]: the archive's kind-16 "woman" run-length
     // mask filled from the fire texture 0x030000da, drawn into 0x030000db's texels through 0x030000da's CLUT (the
     // disc's 0x030000db is a placeholder). The HUD texture starts on the first decoded frame.
@@ -860,6 +887,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         eprintln!("animated textures: {anim}");
     }
     // The level's sound bank (`Sound_Ready`): its hash's slot in SBINFO.SBI, then SB_<slot>.{SHF,SFX,SBF}.
+    phase_mark("08 woman + lang", t); t = std::time::Instant::now();
     let mut scene = scene;
     let level_id = u32::from_str_radix(&archive[..8], 16).unwrap_or(0);
     scene.sound_bank = (|| -> Option<(usize, nf_formats::soundbank::Bank, Vec<u8>)> {
@@ -899,6 +927,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     })();
     // Music (`Sound_Ready` → `Music_Event(0, level)`; docs/systems/music.md): the MapMusic / MapDroneData tables, and
     // the level's track through MFXINFO.MXI to PS2/MUSIC/MFX_<n>.{SMF,SSD}.
+    phase_mark("09 sound banks + streams", t); t = std::time::Instant::now();
     scene.music_tables = nf_formats::music::tables(&elf).map_err(|e| eprintln!("music tables: {e}")).ok();
     // The music logic rides every load (the game's `Sound_Ready` runs before the first frame whether or
     // not an output device exists); the audio driver takes the tables later in `build_sound`.
@@ -996,6 +1025,12 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                 }
             }
             m.start(&mut sim.drones.rng);
+            // mp-host-match-logic: the mode objects build here — `MP_Start` 0x183a50:77-114 creates
+            // them (the demo/prot/blueprint/GE draws — Deathmatch/CTF draw nothing) BEFORE the
+            // humans' spawn picks below, the game's draw order. The headless rigs call
+            // `create_mode_objects` themselves; the live host must too, or no scenario object ever
+            // exists (`update_objects` runs on an empty `objects_rt`).
+            m.create_mode_objects(&mut sim.drones.rng);
             // Every human's pick: `MP_Start` calls `MP_GetSpawnPoint(team, NULL)` BEFORE
             // `Player_Init` creates the obj [M 0x183a50:120-123] — no slots exist yet, so every used
             // point is a 9999-distance candidate (policy-dependent pick, empty slots). net-match-host:
@@ -1019,6 +1054,11 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
                 }
             }
             let sp = first_spawn;
+            // The bots' half of `MP_Start` (0x183a50:134-160): after every human's create, one
+            // `BOT_init` per enabled record in slot order — the game's order is the humans FIRST,
+            // then the bots, so the spawn picks' RNG draws keep the game's sequence.
+            m.create_bots(&mut sim.drones.rng);
+            eprintln!("mp: bots created: {}", m.bots.len());
             sim.mp = Some(m);
             eprintln!("mp: arena {level_id:08x} — {spawn_count} spawn points registered, {humans} human(s), Bond at spawn {sp} ({:.2}, {:.2}, {:.2}) yaw {:.3}",
                 sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2], sim.bond.yaw);
@@ -1036,6 +1076,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         eprintln!("loadout: level {level_id:08x} switch request {req} ({} owned weapons, health {:.0}, armour {:.0})",
             sim.drones.inventory.owned.iter().filter(|&&o| o).count(), sim.drones.health.health, sim.drones.health.armour);
     }
+    phase_mark("10 music + starts + loadout", t);
     Ok(scene)
 }
 
@@ -1088,9 +1129,9 @@ fn casing_meshes(elf: &[u8]) -> Vec<u32> {
     nf_formats::sfx::AmmoData::from_action_elf(elf).map(|a| a.casing_mesh).unwrap_or_default()
 }
 
-/// Moves the foreign maps that hold any of `hashes` into `level` (appended; `by_hash` first-wins, so a
+/// Clones the foreign maps that hold any of `hashes` into `level` (appended; `by_hash` first-wins, so a
 /// hash the level resolves locally keeps its (map, object)). Returns how many maps moved.
-fn take_maps_holding(level: &mut Level, foreign: Level, hashes: &[u32]) -> usize {
+fn take_maps_holding(level: &mut Level, foreign: &Level, hashes: &[u32]) -> usize {
     let mut take: std::collections::HashSet<usize> = Default::default();
     for (mi, m) in foreign.maps.iter().enumerate() {
         if m.objects.iter().any(|o| hashes.contains(&o.hashcode)) { take.insert(mi); }
@@ -1098,16 +1139,29 @@ fn take_maps_holding(level: &mut Level, foreign: Level, hashes: &[u32]) -> usize
     if take.is_empty() { return 0; }
     let base = level.maps.len();
     let mut moved = 0;
-    for (mi, m) in foreign.maps.into_iter().enumerate() {
+    for (mi, m) in foreign.maps.iter().enumerate() {
         if !take.contains(&mi) { continue; }
         let idx = base + moved;
         for (oi, o) in m.objects.iter().enumerate() {
             level.by_hash.entry(o.hashcode).or_insert((idx, oi));
         }
-        level.maps.push(m);
+        // level-load-time: the caller's parsed-archive cache hands shared `&Level`s now, so the
+        // taken maps CLONE out (bit-identical data — load_scene_digest pins it) instead of moving.
+        level.maps.push(m.clone());
         moved += 1;
     }
     moved
+}
+
+/// level-load-time: the parsed-foreign-archive cache behind `merge_weapon_models`. The session mesh
+/// merge used to re-parse every earlier story archive on EVERY load (5-7 `Level::parse` per level,
+/// ~6.7 s of the 27-level probe total). Entries are immutable after parse; a hit's taken maps clone
+/// out bit-identically. Bounded FIFO of 4 entries (the parsed maps can be tens of MB each — keep
+/// the resident set small); the scan order (STORY_ORDER descending per load) re-visits the same
+/// archives across consecutive levels, so the small window still hits.
+fn foreign_level_cache() -> &'static std::sync::Mutex<(std::collections::VecDeque<String>, std::collections::HashMap<String, std::sync::Arc<Level>>)> {
+    static C: std::sync::OnceLock<std::sync::Mutex<(std::collections::VecDeque<String>, std::collections::HashMap<String, std::sync::Arc<Level>>)>> = std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new((Default::default(), Default::default())))
 }
 
 /// The session object table (`models-weapons-items`, see the caller's comment): every weapon-model mesh
@@ -1123,9 +1177,23 @@ pub fn merge_weapon_models<R: std::io::Read + std::io::Seek>(iso: &IsoImage<R>,
     for code in STORY_ORDER.iter().rev().filter(|&&c| c < level_id) {
         if needed.is_empty() { break; }
         let name = format!("{code:08x}.bin");
-        let fd = match read(&name) { Ok(Some(d)) => d, _ => continue };
-        let Ok(foreign) = Level::parse(&fd) else { continue };
-        let moved = take_maps_holding(level, foreign, &needed);
+        let foreign: std::sync::Arc<Level> = {
+            let mut c = foreign_level_cache().lock().unwrap();
+            if let Some(l) = c.1.get(&name) { l.clone() } else {
+                drop(c);
+                let fd = match read(&name) { Ok(Some(d)) => d, _ => continue };
+                let Ok(l) = Level::parse(&fd) else { continue };
+                let l = std::sync::Arc::new(l);
+                let mut c = foreign_level_cache().lock().unwrap();
+                if !c.1.contains_key(&name) {
+                    c.0.push_back(name.clone());
+                    c.1.insert(name.clone(), l.clone());
+                    while c.1.len() > 4 { if let Some(old) = c.0.pop_front() { c.1.remove(&old); } }
+                }
+                l
+            }
+        };
+        let moved = take_maps_holding(level, &foreign, &needed);
         if moved > 0 {
             needed.retain(|h| !level.by_hash.contains_key(h));
             eprintln!("session mesh merge: {moved} map(s) from {name} ({} weapon-model hashes still missing)", needed.len());
@@ -1249,6 +1317,9 @@ pub fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     // `UpdateMusicalEvents` moved into the sim's tick (it runs every frame with or without an output
     // device [M 0x114e70]); the IOP's now-playing section feeds it through `Drones::iop_section`.
     sim.drones.iop_section = s.music.as_ref().map_or(0, |p| p.now_playing);
+    // The EE's SFXPaused mirror (the pause page's op 9 set it on the edge below; the game's
+    // UpdateMusicalEvents reads the global every frame [M 0x114e70:61-64]).
+    sim.drones.music.sfx_paused = s.driver.paused();
     let mut fade_down = None;
     for c in std::mem::take(&mut sim.drones.music.out) {
         match c {
@@ -2135,6 +2206,11 @@ impl App {
             Some(Ok(scene)) => {
                 let name = level_archive_name(load.next);
                 self.swap_in_scene(scene, load.ptp_return);
+                // The level now running (GameState+0xc [M ResetMap_Load phase 2]). It was only ever
+                // set from the command line, so a mission reached through the menus still read as the
+                // front end: Esc found "no mission", released the mouse, and the next Esc quit the
+                // game (playtest 1016 "esc is just closing the game").
+                self.level_code = load.next;
                 // A real level loaded from the front end: the menu manager is gone [M the MP
                 // confirm's / the SP pick's MenuManager_Delete — "the host closing the overlay once
                 // the load leaves the front-end map"]. The MP start loads its arena directly (no
@@ -2275,7 +2351,7 @@ impl App {
         // loop runs only while `fe.is_none()` — the game's GS_PausePlayer per slot.
         fe.requested_level = Some(menu::FRONTEND_LEVEL);
         fe.flow.reset_map_level_to_load(menu::FRONTEND_LEVEL, false, false);
-        fe.flow.push_state(menu::ST_FADE_HOLD);
+        fe.flow.push_state(7, 84); // the raw GameFlow id: PushState(7) becomes the fade hold [M 0x1c9f38]
         self.fe = Some(fe);
         self.grab(false);
     }
@@ -2970,7 +3046,12 @@ impl ApplicationHandler for App {
                         if self.grabbed || in_mission {
                             self.grab(false);
                             // Esc in a mission opens the pause page [S: the game pauses on Start].
-                            if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL {
+                            // The game's pause gate: the action AND GameState+0x36==0 AND
+                            // ScriptCam==0 [M Player_Update 0x193600:72] — a script camera up (the
+                            // 1b intro cinema 0x0600085c, the Drake NISs) refuses the pause; the
+                            // port opened one over the cinema (pause-results-flows live check 1).
+                            if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL
+                                && self.scene.sim.as_ref().and_then(|s| s.script_camera()).is_none() {
                                 let base = self.scene.sim.as_ref().map(|s| s.drones.mission.base_map).filter(|&b| b != 0 && b != u32::MAX).unwrap_or(self.level_code);
                                 let fe = self.fe.get_or_insert_with(|| {
                                     let mut fe = menu::FrontEnd::new();
@@ -3213,6 +3294,11 @@ impl ApplicationHandler for App {
                 let menu_hold = self.paused || self.fe.as_ref().is_some_and(|fe| fe.page == menu::Page::Pause);
                 if menu_hold != self.audio_paused {
                     self.audio_paused = menu_hold;
+                    // The game's pause entry IS the SFXPaused setter: `MenuManager_Create` with
+                    // pause_sound=1 runs the op-9 batch whose EE side sets `SFXPaused` 0x30c92c
+                    // [M 0x21b908:121-124, 0x116b70:11-13] — `UpdateMusicalEvents` freezes on it
+                    // [M 0x114e70:61-64]. The port mirrors it on the same edge.
+                    if let Some(sim) = self.scene.sim.as_mut() { sim.drones.music.sfx_paused = menu_hold; }
                     if let Some(s) = self.sound.as_mut() { s.set_paused(menu_hold); }
                 }
                 if !self.paused && self.fe.is_none() {
@@ -3241,6 +3327,10 @@ impl ApplicationHandler for App {
                     self.ticked = n_ticks > 0;
                     let eye = [self.cam.pos.x, self.cam.pos.y, self.cam.pos.z];
                     let look = self.cam.dir().to_array();
+                    // mp-host-match-logic: set inside the tick loop when the match's debriefing
+                    // request latched and the host opened the page (the grab waits for this
+                    // scope — the sim borrow).
+                    let mut debrief_opened = false;
                     if let Some(sim) = self.scene.sim.as_mut() {
                         for _ in 0..n_ticks {
                             if self.noclip { sim.step(eye, look, self.trigger, self.aiming); continue; }
@@ -3353,6 +3443,32 @@ impl ApplicationHandler for App {
                             }
                             self.prev_lock_ch = on;
                             if let Some(s) = self.sound.as_mut() { sound_tick(s, sim); }
+                            // mp-host-match-logic: the match-end handover — `MP_Update` 0x184bd0's
+                            // case 4 sets `GameState+0x1C = 0x40000033` (the port's
+                            // `MpGame::request_debriefing`, state 5 waits); the host opens
+                            // P_MPDEBRIEFING with the board built from the match [M 0x212198 msg
+                            // 0x4c]. The fe is gone during gameplay (the load closed it), so the
+                            // host re-creates it (the net_fail pattern) — the frame loop's
+                            // `fe.is_none()` gate then stops the sim ticks behind the page, and
+                            // the debriefing page's own arms take over.
+                            if sim.mp.as_ref().is_some_and(|m| m.game.request_debriefing)
+                                && self.fe.as_ref().map_or(true, |fe| fe.mp_debriefing.is_none())
+                            {
+                                let m = sim.mp.as_ref().unwrap();
+                                let fe = self.fe.get_or_insert_with(|| {
+                                    let mut fe = menu::FrontEnd::new();
+                                    // batch-1016b: the re-created manager inherits the music statics
+                                    // and the option file like the pause's create (menu-audio-state
+                                    // [M 0x1dceb8:94-101]; settings-persist).
+                                    Self::inherit_music_statics(&mut fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
+                                    let (opts, warn) = settings::load_default();
+                                    if let Some(w) = warn { eprintln!("[settings] {w}"); }
+                                    fe.opts = opts;
+                                    fe
+                                });
+                                fe.open_mp_debriefing(m);
+                                debrief_opened = true; // the grab waits for the sim borrow (below)
+                            }
                         }
                         // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
                         // (Moved below the sim borrow — see the end of this block.)
@@ -3401,6 +3517,13 @@ impl ApplicationHandler for App {
                             if let Some((p, yaw, pitch, fov)) = sim.creep_camera() {
                                 self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov: GAME_FOV / fov };
                             }
+                            // nis-event9-cnis [M `Player_PositionCamera` 0x18f5d8 case 2]: NIS event
+                            // 9's behind-Bond cut-scene orbit (`Player_Cam2Mode` 0x195fc8 mode 3 →
+                            // `Player_SetCamMode(BL, 2)`) — 10 units behind on the XZ plane at Bond's
+                            // own Y, looking at him, unzoomed (`viewer+0x108 = 1.0` [M :154]).
+                            if let Some((p, yaw, pitch, fov)) = sim.cam2_camera() {
+                                self.cam = Camera { pos: Vec3::new(p[0], p[1], p[2]), yaw, pitch, fov: GAME_FOV / fov };
+                            }
                         }
                         // HUD stand-in: Bond's health (`BL+0x894`) and the hit flash (`BL+0x968`) in the title.
                         if before / 30 != self.anim_time as u32 / 30 {
@@ -3422,6 +3545,7 @@ impl ApplicationHandler for App {
                         }
                     }
                     // Dev mode after-tick: god mode / infinite ammo (the game's own state, set the way the game sets it).
+                    if debrief_opened { self.grab(false); } // the menus own the cursor again
                     if let Some(d) = self.dev.as_deref_mut() { d.after_tick(&mut self.scene); }
                     // The mission's end sequence (`Mission_Update` case 4 → `ResetMap_LevelToLoad`
                     // of the outro or the front end): the same front-end path the F8 hook drives.
@@ -3939,6 +4063,9 @@ pub fn run() -> Result<()> {
     }
     // fix-menus: the front end — the level code, the game's strings, and the boot page.
     app.level_code = u32::from_str_radix(level.trim_end_matches(".bin"), 16).unwrap_or(0);
+    // Every mission open in the window unless `--locked` (the user's playtest request, 2026-10-16) — set
+    // before any front end exists, so the boot, pause, quit and debriefing managers all see it.
+    menu::UNLOCK_ALL.store(!std::env::args().any(|a| a == "--locked"), std::sync::atomic::Ordering::Relaxed);
     if front_end {
         app.fe = Some(menu::FrontEnd::new());
         // boot-flow: the window boot runs P_INTRO's EA + MGM logos before the title [M 0x209e88];

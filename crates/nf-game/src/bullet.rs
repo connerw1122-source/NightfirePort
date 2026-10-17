@@ -52,9 +52,15 @@ fn norm(v: V3) -> V3 { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt();
 /// the offset's components are added to x, z, y in that order.
 pub fn spread(dir: V3, spread: f32, flags68: u32, rng: &mut crate::drone::Rng) -> V3 {
     let s = if flags68 & 0x40_0000 != 0 { 0.0 } else { spread };
-    let r = (rng.frand(2.0 * s) - s) * 0.0014;
+    let r = nf_formats::ps2float::mul(rng.frand(2.0 * s) - s, 0.0014);
     let (th, ph) = (rng.frand(crate::trig::TAU), rng.frand(crate::trig::PI));
-    let off = [r * ph.sin() * th.cos(), r * ph.sin() * th.sin(), r * ph.cos()];
+    // G-046 ps2sinf-remaining: the game's cone is Vec_Spherical_2_Cartesian 0x1e3948 [M]: PS2Sinf2
+    // (0x11f968) lane pairs — the port's old form had θ/φ's roles swapped and sin(ph)·sin(th) in z.
+    // out = ((r·sinθ)·cosφ, r·sinφ, (r·cosθ)·cosφ), every product an EE mul.s [M disasm 0x1e39a4-0x1e39d4];
+    // Bullet_init 0x12c5a0:171-180 then adds them x, z, y (add.s) and normalises twice.
+    let (sth, cth) = (crate::trig::sinf(th), crate::trig::cosf(th));
+    let (sph, cph) = (crate::trig::sinf(ph), crate::trig::cosf(ph));
+    let off = [nf_formats::ps2float::mul(nf_formats::ps2float::mul(r, sth), cph), nf_formats::ps2float::mul(r, sph), nf_formats::ps2float::mul(nf_formats::ps2float::mul(r, cth), cph)];
     let d = norm(dir);
     norm([d[0] + off[0], d[1] + off[2], d[2] + off[1]])
 }
