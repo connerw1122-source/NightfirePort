@@ -161,3 +161,44 @@ fn the_missile_abort_path_fails_the_mission_on_ch_199() {
         assert!(sister, "the disarmed missiles' done channels rise on the same run [M 0x1aa354-398]");
     }
 }
+
+/// Drake's fight init [M 0x14b300:236-243 + :722-739]: the zero-g skins (0x05000078/94/ba) set
+/// skin kind 0x18, which forces mode +0xC5 = 0x1d (DroneTypeSettings row 29: start 0xbd
+/// AstronautLaunch [L 0x29b300 + 0xbd·4]) and the health `DroneInit_TakeXHits(hits, 0x33)` =
+/// weapon_data[0x33]+0xc × (difficulty==1 ? 1 : 2), ×3 for Drake [M 0x14d928, :734-739] — 60.0 at
+/// the port's boot difficulty 2. Before this force the port ran Drake as a generic mode-0 guard
+/// (the playtest: "none of the mechanics are set for this fight properly") — he entered Idle and
+/// fell through the station in gravity. The zero-g drift/thruster movement itself
+/// (`DroneMove_Astronaut*`) is s/astronaut-guards-1b's family, not ported here.
+#[test]
+fn drake_initializes_as_the_zero_g_boss() {
+    let iso = iso();
+    let mut scene = nf_view::load(&iso, "0700001b.bin", false).expect("load 0700001b");
+    {
+        let sim = scene.sim.as_mut().unwrap();
+        assert!(free(sim, 3000), "Bond is free");
+        sim.drones.channels.set(0x0a, 1, sim.drones.frame);
+    }
+    let drake = {
+        let mut found = None;
+        for _ in 0..600u32 {
+            scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+            let sim = scene.sim.as_ref().unwrap();
+            if let Some(i) = sim.drones.list.iter().position(|d| d.present && !d.corpse && d.skin & 0xffff == 0xba) {
+                found = Some(i);
+                break;
+            }
+        }
+        found.expect("the gate spawns Drake (spawner #187 [D])")
+    };
+    // Settle past the spawn tick (the first tick's GLOBAL ENTER routes to the start state).
+    for _ in 0..10 { scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false); }
+    {
+        let sim = scene.sim.as_ref().unwrap();
+        let d = &sim.drones.list[drake];
+        assert_eq!(d.mode, 0x1d, "skin kind 0x18 forces mode +0xC5 = 0x1d [M 0x14b300:722]");
+        assert_eq!(d.state, 0xbd, "the start state is AstronautLaunch [M 0x14b300:723; L 0x29b300+0xbd·4]");
+        assert!((d.health - 60.0).abs() < 1e-3, "TakeXHits(2, 0x33) ×3 = 60.0 at difficulty 2 [M 0x14b300:726-739, 0x14d928], got {}", d.health);
+        assert!(d.enabled, "the spawner enables him (his wait-switch 10 fired with the gate [D])");
+    }
+}

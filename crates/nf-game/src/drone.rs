@@ -1179,6 +1179,26 @@ impl Drone {
     fn type_setup(&mut self, d: &Data) {
         if self.mode_normal == self.mode_alert || self.second_tag == 0x65 { self.second_tag = 0; }
         self.mode = self.dtype_of(d, self.dtype, self.mode_normal);
+        // `NDrone2_DefaultInit` 0x14b300:236-243 — the zero-g skins (0x05000078/0x05000094 the
+        // astronauts, 0x050000ba Drake) set skin kind +0xd8 = 0x18; :722-733 — kind 0x18 then
+        // forces +0xC5 = 0x1d (DroneTypeSettings row 29: start 0xbd AstronautLaunch, alt 0) and
+        // +0x5A4 = 0, with the health `DroneInit_TakeXHits(difficulty==1 ? 1.0 : 2.0, weapon 0x33)`
+        // = weapon_data[0x33]+0xc × x [M 0x14d928] — Drake's is ×3 [M 0x14b300:734-739, the
+        // 0x50000ba branch]. The port had Drake (and the station astronauts) running the generic
+        // mode-0 guard chain, falling through the station floor in gravity (the playtest's
+        // "none of the mechanics are set for this fight").
+        if matches!(self.skin, 0x0500_0078 | 0x0500_0094 | 0x0500_00ba) {
+            self.mode = 0x1d;
+            self.mode_normal = 0x1d;
+            self.mode_alert = 0x1d;
+            self.alt_state = 0;
+            self.second_tag = 0;
+            let hits = if d.difficulty == 1 { 1.0 } else { 2.0 };
+            let dmg = d.weapons.records.get(0x33).map(|r| f32::from_le_bytes(r[0x0c..0x10].try_into().unwrap())).unwrap_or(0.0); // weapon_data+0xc [M 0x14d928]
+            let mul = if self.skin == 0x0500_00ba { 3.0 } else { 1.0 };
+            self.health = dmg * hits * mul;
+            self.max_health = self.health;
+        }
         self.alt_mode = if self.second_tag == 0 || self.second_tag == 0x65 { 0 }
             else if self.second_channel == 0 && self.alert_floor >= 1.0 { 0 }
             else { self.dtype_of(d, self.dtype, self.mode_alert) };
@@ -3866,6 +3886,34 @@ impl Drone {
             (WAIT_SWITCH, msg::ENTER) => { self.enabled = false; self.vision_on = false; self.watching = false; true }
             (WAIT_SWITCH, msg::UPDATE) => { if self.channel_on { self.enabled = true; let s = self.start_state(d); self.set_state(s) } true }
             (WAIT_SWITCH, msg::ENABLE) => { self.enabled = true; let s = self.start_state(d); self.set_state(s); true }
+            // `NDrone2_DSTATE_AstronautLaunch` 0x16dd28 (state 0xbd, DroneTypeSettings row 29's
+            // start): the zero-g entrance. ENTER [M 0x16dd28 case 1]: 0x4f8 |= 0x10000 | 0x2000
+            // (sight processing | may-notice), &= 0xfffffffd (the init-on bit, no reader), +0x23 = 1,
+            // AssignAIPath(8); with the path present (+0x9f2 != 0): +0x50 = 0.07f, CallAnim(0, 0x72),
+            // DroneWeap_Fire(1), +0x3b = 0, +0xcd8/+0xcdc = 0, 0x4f8 &= ~0x20. EXIT [M case 2]:
+            // 0x4f8 |= 0x20. UPDATE [M case 3]: SeenAndAttacking + angle-to-obj + UpdateMissionRoute;
+            // the route-done fall-through → SetState(0xc1 AstronautCombatMove) [S unported — the
+            // state holds]. Cases 8/9: DroneFunc_HandleImpact.
+            (ASTRONAUT_LAUNCH, msg::ENTER) => {
+                self.vision_on = true;
+                self.watching = true;
+                self.assign_path(d, 8);
+                self.call_anim(d, 0x72, 0, 0);
+                true
+            }
+            (ASTRONAUT_LAUNCH, msg::UPDATE) => {
+                // [M 0x16dd28 case 3]: SeenAndAttacking + UpdateMissionRoute; the route-done
+                // fall-through → SetState(0xc1 AstronautCombatMove). 0xc1 is not ported (the
+                // astronaut movement family is s/astronaut-guards-1b's scope), so the state
+                // holds here [S unverified: no ported transition out — the launch anim 0x72
+                // keeps the float]. Impacts still land (the BULLET arm below) [M cases 8/9].
+                true
+            }
+            (ASTRONAUT_LAUNCH, msg::BULLET) => {
+                // [M 0x16dd28 cases 8/9]: HandleImpact.
+                self.on_bullet(d, rng, frame, s);
+                true
+            }
             // `NDrone2_DSTATE_SpaceDrake` 0x16dee0 — Drake's zero-g state (0700001b, task
             // drake-fight-1b). Messages: 1 ENTER, 3 UPDATE, 4 the idle timeout, 5 anim done, 8 bullet.
             (SPACE_DRAKE, msg::ENTER) => {
