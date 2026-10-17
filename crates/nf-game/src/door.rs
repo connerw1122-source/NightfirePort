@@ -123,7 +123,11 @@ pub fn interp(keys: &[Key], first: u16, last: u16, time: f32, spline: bool) -> O
     let time = time.max(lo as f32).min(hi as f32);
     let k = (time as i32).clamp(lo, hi);
     let t = time - k as f32;
-    let key = |i: i32| &keys[(i.clamp(lo, hi) - lo) as usize];
+    // The key index clamps to the list: the copter's framelist passes last = the key COUNT (the
+    // game's `Copter_Move` 0x17d628 passes node+0x10 = the count; at t = count the pose parks on
+    // the final key). The doors' `last` stays below the count — no change there.
+    let kmax = ((keys.len() as i32 - 1).max(lo)).min(hi);
+    let key = |i: i32| &keys[(i.clamp(lo, kmax) - lo) as usize];
     let (pk, pk1) = (key(k), key(k + 1));
     let pos = if spline {
         let (p0, p3) = (key(k - 1).pos, key(k + 2).pos);

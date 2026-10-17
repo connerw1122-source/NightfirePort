@@ -40,3 +40,23 @@ fn probe_path_blocks() {
         }
     }
 }
+
+#[test]
+fn probe_0b_parts() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set"); return };
+    let mut scene = nf_view::load(&iso, "0700000b.bin", false).expect("load");
+    let sim = scene.sim.as_mut().unwrap();
+    let ci = sim.drones.copters.iter().position(|c| c.placement == 328).expect("copter");
+    sim.drones.channels.set(42, 1, sim.drones.frame);
+    sim.bond.pos = [16.7, 55.0, 24.4];
+    for _ in 0..300 { sim.step_bond(nf_game::player::Input::default(), false, false, false); }
+    let c = &sim.drones.copters[ci];
+    eprintln!("copter state {} t {} started {} flight {} path {:?}", c.state, c.t, c.started, c.flight_t, c.path.as_ref().map(|p| (p.count, p.dt)));
+    eprintln!("part_hashes {:?}", c.part_hashes);
+    eprintln!("part_radii {:?}", c.part_radii);
+    for o in sim.drones.scripts.objects.list.iter().flatten() {
+        if let nf_game::nis::Obj::Entity { hash, matrix, src, .. } = o {
+            eprintln!("entity hash={hash:#x} src=({:#x},{}) pos={:?}", src.0, src.1, &[matrix[3][0], matrix[3][1], matrix[3][2]]);
+        }
+    }
+}

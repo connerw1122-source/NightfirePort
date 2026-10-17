@@ -7332,8 +7332,11 @@ pub struct Drones {
     /// The fuseboxes (`FuseBox_Create` 0x1b0448; map-tower2): 07000014's OBJECT_FuseBox1 sabotage boxes.
     pub fuseboxes: Vec<crate::fusebox::FuseBox>,
     /// The helicopter (`Copter_Create` 0x17d340, placement 0x2F; fix-objects2): 07000008's
-    /// extraction copter — gated on ch 5, its arrival writes ch 0x4B (the last mission objective).
+    /// extraction copter — gated on ch 5, its destruction writes ch 0x4B (the last objective).
     pub copters: Vec<crate::copter::Copter>,
+    /// The copter parts' per-tick bullet damage (the game's HITDATA chains at `part+0xD0`, consumed
+    /// by `Copter_Update`'s Bits scan 0x17dbb8 LAB_0017e180). Gathered in the bullet pass.
+    pub copter_part_damage: Vec<[f32; 9]>,
     /// The locks (`Lock_Create` 0x1ae1f8, placement 0x2E; fix-objects2): the laser-burn targets —
     /// 07000008's safe bolts (chs 134/135 → mux 136 → the safe door).
     pub locks: Vec<crate::lock::Lock>,
@@ -7502,6 +7505,7 @@ impl Drones {
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, hold_npcs: false, hold_active: false,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), ai_points: Vec::new(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
+            copter_part_damage: Vec::new(),
             // fix-06-alarm (fields on their own lines — merge lesson 4).
             sound_triggers: Default::default(),
             node_doors: None,
@@ -7678,8 +7682,10 @@ impl Drones {
             obj.map(|o| if o.hashcode == u32::MAX { 0x8000_0000 | ((m as u32) << 16) | p.index as u32 } else { o.hashcode }).unwrap_or(0)
         });
         // The helicopter (`Copter_Create` 0x17d340, placement 0x2F) and the locks (`Lock_Create`
-        // 0x1ae1f8, placement 0x2E) (fix-objects2). Neither draws RNG at create.
-        self.copters = crate::copter::Copter::create(&level.maps[m].placements, self.difficulty);
+        // 0x1ae1f8, placement 0x2E) (fix-objects2). The copter's framelist table = the main map's
+        // 0x19 payloads in block order (`parsemap_block_path_data` 0x1d24d0; the placement's
+        // extra[8] low indexes it — docs/systems/helicopter.md §1). Neither draws RNG at create.
+        self.copters = crate::copter::Copter::create(&level.maps[m].placements, self.difficulty, &path_blocks);
         self.locks = crate::lock::Lock::create(&level.maps[m].placements, self.difficulty, |p| {
             let obj = if p.by_hash() { level.by_hash.get(&p.hashcode).map(|&(map, object)| &level.maps[map].objects[object]) }
                 else { level.maps[m].objects.get(p.index as usize) };
@@ -7701,6 +7707,33 @@ impl Drones {
         let ps = &level.maps[m].placements;
         let lib = level.nis.iter().map(|(&h, n)| (h, std::sync::Arc::new(n.clone()))).collect();
         self.scripts = crate::nis::Scripts::new(lib, ps);
+        // The copter parts: the SP loads BOTH scripts (param 4 assembly + param 5 flight) and
+        // `Copter_Register` 0x17e530 indexes its entities 0..8 — the port's flight-script probe
+        // shows the flight's streams first (0700000b: 3 streams), the assembly's continuing.
+        // Radii from the level's object defs. Sized here (the per-tick damage gather clears it).
+        self.copter_part_damage = vec![[0.0f32; 9]; self.copters.len()];
+        for c in &mut self.copters {
+            let mut slot = 0usize;
+            for script in [c.scripts[1], c.scripts[0]] {
+                if script == 0 { continue; }
+                if let Some(nis) = self.scripts.lib.get(&script) {
+                    for (i, s) in nis.streams.iter().enumerate().take(9) {
+                        if slot >= 9 { break; }
+                        for cmd in s.decode() {
+                            if let nf_formats::nis::Cmd::Entity { hash, .. } = cmd {
+                                c.part_hashes[slot] = hash;
+                                c.part_src[slot] = (script, i as u8);
+                                if let Some(&(mp, ob)) = level.by_hash.get(&hash) {
+                                    c.part_radii[slot] = level.maps[mp].objects[ob].radius.max(0.5);
+                                }
+                                break;
+                            }
+                        }
+                        slot += 1;
+                    }
+                }
+            }
+        }
         // `FuseBox_Create` 0x1b0448 ends with `SP_Create(pos, rot, param 0, 0, 0x40, 0, obj,
         // FuseBox_Register 0x1b0970)` — the box's wire/lid ScriptPlayer, mode 0x40 (the preload:
         // play+update+stop → state 1), whose entity streams are the box's VISIBLE MESH (the object
@@ -7796,6 +7829,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             Some(Some(crate::nis::Obj::Anim { skin, script, frame, .. })) => crate::nis::World::discrete0(d, *skin, *script, *frame).map(|m| [m[3][0], m[3][1], m[3][2]]),
             _ => None,
         }
+    }
+
+    /// The copter part's live position: the flight script's stream-i entity (`Copter_Register`
+    /// 0x17e530's index — the SP registers each script stream's object under its stream number).
+    pub fn script_entity_pos(scripts: &crate::nis::Scripts, script: u32, stream: u8) -> Option<V3> {
+        scripts.objects.list.iter().flatten().find_map(|o| match o {
+            crate::nis::Obj::Entity { matrix, src: (s, st), .. } if *s == script && *st == stream
+                => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
+            _ => None,
+        })
     }
 
     pub fn fire_player(&mut self, d: &Data, from: V3, dir: V3, weapon: u8, sound: nf_formats::sfx::SfxHearing) {
@@ -8072,6 +8115,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // accumulation's per-tick gather (`tick_damage`, consumed by `Player::update`'s damage
         // tail [M SP_Update 0x1dc1c0-0x1dc330]) starts empty each frame.
         for p in &mut self.scripts.players { p.tick_damage = 0.0; }
+        // The copter parts' chains clear with them (`Copter_Update`'s Bits scan reads the tick's
+        // contacts; the collide pass clears every hit list at the frame head [M 0x1ea398]).
+        for pd in &mut self.copter_part_damage { *pd = [0.0f32; 9]; }
         // The held hit-point scripts' stream objects — `SP_GetHitDamage` 0x1dc5f8's read set
         // (GAPS G-047: the 0700001b solar panels). Each bullet contact below adds its damage.
         let held_targets = self.scripts.held_hit_targets(d);
@@ -8125,6 +8171,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             let ray = [b.dir[0] * l, b.dir[1] * l, b.dir[2] * l];
             let end = [b.pos[0] + ray[0], b.pos[1] + ray[1], b.pos[2] + ray[2]];
             self.bullet_paths.push((b.pos, end));
+            // The copter body takes the bullet this tick (`Collide_Update` 0x1ea398 appends the
+            // contact to the part's obj+0xD0; `Copter_Update` 0x17dbb8 LAB_0017e180 sums
+            // `record.damage · Bits[i].mult` per part). The read sphere = the body slot
+            // (`Copter_GetBody` 0x17e4b8's parts[2]) at the record's spline position with the
+            // placement mesh's radius [*deviation*: the per-part spheres would need the script
+            // entities' world poses — the port's flight script plays on a static base, so the
+            // per-part routing is a documented gap; the damage math (Bits × hp) is exact].
+            for (ci, co) in self.copters.iter().enumerate() {
+                if co.done || co.gate != 0 && !self.channels.on(co.gate as u32) { continue; }
+                let r = co.part_radii.iter().cloned().fold(0.0f32, f32::max).max(2.0);
+                if Self::segment_hits_sphere(b.pos, end, co.pos(), r) {
+                    self.copter_part_damage[ci][2] += b.damage;
+                }
+            }
             // fix-samurai-fire: the `+0x6C` bit 0x10000 Swoosh ribbon [M `Bullet_init` 0x12c5a0:116-133:
             // for such records `Swoosh_Create(spawn, spawn, weapon_data+0x76, 0x20005cd, 0)` when the
             // base (+0x02) is 0x33/0x6a/0x6e — else 0x2000481, kind 1 — stored at BU+0xe; `Bullet_update`
@@ -9538,15 +9598,72 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // frame (core-loop §7 item 5). It used to snapshot at the END of the tick, so a 1-tick lock pulse was
         // invisible to the edge test.
         self.doors.end_tick(&self.channels);
-        // The helicopter (`Copter_Update` 0x17dbb8, fix-objects2): the gate check, the countdown
-        // pulse and the arrival write; on the gate's rising edge the flight script starts as a
-        // synthetic one-shot player (the game's hidden `SP_Create` inside `Copter_Create` 0x17d340).
+        // The helicopter (`Copter_Update` 0x17dbb8): the gate check, the countdown pulse, the
+        // state machine (patrol → the 45°-cone + LOS spot → attack), the real spline flight
+        // (`Copter_Move` 0x17d628 over the level's framelist), the Bits damage and the
+        // destruction (+0x72 write; cases 4/5/6 — helicopter docs §2). On the gate's rising edge
+        // the flight script still starts as a synthetic one-shot player (the game's hidden
+        // `SP_Create` inside `Copter_Create` 0x17d340 — the parts' keyed visuals).
         let mut copter_flight: Vec<(usize, u32, nf_formats::anim::Mat4)> = Vec::new();
-        for c in &mut self.copters {
-            let len = self.scripts.lib.get(&c.scripts[1]).map(|n| n.length as u32).unwrap_or(0);
-            let (started, _) = c.tick(&mut self.channels, len, frame);
-            if started { copter_flight.push((c.placement, c.scripts[1], c.matrix)); }
+        let eye = [player.pos[0], player.pos[1] + 0.5, player.pos[2]]; // `glb_players+0x34 + 0.5` [M 0x17d828:59]
+        let mut copter_part_damage = std::mem::take(&mut self.copter_part_damage);
+        if copter_part_damage.len() < self.copters.len() { copter_part_damage = vec![[0.0f32; 9]; self.copters.len()]; }
+        for ci in 0..self.copters.len() {
+            let (c, part_damage) = (&mut self.copters[ci], &copter_part_damage[ci]);
+            if c.level == 0 { c.level = d.level; }
+            let was_started = c.started;
+            let (gun, missile, combat_music, exploded) = c.update(
+                &mut self.channels, frame, Some(player.pos), eye,
+                &|a, b| d.world.line_of_sight(a, b), part_damage, &mut |n| self.rng.rand(n),
+            );
+            if combat_music { self.music.event(2, 1); } // [M 0x17dbb8 case 2]
+            if !was_started && c.started { copter_flight.push((c.placement, c.scripts[1], c.matrix)); }
+            // `Copter_FireGun`'s bullet + sound [M 0x17d828:85-92]: weapon 0x71 (0x61 on 07000008)
+            // from the muzzle, `Sound_Play3D(100.0, muzzle, -1.0, -1.0, 0x5df, 0, 0, 0)`.
+            if let Some((muzzle, dir, level08)) = gun {
+                let wid = if level08 { 0x61u32 } else { 0x71 };
+                if let Some(w) = d.weapons.records.get(wid as usize) {
+                    let f = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
+                    let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
+                    let sdir = crate::bullet::spread(dir, f(0x24), flags68, &mut self.rng);
+                    self.bullets.push(crate::bullet::Bullet {
+                        pos: muzzle, dir: sdir, speed: f(0x20), travelled: 0.0, range: f(0x1c),
+                        damage: f(0x0c), owner: usize::MAX, state: 0, weapon: wid as u16,
+                        flyby: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x4_0000 != 0,
+                        bounces: 0,
+                    });
+                }
+                self.audio.play3d(0x5df, muzzle, None);
+            }
+            // `Copter_FireMissile`'s bullet [M 0x17d9f0:95]: weapon 0x6d (0x62 on 07000008) from the
+            // pod; on 07000008 a `Rand_Rand(8/DiffMod) == 0` roll aims straight at Bond (:66-76),
+            // else the pod's matrix dir (:78).
+            if let Some((muzzle, aims)) = missile {
+                let wid = if c.level == 0x0700_0008 { 0x62u32 } else { 0x6d };
+                if let Some(w) = d.weapons.records.get(wid as usize) {
+                    let f = |o: usize| f32::from_le_bytes(w[o..o + 4].try_into().unwrap());
+                    let mut dir = match aims {
+                        Some(t) => { let mut dv = [t[0] - muzzle[0], t[1] - muzzle[1], t[2] - muzzle[2]]; let l = (dv[0] * dv[0] + dv[1] * dv[1] + dv[2] * dv[2]).sqrt(); if l > 0.0 { for v in &mut dv { *v /= l; } } dv }
+                        None => [c.matrix[2][0], c.matrix[2][1], c.matrix[2][2]],
+                    };
+                    let flags68 = u32::from_le_bytes(w[0x68..0x6c].try_into().unwrap());
+                    dir = crate::bullet::spread(dir, f(0x24), flags68, &mut self.rng);
+                    self.bullets.push(crate::bullet::Bullet {
+                        pos: muzzle, dir, speed: f(0x20), travelled: 0.0, range: f(0x1c),
+                        damage: f(0x0c), owner: usize::MAX, state: 0, weapon: wid as u16,
+                        flyby: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x4_0000 != 0,
+                        bounces: 0,
+                    });
+                }
+            }
+            // The case-6 destroy blast [M 0x17dbb8 case 6: `Explode_Create(10, 10, 64.34, obj, pos,
+            // 0x2d6210, 0x6000052, 0xff, 0xff, 100, 0)`] — the port's shared blast queue.
+            if exploded {
+                let p = c.pos();
+                self.pending_blasts.push((p, 10.0, f32::from_bits(0x4286cccd), usize::MAX, 0, 0x0600_0052, 10.0));
+            }
         }
+        self.copter_part_damage = copter_part_damage;
         for (placement, script, matrix) in copter_flight { self.scripts.spawn_once(placement, script, matrix); }
         // The script players' tick head (the create-time load beat — the game does it during the
         // level load [M 0x1db9a8:81-86]): the players THEMSELVES update from the control walk
