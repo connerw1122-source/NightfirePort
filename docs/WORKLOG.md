@@ -17413,3 +17413,12 @@ through the real input path + a sister, run the touched crates + the full suite.
   vertex 2.59 away) — the plate hangs over the arch void; the game's contact is the sphere
   overlap [M Trigger_Hit 0x1b1fc8 = pure chain classification; the port's capsule (b = feet+1.86
   + r 0.55) crosses the plate plane at the edge].
+- mayhew-exit-walk (03:45 UTC): the chain pinned green —
+  crates/nf-view/tests/mayhew_handover_live.rs (2/2 on master + this branch): the real-input
+  walk reaches the gatehouse edge (99.69, 25.94, 106.98) at t ~373, ch 0x5C fires at t 1884
+  (inside the script's own window t 1882..2312 [D 0x06000A22 stream 8]), SP #38 hands Bond
+  onto the bed (ch 0x71) and the ride carries him west; the sister (no walk → no 0x5C, no
+  exit) holds. Remaining (next session): the manual turn+forward walk from the spawn stalls
+  at (101.2, 24.94) oscillating (probe trace) while the walker's nav walk crosses — pin the
+  exact collision feature there, then decide whether the sim's step/climb needs the game's
+  Player physics [M]; walkreal_07000005's two #[ignore]d tests park on the same spot.
