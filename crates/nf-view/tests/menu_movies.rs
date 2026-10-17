@@ -245,6 +245,24 @@ fn the_start_intro_plays_then_the_main_menu_and_skips_past_the_grace() {
     assert_eq!(fe.page, Page::Main);
 }
 
+/// fe-audit 1017: the ESTHERO budget's disc sister. The flow test above only compares
+/// ESTHERO_TICKS with itself (`intro_frames == ESTHERO_TICKS`); this counts 0x073B0048's own
+/// pictures on the disc, the way the INTRO_MOVIES test pins the boot pair [D the PSS picture
+/// stream]. The slim on-foot ISO stubs its PSS data, so this skips there like the other
+/// movie-data tests.
+#[cfg(feature = "movies")]
+#[test]
+fn the_esthero_budget_matches_the_disc_pictures() {
+    let Some(iso) = iso() else { eprintln!("skip: NF_MOVIE_ISO/NF_ISO not set"); return };
+    let m = match nf_view::movie::Movie::load(&iso, "073B0048") { Ok(m) => m, Err(e) => { eprintln!("skip: {e:#}"); return } };
+    let n = nf_formats::mpeg2::picture_counts(&m.demuxed.video).0;
+    eprintln!("073B0048: {n} pictures = {} s at 30 fps", n as f64 / 30.0);
+    // The headless budget = the movie at 30 fps, one frame per two 60 Hz ticks.
+    assert_eq!(nf_view::menu::ESTHERO_TICKS, (n as u32) * 2, "the budget = the disc movie's length");
+    // Sister: the pin is not a constant — the boot pair's budget differs from ESTHERO's alone.
+    assert_ne!(nf_view::menu::INTRO_TICKS, nf_view::menu::ESTHERO_TICKS, "the boot pair runs a different length");
+}
+
 /// The boot P_INTRO run (`start_boot_intro`, the window's boot): the EA logo 0x07370048 then MGM
 /// 0x07380048, each started by a 0x50 with DAT_002e1c49 = 0 — UNSKIPPABLE [M P_INTRO_Handler
 /// 0x209e88:38-62; Menu_StopMovie 0x215a50:6] — then the title 0x40000009 [M 0x209e88:49-51].

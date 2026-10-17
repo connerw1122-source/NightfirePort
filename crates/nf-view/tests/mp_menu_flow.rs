@@ -74,8 +74,8 @@ fn scenario_confirm_moves_to_map_and_back_out() {
     assert!(fe.action(Action::Back));
     assert_eq!(fe.page, Page::MpScenario, "map's Back returns to the scenario page");
     assert!(fe.action(Action::Back));
-    assert_eq!(fe.page, Page::Main, "scenario's Back returns to the main menu [M → 0x40000002]");
-    assert_eq!(fe.cursor, 1, "back on the Multiplayer row");
+    assert_eq!(fe.page, Page::Main, "scenario's Back returns to the main menu [M 0x217348:28-30 — the 99 arm opens 0x40000002]");
+    assert_eq!(fe.cursor, 1, "back on the Multiplayer row [S — P_MAIN's 0x4c writes only the write-only DAT_002a3cce (0x20a7b0:39); the landing row is the port's choice]");
 }
 
 #[test]
@@ -225,7 +225,9 @@ fn quick_game_lands_on_confirm_with_three_bots() {
     let mut fe = FrontEnd::new();
     enter_mp(&mut fe);
     join_agent1(&mut fe);
-    // Quick Game is row 0 — straight to the confirm page [M C_SBMPSCEN:48-145].
+    // Quick Game is row 0 — straight to the confirm page [M C_SBMPSCEN 0x20c600:48-145]. The
+    // arena is the game's Rand_Random() % 7 sample over mp_level rows 0..6 [M 0x20c600:62-63];
+    // the port takes row 0 (Skyrail) for headless determinism [S — see mp_quick_start].
     fe.mp_scenario_row = 0;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.page, Page::MpConfirm, "Quick Game skips the setup pages [M → 0x40000049]");

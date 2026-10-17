@@ -4610,7 +4610,11 @@ impl FrontEnd {
                 // 0x221810:98-106); without the reset the port entered with the missions cursor
                 // and the wheel showed Weapons on screen — the playtest's "the port adds Weapons"].
                 Action::Side => { self.enter_page(Page::Dossier); self.cursor = 0; return true; }   // □ Dossier
-                Action::Back => { self.enter_page(Page::Difficulty); self.cursor = self.difficulty; return true; }
+                // fe-audit 1017: the list's Back opens MAIN — P_NFMAP's 99 arm is
+                // Manager_SendMessage(0x44, 0x40000002, 1) [M 0x20b608:67-68], run by the manager's
+                // page-pop (msg 0x5f runs the page's msg-99 arm before the stack pop [M 0x21c858:588,
+                // :592-600]). The old "Back → the difficulty wheel" was a guess with no decompile.
+                Action::Back => { self.enter_page(Page::Main); self.cursor = 0; return true; }   // △ the main menu
                 Action::Extra => {}
             },
             Page::Dossier => match a {
@@ -5544,17 +5548,19 @@ impl FrontEnd {
     /// P_MPRULES's two lists, steps by `dir`. Duration (control 0x10000008, MPSettings+0x1a0):
     /// item values 1..10, then 15, 20 … 60 in steps of 5, then the 0x3ca "Unlimited" item with
     /// value −1 [M 0x20f790:21-42]. Points/Lives (control 0x100000f6, MPSettings+0x19c): 1..10,
-    /// then 15 … 120 in steps of 5, no Unlimited [M 0x20f790:45-76]. Both clamp at the list
-    /// ends [S unverified — the list control's ◀▶ code is not exported].
+    /// then 15 … 120 in steps of 5, no Unlimited [M 0x20f790:45-76]. Both WRAP at the ends —
+    /// Scroll_Update's ◀▶ at the max/min re-enters from the other end while the wrap flag stands
+    /// [M 0x221b20:186-210], the flag defaults on (Scroll_Init 0x22214f0:102-103 sets +0x144 = 1;
+    /// only msg 0x69 clears it [M 0x221810:136-138]) and nothing sends 0x69 to the rules page.
     fn mp_rules_step(&mut self, dir: i32) {
         if self.cursor.min(1) == 0 {
             let times = MP_RULES_DURATIONS;
             let idx = times.iter().position(|&t| t == self.mp_time_limit).unwrap_or(0) as i32;
-            self.mp_time_limit = times[(idx + dir).clamp(0, times.len() as i32 - 1) as usize];
+            self.mp_time_limit = times[(idx + dir).rem_euclid(times.len() as i32) as usize];
         } else {
             let pts = MP_RULES_POINTS;
             let idx = pts.iter().position(|&t| t == self.mp_frag_limit).unwrap_or(0) as i32;
-            self.mp_frag_limit = pts[(idx + dir).clamp(0, pts.len() as i32 - 1) as usize];
+            self.mp_frag_limit = pts[(idx + dir).rem_euclid(pts.len() as i32) as usize];
         }
     }
 

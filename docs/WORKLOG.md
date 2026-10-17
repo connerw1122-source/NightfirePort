@@ -17728,3 +17728,22 @@ unlock_popups, pause_results_flows_live, menu_audio_flows). For each row: find t
 (decompile address [M], disc bytes [D], or a fresh-boot PCSX2 note) and tag it, or mark
 // [S] unverified and take it out of pass/fail; fix tests that contradict the decompile.
 In progress.
+
+## unproven-tests-menus (2026-10-17, branch s/unproven-tests-menus) — done ~07:1x UTC
+
+Task 754: settled all 16 audit rows. Evidence highlights: the confirm box is C_LBMSGOPTIONS
+0x2022a0 (triangle→msg 0x6d→"No", cross→the row's value; Menu_UpdateOptionBox 0x202280 only
+returns it); P_NFMAP's 99 arm opens MAIN (0x20b608:67-68) — the "MissionSelect Back→difficulty"
+tests contradicted the decompile and are FIXED, the port's Back arm now opens Main; the
+difficulty table .data 0x2df4c0 holds values 1/2/3 with the gate byte 1 on all three rows [D];
+DAT_002a3cce is write-only (10 refs, all stores of 2) so Main's landing cursor/wrap stay [S] and
+left pass/fail (Main's rows are M_BUTTONs per the def, kind byte 1); msg 0x5d = the pad's action
+0x20 = Square (Button_Update 0x1ef948:123-127); Scroll_Update 0x221b20 wraps lists both ends —
+mp_rules_step's clamp FIXED to wrap + new end-wrap assertions; Results Confirm's three gates
+documented and pinned (0x208e78:29-52); cheat-medal: the disc's page 4000004c has NO 0x11 rows
+[D] so value==index stays [S]; Esc-close's +0x7b==7 settled as the create-time sentinel
+(0x21b908:131); REPLAY row's disc value 0 = warm [D]; LOADING_HOLD/state-6-gate kept as
+labelled [S] port choices; ESTHERO_TICKS got its disc-picture sister test. Verified: nf-view
+full sweep 196 passed / 2 failed (fix_0c_pylon_live — the sandbox has no Vulkan device, the
+tests die at request_adapter before any assertion) / 11 ignored. Report:
+docs/reports/unproven-tests-menus.md.

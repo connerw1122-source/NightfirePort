@@ -106,7 +106,7 @@ fn extra_rematch_rerequests_the_arena() {
     fe.mp_level = 0x0700_0027; // Fort Knox was the arena [L mp_level row 1]
     fe.mp_match_settings = Some(nf_game::mp::MpSettings::deathmatch(0x0700_0027));
     fe.tick(); // the flow machine must be live for the load push [M the confirm-start's pattern]
-    assert!(fe.action(Action::Extra), "the ~Y arm is handled [M C_MPDBG 0x5d]");
+    assert!(fe.action(Action::Extra), "the 0x5d arm is handled [M C_MPDBG 0x217860:12-16; the pad's action 0x20 = □ sends msg 0x5d — Button_Update 0x1ef948:80-87,123-127 — not △/~Y: △ is action 0x22, the manager's pop [M 0x221b20:454-458]]");
     assert_eq!(fe.requested_level, Some(0x0700_0027), "ResetMap_LevelToLoad(MPSettings+0x1A8) [M 0x217860:12-14]");
     assert!(fe.mp_match_settings.is_some(), "the config stays for the host (the rematch)");
     // Sister: the confirm arm does NOT touch the level request.

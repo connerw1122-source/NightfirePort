@@ -119,8 +119,12 @@ fn esc_opens_the_pause_page_and_the_sim_stands_still_until_it_closes() {
         assert_eq!(s.drones.frame, frame0, "the sim is frozen while the pause page stands");
         assert_eq!(s.bond.pos, pos0, "Bond stands still under the menu");
     }
-    // Esc again resumes — the close action works from any tab [M MenuManager_Monitor 0x21d508:24-39
-    // re-reads the manager's close action (0x1e) and MenuManager_Delete 0x21c2b0 runs GS_PauseGame(0)].
+    // Esc again resumes — the close is manager-level, not a per-tab gate [M MenuManager_Monitor
+    // 0x21d508:27-38: the manager's close action (+0x1c8 = Create's param_5, the pause's 0x1e
+    // [M 0x193600:73-75]) must differ from the fail menu's 0x28 [M 0x182c60:78] and be pressed;
+    // the manager+0x7b == 7 in :35-38 is the CREATE-time sentinel [M 0x21b908:131 — the only
+    // writer in the decompile], always true for a live manager and vacuous; the delete runs
+    // GS_PauseGame(0) [M 0x21c2b0:11-15]].
     let closed = {
         let fe = fe.as_mut().unwrap();
         assert!(act(fe, Action::Back), "Esc/Back resumes");
@@ -213,7 +217,9 @@ fn pause_restart_reloads_the_base_map_cold_on_full_health() {
         assert!(act(fe, Action::Confirm));
         assert!(fe.confirming_restart && !fe.confirming_quit);
         assert_eq!(fe.confirm_sel, 1, "the box opens on NO");
-        // NO closes the box and requests nothing.
+        // NO closes the box and requests nothing; the handler enters state_ignore_167, which
+        // swallows exactly ONE further 0x4b before the rows answer again [M 0x204408:165-171 —
+        // the d1=6 arm returns on it once], so the player's next Confirm re-arms RESTART.
         assert!(act(fe, Action::Confirm));
         assert!(!fe.confirming_restart && fe.requested_level.is_none() && !fe.closed);
         // Re-open and answer YES [M 0x204408:134-141 — ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)].
@@ -508,7 +514,9 @@ fn completing_the_mission_reaches_the_results_and_the_next_pages() {
 #[test]
 fn the_loading_hold_window_and_the_double_press_guards() {
     // The port's own loading-screen minimum [S — a PC-port choice; the game's cold-entry minimum
-    // is its loading clip [M 0x1d6360:101-113], restarts have none [M 0x1d6360:39,184]].
+    // is its loading clip [M 0x1d6360:101-113], restarts have none [M 0x1d6360:39,184], and the
+    // whole load state 0x1d6360:121-171 carries no timer or frame minimum — the tail pops at
+    // once (:166-170)].
     assert_eq!(nf_view::LOADING_HOLD, 5.0, "the 5 s hold");
     assert_eq!((nf_view::LOADING_HOLD * 60.0) as u32, 300, "300 ticks at the fixed 60 Hz");
     // While the hold runs, the window ends the frame before anything ticks (lib.rs:2998 → the

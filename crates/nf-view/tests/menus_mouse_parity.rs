@@ -310,8 +310,11 @@ fn the_screen_adjust_bars_hover_and_click_like_the_keyboard() {
     // Main → Codenames → Edit Codename → the AV options → the Screen Adjust row — the
     // keyboard's own path (CnMenu row 5, the AV page's row 6 [L page data y=256]).
     to_main(&mut fe);
-    assert!(act(&mut fe, Action::Up), "Up from NightFire wraps to Codenames [M the % rows arm]");
-    assert_eq!(fe.cursor, 2);
+    // fe-audit 1017: Main's rows are M_BUTTONs [D def 08000002 page 40000002, ctrls
+    // 10000002/3/4 kind byte 1], so Scroll_Init's wrap flag never applies here and the button
+    // focus walk is not in the decompile's C — the wrap itself is [S unverified]. The walk
+    // selects the Codenames row directly instead of relying on it.
+    fe.cursor = 2; // the Codenames row [S — no decompile evidence pins Main's focus walk]
     assert!(act(&mut fe, Action::Confirm), "Codenames");
     assert!(act(&mut fe, Action::Confirm), "the Default row's Edit");
     assert_eq!(fe.page, Page::CnMenu);
@@ -607,9 +610,15 @@ fn clicks_never_change_what_they_should_not() {
     }
     // The difficulty ride-along: clicks on the difficulty wheel pick rows only through the
     // page's own confirm — the value lands in requested_difficulty once, not per click.
+    // fe-audit 1017: Back from the mission list opens MAIN [M 0x20b608:67-68], so the wheel is
+    // reached again by the walk, not by Back.
     let mut g = FrontEnd::new();
     to_missions(&mut g);
     assert!(act(&mut g, Action::Back));
+    assert_eq!(g.page, Page::Main, "the mission list's △ opens the main menu [M 0x20b608:67-68]");
+    assert!(act(&mut g, Action::Confirm), "NightFire");
+    assert!(act(&mut g, Action::Confirm), "the box arms");
+    assert!(act(&mut g, Action::Confirm), "the box's yes → the wheel");
     assert_eq!(g.page, Page::Difficulty);
     for _ in 0..60 {
         let (x, y) = (rng.f32_in(0.0..640.0), rng.f32_in(0.0..480.0));
@@ -619,8 +628,9 @@ fn clicks_never_change_what_they_should_not() {
         if g.page == Page::Difficulty {
             assert!(g.cursor < g.rows());
         } else {
-            // A wheel-row ✕ picks the hovered row (1..3 = the keyboard's own values [M
-            // 0x216ca8:15's +1]); nothing else may pick.
+            // A wheel-row ✕ picks the hovered row — the tier's stored value is the boot table's
+            // +0xc lane: 1/2/3 [D ACTION.ELF .data 0x2df4c0, records 0..2]; the store is
+            // GameState+0x40 = difficulty[i*0x18+0xc] [M 0x216ca8:15]. Nothing else may pick.
             assert!(matches!(g.requested_difficulty, Some(1..=3)),
                 "only a wheel row's ✕ picks — got {:?}", g.requested_difficulty);
             break;

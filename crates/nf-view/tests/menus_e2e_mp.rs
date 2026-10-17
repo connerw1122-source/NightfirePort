@@ -159,7 +159,10 @@ fn every_scenario_row_opens_the_map_or_refuses() {
             assert!(fe.mp_match_settings.is_some());
             assert!(!act(&mut fe, Action::Confirm), "a second ✕ is refused [M MenuManager_Delete]");
             assert_eq!(fe.requested_level, Some(want));
-            assert_eq!(want, MP_MAP_ROWS[0].3, "the quick start samples row 0 (Skyrail) [S the headless stand-in for Rand_Random % 7]");
+            assert_eq!(want, MP_MAP_ROWS[0].3, "the quick start samples row 0 (Skyrail) [S the
+                headless stand-in: the game samples Rand_Random() % 7 over mp_level rows 0..6
+                [M C_SBMPSCEN 0x20c600:62-63], so Skyrail is 1 of 7 and Ravine (row 7) is
+                excluded — the port takes row 0 for determinism]");
             continue;
         }
         assert_eq!(fe.page, Page::MpMap, "row {row}: the map wheel opens [M → 0x40000013]");
@@ -235,6 +238,21 @@ fn every_options_subpage_moves_its_values_and_rides_them() {
     assert_eq!(fe.mp_frag_limit, 15, "10 → 15 [M 0x20f790:54-55]");
     assert!(act(&mut fe, Action::Right));
     assert_eq!(fe.mp_frag_limit, 20, "15 → 20 [M 0x20f790:55-56]");
+    // fe-audit 1017: BOTH lists wrap at their ends — Scroll_Update's ◀▶ at the max re-enters
+    // from the min and vice versa while the wrap flag stands [M 0x221b20:186-194, :202-210]; the
+    // flag defaults on (Scroll_Init 0x22214f0:102-103 sets +0x144 = 1; only msg 0x69 clears it
+    // [M 0x221810:136-138]) and nothing sends 0x69 to the rules page. The old port clamped here.
+    for _ in 0..9 { assert!(act(&mut fe, Action::Right)); }   // 20 → … → 60 → Unlimited
+    assert_eq!(fe.mp_time_limit, -1, "the 0x3ca Unlimited item [M 0x20f790:38-42]");
+    assert!(act(&mut fe, Action::Right), "Right at Unlimited wraps to the first item");
+    assert_eq!(fe.mp_time_limit, 1, "the wrap lands on 1 [M 0x221b20:186-194]");
+    assert!(act(&mut fe, Action::Left), "Left at 1 wraps back to Unlimited");
+    assert_eq!(fe.mp_time_limit, -1, "the mirror wrap [M 0x221b20:202-210]");
+    assert!(act(&mut fe, Action::Down), "the Points row");
+    for _ in 0..20 { assert!(act(&mut fe, Action::Right)); }  // 20 → … → 120
+    assert_eq!(fe.mp_frag_limit, 120, "the list tops at 120 [M 0x20f790:45-76]");
+    assert!(act(&mut fe, Action::Right), "Right at 120 wraps to 1");
+    assert_eq!(fe.mp_frag_limit, 1, "the Points wrap [M 0x221b20:186-194]");
     assert!(act(&mut fe, Action::Confirm), "the rules page closes to the hub [M Manager 0x5f]");
     assert_eq!(fe.page, Page::MpOptions);
     // The hub's row is where the Rules page was opened from — 2; Player Mods is the next row.
@@ -367,10 +385,14 @@ fn every_options_subpage_moves_its_values_and_rides_them() {
 fn back_out_of_every_page_and_walk_forward_again_team() {
     let mut fe = FrontEnd::new();
     to_scenario(&mut fe);
-    // The scenario page's Back returns to Main on the Multiplayer row [M P_MPSCENARIO:29].
+    // The scenario page's Back returns to Main [M P_MPSCENARIO 0x217348:28-30 — the 99 arm is
+    // Manager_SendMessage(0x44, 0x40000002, 0), with no cursor read anywhere in the handler;
+    // msg 99 arrives from the manager's pop [M 0x21c858:588]]. The cursor 1 is the port's [S —
+    // P_MAIN's 0x4c writes only the write-only DAT_002a3cce (0x20a7b0:39, no reader in the
+    // whole .text); nothing in the decompile pins Main's landing row].
     assert!(act(&mut fe, Action::Back), "scenario Back → Main");
     assert_eq!(fe.page, Page::Main);
-    assert_eq!(fe.cursor, 1, "back on the Multiplayer row");
+    assert_eq!(fe.cursor, 1, "back on the Multiplayer row [S the port's choice]");
     assert!(act(&mut fe, Action::Confirm), "Multiplayer");
     assert!(act(&mut fe, Action::Confirm), "Local");
     assert_eq!(fe.page, Page::MpJoin);

@@ -268,9 +268,12 @@ impl Host {
         }
     }
 
-    /// App::menu_action: the state-6 intercept for briefings/outros (only the skip matters, a
-    /// second into the movie [S port choice]; the intro run is NOT state 6 and reaches fe.action,
-    /// which honours the grace), then fe.action + menu_after (the sfx drain: removes BEFORE the same frame's starts [M
+    /// App::menu_action: the state-6 intercept for briefings/outros (only the skip matters — a
+    /// second into the movie [S port choice: the GAME's state 6 skips at once, movie finished OR
+    /// the edge-triggered action 0x19 pops the same frame, no delay [M GameFlow_Main 0x1c98c8:145-151];
+    /// the port's 1 s gate is deliberate, keep it]; the intro run is NOT state 6 and reaches
+    /// fe.action, which honours the grace), then fe.action + menu_after (the sfx drain: removes
+    /// BEFORE the same frame's starts [M
     /// 0x20a408:17-22]), the level request, the close. The pause's Back resumes.
     fn input(&mut self, a: Action) -> bool {
         let Some(fe) = self.fe.as_mut() else { return false };
@@ -539,10 +542,16 @@ fn the_backdrop_pages_keep_one_pair_and_the_list_pages_touch_nothing() {
     assert_eq!(h.drv.jingles, vec![0x1d7]);
     let starts = h.drv.starts_of(0x1d7, 0);
     // The mission list IS a backdrop page: leaving and coming back while the pair is up must
-    // restart NOTHING (the menu_movie gate [M 0x20b608's if menu_movie == 0]).
+    // restart NOTHING (the menu_movie gate [M 0x20b608's if menu_movie == 0; P_MAIN's 0x4c
+    // likewise only restarts when menu_movie == 0, 0x20a7b0:42-48]). fe-audit 1017: Back from
+    // the list opens MAIN [M 0x20b608:67-68], so the round trip is the walk through
+    // NightFire/the box/the wheel again.
     assert!(act(&mut h, Action::Back));
-    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Difficulty));
-    assert!(act(&mut h, Action::Confirm));
+    assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::Main));
+    assert!(act(&mut h, Action::Confirm), "NightFire");
+    assert!(act(&mut h, Action::Confirm), "the box arms");
+    assert!(act(&mut h, Action::Confirm), "the box's yes");
+    assert!(act(&mut h, Action::Confirm), "the wheel");
     assert!(h.fe.as_ref().is_some_and(|fe| fe.page == Page::MissionSelect));
     assert_eq!(starts, h.drv.starts_of(0x1d7, 0), "no restart while the pair is up");
     assert_eq!(h.jingles(), 1);
