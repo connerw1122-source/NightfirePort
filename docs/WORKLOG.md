@@ -17719,3 +17719,12 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+
+## fe-gaps-g048 (2026-10-17, branch s/fe-gaps-g048) — in progress 06:35 UTC
+
+Task: docs/GAPS.md G-048, the front end's open gaps: (1) Menu_ChangePageCloseIris delayed
+page change with input blocked, (2) Menu_EnableSounds 0x1f31f0 per-page sound flags vs the
+port's global 0x0b, (3) completed-mission results page order (Mission_Update case 4 sets the
+page id; the manager is created by the load) + MP match-end to debriefing path, (4) P_PARISENUM
+0x20a648 / HandlePS2CardState 0x110b98 card-wait time. Docs first, each change cited [M],
+tests with sisters, remove the G-048 rows closed. In progress.
