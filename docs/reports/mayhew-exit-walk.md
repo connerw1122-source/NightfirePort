@@ -60,8 +60,13 @@ The mid cut-scene is the **truck hand-over**:
 ## What ran
 
 - `mayhew_handover_live` 2/2 (NF_ISO, release, --test-threads=1; the full-ride version).
+- `walkreal_07000005_live` 1 passed + 1 ignored (the cable sister) — **the truck-route walkreal
+  is un-parked and green**: the walked ride parks at (29.86, 37.93, 52.4) at t 5687, no falls,
+  and the chain exits through the real walked path.
 - `walk_07000005_live` 2/2, `fix_truck_live` 2/2 (the sisters — no interference).
 - `walkreal_07000001_live` 2/2 (the escort level, unchanged — the sanity side).
+- `nf-game --lib` 251 passed / 0 failed (the sim surface untouched by this session's
+  test-only changes; the branch is master 31dd6161 + test/doc commits).
 - The fast suite (`tools/test/suite.py`) **could not run in this sandbox**: background jobs
   are reaped between tool calls here (setsid/nohup detached runs died within one tool call,
   twice — the empty `suite.out` stands as the record; the same was reported by
@@ -70,13 +75,17 @@ The mid cut-scene is the **truck hand-over**:
 
 ## What's left (the next session continues from the branch)
 
-1. **Root-cause the manual-walk stall** at x ≈ 101.2: the collision feature that stops Bond
-   (the walkway lip from the 24.75 lane to the 25.9-26.2 edge — the floor probes show the
-   lane at 23.75-23.94 east of x 101 and the plateau at 24.75-26.2 west of it) and whether
-   the game's Bond climbs it via the Player physics [M Player_Move's step rule] — then either
-   the sim fix or the route fix, with the manual-walk test un-ignored and failing first.
-2. Un-`#[ignore]` the two `walkreal_07000005_live` tests once the stall is fixed.
-3. The full suite on the final merged tree (blocked by the sandbox reaping this session).
+1. **The player-visible question the live checks settle**: the truck script is one-shot and its
+   ch-0x5C window is 430 ticks (7.2 s) [D 0x06000A22 stream 8]; a player who fumbles the
+   gatehouse approach misses the hand-over for that pass (the truck leaves; the level remains
+   completable through the gate door #118, fallback 0x1F [D]). The sim chain itself is green
+   end to end from the walked start (this session), so what remains is confirming in PCSX2
+   what the player actually hits: the arch-face beeline stall at (101.2, 24.94) (the manual
+   walker's trace) or a missed window, and whether the game's own walk needs any climb there.
+2. The cable route's `walkreal_07000005_live::walk_the_west_ledge_and_cross_the_cable` stays
+   `#[ignore]`d (the west anchors untested beyond the ladder — its own comment).
+3. The full suite on the final merged tree (the background runner is reaped between tool calls
+   in this sandbox; the foreground slices that fit ran green — see "What ran").
 
 ## Live checks for the main agent
 
