@@ -153,16 +153,14 @@ impl Breaks {
     /// 0x7000001, only kind == 2, damage = the drone's squared step × 20]). `level_01` is the
     /// caller's `GameState+0x12 == 0x07000001` check.
     ///
-    /// The contact test grows the pane's bounds by the class-2 body radius (`Bond`'s capsule
-    /// RADIUS 0.55 [M player.rs]; the drones' hull is the same scale [S]): the game feeds the arm
-    /// from the pane's `obj+0xD0` contact list, whose entries exist as soon as the body's
-    /// collision hull TOUCHES the pane's glist (a moving body registers while still outside the
-    /// mesh — the same list the bullet arm filters [M 0x12bfd8:15], whose 0.1 grow is the small
-    /// bullet sphere). A strict point-in-box never fires on the disc's flat pane sheets (pane
-    /// 130's z pair −1.01/−1.01 [D nf_view bounds]). The dead pane's collision lingers in the
-    /// port's static bake (the deviation — Break_Kill's "the collision goes away" [M 0x12b970:60]
-    /// needs the panes out of the bake and re-injected per tick; the naive set_dynamic route
-    /// stalled the 01 walk real-path test, see the task report).
+    /// The contact stands in for the game's collision pair ([M 0x12bfd8:15 — the pane's obj+0xD0
+    /// list the collision pass fills): the pair exists when the body's movement CARRIES IT INTO
+    /// the pane's collision sheet — this tick's step segment crosses the pane's bounds. A body
+    /// whose approach merely closes distance (a guard walking up to the glass, or standing near
+    /// it) has no pair until the collision engages; the port's pane bake stops bodies at the
+    /// sheet, so the crossing IS the engagement. The previous 0.55-grown hull zone fired ~0.6
+    /// before any physical contact — a proximity kill the game's list cannot produce (a pressed
+    /// guard's position is collision-owned: zero net step, zero damage [M the SqDist rule]).
     pub fn drone_step(&mut self, drone_from: V3, drone_to: V3, level_01: bool) -> Vec<BreakEffect> {
         let mut kills = Vec::new();
         if !level_01 { return kills; }
@@ -172,8 +170,8 @@ impl Breaks {
         if sq == 0.0 { return kills; }
         let dmg = sq * 20.0;
         for br in self.list.iter_mut().filter(|b| !b.dead && b.kind == 2) {
-            // The contact: this tick's step reaches the pane's body-radius-grown bounds.
-            if Self::seg_box_grow(drone_from, drone_to, br.lo, br.hi, 0.55) {
+            // The contact: this tick's step crosses the pane's bounds (the collision pair).
+            if Self::seg_box_grow(drone_from, drone_to, br.lo, br.hi, 0.0) {
                 br.health -= dmg;
                 if br.health < 0.0 {
                     br.dead = true;
