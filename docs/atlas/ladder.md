@@ -44,9 +44,12 @@ On grab [M]: snap to `centre + fwd(ladder.yaw)·0.5` (x = `cx − sin(yaw+π)·0
 
 **Not input-driven**: walking into the ladder attaches (the use key is not involved) [M].
 
-Port: `Bond::ladder_grab` (crates/nf-game/src/player.rs). The grab zone uses the ladder's axis column
-(`Ladder::capsule_hits`) instead of the game's per-object HITTEST shape [S — the shape is not recoverable
-from the decompile this pass; the yaw window and y window above are the real gates and are [M]].
+Port: `Bond::ladder_grab` (crates/nf-game/src/player.rs). The grab zone is the substate arm's capsule
+against the ladder mesh's bounds box in the ladder's frame (`Ladder::in_mesh_box`; the shipped ladders
+are ±0.354 wide × ±0.060 deep [M glist bounds + 0x2E triangles, 07000002]) instead of the unported
+glist triangle refine [S stand-in; the yaw window and y window above are the real gates and are [M]].
+PCSX2 pin (2026-10-16): from the 02 hut pocket (−76.27, 3.17, 22.14) a swimmer at yaw 0.4/0.7 passes
+the ladder and ≥ 1.3 grabs (`hut_pocket_swim_out_passes_the_ladder_like_the_ps2`).
 
 ## The climb — `Player_Climb` 0x196310 (936 bytes, substate 1) [M]
 

@@ -17,10 +17,11 @@ fn an_unread_stream_stays_bounded_and_stops_promptly() {
     std::thread::sleep(std::time::Duration::from_secs(8));
     let mut queued = 0usize;
     while s.advance() { queued += 1; }
-    // While this loop drains, the worker refills from the GOP it already decoded (one GOP's pictures,
-    // 12-15 in these movies), so the bound is STREAM_AHEAD plus a GOP, not thousands.
+    // While this loop drains, each decode thread refills from the GOP it already decoded (one GOP's
+    // pictures, 12-15 in these movies), so the bound is STREAM_AHEAD plus a GOP per thread, not
+    // thousands.
     eprintln!("queued unread: {queued}");
-    assert!(queued <= nf_view::movie::STREAM_AHEAD + 30,
+    assert!(queued <= nf_view::movie::STREAM_AHEAD + 30 * nf_view::movie::DECODE_THREADS,
         "{queued} pictures queued unread; the worker must stop {} ahead", nf_view::movie::STREAM_AHEAD);
     // Sister: the worker did decode ahead (the bound is what stopped it, not a dead worker).
     assert!(queued >= nf_view::movie::STREAM_AHEAD / 2, "only {queued} pictures decoded in 8 s");

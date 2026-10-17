@@ -73,32 +73,40 @@ fn the_stun_grenade_whites_bond_out_at_the_games_time_and_alpha() {
         if sim.drones.health.flashbang > 0.0 { popped = Some(()); break; }
     }
     popped.expect("the stun grenade flashed Bond at its fuse");
-    // The expected factor from the OBSERVED blast geometry, through the ported math itself: the
-    // spread and the bounce decide where the grenade sits, and the game's formula answers from there.
+    // frag-throw-timing2: the sim recorded the flash's exact geometry at the pop (`Drones::
+    // flash_probe`, the FlashProbe doc) — the formula is asserted on THAT, not on a
+    // reconstruction: with the case-0xc release timing [M 0x1a2e38:505-519] the pop can catch
+    // the grenade still in flight, and the old reconstruction (the last grenade position the
+    // test sampled — the record is deleted the same tick as the pop [M retain state<2, the
+    // flash branch sets state 2 0x12e118's tail] — plus Bond's post-pop look) drifted past the
+    // tolerance (the 741 hold: alpha 0.673 vs 0.758/0.379 on reconstructed geometry).
     let sim = scene.sim.as_ref().unwrap();
-    let blast = blast.expect("the grenade's flight was observed");
-    let head = sim.bond.head();
-    let look = sim.bond.look();
-    let l = (look[0] * look[0] + look[2] * look[2]).sqrt().max(1e-6);
-    let yaw = (look[0] / l).atan2(look[2] / l);
-    // The captured blast pos lags the pop tick by ≤ one segment and the test's head point differs
-    // from the sim's player.eye — the LOS leg is endpoint-sensitive near the floor lip, so the
-    // formula is asserted on BOTH its LOS branches (the old flat flashbang = 1.0 fails either).
-    let e_clear = nf_game::drone::flash_amount(head, blast, sim.bond.pos[0], sim.bond.pos[2], yaw, true);
-    let e_block = nf_game::drone::flash_amount(head, blast, sim.bond.pos[0], sim.bond.pos[2], yaw, false);
+    let probe = sim.drones.flash_probe.expect("the flash recorded its geometry (the FlashProbe doc)");
+    // Sister: the recorded blast is the grenade's own pop position — the last sampled flight
+    // position sits one tick before it (the same-tick record deletion above).
+    let last_seen = blast.expect("the grenade's flight was observed");
+    let drift = ((probe.blast[0] - last_seen[0]).powi(2) + (probe.blast[1] - last_seen[1]).powi(2)
+        + (probe.blast[2] - last_seen[2]).powi(2)).sqrt();
+    eprintln!("[stun] probe {probe:?} last_seen {last_seen:?} drift {drift}");
+    assert!(drift < 3.0, "the flash's blast is the grenade's pop position (one sampled tick apart), got {drift}");
+    // The game's formula [M 0x12dfb0-0x12e0b8] on the recorded geometry reproduces the flash
+    // exactly: the sim's alpha IS that call's f (the same pure function on the same inputs).
+    let e = nf_game::drone::flash_amount(probe.head, probe.blast, probe.px, probe.pz, probe.yaw, probe.los);
     let alpha = sim.drones.health.flash_alpha;
-    eprintln!("[stun] blast {blast:?} head {head:?} f(clear) {e_clear} f(blocked) {e_block} alpha {alpha}");
-    let expect = if (alpha - e_clear).abs() <= (alpha - e_block).abs() { e_clear } else { e_block };
-    assert!((alpha - e_clear).abs().min((alpha - e_block).abs()) < 0.08,
-        "the flash alpha follows the game's factor on the observed geometry [M 0x12dfb0], got {alpha}, want {e_clear} or {e_block}");
+    assert!((alpha - e).abs() < 1e-6,
+        "the flash alpha is the game's factor on the geometry the flash used [M 0x12dfb0], got {alpha}, formula {e}");
     let h = &sim.drones.health;
-    assert!(expect > 0.2, "the at-feet blast must flash meaningfully, got {expect}");
-    assert!((h.flashbang - 600.0 * expect).abs() < 48.0,
-        "the flash lasts FRAME_RATE·f·10 = 600·f ticks [M 0x12e0b8; D input.md:126], got {} want {}", h.flashbang, 600.0 * expect);
-    assert!((h.flash_total - 600.0 * expect).abs() < 48.0, "the flash's total matches (the plateau/fade switch) [M 0x193600]");
+    assert!(e > 0.2, "the at-feet blast must flash meaningfully, got {e}");
+    // The remaining count was set to 600·f this pop [M 0x12e0b8 + 0x196040; D input.md:126] and
+    // the read lands within one countdown tick of it (the pop step's own decay — 0x193600's
+    // 1/tick countdown runs after the grenade update in the same step; the read is exact on
+    // 600·f when the order ever flips, so the window is one-sided, no slop).
+    assert!(h.flashbang <= 600.0 * e + 1e-3 && h.flashbang > 600.0 * e - 1.5,
+        "the flash lasts FRAME_RATE·f·10 = 600·f ticks, read within one countdown tick [M 0x12e0b8; D input.md:126; the countdown 0x193600], got {} want ~{}", h.flashbang, 600.0 * e);
+    assert!((h.flash_total - 600.0 * e).abs() < 1e-3, "the flash's total matches (the plateau/fade switch) [M 0x193600]");
     // The render shape [M 0x193600:340-352]: full white past the half point, faded out by the end.
-    // The shape: the drawn white equals the flash alpha while more than half remains (the alpha itself is
-    // checked against the formula above, within the observed-geometry tolerance).
+    // The shape: the drawn white equals the flash alpha while more than half remains (the alpha
+    // itself is checked against the formula on the flash's recorded geometry above).
     assert!((flash_white_alpha(&scene) - h.flash_alpha).abs() < 0.02, "full white while remaining counts past its half");
     drop(h);
     // The held trigger threw more grenades; each later pop re-sets the flash. Let the air clear,
@@ -164,22 +172,28 @@ fn the_stun_flash_scales_with_distance() {
     }
     popped.expect("the stun flashed");
     let sim = scene.sim.as_ref().unwrap();
-    let blast = last_grenade.expect("the grenade's flight was observed");
-    let head = sim.bond.head();
-    let d = ((head[0] - blast[0]).powi(2) + (head[1] - blast[1]).powi(2) + (head[2] - blast[2]).powi(2)).sqrt();
-    eprintln!("blast at {blast:?}, head {head:?}, d {d}, alpha {}", sim.drones.health.flash_alpha);
-    assert!(d > 20.0, "Bond retreated before the pop (d = {d})");
+    // frag-throw-timing2: the formula is asserted on the flash's recorded geometry (the
+    // FlashProbe doc) — the retreat test's reconstruction read Bond's post-teleport look while
+    // the pop caught the grenade in flight, so the reconstruction drifted.
+    let probe = sim.drones.flash_probe.expect("the flash recorded its geometry (the FlashProbe doc)");
+    let d = ((probe.head[0] - probe.blast[0]).powi(2) + (probe.head[1] - probe.blast[1]).powi(2)
+        + (probe.head[2] - probe.blast[2]).powi(2)).sqrt();
+    eprintln!("blast at {:?}, head {:?}, d {d}, alpha {}", probe.blast, probe.head, sim.drones.health.flash_alpha);
+    assert!(d > 20.0, "Bond retreated before the pop (the flash's own dist d = {d})");
+    // Sister: the recorded blast is the grenade's own pop position (one sampled tick apart —
+    // the record dies the same tick, drone.rs retain(state<2)).
+    let last_seen = last_grenade.expect("the grenade's flight was observed");
+    let drift = ((probe.blast[0] - last_seen[0]).powi(2) + (probe.blast[1] - last_seen[1]).powi(2)
+        + (probe.blast[2] - last_seen[2]).powi(2)).sqrt();
+    assert!(drift < 3.0, "the flash's blast is the grenade's pop position (one sampled tick apart), got {drift}");
     // The far blast reads well under the old flat full-white: the distance factor alone caps at
     // 1 − (d−5)/85 ≈ 0.65 at 35 u, and the retreat line's geometry may halve it again (×0.5, the
-    // LOS arm [M 0x12e0a4]). Assert the formula on both its LOS branches.
-    let look = sim.bond.look();
-    let l = (look[0] * look[0] + look[2] * look[2]).sqrt().max(1e-6);
-    let yaw = (look[0] / l).atan2(look[2] / l);
-    let e = nf_game::drone::flash_amount(head, blast, sim.bond.pos[0], sim.bond.pos[2], yaw, false);
+    // LOS arm [M 0x12e0a4]) — both live in the recorded `los` branch the formula call consumes.
+    let e = nf_game::drone::flash_amount(probe.head, probe.blast, probe.px, probe.pz, probe.yaw, probe.los);
     let alpha = sim.drones.health.flash_alpha;
     assert!(alpha < 0.7, "a distant blast is not a near-full white, got {alpha}");
-    assert!((alpha - e).abs() < 0.08 || (alpha - e * 0.5).abs() < 0.08,
-        "the alpha follows the distance factor ×(LOS branch) [M 0x12dfb0], got {alpha} want {e} or {}", e * 0.5);
+    assert!((alpha - e).abs() < 1e-6,
+        "the alpha is the game's distance factor ×(LOS branch) on the recorded geometry [M 0x12dfb0], got {alpha} want {e}");
 }
 
 /// ── The guard within the blast is stunned for 3600 ticks and drops his weapon ───────────────────

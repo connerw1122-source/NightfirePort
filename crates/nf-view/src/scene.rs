@@ -417,6 +417,12 @@ pub struct Sim {
     /// Set by the `Check_Target` block in `run` every 6th frame, read by the HUD [M 0x1a7810, 0x19e6d0].
     pub cross_state: u8,
     pub auto_aim: bool,
+    /// PC-port option "Rapid fire" [S port-only; off = the game]: while the trigger is held every
+    /// weapon fires one round per 60 Hz tick (the record's refire interval and shots-per-pull are
+    /// overridden, the round spawns on the press tick instead of the fire script's release frame) and
+    /// its clip stays full. A showcase of how many live projectiles the port's sim and renderer carry;
+    /// the game's own rules are untouched while it is off.
+    pub rapid_fire: bool,
     /// `BLData+0x8D0`: the current zoom factor (1.0 = no zoom, up to `weapon_data+0x88`). The FOV is divided
     /// by this. `Player_Zoom` (0x1a1a70) interpolates it toward `zoom_target` (`+0x8D4`).
     pub zoom: f32,
@@ -1854,6 +1860,9 @@ impl Sim {
     /// height (stand-in for the game's player object and `Drone_View_Bones`).
     /// `trigger`: the fire button (action 9) held; `aiming`: aim mode (L1).
     pub fn step(&mut self, camera: [f32; 3], look: [f32; 3], trigger: bool, aiming: bool) {
+        // mayhew-end-transition: the exit hold freezes the free-camera path too (the game's whole
+        // sim is paused [M 0x1c98c8:44-47]; docs/systems/exit-hold.md).
+        if self.drones.tick_exit_hold() { return; }
         let floor = self.world.floor_below(camera, 4.0).unwrap_or(camera[1] - 1.6);
         self.first_person = false;
         let ground = [camera[0], floor + 0.4, camera[2]];
@@ -1893,6 +1902,14 @@ impl Sim {
     pub fn step_bond(&mut self, mut input: nf_game::player::Input, trigger: bool, reload: bool, use_key: bool) {
         nf_game::prof::tick();
         let _prof = nf_game::prof::scope("step_bond (total)");
+        // mayhew-end-transition: the exit hold — `Trigger_Activate`'s `GS_PauseGame(1)` +
+        // `GameFlow_PushState(300.0f, 7, 0xff)` [M 0x1b2318:90-92]. While it stands the game's
+        // clock stops [M 0x1c98c8:44-47], the player input dies [M `psiInput_MapInputs`
+        // 0x10cd80:36] and the world sections of `Game_Run` are behind the pause gate
+        // [M 0x1c9790:30-38] — but the fade itself advances every frame [M 0x1c9790 tail].
+        // The port ticks the hold and skips the world (docs/systems/exit-hold.md); the host
+        // defers the level load until it clears.
+        if self.drones.tick_exit_hold() { return; }
         // mp-core: `MP_Update` 0x184bd0 runs per frame in the gameplay flow state [M 0x184bd0:17-21];
         // the port's fixed tick stands in for the game's wall-clock delta (the module doc's
         // *Deviation*). Arena loads only — `None` on every campaign level.
@@ -3155,7 +3172,19 @@ impl Sim {
         let can_fire = !switching;
         if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
             let scripts = &self.scripts;
-            let params = nf_game::gun::GunParams::from_record(w, self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0) as usize, |h| scripts.get(&h).map(|s| s.length as u32));
+            let mut params = nf_game::gun::GunParams::from_record(w, self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0) as usize, |h| scripts.get(&h).map(|s| s.length as u32));
+            if self.rapid_fire && params.ammo_type != 0 {
+                // The PC-port rapid fire (see the field): one round per tick for as long as the
+                // trigger is held, spawned on the press tick, from a clip that never empties.
+                params.interval = 1.0;
+                params.shots_per_pull = i32::MAX;
+                params.fire_anim_len = 0;
+                if params.clip > 0 {
+                    let slot = self.clip_slot(self.gun.weapon as usize);
+                    if let Some(c) = self.drones.inventory.clip.get_mut(slot) { *c = (*c).max(params.clip as i16); }
+                    self.gun.clip = self.gun.clip.max(params.clip);
+                }
+            }
             // Auto-aim (on by default in the game's options) scans only outside aim mode
             // (`Player_AutoAim` 0x1a7c98 gates the `Check_AutoAim` scan on the aiming bit, which the
             // game sets only after the aim-raise anim finishes — `Player_SetWeaponAnimObj` case 0xf).
@@ -3295,7 +3324,7 @@ impl Sim {
             let new_reload_state = self.gun.reload_tick(trigger, params);
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let flags = rd(0x68);
-            let fire_anim_len = rd(0x44);
+            let fire_anim_len = if self.rapid_fire && params.ammo_type != 0 { 0 } else { rd(0x44) };
             if fired {
                 // `Player_SetFiringAnim` (0x1a3c70), via `Gun::firing_anim_script`: the last-round pick
                 // (flag 0x1000 / base 0x11), the fists' Rand(100) left/right alternation (flag 0x80000)
@@ -3517,7 +3546,20 @@ impl Sim {
             // `fire_anim_len == 0` spawn on the press tick (latched there) [M 0x1a5460:688-693]. Before this,
             // the port spawned every round on the press tick — a grenade pull fired a hitscan bullet instead
             // of winding up and throwing, and the 900-tick refire interval stayed armed afterwards.
-            let release = if fire_anim_len == 0 { fired } else { self.gun.release_frame_reached(self.view_time, fire_anim_len) };
+            // fix-frag-throw-timing: the release-family weapons (`+0x6C & 0x400` with a `+0xB4` script — the
+            // hand grenades) run the view machine through 0xb/0xc [M 0x1a5460:676-685], and case 9's check
+            // never fires for them — the state leaves 9 inside the fire tick itself. Their release check is
+            // case 0xc's [M 0x1a2e38:505-519, disasm 0x1a3268-0x1a32c4], reached only after the fire script
+            // ENDED (case 0xb's `AnimScriptIsStopped` gate → the +0xB4 script queued) — so the playhead it
+            // compares against `+0x44` is the +0xB4 script's, which starts at 1.0 [M AnimScriptInit
+            // 0x1c1600:37] and advances 1.0/tick [M AnimScriptTick 0x1c2630 mode 0]. The port ran case 9's
+            // check during the fire script itself: the frag (fire 70 frames at 1.5×, +0x44 = 26) released at
+            // press+17, mid-wind-up — the playtest's "flying out way too soon, they don't let the animation
+            // finish". The gate below (the view is on the +0xB4 script) is the case-0xb → case-0xc phase.
+            let release_family = rd(0x6c) & 0x400 != 0 && rd(0xb4) != 0;
+            let release = if fire_anim_len == 0 { fired }
+                else if release_family { self.view_script == rd(0xb4) && self.gun.release_frame_reached(self.view_time, fire_anim_len) }
+                else { self.gun.release_frame_reached(self.view_time, fire_anim_len) };
             if release && !fired { self.gun.latch = true; }
             // The gun scripts' sound commands (`AnimProcessScriptCmds` op 1: `Sound_Play3D(cmd[2], …)` when the
             // script's frame crosses cmd[1]): the shot (0x403 at frame 1 of the P2K's fire scripts) and the reload's
@@ -6545,7 +6587,7 @@ impl Scene {
             // The difficulty was set before the creates above (the game's GameState+0x28 pick);
             // the old direct-load hardcode `= 1` moved into the build parameter so replay loads
             // pass 1 and the front-end path passes the menu's pick.
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, ai_points, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, ai_points, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, rapid_fire: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
             mp_bonds: [None, None, None, None],
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, laser_charge: 100.0, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,
@@ -7128,9 +7170,11 @@ impl Scene {
                 return datum;
             }
             if a.flash.is_none() { return datum; }
-            // Bond's flash: 3 ticks after his shot (`BL+0x938` = 3), along the datum's +Z with a random roll and scale.
+            // Bond's flash: `BL+0x938` = 3 at the shot, and `Player_CollisionHandler` decrements it in the
+            // same tick before the draw test, so `Draw_MuzzleFlash` runs on 2 ticks [M 0x1949a8:192-202]
+            // (the port drew 3); along the datum's +Z with a random roll and scale.
             if self.sim.as_ref().and_then(|s| self.view_models.get(&s.gun.weapon)) == Some(&(a.character as usize)) {
-                return match self.sim.as_ref().and_then(|s| s.last_shot.filter(|&f| s.drones.frame.saturating_sub(f) < 3).map(|f| (s, f))) {
+                return match self.sim.as_ref().and_then(|s| s.last_shot.filter(|&f| s.drones.frame.saturating_sub(f) < 2).map(|f| (s, f))) {
                     Some((s, f)) => player_flash_matrix(&datum, s.drones.frame ^ f.wrapping_mul(0x9e37_79b9)),
                     None => collapse(&datum),
                 };
@@ -7600,6 +7644,26 @@ impl Scene {
                 let Some(c) = cols.get_mut((l.col_att + a as u32) as usize) else { continue };
                 if let Some(g) = s.drones.gas.puffs.get(gi as usize).filter(|g| g.mesh == gm) {
                     *c = [g.rgba[0] / 255.0, g.rgba[1] / 255.0, g.rgba[2] / 255.0, g.rgba[3] / 255.0];
+                }
+            }
+        }
+        // Bond's muzzle flash alpha: `Draw_MuzzleFlash` writes the object's alpha byte (`obj+0x106`) on
+        // every drawn tick as `wd[+0x51] + Rand_FRand(wd[+0x52] − wd[+0x51])` [M 0x1a3fe0:141-144], which
+        // `View_SetupRenderModes_Tweak` 0x1e5888:47-49 hands to `psiSetTweakARGB` as the draw's alpha
+        // factor (byte/255) — the launcher's 128..255, the P2K's 64..192 [L weapon_data]. The port drew
+        // every flash at alpha 1: a solid shape where the game's flash is a flickering, see-through one.
+        // (A render-side random like the roll/scale in `player_flash_matrix`, not the sim's RNG.)
+        if let Some(s) = self.sim.as_ref() {
+            if let (Some(&vm), Some(f)) = (self.view_models.get(&s.gun.weapon), s.last_shot) {
+                if let Some(r) = s.weapons.records.get(s.gun.weapon as usize) {
+                    let (lo, hi) = (r[0x51] as f32, r[0x52] as f32);
+                    let mut z = (s.drones.frame ^ f.wrapping_mul(0x9e37_79b9)).wrapping_mul(2_654_435_761).wrapping_add(0x6d2b_79f5);
+                    z ^= z >> 15; z = z.wrapping_mul(0x2c1b_3c6d); z ^= z >> 12;
+                    let alpha = (lo + (z >> 8) as f32 / (1u32 << 24) as f32 * (hi - lo).max(0.0)) / 255.0;
+                    for (a, att) in self.attachments.iter().enumerate() {
+                        if att.flash.is_none() || att.character as usize != vm { continue; }
+                        if let Some(c) = cols.get_mut((l.col_att + a as u32) as usize) { c[3] = alpha; }
+                    }
                 }
             }
         }

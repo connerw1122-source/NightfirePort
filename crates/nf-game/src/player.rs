@@ -2028,7 +2028,7 @@ mod tests {
     #[test]
     fn the_ladder_grab_gate_excludes_only_climb_and_grapple() {
         let world = CollisionWorld::from_triangles(Vec::new());
-        let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
+        let lad = Ladder::simple([10.0, 3.0, 20.0], 2.0, 0.0);
         let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: Some(2.0), sink: false, creepwalls: &[], level_bump_5fb: false };
         // SWIM grabs: one tick in the water context attaches (pre-fix it stayed SS_SWIM).
         let mut b = Bond::new([10.0, 3.0, 20.5], lad.yaw + std::f32::consts::PI);
@@ -2083,7 +2083,7 @@ mod tests {
     #[test]
     fn climb_look_turns_within_the_ladder_window_and_pitch_is_free() {
         let world = CollisionWorld::from_triangles(Vec::new());
-        let lad = Ladder { centre: [10.0, 3.0, 20.0], radius: 2.0, yaw: 0.0, channel: 0 };
+        let lad = Ladder::simple([10.0, 3.0, 20.0], 2.0, 0.0);
         let ctx = LadderCtx { ladders: &[lad.clone()], wires: &[], wire_anims: None, water: None, sink: false, creepwalls: &[], level_bump_5fb: false };
         let mut b = Bond::new([10.0, 3.0, 20.0 + 0.5], lad.yaw + std::f32::consts::PI);
         b.substate = SS_CLIMB;
