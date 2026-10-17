@@ -22,13 +22,15 @@ fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
 /// The truck + gate route: the walk to the gatehouse, the scripted ride (the crouch is the player's
 /// own input [D fix-truck's trace]), the park, the chain's automatic exit.
-/// IGNORED (walkreal-a parked mid-task): the gatehouse floor sits ~1.1 over the courtyard and the
-/// hand-off's volume wants Bond ON it (the fix_truck teleport stood at (100,26,108); the walked
-/// Bond stops 1.1 below and the chain never fires — the ride trace shows 0x5c/0x70 dead for 9000
-/// ticks). The next session needs the gatehouse ramp route (the ch-0x25 plate at (58.7, 27.1, 110.7)
-/// marks the upper lane) or a jump-onto-ledge fix in the walker.
+/// UN-PARKED (mayhew-exit-walk 2026-10-17): the approach now walks the road to the gatehouse
+/// walkway's WEST edge (98.6, 26.0, 106.5) — inside the ch-0x5C plate's XZ [D the entity
+/// matrix (98.49, 27.05, 106.36), extent ±1.95/±1.75] — instead of the old (100, 26, 108)
+/// target whose line runs along the lower lane into the arch's south face (the old stall:
+/// the walked Bond oscillated at (101.2, 24.94, 107.6) [D Room_Road_A1's tris]). The chain
+/// (0x5C → SP #38 → the bed 0x71 → the crouched ride → 0x70 → the exit) is pinned green in
+/// crates/nf-view/tests/mayhew_handover_live.rs; this walk asserts the same from the
+/// walkreal harness.
 #[test]
-#[ignore]
 fn walk_to_the_gatehouse_and_ride_the_truck() {
     let iso = iso();
     let mut w = Walker::new(nf_view::load(&iso, "07000005.bin", false).expect("load 07000005"));
@@ -42,7 +44,7 @@ fn walk_to_the_gatehouse_and_ride_the_truck() {
     // Walk to the gatehouse (the truck's boarding spot; the fix-truck teleport stood at (100,26,108)).
     // Lenient: the gatehouse floor sits ~1.1 above the courtyard and the truck's own Script_Free
     // hand-off takes Bond from where he stands (the enable's `at` is the truck's matrix).
-    w.walk_nav_to([100.0, 26.0, 108.0], "to the gatehouse", 2.6);
+    w.walk_nav_to([98.6, 26.0, 106.5], "to the gatehouse", 1.6);
     {
         // The spawn's reveal plate (ch 0x45 at feet+0.47) sits below the toucher stand-in's reach —
         // a documented stand-in miss (see drone.rs's toucher comment); the truck chain does not
