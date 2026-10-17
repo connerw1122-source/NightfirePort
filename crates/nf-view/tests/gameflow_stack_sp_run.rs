@@ -107,7 +107,7 @@ fn the_sp_run_stack_matches_the_game() {
 
     // --- the mission end [M Mission_Update 0x182c60 case 4 / disasm 0x183054-60]:
     // +0x28 = 0x40000036, LevelToLoad pushes 3, then PushState(60.0f, 7) — a 60-frame fade.
-    fe.mission_ended(Outcome::Complete, Stats { shots_fired: 120, shots_hit: 40, accuracy_pct: 33, time_s: 754 });
+    fe.mission_ended(Outcome::Complete, Stats { shots_fired: 120, shots_hit: 40, accuracy_pct: 33, time_s: 754, ..Stats::default() });
     assert_eq!(fe.flow.stack, vec![ST_BOOT, ST_RUNNER, ST_MAPLOAD, ST_FADE_HOLD],
         "the end fade over the next load [M 0x182c60 case 4]");
     assert_eq!(fe.flow.fade_frames, 60, "0x42700000 = 60.0f [M disasm 0x183054]");

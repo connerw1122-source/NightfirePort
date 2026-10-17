@@ -477,7 +477,7 @@ fn a_completed_mission_routes_the_results_save_and_the_next_row() {
     fe.flow.current_level = level;
     fe.mission_ended(
         Outcome::Complete,
-        Stats { shots_fired: 30, shots_hit: 20, accuracy_pct: 66, time_s: 100 },
+        Stats { shots_fired: 30, shots_hit: 20, accuracy_pct: 66, time_s: 100, ..Stats::default() },
     );
     // The Exchange has no outro code: the front-end map loads plain, the results page stands.
     assert_eq!(fe.requested_level.take(), Some(menu::FRONTEND_LEVEL), "no outro for 07000005");
@@ -610,7 +610,7 @@ fn the_final_mission_routes_to_the_win_page_and_credits() {
     fe.flow.current_level = level;
     fe.mission_ended(
         Outcome::Complete,
-        Stats { shots_fired: 30, shots_hit: 20, accuracy_pct: 66, time_s: 100 },
+        Stats { shots_fired: 30, shots_hit: 20, accuracy_pct: 66, time_s: 100, ..Stats::default() },
     );
     assert_eq!(fe.requested_level.take(), Some(0x0730_001b), "the final level wraps to its outro");
     assert_eq!(drive_end_to_map(&mut fe), Some(menu::FRONTEND_LEVEL), "the outro resolves to the map");

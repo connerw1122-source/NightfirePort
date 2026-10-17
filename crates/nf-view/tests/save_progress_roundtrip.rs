@@ -98,7 +98,7 @@ fn the_roundtrip_restores_the_progress() {
     progress.stats[0].shots_fired = 10;
     progress.stats[0].shots_hit_enemy = 6;
     fe.mission = 1;
-    fe.mission_ended(Outcome::Complete, Stats { shots_fired: 30, shots_hit: 20, accuracy_pct: 66, time_s: 100 });
+    fe.mission_ended(Outcome::Complete, Stats { shots_fired: 30, shots_hit: 20, accuracy_pct: 66, time_s: 100, ..Stats::default() });
     fe.requested_level = None; // the headless leg skips the outro wrap
     assert!(fe.results_enter(&mut progress, 0x0700_0005, 6, 2, None), "the fields built [M 0x208e78:77]");
     assert!(fe.results_improved, "the commit improved (first completion) [M DoneBetter]");
@@ -124,7 +124,7 @@ fn the_roundtrip_restores_the_progress() {
     progress.stats[0].shots_fired = 20;
     progress.stats[0].shots_hit_enemy = 12;
     fe.mission = 4;
-    fe.mission_ended(Outcome::Complete, Stats { shots_fired: 44, shots_hit: 30, accuracy_pct: 68, time_s: 190 });
+    fe.mission_ended(Outcome::Complete, Stats { shots_fired: 44, shots_hit: 30, accuracy_pct: 68, time_s: 190, ..Stats::default() });
     fe.requested_level = None;
     assert!(fe.results_enter(&mut progress, 0x0700_0001, 6, 2, None), "the fields built");
     let medal2 = fe.results.as_ref().expect("the results fields").medal;

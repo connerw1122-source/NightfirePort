@@ -141,7 +141,7 @@ fn the_results_commit_writes_once_with_the_synced_contents() {
     progress.stats[0].shots_fired = 10;
     progress.stats[0].shots_hit_enemy = 6;
     let map = 0x0700_0005;
-    fe.mission_ended(Outcome::Complete, Stats { shots_fired: 30, shots_hit: 20, accuracy_pct: 66, time_s: 100 });
+    fe.mission_ended(Outcome::Complete, Stats { shots_fired: 30, shots_hit: 20, accuracy_pct: 66, time_s: 100, ..Stats::default() });
     fe.requested_level = None; // the headless leg skips the outro wrap
     fe.sync_profile_progress(&progress);
     assert!(fe.results_enter(&mut progress, map, 6, 2, None), "the fields build [M 0x208e78:77]");

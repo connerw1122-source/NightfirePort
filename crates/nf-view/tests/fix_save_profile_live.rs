@@ -174,7 +174,7 @@ fn completing_a_mission_unlocks_and_saves() {
     // Sister: a FAILED mission saves nothing new — the fail menu has no save arm [M 0x216618].
     let before = std::fs::read(nf_game::profile::Profile::path_in(&dir, "UNLOCKTEST")).unwrap();
     fe.mission = 2;
-    fe.mission_ended(Outcome::Failed, Stats { shots_fired: 0, shots_hit: 0, accuracy_pct: 0, time_s: 1 });
+    fe.mission_ended(Outcome::Failed, Stats { shots_fired: 0, shots_hit: 0, accuracy_pct: 0, time_s: 1, ..Stats::default() });
     let after = std::fs::read(nf_game::profile::Profile::path_in(&dir, "UNLOCKTEST")).unwrap();
     assert_eq!(before, after, "the fail path does not write the profile");
     assert!(!fe.unlocked[3], "a failed mission unlocks nothing");
