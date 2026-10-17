@@ -18810,3 +18810,37 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   spent its window on the keyboard) — the walkreal's SW-office route with the ch-0x30 door drive
   is unchanged and green. Suite: the touched crates' tests (interactables 7/0, keyboard 1/0,
   walk 3/0, walkreal 1/0) on the final tree.
+- 2026-10-17 s/level-0b-interactables (task 711a): STARTED. Census of every placement a player can
+  touch, use, shoot or ride on 0700000b (Tower C: executive floor + roof), one real-input-path test
+  per KIND, every model/skin resolving. Known opens: roof helicopter (750h2), executive-floor locks.
+  Sandbox window ~20:26-22:26 UTC.
+- 2026-10-17 s/level-0b-interactables (task 711a): DONE. The 0700000b interactables. (1) The
+  census (docs/levels/0700000b.md "Census (task 711a)"): all 86 dynamic placements by type with
+  the game's function [M] and the port status — the one unported kind is the GT turret (0x27
+  "GunSamuri-Placement" ×5, `case 0x27 → GT_Create` 0x17ffa0 [M 0x1d04f0:113-115]; two of the
+  five guard the Secure Terminal Room); the old "11 hurt volumes (0xE6)" line was a misread (the
+  0xE6 placements are roof Cover Low Nodes; the port hurts list on 0b is empty [D probe]). (2)
+  The two known opens, both pinned green through the real input: the executive-floor locks (the
+  0x2E keypad burns under the Laser watch 0x4E [M Lock_Update 0x1ae3d8 case 0, the open writes
+  switch_channels[47] :194-195] and door #151 refuses-then-opens on the same E; the 0x29 keycard
+  lock E-toggles ch 9 [M 0x1b02a8] and the locked sdoor1 slides) and the roof helicopter (the
+  0x2F copter #328 held at its placement by the closed gate ch 0x2A [D p6; M 0x17dbb8 head], no
+  drift, arrival ch 0x66 unwritten, the parachute #280 untouched on the deck; no gate writer in
+  the dumps [D]). (3) Nine live kind tests (crates/nf-view/tests/interactables_0700000b_live.rs,
+  each with a sister): keycard E → ch 9 → sdoor; keypad burn → ch 0x2F → the exec-office door;
+  plain door E; the vent-grill SS #98 E (state 0x40, mask 4 [D]) sweep + wrap [M 0x1a9ea8,
+  0x1a9948:121-126]; the dome laserbeam crossing (the 0.28 m band + the off-write — polls during
+  the crossing); the pickups walk-overs (armour 50, the rocket 0x2E, the BOND_BONUS consume [M
+  0x18e650]); the rooftop vent E (ch 0x77 pulse; SP #326 plays 0x060009F9 — the cover kept by
+  Event 0xC at its tick 31, the script's own Event 0xD clears ch 0x77 at tick 10 [D nis]); the
+  copter gated hover; the music triggers' create pin (ch 9 → event 41, ch 0x4E → event 17 [D
+  #269/#283]; the board slot is consumed inside the frame — a live check). The Q-Worm install
+  kind is already walkreal's real shot. (4) The models sweep green: 5630 materials, 0
+  white-fallback; the 10 oDrone guard templates + the 2 spawners (#267 group 2 / #268 group 3)
+  with skins [M DroneSpawner_Control 0x137e68 holds them absent until the spawn conditions].
+  SP mode 8 = looping (SCRIPTINFO+0xAB2 bit 3, Script_Run 0x1d8548:130) — the lift's loop plays;
+  the carry (standing on the moving cab) stays the port's gap, the ladder carry is the precedent.
+  Green: interactables_0700000b 9/0, models_sweep_0700000b 2/0, walkreal_0700000b 1/0,
+  walk_0700000b 4/0, nf-game lib 279/0, textures_live 1/0, pickup_live 1/0, nf-view lib 21/0.
+  suite.py did not fit (the sandbox kills background processes; the foreground set above is the
+  touched crates). Report: docs/reports/level-0b-interactables.md.
