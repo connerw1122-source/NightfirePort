@@ -18882,3 +18882,12 @@ the game's reasons; the weapon gate drops with it. Blocked: the escort stays red
 live checks (the 0xa27 ray, the AND latch semantics, Mayhew's prop 0x50, the +0x62 byte) listed
 in the report. Ran: escort_follow + walkreal_07000001 binaries on the final tree; the suite
 total line not reached. Report: docs/reports/level-01-complete-3.md.
+
+## level-01-complete-4 (2026-10-17, branch s/level-01-complete-4)
+Task 701e. Continues 701d's blocked fix path: port the masked sight ray (the game's
+Collide_LineOfSight mask 0xa27, per DroneVision_CanSeeObjectFrom 0x176f18:56-104) into the port's
+CollisionWorld as a segment_masked, use it in the armed-peer scan (keep health>0 + ≤20m), and
+drop/re-derive the weapon gate per the disasm (NearArmedDrone 0x17752c-0x177578: a NULL weapon
+record at obj+0xdc or record byte+0x62 == 0x47 exactly; NotNearArmedDrone 0x177640 keeps the
+remembered +0x2b8 peer WITHOUT the sight test). Both escort_follow_07000001_live and
+walkreal_07000001_live (3/3) must pass; the full suite to a total line before the push.
