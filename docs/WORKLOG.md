@@ -16727,3 +16727,11 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+## ai-points (2026-10-17, branch s/ai-points) — started 01:10 UTC
+
+Task 747: port the `Drone_AIPoint` script entity (0xE9, `Drone_AIPoint` 0x137550 [M], 162
+placements) and wire it into the guards' route/patrol logic the way the game uses it. Test on
+07000007 (34 points). Plan: read the script-census entry, port the record from the decompile,
+write a test that fails without the fix, update script_census.rs handled sets, run the touched
+crates + the suite. Branch created from origin/master bee8c129.
