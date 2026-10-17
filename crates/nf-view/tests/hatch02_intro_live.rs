@@ -52,6 +52,7 @@ fn the_intro_animates_no_hatch_and_ends_on_the_objective_gate() {
                 nf_game::nis::Obj::Camera { .. } => "camera".into(),
                 other => format!("{other:?}"),
             }).collect();
+            // [D script 0x06000084 of 07800002.bin: streams s0 camera, s1/s2 anim actors, s8 the one entity 020005db]
             assert_eq!(objs.len(), 4, "the intro created unexpected objects: {objs:?}");
             assert!(objs.contains(&"anim 0500004f".into()) && objs.contains(&"anim 05000009".into())
                 && objs.contains(&"entity 020005db".into()) && objs.contains(&"camera".into()),
@@ -64,6 +65,7 @@ fn the_intro_animates_no_hatch_and_ends_on_the_objective_gate() {
             });
         }
         if t == 1500 {
+            // [D 0x06000084's only channel write: event 0xD [0x47, 1] at tick 1539]
             assert!(!sim.drones.channels.on(0x47), "ch 0x47 rose before the intro's final event");
         }
         // no grate ever moves during the intro (the script has no hatch stream [D])
@@ -75,6 +77,7 @@ fn the_intro_animates_no_hatch_and_ends_on_the_objective_gate() {
     }
     let sim = scene.sim.as_ref().unwrap();
     let player = sim.drones.scripts.players.iter().find(|p| p.scripts.contains(&0x0600_0084)).expect("the intro SP");
+    // [D 0x06000084 runs to its end; event 0xD [0x47, 1] at tick 1539; the pearl's 1500-key stream s8]
     assert_eq!(player.state, 5, "the intro (0x06000084) never ran to its end (state 5)");
     assert!(sim.drones.channels.on(0x47), "the intro's final event 0xD [0x47, 1] (tick 1539) never landed");
     // the pearl tracked its key path: the final entity position ≈ key 1719 (the last key)
@@ -82,6 +85,7 @@ fn the_intro_animates_no_hatch_and_ends_on_the_objective_gate() {
     let last = nis.keys[1719].clone();
     let mid = pearl_mid.expect("the pearl entity was alive mid-intro");
     let moved = ((mid[0] - last.pos[0]).powi(2) + (mid[1] - last.pos[1]).powi(2) + (mid[2] - last.pos[2]).powi(2)).sqrt();
+    // [D 0x06000084 stream s8: the pearl entity's keys travel through the bunker]
     assert!(moved > 0.5, "the pearl never left its first key (moved {moved:.3}) — the entity stream is dead");
 }
 
@@ -117,6 +121,7 @@ fn the_bunker_bed_hatch_opens_on_e_and_holds_the_open_pose() {
         sim.bond.yaw = dz.atan2(dx);
         sim.bond.pitch = (dy.atan2(horiz) * 2.0 / std::f32::consts::PI).clamp(-1.0, 1.0);
         // Sister (closed first): the posed matrix is still key 0 — the hatch is shut.
+        // [M SS_Activate 0x1a9ea8 (mask 4, ch word 0): grill1 #440 opens on the use key only; [D #440] key 0 = closed]
         assert_eq!(sim.drones.sss.list[ss440].matrix, closed, "the hatch is open before any use key");
     }
     // The use key through the real input path (the E edge every other tick), then the sweep

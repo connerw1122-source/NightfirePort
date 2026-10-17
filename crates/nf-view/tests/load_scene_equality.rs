@@ -42,6 +42,7 @@ fn the_cut_costs_build_the_same_scene() {
             scene.vertices.len(), scene.indices.len(), scene.materials.len(), scene.char_verts.len(),
             scene.characters.len(), scene.attachments.len(), scene.colliders.len(), scene.cels.len(),
             sim.drones.list.len(), sim.drones.pickups.len());
+        // [S port engineering] scene-equality of the load-time cuts (digests re-captured on master bee8c129), no game claim
         assert_eq!(&got, expected, "{level}: the built scene changed (level-load-time cuts must be scene-preserving)");
         assert!(scene.vertices.len() > 0, "{level}: the pin must not be vacuous");
     }

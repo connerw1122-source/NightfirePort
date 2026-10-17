@@ -38,6 +38,7 @@ fn load_time_probe_all_levels_cold_and_warm_by_phase() {
     if cfg!(debug_assertions) { eprintln!("load_time_probe: release-only, skipped on a debug build"); return; }
     let img = nf_formats::iso9660::IsoImage::open(&iso).expect("open the ISO");
     let levels = on_foot_levels(&img);
+    // [S port engineering] the load-time probe: timings and non-vacuity only, no game claim
     assert!(!levels.is_empty(), "the disc must list the on-foot level archives");
     eprintln!("\n=== load-time probe: {} on-foot levels ===", levels.len());
     eprintln!("{:<10} {:>9} {:>9} | {}", "level", "cold s", "warm s", "warm phases (s)");
@@ -48,6 +49,7 @@ fn load_time_probe_all_levels_cold_and_warm_by_phase() {
         let t0 = Instant::now();
         let scene = nf_view::load(&iso, level, false).unwrap_or_else(|e| panic!("{level}: {e}"));
         let cold = t0.elapsed().as_secs_f64();
+        // [S port engineering] probe non-vacuity
         assert!(scene.vertices.len() > 0, "{level}: the probe's scene must be non-vacuous");
         // Warm: the same level again — the page cache and the process-level tables are hot.
         nf_view::phases_reset();
@@ -55,6 +57,7 @@ fn load_time_probe_all_levels_cold_and_warm_by_phase() {
         let warm_scene = nf_view::load(&iso, level, false).unwrap_or_else(|e| panic!("{level} warm: {e}"));
         let warm = t1.elapsed().as_secs_f64();
         let phases = nf_view::phases_take();
+        // [S port engineering] cold/warm build parity
         assert_eq!(scene.vertices.len(), warm_scene.vertices.len(), "{level}: warm must build the same scene");
         eprintln!("{:<10} {:>9.3} {:>9.3} | {}", level, cold, warm,
             phases.iter().map(|(n, s)| format!("{n}={s:.3}")).collect::<Vec<_>>().join(" "));
@@ -74,5 +77,6 @@ fn load_time_probe_all_levels_cold_and_warm_by_phase() {
     totals.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
     eprintln!("\n=== phase totals over all levels (warm runs) ===");
     for (n, s) in &totals { eprintln!("{s:>9.3}s  {n}"); }
+    // [S port engineering] probe instrumentation
     assert!(totals.iter().any(|(n, _)| n.starts_with("07")), "the scene-build phase must be measured");
 }

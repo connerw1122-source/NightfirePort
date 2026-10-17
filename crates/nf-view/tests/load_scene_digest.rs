@@ -79,6 +79,7 @@ fn scene_digest_per_level() {
         let scene = nf_view::load(&iso, level, false).unwrap_or_else(|e| panic!("{level}: {e}"));
         let (h, summary) = digest(&scene);
         eprintln!("DIGEST {level} {summary}");
+        // [S port engineering] load-path digest, no game claim
         assert!(h != 0, "{level}: the digest must not be vacuous");
     }
 }

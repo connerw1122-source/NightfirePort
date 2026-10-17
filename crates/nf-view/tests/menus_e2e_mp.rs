@@ -379,6 +379,7 @@ fn back_out_of_every_page_and_walk_forward_again_team() {
     // back-out left must not survive it (playtest 1015-2231's forward-again walk).
     assert_eq!(fe.mp_join[0].state, 0, "the re-entered page resets the agent");
     assert!(!fe.mp_join[0].ready);
+    // [M P_MPJOIN 0x20ca00's 0x4c: the re-entered join page memsets mpjoin, so the panel's âœ• joins again]
     assert!(act(&mut fe, Action::Confirm), "the fresh panel's ✕ joins");
     assert_eq!(fe.mp_join[0].state, 1);
     assert!(act(&mut fe, Action::Right), "the codename list moves");

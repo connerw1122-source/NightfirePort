@@ -68,6 +68,7 @@ fn local_deathmatch_kill_scores_respawns_and_ends_into_the_debriefing() {
     // the stamp. The 300th dead tick respawns (the dead-tick counter starts at 0 on the stamp
     // tick); 299 ticks in: still dead.
     for _ in 0..299 { sim.step_bond(Default::default(), false, false, false); }
+    // [M Player_HandleDeath 0x190bb0:41-54] FRAME_RATE_INT * 5 after the stamp
     assert!(sim.drones.death.active && sim.drones.death.ticks == 299, "still inside the delay");
     sim.step_bond(Default::default(), false, false, false);
     let m = sim.mp.as_ref().unwrap();
@@ -90,6 +91,7 @@ fn local_deathmatch_kill_scores_respawns_and_ends_into_the_debriefing() {
         if d > 2.0 && d < min { min = d; expect = i; }
     }
     let sp = &m.spawns.points[expect];
+    // [M 0x185098:141-146,165-176] policy 0's least-far point; the y band is [S port engineering] (the load's stand_at convention)
     assert!((sim.bond.pos[0] - sp.pos[0]).abs() < 0.01 && (sim.bond.pos[2] - sp.pos[2]).abs() < 0.01,
         "the body respawns at the policy's point {expect} (x/z; got {:?}, want {:?})",
         [sim.bond.pos[0], sim.bond.pos[2]], [sp.pos[0], sp.pos[2]]);
@@ -99,11 +101,13 @@ fn local_deathmatch_kill_scores_respawns_and_ends_into_the_debriefing() {
     // ---- Kill 2 → the frag limit latches → the end states → the debriefing handover.
     {
         let m = sim.mp.as_mut().unwrap();
+        // [M MP_RegisterBulletHit 0x1857c0; MP_PlayerKilled 0x188f70:179-184] the second frag scores
         assert!(m.register_bullet_hit(0, 4), "the second hit registers");
     }
     sim.drones.health.health = 0.0;
     sim.step_bond(Default::default(), false, false, false);
     let m = sim.mp.as_ref().unwrap();
+    // [M 0x188f70:179-184] the deathmatch frag
     assert!((m.game.slots[4].score - 2.0).abs() < 1e-6, "the second frag scores");
     // The victim stays dead this time: the frag latch leaves state != 0 and `MP_ReSpawn`'s
     // gate refuses [M 0x185368:16-20].
@@ -123,10 +127,12 @@ fn local_deathmatch_kill_scores_respawns_and_ends_into_the_debriefing() {
     assert_eq!(board_rows, 2, "the board carries the human and the bot (the settings' counts)");
     let mut fe = FrontEnd::new();
     fe.open_mp_debriefing(sim.mp.as_ref().unwrap());
+    // [M 0x212198 msg 0x4c; Who-won 0x1848d0:79-84] the board ranks by points, deaths per slot
     assert_eq!(fe.page, Page::MpDebriefing, "the handover lands on the debriefing page");
     let board = fe.mp_debriefing.as_ref().expect("the board built");
     assert_eq!(board.rows[0].points, 2, "the bot ranks first with the 2 frags");
     assert_eq!(board.rows[0].slot, 4, "the winner is the killer's slot");
+    // [M 0x188f70:92-94] every death counts
     assert_eq!(board.rows[1].deaths, 2, "the victim's two deaths on the board");
     assert!(matches!(board.result, MpDebriefResult::Wins(_)), "an FFA win line [M 0x1848d0:79-84]");
 }
@@ -148,6 +154,7 @@ fn ctf_capture_scores_in_the_live_host_like_the_headless_rules() {
     let sim = scene.sim.as_mut().unwrap();
     {
         let m = sim.mp.as_ref().unwrap();
+        // [M MP_Start 0x183a50:207; mode objects at MP_Start 0x185990] flags + bases from the registered type-0/1 placements
         assert!(m.settings.started, "the match started");
         let (f0, f1) = (m.objects_rt.flags[0].is_some(), m.objects_rt.flags[1].is_some());
         assert!(f0 && f1, "the live match built both flags at MP_Start (the registered type-0/1 placements)");
@@ -174,6 +181,7 @@ fn ctf_capture_scores_in_the_live_host_like_the_headless_rules() {
     {
         let m = sim.mp.as_mut().unwrap();
         m.touch_flag(0);
+        // [M MP_FlagUpdate 0x1861a8] touch â†’ state 1, carrier = the toucher
         assert_eq!(m.objects_rt.flags[1].as_ref().unwrap().state, 1, "the enemy flag is carried");
         assert_eq!(m.objects_rt.flags[1].as_ref().unwrap().carrier, Some(0));
     }
@@ -197,5 +205,6 @@ fn ctf_capture_scores_in_the_live_host_like_the_headless_rules() {
         && (head.game.slots[0].score - m.game.slots[0].score).abs() < 1e-6,
         "the live host scores the capture exactly like the headless rules");
     // Sister: the score is not constant — a no-touch run scores nothing.
+    // [M 0x1861a8:89-93] sister: only the taker's team scores
     assert!((m.game.team_scores[1]).abs() < 1e-6, "team 1 never touched: no score");
 }
