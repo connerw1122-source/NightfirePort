@@ -18367,3 +18367,12 @@ Work Log:
   models_sweep_07000006_live (2 — 5940 materials / 447 textures / 0 white fallback; all drone
   skins present). The one unported interactive KIND on this level: Hurt volumes (0xE4, the well
   shaft's #373 type-6 1000-damage kill volume [M Hurt_Create 0x17e870]).
+- 2026-10-17 s/level-09-interactables (task 709a): "every interactive thing and every model on
+  07000009 (Night of the Agent (Tower A))". Plan: (1) the census from the disc (nf-formats parse
+  of 07000009.bin) into docs/levels/07000009.md — every touch/use/shoot/ride placement by type
+  with parameters + channel wiring, [M] game behaviour, port status; known open items: the
+  ELEVATOR BUTTONS (task 700 owns them — reuse s/elevator-buttons-09 findings), the lobby laser
+  grid art (s/laser-scripts, held for a render check), the security-room monitor. (2) one
+  real-input live test per KIND (nf_view::load + Sim::step_bond), each with a sister that fails
+  without the operation. (3) every placement's mesh/skin resolves (no white fallback,
+  NF_TEX_TRACE=1). Branch from origin/master 0603094e.
