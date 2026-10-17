@@ -87,6 +87,14 @@ pub struct SwitchObj {
     pub latch: u8,
     /// The auto-return frame counter (`obj+0xF6`) [M 0x1adea8].
     pub auto_ct: u16,
+    /// The switch's main-map placement index (the walk order `UseObjects::create` consumed).
+    pub placement: usize,
+    /// The embedded ScriptPlayer's index in `Drones::scripts.players` — `Switch_Create` 0x1adcc0:44-46
+    /// stores `SP_Create(pos, rot, param 1, 0, 8, 0, obj, 0)`'s handle at ext+0x0C. `None` = the
+    /// switch carries no script param (the SP handle is then 0 and every `SP_*` call on it is a
+    /// no-op [M SP_GetState 0x1dc900:8-10]). Set by `Drones::attach_level` (crate::drone) after the
+    /// players are mounted (laser-scripts).
+    pub sp: Option<usize>,
 }
 
 /// The level's use objects, in placement order.
@@ -123,7 +131,7 @@ impl UseObjects {
     /// `parsemap_create_dynamic_objects` 0x1d04f0 cases 0x35 / 0x29, in placement order.
     pub fn create(ps: &[nf_formats::placement::Placement]) -> UseObjects {
         let mut u = UseObjects::default();
-        for p in ps {
+        for (pi, p) in ps.iter().enumerate() {
             if p.flags & 0xff != 0x35 && p.flags & 0xff != 0x29 { continue; }
             let par = |k: u32| p.params.iter().find(|(i, _)| *i == k).map_or(0, |&(_, v)| v);
             let pos = p.translation;
@@ -137,6 +145,8 @@ impl UseObjects {
                     pos, ch: par(0) as u8, gate: par(5) as u8, rest: par(3) as u8, busy: par(4) != 0,
                     auto_delay: par(2) as u16, value: par(3) as u8, auto_ct: 0,
                     latch: 0,
+                    placement: pi,
+                    sp: None,
                 });
             }
         }
@@ -146,8 +156,9 @@ impl UseObjects {
     /// `PCQWorm_Update` 0x1aee20 + `Switch_Update` 0x1adea8, once per tick. `bullets` are this
     /// tick's player-bullet shots as (from, to, weapon) — the game reads the PC's class-5 contact
     /// list (a bullet with weapon 0x58 entering the object's box); the port's equivalent is the
-    /// segment-vs-sphere test over each bullet's path [M 0x1aee20's 0x58 test].
-    pub fn tick(&mut self, bullets: &[(V3, V3, u16)], ch: &mut Channels, frame: u32) {
+    /// segment-vs-sphere test over each bullet's path [M 0x1aee20's 0x58 test]. `scripts` carries
+    /// the level's ScriptPlayers so the switch's embedded one can be unpaused (laser-scripts).
+    pub fn tick(&mut self, bullets: &[(V3, V3, u16)], ch: &mut Channels, frame: u32, scripts: &mut crate::nis::Scripts) {
         for pc in self.pcs.iter_mut() {
             match pc.state {
                 0 => {
@@ -178,14 +189,29 @@ impl UseObjects {
             if s.value != cur {
                 s.value = cur;
                 s.latch = s.latch.saturating_add(1);
+                // The channel-mirror arm unpauses the embedded player [M 0x1adea8:23
+                // `SP_UnPause(inst+0x0C)` = the +0x2c flag plus `SCRIPTINFO+0x9c = 0`,
+                // SP_UnPause 0x1dca58:10-14] — the laser show resumes from its hold.
+                if let Some(idx) = s.sp {
+                    if let Some(p) = scripts.players.get_mut(idx) {
+                        p.activated = true;
+                        if let Some(sc) = p.info[p.cur].as_mut() { sc.delay = 0; }
+                    }
+                }
             }
             // The auto-return [M 0x1adea8's second block]: after param2 frames off the rest
-            // value, flip the channel back.
+            // value, flip the channel back. Its fire unpauses the player too [M 0x1adea8:29-30].
             if s.auto_delay != 0 && cur != s.rest {
                 s.auto_ct += 1;
                 if s.auto_ct > s.auto_delay {
                     let v = if cur != 0 { 0u8 } else { 1u8 };
                     ch.set(s.ch as u32, v, frame);
+                    if let Some(idx) = s.sp {
+                        if let Some(p) = scripts.players.get_mut(idx) {
+                            p.activated = true;
+                            if let Some(sc) = p.info[p.cur].as_mut() { sc.delay = 0; }
+                        }
+                    }
                     s.auto_ct = 0;
                 }
             } else {
@@ -226,6 +252,16 @@ impl UseObjects {
             if s.gate != 0 && ch.on(s.gate as u32) { continue; }
             if s.ch == 0 { continue; } // [M 0x1b02a8:24 — a channel-less switch never activates]
             if s.ch == 0x61 { continue; }
+            // The script-idle gate [M 0x1b02a8:23 `SP_GetState(inst+0x0C) == 0`, SP_GetState
+            // 0x1dc900:13-20 = `SCRIPTINFO+0x9c == 0` → toggle allowed only while the embedded
+            // script is NOT running its delay-0 update path — i.e. held (delay ≠ 0) or not yet
+            // loaded (SP_GetState's null-SCRIPTINFO arm returns false = allowed)].
+            if let Some(idx) = s.sp {
+                let busy_running = scripts.players.get(idx)
+                    .and_then(|p| p.info[p.cur].as_ref())
+                    .is_some_and(|sc| sc.delay == 0);
+                if busy_running { continue; }
+            }
             let cur = ch.v.get(s.ch as usize).copied().unwrap_or(0);
             if s.value != cur { continue; }
             if near(s.pos) {
@@ -233,8 +269,16 @@ impl UseObjects {
                 ch.set(s.ch as u32, v, _frame);
                 s.value = v;
                 // The toggle's mirror mismatch bumps +0x18 next Update [M 0x1adea8:20-23]; the
-                // port syncs the mirror here, so it bumps the latch at the same point.
+                // port syncs the mirror here, so it bumps the latch at the same point — and
+                // unpauses the embedded player here, where the game's next Switch_Update mirror
+                // arm does it (0x1adea8:23 `SP_UnPause`; SP_UnPause 0x1dca58:10-14).
                 s.latch = s.latch.saturating_add(1);
+                if let Some(idx) = s.sp {
+                    if let Some(p) = scripts.players.get_mut(idx) {
+                        p.activated = true;
+                        if let Some(sc) = p.info[p.cur].as_mut() { sc.delay = 0; }
+                    }
+                }
                 used = true;
             }
         }
@@ -272,21 +316,22 @@ mod tests {
     #[test]
     fn pcqworm_installs_on_qworm_bullet_only() {
         let ps = [placement(0x35, [10.0, 1.0, 10.0], &[(0, 0), (1, 0x48), (2, 0), (3, 1)])];
+        let mut scripts = crate::nis::Scripts::default();
+        let mut scripts2 = crate::nis::Scripts::default();
         let mut u = UseObjects::create(&ps);
         let mut ch = chans(&[]);
         let bullets = [( [10.0, 1.0, 10.4], [10.0, 1.0, 12.0], 0x58u16 )];
-        u.tick(&bullets, &mut ch, 1);
-        u.tick(&[], &mut ch, 2);
+        u.tick(&bullets, &mut ch, 1, &mut scripts);
+        u.tick(&[], &mut ch, 2, &mut scripts);
         assert!(ch.on(0x48), "the Q-Worm bullet installs the virus (ch 0x48) [M 0x1aee20]");
         // Sister: a rifle bullet must not.
         let mut u2 = UseObjects::create(&ps);
         let mut ch2 = chans(&[]);
         let rifle = [( [10.0, 1.0, 10.4], [10.0, 1.0, 12.0], 2u16 )];
-        u2.tick(&rifle, &mut ch2, 1);
-        u2.tick(&[], &mut ch2, 2);
+        u2.tick(&rifle, &mut ch2, 1, &mut scripts2);
+        u2.tick(&[], &mut ch2, 2, &mut scripts2);
         assert!(!ch2.on(0x48), "a normal bullet does not install [M 0x1aee20's 0x58 test]");
         // E with param 2 = 0 does nothing either.
-        let mut scripts = crate::nis::Scripts::default();
         let mut u3 = UseObjects::create(&ps);
         let mut ch3 = chans(&[]);
         u3.player_activate(&mut scripts, &mut ch3, [9.0, 1.0, 10.0], [1.0, 0.0, 0.0], 0);
@@ -360,7 +405,7 @@ mod tests {
     fn switch_inhibit_gate_blocks_only_while_on() {
         let mut u = UseObjects::default();
         u.switches.push(SwitchObj { pos: [0.0, 0.5, -0.5], ch: 9, gate: 7, rest: 0, busy: false,
-            auto_delay: 0, value: 0, latch: 0, auto_ct: 0 });
+            auto_delay: 0, value: 0, latch: 0, auto_ct: 0, placement: 0, sp: None });
         // Gate channel OFF: the switch activates.
         let mut scripts = crate::nis::Scripts::default();
         let mut ch = Channels::default();
@@ -369,7 +414,7 @@ mod tests {
         // Sister: the same switch with its gate channel ON never activates.
         let mut u2 = UseObjects::default();
         u2.switches.push(SwitchObj { pos: [0.0, 0.5, -0.5], ch: 9, gate: 7, rest: 0, busy: false,
-            auto_delay: 0, value: 0, latch: 0, auto_ct: 0 });
+            auto_delay: 0, value: 0, latch: 0, auto_ct: 0, placement: 0, sp: None });
         let mut scripts2 = crate::nis::Scripts::default();
         let mut ch2 = chans(&[7]);
         let used2 = u2.player_activate(&mut scripts2, &mut ch2, [0.0, 0.5, -0.5], [0.0, 0.0, 1.0], 1);
@@ -377,7 +422,7 @@ mod tests {
         // Sister 2: gate 0 always allows.
         let mut u3 = UseObjects::default();
         u3.switches.push(SwitchObj { pos: [0.0, 0.5, -0.5], ch: 9, gate: 0, rest: 0, busy: false,
-            auto_delay: 0, value: 0, latch: 0, auto_ct: 0 });
+            auto_delay: 0, value: 0, latch: 0, auto_ct: 0, placement: 0, sp: None });
         let mut scripts3 = crate::nis::Scripts::default();
         let mut ch3 = Channels::default();
         assert!(u3.player_activate(&mut scripts3, &mut ch3, [0.0, 0.5, -0.5], [0.0, 0.0, 1.0], 1),
@@ -391,17 +436,17 @@ mod tests {
     fn switch_busy_is_one_shot_never_rearms() {
         let mut u = UseObjects::default();
         u.switches.push(SwitchObj { pos: [0.0, 0.5, -0.5], ch: 9, gate: 0, rest: 0, busy: true,
-            auto_delay: 0, value: 0, latch: 0, auto_ct: 0 });
+            auto_delay: 0, value: 0, latch: 0, auto_ct: 0, placement: 0, sp: None });
         let mut scripts = crate::nis::Scripts::default();
         let mut ch = Channels::default();
         let head = [0.0, 0.5, -0.5]; let look = [0.0, 0.0, 1.0];
         assert!(u.player_activate(&mut scripts, &mut ch, head, look, 1), "first use activates");
         // Let the tick see the channel change (the game's mirror test bumps +0x18).
-        u.tick(&[], &mut ch, 2);
+        u.tick(&[], &mut ch, 2, &mut scripts);
         assert_eq!(u.switches[0].latch, 1, "the channel change bumped the latch");
         assert!(!u.player_activate(&mut scripts, &mut ch, head, look, 3), "second use blocked");
         // After 61 ticks the game is still dead (the latch never resets).
-        for f in 4..70 { u.tick(&[], &mut ch, f); }
+        for f in 4..70 { u.tick(&[], &mut ch, f, &mut scripts); }
         assert!(!u.player_activate(&mut scripts, &mut ch, head, look, 70),
             "a busy switch never re-arms");
     }

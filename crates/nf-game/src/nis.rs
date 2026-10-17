@@ -1502,6 +1502,20 @@ impl Scripts {
         }).collect()
     }
 
+    /// laser-scripts: every live script entity — `(script hash, stream, object hashcode, world
+    /// matrix, alpha)`. The laser-grid beams are exactly these (`Script_CreateEntity` 0x1d8968:170-173
+    /// creates the class-0 object with the hash's glist; `Script_Interp` 0x1d9a08 poses it; the
+    /// laser art glists are modelled in world space, so the matrix stays the script base), so this
+    /// is the per-beam state the draw code reads: which art variant (ON / OFF / AMBER — the
+    /// hashcode) is alive, where, at what alpha (`Script_GetInterp` 0x1da158's `*param_8`), and
+    /// under which script/stream (the `src` the render attachments resolve through). Read-only.
+    pub fn entities(&self) -> Vec<(u32, u8, u32, Mat4, f32)> {
+        self.objects.list.iter().filter_map(|o| match o {
+            Some(Obj::Entity { hash, matrix, alpha, src: (sh, st), .. }) => Some((*sh, *st, *hash, *matrix, *alpha)),
+            _ => None,
+        }).collect()
+    }
+
     pub fn spawn_once_scaled(&mut self, placement: usize, script: u32, matrix: Mat4, scale: f32) {
         self.players.push(Player {
             placement, scripts: [script, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0,
