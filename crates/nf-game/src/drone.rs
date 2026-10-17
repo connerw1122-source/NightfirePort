@@ -80,6 +80,40 @@ pub mod state {
     /// allow = 1) — ENTER replays `NDrone2_PunchImpact(…, resume 0, allow 1)` (the stagger anim).
     pub const PUNCH_IMPACT: u8 = 0x53;
     pub const BULLET_IMPACT: u8 = 0x55;
+    /// `NDrone2_DSTATE_ExplosiveImpact` 0x172fb0 [M] — the blast stagger (uncited-audit gap 2):
+    /// `HandleImpact` case 9 with allow ≠ 0 stamps the resume into +0x118 and enters 0x54 [M
+    /// 0x1469b8:173-201]; the ENTER sets `+0x4F8 |= 0x10000` and re-runs
+    /// `NDrone2_ExplosiveImpact(impact, 0, 1)` — the damage + the 0x47 stagger anim (variant by the
+    /// blast's bearing) with follow-on `+0x118` [M 0x172fb0 case 1; 0x146480]. A re-impact (msg 9
+    /// while in 0x54) runs `HandleImpact(…, 0, 0)` — damage + PainTalk, no state change [M
+    /// 0x172fb0 case 9 → 0x1469b8 case 9's allow-0 arm]. A frag kill routes per kind: 0x0D → 0x44,
+    /// 0x1B/0x1C → 0x92, 0x1D → 0xBF, else **0x45 DeathByExplosion** [M 0x1465e4-0x14697c].
+    pub const EXPLOSIVE_IMPACT: u8 = 0x54;
+    /// The smoke family (uncited-audit gap 2): `HandleImpact` case 0x17 (prop 0x36/0x34 guards are
+    /// immune) always enters 0x7B — no allow branch [M 0x1469b8:197-249]. The msg comes from the
+    /// smoke cloud itself: `NDrone2_DealWithObjHit` case 0x2A (the cloud's class byte) sends
+    /// `Drone_Message(obj, 0x17, 0, 0)` when the drone's collision scan touches it [M disasm
+    /// 0x1405a8 `addiu a1, 0x17` → 0x13a678; the hit list is the per-tick
+    /// `Drone_CollisionHandler` 0x140968:85 walk].
+    /// `DSTATE_SmokedOut` 0x173c50: ENTER = AlertStatusSet(2) + the cough anim 0x20 with follow-on
+    /// 0x7C [M case 1].
+    pub const SMOKED_OUT: u8 = 0x7b;
+    /// `NDrone2_DSTATE_SmokedOut_Loop` 0x16b878: ENTER coughs again (no follow-on) and arms timer C
+    /// at frame + 5 (`+0xCC4 = GameState._52_4_ + 5`, `+0xCC8 = 0`, `+0xCC0 = 1`) [M case 1]; timer
+    /// C (msg 0xC) → Recover 0x7D [M case 0xc]; a further smoke (msg 0x17) re-arms the +5 [M case
+    /// 0x17]. Bullets/explosions/punch route (0, 0); tase/0x19 (0, 1) [M cases 6-9, 0x19].
+    pub const SMOKED_OUT_LOOP: u8 = 0x7c;
+    /// `NDrone2_DSTATE_SmokedOut_Recover` 0x173d30: ENTER sets `+0x4F8 |= 0x10000` and plays anim 10
+    /// (the aim-stand return) with follow-on = SMI+0x10 — the stamped impact resume [M case 1]. No
+    /// 0x17 case: further smoke while recovering is dropped.
+    pub const SMOKED_OUT_RECOVER: u8 = 0x7d;
+    /// `NDrone2_DSTATE_DeathByExplosion` 0x163a80 [M] — the frag kill: ENTER marks the corpse
+    /// (`obj+0xF0 |= 0x20`), AlertStatusSet(3), routes `+0xBD4` → SpecialDeath 0x46, runs
+    /// OnInitDeath, sets the death-channel latch `+0xCD8 = 1` and plays the launch death anim 0x44
+    /// with the variant from `NDrone2_ExplosionDir(dcv, SMI+0x24)` (the SetState channel arg — the
+    /// DroneImpact the death path passed) and follow-on 0x47 DEAD [M case 1]. EXIT / msg 0xC raise
+    /// the death channel while `+0xCD8` is set [M cases 2/0xc]; msg 3 drops the weapon [M case 3].
+    pub const DEATH_BY_EXPLOSION: u8 = 0x45;
     pub const ALERT_TO_POSITION: u8 = 0x62;
     pub const SEARCH_AREA: u8 = 0x65;
     pub const HEARD_NOISE: u8 = 0xa2;
@@ -300,6 +334,15 @@ pub mod msg {
     /// StunDart family; `DSTATE_Attack` 0x164210 and the FirstAttack wrapper have NO case 0x19 —
     /// a guard in full combat ignores the dart.
     pub const STUN_DART: u8 = 0x19;
+    /// An explosive impact (`Drone_ExplosiveHit` 0x13aab8 `SendMsgSelf(9, DroneImpact*, 0, 0)` [M];
+    /// `DroneFunc_HandleImpact` case 9 → `NDrone2_ExplosiveImpact` 0x146480 → the 0x54 stagger or
+    /// the death). The DroneImpact the game passes [M Explode_Propagate 0x17c6e0-0x17c6fc stack
+    /// build]: +0x0 the falloff damage, +0x4 the radius, +0x10 the blast VECTOR, +0x20 the
+    /// attacker's obj; the port rides `last_damage` (+0x150's source) and `blast`.
+    pub const EXPLOSION: u8 = 9;
+    /// The smoke cloud's touch (`NDrone2_DealWithObjHit` case 0x2A → `Drone_Message(obj, 0x17, 0,
+    /// 0)` [M disasm 0x1405a8]; `DroneFunc_HandleImpact` case 0x17 → `DSTATE_SmokedOut` 0x7B).
+    pub const SMOKE: u8 = 0x17;
 }
 
 /// Anim states (`DroneAnimStates` index).
@@ -341,6 +384,17 @@ pub mod anim_state {
     pub const KNOCKED_OUT_FALL: u16 = 0x50;
     /// The punch stagger (`NDrone2_PunchImpact` 0x145f28:89-94: `CallAnim(0, 0x51, 0, resume)`).
     pub const PUNCHED: u16 = 0x51;
+    /// The blast stagger (`NDrone2_ExplosiveImpact` 0x146480:204-205 / 0x14667f: `CallAnim(0, 0x47,
+    /// <variant by the blast's bearing>, +0x118)`).
+    pub const BLAST_STAGGER: u16 = 0x47;
+    /// The cough (`DSTATE_SmokedOut` 0x173c50 case 1 / `SmokedOut_Loop` 0x16b878 case 1:
+    /// `CallAnim(0, 0x20, 0, …)`).
+    pub const COUGH: u16 = 0x20;
+    /// The smoke recovery (`DSTATE_SmokedOut_Recover` 0x173d30 case 1: `CallAnim(0, 10, 0, +0x118)`).
+    pub const SMOKED_RECOVER: u16 = 10;
+    /// The death-by-explosion launch (`DSTATE_DeathByExplosion` 0x163a80 case 1:
+    /// `CallAnim(0, 0x44, ExplosionDir, next 0x47)`).
+    pub const DEATH_EXPLOSION: u16 = 0x44;
     /// CivilianHiding's cower (`NDrone2_DSTATE_CivilianHiding` 0x15d520 ENTER: `CallAnim(0x19)`).
     pub const COWER: u16 = 0x19;
     /// The stun-grenade reactions (`StunGrenadeImpact` 0x172bb0 ENTER: `Rand_Rand(2)` → `CallAnim(0, 0x2D/0x2E,
@@ -802,6 +856,10 @@ pub struct Drone {
     pub hit: Option<Hit>,
     pub impact_resume: u8,
     pub hits_taken: u32,
+    /// The msg-9 `DroneImpact+0x10` blast position — the stagger/death anim's bearing source [M
+    /// `NDrone2_ExplosiveImpact` 0x146480:143-159, `NDrone2_ExplosionDir` 0x14aba8]. Set at the
+    /// `spawn_blast` send, read by the 0x54/0x45 ENTERs.
+    pub blast: Option<V3>,
     /// Lent by `Drones`: the global last flinch (`DAT_00298FC0`), whether Bond aims (L1, player `anim+0x60` bit 0),
     /// and whether this drone is the oldest corpse beyond the limit (`DroneFunc_DeadDrone`).
     pub global_flinch: Option<u32>,
@@ -1292,6 +1350,7 @@ impl Drone {
             // `drone_stats[type]+8` is 0 for these guards → 10 (captains, difficulty ≥ 2 only, are not modelled).
             health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: !matches!(skin, 0x0500_003b | 0x0500_003c | 0x0500_0053), kind: setup.kind,
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
+            blast: None,
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false,
             mission_wait_channel: 0,
@@ -2307,6 +2366,157 @@ impl Drone {
         true
     }
 
+    /// Msg 9 in state `s` — `DroneFunc_HandleImpact` case 9 (0x1469b8:173-201). The per-state
+    /// (resume, allow) pairs are the msg-8 table's: every DSTATE that carries a case 9 passes the
+    /// same resume/allow it passes case 8 (a scan of the decomps, 2026-10-16 — Idle/Alert/Patrol/
+    /// AlertToPosition/SearchArea/HeardNoise*/RunForCover → (0x56, 0); AimStand/Backoff/Step/Strafe/
+    /// Dodge/Roll → (0x68, 1); AimStandFire/AimCrouchFire/CombatNoMove/CombatNoRoute/SniperFire →
+    /// (current, 1); AimCrouch/Reloads/OutOfRange/NoSight/Wait/GoToGoal → (current, 0); the mission
+    /// states their own). The stun families keep their own case-9 arms (8/9 → Death_Anim 0x44
+    /// [M 0x172bb0/0x1631c0/0x163350]; the taser family the same [M 0x162eb0 case 8/9]), the KO
+    /// states too [M 0x172a30], `Surrender_Anim`'s case 9 sets Death_Anim directly [M 0x1626a0:65],
+    /// `PunchImpact` replays as (0, 1) [M 0x172ee0], `BulletImpact` sets 0x54 outright [M
+    /// 0x173098 case 9], and states without a case 9 (Attack/Combat/WaitSwitch/…) drop the message
+    /// (the GLOBAL fallback has none either [M 0x15b830] — a frag next to a pure-Attack guard does
+    /// nothing, the game's own routing).
+    fn on_explosion(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8) -> bool {
+        use state::*;
+        if matches!(s, STUN_GRENADE_IMPACT | STUN_GRENADE_LOOP | STUN_GRENADE_RECOVER
+                | TASER | STUNNED | STUNNED_RECOVER | KNOCKED_OUT_ANIM | KNOCKED_OUT
+                | SURRENDER_ANIM | SURRENDERED) {
+            self.set_state(DEATH_ANIM);
+            return true;
+        }
+        if s == PUNCH_IMPACT {
+            // 0x172ee0 case 9 → HandleImpact(0, 1): the resume stamp (0x53 is invalid → keeps the
+            // first stagger's), then the blast state — its ENTER plays the 0x47 anim.
+            self.set_state(EXPLOSIVE_IMPACT);
+            return true;
+        }
+        if s == BULLET_IMPACT {
+            // 0x173098 case 9 → SetState(0x54, impact) outright; the ENTER runs the damage + anim.
+            self.set_state(EXPLOSIVE_IMPACT);
+            return true;
+        }
+        if s == EXPLOSIVE_IMPACT {
+            // 0x172fb0 case 9 → HandleImpact(…, 0, 0): damage + PainTalk, no state change.
+            self.explosive_impact(d, rng, frame, 0, false);
+            return true;
+        }
+        if s == SMOKED_OUT || s == SMOKED_OUT_LOOP || s == SMOKED_OUT_RECOVER {
+            // 0x173c50/0x16b878/0x173d30 case 9: SmokedOut (0, 0), Loop (0, 0), Recover (0, 0) —
+            // the damage arm, no state change (resume 0 invalid → ExplosiveImpact returns).
+            self.explosive_impact(d, rng, frame, 0, false);
+            return true;
+        }
+        let Some((resume, allow)) = Self::impact_args(s) else { return false };
+        if allow {
+            // 0x1469b8:178-193: stamp the resume (the 0x53-0x55 impact states are excluded), then
+            // state 0x54 — its ENTER re-runs the impact with allow = 1 (the stagger anim).
+            let u10 = if resume != 0 { resume } else { self.state };
+            if u10 != 0 && !(0x53..=0x55).contains(&u10) { self.impact_resume = u10; }
+            self.set_state(EXPLOSIVE_IMPACT);
+        } else {
+            // allow = 0: `NDrone2_ExplosiveImpact(impact, resume, 0)` — damage + PainTalk + the
+            // resume entry (the punched-idle guard's (0x56, 0) pair: hostile at once, no stagger).
+            self.explosive_impact(d, rng, frame, resume, false);
+        }
+        true
+    }
+
+    /// `NDrone2_ExplosiveImpact` (0x146480). `resume` = p3 (the caller's resume; 0 = the current
+    /// state), `allow` = p4. Damage = the raw falloff amount through `HitDamage` with part −1 (→ 1)
+    /// — the game passes `*(float*)impact` straight in f12 [M disasm 0x14654c], no `+0x14C`
+    /// multiply on this path (that is the bullet callers' job). The self-blast arm (impact+0x20 ==
+    /// the drone's obj and skin 0x50000BA, 0x1464ba) never fires in the port's roster [L].
+    fn explosive_impact(&mut self, d: &Data, rng: &mut Rng, frame: u32, resume: u8, allow: bool) -> bool {
+        use state::*;
+        let valid = |x: u8| x != 0 && !(0x53..=0x55).contains(&x);
+        let u10 = if resume != 0 { resume } else { self.state };
+        self.alert = self.alert.max(1.0); // `Drone_AlertStatusSet(2)` [M 0x146538]
+        let dmg = self.last_damage;
+        if dmg > 0.0 {
+            let target = crate::damage::Target { damageable: self.damageable, armour: 0, mode: 0, skin: self.skin, kind: self.kind };
+            let r = crate::damage::hit_damage(d.tuning, target, dmg, -1, 0, false, d.difficulty, d.level);
+            // `NDrone2_HitDamage` 0x145558:57-60: a team-1 hit from the player logs the accuracy
+            // numerator (+0x2B4 == +0x170 in SP — the port's established fold).
+            if self.team == 1 { self.hit_log = self.hit_log.saturating_add(1); }
+            if r.head { self.silent_kill = true; }
+            self.health -= r.loss;
+            self.last_damage = r.recorded;
+        }
+        if self.health <= 0.0 {
+            // The death routing [M 0x1465e4-0x14697c]: kind 0x0D → 0x44, 0x1B/0x1C → 0x92,
+            // 0x1D → 0xBF, else 0x45 DeathByExplosion (the death states 0x92/0xBF are not ported —
+            // their kinds do not occur in the port's roster [*suggested*]; they land in 0x44 like
+            // the port's bullet path).
+            self.set_state(match self.kind { 0x0d | 0x1b | 0x1c | 0x1d => DEATH_ANIM, _ => DEATH_BY_EXPLOSION });
+            return true;
+        }
+        if !allow {
+            // 0x146958-0x14697c: PainTalk, then the resume entry (SetState(0) is a no-op when the
+            // resume equals the current state).
+            self.pain_talk(d);
+            if valid(resume) { self.set_state(resume); }
+            return true;
+        }
+        // allow: the kind gates first [M 0x1467f0-0x1468f8]: 0x1E plays anim 0x47 with the 0xCF
+        // datum and no resume; 0x1D and +0xD8 == 0x14 return; 0x0D returns (the port reads +0xD8 as
+        // `kind`, its established stand-in).
+        if self.kind == 0x1d { return true; }
+        if self.kind == 0x0d { return true; }
+        if valid(u10) { self.impact_resume = u10; }
+        // The stagger anim: variant by the blast's bearing (0x146480:143-159, = ExplosionDir
+        // 0x14aba8), follow-on = the stamped resume +0x118; then PainTalk.
+        let v = self.blast_variant();
+        self.call_anim_variant(d, anim_state::BLAST_STAGGER, v, self.impact_resume, 0);
+        self.pain_talk(d);
+        let _ = frame;
+        true
+    }
+
+    /// The blast's bearing variant (`NDrone2_ExplosionDir` 0x14aba8 / the inline copy in
+    /// `ExplosiveImpact` 0x146480:143-159): `atan2(dx, dz)` from the drone to the blast, the
+    /// difference against the drone's yaw (+0x54); |diff| < 45° → 1 (in front), 45-135° → 2 (left,
+    /// diff < 0) / 3 (right), beyond 135° → 0 (behind); no impact data → 1.
+    fn blast_variant(&self) -> u16 {
+        let Some(p) = self.blast else { return 1 };
+        let a = atan2_approx(p[0] - self.pos[0], p[2] - self.pos[2]);
+        let diff = angle_difference(self.yaw, a); // Vec_AngleDifference(yaw, atan) = atan − yaw [M 0x1e2b78]
+        if diff.abs() >= 0.7853982 {
+            if diff.abs() > 2.3561947 { return 0; }
+            return if diff < 0.0 { 2 } else { 3 };
+        }
+        1
+    }
+
+    /// Msg 0x17 in state `s` — `DroneFunc_HandleImpact` case 0x17 (0x1469b8:197-249). The prop
+    /// 0x36 (smoke-proof) / 0x34 (gas-proof) guards are immune [M 0x1469b8:198-205]; everyone else
+    /// stamps the resume and enters 0x7B — the case has NO allow branch (the per-state `allow` arg
+    /// exists in the DSTATEs but `HandleImpact`'s 0x17 arm never reads it). States without a case
+    /// 0x17 (the surrendered, the KO'd, WaitSwitch, …) drop it. No damage: the arm calls nothing
+    /// but `SetState(0x7B, msg[6])` [M 0x1469b8:206-249].
+    fn on_smoke(&mut self, d: &Data, _rng: &mut Rng, frame: u32, s: u8) -> bool {
+        use state::*;
+        if self.prop(d, 0x36) || self.prop(d, 0x34) { return true; }
+        if matches!(s, SMOKED_OUT | SMOKED_OUT_LOOP | SMOKED_OUT_RECOVER) {
+            // The family's own 0x17 arms [M 0x173c50 / 0x16b878 case 0x17 / 0x173d30]: 0x7B and
+            // 0x7D have no case — the game drops the msg (the GLOBAL fallback has none either),
+            // so this is HANDLED, not a fallback fallthrough (returning false here would re-smoke
+            // through the port's GLOBAL arm forever). 0x7C re-arms: `+0xCC4 = frame + 5`,
+            // `+0xCC8 = 0`, `+0xCC0 = 1` — the port's timer_c.
+            if s == SMOKED_OUT_LOOP { self.timer_c = Some(frame + 5); }
+            return true;
+        }
+        let Some((resume, _allow)) = Self::impact_args(s) else { return false };
+        let u10 = if resume != 0 { resume } else { self.state };
+        if u10 != 0 && !(0x53..=0x55).contains(&u10) { self.impact_resume = u10; }
+        // (The 07000009/0A stamp arm 0x1469b8:220-246 is the mission states' +0x89/+0x14 setup —
+        // not the 07000005 path.)
+        self.set_state(SMOKED_OUT);
+        true
+    }
+
     /// Msg 6 in state `s` (the punch). The per-state `HandleImpact` arguments are the SAME as msg 8's for every state
     /// that handles the punch (a scan of all 250 DSTATE decomps, 2026-10-12: 46 states carry case 6, each with the
     /// resume/allow of its case 8) — only the impact handler differs (`NDrone2_PunchImpact` vs `NDrone2_BulletImpact`).
@@ -2859,6 +3069,93 @@ impl Drone {
                 self.call_anim(d, anim as u16, 0, 0);
                 self.timer_c = Some(frame + (rng.rand(20) + 5) * 30);
                 self.timer_c_payload = next_payload;
+                true
+            }
+            _ => false,
+        })
+    }
+
+    /// The blast-stagger and smoke states: ExplosiveImpact 0x54, SmokedOut 0x7B/0x7C/0x7D and
+    /// DeathByExplosion 0x45 (0x172fb0, 0x173c50, 0x16b878, 0x173d30, 0x163a80). The impact
+    /// messages (6/7/8/9) never reach here — `handle()` routes them to `on_*` before the state
+    /// match, whose per-family arms already cover these states' own (resume, allow) pairs.
+    fn handle_blast_smoke(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        if !matches!(s, EXPLOSIVE_IMPACT | SMOKED_OUT | SMOKED_OUT_LOOP | SMOKED_OUT_RECOVER | DEATH_BY_EXPLOSION) { return None; }
+        Some(match (s, m) {
+            // ENTER (0x172fb0 case 1): `+0x4F8 |= 0x10000` and the impact re-run with allow = 1 —
+            // the damage + the 0x47 stagger with follow-on +0x118. The ENTER's re-run goes through
+            // `explosive_impact(…, resume 0, allow true)`: its resume stamp re-derives u10 = the
+            // current state (0x54 — invalid) so the stamped resume from `on_explosion` survives.
+            (EXPLOSIVE_IMPACT, msg::ENTER) => {
+                self.vision_on = true;
+                self.explosive_impact(d, rng, frame, 0, true);
+                true
+            }
+            // 0x172fb0 cases 0/3/default: ENTER-0 handled, msg 3 = SeenAndAttacking (music
+            // bookkeeping only [M 0x145150] — a no-op for the sim), everything else unhandled.
+            (EXPLOSIVE_IMPACT, msg::EXIT) | (EXPLOSIVE_IMPACT, msg::UPDATE) => true,
+            // SmokedOut ENTER (0x173c50 case 1): AlertStatusSet(2) + the cough with follow-on 0x7C.
+            (SMOKED_OUT, msg::ENTER) => {
+                self.alert = self.alert.max(1.0);
+                self.call_anim_variant(d, anim_state::COUGH, 0, SMOKED_OUT_LOOP, 0);
+                true
+            }
+            (SMOKED_OUT, msg::EXIT) | (SMOKED_OUT, msg::UPDATE) => true,
+            // SmokedOut_Loop ENTER (0x16b878 case 1): cough again (no follow-on), timer C at
+            // frame + 5 (+0xCC8 = 0, +0xCC0 = 1).
+            (SMOKED_OUT_LOOP, msg::ENTER) => {
+                self.call_anim_variant(d, anim_state::COUGH, 0, 0, 0);
+                self.timer_c = Some(frame + 5);
+                true
+            }
+            // Timer C (case 0xc) → Recover 0x7D. The Loop's timer C is the ONLY exit but a state
+            // change (bullets/explosions arrive through the on_* intercepts).
+            (SMOKED_OUT_LOOP, msg::TIMER_C) => { self.set_state(SMOKED_OUT_RECOVER); true }
+            (SMOKED_OUT_LOOP, msg::EXIT) | (SMOKED_OUT_LOOP, msg::UPDATE) => true,
+            // SmokedOut_Recover ENTER (0x173d30 case 1): `+0x4F8 |= 0x10000`, anim 10 with follow-on
+            // = SMI+0x10 (the stamped resume).
+            (SMOKED_OUT_RECOVER, msg::ENTER) => {
+                self.vision_on = true;
+                self.call_anim_variant(d, anim_state::SMOKED_RECOVER, 0, self.impact_resume, 0);
+                true
+            }
+            (SMOKED_OUT_RECOVER, msg::EXIT) | (SMOKED_OUT_RECOVER, msg::UPDATE) => true,
+            // DeathByExplosion (0x163a80): ENTER = corpse, alert 3, the special-death route,
+            // OnInitDeath's halves, the death-channel latch +0xCD8 = 1, the 0x44 launch anim with
+            // the ExplosionDir variant (the SetState channel arg = the death path's DroneImpact;
+            // the port re-derives it from `blast`), follow-on 0x47 DEAD.
+            (DEATH_BY_EXPLOSION, msg::ENTER) => {
+                self.corpse = true;
+                self.vision_on = false;
+                self.firing = false;
+                if self.special_death != 0 { self.set_state(SPECIAL_DEATH); return Some(true); }
+                self.death_pending = true;
+                if !(self.team == 1 && self.knocked_out) {
+                    if let Some(r) = crate::ally::on_init_death(self.team, self.prop(d, 0x53), self.prop(d, 0x54), self.hit_by_player) {
+                        self.fail_reason = Some(r);
+                    }
+                }
+                if self.team == 1 && !self.knocked_out { self.dispatched_logged = true; }
+                if !self.silent_kill { self.death_talk(d); }
+                self.drop_grenades(d);
+                let v = self.blast_variant();
+                self.call_anim_variant(d, anim_state::DEATH_EXPLOSION, v, DEAD, 0);
+                true
+            }
+            // EXIT (case 2) and TIMER_C (case 0xc): raise the death channel while +0xCD8 is set —
+            // the port's `death_pending` latch (the DEATH_ANIM convention).
+            (DEATH_BY_EXPLOSION, msg::EXIT) => { if self.death_pending { self.set_death_channel(); } true }
+            (DEATH_BY_EXPLOSION, msg::TIMER_C) => { if self.death_pending { self.set_death_channel(); self.death_pending = false; } true }
+            // UPDATE (case 3): the weapon drop behind the +0x3B/anim-set gate (the DEATH_ANIM arm's).
+            (DEATH_BY_EXPLOSION, msg::UPDATE) => {
+                if !self.firing || matches!(self.anim_set, 4 | 9) { self.drop_weapon(d, rng); }
+                if self.death_pending { self.set_death_channel(); }
+                true
+            }
+            _ => false,
+        })
+    }
                 true
             }
             _ => false,
@@ -4627,6 +4924,11 @@ impl Drone {
         // unhandled→GLOBAL fallback the bullets use (WaitSwitch's handler drops it [M 0x15b960], the
         // GLOBAL base state picks it up).
         if m == msg::FLASH { return self.on_flash(d, rng, frame, s); }
+        // guard-blast-smoke: the explosive impact (msg 9) and the smoke cloud's touch (msg 0x17)
+        // ride the same state machine — `HandleImpact` cases 9/0x17 through the same
+        // unhandled→GLOBAL fallback (the GLOBAL base has neither case [M 0x15b830]).
+        if m == msg::EXPLOSION { return self.on_explosion(d, rng, frame, s); }
+        if m == msg::SMOKE { return self.on_smoke(d, rng, frame, s); }
         // fix-stunner-press (109b): the tase. The taser family handles its own case-7 arms
         // (`handle_taser`); every other state falls to the base handler — `DroneFunc_HandleImpact`
         // IS the base DSTATE, so its case 7 (the accumulator + the fall) is the GLOBAL fallback,
@@ -4698,6 +5000,7 @@ impl Drone {
         if let Some(r) = self.handle_death(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_knockout(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_door_guard(d, rng, frame, s, m) { return r; }
+        if let Some(r) = self.handle_blast_smoke(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_scary(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_cover(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_grenade_throw(d, rng, frame, s, m) { return r; }
@@ -8344,6 +8647,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
     /// [M 0x17cbd0:84-106] is the object's obj+0xE8 field, NOT the script scale; its own Sound(0x3E)
     /// is the blast sound [D script stream 36].
     fn spawn_blast(&mut self, d: &Data, pos: V3, radius: f32, damage: f32, owner: usize, weapon_type: u16, player_pos: V3, frame: u32, script: u32, scale: f32) {
+        // Every present drone is swept (the port's established GLOBAL-fallback convention: the
+        // disabled guards' msg 9 lands on HandleImpact's (0, false) arm and takes the damage —
+        // the merged frag pin `frag_at_the_same_spot_kills_the_trio` requires it; whether the
+        // game's own Collide_SphereIntersect list skips obj+0xF0 & 0x20 for DISABLED guards is an
+        // open live check in the report).
         let drones: Vec<(usize, V3, f32)> = self.list.iter().enumerate()
             .filter(|(_, x)| x.present && !x.corpse).map(|(i, x)| (i, x.pos, 0.4)).collect();
         let hits = crate::explode::propagate(pos, radius, damage, owner,
@@ -8358,23 +8666,21 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             self.player_hits.push((frame, owner, before - self.health.health));
         }
-        // Drones: `Drone_ExplosiveHit` → msg 9 (the port routes through `on_bullet` as an impact).
+        // Drones: `Drone_ExplosiveHit` 0x13aab8 — the attacker stamp (+0x2B4), then msg 9 with the
+        // DroneImpact (guard-blast-smoke). The damage itself is the msg-9 handler's job
+        // (`NDrone2_ExplosiveImpact` → `HitDamage`, the raw falloff amount, part −1): the port used
+        // to apply `ddmg · damage_taken` here and send msg 8 — the +0x14C multiply is the bullet
+        // paths' (armour ×0.25 made frags 4× weak) and the msg-8 route kept the guard standing
+        // (the playtest's "grenades stagger nobody"). A guard whose state has no case 9 (Attack/
+        // Combat/WaitSwitch…) drops the message and takes nothing — the game's own routing
+        // [M 0x1469b8 case 9 + 0x15b830].
         for (di, ddmg) in hits.drones {
             if let Some(dr) = self.list.get_mut(di) {
                 dr.last_damage = ddmg;
                 // The owner's grenade: usize::MAX = the player's throw [M +0x2B4 = the thrower; fix-actors].
                 if owner == usize::MAX { dr.hit_by_player = true; }
-                dr.health -= ddmg * dr.damage_taken;
-                // `Drone_ExplosiveHit` → msg 9 for BOTH cases (the port routes it through the
-                // impact intercept): the kill's `HandleImpact` → `ExplosiveImpact` → the death
-                // selector (mode 0x1D → AstronautDeath 0xBF [M 0x146480:103-104], else 0x44)
-                // applies inside THIS delivery — a bare set_state here sat pending and was
-                // clobbered by the next UPDATE's state re-assert (the astronaut strafe pick).
-                // Every other kind keeps master's kill arm (the death anim set at once): routing their
-                // kills through msg 8 too lost the protected guest's ch-0x60 raise
-                // (fix_actors_live, [M 0x145bd0 reason 3]) — the batch merge 2026-10-16.
-                if dr.health <= 0.0 && dr.mode != 0x1D { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
-                else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
+                dr.blast = Some(pos); // DroneImpact+0x10: the blast VECTOR (the anim bearing)
+                dr.send(d, &mut self.rng, frame, msg::EXPLOSION);
             }
         }
         // `Explode_Create` aligns the blast script to face the closest player before playing it:
@@ -10041,6 +10347,29 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // `handle` lacks — one tick after the ENTER for the pairing [*suggested* deviation], the
         // same tick for the zone (the vision pass above has run).
         self.door_guard_pass(d, player);
+        // guard-blast-smoke: the smoke clouds' per-tick touch. The game's cloud is a class-0x2A
+        // object whose collision is its glist bounds (the `MapObject.centre/radius` the port's
+        // `Data.models` carries, hashcode 0x2000273 for the grenade cloud); the drone's
+        // per-tick collision scan (Drone_CollisionHandler 0x140968:85) walks the hit list and
+        // `NDrone2_DealWithObjHit` case 0x2A sends msg 0x17 to the touched drone [M disasm
+        // 0x1405a8]. The port stands the collide engine's sphere-vs-glist test in with a point
+        // test against the drone's 1.05 object-contact sphere [S — the game's obj+0x80/0x8C stamp
+        // for the cloud is a live check in the report].
+        let mut smoke_touch: Vec<bool> = vec![false; self.list.len()];
+        if let Some(model) = d.models.get(&crate::grenade::SMOKE_CLOUD_MESH) {
+            for c in &self.smoke_clouds {
+                let centre = [c.pos[0] + model.centre[0], c.pos[1] + model.centre[1], c.pos[2] + model.centre[2]];
+                // The drone side is the port's 1.05 object-contact sphere (the same stand-in the
+                // hat's touch uses [M `Collide_PickObj`'s r obj+0x8C ≈ 1.05]; the cloud's own glist
+                // sphere is the mesh bounds above).
+                let r = model.radius + 1.05;
+                for (i, dr) in self.list.iter().enumerate() {
+                    if !dr.present || !dr.enabled || dr.corpse { continue; }
+                    let dx = dr.pos[0] - centre[0]; let dy = dr.pos[1] - centre[1]; let dz = dr.pos[2] - centre[2];
+                    if dx * dx + dy * dy + dz * dz <= r * r { smoke_touch[i] = true; }
+                }
+            }
+        }
         // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
         // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
         // The player toucher keeps the historical stand-in (`Toucher::player(pos − 0.4)`, reach
@@ -10524,6 +10853,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
             dr.voice_finished = dr.voice.is_none_or(|v| self.audio.finished(v.0));
             dr.patrol_cooldown = self.patrol_cooldown;
+            // guard-blast-smoke: the smoke cloud's touch this tick → msg 0x17 (DealWithObjHit case
+            // 0x2A). Delivered before the timers so the Loop's re-arm lands on the same tick.
+            if smoke_touch[index] { dr.send(d, rng, frame, msg::SMOKE); }
             // `NDrone2_DoorIsOpen` (0x14aaa0) refreshed for this tick: no door in the way → open;
             // else the door's obj+0xF4 == 4.
             dr.hit_door_open = dr.hit_door.map_or(true, |i| self.doors.list[i].state == crate::door::OPEN);
@@ -11633,6 +11965,7 @@ mod tests {
             loudness: 0.0, sound_share: 0.0, heard_frame: 0, heard_peak: 0.0, sound_pos: pos, noise_level: 0, investigating: false, turned: false, resume_state: 0, home: pos,
             health: 10.0, max_health: 10.0, damage_taken: 1.0, damageable: true, kind: 0,
             last_damage: 0.0, silent_kill: false, big_hit: false, flinch_at: None, hit: None, impact_resume: 0, hits_taken: 0,
+            blast: None,
             global_flinch: None, bond_aiming: false, cull: false, bond_armed: true, opp_facing: 0.0, opp_target: [0.0; 3], sighted: false, own_sight: false, first_attack_done: false,
             corpse: false, death_pending: false, hit_by_player: false, fail_reason: None, armed_peer_dist: f32::MAX, wait_channel: 0, wait_channel_on: false, route_blocked: false, death_channel: 0, special_death: 0, special_spot: pos, special_yaw: 0.0,
             mission_wait_channel: 0,

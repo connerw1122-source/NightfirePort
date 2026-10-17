@@ -17885,3 +17885,28 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+
+- 2026-10-16 s/guard-blast-smoke (task 727): guards ignore grenades and smoke entirely
+  (uncited-audit gap 2). Plan: port the blast-stagger state DSTATE 0x54 and the smoke
+  states 0x7B-0x7D [M] — entry from nearby explosion / stun / smoke cloud, the anims,
+  the timings, exit back to combat. Read docs/systems/uncited-audit.md gap section first.
+  Tests on 07000005: frag a few units from a guard staggers him the game's way; smoke
+  grenade puts guards inside the cloud into the smoke state until it clears. Branch
+  created from origin/master 170bcf01.
+- guard-blast-smoke: ported the blast-stagger and smoke families — states 0x54 ExplosiveImpact
+  (0x172fb0), 0x7B/0x7C/0x7D SmokedOut/Loop/Recover (0x173c50/0x16b878/0x173d30) and 0x45
+  DeathByExplosion (0x163a80); the msg routes: Drone_ExplosiveHit's msg 9 (0x13aab8) through
+  HandleImpact case 9 (0x1469b8:173-201 — the per-state (resume, allow) pairs are the msg-8
+  table's, verified by a scan of every DSTATE carrying case 9/0x17), and the smoke touch:
+  Drone_CollisionHandler's per-tick hit list → DealWithObjHit case 0x2A (the cloud's class byte)
+  → Drone_Message(obj, 0x17) [M disasm 0x1405a8]. spawn_blast now sends msg 9 instead of the old
+  direct damage·damage_taken + msg 8 (the game's HitDamage gets the raw falloff amount, part −1,
+  no +0x14C [M disasm 0x14654c]) and skips disabled drones (the collide list drops obj+0xF0 &
+  0x20 [M 0x1eae80:26-30]). The blast sweep's kills route per kind (0x0D → 0x44, else 0x45). The
+  smoke cloud's glist bounds (Data.models 0x2000273, radius 1.74 [L]) stand in for the collide
+  sphere against the port's 1.05 contact sphere [S]. Immunities: prop 0x36/0x34 (smoke) and the
+  family's own 0x17 arms (0x7B/0x7D drop, 0x7C re-arms timer C at frame+5). Tests
+  (blast_smoke_live): the frag kill routes 0x45 then DEAD with the control untouched; the smoke
+  cloud puts a guard in the family until it clears and recovers to the stamped resume; the
+  prop-0x34 guard never smokes; a firing-family guard staggers 0x54 → back to +0x118; a stunned
+  guard dies 0x44. 4/4 pass. Report: docs/reports/guard-blast-smoke.md.
