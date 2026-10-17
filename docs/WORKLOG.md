@@ -18629,3 +18629,34 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   2/2, doors_live 2/2, npc_doors_live 7/7, walkreal_0700004a 1 ignored (pre-existing),
   walkreal_07000001 2/2, fix_truck 2/2, walk_07000005 2/2. Report:
   docs/reports/channel-persistence.md.
+- 2026-10-17 s/level-09-complete (task 709b): started. Task: the live walk of
+  07000009 (Night of the Agent, Tower A) start to finish through the real input
+  path — every objective (the optional ones too), every cut-scene (skipped only
+  with the game's own skip), every scripted event, the exit the game's way.
+  Known open items to start from: the elevator buttons (task 700's findings,
+  s/elevator-buttons-09), the lobby laser grid art (s/laser-scripts, held for a
+  render check), the security-room monitor. walkreal_07000009_live.rs is to be
+  un-ignored and extended. In progress.
+- 2026-10-17 s/level-09-complete (task 709b): DONE. walkreal_07000009_live.rs
+  rewritten (3 tests, un-ignored as it already was): the writer pin (SP #70's
+  shape, the panel entity, the SS door pair); the FULL start-to-finish walk —
+  spawn #68 → the arrival plate #248 (ch 0x51) → the AI graph's stairs → the
+  lobby on the lenient nav graph → the REAL E-press on the elevator panel's
+  script entity (the elevator-buttons mechanism, no channel stand-in) → ch 0x39
+  → AND mux #274 → ch 0x46 → objective 0x4000017 state 4 → the FX entity B →
+  the LIFTDOORS SS pose open and disarm → the cab → TOUCH_ONCE #67 ch 0x32 →
+  LOAD_LEVEL #63 → level_exit 0700000a, with the mission rows asserted at the
+  start and the exit (obj 0x4000016 flags-2 sits 2 = no alarm; 0x4000017 = 4;
+  0x4000018 announced 3 when its enable ch 0x46 fired [M 0x1827d8:55-67]) —
+  4260 ticks, 0 stuck, 0 falls; the alarm fail-path sister (E an alarm switch →
+  ch 0x7C → OR mux #278 → ch 0x61 → ch 99 → state 5). Level-doc fix: the
+  monitor census line was wrong — ZERO 0x30 placements in all 40 maps [D probe;
+  M 0x1d04f0 case 0x30] (the security-room monitor WALL is baked art). Walk
+  findings: the security door E works (state 0x4 pos01 1.0) but the north-wall
+  furniture belt (a console at ≈(−23.5, 38.2)) and the raised desk platform
+  body-block direct steers — the route uses the guards' own nav graph; the
+  laser toggle switch #71 stays unreachable (its placement is the origin — the
+  position is scripted; the port's switch use targets placements). Ran:
+  walkreal_07000009_live 3/3, elevator_buttons_09_live 3/3, the four-crate
+  suite build + the run in flight on this tree (the 3 allowed disc_golden
+  failures only, so far). Report: docs/reports/level-09-complete.md.
