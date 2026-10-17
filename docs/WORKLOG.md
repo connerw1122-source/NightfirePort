@@ -16727,3 +16727,11 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+## cover-nodes (2026-10-17, branch s/cover-nodes) — started 00:24 UTC
+
+Task 746: the AI cover node placements — `Drone_CoverCornerNode` 0x136ff0 and
+`Drone_CoverLowNode` 0x137340 (968 placements on mission levels the port doesn't
+spawn). Reading the script census and the drone cover system first; port from the
+decompile [M], test on 07000006 through the real path, update script_census.rs
+handled sets. In progress.
