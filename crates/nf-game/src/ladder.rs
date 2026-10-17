@@ -32,6 +32,13 @@ pub struct Ladder {
     pub yaw: f32,
     /// `inst+0x02` = placement param 1 (`level_tag+0x30`) [M 0x196710-0x196714]; no reader found.
     pub channel: u16,
+    /// The glist bounds box half-extents in the ladder's own frame, `[lateral, frontal]` (object-space
+    /// x and z of `MapObject.min/max` × scale, about the bounds centre) — the pickable mesh's footprint
+    /// [M 07000002's hut ladder `Ladder_medium`: x ±0.354, z ±0.060, and its 0x2E collision triangles
+    /// span the same box]. The pick's stage 2 measures the capsule against this box.
+    pub half: [f32; 2],
+    /// The same box's world y span `[min, max]` (translation.y + min.y / max.y × scale).
+    pub y_span: [f32; 2],
 }
 
 impl Ladder {
@@ -53,7 +60,18 @@ impl Ladder {
         ];
         let scale = p.scale();
         let s_max = scale.iter().fold(1.0f32, |a, &v| a * v.max(1e-6).abs());
-        Some(Ladder { centre, radius: o.radius * s_max, yaw, channel: param1(p) })
+        let half = [
+            0.5 * (o.max[0] - o.min[0]) * scale[0].abs(),
+            0.5 * (o.max[2] - o.min[2]) * scale[2].abs(),
+        ];
+        let y_span = [p.translation[1] + o.min[1] * scale[1].abs(), p.translation[1] + o.max[1] * scale[1].abs()];
+        Some(Ladder { centre, radius: o.radius * s_max, yaw, channel: param1(p), half, y_span })
+    }
+
+    /// A hand-built ladder for unit tests: a rung box ±0.354 wide, ±0.06 deep (the shipped ladder
+    /// meshes' footprint [M 07000002]) spanning the sphere's height.
+    pub fn simple(centre: V3, radius: f32, yaw: f32) -> Ladder {
+        Ladder { centre, radius, yaw, channel: 0, half: [0.354, 0.06], y_span: [centre[1] - radius, centre[1] + radius] }
     }
 
     /// `BLData+0x8A0` = `centre.y + radius + 0.85` — the top dismount threshold [M Player_CollLadder
@@ -81,11 +99,10 @@ impl Ladder {
     /// candidate in `Collide_Update` 0x1ea398:84-93, not ported): a tall ladder's bounds sphere is its
     /// half-HEIGHT (r 5.75 on the 0700000c yard ladder, y span 0.8..12.1 [D probes]), so the bare ×1.5
     /// sphere reaches ~9 units sideways, and a ladder's pickable body is its thin rung plane through
-    /// the axis plus the rails' lateral span. The port models the refine as the frontal/lateral
-    /// decomposition of the offset from the axis ([S] — the stand-in for cel scoping + mesh refine,
-    /// replacing the pre-109i bare radial column `min(radius,1)+capsule`): `|frontal| ≤ capsule_radius`
-    /// (the capsule reaches the rung plane and no farther) and `|lateral| ≤ 0.4 + capsule_radius`
-    /// (the rails' span ±~0.4 of the axis). With the WALK arm's own 0.275 the walk grab fires only
+    /// the axis plus the rails' lateral span. The port models the refine as the capsule against the
+    /// mesh's bounds box in the ladder's frame ([S] the stand-in for cel scoping + mesh refine; the
+    /// box itself is [M], `in_mesh_box`): the capsule reaches the rung box (±0.06 deep, ±0.354 wide
+    /// on the shipped ladders) and no farther. With the WALK arm's own 0.275 the walk grab fires only
     /// when the walk capsule touches the rung plane — a walker brushing past, a stander 0.5+ off the
     /// plane or a just-dismounted dry stander at the dismount offset 0.5 never re-grabs, as in the
     /// game (fix-ladder-water2; the pre-109i2 port passed the swim arm's 0.55 here and re-grabbed a
@@ -114,7 +131,7 @@ impl Ladder {
     /// The two pick stages over one arm's segment: stage 1 — the object's world sphere inflated
     /// ×1.5 plus the capsule radius against the closest point on the segment A..B
     /// [`Collide_PickObj` 0x1eae80:152-168, mode word BLData+0x7D4 = 0x800]; stage 2 — the
-    /// mesh-scale column [`in_mesh_column`, the stand-in for the glist refine
+    /// mesh box [`in_mesh_box`, the stand-in for the glist refine
     /// `Collide_Update` 0x1ea398:84-93 → `Collide_Intersect` 0x1ebaa8].
     fn pick_hit(&self, pos: V3, a_off: f32, b_off: f32, capsule_radius: f32) -> bool {
         let a = [pos[0], pos[1] + a_off, pos[2]];
@@ -128,7 +145,7 @@ impl Ladder {
         let cy = a[1] + ab[1] * t - self.centre[1];
         let cz = a[2] + ab[2] * t - self.centre[2];
         if (cx * cx + cy * cy + cz * cz).sqrt() > self.radius * 1.5 + capsule_radius { return false; }
-        self.in_mesh_column(pos, capsule_radius)
+        self.in_mesh_box(pos, a_off.max(b_off), a_off.min(b_off), capsule_radius)
     }
 
     /// The CROUCH form of the pick (`Player_Collision` 0x194df0's capsule switch case 3 [M] — the
@@ -137,25 +154,31 @@ impl Ladder {
     /// — a short LOW capsule ~0.48 under the root at the stand height. (Named `capsule_hits_swim`
     /// before 750a mis-read case 3 as the swim substate; the swim substate 3 rides the switch's
     /// DEFAULT arm [M 0x195070 default].) Stage 1 is the same ×1.5 sphere test; stage 2 is the same
-    /// mesh-scale column (`in_mesh_column`). The low segment bounds the grab by DEPTH: a bed-hugging
+    /// mesh box (`in_mesh_box`). The low segment bounds the grab by DEPTH: a bed-hugging
     /// root too far under the bounds centre misses the ×1.5 sphere.
     pub fn capsule_hits_crouch(&self, pos: V3, capsule_radius: f32, cc: f32) -> bool {
         self.pick_hit(pos, 0.1 - (cc - 0.55), 0.45 - cc, capsule_radius)
     }
 
-    /// Stage 2, shared by every pick form: the offset from the ladder axis decomposed along the
-    /// ladder's facing (`fwd(yaw) = (sin, ·, cos)`, the same convention as the grab snap
-    /// `centre + fwd·0.5` [M 0x196118:36-44]) — `|frontal| ≤ capsule_radius` (the rung plane: the
-    /// form's own capsule radius — the walk arm 0.275 [M 0x194df0 case 0/6], the swim/default arms
-    /// 0.55 [M case 3 / default]) and `|lateral| ≤ 0.4 + capsule_radius` (the rails' span). See
-    /// `capsule_hits`'s doc.
-    fn in_mesh_column(&self, pos: V3, capsule_radius: f32) -> bool {
+    /// Stage 2, shared by every pick form: the capsule (the vertical segment pos.y + lo ..
+    /// pos.y + hi, radius `capsule_radius`) against the ladder mesh's bounds box in the ladder's frame
+    /// (`fwd(yaw) = (sin, ·, cos)`, the grab snap's convention [M 0x196118:36-44]; lateral = the rungs'
+    /// width, frontal = their depth) — the stand-in for the glist refine (`Collide_Update`
+    /// 0x1ea398:84-93 → `Collide_Intersect` 0x1ebaa8, not ported) and the straddled-cel scoping. The
+    /// box is the mesh's own [M `half`/`y_span`]; the pre-1016 port used a guessed ±0.4 rail span with
+    /// zero depth, which reached 0.95 sideways for the swim's 0.55 capsule where the mesh gives 0.904 —
+    /// the 02 hut-pocket swimmer at 0.955 slid along that edge and grabbed where the PS2 swims past
+    /// (PCSX2 2026-10-16, yaw 0.4/0.7 from (-76.27, 3.17, 22.14)). See `capsule_hits`'s doc.
+    fn in_mesh_box(&self, pos: V3, hi: f32, lo: f32, capsule_radius: f32) -> bool {
         let dx = pos[0] - self.centre[0];
         let dz = pos[2] - self.centre[2];
         let (s, c) = self.yaw.sin_cos();
         let frontal = dx * s + dz * c;
         let lateral = dx * c - dz * s;
-        frontal.abs() <= capsule_radius && lateral.abs() <= 0.4 + capsule_radius
+        let ox = (lateral.abs() - self.half[0]).max(0.0);
+        let oz = (frontal.abs() - self.half[1]).max(0.0);
+        let oy = (self.y_span[0] - (pos[1] + hi)).max((pos[1] + lo) - self.y_span[1]).max(0.0);
+        ox * ox + oz * oz + oy * oy <= capsule_radius * capsule_radius
     }
 }
 
@@ -187,7 +210,7 @@ mod tests {
     use super::*;
 
     fn ladder(yaw: f32) -> Ladder {
-        Ladder { centre: [10.0, 3.0, 20.0], radius: 1.5, yaw, channel: 0 }
+        Ladder::simple([10.0, 3.0, 20.0], 1.5, yaw)
     }
 
     #[test]
@@ -197,7 +220,7 @@ mod tests {
         assert!((l.top() - 5.35).abs() < 1e-6, "{}", l.top());
         assert!((l.bottom() - 2.5).abs() < 1e-6, "{}", l.bottom());
         // Sister: a different radius moves both thresholds.
-        let l2 = Ladder { radius: 2.5, ..ladder(0.0) };
+        let l2 = Ladder::simple([10.0, 3.0, 20.0], 2.5, 0.0);
         assert!((l2.top() - l.top()).abs() > 0.5 && (l2.bottom() - l.bottom()).abs() > 0.5);
     }
 
@@ -216,7 +239,7 @@ mod tests {
         // 2 units to the side: the bare stage-1 sphere reaches (2.0 ≤ 2.775) [M 0x1eae80:152-168], but the
         // game narrows the reach past the sphere (the straddled-cel scoping Collide_Pick 0x1eb320:125-134
         // + the glist mesh refine Collide_Intersect 0x1ebaa8 — both unported); the port's stage-2
-        // axis-column bound stands in: lateral 2.0 > 0.4 + 0.275 → no hit. (The bare stage 1 here is what
+        // mesh-box bound stands in: lateral 2.0 − 0.354 > 0.275 → no hit. (The bare stage 1 here is what
         // re-grabbed Bond off the 0700000c ladder top — the 102h regression.)
         assert!(!l.capsule_hits([12.0, 3.0, 20.0], wr, cc));
         // 4 units to the side: beyond both stages: no hit.
@@ -226,13 +249,13 @@ mod tests {
         // the ×1.5 sphere reaches — the grab y-snap then lifts him to bottom + 0.02 [M 0x196118:23-31].
         assert!(l.capsule_hits([10.0, 0.9, 20.0], wr, cc));
         // Sister: a shallow radius ladder stops reaching deep (the pick tracks the sphere).
-        let thin = Ladder { radius: 0.6, ..ladder(0.0) };
+        let thin = Ladder::simple([10.0, 3.0, 20.0], 0.6, 0.0);
         assert!(!thin.capsule_hits([10.0, 0.9, 20.0], wr, cc), "the inflated pick reached a thin ladder's bed depth");
         // Sister (the swim2 regression, the 0700000c yard ladder's real geometry — y span 0.8..12.1
         // [D probes] → cy 5.55, r 5.75): the top-exit dismount leaves Bond ~2.9 from the axis at
         // walkway height when regrab expires. The bare stage-1 sphere HITS him there (dist 6.4 ≤ 9.03)
         // and yanked him back into the climb; the stage-2 column bound rejects.
-        let yard = Ladder { centre: [9.7, 5.55, -187.3], radius: 5.75, yaw: 0.0, channel: 0 };
+        let yard = Ladder::simple([9.7, 5.55, -187.3], 5.75, 0.0);
         // Walking INTO the ladder at walkway height (crossing the rung plane) still grabs — the
         // walk capsule's own reach [M 0x194df0 case 0/6].
         assert!(yard.capsule_hits([9.7, 11.736, -187.1], wr, cc), "the walk-on grab at the walkway height must still reach");
@@ -262,7 +285,7 @@ mod tests {
         // Sister: a thin ladder stops the deep reach (the pick tracks the sphere): at the root
         // 0.9 the low segment (0.52..0.32) sits 2.49 from the sphere centre — past the thin ×1.5
         // reach 1.45, while the full ladder still reaches (2.49 ≤ 2.8).
-        let thin = Ladder { radius: 0.6, ..ladder(0.0) };
+        let thin = Ladder::simple([10.0, 3.0, 20.0], 0.6, 0.0);
         assert!(!thin.capsule_hits_crouch([10.0, 0.9, 20.0], 0.55, cc));
     }
 

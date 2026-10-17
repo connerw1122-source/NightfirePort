@@ -260,3 +260,37 @@ fn deep_ladder_let_go_mid_water_push_off_clears() {
     let dxz = push_off_clears(&mut sim, &lad, 600);
     eprintln!("  push-off cleared the column: dxz {dxz:.3}");
 }
+
+/// The hut pocket swim-out (playtest 1016: "swimming from the pond, back out to the pond … swims
+/// past the ladder"). PCSX2 truth, 2026-10-16 [L, fresh 07000002 boot via goto_level, Bond placed by
+/// PINE in the pond cel 0x1708870, stick forward held]: from the pocket spot (−76.27, 3.17, 22.14),
+/// 0.955 to the side of the ladder axis, yaw 0.4 swims PAST the ladder to (−71.14, 3.63, 27.94) and
+/// yaw 0.7 to (−69.16, ·, 28.55); yaw ≥ 1.3 (into the rungs) grabs. The pre-fix port grabbed at
+/// 0.4/0.7 too: its stage-2 stand-in used a guessed ±0.4 rail span (reach 0.95 for the swim's 0.55
+/// capsule) where the mesh box is ±0.354 × ±0.060 [M the ladder's glist bounds and 0x2E triangles] —
+/// reach 0.904.
+#[test]
+fn hut_pocket_swim_out_passes_the_ladder_like_the_ps2() {
+    if iso().is_none() { return; }
+    let run = |yaw: f32| {
+        let mut sim = load();
+        for _ in 0..200 { step(&mut sim, nf_game::player::Input::default()); }
+        sim.bond = nf_game::player::Bond::new([-76.27, 3.17, 22.14], yaw);
+        let mut grabbed = None;
+        for t in 0..168 {
+            step(&mut sim, nf_game::player::Input { forward: 1.0, ..Default::default() });
+            if grabbed.is_none() && sim.bond.ladder.is_some() { grabbed = Some(t); }
+        }
+        (grabbed, sim.bond.pos, sim.bond.substate)
+    };
+    let (_, lad) = { let s = load(); ladder_near(&s, HUT_XZ.0, HUT_XZ.1) };
+    for yaw in [0.4f32, 0.7] {
+        let (g, p, ss) = run(yaw);
+        let d = ((p[0] - lad.centre[0]).powi(2) + (p[2] - lad.centre[2]).powi(2)).sqrt();
+        assert!(g.is_none(), "yaw {yaw}: grabbed the hut ladder at tick {g:?} — the PS2 swims past it");
+        assert!(d > 4.0 && p[2] > 26.0, "yaw {yaw}: ended at {p:?} ({d:.2} from the ladder, substate {ss}) — the PS2 reaches the open pond (z ≈ 28)");
+    }
+    // Sister: swimming INTO the rungs still grabs and climbs (the PS2 grabs at yaw ≥ 1.3).
+    let (g, p, _) = run(1.3);
+    assert!(g.is_some() && p[1] > 5.0, "yaw 1.3: no grab/climb (ended {p:?}) — the PS2 grabs here");
+}
