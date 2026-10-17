@@ -16727,3 +16727,11 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+## frag-throw-timing (741)
+
+- Symptom (playtest 1016-1355, 07000014): frag grenades leave the hand before the throw animation
+  finishes — the port spawns them too early. Goal: the game's release frame for the frag throw
+  (the fire script's spawn frame / the release-frame family [M Player_WeaponFiring 0x1a5460,
+  +0x44]) and a fix that spawns the grenade on exactly that tick, measured from the press.
+- Started: reading the decompile.
