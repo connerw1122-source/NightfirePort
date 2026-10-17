@@ -223,3 +223,4 @@ One line per finished queue task: merged into master or not, and why. Written by
 - 2026-10-17 11:48 MST: merged batch 1017u: 1017t + level-05-interactables-2 (705d — one hurt system on master's module, the searchlight fix, the 16 finale checks). Suite 2223 passed, 0 failed, 79 ignored.
 - 2026-10-17 12:31 MST: merged batch 1017w: channel-persistence (699 — switch channels no longer cleared within a tick; every level's buttons/doors). Held: glass-breach-guards-2 (705c → 705f). Suite 2226 passed, 0 failed, 79 ignored.
 - 2026-10-17 13:02 MST: merged batch 1017x: level-09-complete (709b — the 09 walk test). Suite 2227 passed, 0 failed, 79 ignored.
+- 2026-10-17 13:08 MST: merged batch 1017y: level-08-interactables-2 (708c — the 08 kill-floor hurt volumes on master's one hurt system, drone victims). Suite 2231 passed, 0 failed, 82 ignored (on 7645223a; 1017x on top touched only the 09 walk test).
