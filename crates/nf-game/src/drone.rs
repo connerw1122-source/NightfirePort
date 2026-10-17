@@ -68,6 +68,16 @@ pub mod state {
     pub const HEARD_NOISE_SUSPECT: u8 = 0xa4;
     pub const HEARD_NOISE_ALERT: u8 = 0xa5;
     pub const RUN_FOR_COVER: u8 = 0x8c;
+    /// The abseil + elevator-jump family (`NDrone2_StateFuncs` 0x29b300 slots 0x8d–0x92; docs/fields/
+    /// dronetype-tables.md rows 141–146). ElevatorJumper 0x8d (0x169488), AbseilInit 0x8e (0x169610),
+    /// AbseilSlide 0x8f (0x169730), AbseilHang 0x90 (0x169940), AbseilStepOff 0x91 (0x1738e0),
+    /// AbseilDeath 0x92 (0x169b28).
+    pub const ELEVATOR_JUMPER: u8 = 0x8d;
+    pub const ABSEIL_INIT: u8 = 0x8e;
+    pub const ABSEIL_SLIDE: u8 = 0x8f;
+    pub const ABSEIL_HANG: u8 = 0x90;
+    pub const ABSEIL_STEP_OFF: u8 = 0x91;
+    pub const ABSEIL_DEATH: u8 = 0x92;
     pub const UNDER_COVER_INIT: u8 = 0x93;
     pub const UNDER_COVER_IDLE: u8 = 0x94;
     pub const UNDER_COVER_AIM: u8 = 0x95;
@@ -977,6 +987,38 @@ pub struct Drone {
     /// `+0x554 = piVar19[0xE]` = params[1], 0 when the word is 0x6000000 or one of the 0x6000892/0x600089c
     /// specials). Non-zero → `NDrone2_DSTATE_Global`'s enter starts the drone in PlayScript (3).
     pub start_script: u32,
+    /// `Drone+0x23`: the air/rope flag. Set for the dtypenew specials (modes 0x1b/0x1c) at DefaultInit
+    /// 0x14b300:763, kept by the abseil states' ENTERs, cleared on landing (AbseilSlide UPDATE
+    /// 0x169730:34 / StepOff 0x1738e0:19 / AbseilDeath 0x169b28:28). Gates `NDrone2_Move`'s rope
+    /// descent (0x14eff8:44) and the collision handler's no-gravity branch (0x140968:75).
+    pub air: bool,
+    /// `Drone+0x24`: the move-branch gate read with `air` in `NDrone2_Move` (0x14eff8:52). Set for
+    /// every drone at DefaultInit 0x14b300:771; no clearer in the decomp (grep `+ 0x24)`).
+    pub move_ok: bool,
+    /// `Drone+0x50`: the rope descent speed. DefaultInit 0x14b300:772-774 sets 0.05 when left 0;
+    /// AbseilSlide ENTER sets 6.5 (0x169730:22), AbseilHang ENTER 0 (0x169940:23).
+    pub descend_speed: f32,
+    /// `Drone+0x670..0x67c`: the rope point. AbseilInit ENTER copies the object position (0x169610:32-35);
+    /// AbseilSlide ENTER sets the Y to −1000 for mode 0x1b (0x169730:24) and its UPDATE tracks it down to
+    /// the opponent's Y (`+0x674 = min(+0x674, opp+0x184)`, 0x169730:52-54), as does the hang (0x169940:39-41).
+    pub rope: V3,
+    /// `Drone+0xdc`: the anim set saved by the dtypenew special (DefaultInit 0x14b300:625), restored
+    /// on landing (AbseilSlide 0x169730:35 / StepOff 0x1738e0:18).
+    pub saved_anim_set: u16,
+    /// `Drone+0xc4`: the attack type the landing restores into the mode byte (`+0xc5 = +0xc4`,
+    /// AbseilSlide 0x169730:36 / StepOff 0x1738e0:21). The OLD chain never writes it (the only
+    /// decomp writer is the astronaut's at 0x14b300:725) — a fresh allocation reads 0, so the
+    /// landed abseiler becomes mode 0 (the generic guard row).
+    pub attack_mode: u8,
+    /// `Drone+0xcc0/0xcc4/0xcc8` scratch of the hang re-slide hysteresis: `DCVars+0x1c =
+    /// (int)Rand_FRand(1.0)` — truncates to 0 (0x169940:21-22, held across the hang ↔ slide flips).
+    pub hang_rand: i32,
+    /// The ElevatorJumper outbox: the ENTER's `NDrone2_FindElevatorDoor` (0x14a940) scan request,
+    /// drained by `Drones::tick` (the game scans the class-0x1c objects directly).
+    pub elevator_scan: bool,
+    /// `+0xcd8` of the ElevatorJumper: the jump-out latch (0 at ENTER, 1 after the door opens and
+    /// anim 0x1e starts) [M 0x169488:20,28].
+    pub elevator_latch: bool,
     /// The surrender tally outbox: `PlrStat_LogEnemySurrender(0)` 0x1997b8 runs in the
     /// `Surrender_Anim` ENTER (0x1626a0) — folded into `Drones.progress` by the tick (fix-progress).
     pub surrender_logged: bool,
@@ -1080,7 +1122,8 @@ impl Drone {
         if d.level == 0x0700_0014 && (0x34..0x37).contains(&grenade_weapon) { grenade_weapon = 0x34; }
         // `Drone+0x554` (NDrone2_DefaultInit 0x14b300: `+0x554 = piVar19[0xE]` = params[1]): the start
         // script. 0x6000000 and the 0x6000892/0x600089c dtypenew specials leave it 0.
-        let start_script = match param(1) { 0x6000000 | 0x6000892 | 0x600089c => 0, s => s };
+        let p1 = param(1);
+        let start_script = match p1 { 0x6000000 | 0x6000892 | 0x600089c => 0, s => s };
         let mut dr = Drone {
             skin, anim_set, weapon, pos, yaw, desired_yaw: yaw, aim_yaw: 0.0, alert, alert_floor: alert, props: normal, alert_props,
             sight_range: e8, half_fov: crate::trig::HALF_PI, engage_range: f0, combat_range: fc,
@@ -1096,6 +1139,18 @@ impl Drone {
             firing: false, burst_done: false, burst: 0, next_shot: 0, last_shot: 0, clip, clip_max: clip,
             grenade_weapon, grenade_count, pending_grenade: false,
             shots: Vec::new(), log: Vec::new(), knocked_out: false, disabled_logged: false, dispatched_logged: false, start_script, root_prev: None, aimed_at: false, aimed_until: 0, bunched: false, wobble: rng.rand(10000), lost_sight: true, damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
+            // drone-abseil-elevator: the +0x23 rope fields (own lines — merge lesson 4). `move_ok`
+            // (+0x24) is set for every drone at DefaultInit 0x14b300:771; the rest start at the
+            // game's fresh-allocation values.
+            air: false,
+            move_ok: true,
+            descend_speed: 0.0,
+            rope: pos,
+            saved_anim_set: 0,
+            attack_mode: 0,
+            hang_rand: 0,
+            elevator_scan: false,
+            elevator_latch: false,
             // fix-progress tally outboxes (fields on their own lines — merge lesson 4):
             surrender_logged: false,
             hit_log: 0,
@@ -1148,6 +1203,21 @@ impl Drone {
         };
         dr.init_properties(d, &param);
         dr.type_setup(d);
+        // The dtypenew specials [M 0x14b300:615-627]: placement msg 0x6000892 → mode 0x1c, 0x600089c
+        // → 0x1b; the skin's anim set (+0xda) is saved to +0xdc and set 0xf (the rope set) takes
+        // over; the start script is consumed (start_script above). The type-settings lookup runs
+        // with the OVERRIDE mode: the OLD chain's DoTypeSettingsOLD(+0xc5) at 0x14b300:676 reads
+        // rows 27/28 → start state 0x8e (AbseilInit) [L rows 27/28 = 8e00…]. DefaultInit's mode
+        // check {0x1b,0x1c} then sets the air flag (0x14b300:763); the port's `start_state` picks
+        // 0x8e off the same rows, so the Global enter dispatches into the abseil chain.
+        if matches!(p1, 0x0600_0892 | 0x0600_089c) {
+            dr.saved_anim_set = dr.anim_set;
+            dr.anim_set = 0xf;
+            dr.mode = if p1 == 0x0600_0892 { 0x1c } else { 0x1b };
+            dr.air = true;
+            // DefaultInit 0x14b300:772-774: `+0x50 = 0.05` when the placement left it 0.
+            dr.descend_speed = 0.05;
+        }
         dr.captain_setup(d);
         dr.set_danim(d, start_danim, 0);
         dr
@@ -3283,6 +3353,19 @@ impl Drone {
     /// hip+0.6 ray, 0.2 on-surface, probe 0.4 (0x140e90; 0.55 when +0xd8 == 0xc and 0.3 when +0x2f — unmodelled,
     /// the gate's band only shifts, the sit/stand split does not change), 0.125 settle rate.
     pub fn collision_handler(&mut self, world: &CollisionWorld) {
+        if self.air {
+            // `Drone_CollisionHandler` (0x140968) +0x23 branch [M :75-111]: the feet probe (records
+            // the anim+0x60 & 8 flag the abseil states poll as on_surface), then pos += vel × REC —
+            // no gravity, no velocity zeroing, no settle. (The `+0x4f8 & 0x40` velocity decay ×0.98
+            // here has no decomp writer arming the bit — skipped.)
+            self.on_surface = self.feet_on_point(world).is_some();
+            self.in_air = !self.on_surface;
+            let r = 1.0 / 60.0;
+            self.pos[0] += self.velocity[0] * r;
+            self.pos[1] += self.velocity[1] * r;
+            self.pos[2] += self.velocity[2] * r;
+            return;
+        }
         if self.free_root || self.corpse || !self.bounded { return; }
         // `+0x4F8 & 0x4000` cleared at the top.
         self.in_air = false;
@@ -3321,6 +3404,42 @@ impl Drone {
     /// length (+0xA0 + 0.6) and the feet (`pos.y − +0xA0`), and the sitting driver's is the 0.2 clamp
     /// [L 05-truck.trace]. DefaultInit 0x14b300:48 starts it at 1.0.
     fn hip(&self) -> f32 { self.hip_anim }
+
+    /// `NDrone2_Move` (0x14eff8) +0x23 branch, interpreter-verified against the real code (this
+    /// task): `velocity += normalise(rope − pos) · (REC_FRAME_RATE · +0x50)` per control tick, the
+    /// old velocity kept (it accumulates — the rope slide accelerates at +0x50 u/s²). The VU/EE op
+    /// split is the game's: the vector sub (VU chop), `Vec_Normalise` 0x1e3000 (the squares via the
+    /// VU mul, the sum/sqrt/recip via the EE FPU, the final scale via the VU mul), the scalar
+    /// `REC_FRAME_RATE · +0x50` via the EE mul, the product and add via the VU ops.
+    fn abseil_move(&mut self) {
+        if !self.air || !self.move_ok { return; }
+        let chop = |x: f64| -> f32 {
+            let n = x as f32;
+            if (n as f64).abs() > x.abs() { f32::from_bits(n.to_bits() - 1) } else { n }
+        };
+        // dir = normalise(rope − pos) [VU vsub + Vec_Normalise]. The EE FPU rounds toward zero
+        // (the interpreter's pinned model): the sum is `add_noguard` chopped, sqrt f64-truncated,
+        // the recip nearest.
+        let mut dir = [0.0f32; 3];
+        {
+            let raw = [chop((self.rope[0] - self.pos[0]) as f64), chop((self.rope[1] - self.pos[1]) as f64), chop((self.rope[2] - self.pos[2]) as f64)];
+            let sq = [nf_formats::ps2float::mul(raw[0], raw[0]), nf_formats::ps2float::mul(raw[1], raw[1]), nf_formats::ps2float::mul(raw[2], raw[2])];
+            let len2 = nf_formats::ps2float::add_noguard(nf_formats::ps2float::add_noguard(sq[0], sq[1], true), sq[2], true);
+            let len = nf_formats::ps2float::sqrt(len2);
+            if len == 0.0 {
+                dir = [0.0; 3];
+            } else {
+                let r = 1.0 / len; // div.s, nearest [L WORKLOG 0026]
+                for k in 0..3 { dir[k] = nf_formats::ps2float::mul(raw[k], r); }
+            }
+        }
+        let s = nf_formats::ps2float::mul(self.descend_speed, 1.0 / 60.0); // mul.s, chopped [M 0x14eff8:64]
+        for k in 0..3 {
+            self.velocity[k] = chop((self.velocity[k] as f64 + nf_formats::ps2float::mul(dir[k], s) as f64)); // VU vmulbc + vadd
+        }
+        // The common tail's knockback delta add and +0x5d0 decay are the normal path's (the port's
+        // collision handler owns the position integration); the +0x5e0 bookkeeping has no reader here.
+    }
 
     /// `NDrone2_SetAngleToCover`: low node or as-low cover → the opponent; side 1 → node yaw − π/2; side 2 → node yaw.
     fn set_angle_to_cover(&mut self, d: &Data) {
@@ -5125,6 +5244,162 @@ impl Drone {
             }
             // DeleteMe 0xb4 (0x173f00): the soft removal (NDrone2_Enable(0) + obj+0xfe |= 1).
             (crate::kiko::DELETE_ME, msg::ENTER) => { self.present = false; self.enabled = false; true }
+            // ---- drone-abseil-elevator: states 0x8d–0x92 (`NDrone2_StateFuncs` slots 0x8d–0x92) ----
+            // ElevatorJumper 0x8d (0x169488). No decomp writer reaches 0x8d — every constant
+            // `Drone_SM_SetState` and every `+0x5a2` write in ACTION.ELF is accounted for elsewhere and
+            // no DroneTypeSettings row starts there — so the tests drive it directly. ENTER (case 1):
+            // anim 0x21, find + open the elevator door (the class-0x1c door within 2.0), +0xcd8 = 0.
+            (state::ELEVATOR_JUMPER, msg::ENTER) => {
+                self.call_anim(d, anim_state::ALERT_IDLE, 0, 0);
+                self.elevator_scan = true;
+                self.door_attempt = true;
+                self.elevator_latch = false;
+                true
+            }
+            // UPDATE (case 3): SeenAndAttacking (the tick's music gate below covers this state) and the
+            // once-only jump out: `+0xcd8 == 0 && DoorIsOpen` → anim 0x1e (RUN), latch, timer C at
+            // now + 30 [M 0x169488:23-34; FRAME_RATE_DIV·30 = 30 ticks, L 0x30d0d4 = 1.0].
+            (state::ELEVATOR_JUMPER, msg::UPDATE) => {
+                if !self.elevator_latch && self.hit_door_open {
+                    self.elevator_latch = true;
+                    self.call_anim(d, anim_state::RUN, 0, 0);
+                    self.timer_c = Some(frame + 30);
+                }
+                true
+            }
+            // Timer C (case 0xc) → Attack 0x56 [M 0x169488:40]. The other msgs are unhandled
+            // (default → 0 → the GLOBAL handler).
+            (state::ELEVATOR_JUMPER, msg::TIMER_C) => { self.set_state(state::ATTACK); true }
+            // AbseilInit 0x8e (0x169610). ENTER: flag 0x10000, SetDAnimNow(0xb) (the rope-grab danim),
+            // timer C at now + Rand_Rand(60), +0xcc8 = 0, +0xcc0 = 1, +0x23 = 1, the rope point =
+            // the object position, +0xcd8 = 0 [M case 1].
+            (state::ABSEIL_INIT, msg::ENTER) => {
+                self.set_danim(d, 0xb, 0);
+                self.timer_c = Some(frame + rng.rand(60) as u32);
+                self.air = true;
+                self.rope = self.pos;
+                true
+            }
+            // UPDATE (case 3): SetAngleToObj(opponent) and falls into case 0 (handled) [M :41-45].
+            (state::ABSEIL_INIT, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp; true }
+            // Timer C (case 0xc) → AbseilSlide 0x8f [M :53-55].
+            (state::ABSEIL_INIT, msg::TIMER_C) => { self.set_state(state::ABSEIL_SLIDE); true }
+            // AbseilSlide 0x8f (0x169730). ENTER: flag 0x10000, CallAnim(3) (the slide pose), +0x23 = 1,
+            // +0x50 = 6.5; mode 0x1b drops the rope point to −1000 [M case 1].
+            (state::ABSEIL_SLIDE, msg::ENTER) => {
+                self.call_anim(d, 3, 0, 0);
+                self.air = true;
+                self.descend_speed = 6.5;
+                if self.mode == 0x1b { self.rope[1] = -1000.0; }
+                true
+            }
+            // UPDATE (case 3) [M :29-66]: SeenAndAttacking + AttackTalk; landing when the feet probe
+            // hits (anim+0x60 & 8 — the collision handler's air branch sets on_surface from the same
+            // probe): +0x23 = 0, the saved anim set back, mode = +0xc4 (0 — the generic guard), the
+            // land anim 0x21 with follow-on 0x67 (DrawWeapon), +0xcd8 = 1. Mode 0x1c: no opponent →
+            // hang; the rope point tracks down to the opponent's Y; within 3.0 of the opponent's
+            // height → hang. Then SetAngleToObj(opponent). The +0x3b firing flag = LOS (& the +0x1e
+            // gate — no decomp writer on these drones, fresh allocations read 0).
+            (state::ABSEIL_SLIDE, msg::UPDATE) => {
+                self.attack_talk(d, rng);
+                if self.on_surface {
+                    self.air = false;
+                    self.anim_set = self.saved_anim_set;
+                    self.mode = self.attack_mode;
+                    self.call_anim(d, anim_state::ALERT_IDLE, 0x67, 0);
+                    return true;
+                }
+                self.firing = self.los;
+                if self.mode == 0x1c {
+                    if !self.ever_seen {
+                        // `+0x170 == 0`: no opponent object — the port's stand-in is `ever_seen`
+                        // (the vision pass assigns the opponent; the game's pointer is written by
+                        // `Drone_ProcessOpponents`). Hang at once.
+                        self.set_state(state::ABSEIL_HANG);
+                        return true;
+                    }
+                    if self.player_pos[1] < self.rope[1] { self.rope[1] = self.player_pos[1]; }
+                    if self.pos[1] < self.player_pos[1] + 3.0 { self.set_state(state::ABSEIL_HANG); return true; }
+                }
+                self.desired_yaw = self.yaw_to_opp;
+                true
+            }
+            // AbseilHang 0x90 (0x169940). ENTER: flag 0x10000, CallAnim(2) (the hang pose), +0x23 = 1,
+            // DCVars+0x1c = (int)Rand_FRand(1.0) = 0, +0x50 = 0 (the descent stops), DroneWeap_Fire(1)
+            // [M case 1].
+            (state::ABSEIL_HANG, msg::ENTER) => {
+                self.call_anim(d, 2, 0, 0);
+                self.air = true;
+                self.hang_rand = 0;
+                self.descend_speed = 0.0;
+                self.fire(d, rng, frame, true);
+                true
+            }
+            // UPDATE (case 3) [M :28-48]: SeenAndAttacking + AttackTalk + SetAngleToObj(opponent); the
+            // velocity decay ×(1.0 − FRAME_RATE_DIV·0.02) = 0.98 (the collision handler's air branch
+            // applies it); the firing flag as in the slide; the rope tracking; back to the slide when
+            // the opponent is more than 3.0 + hang_rand BELOW the drone.
+            (state::ABSEIL_HANG, msg::UPDATE) => {
+                self.attack_talk(d, rng);
+                self.desired_yaw = self.yaw_to_opp;
+                // The velocity decay ×(1.0 − FRAME_RATE_DIV·0.02) = 0.98 [M 0x169940:33; EE mul.s].
+                for v in &mut self.velocity { *v *= 0.98; }
+                self.firing = self.los;
+                if self.ever_seen {
+                    if self.player_pos[1] < self.rope[1] { self.rope[1] = self.player_pos[1]; }
+                    if self.player_pos[1] + 3.0 + (self.hang_rand as f32) < self.pos[1] { self.set_state(state::ABSEIL_SLIDE); return true; }
+                }
+                true
+            }
+            // AbseilStepOff 0x91 (0x1738e0). ENTER: flag 0x10000, +0x56a = 0 (the anim state), +0x23 = 0,
+            // the saved anim set back, mode = +0xc4, the land anim 0x21 → 0x67 [M case 1]. UPDATE:
+            // SeenAndAttacking, +0x3b = 0 [M case 3]. No decomp caller (like 0x8d).
+            (state::ABSEIL_STEP_OFF, msg::ENTER) => {
+                self.anim.state = 0;
+                self.air = false;
+                self.anim_set = self.saved_anim_set;
+                self.mode = self.attack_mode;
+                self.call_anim(d, anim_state::ALERT_IDLE, 0x67, 0);
+                true
+            }
+            (state::ABSEIL_STEP_OFF, msg::UPDATE) => { self.firing = false; true }
+            // AbseilDeath 0x92 (0x169b28). ENTER: on 0700004a the collision bit 0x20 clears and bit 4
+            // sets (the corpse falls free), else the obj+0xf0 bit 0x20 corpse flag; +0xcd8: 0 then 1;
+            // alert 3, the death log, +0x23 = 0 (gravity resumes), +0xcdc = 0, the death anim 0x40,
+            // DropWeapon [M case 1].
+            (state::ABSEIL_DEATH, msg::ENTER) => {
+                if d.level == 0x0700_004a {
+                    // +0x4f8 = (& ~0x20) | 4: the port's `bounded` flag stands for the collision bit
+                    // 0x20 — clearing it drops the corpse through the collision driver untouched
+                    // (the free-fall arm of `Drone_CollisionHandler`'s air branch does not apply —
+                    // +0x23 = 0 below — but the gravity/branch gate in the port is `bounded`).
+                    self.bounded = false;
+                } else {
+                    self.corpse = true; // obj+0xf0 bit 0x20
+                }
+                self.death_pending = true;
+                self.air = false;
+                self.call_anim(d, anim_state::DEATH, 0, 0);
+                self.drop_weapon(d, rng);
+                true
+            }
+            // UPDATE (case 3): on 0700004a wait to be drawn, then Enable(0) + obj+0xfe |= 1 (the soft
+            // delete); elsewhere wait for +0xcdc == 0 and the feet probe (the corpse landed) → danim
+            // 10, +0xcdc = 1, DEAD 0x47 [M case 3].
+            (state::ABSEIL_DEATH, msg::UPDATE) => {
+                if d.level == 0x0700_004a {
+                    if self.drawn { self.present = false; self.enabled = false; }
+                } else if !self.death_pending {
+                    if self.on_surface {
+                        self.set_danim(d, 10, 0);
+                        self.death_pending = true;
+                        self.set_state(state::DEAD);
+                    }
+                }
+                true
+            }
+            // EXIT (case 2): +0xcd8 set → SetDeathChannel [M case 2]. (The enter leaves it set.)
+            (state::ABSEIL_DEATH, msg::EXIT) => { self.set_death_channel(); true }
             (_, msg::ENTER | msg::EXIT | msg::UPDATE) => true,
             _ => false,
         }
@@ -8806,6 +9081,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     }
                 }
             }
+            // `NDrone2_FindElevatorDoor` (0x14a940) + `NDrone2_OpenDoor` (0x14aa38) for the
+            // ElevatorJumper's ENTER: the nearest class-0x1c door object within 2.0 (the squared 4.0
+            // test), skipped when disabled (obj+0xf4 bit 2) — drained BEFORE the door_attempt request
+            // below so the ENTER's own activation opens it the same tick.
+            if dr.elevator_scan {
+                dr.elevator_scan = false;
+                let mut best: Option<(f32, usize)> = None;
+                for (i, _) in self.doors.list.iter().enumerate() {
+                    let dp = self.doors.list[i].pos;
+                    let dx = dp[0] - dr.pos[0];
+                    let dy = dp[1] - dr.pos[1];
+                    let dz = dp[2] - dr.pos[2];
+                    let d2 = dx * dx + dy * dy + dz * dz;
+                    if d2 < 4.0 && best.map_or(true, |(b, _)| d2 < b) { best = Some((d2, i)); }
+                }
+                dr.hit_door = best.map(|(_, i)| i);
+                if let Some(i) = dr.hit_door { dr.hit_door_open = self.doors.list[i].state == crate::door::OPEN; }
+            }
             // The ENTER / timer-C activation request (`NDrone2_OpenDoor` 0x14aa38): only a CLOSED
             // /CLOSING door activates; the attempt stamps +0xBB0. `Door_Activate(door, drone, 0)`.
             if dr.door_attempt {
@@ -8827,7 +9120,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 | state::AIM_CROUCH | state::AIM_CROUCH_FIRE | state::AIM_CROUCH_RELOAD | state::STEP_AIM_LEFT | state::STEP_AIM_RIGHT
                 | state::STRAFE_AIM_LEFT | state::STRAFE_AIM_RIGHT | state::STRAFE_DODGE_LEFT | state::STRAFE_DODGE_RIGHT | state::ROLL_LEFT_CROUCH
                 | state::ROLL_RIGHT_CROUCH | state::RUN_FOR_COVER | state::UNDER_COVER_INIT | state::UNDER_COVER_IDLE | state::UNDER_COVER_AIM
-                | state::UNDER_COVER_FIRE | state::UNDER_COVER_RETURN | state::UNDER_COVER_LEAVE_NOW | state::UNDER_COVER_TYPE_CHANGE | state::BULLET_IMPACT)
+                | state::UNDER_COVER_FIRE | state::UNDER_COVER_RETURN | state::UNDER_COVER_LEAVE_NOW | state::UNDER_COVER_TYPE_CHANGE | state::BULLET_IMPACT
+                | state::ELEVATOR_JUMPER | state::ABSEIL_SLIDE | state::ABSEIL_HANG | state::ABSEIL_STEP_OFF)
                 && dr.team == 1
                 && self.attack_gate.seen_and_attacking(index, dr.seen, dr.unseen_ticks, dr.dist) { self.music.event(2, 5); }
             self.patrol_cooldown = dr.patrol_cooldown;
@@ -9029,7 +9323,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             for mut p in dr.drops.drain(..) { p.from = Some(index); self.pickups.push(p); }
             // `Drone_CollisionHandler` (0x140968, WORKLOG 0078): the feet-sphere down-ray + gravity, before the
             // AI-boundary push-out (the game's `AINetwork_GetBoundsPushVectorForSphere` runs last in the handler).
-            { let _p = crate::prof::scope("drone: collision_handler"); dr.collision_handler(d.world); }
+            { let _p = crate::prof::scope("drone: collision_handler"); dr.abseil_move(); dr.collision_handler(d.world); }
             // `NDrone2_Collision`: the feet sphere (r 0.4) is pushed out of the AI-network boundaries.
             if dr.enabled && dr.bounded && d.nav.bounds {
                 let p = d.nav.push_out(dr.feet(), 0.4);
@@ -9740,7 +10034,7 @@ mod tests {
 
     /// A drone with only the collision-relevant fields set (pos, velocity, bounded, free_root, corpse), for the
     /// gravity / down-ray tests. The hip height is the default 1.0 (`Drone::hip`).
-    fn drone_at(pos: V3) -> Drone {
+    pub(crate) fn drone_at(pos: V3) -> Drone {
         let dr = Drone {
             skin: 0, anim_set: 0, weapon: 0, pos, yaw: 0.0, desired_yaw: 0.0, aim_yaw: 0.0, alert: 0.0, alert_floor: 0.0,
             props: [0; 3], alert_props: None, sight_range: 0.0, half_fov: 0.0, engage_range: 0.0, combat_range: 0.0,
@@ -9792,6 +10086,16 @@ mod tests {
             // fix-facial3: the blink driver state + the facial script slots (own line — merge lesson 4).
             facial_state: 0, facial_timer: 0, facial_reappend: false, facial_idle: None, facial_blink: None, last_tick: 0,
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
+            // drone-abseil-elevator: the +0x23 rope fields (own lines — merge lesson 4).
+            air: false,
+            move_ok: true,
+            descend_speed: 0.0,
+            rope: pos,
+            saved_anim_set: 0,
+            attack_mode: 0,
+            hang_rand: 0,
+            elevator_scan: false,
+            elevator_latch: false,
             // fix-cover-remainder: the scary-object flee family (own line — merge lesson 4).
             scared: false, flee_return: 0, flee_deadline: None, explosive_msg: None,
         };
@@ -9971,5 +10275,73 @@ mod foley_tests {
         let draw = rng.rand(n) as usize;
         let l = Drones::foley_entry(Some(&lines), &mut last, base + draw, 40).expect("the death entry plays");
         assert!(l.sfx == 949 || l.sfx == 947 || l.sfx == 139, "a male death-pool sfx, got {}", l.sfx);
+    }
+}
+
+#[cfg(test)]
+mod abseil_tests {
+    use super::tests::drone_at;
+    use super::*;
+
+    /// The rope descent's float chain, pinned against the game's real `NDrone2_Move` (0x14eff8)
+    /// run in this repo's EE interpreter (this task): the velocity accumulates
+    /// `normalise(rope − pos) · (REC_FRAME_RATE · +0x50)` with the VU chop on the vector ops and
+    /// the EE nearest rounding on the scalars.
+    #[test]
+    fn abseil_move_matches_the_interpreter() {
+        // CASE 1: rope straight below, still air → vel = (0, −0.108333334, 0).
+        let mut dr = drone_at([10.0, 100.0, 10.0]);
+        dr.air = true;
+        dr.descend_speed = 6.5;
+        dr.rope = [10.0, 90.0, 10.0];
+        dr.abseil_move();
+        assert_eq!(dr.velocity, [0.0, -0.108_333_334_f32, 0.0], "case 1: {:?} (interpreter −0.108333334)", dr.velocity);
+        // CASE 3: diagonal rope (3,−4,0) → normalised × the same scalar.
+        let mut dr = drone_at([10.0, 100.0, 10.0]);
+        dr.air = true;
+        dr.descend_speed = 6.5;
+        dr.rope = [13.0, 96.0, 10.0];
+        dr.abseil_move();
+        assert_eq!(dr.velocity, [0.064_999_99_f32, -0.086_666_666_f32, 0.0], "case 3: {:?}", dr.velocity);
+        // CASE 4: an existing velocity is KEPT (the descent adds, not resets).
+        let mut dr = drone_at([10.0, 100.0, 10.0]);
+        dr.air = true;
+        dr.descend_speed = 6.5;
+        dr.rope = [10.0, 90.0, 10.0];
+        dr.velocity = [0.0, 0.0, -5.0];
+        dr.abseil_move();
+        assert_eq!(dr.velocity, [0.0, -0.108_333_334_f32, -5.0], "case 4: {:?}", dr.velocity);
+        // CASE 5: speed 0 (the hang's +0x50 = 0) → no change.
+        let mut dr = drone_at([10.0, 100.0, 10.0]);
+        dr.air = true;
+        dr.descend_speed = 0.0;
+        dr.rope = [10.0, 90.0, 10.0];
+        dr.velocity = [0.0, 0.0, -5.0];
+        dr.abseil_move();
+        assert_eq!(dr.velocity, [0.0, 0.0, -5.0], "case 5: {:?}", dr.velocity);
+        // CASE 7: two ticks accumulate (the acceleration).
+        let mut dr = drone_at([10.0, 100.0, 10.0]);
+        dr.air = true;
+        dr.descend_speed = 6.5;
+        dr.rope = [10.0, 90.0, 10.0];
+        dr.abseil_move();
+        dr.abseil_move();
+        assert_eq!(dr.velocity[1], -0.216_666_67_f32, "case 7: {:?} (interpreter −0.21666667)", dr.velocity);
+    }
+
+    /// `Drone_CollisionHandler` (0x140968) +0x23 branch: pos += vel × REC with no gravity and no
+    /// velocity zeroing — the rope drone falls through open shafts at its own accumulated speed.
+    #[test]
+    fn air_collision_integrates_without_gravity() {
+        let mut dr = drone_at([10.0, 100.0, 10.0]);
+        dr.air = true;
+        dr.velocity = [0.0, -0.108_333_334_f32, 0.0];
+        let world = CollisionWorld::empty();
+        for _ in 0..60 { dr.collision_handler(&world); }
+        // 60 ticks × vel/60 ≈ −0.10833333 (the integration is the port's plain-f32 style, shared
+        // with the normal branch; the velocity itself is untouched — no gravity).
+        assert!((dr.pos[1] - (100.0 - 0.108_333_33)).abs() < 1e-3, "pos {:?}", dr.pos);
+        assert_eq!(dr.velocity[1], -0.108_333_334_f32, "no gravity may touch the rope velocity");
+        assert!(dr.in_air, "the rope drone is airborne unless the probe hits");
     }
 }

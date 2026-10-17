@@ -16905,3 +16905,38 @@ prop 0x56.
   with the env sourced) — no suite total line this session; the next session should run it.
   The trigger-movie push glue (Trigger_Update/Trigger_Activate) is left for a follow-up task.
 - Report: docs/reports/gameflow-state-stack.md.
+
+## drone-abseil-elevator (2026-10-16, branch s/drone-abseil-elevator) — start 20:15 UTC
+
+Task 720: the decompile census lists NDrone2_AbseilHang and the ElevatorJumper states as not cited
+in the port. Find which levels place drones that use them [D the placements / DCVars whose setup
+reaches those states]. Then port both: the hang / descend / land sequence with its anims and
+timings, and the elevator jump [M]. Tests on a level that uses them: the drone runs the sequence
+and lands at the game's position and tick — without those states the drone just stands there.
+Branch created from origin/master 170bcf01.
+## drone-abseil-elevator (2026-10-16, branch s/drone-abseil-elevator) — start 20:15 UTC
+
+Task 720: port the drone abseil family (0x8e–0x92) and the ElevatorJumper (0x8d) the census lists
+as uncited. Disc reach [D nf-extract drones]: the five 0x06000892 placements — 07000011 ×2 (office
+floor Y 46.5) and 0700004a ×3 (the elevator shaft, Y −7.5/−50/−95) — placement msg 0x06000892 →
+mode +0xC5 = 0x1c [M DefaultInit 0x14b300:615-627]; the mode ∈ {0x1b,0x1c} arms the rope flag +0x23
+and start 0x8e [M 0x14b300:757-766]; DroneTypeSettings rows 27/28 start AbseilInit [L]. Ported
+(crates/nf-game/src/drone.rs): the dtypenew-special wiring in Drone::new, the six states in the
+dispatch (Init 0x8e 0x169610, Slide 0x8f 0x169730, Hang 0x90 0x169940, StepOff 0x91 0x1738e0,
+AbseilDeath 0x92 0x169b28, ElevatorJumper 0x8d 0x169488), the rope descent in `NDrone2_Move`'s
++0x23 branch (0x14eff8) and the collision handler's air branch (0x140968:75-111: probe, pos +=
+vel/60, no gravity/zeroing). The descent math is interpreter-verified against the REAL function run
+in this repo's EE interpreter (nf-formats::ee::Machine): vel += normalise(rope−pos)·(REC·+0x50),
+the old velocity kept, accumulating — with the EE FPU round-toward-zero (mul.s/add.s chop, div.s
+nearest) and the VU chop on the vector ops; the unit tests pin the interpreter's exact f32 bits.
+Findings: ElevatorJumper 0x8d, AbseilStepOff 0x91 and AbseilDeath 0x92 have NO decomp writer (every
+SetState constant and +0x5a2 write accounted; no DroneTypeSettings row starts there) — the docs'
+"07000014's Rook = ElevatorJumper" gloss has no code path; the tests drive 0x8d directly (door
+scan 0x14a940 within 2.0 → OpenDoor 0x14aa38 → danim 0x1e + timer C 30 → Attack 0x56). Landing =
+the feet probe (anim+0x60 & 8), not an anim end; mode 0x1b drops the rope to −1000 [M 0x169730:24]
+(no disc instance — tested through the same path). Tests: drone.rs unit 2 (interpreter-pinned math,
+the air collision branch) + nf-view live 3/3 green on the real levels (the WAIT_SWITCH gate ch 0x13
+[D], Init→Slide→Hang, the follow-down/hang-band/×0.98 decay, the probe landing, the jumper door →
+jump → Attack → combat chain). Ran: nf-game lib 243 passed, nf-view abseil_elevator_live 3 passed.
+The full background suite could not complete inside the sandbox window (started 20:15 on the
+pre-task tree, killed; the final tree ran the touched crates only) — see the report.
