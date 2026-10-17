@@ -958,7 +958,11 @@ impl BotBrain {
         // 1. the forced-to-0xC5 heartbeat [M 0x171df8:78-86]
         self.bot_global_msg3(ctx);
         // 2. msg 3 to the current state (unknown states do not consume → nothing, like the
-        //    unported handlers returning 0 with the BotGlobal fallback consumed above)
+        //    unported handlers returning 0 with the BotGlobal fallback consumed above). The two
+        //    unported combat-move states bounce back to 0xCF [S — the port's stand-in for the
+        //    unported run/backoff movement: the game's 0xD0/0xD7 walk/step the combat range and
+        //    re-route through the attack state's own msg-3 arms; freezing in them (the old
+        //    `_ => {}` fall-through) idled the bot mid-fight forever].
         match self.state {
             state::BOT_IDLE => {
                 self.bot_idle_msg3(ctx, rng);
@@ -966,6 +970,9 @@ impl BotBrain {
             state::BOT_GOTO_GOAL_POSITION => self.bot_goto_goal_msg3(ctx),
             state::BOT_ATTACK => self.bot_attack_msg3(ctx, rng),
             state::BOT_ATTACK_FIRE => self.bot_attack_fire_msg3(ctx, rng),
+            state::BOT_ATTACK_RUN | state::BOT_ATTACK_BACKOFF | state::BOT_ATTACK_STRAFE_AIM_LEFT
+            | state::BOT_ATTACK_STRAFE_AIM_RIGHT | state::BOT_ATTACK_STEP_AIM_LEFT
+            | state::BOT_ATTACK_STEP_AIM_RIGHT => self.bot_attack_move_stub(ctx),
             _ => {}
         }
         // 3. the per-tick firing pipeline [M 0x1490f0:231 `DroneWeap_HandleFiring`]
@@ -1508,22 +1515,34 @@ impl BotBrain {
         }
     }
 
-    /// `NDrone2_FindOpponent` 0x1424e0 (the port's minimal pick): accept the nearest live
-    /// candidate the pass found (the gate [M 0x1424e0:164-167 — 0x600 clear, 0x100 set,
-    /// health > 0]; the full score/history selection is not lifted — [S], see the report).
-    /// Team reads are `MP_getObjectTeam` (0x18b6c0).
+    /// `NDrone2_FindOpponent` 0x1424e0 (the port's form): the search walks the live candidates
+    /// and tests `NDrone2_CanSeeObject` PER candidate [M 0x1424e0:158 (the current opponent's
+    /// re-validation), :222/:259/:307/:354 (the search loop's own CanSeeObject arms)] — the
+    /// +0xB0 seen bits are NOT the acquisition gate (the same-team rows never carry bit2, yet
+    /// the game's deathmatch bots fight each other). The port's CanSeeObject is the
+    /// collision-world segment, the same stand-in the perception pass runs [S]. The gate per
+    /// candidate: alive (`+0xff` states), the behaviour-prop word 0x600 clear / 0x100 set /
+    /// health > 0 [M :166-170 — the port's alive flag + health rows], and the team gate in the
+    /// team scenarios only (deathmatch's FFA candidates are everyone [S — the team words gate
+    /// the trait picks, not the deathmatch search]). Nearest clear candidate wins.
     pub fn find_opponent(&mut self, ctx: &BotCtx) {
         if self.vars.opponent.is_some_and(|i| ctx.others.get(i).is_some_and(|o| o.alive)) {
-            return; // keep the current opponent
+            return; // keep the current opponent (the game re-tests its LOS each pass [M :158])
         }
+        let team_game = (ctx.scenario >> 29) & 1; // [M MP_Init 0x183438:41]
         let mut best: Option<(usize, f32)> = None;
         for o in ctx.others {
             if o.index == ctx.my_index || !o.alive {
                 continue;
             }
-            if o.flags & 0x6 != 0x6 {
-                continue; // bit1 candidate + bit2 seen (the game's CanSeeObject bit [S — the
-                          // vision query's range/params are not lifted; the caller supplies it])
+            if team_game != 0 && o.team == ctx.my_team {
+                continue; // the team scenarios' side gate [S — see above]
+            }
+            if o.flags & 0x2 == 0 {
+                continue; // the candidate bit (the live scan row) [M 0x125390:99]
+            }
+            if ctx.world.segment(self.pos, o.pos).is_some() {
+                continue; // CanSeeObject [M 0x1424e0:158+]
             }
             match best {
                 Some((_, d)) if o.dist2 >= d => {}
@@ -1531,6 +1550,31 @@ impl BotBrain {
             }
         }
         self.vars.opponent = best.map(|(i, _)| i);
+    }
+
+    /// The unported combat movement [S — 0xD0/0xD4/0xD5/0xD7/0xDB/0xDC walk the combat range]:
+    /// one straight-line step per tick at `move_to_goal_position`'s cadence — 0xD7 backs away,
+    /// 0xD4/0xD5 strafe (the perpendicular), 0xD0/0xDB/0xDC close in — then back to 0xCF whose
+    /// msg-3 re-routes. The game's own states walk the AI route network; the straight-line step
+    /// is the same stand-in the goal walk uses.
+    fn bot_attack_move_stub(&mut self, ctx: &BotCtx) {
+        let Some(o) = self.vars.opponent else { self.set_state(state::BOT_ATTACK); return; };
+        let Some(t) = ctx.others.get(o) else { self.set_state(state::BOT_ATTACK); return; };
+        let (dx, dy, dz) = (t.pos[0] - self.pos[0], t.pos[1] - self.pos[1], t.pos[2] - self.pos[2]);
+        let d = (dx * dx + dy * dy + dz * dz).sqrt();
+        if d > 0.001 {
+            let (mx, mz) = match self.state {
+                st::BOT_ATTACK_BACKOFF => (-dx / d, -dz / d),
+                st::BOT_ATTACK_STRAFE_AIM_LEFT => (-dz / d, dx / d),
+                st::BOT_ATTACK_STRAFE_AIM_RIGHT => (dz / d, -dx / d),
+                _ => (dx / d, dz / d), // 0xD0 run, 0xDB/0xDC step
+            };
+            self.pos[0] += mx * 0.05;
+            self.pos[2] += mz * 0.05;
+            self.pos[1] += dy / d * if self.state == st::BOT_ATTACK_BACKOFF { -0.05 } else { 0.05 };
+            self.yaw = crate::trig::atan2_approx(dz, dx); // the aim holds on the opponent
+        }
+        self.set_state(state::BOT_ATTACK);
     }
 
     /// `NDrone2_ReactToOpponentSighted` 0x1770f0 — the gates the decompile shows, then the
@@ -1543,9 +1587,11 @@ impl BotBrain {
     }
 
     /// `BOTSTATE_chooseCombatMove` 0x129218 via `checkAttackMove`: `Rand_Rand(4)` →
-    /// 0xD4/0xD5/0xDB/0xDC [M 0x129218:14], gated by `checkAttackMove`'s validity [S — the
-    /// strafe/step states are not ported; the validity gate keeps the bot in 0xCF so the roll
-    /// still consumes the shared RNG in the game's order].
+    /// 0xD4/0xD5/0xDB/0xDC [M 0x129218:14]. The four states are the combat movement — the
+    /// strafes/step-aims circle the opponent while the fire pipeline keeps running (the game's
+    /// combat bots never stand still). The port returns the rolled state; the movement runs in
+    /// [`BotBrain::bot_attack_move_stub`] (the straight-line stand-in) [S — `checkAttackMove`'s
+    /// validity gate and the route walk are not lifted].
     fn choose_combat_move(&mut self, rng: &mut Rng) -> Option<u8> {
         let roll = rng.rand(4);
         let mv = match roll {
@@ -1554,7 +1600,7 @@ impl BotBrain {
             2 => st::BOT_ATTACK_STEP_AIM_LEFT,
             _ => st::BOT_ATTACK_STEP_AIM_RIGHT,
         };
-        None // checkAttackMove's stand-in: no move state is ported yet (the report lists it)
+        Some(mv)
     }
 
     // ------------------------------------------------------------------
@@ -1847,7 +1893,8 @@ impl BotBrain {
         let mut burst = match self.vars.weapon_id {
             6 | 0xA => rng.rand(3) + 2,   // [M :58]
             0xB..=0xD => rng.rand(2) + 1, // [M :74]
-            _ => self.weapon.burst as u32,
+            _ => (self.weapon.burst as u32).max(1), // [S] the record's burst can read 0 — the game's own
+                                           // min-3 clamp for bursts ≥ 4 shows bursts are never 0
         };
         if burst >= 4 {
             burst = ((burst as f32) * self.weapon.aggression_mul).max(3.0) as u32; // [M :…116]
@@ -1862,27 +1909,45 @@ impl BotBrain {
     // ------------------------------------------------------------------
 
     fn handle_firing(&mut self, ctx: &BotCtx, rng: &mut Rng) {
-        if self.vars.fire_latch == 0 || self.vars.next_bullet_at <= 0.0 {
-            return;
+        if self.vars.fire_latch == 0 {
+            return; // [M 0x17a180:10]
         }
-        if (self.tick as f32 / 60.0) < self.vars.next_bullet_at {
-            return; // now < the deadline
+        // The latch arm's +0x3d == 0 case clears burst_empty EVERY tick [M 0x17a180:29-30] —
+        // the fire cycle is continuous: DoFiring re-arms the burst itself (below) and the
+        // emptied-burst hold (+0x3c) never wedges the pipeline. The +0x3d reload-hold arm
+        // (latch cleared until the state re-pulls [M 0x17a180:31-37]) is not ported — the
+        // bot's clip is the weapon-set clip and `BOTWEAP` reload states are the report's left
+        // items [S].
+        self.vars.burst_empty = 0;
+        // DoFiring's burst re-arm [M 0x17a080:17-19 — burst_left == 0 → NextBulletTime(1,0)]:
+        // the pipeline refills the burst itself, the state machine does not re-enter for it.
+        if self.vars.burst_left == 0 {
+            self.next_bullet_time(rng);
         }
-        // the gates [M 0x17a080: unseen < 16; 0x178c48: opponent alive, ammo, the aim cone]
+        // `BOT_opponentTargetting` 0x125b30 runs first in DoFiring (the MP master gate [M
+        // 0x17a080:13-15]): the aim layer turns the drone onto the opponent (rate-limited by
+        // the aim stat, the +0x130 aim target). The port turns the yaw directly [S — the
+        // rate-limited turn + the aim lead are not lifted], so the aim-cone gate below reads
+        // the aimed facing.
+        let Some(o) = self.vars.opponent else { return };
+        let Some(target) = ctx.others.get(o) else { return };
+        // the gates [M 0x17a080:21-23 unseen < 16; 0x178c48: opponent alive, ammo]
         if self.vars.unseen_ticks >= 0x10 {
             return;
         }
-        let Some(o) = self.vars.opponent else { return };
-        let Some(target) = ctx.others.get(o) else { return };
         // `BOTWEAP_WeaponHasAmmo` (0x12adb0): the port gates on clip rounds only; the ammo-pool
         // half (BotVars+0x698) is not modelled [S partial].
         if !target.alive || self.vars.clip_rounds < 1 {
             return;
         }
+        if (self.tick as f32 / 60.0) < self.vars.next_bullet_at {
+            return; // now < the deadline [M 0x17a080:27]
+        }
         let dx = target.pos[0] - self.pos[0];
         let dz = target.pos[2] - self.pos[2];
         let d = (dx * dx + dz * dz).sqrt();
         let dir = [dx / d, 0.0, dz / d];
+        self.yaw = crate::trig::atan2_approx(dz, dx); // the aim layer's turn [S — see above]
         // the aim cone [M 0x178c48: dot > 0.9998]
         // the game's PS2Sinf/PS2Cosf (0x120700) — see the ATAN2_APPROX note above: std trig is
         // libm-dependent; the game's own approximations are not.
@@ -1895,12 +1960,11 @@ impl BotBrain {
         self.shots.push(BotShot { tick: self.tick, pos: self.pos, dir, weapon: self.vars.weapon_id });
         self.vars.clip_rounds -= 1;
         self.vars.burst_left -= 1;
-        if self.vars.burst_left == 0 {
-            self.vars.burst_empty = 1; // [M 0x17a180:63]
-            self.vars.next_bullet_at = 0.0; // the pipeline stops — Fire's only caller is the state ENTER [M]
-        } else {
-            self.vars.next_bullet_at += self.weapon.interval.max(0) as f32 / 60.0;
+        if self.vars.burst_left < 1 {
+            return; // DoFiring returns 0 (the caller marks +0x3c; the next tick clears it — [M 0x17a080:39-41, 0x17a180:29-30])
         }
+        // NextBulletTime(0,0) reschedules from the game's now [M 0x17a080:43]
+        self.vars.next_bullet_at += self.weapon.interval.max(0) as f32 / 60.0;
     }
 }
 

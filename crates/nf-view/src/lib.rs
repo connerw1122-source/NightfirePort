@@ -1056,9 +1056,25 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             let sp = first_spawn;
             // The bots' half of `MP_Start` (0x183a50:134-160): after every human's create, one
             // `BOT_init` per enabled record in slot order — the game's order is the humans FIRST,
-            // then the bots, so the spawn picks' RNG draws keep the game's sequence.
-            m.create_bots(&mut sim.drones.rng);
-            eprintln!("mp: bots created: {}", m.bots.len());
+            // then the bots, so the spawn picks' RNG draws keep the game's sequence. Each bot
+            // arms through `BOTWEAP_InitWeapon`'s port (the weapon-set weapon + clip + cadence
+            // [M 0x129e48]).
+            m.create_bots(&mut sim.drones.rng, &sim.weapons);
+            // The goal picker's table [M 0x126b88:386-460]: `Pickup_Create` 0x18dda0:198-203
+            // registers the arena's pickups into `MPpickups` when the MP master is set; the
+            // port lifts the load's placed pickups (the 0xF0 walk) — pos = the placed matrix
+            // translation, the class/weapon words straight off the pickup record (+0x22/+0x24).
+            // Every placed pickup is listed [S — the game's +0x20 registration gate is the
+            // placement's own flag, not lifted]; the picker's class filter ignores the rows it
+            // cannot score ([M 0x126b88:474-475]).
+            m.bot_pickups = sim.drones.pickups.iter().map(|p| nf_game::mp::bots::BotPickup {
+                pos: [p.m[3][0], p.m[3][1], p.m[3][2]],
+                weapon_id: p.weapon,
+                mp_class: p.kind as u8,
+                is_obj_flag2: false,
+                visit: [0.0; 4],
+            }).collect();
+            eprintln!("mp: bots created: {} ({} pickups listed)", m.bots.len(), m.bot_pickups.len());
             sim.mp = Some(m);
             eprintln!("mp: arena {level_id:08x} — {spawn_count} spawn points registered, {humans} human(s), Bond at spawn {sp} ({:.2}, {:.2}, {:.2}) yaw {:.3}",
                 sim.bond.pos[0], sim.bond.pos[1], sim.bond.pos[2], sim.bond.yaw);

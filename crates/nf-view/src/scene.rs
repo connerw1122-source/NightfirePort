@@ -7916,6 +7916,10 @@ impl Sim {
         let wdata = &self.weapons;
         // The human's live state the bots read/fight (slot 0).
         let human = others[0];
+        // The goal picker's table (`MPpickups` [M 0x126b88:386-460]) taken out so the per-bot
+        // loop can hold `&mut m.bots[i]` and `&pickups` together; the visit stamps mirror back
+        // after each step and the table returns to the match at the end.
+        let mut bot_pickups = std::mem::take(&mut m.bot_pickups);
 
         for i in 0..m.bots.len() {
             let alive = !m.bots[i].dead;
@@ -7931,6 +7935,10 @@ impl Sim {
                     let pos = [p4[0], p4[1], p4[2]];
                     let yaw = m.spawns.points[sp].facing[1];
                     m.bots[i].brain = nf_game::mp::bots::BotBrain::bot_init(&rec, slot as u8, pos, yaw);
+                    // `BOT_respawn` re-runs `BOTWEAP_InitWeapon` with the respawn [M 0x124e38:74]
+                    nf_game::mp::bot_arm_weapon(&mut m.bots[i].brain, wdata, m.settings.weapon_set);
+                    m.bots[i].scan_row = 0;
+                    m.bots[i].seen = [false; 8];
                     m.bots[i].health = m.bots[i].max_health;
                     m.bots[i].dead = false;
                     m.bots[i].respawns += 1;
@@ -7941,13 +7949,62 @@ impl Sim {
             let health = m.bots[i].health;
             let max_health = m.bots[i].max_health;
             let my_team = m.settings.players[m.bots[i].slot].team;
+            // The bot's own `BOT_vars+0xB0` pass [M BOT_setOtherPlayerInfo 0x125390]: the base
+            // rows (pos/alive/team/health/score — the game reads the live objs), then per row
+            // the fresh dist² + the candidate/team bits, and the seen bit — round-robin, ONE
+            // row per tick [M 0x125390:148-160], with bot-to-bot rows copying the higher
+            // index bot's seen bit instead of testing [M :141-147] (the pair is tested once,
+            // by the higher bot, and mirrored — the lower bot's copy arm).
+            let my_index = m.bots[i].slot;
+            let my_pos = m.bots[i].brain.pos;
+            let scan_row = m.bots[i].scan_row;
+            let mut my_others = others;
+            let mut scanned = false; // the scan row ran a fresh LOS test
+            for (r, o) in my_others.iter_mut().enumerate() {
+                if o.index == my_index || !o.alive {
+                    o.flags = 0; // dead/missing rows lose the candidate bit [M 0x125390:78-84]
+                    continue;
+                }
+                o.dist2 = (o.pos[0] - my_pos[0]).powi(2)
+                    + (o.pos[1] - my_pos[1]).powi(2)
+                    + (o.pos[2] - my_pos[2]).powi(2); // [M 0x125390:148-149]
+                o.flags = 0x2; // bit1 candidate [M 0x125390:99]
+                if o.team == my_team {
+                    o.flags |= 0x8; // bit3 same team [M 0x125390:101-102]
+                    continue; // the seen bit is never tested on a team mate [M :104-121]
+                }
+                // The seen bit: bot-to-bot pairs copy (my index < the row's) [M :141-147];
+                // everything else round-robins the fresh `CanSeeObject` — the port's LOS is
+                // the collision-world segment, the same stand-in the brain's perception pass
+                // runs [S — NDrone2_CanSeeObject 0x1785e0 → Collide_LineOfSight].
+                let seen = if my_index < 4 {
+                    false
+                } else if o.index >= 4 && my_index < o.index {
+                    m.bots.get(o.index - 4).map_or(false, |b| b.seen[my_index])
+                } else if r == scan_row as usize {
+                    scanned = true;
+                    world.segment(my_pos, o.pos).is_none()
+                } else {
+                    m.bots[i].seen[r]
+                };
+                if seen {
+                    o.flags |= 0x4; // bit2 seen [M 0x125390:155-160]
+                }
+            }
+            // The scan row's advance [M 0x125390:186-196]: +1 per tick, reset to 0 when the
+            // scan row was reached but skipped (a dead/team/copy row — the rotation must not
+            // wedge on it).
+            m.bots[i].scan_row = if scanned { (scan_row + 1) % 8 } else { 0 };
+            for (r, o) in my_others.iter().enumerate() {
+                m.bots[i].seen[r] = o.flags & 0x4 != 0;
+            }
             let ctx = nf_game::mp::bots::BotCtx {
                 now: 0.0, // the brain's own tick counter is the clock (net-lockstep F4)
                 scenario,
                 my_index: m.bots[i].slot,
                 my_team,
-                pickups: &[],
-                others: &others,
+                pickups: &bot_pickups, // the goal machine's MPpickups table [M 0x126b88:386-460]
+                others: &my_others,    // this bot's own +0xB0 rows (the pass above)
                 world,
                 health,
                 max_health,
@@ -7955,6 +8012,16 @@ impl Sim {
             };
             let before = m.bots[i].brain.shots.len();
             m.bots[i].brain.step(&ctx, &mut self.drones.rng, true);
+            // The visit-stamp mirror [M 0x129958: the game writes MP_PICKUP+0x80+idx·4 in
+            // place; the brain parks it in `last_visit_stamp` for the driver].
+            let (visit_idx, visit_t) = m.bots[i].brain.last_visit_stamp;
+            if visit_idx != usize::MAX {
+                let bi = m.bots[i].brain.vars.bot_index as usize;
+                if let Some(p) = bot_pickups.get_mut(visit_idx) {
+                    p.visit[bi.min(3)] = visit_t;
+                }
+                m.bots[i].brain.last_visit_stamp = (usize::MAX, 0.0);
+            }
             if std::env::var_os("NF_BOTLOG").is_some() && frame % 600 == 0 {
                 eprintln!("[botlog] f{} bot{} state {:#x} pending {:?} opp {:?} goals {:?} pos {:.1?} trace {}",
                     frame, i, m.bots[i].brain.state, m.bots[i].brain.trace.last(),
@@ -8023,6 +8090,7 @@ impl Sim {
                 }
             }
         }
+        m.bot_pickups = bot_pickups; // the table (with the mirrored visit stamps) back on the match
     }
 
     // The bots' observation API (the live tests read the per-bot table through these).

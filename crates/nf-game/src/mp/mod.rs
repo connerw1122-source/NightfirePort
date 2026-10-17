@@ -431,6 +431,12 @@ pub struct MpMatch {
     /// (the ported `BotBrain` = the game's BOT_update family); creation is the caller's
     /// [`MpMatch::create_bots`] right after the humans' spawn picks, like the game's order.
     pub bots: Vec<MpBot>,
+    /// The registered MP pickups — the game's `MPpickups` @0x2a4b60, filled by
+    /// `MP_RegisterPickup` 0x189d80 (from `Pickup_Create` 0x18dda0:198-203 when the MP master
+    /// is set) and read by the goal machine's `BOTSTATE_pickGoal` 0x126b88:386-460. The port
+    /// lifts the arena's placed pickups into [`BotPickup`] rows at load; the per-bot visit
+    /// stamps ride the rows ([`BotPickup::visit`], mirrored from the brains' visit writes).
+    pub bot_pickups: Vec<crate::mp::bots::BotPickup>,
 }
 
 /// One MP bot: the ported brain (`BOT_vars` stand-in) plus the per-slot bookkeeping the match
@@ -458,6 +464,44 @@ pub struct MpBot {
     /// spawn point; the death handler's delay — the port stands in 180 ticks / 3 s [S]).
     pub dead: bool,
     pub respawn_at: u32,
+    /// `BOT_vars+0x767` — the vision scan's round-robin row [M 0x125390:56-60,186-196]: one row
+    /// per tick gets a fresh `NDrone2_CanSeeObject`; the rest keep their last seen bit (the
+    /// rows live in [`MpBot::seen`]). Reset to 0 when the scan row was reached but skipped
+    /// [M 0x125390:190-194]. Driven by [`Sim::step_mp_bots`] (nf-view/scene.rs).
+    pub scan_row: u8,
+    /// The bot's `BOT_vars+0xB0` row seen bits per player index — the game's `+0xB0` rows keep
+    /// the bit2 seen result between the round-robin updates [M 0x125390:148-160]; bot-to-bot
+    /// rows copy the higher-index bot's bit instead of testing [M 0x125390:141-147]. Home: the
+    /// driver (the brain's `find_opponent` reads the per-tick ctx table built from these).
+    pub seen: [bool; 8],
+}
+
+/// `BOTWEAP_InitWeapon` 0x129e48 (the port's lift): the match weapon a bot spawns with.
+/// `startweap = weapon_data[PickupMatrix[weapon_set]][+0x02 base]` [M 0x129e48:44-48 — the
+/// matrix row is 10 bytes/5 u16s; only row 0 is lifted (`PICKUP_MATRIX_ROW0`) so any other set
+/// falls back to row 0's first entry [S]]; `+0x768 = startweap`, the clip from
+/// `weapon_data[startweap]+0x92` (the equip rounds [M :50-52], `WeaponData::clip_size`), and
+/// the fire cadence from the weapon record (`+0x40` s16 interval, `+0x2C` u16 burst —
+/// [M 0x179d40:26-47,53-116]). The aggression multiplier stays 1.0 (the game's
+/// `BOT_getAggressionMul` table is not lifted [S]); the sidearm equip (1, 999 rounds [M :50])
+/// is not modelled — the brain carries one weapon. Called at `create_bots` and at respawn
+/// (`BOT_respawn` 0x124e38 re-runs `BOT_init` + `BOTWEAP_InitWeapon` [M 0x124e38:74]).
+pub fn bot_arm_weapon(brain: &mut crate::mp::bots::BotBrain, wdata: &nf_formats::weapon::WeaponData, weapon_set: u32) {
+    use crate::pickup::PICKUP_MATRIX_ROW0;
+    let set = weapon_set.min(10) as usize;
+    let _ = set; // [S] rows 1..10 are not lifted — every set falls back to row 0's first entry
+    let mat_w = PICKUP_MATRIX_ROW0[0] as usize;
+    // `weapon_data[mat_w]+0x02` is the base weapon a variant belongs to; a base weapon reads 0
+    // and stays itself [S — the +0x02 semantics are docs/fields/weapon.md's `base()`].
+    let base = wdata.records.get(mat_w).map(|r| u16::from_le_bytes([r[2], r[3]]) as usize).unwrap_or(0);
+    let startweap = if base != 0 && wdata.records.get(base).is_some() { base } else { mat_w };
+    brain.vars.weapon_id = startweap as u8; // +0x768 [M 0x129e48:53]
+    brain.vars.clip_rounds = wdata.clip_size(startweap); // the equip rounds [M 0x129e48:50-52]
+    if let Some(r) = wdata.records.get(startweap) {
+        let interval = i16::from_le_bytes([r[0x40], r[0x41]]); // [M 0x179d40:26-47]
+        let burst = u16::from_le_bytes([r[0x2c], r[0x2d]]); // [M 0x179d40:53-116]
+        brain.weapon = crate::mp::bots::BotWeapon { interval, burst, aggression_mul: 1.0 };
+    }
 }
 
 fn sq_dist3d(a: [f32; 4], b: [f32; 3]) -> f32 {
@@ -493,6 +537,7 @@ impl MpMatch {
             assassin: None,
             assassin_target: None,
             bots: Vec::new(),
+            bot_pickups: Vec::new(),
         }
     }
 
@@ -500,14 +545,15 @@ impl MpMatch {
     /// (clamped ≤ 4 [M 0x183a50:138-140]), then per bot — the slot `4 + i`, the team byte from
     /// the record's +0x0F into `MPSettings + slot·0x30 + 0x20` [M 0x183a50:143-145], a spawn
     /// point pick for that team (`MP_GetSpawnPoint(team, 0)` [M 0x183a50:147-148]) and
-    /// `BOT_init(slot, pos, …, record, 0)` [M 0x183a50:156-160]. The port: the brains init from
-    /// the enabled records in order (the Quick Start's Drake/Kiko/Rook — the first `count`
-    /// records, the menu's compacted order [M Menu_PrepareBots 0x1f94a0]), the slot team words
-    /// ride the settings, and the caller re-picks the spawn through the port's
-    /// [`MpMatch::get_spawn_point`] (the same policy the humans use). Draw order: the game picks
-    /// the humans FIRST, then the bots — the caller keeps that order (create_bots runs after the
-    /// humans' picks in the load).
-    pub fn create_bots(&mut self, rng: &mut Rng) {
+    /// `BOT_init(slot, pos, …, record, 0)` [M 0x183a50:156-160] + `BOTWEAP_InitWeapon`
+    /// ([`bot_arm_weapon`] — the weapon-set weapon, the clip, the fire cadence [M 0x129e48]).
+    /// The port: the brains init from the enabled records in order (the Quick Start's
+    /// Drake/Kiko/Rook — the first `count` records, the menu's compacted order [M
+    /// Menu_PrepareBots 0x1f94a0]), the slot team words ride the settings, and the caller
+    /// re-picks the spawn through the port's [`MpMatch::get_spawn_point`] (the same policy the
+    /// humans use). Draw order: the game picks the humans FIRST, then the bots — the caller
+    /// keeps that order (create_bots runs after the humans' picks in the load).
+    pub fn create_bots(&mut self, rng: &mut Rng, wdata: &nf_formats::weapon::WeaponData) {
         use crate::mp::bots::{BotRecord, INITIAL_BOT_RECORDS};
         let count = (self.settings.bot_count as usize).min(4);
         if count == 0 {
@@ -526,8 +572,8 @@ impl MpMatch {
             let pos = [p4[0], p4[1], p4[2]];
             let yaw = self.spawns.points[sp].facing[1];
             let max_hp = rec.max_hp() as f32;
-            let brain = crate::mp::bots::BotBrain::bot_init(rec, slot as u8, pos, yaw);
-            let weapon = rec.preferred_weapon_class();
+            let mut brain = crate::mp::bots::BotBrain::bot_init(rec, slot as u8, pos, yaw);
+            bot_arm_weapon(&mut brain, wdata, self.settings.weapon_set);
             self.game.slots[slot].pos = Some(pos);
             self.bots.push(MpBot {
                 slot,
@@ -535,12 +581,14 @@ impl MpMatch {
                 brain,
                 health: max_hp,
                 max_health: max_hp,
-                weapon,
+                weapon: 0,
                 shots: 0,
                 deaths: 0,
                 respawns: 0,
                 dead: false,
                 respawn_at: 0,
+                scan_row: 0,
+                seen: [false; 8],
             });
         }
     }
