@@ -63,17 +63,35 @@ not the actor.
 
 - **Gate**: a non-zero +0x70 channel that is off returns at once — the copter does nothing until
   the gate opens; then the +0x76 countdown (when non-zero) pulses `switch_channels[+0x74]` at 0.
+  The gate is a ONE-SHOT rising-edge start [M 0x17dbb8 head :99-105]: on the first tick the
+  channel reads on, the head calls `SP_HideObj(record+0x2c, 0)` (unhide) and **zeroes record+0x70**
+  — afterwards the actor behaves as if it never had a gate, even if the channel goes off again.
+  (Port note: the port's `Copter::gate` field keeps the channel number and `update`/`visible`
+  re-check the channel every frame — equivalent while the channel stays on; a channel that
+  drops after the start would freeze/hide the port's copter where the game's would not. The
+  zero-on-start is not ported yet — flagged in the helicopter-2 report.)
 - **State 0** (once): counts the same-id route nodes into +0x78 (type-2 nodes stored to +0x58, the
   death segment). → 1.
-- **State 1** (patrol): `Copter_Move` advances the spline; every `240/DiffMod` ticks
-  (`FRAME_RATE_INT << 2`, obj+0xF6) the cone check: the player within `1e6` square units, inside
-  the `COPT_COS/COPT_SIN` cone [M 0x17e468 static ctor: `PS2Sinf(3π/4)`, `PS2Sinf(π/4)` — both
-  0.70710678, a 45° half-angle] and `Collide_LineOfSight` clear → state 2,
-  `attackmode_159 = Rand_Rand(10)`, the recent-damage accumulator (+0x6c) reset. → 2.
+- **State 1** (patrol): `Copter_Move` advances the spline; the whole spot check — the obj+0xF6
+  timer increment, the every-`240/DiffMod` period test (`FRAME_RATE_INT << 2`), the cone check
+  (the player within `1e6` square units, inside the `COPT_COS/COPT_SIN` cone [M 0x17e468 static
+  ctor: `PS2Sinf(3π/4)`, `PS2Sinf(π/4)` — both 0.70710678, a 45° half-angle], `Collide_LineOfSight`
+  clear), the state-2 flip, the `attackmode_159 = Rand_Rand(10)` draw and the recent-damage
+  accumulator (+0x6c) reset — sits **inside the conjunct `record+0x74 != 100`** [M 0x17dbb8:140,
+  the `Rand_Rand(10)` at :184 inside it]. A copter whose +0x74 channel number is 100 — the
+  ambient patrols (07000005's #241/#242, 0700000b's #328 [L the level params]) — never increments
+  the timer, never spots, never draws from the shared RNG, never fires, never plays 0x5df and
+  never requests combat music: it flies its loop forever. (This is the helicopter-2 merge-hold
+  fix: the pre-fix port spotted the courtyard player at t160 and attacked for the rest of the
+  window, which shifted the guards' sight-to-first-shot stream
+  (`guard_reaction_live` path 3) and interrupted the weapon-sound sweep
+  (`fix_weapon_sounds_live` 0x3a/0x41).)
 - **State 2** (attack): `Music_Event(2, 1)` (the combat music) every tick; `Copter_Move`; obj+0xF6++
   and per tick one of:
-  - `attackmode & 1 == 0` → **`Copter_FireMissile`**: every `60·DiffMod` ticks (`GameState time %
-    (60·DiffMod) == 0`), the pod by `Rand_Rand(0x86e6) & 1` (+0x50 left / +0x4c right), the bullet
+  - `attackmode & 1 == 0` → **`Copter_FireMissile`**: the pod pick `Rand_Rand(0x86e6) & 1`
+    (+0x50 left / +0x4c right) draws on EVERY call, BEFORE the `60·DiffMod` launch gate
+    (`GameState time % (60·DiffMod) == 0`) [M 0x17d9f0:47 vs :58-64] — off-gate ticks still
+    spend one RNG draw; only the launch is gated. On a launch tick the bullet
     = `weapon_data[0x6d]` (`0x62` on 07000008) from the pod's muzzle (`pod+0x80` sphere, the
     `pod->cel+0x38 · 1.5` offset along the aim dir); on 07000008 a `Rand_Rand(8/DiffMod) == 0`
     roll aims straight at Bond instead of the pod's matrix dir.
@@ -83,8 +101,11 @@ not the actor.
     `Sound_Play3D(100.0, muzzle, -1.0, -1.0, 0x5df, 0, 0, 0)` [M 0x17d828:85] and readies the
     +0x48 turret's muzzle flash (its +0xF4 = 2, the +0xF0 bit 0x10 cleared — the flash the update's
     head ticks down).
-  - Back to 1 when the player is gone, or `5·FRAME_RATE·DiffMod` ticks pass without a clear
-    LOS/recent damage ≤ 100 (`+0x6c`), or the recent damage exceeds 100 (bailing under fire).
+  - The attack tick fires BEFORE the bail checks [M 0x17dbb8:191-198 → :199-242]: even the tick
+    that loses the sight has already fired. Back to 1 (timer 0, +0x6c reset) when the player is
+    gone, or the recent damage exceeds 100, or `5·60·DiffMod < obj+0xF6` — the timeout is STRICT
+    and a keep tick does NOT reset the counter [M :200], so a stint ends mid-sight at
+    `5·60·DiffMod`.
 - **Damage** (every tick, LAB_0017e180): per part i (0..8) the part's `obj+0xD0` HITDATA chain sums
   `record.damage · Bits[i].mult` into the total (+0x64) and the recent (+0x6c). `Bits` [L ELF
   0x2a37e8, the static .data table — only `Copter_Update` references it]: mult
