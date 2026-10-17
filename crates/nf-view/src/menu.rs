@@ -689,6 +689,17 @@ pub const DELAYED_PAGE_TICKS: u32 = 0x13;
 /// The from-Main open's own block on P_NFSELECT / P_CNSELECT: 0x68/1 then a delayed 0x68/0 at 0xf
 /// [M 0x20aec0:75-76, 0x212ad0:73-74].
 pub const MAIN_OPEN_BLOCK: u32 = 0xf;
+/// G-048(1): `Menu_ChangePageCloseIris(page, mgr, ctl)` 0x202190's page-change delay —
+/// `__Menu_SendDelayedMessage(10, mgr+page*0x1d8, 0x44, page, DAT_002e1adc)` [M disasm 0x2021e0-0x2021f8:
+/// a0 = 0xa, a2 = 0x44, a3 = s1 (the target page), t0 = `lw 0x1adc(0x2e0000)` loaded at call time].
+/// The iris close (`Menu_StartIris(1, …)`, :6) starts at once and a delayed 0x68/1 lands one tick
+/// later [M :7], so input is blocked from the tick after the call until the 0x44 arrives; the 0x44's
+/// own processing lifts it [M 0x21c858:315 `Manager_SendMessage(mgr, 0x68, 0, 0)` on the bit-1-clear
+/// arm]. `DAT_002e1adc` (the card-flow MENU_LS's next-page lparam) reads 0 in .data [L ACTION.ELF
+/// file offset 0x1dbadc] and P_PARISENUM's 0x4c zeroes it [M 0x20a648:21] — lparam 0 on every walk
+/// the port models, so the arrival is the push-open (0x21c858:263: bit 0 clear → the opener is
+/// stacked for △).
+pub const CLOSE_IRIS_PAGE_TICKS: u32 = 10;
 
 /// boot-flow: the game's boot order [M]: `bootup` 0x1c7e78 opens P_LANGUAGE 0x40000034 →
 /// P_PS2MEMCARDINIT (0x218538:18 → 0x40000032) → **P_INTRO 0x40000032** plays [`INTRO_MOVIES`] (the EA
@@ -827,6 +838,192 @@ pub const MENU_SOUND_VAL_DEC: u8 = 3;
 pub const MENU_SOUND_VAL_INC: u8 = 4;
 pub const MENU_SOUND_FOCUS: u8 = 7;
 pub const MENU_SOUND_BACK: u8 = 8;
+
+/// G-048(2): `Menu_EnableSounds` 0x1f31f0 — the per-page `enabled_sound_flags` 0x30d184 value the
+/// game sets when a page opens. `Manager_SendMessage` case 0x44 calls it with the new page's id
+/// when that page is found in the manager's list [M 0x21c858:267-268], so every page open re-keys
+/// the gates: MENU_SOUND 0 (✕ select) obeys bit 0, 1 (□ side) bit 1, 2 (○ side) bit 2 and 8 (△
+/// back) bit 3 of the result [M 0x1f3278's case gates]. The switch [M 0x1f31f0]:
+/// 0x40000002/0x40000009/0x40000015 → 1 (select only — the title and Main are silent for
+/// □/○/△); 0x40000005/0x4000001c/0x40000025/0x4000004b → 0xb (select + both sides); 0x40000022 →
+/// 0xd (select + ○ + △); 0x40000033 → 3; 0x40000036/0x40000038 → 7 (select + □ + △, no ○);
+/// 0x40000037 and 0x4000003a-0x4000003e → 8 (the △ buzz only); every other page → 9 (select +
+/// △ — the boot default, which is also what the port-only pages get [S: the game has no id for
+/// them, so its own open would take the same default arm]).
+pub fn menu_enable_sounds(page: u32) -> u8 {
+    match page {
+        0x4000_0002 | 0x4000_0009 | 0x4000_0015 => 1,
+        0x4000_0005 | 0x4000_001c | 0x4000_0025 | 0x4000_004b => 0xb,
+        0x4000_0022 => 0xd,
+        0x4000_0033 => 3,
+        0x4000_0036 | 0x4000_0038 => 7,
+        0x4000_0037 | 0x4000_003a..=0x4000_003e => 8,
+        _ => 9,
+    }
+}
+
+// ── G-048(4): the boot card check ─────────────────────────────────────────────────────────────
+// P_PARISENUM ("Checking memory card…") opens the box and waits on the card flow: its 0x4c sets
+// the message-box mode 4 (`DAT_002e1b09 = 4`) and runs `Menu_UpdateMessageBox(page, 0, 0)`
+// [M 0x20a648:12-24], whose case 4 calls `Menu_EnumSaves(page, 1)` + `PS2_DoCardFlow`
+// [M 0x1f7de8:53-58]; each 0x50 with `DAT_002e1b0a == 0` re-runs it [M 0x20a648:36-38]. The enum
+// drives `HandlePS2CardState` 0x110b98 — the stack machine `PS2PollMemoryCard` pumps every menu
+// tick on the front-end map [M 0x21c3d8:45-47] — and completes when `PS2_DoCardFlow`'s
+// state>3 arm sets `*(MENU_LS+0x3a) = DAT_002e1b0a = 1` [M 0x217bd8:68]; P_PARISENUM's next 0x50
+// sees it, clears it and sends the 0x44 to P_ESTHERO 0x40000043 lparam 1 [M 0x20a648:39-47].
+
+/// `HandlePS2CardState`'s state ids for the boot check's walk [M 0x110b98's switch + the pushes].
+pub const CARD_ST_SYNC: u8 = 1;
+pub const CARD_ST_GET_CARD_STATUS: u8 = 10;
+pub const CARD_ST_GET_SAVE_GAMES: u8 = 0xe;
+
+/// The no-card walk of the boot card check, as far as P_PARISENUM needs it. One `tick` per menu
+/// tick stands in for `HandlePS2CardState` 0x110b98's bounded loop (the game processes states
+/// repeatedly within a 10-count RCNT1 budget per tick [M :15-21]; one pass per tick is what the
+/// walk needs — every sceMc op it waits on is still a full tick). The sceMc ops (`sceMcGetInfo`
+/// 0x10e798:12, `sceMcGetDir` 0x110188:40-43) complete on the tick after they start:
+/// `MC_TICKS` = 1 — the IOP mcman server's completion latency is NOT pinned by any decompile or
+/// disc byte [S unverified — a fresh-boot live measurement is owed; see the report's live checks].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ParisCardCheck {
+    /// The stack machine: `CardState[StateStack]` pairs with its sub-state byte
+    /// (`&DAT_00316951[StateStack*2]`) [M 0x110b98:11, 0x110fe0:8-15].
+    pub stack: [u8; 4],
+    pub sub: [u8; 4],
+    /// `StateStack` [M 0x110b98:11] — 0xff = the machine is idle (the boot state: CardState's
+    /// stack is empty, state 0 returns at once [M :11-14]).
+    pub sp: u8,
+    /// `GettingSaveGames` [M 0x110fe0:11 = -1; 0x110188:49 = 0 on completion] — psiGetNextSave
+    /// returns -1 while it holds -1 [M 0x111038:8-10], which keeps `Menu_EnumSaves` in enum_state 1.
+    pub getting_saves: i32,
+    /// `NumberSaveGamesGot` = the sceMcGetDir sync result [M 0x110188:48] — 0 with no card.
+    pub saves_got: i32,
+    /// `Menu_EnumSaves`'s `enum_state` [M 0x1f7b78:14-68]: 0 fresh, 1 enumerating, 7 done.
+    pub enum_state: u8,
+    /// `PS2_one_codename` [M 0x110fe0:12] — Menu_EnumSaves(page, 1) passes 1 on this path
+    /// [M 0x1f7de8:53-56 case 4's uVar3 = 1], which skips the CHECK_FOR_CARD2 sub-arm.
+    pub one_codename: bool,
+    /// `DAT_002462d4` — the card-flow message state PS2_DoCardFlow renders [M 0x217bd8:76-153];
+    /// 0 = no message, 0xb = the "Checking memory card (PS2) in slot 1" text (Txt 0x277)
+    /// [M 0x110188:37 sets it for the GetDir step; 0x217bd8:119-121 case 0xb binds 0x277].
+    pub flow_msg: u8,
+    /// The completion flag `DAT_002e1b0a` [M 0x217bd8:68 `*(param_3 + 0x3a) = 1`] —
+    /// P_PARISENUM's 0x50 waits on exactly this [M 0x20a648:36].
+    pub done: bool,
+    /// The sceMc op completion latency in ticks [S unverified — see the type doc].
+    pub mc_ticks: u32,
+    /// The running sceMc op's remaining ticks.
+    mc_wait: u32,
+}
+
+impl Default for ParisCardCheck {
+    fn default() -> Self {
+        ParisCardCheck { stack: [0; 4], sub: [0; 4], sp: 0xff, getting_saves: 0, saves_got: 0,
+            enum_state: 0, one_codename: false, flow_msg: 0, done: false, mc_ticks: 1, mc_wait: 0 }
+    }
+}
+
+impl ParisCardCheck {
+    /// `psiStartSaveEnum(param)` [M 0x110fe0]: push GET_SAVE_GAMES, `DAT_002462d4 = 0`,
+    /// `GettingSaveGames = -1`, `PS2_one_codename = param`, the sub-byte 0, `SaveGamesReturned = 0`.
+    pub fn start(&mut self, one_codename: bool) {
+        self.sp = 0;
+        self.stack[0] = CARD_ST_GET_SAVE_GAMES;
+        self.sub[0] = 0;
+        self.flow_msg = 0;
+        self.getting_saves = -1;
+        self.one_codename = one_codename;
+        self.done = false;
+        self.mc_wait = 0;
+    }
+
+    /// One `HandlePS2CardState` invocation [M 0x110b98]: the do-while runs state functions until
+    /// the RCNT1 budget ends; the port's budget equivalent is "until an sceMc op pends" — each
+    /// pass advances a sub-counter or pops, and the only thing that stops a pass early is a busy
+    /// `sceMcSync`. Returns whether the machine did anything.
+    pub fn tick(&mut self) -> bool {
+        let mut did = false;
+        loop {
+            if self.sp == 0xff || self.sp as usize >= self.stack.len() { break; }
+            // An sceMc op in flight: `sceMcSync(1, …)` returns 0 (busy) until it completes [M the
+            // 0x110188:17-19 / 0x110b98:26-28 wait shape] — the pass (and the tick) waits it out.
+            if self.mc_wait > 0 { self.mc_wait -= 1; break; }
+            let s = self.sp as usize;
+            match self.stack[s] {
+                // GET_SAVE_GAMES [M 0x110188]: the sub-counter advances on every completed sync
+                // (:22-24 — the increment is BEFORE the switch, so a no-op arm still moves on);
+                // sub 1 pushes GET_CARD_STATUS (:27-29), sub 2 pushes CHECK_FOR_CARD2 unless
+                // one-codename mode skips it (:31-34), sub 3 sets the 0xb message and starts the
+                // GetDir (:37-43), sub 4 pops with the sync result (:46-49).
+                CARD_ST_GET_SAVE_GAMES => {
+                    self.flow_msg = 0; // [M :21]
+                    self.sub[s] = self.sub[s].wrapping_add(1);
+                    match self.sub[s] {
+                        1 => self.push(CARD_ST_GET_CARD_STATUS),
+                        2 => { if !self.one_codename { self.push(0x15); } }
+                        3 => { self.flow_msg = 0xb; self.begin_mc(); }
+                        4 => { self.saves_got = 0; self.getting_saves = 0; self.pop(); }
+                        _ => self.pop(),
+                    }
+                }
+                // GET_CARD_STATUS [M 0x10e798]: sub 0 → 1 + sceMcGetInfo + push the sync waiter
+                // (:10-16); the next completed visit pops (:18-20).
+                CARD_ST_GET_CARD_STATUS => {
+                    self.sub[s] += 1;
+                    if self.sub[s] == 1 { self.begin_mc(); self.push(CARD_ST_SYNC); }
+                    else { self.pop(); }
+                }
+                // The sync waiter [M 0x110b98:25-30 case 1]: the op done → pop.
+                CARD_ST_SYNC => { self.pop(); }
+                _ => { self.pop(); }
+            }
+            did = true;
+        }
+        did
+    }
+
+    /// `psiGetNextSave` [M 0x111038]: -1 while the enum runs, 0 when the dir read landed with no
+    /// (more) saves — `NumberSaveGamesGot <= SaveGamesReturned` on this path.
+    pub fn next_save(&self) -> i32 {
+        if self.getting_saves == -1 { return -1; }
+        0 // [M :12-14 — saves_got (0, no card) <= SaveGamesReturned (0)]
+    }
+
+    /// `Menu_EnumSaves(page, 1)`'s state step [M 0x1f7b78]: state 0 arms the machine via
+    /// psiStartSaveEnum and moves to 1; state 1 polls psiGetNextSave until it returns 0, then
+    /// completes to 7 (the one-codename arm's early return [:44-48] is the same completion for
+    /// the no-card walk — nothing to enumerate).
+    pub fn enum_step(&mut self) -> u8 {
+        match self.enum_state {
+            0 | 4 => { self.start(true); self.enum_state = 1; }   // [M :58-68]
+            1 => {
+                if self.next_save() == -1 { return self.enum_state; }
+                self.enum_state = 7;                               // [M :27, :44-47]
+            }
+            _ => {}
+        }
+        self.enum_state
+    }
+
+    /// Whether the whole flow is done: enum_state 7 is what `PS2_DoCardFlow`'s >3 arm receives
+    /// [M 0x1f7b78 returns 7; 0x217bd8:26 `3 < param_2`], which sets DAT_002e1b0a [M :68].
+    pub fn flow_done(&self) -> bool { self.enum_state == 7 }
+
+    fn push(&mut self, st: u8) {
+        if (self.sp as usize) + 1 < self.stack.len() {
+            self.sp += 1;
+            self.stack[self.sp as usize] = st;
+            self.sub[self.sp as usize] = 0;
+        }
+    }
+    fn pop(&mut self) {
+        self.stack[self.sp as usize] = 0;
+        self.sub[self.sp as usize] = 0;
+        self.sp = if self.sp == 0 { 0xff } else { self.sp - 1 };
+        if self.sp == 0xff { self.mc_wait = 0; }
+    }
+    fn begin_mc(&mut self) { self.mc_wait = self.mc_ticks.max(1); }
+}
 
 /// One menu sound the game's front end starts. `sound` is the MENU_SOUND value the game passed to
 /// `Menu_PlaySound` [M 0x1f3278] (or [`MENU_SOUND_PAGE_OPEN`] for the handlers' `SFXStart` pair);
@@ -2053,6 +2250,23 @@ pub struct FrontEnd {
     /// C_GONIGHTFIRE 0x2169b8:36-37 / C_GOCODENAMES 0x216b38:36-37 queue 0x13 ticks out
     /// (`__Menu_SendDelayedMessage`, run by `Menu_ProcessDelayedMessages` every menu tick).
     pub delayed_page: Option<(u32, Page, usize)>,
+    /// G-048(1): the in-flight delayed page is a `Menu_ChangePageCloseIris` one [M 0x202190] — its
+    /// arrival lifts the input block itself (the 0x44's own 0x68/0 [M 0x21c858:315]) instead of
+    /// taking the destinations' from-Main 0x4c block.
+    pub delayed_iris: bool,
+    /// G-048(1): ticks until the CloseIris's delayed 0x68/1 lands [M 0x202190:7 —
+    /// `__Menu_SendDelayedMessage(1, …, 0x68, 1, 0)`]; the block starts the tick AFTER the call,
+    /// not on it.
+    pub delayed_block: Option<u32>,
+    /// G-048(3): the manager's page-up flag — the game's `manager+0x1bc != 0` [M 0x21c858 case
+    /// 0x44's walk]. Between the mission end and the front-end load's `MenuManager_Create`
+    /// [M 0x1d6360:160-163] the game has NO page up (Mission_Update case 4 only queues
+    /// GameState+0x1c); the port models it with this flag so the draw code can show nothing
+    /// there (`up_page()`).
+    pub page_open: bool,
+    /// G-048(4): the boot card check's state machine ([`ParisCardCheck`]) — P_PARISENUM's
+    /// 0x4c starts it [M 0x20a648:12-24] and its 0x50s wait on it [M :36-47].
+    pub paris_card: ParisCardCheck,
     /// The manager's input block (manager+0x1d4, msg 0x68 [M 0x21c858:612-613]; the 0x22
     /// dispatcher skips while it is set [M 0x21c3d8:70]): ticks left until the delayed 0x68/0.
     /// `u32::MAX` = held until a page lifts it.
@@ -2189,9 +2403,13 @@ impl FrontEnd {
             sfx_out: Vec::new(),
             // menu-audio-leaks (each new field on its own line [WORKLOG lesson 4]).
             sfx_remove_out: Vec::new(),
-            /// `enabled_sound_flags` 0x30d184 — the boot value 0x0b gates MENU_SOUND 0/1/2/8
-            /// [L ee_start 0x30d184 = 0x0b; M 0x1f3278's gates].
-            enabled_sound_flags: 0x0b,
+            /// `enabled_sound_flags` 0x30d184 — G-048(2): every page open re-keys it [M
+            /// 0x21c858:268]; the boot value is the game's FIRST page open — P_LANGUAGE
+            /// 0x40000034 rides the manager-create 0x43's direct 0x44 [M 0x21c858:252] and takes
+            /// Menu_EnableSounds' default arm → 9 [M 0x1f31f0]. (The ee_start snapshots' 0x0b
+            /// [L ee_start 0x30d184] is the value a MISSION inherits from the mission list
+            /// 0x4000001c — [M 0x1f31f0 case 0x4000001c] — not a boot value.)
+            enabled_sound_flags: menu_enable_sounds(PAGE_LANGUAGE),
             /// The handlers' `menu_movie` static: set once the open pair has played, reset by the
             /// intro/attract movie ends [M P_START 0x20a408:22; P_INTRO 0x209e88:44,58].
             net_notice: None,
@@ -2219,6 +2437,12 @@ impl FrontEnd {
             // fe-audit (each new field on its own line [WORKLOG lesson 4]).
             mp_confirm_from: Page::MpOptions,
             delayed_page: None,
+            // G-048(1)/(3)/(4) (each new field on its own line [WORKLOG lesson 4]).
+            delayed_iris: false,
+            delayed_block: None,
+            // The boot manager's page is up from the first 0x43→0x44 [M 0x21c858:252].
+            page_open: true,
+            paris_card: ParisCardCheck::default(),
             input_block_ticks: 0,
             intro_step: 0,
             intro_movie: false,
@@ -2262,6 +2486,9 @@ impl FrontEnd {
     /// is the swap, handled below and in `MenuMusic::page_enter`).
     fn enter_page(&mut self, p: Page) {
         self.page = p;
+        self.page_open = true; // [M 0x21c858 case 0x44 — manager+0x1bc = the new page]
+        // G-048(2): every page open re-keys the sound flags [M 0x21c858:268 Menu_EnableSounds].
+        self.enabled_sound_flags = menu_enable_sounds(p.id());
         self.wheel_hover = None;   // menu-mouse-parity: the hover named a row of the old page.
         if matches!(p, Page::Start | Page::Main | Page::MissionSelect | Page::Results
                     | Page::MpDebriefing) {
@@ -3033,13 +3260,25 @@ impl FrontEnd {
     /// opened from 0x40000002 they send 0x68/1 and a delayed 0x68/0 at 0xf).
     fn delayed_tick(&mut self) {
         if self.input_block_ticks > 0 && self.input_block_ticks != u32::MAX { self.input_block_ticks -= 1; }
+        // G-048(1): the CloseIris's delayed 0x68/1 lands one tick after the call [M 0x202190:7].
+        if let Some(n) = self.delayed_block {
+            if n <= 1 { self.input_block_ticks = u32::MAX; self.delayed_block = None; }
+            else { self.delayed_block = Some(n - 1); }
+        }
         let Some((n, page, cursor)) = self.delayed_page else { return };
         if n > 1 { self.delayed_page = Some((n - 1, page, cursor)); return; }
         self.delayed_page = None;
         self.enter_page(page);
         self.cursor = cursor;
-        // Both destinations are only queued from Main, so their 0x4c takes the from-Main arm.
-        self.input_block_ticks = MAIN_OPEN_BLOCK;
+        if self.delayed_iris {
+            // The CloseIris 0x44's own processing lifts the block (lparam bit 1 clear →
+            // `Manager_SendMessage(mgr, 0x68, 0, 0)` [M 0x21c858:314-315]).
+            self.delayed_iris = false;
+            self.input_block_ticks = 0;
+        } else {
+            // Both destinations are only queued from Main, so their 0x4c takes the from-Main arm.
+            self.input_block_ticks = MAIN_OPEN_BLOCK;
+        }
     }
 
     /// Queues a delayed page change: input blocked now (0x68/1), the page `DELAYED_PAGE_TICKS`
@@ -3048,6 +3287,26 @@ impl FrontEnd {
         self.input_block_ticks = u32::MAX;
         self.delayed_page = Some((DELAYED_PAGE_TICKS, page, cursor));
     }
+
+    /// G-048(1): `Menu_ChangePageCloseIris(page, mgr, ctl)` 0x202190 — the iris close starts now
+    /// (`Menu_StartIris(1, …)`, :6 — the draw code reads [`Self::close_iris_in_flight`]), the
+    /// delayed 0x68/1 lands the NEXT tick (:7) and the delayed 0x44 `CLOSE_IRIS_PAGE_TICKS` ticks
+    /// out (:8-9), whose own processing unblocks input [M 0x21c858:315]. Every caller list
+    /// [M the decompile's xrefs]: C_SBNFDFCTY 0x216ca8:16 (difficulty confirm → the SP list),
+    /// P_NFSELECT 0x20aec0:103/:108, C_SBNFCN 0x20b390:47 (→ the name entry 0x40000020),
+    /// C_SBNFMAP 0x20b8d8:48 (□ → the Dossier), C_SBMPSCEN 0x20c600:45/:142, C_SBMPOPTIONS
+    /// 0x20e818:116 (→ 0x40000027), C_SBBOTS 0x210a08:22 (→ 0x4000003f), P_CNSELECT 0x212ad0:105/:112,
+    /// C_SBCNSELECT 0x212f58:41, P_CNMENU 0x213288:49, C_SBCNOPTIONS 0x213528:58, C_SBDOSSIER
+    /// 0x216eb0:20/:26 (→ the Records/Rewards/Gadgets/Weapons wheel rows), C_SBMPMAP 0x217538:17.
+    fn close_iris_page(&mut self, page: Page, cursor: usize) {
+        self.delayed_iris = true;
+        self.delayed_block = Some(1); // [M 0x202190:7 — the 0x68/1 delay]
+        self.delayed_page = Some((CLOSE_IRIS_PAGE_TICKS, page, cursor));
+    }
+
+    /// G-048(1): a CloseIris page change is in flight — the iris-close draw window (the game's
+    /// `Menu_StartIris(1, …)` + `Menu_PlayIris(1, …)` per tick [M 0x202190:6, the callers' 0x50s]).
+    pub fn close_iris_in_flight(&self) -> bool { self.delayed_page.is_some() && self.delayed_iris }
 
     /// boot-flow / fe-audit: the intro pages' own 0x50 handlers, one per menu tick, plus the
     /// manager's movie counter. P_INTRO (boot) plays [`INTRO_MOVIES`] then opens the title; START
@@ -3067,12 +3326,21 @@ impl FrontEnd {
             }
         }
         match self.page {
-            // P_PARISENUM's 0x50: once the card check's box is done, 0x44 → 0x40000043 with
-            // lparam 1 [M 0x20a648:36-44]. The port has no card scan here, so the check is done on
-            // the first 0x50 [S unverified — the game's check takes as long as the card I/O].
+            // G-048(4): P_PARISENUM's 0x50 [M 0x20a648:26-47] — the box's message-box pump runs
+            // `Menu_EnumSaves(page, 1)` per tick (the 0x4c's own call is the same function at
+            // state 0 [M 0x1f7de8:24, :53-58]) while `DAT_002e1b0a` is clear, and the tick that
+            // sees it set sends the 0x44 to P_ESTHERO 0x40000043 lparam 1 (:39-47). The card
+            // machine pumps once per menu tick [M PS2PollMemoryCard 0x110fa0 from
+            // MenuManager_Update 0x21c3d8:45-47] — the port collapses the two pumps into this arm.
+            // The old "check is done on the first 0x50 [S]" is gone: the box now lasts the card
+            // machine's walk (see [`ParisCardCheck`]; the sceMc latency is the [S] part).
             Page::ParisEnum => {
-                self.enter_page(Page::EstHero);
-                self.intro_step = 0; // P_ESTHERO's 0x4c [M 0x20a060:12-13]
+                self.paris_card.tick();
+                self.paris_card.enum_step();
+                if self.paris_card.flow_done() {
+                    self.enter_page(Page::EstHero);
+                    self.intro_step = 0; // P_ESTHERO's 0x4c [M 0x20a060:12-13]
+                }
             }
             Page::EstHero => {
                 if self.intro_step == 1 {
@@ -3228,7 +3496,8 @@ impl FrontEnd {
         self.requested_restart = false;
         if outcome == Outcome::Failed {
             // [M 0x182c60:77-80] the fail menu 0x40000042 over the paused mission: no level
-            // request, no fade, the flow stays where the mission runs.
+            // request, no fade, the flow stays where the mission runs. MenuManager_Create runs
+            // HERE, so the page is up at once.
             self.enter_page(Page::Results);
             self.cursor = 0;
             return;
@@ -3245,9 +3514,20 @@ impl FrontEnd {
         // The game's order [M 0x182c60:73-74]: the load first, THEN the fade push on top —
         // `GameFlow_PushState(60.0, 7, ...)` [M disasm 0x183054-60: f12 = 0x42700000 = 60.0f, a0 = 7].
         self.flow.push_state(7, 60);
-        self.enter_page(Page::Results);
+        // G-048(3): NO page opens here. Case 4 only queues GameState+0x1c = 0x40000036
+        // [M 0x182c60:72] — the page comes up when the front-end map's load tail runs
+        // `MenuManager_Create(GameState+0x20, +0x28)` [M 0x1d6360:160-163], which the host drives
+        // through [`Self::reopen_queued_page`]. The manager has no page until then [M the game's
+        // manager list is empty during a mission — MenuManager_Monitor 0x21d508:27's in-use check].
+        self.page_open = false;
         self.cursor = 0;
     }
+
+    /// G-048(3): the manager's current page — `None` while no page is up (the game's
+    /// `manager+0x1bc == 0` [M 0x21c858 case 0x44's walk]; the mission end runs with no page
+    /// until the load's `MenuManager_Create` [M 0x1d6360:160-163]). The draw code shows nothing
+    /// for the menu overlay when this returns None.
+    pub fn up_page(&self) -> Option<Page> { self.page_open.then_some(self.page) }
 
     /// P_NFRESULTS 0x208e78 case 0x4c against the LIVE progress layer — the results page's enter:
     /// `PlrStat_GetScore(0)` (the commit — the game's param 0 [M :77]) builds the page's fields,
@@ -3638,6 +3918,9 @@ impl FrontEnd {
         self.intro_end = Page::Start;
         self.intro_ticks = 0;
         self.page = Page::Intro;
+        // The run's page opened through the manager's 0x44 [M P_INTRO rides the page list] —
+        // G-048(2): its open re-keys the flags [M 0x21c858:268]; 0x40000032 takes the default arm.
+        self.enabled_sound_flags = menu_enable_sounds(PAGE_INTRO);
         self.cursor = 0;
     }
 
@@ -4512,10 +4795,12 @@ impl FrontEnd {
                             self.confirming_default_profile = true;
                         } else {
                             self.confirming_default_profile = false;
-                            self.enter_page(Page::Difficulty);
+                            // G-048(1): the game's play-without-saving path rides
+                            // Menu_ChangePageCloseIris 0x40000023 [M P_NFSELECT 0x20aec0:103 —
+                            // the option-box resolve arm] — the 10-tick delayed 0x44.
+                            self.close_iris_page(Page::Difficulty, 0);
                             // Opened from the codename page, P_NFDFCTY sends 0x2e index 0 to the
                             // wheel 0x100000bf [M 0x216bf8:10-12] — the first row (Operative).
-                            self.cursor = 0;
                         }
                         return true;
                     }
@@ -4542,9 +4827,12 @@ impl FrontEnd {
                     // difficulty-effects: the pick writes GameState+0x28 NOW (1-based: the
                     // wheel's rows are values 1/2/3 = Operative/Agent/00 Agent) [M 0x216ca8:15; D difficulty 0x2df4c0 +0xc = 1/2/3].
                     self.requested_difficulty = Some(self.difficulty as u32 + 1);
-                    // → the Single Player list [M C_SBNFDFCTY 0x216ca8:10-17 Menu_ChangePageCloseIris
-                    // 0x4000001c — the driver's observed order Select Difficulty → Single Player].
-                    self.open_mission_list();
+                    // → the Single Player list [M C_SBNFDFCTY 0x216ca8:10-17
+                    // Menu_ChangePageCloseIris 0x4000001c] — G-048(1): a 10-tick delayed 0x44
+                    // with the iris close and the input block from the next tick, not an
+                    // immediate page flip.
+                    self.flow.page = PAGE_MISSION_SELECT;
+                    self.close_iris_page(Page::MissionSelect, self.highest_unlocked());
                     return true;
                 }
                 Action::Back => { self.enter_page(Page::Codename); self.cursor = 0; return true; }
@@ -4609,7 +4897,9 @@ impl FrontEnd {
                 // 0x1000010c, which rejects out-of-range indices and redraws (Scroll_SendMessage
                 // 0x221810:98-106); without the reset the port entered with the missions cursor
                 // and the wheel showed Weapons on screen — the playtest's "the port adds Weapons"].
-                Action::Side => { self.enter_page(Page::Dossier); self.cursor = 0; return true; }   // □ Dossier
+                // G-048(1): the game rides Menu_ChangePageCloseIris here [M C_SBNFMAP 0x20b8d8:48
+                // — □ → 0x4000002b] — the 10-tick delayed 0x44, not an immediate flip.
+                Action::Side => { self.close_iris_page(Page::Dossier, 0); return true; }   // □ Dossier
                 Action::Back => { self.enter_page(Page::Difficulty); self.cursor = self.difficulty; return true; }
                 Action::Extra => {}
             },
@@ -4627,9 +4917,10 @@ impl FrontEnd {
                     // [M the wheel controls' own MSG 0x2e (0,0) [D page data] + P_DSGADGETS
                     // 0x217190:10's explicit reset; P_DSREWARDS/P_DSRECORDS leave the list at
                     // GameState+0x48's row — the port keeps the cursor at the mission].
+                    // G-048(1): both row arms ride Menu_ChangePageCloseIris [M 0x216eb0:20/:26].
                     let to = Self::dossier_row_page(self.cursor);
-                    self.enter_page(to);
-                    self.cursor = if to == Page::Records { self.mission.min(CAMPAIGN.len() - 1) } else { 0 };
+                    let cur = if to == Page::Records { self.mission.min(CAMPAIGN.len() - 1) } else { 0 };
+                    self.close_iris_page(to, cur);
                     return true;
                 }
                 Action::Back | Action::Side => { self.enter_page(Page::MissionSelect); return true; }
@@ -5102,9 +5393,10 @@ impl FrontEnd {
                         // confirm page [M C_SBMPSCEN:48-145].
                         if MP_SCENARIO_ROWS[row].3 == 0 { self.mp_quick_start(); return true; }
                         // Confirm stores the scenario word [M disasm 0x20c9c8 `sw 0x4944($t0)`]
-                        // and opens the map page [M 0x20c9a8-0x20c9b4 → 0x40000013].
+                        // and opens the map page [M 0x20c9a8-0x20c9b4 → 0x40000013] — G-048(1):
+                        // through Menu_ChangePageCloseIris [M C_SBMPSCEN 0x20c600:45].
                         self.mp_scenario = MP_SCENARIO_ROWS[row].3;
-                        self.enter_page(Page::MpMap);
+                        self.close_iris_page(Page::MpMap, 0);
                         self.mp_map_row = self.mp_map_row.min(MP_MAP_ROWS.len() - 1);
                         return true;
                     }
@@ -5919,7 +6211,13 @@ impl FrontEnd {
     /// borrow the match (it lives in the sim the front end replaces), so the board travels by
     /// value from `Sim::take_mp_debrief_request`.
     pub fn show_mp_debriefing(&mut self, board: nf_game::mp::debrief::MpDebriefing) {
-        self.enter_page(Page::MpDebriefing);
+        // G-048(3): the game's match end [M MP_Update 0x184bd0 case 4, :62-78] only QUEUES the
+        // debriefing page (GameState+0x1c = 0x40000033 = P_MPDEBRIEFING [M the handler table
+        // 0x2029e0:434-437]), loads the front-end map and pushes the fade — the page comes up at
+        // the load's `MenuManager_Create` [M 0x1d6360:160-163], not over the arena. The port's
+        // load tail drives it through [`Self::reopen_queued_page`]; the board data rides along.
+        self.flow.page = PAGE_MP_DEBRIEFING;
+        self.page_open = false;
         self.cursor = 0;
         self.mp_debriefing = Some(board);
     }
