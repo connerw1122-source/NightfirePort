@@ -56,9 +56,9 @@ fn the_census_creations_match_the_disc() {
     eprintln!("[05] copters: {:?}", d.copters.iter().map(|c| (c.gate, c.out, c.scripts, c.arrival, c.countdown)).collect::<Vec<_>>());
     assert!(d.copters.iter().all(|c| c.scripts == [0x0600_0046, 0x0600_0047]), "the flight scripts 0x06000046/0x06000047 [D params 4/5]");
     // The hurt volumes [D ×13]: type 6, damage 1000, no gate [D params].
-    assert_eq!(d.hurts.len(), 13, "the thirteen hurt volumes [D]");
-    assert!(d.hurts.iter().all(|h| h.kind == 6 && h.damage == 1000.0 && h.gate == 0), "type 6, damage 1000, ungated [D]");
-    for h in &d.hurts {
+    assert_eq!(sim.hurts.len(), 13, "the thirteen hurt volumes [D]");
+    assert!(sim.hurts.iter().all(|h| h.kind == 6 && h.damage == 1000.0 && h.gate == 0), "type 6, damage 1000, ungated [D]");
+    for h in &sim.hurts {
         assert!(!h.tris.is_empty(), "hurt placement {} resolved its volume cels [D the object's collision]", h.placement);
     }
     // The origin-parked fuseboxes create nothing [M 0x1b0448 with no param 0 script; obj+0xD8 = 0].
@@ -72,7 +72,7 @@ fn the_census_creations_match_the_disc() {
     assert_eq!(env.boxes.len(), 18, "the eighteen RainBox volumes [D]");
     assert_eq!(env.kind, 0, "drop type 0 = SNOW [D params (0,0); M Env_Create]");
     eprintln!("[05] hurt boxes:");
-    for h in &d.hurts {
+    for h in &sim.hurts {
         eprintln!("  placement {} lo {:?} hi {:?}", h.placement, h.lo, h.hi);
     }
     eprintln!("[05] ladders {:?} copters {:?} searchlight heads {}",
@@ -276,7 +276,7 @@ fn the_valley_fall_dies_in_the_hurt_volume() {
     w.walk_to(walker::Wp { at: [-10.0, -0.7, 60.0], act: walker::Act::None, arrive: 1.5 }, "west down the valley floor");
     let sim = w.scene.sim.as_ref().unwrap();
     let (ca, cb) = sim.bond.capsule_seg();
-    let in_hurt = sim.drones.hurts.iter().filter(|h| h.contains(ca, cb, 0.55)).count();
+    let in_hurt = sim.hurts.iter().filter(|h| h.contains(ca, cb, 0.55)).count();
     eprintln!("[05] after the fall: bond {:?} health {} in_hurt {} ch 0x62 {}",
         sim.bond.pos, sim.drones.health.health, in_hurt, sim.drones.channels.on(0x62) as u8);
     assert!(sim.drones.health.health <= 0.0 || sim.drones.channels.on(0x62),
