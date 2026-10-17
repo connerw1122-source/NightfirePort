@@ -22,3 +22,7 @@ addresses + live checks).
   processes are killed between tool calls here; foreground runs of nf-game done twice instead).
 - Live checks in the report: 07000005's hidden-pair setter; Skyrail carriage render spots
   (--bond 12,32,-50,0,-0.5); Car_Create/Deactivate Mat_Copy arg order (disasm).
+
+---
+## Report (done, 2026-10-17T00:58Z)
+
