@@ -1317,6 +1317,9 @@ pub fn sound_tick(s: &mut nf_audio::sfx::Sound, sim: &mut scene::Sim) {
     // `UpdateMusicalEvents` moved into the sim's tick (it runs every frame with or without an output
     // device [M 0x114e70]); the IOP's now-playing section feeds it through `Drones::iop_section`.
     sim.drones.iop_section = s.music.as_ref().map_or(0, |p| p.now_playing);
+    // The EE's SFXPaused mirror (the pause page's op 9 set it on the edge below; the game's
+    // UpdateMusicalEvents reads the global every frame [M 0x114e70:61-64]).
+    sim.drones.music.sfx_paused = s.driver.paused();
     let mut fade_down = None;
     for c in std::mem::take(&mut sim.drones.music.out) {
         match c {
@@ -3043,7 +3046,12 @@ impl ApplicationHandler for App {
                         if self.grabbed || in_mission {
                             self.grab(false);
                             // Esc in a mission opens the pause page [S: the game pauses on Start].
-                            if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL {
+                            // The game's pause gate: the action AND GameState+0x36==0 AND
+                            // ScriptCam==0 [M Player_Update 0x193600:72] — a script camera up (the
+                            // 1b intro cinema 0x0600085c, the Drake NISs) refuses the pause; the
+                            // port opened one over the cinema (pause-results-flows live check 1).
+                            if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL
+                                && self.scene.sim.as_ref().and_then(|s| s.script_camera()).is_none() {
                                 let base = self.scene.sim.as_ref().map(|s| s.drones.mission.base_map).filter(|&b| b != 0 && b != u32::MAX).unwrap_or(self.level_code);
                                 let fe = self.fe.get_or_insert_with(|| {
                                     let mut fe = menu::FrontEnd::new();
@@ -3286,6 +3294,11 @@ impl ApplicationHandler for App {
                 let menu_hold = self.paused || self.fe.as_ref().is_some_and(|fe| fe.page == menu::Page::Pause);
                 if menu_hold != self.audio_paused {
                     self.audio_paused = menu_hold;
+                    // The game's pause entry IS the SFXPaused setter: `MenuManager_Create` with
+                    // pause_sound=1 runs the op-9 batch whose EE side sets `SFXPaused` 0x30c92c
+                    // [M 0x21b908:121-124, 0x116b70:11-13] — `UpdateMusicalEvents` freezes on it
+                    // [M 0x114e70:61-64]. The port mirrors it on the same edge.
+                    if let Some(sim) = self.scene.sim.as_mut() { sim.drones.music.sfx_paused = menu_hold; }
                     if let Some(s) = self.sound.as_mut() { s.set_paused(menu_hold); }
                 }
                 if !self.paused && self.fe.is_none() {

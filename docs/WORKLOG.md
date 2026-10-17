@@ -17354,3 +17354,21 @@ through the real input path + a sister, run the touched crates + the full suite.
   formulas, the armed sister (hostile, no challenge), the unarmed challenge (0x5f + step 2), the
   restricted band → the fail reason 0xc + hostile, and the waiting pair activating through ch 21.
   3/3 pass. Report: docs/reports/door-guard-pairing.md.
+- 2026-10-16 s/pause-music-1b (task 740): Music still plays during the pause menu on
+  0700001b (playtest 1016-1355); earlier fixes stopped it on other levels. Plan: find
+  what is different on 1b (the level's music source or stream, a script-driven track,
+  the space ambience) and pause or stop it the way the game's pause does
+  [M the pause entry's music calls]. Test: pausing on 1b silences the level music;
+  unpausing resumes it. Sister: 05 still behaves. Branch created from origin/master
+  f09f3c6c.
+- pause-music-1b: the pause entry's music calls ported — UpdateMusicalEvents' SFXPaused freeze
+  (0x114e70:61-64; the level-start restart excepted, 0x114e70:43-54) mirrored on the App's pause
+  edge + every sound_tick; UpdateMFX_HT_Level_SpaceStationD 0x114d60 (1b's own updater: the intro
+  cinema 0x0600085c's end restarts the track at section 0, the empty-combat alert arm jumps
+  end_calm 10 instant + FadeDown + WaitForEnd); the Esc arm's ScriptCam gate (0x193600:72 — the
+  port opened a pause over the 1b intro cinema that the game refuses). The engine-level pause
+  probe (pause_music_1b_probe) proved the mixer hold identical on 1b and 05 before the fixes
+  (1b: track 35 sec 4 + 10 ambients; 05: track 15 sec 0 + 2 items). Tests: 2 music unit tests
+  (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
+  binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
+  the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
