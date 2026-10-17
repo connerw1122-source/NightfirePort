@@ -10052,10 +10052,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         //   game path, trigger-port-check #11) AND the standing ride touched the ch-0x70 park plate
         //   the game only fires crouched (fix-truck's trace) — the fix_truck_live sister caught it.
         // - the union of both capsules also let the standing ride touch the park plate.
-        // The stand-in's known misses (documented): floor plates within 0.53 of the floor
-        // (07000005's ch-0x45 reveal plate at feet+0.47; 07000002's bunker plate 0x80 below the
-        // floor — the stealth route). Revisit when object touchers land.
-        let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher { contain: !player.hanging, ..crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.4, player.pos[2]]) })
+        // level-05-complete: the reach is measured from live play, not chosen: the game's Bond
+        // (BLData translation, the port's `player.pos` reference) touches 07000005's ch-0x45 spawn
+        // reveal plate 0.557 BELOW that reference on the boot tick [L ee_start_05.bin
+        // glb_players→+0xc4 = 24.9633 vs the plate's 24.4065 — the fresh-boot snapshot carries
+        // switch_channels[0x45] = 1], while the ch-0x70 park plate (0.575 below the game's standing
+        // BLData on the bed: 37.28 floor + 1.035 hip) stays untouched until the crouch drops Bond
+        // 0.46 [D fix-truck's trace]. So the true reach lives in [0.557, 0.575] below the reference;
+        // the port's geometry (its bed stand is +0.075 vs the game's hip math) gives the standing
+        // ride a measured miss boundary at 0.65 (zz probe: standing pos 38.39 − plate 37.74), so
+        // `pos − 0.6` reproduces both live behaviours with margin on both sides. The old −0.4
+        // stand-in's remaining known miss (07000002's bunker plate 0x80 below the floor) is
+        // unchanged in kind — floor plates between 0.4 and 0.557 below the reference now fire, as
+        // the game's do.
+        let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher { contain: !player.hanging, ..crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.6, player.pos[2]]) })
             .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin, contain: true }))
             .collect();
         drop(prof_pre);
