@@ -17391,3 +17391,10 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+- 2026-10-17 s/mp-screens (task 750): "Missing mp screens" (2026-10-16 evening). Plan: list every
+  multiplayer front-end page (the ACTION.ELF .data page table, the P_MP* handlers, the menu-def
+  pages) and which the port lacks or leaves blank (character select, team setup, scenario options,
+  map select, bot setup, the per-player confirm/ready screens, the results/debriefing pages);
+  port each missing page's data/state/flow in menu.rs with [M] citations (no drawing — the main
+  agent draws); plus the F12 spot_shot all-dark-image bug on front-end pages (nf-shots/
+  001-07000048.png). Report the page list ported/missing. Branch from origin/master 31dd6161.
