@@ -17391,3 +17391,12 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+- 2026-10-17 s/create-save (task 750j): The user cannot create a save (playtest
+  1016): Select Codename -> New Codename should open the name entry (P_CNNAME
+  0x40000020, the C_KEYBOARD 0x213a98 grid), confirm with the check mark, save the
+  codename (the port's stand-in: the settings/save files under %APPDATA%/NightfirePort)
+  and list/select it on the next boot; finishing a mission under it saves progress.
+  Plan: walk the real window input path (arrows/Enter/Esc/Tab + typed letters, lib.rs's
+  name-page key handling) on a fresh profile, find the failure, fix to the game's flow
+  with [M] citations, pin create "BOND" -> saved to disk -> offered next boot. Branch
+  created from origin/master 31dd6161.
