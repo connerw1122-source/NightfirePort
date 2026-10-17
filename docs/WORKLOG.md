@@ -18444,3 +18444,22 @@ directly. Report: docs/reports/level-07-interactables.md.
   master, find which held change stalls the contact's route (the report mentions
   an escort stall and a door wedge), fix with evidence, make that walk pass
   alongside the held tests. In progress.
+
+- 2026-10-17 s/level-01-complete-2: the held 01 walk finished. The stall's root cause was the
+  armed-peer snapshot, not the route: the port counted every started team-1 drone as an "armed
+  peer" by 3D distance alone, while the game's `NDrone2_NearArmedDrone` 0x177420 /
+  `NDrone2_NotNearArmedDrone` 0x177640 also demand the WEAPON filter (obj+0xdc → +0x62 in
+  [2..0x46] ∪ [0x6a..0x71] — disasm 0x177538-0x177578, the same predicate as
+  `NDrone2_ObjectIsArmed` 0x178768) and the SIGHT gate (`DroneVision_CanSeeObjectFrom` 0x176f18,
+  bone 5 = the head, head-to-head `Collide_LineOfSight` 0xa27 behind an `AINetwork_TestRayCels`
+  AI-cel pretest). The port's stand-in is the shared head-to-head `world.line_of_sight` (the
+  shout pass's shape), and the scan caps at 20.0 (every consumer branches at 10/14/20 [M
+  0x15e698:30/0x15ec08:30/0x15ce60:29]). The flag-1 Lead hide-enters also gate on the drone's own
+  behaviour prop 0x50 [M 0x177420:57-61 + the callers pass 1; 0x177640 has no prop gate]. The
+  walk test itself needed the player-shaped fixes: the hall detour stages through the east door
+  (the west routes wedge on door #2), the stairwell guards the contact hides from are cleared
+  post-plate, Bond leads the descent through the stairwell-head anchor, and the ch-0x47 hand
+  rides Mayhew's arrival beat — the exit-hold freezes the world after the AND, so a frozen-window
+  monitor call stands in when the exit races the hand. The obj0 asserts resolve their record
+  indexes from the LEVELS table (master's 05-08 records sit in front of 01's; a hardcoded
+  [0][0] named 05's record). Suite: see docs/reports/level-01-complete-2.md.
