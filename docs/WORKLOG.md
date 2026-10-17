@@ -17719,3 +17719,11 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+- 2026-10-17 s/glass-breach-guards (task 750p): "beginning of mayhew level guards are supposed
+  to break through the glass" (playtest 1016-evening). 750e glass-shatter ported the breakables
+  core on s/glass-shatter (Break_Create 0x12c230 / Break_Update 0x12bfd8 / Break_Kill 0x12b970,
+  NOT yet on master) — build on it. Plan: find the Mayhew-start glass-breach scripted event
+  (placements/scripts/triggers, docs/levels/), port the event + the guards' entry, the
+  guards-smash-glass arm 0x12bfd8:23-34 (level 07000001) as it applies, reproduce fail-first
+  through the real path (panes break + guards come in at the game's time), then fix.
+  Branch created from origin/master 50d51ae7.
