@@ -18787,3 +18787,10 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   headless-runnable. The full suite.py did not fit the window (the sandbox kills background
   processes between tool calls; foreground 10-min tool windows cover ~77 of 522 binaries) — the
   foreground runs above are the verification. Report: docs/reports/level-0a-interactables.md.
+
+## level-0b-complete (2026-10-17, branch s/level-0b-complete) — started
+Task 711b: play 0700000b (Tower C — the executive floor and the roof) from its start through the
+real input path to every objective (optionals included) and the exit into the next level. Extend
+and un-ignore crates/nf-view/tests/walkreal_0700000b_live.rs; fix every blocker on the way with a
+focused test + a sister that fails on the old code. Known open items to start from: the roof
+helicopter (task 750h2) and the executive-floor locks. Branch = origin/master 92db2533.
