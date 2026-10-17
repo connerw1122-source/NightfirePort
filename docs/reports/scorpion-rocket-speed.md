@@ -84,10 +84,11 @@ pin was weakened.
   - `fix_0c_pylon_live` (2) and `probe_pylon_render` — `wgpu adapter NotFound`: this sandbox
     has no GPU; render tests are main-agent surface (merge lesson 6);
   - the 100 s per-binary limit TIMEOUTed the big sweeps (`frame_cost_live`, `weapon_matrix_live`,
-    `levels_sweep_live`, `npc_doors_live`, `pss_vag_golden`); the 250 s re-run and chunk 1's
-    tail were cut by the sandbox's 570 s foreground cap — those five binaries are limit
-    artefacts, not failures (all five pre-date this task and none touches the rocket path;
-    `weapon_matrix_live`'s matrix_0700001b leg was mid-run green when the cap hit). The next
+    `levels_sweep_live`, `npc_doors_live`, `pss_vag_golden`); two of them re-run directly green
+    after the chunks: `weapon_matrix_live` 6 passed / 0 failed (98.6 s) and `frame_cost_live`
+    5 passed / 0 failed (126.4 s) — limit artefacts, not failures. `levels_sweep_live`,
+    `npc_doors_live`, `pss_vag_golden` and chunk 1's tail stayed unrun (the sandbox's 570 s
+    foreground cap); all pre-date this task and none touches the rocket path. The next
     session / the main agent should run the full suite once with the default 600 s limit.
 
 ## Live checks for the main agent
