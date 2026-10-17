@@ -18838,3 +18838,10 @@ the report. The balcony→exec leg (the physical cab carry, no moving-platform f
 boardroom-row transits stay documented stand-ins. The full suite.py did not fit the window
 (the sandbox OOM-kills concurrent heavy tests); ran the task's two test binaries green on the
 slim ISO. Report: docs/reports/level-0b-complete.md.
+
+---
+level-0c-interactables (branch s/level-0c-interactables): started. Task: census of every
+interactable placement on 0700000c (the power station, part 1) into docs/levels/0700000c.md,
+then drive Bond through the real input path to one instance of every KIND and fix what does
+not work, plus the every-model-draws sweep. Known open items to start from: the yard ladder,
+the drawn gate, the latches, the sniper spots. Branch cut from origin/master 0c455572.
