@@ -334,8 +334,41 @@ impl Searchlights {
             // The player's pick sphere: centre `obj+0x80` (the `Player.sph` the port fills from
             // `Bond::sphere_centre`), radius `M_CONTROL+0x8C` = 1.0576 [L ee_start_05.bin].
             const PLAYER_SPH_R: f32 = 1.0576;
-            let (mut t_hit, mut n_hit) = match d.world.segment_surface(pos, end, false) {
-                Some((t, n, _)) => (Some(t), Some(n)),
+            // The game excludes the head's OWN cel and object from the spot ray (`Collide_RayIntersect`
+            // carries the source object, and `Collide_PickObj` 0x1eae80:57-59 refuses param_3 == param_2
+            // plus the hittest's two extra exclusion slots [M]). The port's ray origin sits inside the
+            // head's own platform/housing geometry, so the port skips everything the ray crosses before
+            // it exits the head's own gfx box — the same "not my own housing" effect [S for the box
+            // stand-in, M for the exclusion itself].
+            let dir_unit = [(end[0] - pos[0]) / 100.0, (end[1] - pos[1]) / 100.0, (end[2] - pos[2]) / 100.0];
+            let mut skip = 0.0f32;
+            {
+                let (bmin, bmax) = (&self.parts[head].box_min, &self.parts[head].box_max);
+                let (mut t_near, mut t_far) = (f32::NEG_INFINITY, f32::INFINITY);
+                let mut inside = true;
+                for k in 0..3 {
+                    let o = pos[k];
+                    let d = dir_unit[k];
+                    if d.abs() < 1e-9 {
+                        if o < bmin[k] || o > bmax[k] { inside = false; }
+                    } else {
+                        let mut t1 = (bmin[k] - o) / d;
+                        let mut t2 = (bmax[k] - o) / d;
+                        if t1 > t2 { std::mem::swap(&mut t1, &mut t2); }
+                        t_near = t_near.max(t1);
+                        t_far = t_far.min(t2);
+                        if o < bmin[k] || o > bmax[k] { inside = false; }
+                    }
+                }
+                // Origin inside the box: skip to the exit; outside: skip the entry face.
+                let skip_t = if inside { t_far } else if t_near <= t_far && t_near > 0.0 { t_near } else { 0.0 };
+                if skip_t.is_finite() && skip_t > skip { skip = skip_t; }
+            }
+            let (skip_pos, skip_end) = if skip > 0.0 {
+                ([pos[0] + dir_unit[0] * skip, pos[1] + dir_unit[1] * skip, pos[2] + dir_unit[2] * skip], end)
+            } else { (pos, end) };
+            let (mut t_hit, mut n_hit) = match d.world.segment_surface(skip_pos, skip_end, false) {
+                Some((t, n, _)) => (Some(t + skip), Some(n)),
                 None => (None, None),
             };
             {
