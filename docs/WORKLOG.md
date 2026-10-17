@@ -16727,3 +16727,11 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+## zero-g-movement-1b (2026-10-17, branch s/zero-g-movement-1b) — started 00:3x UTC
+
+Playtest 1016-1355: "we're in space ... there's a different movement system that you're missing"
+(on 0700001b, master 2026-10-16). Porting Bond's zero-G substate: Player_ZeroG 0x192ab0 (dispatch
+cases 8/9), thruster controls, inertia, the auto-stabilisers and the camera rules [M]. The level
+starts in zero-g gravity (p3 == 2). Tests only pin proven behaviour ([M]/[D]/[L] cited); sister:
+on-foot levels unchanged.
