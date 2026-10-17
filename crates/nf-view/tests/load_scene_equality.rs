@@ -27,11 +27,13 @@ fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 // Re-pinned at rocket-look: the swoosh ribbon pools (2 meshes x 128 slots) and Bond's projectile slots
 // 8 -> 32 per projectile mesh add attachments (+496..+640) and their vertices, plus one material (the
 // ribbons' additive batch); characters, colliders, cels, drones and pickups are unchanged on all 5.
+// Re-pinned at batch 1017a: laser-scripts spawns the switch-script lasers' ON art at the load beat,
+// which 07000014 carries: +2 attachments (+100 vertices, +168 indices, +5 materials); the other 4 unchanged.
 const BASELINE: &[(&str, &str)] = &[
     ("07000002.bin", "c582e1cecfa95882 4477000 9358692 5507 4334210 81 9682 255 28 25 8"),
     ("07000005.bin", "6a43ad2ce9dee894 4377695 9151611 3576 4293354 73 9731 106 19 16 6"),
     ("0700000c.bin", "15de2f0294792a8a 4871632 10240830 8177 4680808 96 10996 170 22 40 15"),
-    ("07000014.bin", "507c3355ead4823c 7335190 15226002 7226 7182053 134 13485 176 41 37 32"),
+    ("07000014.bin", "ad787fb8a7119400 7335290 15226170 7231 7182153 134 13487 176 41 37 32"),
     ("07000001.bin", "8c9aa4f6a555441e 4389556 9198708 3678 4307151 76 9696 156 11 20 6"),
 ];
 
