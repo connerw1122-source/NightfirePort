@@ -128,13 +128,15 @@ has spawned them since — `nf-game/src/cover.rs` `from_placement`/`build`, `Dro
 (0xFB music trigger 15 was listed here by the original census; the port now creates the trigger
 and runs its update — `nf-game/src/worldobj.rs` `MusicTrigger`, `MusicTrigger_Create` 0x1b30e0 /
 `MusicTrigger_Update` 0x1b31a0 [task music-triggers, 2026-10-17].)
+(0x2d start-slot 51 was listed here by the original census; the port now registers the second
+start set with the game's kind 0 — `nf-game/src/player.rs` `starts_from_placements`,
+`Player_AddNewStartPos` 0x195c00's u16 at entry+0x22 [task start-slot-0x2d, 2026-10-17].)
 
 | type | count | port | game spawn fn |
 |---|---|---|---|
 | 0x27 | 41 | — | GT_Create 0x17ffa0 |
 | 0x2b | 3 | — | LeafGen_Create 0x1acbd0 |
 | 0x2c | 15 | — | Lightning_Create 0x18cde8 |
-| 0x2d | 51 | — | Player_AddNewStartPos(,0) 0x195c00 |
 | 0x38 | 1 | — | Create_SpaceLaser 0x1aa8b8 |
 | 0x39 | 8 | — | Create_SpaceMissile 0x1a9ef0 |
 | 0xdd | 33 | — | — none (game ignores) |
@@ -299,7 +301,7 @@ player scripts, so its real gameplay reach is narrower than its 12,947 count.
 | 4 | placement 0xE9 AI point | 162 | `Drone_AIPoint` 0x137550 | patrol/waypoint graph points |
 | 5 | placement 0xE4 hurt volume | 64 | `Hurt_Create` 0x17e870 | damage volumes (hazards) |
 | — | placement 0x28 sensor | 62 | PORTED (sensor.rs, 2026-10-17): `Sensor_Create` 0x1af010 | security cameras; out channel after 2 s of player sight |
-| 7 | placement 0x2D start-pos slot 0 | 51 | `Player_AddNewStartPos(...,0)` 0x195c00 | second start-position set |
+| 7 | placement 0x2D start-pos slot 0 | 51 | PORTED (nf-game/src/player.rs, 2026-10-17): `starts_from_placements` — `Player_AddNewStartPos(...,0)` 0x195c00 kind 0 | second start-position set |
 | 8 | placement 0x27 GT | 41 | `GT_Create` 0x17ffa0 (+ Update/Activate/TakeControl) | controllable special object |
 | 9 | placement 0xFB music trigger | 15 | `MusicTrigger_Create` 0x1b30e0 / `_Update` 0x1b31a0 | `Music_Event(id,2)` countdown music |
 | 10 | placement 0x2C lightning | 15 | `Lightning_Create` 0x18cde8 | storm lightning in 07000001/07000041 |
@@ -360,10 +362,16 @@ records (165), NIS op none, anim ops 2/3 (0), event kinds 0x0e/0x10/0x13 (0), en
    `GT_Activate`/`GT_TakeControl`: a controllable special object [UNCERTAIN semantics — needs
    an EE probe of the object it builds before queuing the port]. Two per MP map suggests
    objective equipment.
-9. **Start-position slot 0 (0x2D, 51, one per level incl. every MP map).**
-   `Player_AddNewStartPos(...,0)` 0x195c00 vs the port's 0x24-only registration
-   (nf-view/src/lib.rs:1141): the port may be spawning Bond at the wrong start where a level
-   ships both (07000007 ships 5 of type 0x2D).
+9. ~~**Start-position slot 0 (0x2D, 51, one per level incl. every MP map).**~~ PORTED 2026-10-17
+   (branch s/start-slot-0x2d, `nf-game/src/player.rs` `starts_from_placements` + `pick_start`).
+   Correction to the plan text: the "may be spawning Bond at the wrong start" worry is REFUTED —
+   `Player_Start` 0x190fd0 only ever picks the kind-1 entries (both passes `bne v0, 1` on
+   entry+0x22, disasm 0x191028/0x1910b0), so the 0x2D set (kind 0) is written by
+   `Player_AddNewStartPos` 0x195c00 and read by nothing in the on-foot runtime (no other function
+   touches `player_start` in the decompile; MP humans spawn from `MP_Start` 0x183a50's
+   `MP_GetSpawnPoint`). 07000007's five 0x2D records are one kind-0 shell-map (0,0,0) dummy plus
+   four main-map hall spots that must never win the pick — pinned by start_slot_0x2d_live, whose
+   sister level 0700000b ships a real 0x2D FIRST in parse order ahead of its only 0x24.
 10. **Movie trigger (0xF4 / action 0xD, 1, 07000041).** `Trigger_MoviePlayer` 0x1b2a08 +
     `Trigger_Update` case 0xd: input channel clears, `GameState+0x16 = out`, GameFlow push 6/7
     (movie + fade). Wire into the port's `resolve_exit_code` path like LOAD_LEVEL does.
@@ -375,7 +383,7 @@ menus; kind-15 icon — cosmetic; anim op-4 kinds 1/3/7 — 109 commands, minor.
 
 `crates/nf-formats/tests/script_census.rs` (added by this task) re-runs the census through the
 port's own parsers on every 07* archive and pins the handled sets and the headline counts as
-constants: 20 NIS opcodes handled, 14 event kinds, 7 trigger actions, 56 placement types; and
+constants: 20 NIS opcodes handled, 14 event kinds, 7 trigger actions, 62 placement types; and
 the disc totals (468 NIS scripts, 5,263 streams, 851 events with 3 on unhandled kinds, 18,231
 anim scripts, 50,279 anim commands, 7,372 dynamic placements, 676 triggers, 1 movie trigger).
 A regression that stops handling something, or a newly handled opcode, changes a constant and
