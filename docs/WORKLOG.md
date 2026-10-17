@@ -17380,3 +17380,12 @@ update — trip volumes that anything (not only the player) can set, writing swi
 Porting from the decompile [M]; test on real levels through the real path with a sister
 assertion (drone walking through sets the sensor's out channel; an empty volume doesn't).
 Update `crates/nf-formats/tests/script_census.rs`'s handled sets.
+  — completed 02:35 UTC: crate::sensor (Sensor_Create 0x1af010 / Sensor_Update 0x1af618 /
+  Sensor_InCone 0x1af4f0 / Intersect_ConeSphere 0x1ee100 ported; the disable-channel state 3,
+  the 32-tick alert, the 2 s trip write, the 0.1-return slerp); wired into the control walk as
+  class 0x37 (what==6). Census handled sets updated (57 handled / 1475 unhandled). TEST
+  CORRECTION: the census plan's "a drone walking through sets the out channel" is not what the
+  binary does — Sensor_Update 0x1af618 detects glb_players[0] only (disasm 0x1af644/0x1af97c/
+  0x1afae0); the pinned test drives the PLAYER through sensor 164's sweep cone on 0700000b
+  (ch 0x28 sets at >=152 ticks; sister 172 never sets). Unported: lens/mount meshes (visual),
+  the monitor pairing (0x30), sensor sounds, the posed-head draw (main agent's side).
