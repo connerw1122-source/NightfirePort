@@ -4952,7 +4952,10 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
     // (the user, 2026-10-16: "work on character lighting. especially in cutscenes"). The tag SKIN_TAG in
     // slot 2 lets the material build recover the (character, attachment) pair.
     let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) }
-        else if let (Layer::Character, Some((ci, att))) = (layer, character) { [ci, att.map_or(0, |a| a + 1), SKIN_TAG] }
+        // Keyed per CHARACTER only: an attachment (the held gun) lights with its owner, and the pools that
+        // share a character index across many slots (projectiles/debris) keep merging — keying per slot
+        // multiplied the draw count (07000002: 4540 → 5927 materials) for no lighting gain.
+        else if let (Layer::Character, Some((ci, _))) = (layer, character) { [ci, 0, SKIN_TAG] }
         else { [0; 3] };
     // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none. The GS applies each DIRECT
     // write immediately at its position in the packet, so a write between batch 2 and batch 3 affects batch 3

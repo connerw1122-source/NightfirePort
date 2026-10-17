@@ -20,12 +20,16 @@ fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 // Re-pinned at merge batch 1016b: master gained scene content since the branch cut (e.g. the
 // quiver bolt pool); the digests were re-captured on origin/master bee8c129 (no cuts) and the
 // merged tree (cuts) builds them identically on all 5 levels.
+// Re-pinned at batch 1016c: the per-character light pick (characters key their draws per character —
+// the game picks lights per object [M View_DrawObjList 0x1e69a0:73-81]) splits the shared character
+// groups, so ONLY the material count and the hash move; vertices, indices, char verts, characters,
+// attachments, colliders, cels, drones and pickups are unchanged on all 5 levels.
 const BASELINE: &[(&str, &str)] = &[
-    ("07000002.bin", "d2d94af0cf17010d 4303432 8995716 4540 4160642 81 9186 255 28 25 8"),
-    ("07000005.bin", "7099e4ac4aae4104 4204127 8788635 2680 4119786 73 9235 106 19 16 6"),
-    ("0700000c.bin", "a4a2155d96a2f706 4687168 9851358 7026 4496344 96 10452 170 22 40 15"),
-    ("07000014.bin", "826b23eb71554128 7060774 14654658 5293 6907637 134 12845 176 41 37 32"),
-    ("07000001.bin", "d053e1db8a46c7a3 4215988 8835732 2786 4133583 76 9200 156 11 20 6"),
+    ("07000002.bin", "45e28bc78ef967f1 4303432 8995716 5506 4160642 81 9186 255 28 25 8"),
+    ("07000005.bin", "1c51c5202981ea45 4204127 8788635 3575 4119786 73 9235 106 19 16 6"),
+    ("0700000c.bin", "3bae6bfd545927f7 4687168 9851358 8176 4496344 96 10452 170 22 40 15"),
+    ("07000014.bin", "19942d45f2897e0b 7060774 14654658 7225 6907637 134 12845 176 41 37 32"),
+    ("07000001.bin", "a8ca9eb066a7c76e 4215988 8835732 3677 4133583 76 9200 156 11 20 6"),
 ];
 
 #[test]
