@@ -87,7 +87,10 @@ fn the_frag_throws_on_the_release_frame_and_refires_at_the_interval() {
     assert!(!spawn_ticks.is_empty(), "a grenade spawned while holding the trigger");
     let first = spawn_ticks[0];
     let pin = pin_sound_tick.expect("the pin sound played (the fire script's op-1 frame 16)");
-    assert!(pin < first, "the pin sound (frame 16) precedes the throw (frame 26) [D script; L +0x44]");
+    // fix-frag-throw-timing: the release is the +0xB4 script's playhead reaching +0x44 = 26 [M 0x1a2e38 case 0xc],
+    // i.e. after the 70-frame fire script has played out at 1.5x — the pin sound (the fire script's op-1 frame 16)
+    // still precedes it, by a wider margin now.
+    assert!(pin < first, "the pin sound (frame 16) precedes the throw (the +0xB4 playhead 26) [D script; L +0x44]");
     if spawn_ticks.len() > 1 {
         let gap = spawn_ticks[1] - spawn_ticks[0];
         eprintln!("held-trigger refire gap {gap}");
