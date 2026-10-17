@@ -17885,3 +17885,10 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+
+- 2026-10-17 s/level-01-complete: branch started (from origin/master d628f01f) for the 07000001
+  Paris Prelude (Castle A) start-to-finish walk: extend + un-ignore
+  crates/nf-view/tests/walkreal_07000001_live.rs, play every objective (optional included)
+  through the real input path, exit the way the game does; fix each blocker with a focused
+  test + sister. Known open items: the escort route and its doors; the shoji door drawn black
+  (GAPS G-050). Work continues below.
