@@ -6370,6 +6370,17 @@ impl Drones {
                 else { level.maps[m].objects.get(p.index as usize) };
             obj.map_or((0, [0.0; 3]), |o| (o.flags, o.centre))
         });
+        // The hurt volumes (placement 0xE4, `Hurt_Create` 0x17e870, class 0x27 — crate::worldobj
+        // `Hurt`): placement order, no RNG [M the decompile]. The triangles come from the placement
+        // object's glist, resolved exactly like `triggers::build` does.
+        self.worldobjs.hurts = crate::worldobj::Hurt::create(&level.maps[m].placements, &path_blocks, |p| {
+            let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+            let mx = nf_formats::placement::object_matrix(p.rotation, p.translation);
+            target.and_then(|(om, oi)| level.maps[om].objects[oi].collision.as_ref())
+                .map(|c| c.triangles().into_iter().map(|t| t.map(|v| nf_formats::placement::transform(&mx, v))).collect())
+                .unwrap_or_default()
+        });
         // Fuseboxes (`FuseBox_Create` 0x1b0448, placement 0x31 with a script hash): 07000014's
         // OBJECT_FuseBox1 security-sabotage boxes (map-tower2).
         let (fuseboxes, _spheres) = crate::fusebox::FuseBox::create(&level.maps[m].placements, |p| {
@@ -8037,6 +8048,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             .collect();
         drop(prof_pre);
         { let _p = crate::prof::scope("drones: Trigger_Calc"); crate::triggers::calc(d.level, &mut self.triggers, &mut self.channels, &touchers, frame); }
+        // The hurt volumes' damage pass (crate::worldobj `Hurt`): `Player_CollisionHandler`
+        // 0x1949a8:141-152 walks Bond's per-tick contact list and `Player_DealWithObjHit`
+        // 0x194458:94-101 case 0x27 deals `Player_HandlePain(hitdata+8 + Hurt_GetDamage, BL,
+        // Hurt_GetType, -1)` per contact — hitdata+8 = the player's ground `HITTEST+0x90`
+        // (`Collide_Intersect` 0x1ebaa8:322), never written, so the param damage is the whole
+        // amount. Standing inside = a fresh contact list every tick (`Collide_Update` 0x1ea398
+        // rebuilds), so the damage repeats per tick. The pain type rides `Hurt_GetType` (types
+        // 1..7 bypass armour [M 0x1902c8:84-104]); the grunt rolls 1-in-4 per contact [M
+        // 0x1902c8:110-119], in placement order (the game sorts contacts by distance — [S] the
+        // port's order; single-volume ticks agree). Drone victims (`NDrone2_DealWithObjHit`
+        // 0x13fff0 case 0x27) are not modelled — the port's drone touchers feed triggers only.
+        for (dmg, kind) in self.worldobjs.hurt_pain(&touchers[0]) {
+            let before = self.health.health;
+            if self.health.pain_generic(&mut self.rng, dmg, self.difficulty, d.level, kind) {
+                self.play_pain_grunt(player.pos);
+            }
+            self.player_hits.push((frame, usize::MAX, before - self.health.health));
+        }
         // `switch_channels_prev` is snapshotted right after `Trigger_Calc`, BEFORE the object walk [M 0x1336f8:52-53
         // — `prev ← hold; hold ← channels` at 0x1337cc/0x1337dc] — so `Door_Update`'s lock rising edge
         // (`prev == 0 && now != 0`, 0x136550-0x136608) sees a channel a trigger or script pulsed earlier this
