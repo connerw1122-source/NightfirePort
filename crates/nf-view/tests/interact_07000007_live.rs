@@ -87,10 +87,10 @@ fn the_party_vase_breaks_on_a_p2k_round() {
         let sim = scene.sim.as_mut().unwrap();
         free(sim);
         release_weapon_lock(sim);
-        assert!(!sim.drones.props.breaks.is_empty(), "the 0x20 placements created break objects [D census]");
-        assert!(!sim.drones.props.breaks[0].dead, "vase #49 stands before the shot");
-        assert_eq!(sim.drones.props.breaks[0].kind, 1, "vase #49 is the debris type (param 0 = 1 [D])");
-        assert_eq!(sim.drones.props.breaks[0].health, 0.0, "the disc's pool (float)param 1 = 0.0 [D; M 0x12c230:21-25]");
+        assert!(!sim.drones.breaks.list.is_empty(), "the 0x20 placements created break objects [D census]");
+        assert!(!sim.drones.breaks.list[0].dead, "vase #49 stands before the shot");
+        assert_eq!(sim.drones.breaks.list[0].kind, 1, "vase #49 is the debris type (param 0 = 1 [D])");
+        assert_eq!(sim.drones.breaks.list[0].health, 0.0, "the disc's pool (float)param 1 = 0.0 [D; M 0x12c230:21-25]");
     }
     // Stand 4m south of the vase on the hall floor, face +z (the vase), fire.
     let sim = scene.sim.as_mut().unwrap();
@@ -107,15 +107,15 @@ fn the_party_vase_breaks_on_a_p2k_round() {
         sim.bond.pitch = *pitch;
         for t in 0..20 {
             sim.step_bond(Input { fire: true, ..Input::default() }, true, false, false);
-            if sim.drones.props.breaks[2].dead { broke_at = Some((k, t)); break; }
+            if sim.drones.breaks.list[2].dead { broke_at = Some((k, t)); break; }
         }
         if broke_at.is_some() { break; }
     }
-    assert!(broke_at.is_some(), "the statue never broke across the aim sweep (vase: {:?})", sim.drones.props.breaks[0].dead);
-    assert!(sim.drones.props.breaks[0].dead, "the P2K round killed the vase [M Break_Kill 0x12b970:41]");
+    assert!(broke_at.is_some(), "the statue never broke across the aim sweep (vase: {:?})", sim.drones.breaks.list[0].dead);
+    assert!(sim.drones.breaks.list[0].dead, "the P2K round killed the vase [M Break_Kill 0x12b970:41]");
     // The glass in the same room: kind 2 — the same 0x20 kind, the shatter route.
-    assert_eq!(sim.drones.props.breaks[4].kind, 2, "window #298 is the glass type (param 0 = 2 [D])");
-    assert!(!sim.drones.props.breaks[4].dead, "the window stands away from the vase's shot");
+    assert_eq!(sim.drones.breaks.list[4].kind, 2, "window #298 is the glass type (param 0 = 2 [D])");
+    assert!(!sim.drones.breaks.list[4].dead, "the window stands away from the vase's shot");
 }
 
 /// Sister: walking the party without firing leaves every breakable standing.
@@ -129,7 +129,7 @@ fn walking_the_party_breaks_nothing() {
     sim.bond.pos = [60.25, 43.0, -38.0];
     sim.bond.yaw = 0.0;
     for _ in 0..90 { sim.step_bond(Input::default(), false, false, false); }
-    assert!(!sim.drones.props.breaks.iter().any(|b| b.dead), "no trigger, no break [M 0x12bfd8 — only class-5 contacts subtract]");
+    assert!(!sim.drones.breaks.list.iter().any(|b| b.dead), "no trigger, no break [M 0x12bfd8 — only class-5 contacts subtract]");
 }
 
 /// KIND 0xF0 (Pickup_Create 0x18dda0): the heavy armour takes on contact for +50 armour [D #507:
