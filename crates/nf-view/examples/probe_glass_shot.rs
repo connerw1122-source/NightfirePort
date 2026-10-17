@@ -47,12 +47,12 @@ fn main() {
                 println!("t{t} bullet w{} pos {:?} dir {:?} dmg {} travelled {}", b.weapon, b.pos, b.dir, b.damage, b.travelled);
             }
         }
-        let brk: Vec<usize> = sim.drones.breakables.list.iter().filter(|b| b.broken).map(|b| b.placement).collect();
+        let brk: Vec<usize> = sim.drones.breaks.list.iter().filter(|b| b.dead).map(|b| b.placement).collect();
         if !brk.is_empty() { println!("t{t} BROKEN {brk:?}"); break; }
         if fired_tick.is_some() && t > fired_tick.unwrap() + 80 { println!("t{t} no break within 80 ticks; bullets {:?}", sim.drones.player_bullets.len()); break; }
     }
     let sim = scene.sim.as_ref().unwrap();
-    println!("final broken: {:?}", sim.drones.breakables.list.iter().filter(|b| b.broken).map(|b| (b.placement, b.health)).collect::<Vec<_>>());
+    println!("final broken: {:?}", sim.drones.breaks.list.iter().filter(|b| b.dead).map(|b| (b.placement, b.health)).collect::<Vec<_>>());
     println!("impacts: {:?}", sim.drones.player_impacts.len());
     let e = sim.drones.audio.live_ids();
     println!("0x2e live: {}", e.iter().filter(|&&i| i == 0x2e).count());

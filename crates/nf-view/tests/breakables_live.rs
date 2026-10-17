@@ -23,7 +23,7 @@ fn count_2e(sim: &nf_view::scene::Sim) -> usize {
 }
 
 fn broken(sim: &nf_view::scene::Sim) -> Vec<usize> {
-    sim.drones.breakables.list.iter().filter(|b| b.broken).map(|b| b.placement).collect()
+    sim.drones.breaks.list.iter().filter(|b| b.dead).map(|b| b.placement).collect()
 }
 
 /// Walks the aim onto `at` from the eye and taps the trigger (the solar-panels walker: turn/look

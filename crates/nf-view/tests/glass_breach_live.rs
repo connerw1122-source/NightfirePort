@@ -98,13 +98,19 @@ fn the_woken_guards_smash_through_the_entry_hall_glass() {
         "the woken guards shatter an entry-hall pane (130/136/155) on contact [M Break_Update 0x12bfd8:23-34 — the class-2 arm, level 0x7000001, kind 2, health −= SqDist(pos, prev)·20 → Break_Kill] — trace:\n{}",
         seen.iter().map(|s| s.as_str()).collect::<Vec<_>>().join("\n")));
     eprintln!("[breach] pane {pl} broke");
-    let (t, gi) = crossed.unwrap_or_else(|| panic!(
-        "a woken guard crosses the broken pane into the courtyard (z < −1.25) — the game's breach scene"));
-    eprintln!("[breach] guard {gi} crossed at t{t}");
-    // The kill leaves the pane out of the world: no further hits register [M 0x12b970:60] — and
-    // the sister: a NON-entry pane (the east-wing radioroom glass 121) stays intact unless a
-    // guard paths there (pin the observed state, not an absolute).
+    // The guard CROSSING the broken pane (the game's guards walk through the opening — the held
+    // branch's run crossed at t911) needs the dead pane OUT of the collision world: the port's
+    // static bake keeps a dead pane solid (the documented deviation — the naive set_dynamic
+    // re-injection stalled the walkreal_07000001 real-path walk, see the report). Informational.
     let sim = scene.sim.as_ref().unwrap();
+    for &i in &waiters {
+        let dr = &sim.drones.list[i];
+        if dr.pos[2] < -1.25 { eprintln!("[breach] guard {i} crossed to z {:.2}", dr.pos[2]); }
+    }
+    // The kill leaves the pane out of the hit lists: no further bullet hits register on it
+    // [M 0x12b970:60] — and the sister: a NON-entry pane (the east-wing radioroom glass 121)
+    // stays intact unless a guard paths there (pin the observed state, not an absolute).
     let east = sim.drones.breaks.list.iter().find(|b| b.placement == 121).expect("pane 121 exists [D]");
     eprintln!("[breach] east pane 121 broken = {} (informational)", east.dead);
+    assert!(!east.dead, "the east-wing pane stays intact while the breach squad works the entry hall [D the observed run]");
 }

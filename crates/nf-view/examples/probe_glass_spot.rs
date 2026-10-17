@@ -7,7 +7,7 @@ fn main() {
     unsafe { std::env::set_var("NF_SILENT", "1"); }
     let mut scene = nf_view::load(&iso_path, "07000008.bin", false).expect("load 08");
     let sim = scene.sim.as_mut().unwrap();
-    let panes: Vec<([f32; 3], [f32; 3], usize)> = sim.drones.breakables.list.iter()
+    let panes: Vec<([f32; 3], [f32; 3], usize)> = sim.drones.breaks.list.iter()
         .map(|b| (b.lo, b.hi, b.placement)).collect();
     println!("panes: {panes:?}");
     for (lo, hi, plc) in &panes {

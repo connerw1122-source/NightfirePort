@@ -10751,14 +10751,6 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // bolt (ch 137) are solid at their posed matrix, like the doors. Id: bit 41 + the ss index.
             parts.extend(drones.sss.list.iter().enumerate().filter(|(_, x)| x.hash != 0)
                 .map(|(k, x)| (0x200_0000_0000 | k as u64, x.hash, x.matrix)));
-            // The breakable scenery (glass-breach): each INTACT object is a solid body this tick at
-            // its placement matrix; a DEAD one injects nothing — `Break_Kill`'s obj+0xFE |= 1 takes
-            // it out of the world, "the collision goes away" [M 0x12b970:60] and the guards cross
-            // the opening. The static bake excludes the 0x20 placements (world.rs). Id: bit 42 +
-            // the placement (the sss ids own bit 41 here — no overlap).
-            parts.extend(drones.breaks.list.iter()
-                .filter(|s| !s.dead && s.shape_key != 0)
-                .map(|s| (0x400_0000_0000 | s.placement as u64, s.shape_key, s.matrix)));
             parts
         };
         // Script triggers (`Trigger_TouchOnce` / `Trigger_Touch` made by `Script_CreateEntity`): one per live entity,
