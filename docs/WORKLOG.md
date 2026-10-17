@@ -18410,3 +18410,11 @@ directly. Report: docs/reports/level-07-interactables.md.
   ticks, no falls. Ran: walkreal_07000007_live 2/2, nf-game 509/0, the six sibling 07 binaries
   34/0 (suite.py background-killed by the sandbox as before; the foreground runs stand in).
   Report: docs/reports/level-07-complete.md.
+- 2026-10-17 s/level-05-interactables-2 (task 705d): started. Task: finish the HELD 05
+  interactables (705a, 41f5ae1) — merge it onto master and fix the three breaks:
+  searchlight_live::channels_and_tracking_behave (the own-housing skip pushes the spot ray
+  start past its end; dir_unit assumes a 100-unit ray), and the two 07000016 finale tests
+  (the hurt param map made #309 HurtPoly-ShuttleLaunch deal 1000 through the chaser fight —
+  the held hurt.rs lost Hurt_Update 0x17e5d0's who-mask/gate state machine; ch 243's writer
+  timing to be checked against [M 0x182c60]). Single hurt system on Sim.hurts; damage stays
+  1000. In progress.
