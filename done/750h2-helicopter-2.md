@@ -33,3 +33,8 @@ say so in the report. Never weaken a decompile-backed test to make code pass.
 
 ---
 claimed-by: sandbox1 at 2026-10-17T06:26Z
+
+---
+## Report (done, 2026-10-17T07:39Z)
+
+Closed by the driver: the report is on `s/helicopter-2` (docs/reports/helicopter-2.md); the worker didn't run finish.sh.
