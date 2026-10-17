@@ -17902,3 +17902,19 @@ approach) — the census of every interactive thing (buttons, doors, triggers, p
 ladders, vehicles...) with params + channel wiring + [M] behaviour + port status into
 docs/levels/07000005.md; then one real-input-path live test per KIND with a sister; then the
 model/texture sweep (every placement's mesh resolves, no white fallbacks). Working notes as I go.
+- 2026-10-17 s/level-05-interactables (task 705a): level 07000005 "Mayhew A (the castle approach)" —
+  the interactables census (363 placements, dispatcher 0x1d04f0's creator per kind, params + channel
+  wiring + [M] behaviour + port status) into docs/levels/07000005.md §7; two corrections: TouchOnce
+  #36 IS the ch-0x45 reveal writer (out 69), and the searchlight roles are param 0 = 1 head /
+  2 psiLight. The hurt volumes 0xE4 ported (class-0x27 capsule damage [M 0x194458:95-103] through
+  pain_generic's type-1..7 no-armour switch [M 0x1902c8:84-104]); the searchlight spot ray skips the
+  head's own gfx box ([M 0x1eae80:57-59] the own-cel exclusion — the ray used to hit the platform at
+  t≈0 and no head could arm). One live test per KIND through the real input path (11/11, sisters):
+  plates+OR mux, doors (locked refuse), ladder, pickups (armour/bonus), searchlight sweep + the [L]
+  orphan light, SC3 plate → copter gate, ledge plate → sound trigger, ch 0x22 → spawner, grapple
+  aim, the valley hurt fall; the census test asserts 0 unresolved meshes + 0 white-fallback
+  materials of 3576. Repairs: nf-extract ai_sim + 19 nf-game tests' stale attach_level calls. Left:
+  the walkreal west anchors + the jump-grab (020-fix-wire), the window-ledge plunge catch, the #36
+  plate vs the toucher stand-in. Run: nf-game 61/61 binaries, nf-formats/nf-audio, the nf-view
+  touched neighbourhood + walk slices; the full remaining nf-view sweep did not fit (suite.py
+  background-killed in this sandbox). Report: docs/reports/level-05-interactables.md.
