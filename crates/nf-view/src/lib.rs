@@ -2329,7 +2329,7 @@ impl App {
         // loop runs only while `fe.is_none()` — the game's GS_PausePlayer per slot.
         fe.requested_level = Some(menu::FRONTEND_LEVEL);
         fe.flow.reset_map_level_to_load(menu::FRONTEND_LEVEL, false, false);
-        fe.flow.push_state(menu::ST_FADE_HOLD);
+        fe.flow.push_state(7, 84); // the raw GameFlow id: PushState(7) becomes the fade hold [M 0x1c9f38]
         self.fe = Some(fe);
         self.grab(false);
     }

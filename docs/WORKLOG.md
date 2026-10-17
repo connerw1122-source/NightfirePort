@@ -16877,3 +16877,31 @@ prop 0x56.
   ported HeardNoise family; full [M] chain table; pinning test; per-crate suite totals 754 passed / 5 failed
   [3 allowed disc_golden slim-ISO + 2 headless-GPU pylon probes, master baseline] / 11 ignored; 2 live checks;
   Usage: not visible to me). No lib code changed (master already behaves like the game — pinned, per the task).
+
+## gameflow-state-stack
+- Task: port the real GameFlow state stack from ACTION.ELF — GameFlow_Main, GameFlow_PushState /
+  GameFlow_PopState / GameFlow_GetState (0x1c98c8, 0x1c9f38, 0x1c9eb0, 0x1c9e80), the state ids,
+  who pushes/pops what (level load, movie, front end, pause, fade hold), each state's tick — and
+  replace the port's stand-in flow machine where it differs, without breaking the menus (menu e2e
+  + mission_unlock_flow are the guard rails). Test: stack contents across a full SP run match the
+  game's push/pop sequence.
+- Status: started (branch cut from origin/master at e2bdc00f-ish master).
+- Done: the GameFlow stack port finished. Read the four GameFlow functions from ACTION.ELF
+  (GetState 0x1c9e80, PopState 0x1c9eb0, PushState 0x1c9f38, Main 0x1c98c8) + Camera_SetFade
+  0x1bbdd8 / Camera_UpdateGlbVars 0x1bada0 and enumerated all 16 PushState call sites; the
+  decomp's arg mapping was scrambled, so the PushState ABI came from the disassembly
+  (f12 = the duration, a0 = the state, a1 = the colour — Mission_Update's site 0x183054-60).
+  The stand-in's divergences fixed in menu.rs: push_state now takes the caller's duration
+  (the raw game ids 7/0xb/0xd convert inside), the fade-busy abort [M 0x1c9f88], SkipCodeFrame
+  for state 0xe [M case 0xe], and the two missing pushes (C_SBNFMAP's 84-frame mission-pick
+  fade 0x20ba50, C_GCPAUSE's shared RESTART/QUIT fade 0x204408:150). Durations now the game's:
+  60 (mission end 0x183054, MP_Update 0x184ea8), 84 (all the menu handlers' 0x42a00000), 20
+  (SP_Update's 0xd 0x1dbfd8); P_NFMAP's 0xb wait modelled.
+- Tests: new gameflow_stack_sp_run.rs (4 tests — the boot sequence, the full SP run stack
+  contents, the PushState contracts incl. the abort, the SkipCodeFrame freeze); guard rails
+  updated (menus_flow, mission_unlock_flow, movie_playback_flow now drain the 84-frame fade
+  with the site citations). All green: 19 nf-view test files + the lib tests, 0 failures.
+- Not done: the background fast runner was killed by the sandbox three times (last at 21:05
+  with the env sourced) — no suite total line this session; the next session should run it.
+  The trigger-movie push glue (Trigger_Update/Trigger_Activate) is left for a follow-up task.
+- Report: docs/reports/gameflow-state-stack.md.
