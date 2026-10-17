@@ -18108,3 +18108,36 @@ Stage Summary:
 - Tests: mp_defaults_setup (new mp_confirm_start_writes_difficulty_1), ptp lib tests (the
   round-trip pins), walk_07000004_ptp_live, driving_mission_live. Suite (foreground --only
   chunks — this sandbox kills background jobs): 80 passed + 112 passed, 0 failed.
+- 2026-10-17 s/level-01-interactables (task 701a): every interactive thing and every model on
+  07000001 (Paris Prelude, Castle A). Plan: census from the disc (nf-formats parse of
+  07000001.bin) into docs/levels/07000001.md (every touch/use/shoot/ride placement by type with
+  parameters + channel wiring, port status); drive Bond through the real input path to one
+  instance of every KIND and operate it (use key, gadget, shooting, walking in), one live test
+  per kind each asserting the game's effect with a sister that fails without the operation;
+  every model draws (no missing hash, NF_TEX_TRACE=1 for fallbacks, NPC skins, pickup/script
+  models). Known open items: the escort route and its doors; the shoji door drawn black during
+  play (GAPS G-050). No drawing (main agent renders). Branch from origin/master d628f01f.
+- level-01-interactables: the census (all 35 placement types on 07000001 from the disc via
+  nf-extract placements + the 0x1d04f0 dispatch [M]) appended to docs/levels/07000001.md with
+  semantics, placements and port status per kind; corrections: 0x2D is an MP-gated second
+  PlayerStart (NOT a Lock — Lock is 0x2E, zero here), 0xE5/0xE6 are cover nodes (ThirdCam is
+  0xE7, none here), the 12 fuseboxes carry the 0x2000 template flag and never create, the
+  TouchOnce outs are 15/50/12/38/39 with mask 8 (player) [D params]. Three kinds were draw-only
+  and are now simulated: Break_Create 0x12c230 (55 breakables: bullet damage → Break_Kill, glass
+  kind 2 shatter + sound 0x2E, debris 0x5F3, no channel; the level-01 drone-smashes-glass arm
+  unit-tested but not yet wired into the drone move), rotor 0x18f4b8/0x18f568 (the fans spin by
+  the placement ROT vector while the gate channel is off), Monitor 0x1b08b0/0x1b0058/0x1afcc8
+  (E-use takes the group sensor's feed, the viewed tick writes the sensor's param-8 channel and
+  unhides it, 0xE cycles/exits, bullets destroy it). Tests: nf-game lib 267 passed (new:
+  breakable ×4, monitor ×2); nf-view interact_07000001_live 10/10 — one per KIND through the
+  real input path (E-opens door 0 + sister, bullet opens the SS shoji, bullets shatter scenery +
+  sister, armour take writes ch 13 + sister, the ch-13 shooter trap fires once + sister, mux
+  out/in, the TouchOnce plate via the teleport-to-spot pattern + sister, the fans' spin, the
+  monitor feed, the static-kind counts); regression: walk_07000001_live, walkreal_07000001_live,
+  door_portal_live, pickups_g029_live, music_triggers_live all green. G-050 (the black door is
+  0xDB #14) is render-side, untouched — main-agent render needed. RB 0xD8 dynamics and the
+  0x2C lightning creator remain unported (documented in the census).
+- level-01-interactables (follow-up, same session): wired the guards-smash-glass arm — tick_inner
+  snapshots the drone positions and at the tail runs Breaks::drone_step per mover (kills join
+  break_kills for the view). nf-game lib 267 ✓, interact_07000001_live 10/10 ✓, walk_07000001_live
+  + walkreal (bit-exact) ✓ after the change.

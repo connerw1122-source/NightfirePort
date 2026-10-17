@@ -175,6 +175,8 @@ pub struct Sensor {
     pub seen: i16,
     /// The last detection result (for the report/tests; not a game field).
     pub last_hit: bool,
+    /// `SENSOR+0x60` — set while a monitor views this sensor (the unhide) [M 0x1afcc8].
+    pub unhidden: bool,
 }
 
 impl Sensor {
@@ -374,6 +376,7 @@ impl Sensors {
                 beep: 0.0,
                 seen: 0,
                 last_hit: false,
+                unhidden: false,
             });
         }
         Sensors { list }
