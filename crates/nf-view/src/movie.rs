@@ -207,7 +207,7 @@ impl Player {
         let iso = nf_formats::iso9660::IsoImage::open(iso_path).map_err(|e| StartError::NoMovieData(e.to_string()))?;
         let m = Movie::load(&iso, &format!("{code:08X}")).map_err(|e| StartError::NoMovieData(e.to_string()))?;
         #[cfg(not(feature = "movies"))]
-        { let _ = (&m, looping); Ok(Player { code, looping, last: None, tick: 0, started: None, ended: true }) }
+        { let _ = (&m, looping); Ok(Player { code, looping, last: None, tick: 0, started: None, ended: true, timing: Timing::default() }) }
         #[cfg(feature = "movies")]
         {
             // Audio first: the whole PCM is in memory after the demux; each decoded frame's slice
