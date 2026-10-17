@@ -120,3 +120,8 @@ launch, so the crates ran directly):
 ## Usage
 
 not visible to me (no token, context-window or cost figures are exposed to this session).
+
+---
+## Report from the worker (done, 2026-10-17T18:47Z)
+
+Closed by the driver: the report is on `s/level-08-interactables-2` (docs/reports/level-08-interactables-2.md); the worker didn't run finish.sh.
