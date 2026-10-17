@@ -17885,3 +17885,11 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- 2026-10-17 s/level-06-interactables (task 706a): "every interactive thing and every model on
+  07000006 (Mayhew B: the castle interior to the party)". Plan: (1) the census from the disc
+  (nf-formats parse of 07000006.bin) into docs/levels/07000006.md — every touch/use/shoot/ride
+  placement by type with parameters + channel wiring, [M] game behaviour, port status; known open
+  items: Rook stuck in the doorway (user report ×2), the alarm panel, the Drake cut-scene
+  lag/artifacts. (2) one real-input live test per KIND (nf_view::load + Sim::step_bond), each
+  with a sister that fails without the operation. (3) every placement's mesh/skin resolves (no
+  white fallback, NF_TEX_TRACE=1). Branch from origin/master d628f01f.
