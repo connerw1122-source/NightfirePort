@@ -3156,11 +3156,6 @@ impl Drone {
             _ => false,
         })
     }
-                true
-            }
-            _ => false,
-        })
-    }
 
     /// KnockedOut_Anim 0x42, Knocked_Out 0x43, PunchImpact 0x53 (0x172a30, 0x172b48, 0x172ee0).
     fn handle_knockout(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
@@ -4686,7 +4681,7 @@ impl Drone {
 
     // ---- state machine -----------------------------------------------------------------------------------------
 
-    fn set_state(&mut self, s: u8) {
+    pub fn set_state(&mut self, s: u8) {
         if s != 0 {
             if std::env::var_os("NF_AILOG").is_some() {
                 eprintln!("[ailog] guard {} state {:#x} -> {:#x}", self.index, self.state, s);
@@ -11820,6 +11815,22 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             self.spawn_blast(d, pos, radius, damage, owner, weapon_type, player.pos, frame, script, scale);
         }
         self.grenades.retain(|g| g.state < 2);
+        // The mid-pass death drain. A blast kills through the victim's own `send(EXPLOSION)` from
+        // `spawn_blast` (`Drone_ExplosiveHit` 0x13aab8 → msg 9 → the ENTER's `DroneFunc_OnInitDeath`
+        // 0x145bd0 → `SetMissionFailReason` 0x13e560 writes `switch_channels[0x60] = 1` INSIDE the
+        // ENTER, the same instant as the corpse) — and spawn_blast runs at the tick's tail, after
+        // every drone's own in-loop drain has gone by. This pass drains whatever is still pending,
+        // in the same tick the game wrote it.
+        for dr in self.list.iter_mut() {
+            if let Some(c) = dr.raise.take() { self.channels.set(c as u32, 1, frame); }
+            if let Some(r) = dr.fail_reason.take() {
+                if r.label != 0 {
+                    self.mission.fail_label = r.label;
+                    self.mission_events.push(crate::mission::Event::FailLabel(r.label));
+                }
+                if r.channel != 0 { self.channels.set(r.channel as u32, 1, frame); }
+            }
+        }
         // The HandleExplosives broadcast for the bounced explosives [M 0x1435f0 + 0x138b10]: classification by
         // the grenade's weapon record (the game classifies by the thrower's weapon id — the port's events carry
         // the record id; mapping documented in the report): frag 0x34 → radius 12.0, flee 4.0, deadline 2 s,
