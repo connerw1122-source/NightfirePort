@@ -17894,3 +17894,20 @@ port's global 0x0b, (3) completed-mission results page order (Mission_Update cas
 page id; the manager is created by the load) + MP match-end to debriefing path, (4) P_PARISENUM
 0x20a648 / HandlePS2CardState 0x110b98 card-wait time. Docs first, each change cited [M],
 tests with sisters, remove the G-048 rows closed. In progress.
+
+## fe-gaps-g048 (2026-10-17, branch s/fe-gaps-g048) — done 08:20 UTC
+
+G-048's four logic gaps closed: (1) Menu_ChangePageCloseIris 0x202190's 10-tick delayed 0x44 with
+the tick-1 0x68/1 block (close_iris_page; the difficulty/codename/Dossier/Dossier-rows/MP-scenario
+walks converted, all 13 callers listed); (2) Menu_EnableSounds 0x1f31f0 per-page flags in
+enter_page [M 0x21c858:268], boot = P_LANGUAGE's default 9, the ee_start 0x0b re-homed as the
+mission-list value; (3) the results/debriefing order — Mission_Update case 4 and MP_Update case 4
+only queue +0x1c, the page lands at the load's MenuManager_Create [M 0x1d6360:160-163]
+(page_open/up_page + reopen_queued_page); the fail menu stays immediate [M 0x182c60:77-80];
+(4) P_PARISENUM waits on the ParisCardCheck machine (HandlePS2CardState 0x110b98's walk +
+Menu_EnumSaves + DoCardFlow's DAT_002e1b0a [M 0x217bd8:68]; the sceMc latency mc_ticks=1 is the
+marked [S]). Six tests that pinned the old [S]/port choices were fixed with addresses. Suite ran
+foreground on the mid-fix tree; every touched binary re-run green on the final merged tree;
+net_e2e_loopback_live is SIGKILLed by this sandbox and probe_pylon_render fails on master here
+(both outside this task's paths). GAPS row trimmed to items 3+4. Report:
+docs/reports/fe-gaps-g048.md.
