@@ -366,7 +366,7 @@ pub fn merge_weapon_assets<R: std::io::Read + std::io::Seek>(
                 }
             }
         }
-        stats.maps += crate::take_maps_holding(level, foreign, &hashes);
+        stats.maps += crate::take_maps_holding(level, &foreign, &hashes);
         stats.archives += 1;
         eprintln!("weapon assets: merged {archive_name} ({} skins, {} maps so far)", new_skins.len(), stats.maps);
     }
@@ -384,7 +384,7 @@ pub fn merge_weapon_assets<R: std::io::Read + std::io::Seek>(
     for archive_name in &topup_archives {
         let fd = match read(archive_name)? { Some(d) => d, None => continue };
         let Ok(foreign) = Level::parse(&fd) else { continue };
-        let moved = crate::take_maps_holding(level, foreign, &needed);
+        let moved = crate::take_maps_holding(level, &foreign, &needed);
         if moved > 0 {
             needed.retain(|h| !level.by_hash.contains_key(h));
             stats.maps += moved;

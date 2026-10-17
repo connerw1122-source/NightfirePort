@@ -14186,6 +14186,14 @@ docs/systems/attract-mode.md. Started 22:52 UTC; sandbox expires ~00:51 UTC.
 - Live checks for the main agent: measure 30_FPS/073A0048.PSS + 073B0048.PSS on a full image
   (picture counts → the real attract lengths; the slim ISO has 0-byte stubs); render check: the
   attract page draws the movie fullscreen over black, no controls, no plate.
+
+---
+level-load-time
+- Started: measure and cut nf_view::load build time. Probe test times every SP level cold+warm
+  by phase (archive read/decompress, mesh/material decode, characters/attachments, effect pools,
+  cel/portal graph, Sim create); then cut top costs scene-preserving; prove equality on >=4 levels.
+- Setup: sandbox had repo+work/+ISO+queue worktree from the prior task; created
+  s/level-load-time from origin/master (4bdf7678). Progress pushed as checkpoints below.
 ## unlock-popups2 (2026-10-15, branch s/unlock-popups2) — DONE 01:10 UTC
 
 Work Log (unlock-popups2):
@@ -16019,6 +16027,39 @@ INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 pa
 07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
 and other merged tasks' new tests. The 2 new live tests are green in the totals.
 
+## mp-bots-in-match (2026-10-16, branch s/mp-bots-in-match) — start
+- Task 704: a local MP Quick Game loads its arena with 3 bots (the menu repair, 2026-10-15) —
+  prove the bots PLAY. Headless from the menus' mp_match_settings through load_mp_carry, tick
+  3600 frames of the arena and check each bot: route movement, acquisition + fire at the human
+  and other bots, damage + death, respawn per the game's rules, scores going up. Use the MP core
+  (nf_game::mp, the bots module) and the game's bot AI [M BOT_update and friends]. Fix anything
+  inert. Sister: with bots disabled only the human is in the match.
+- Started: branch created from origin/master (3bb7be9a). Setup in progress (sandbox was reset —
+  full re-clone + downloads); suite starts as soon as the game files are in.
+- mp-bots-in-match close-out (BLOCKED — the window): sandbox was reset at 17:00 (full re-setup:
+  clone, work-slim + ISO, cargo, the alsa prefix — ~30 min of the 2 h gone before any code). The
+  wiring landed: `MpMatch::create_bots` (MP_Start 0x183a50:134-160's bot half — slots 4..4+count,
+  the record team byte into MPSettings+slot·0x30+0x20, a spawn pick per bot, `BotBrain::bot_init`),
+  `Sim::step_mp_bots` (the BOT_update 0x126448 driver: the 8-slot others table per
+  BOT_setOtherPlayerInfo 0x125390, the brain step per tick, the shot→damage/frag/death/respawn
+  bookkeeping) + the observation API. bots.rs's `#[cfg(any(test, feature = "mp-bots"))]` gates
+  lifted (18 sites — the machinery is now the sim's). VERIFIED: the bots exist in the loaded
+  Quick Game (3/3), the sister (bot_count 0 → only the human) green, net_match_live lockstep
+  still 1/1, mp_menu_flow 9/9, nf-game lib mp:: 12/12. THE GAP: the brains tick but stay in
+  BotIdle (state 0xF9) — pick_goal finds nothing: ctx.pickups is empty (the arena's MP pickup
+  placements are not lifted into BotPickup rows) and find_opponent never acquires (its inputs —
+  dist2/cel data — are unfilled stand-ins). The 3600-tick proof test is committed RED under
+  #[ignore] with the reason; the report has the per-bot table (all inert values) and the exact
+  next steps. The full fast suite never ran (the setup + wiring consumed the window; only the
+  touched-crate runs above stand) — flagged in the report.
+
+## mp-host-match-logic (2026-10-16, branch s/mp-host-match-logic) — start
+- Task 729 (audit gap 4): in a live match the host never runs the match logic — update_objects,
+  player_killed and respawn are only exercised by tests. Wire them into the running match loop
+  (local and online host) the way MP_Update drives them [M]. Branch based on s/mp-bots-in-match
+  (704) per the task note, so the bot wiring is inherited, not redone. Tests: a local deathmatch
+  in the real app path — a kill scores, the victim respawns at the policy's point, the frag
+  limit ends the match into the debriefing. Reading docs/systems/uncited-audit.md gap 4 first.
 SAVE-PROGRESS-ROUNDTRIP (started 17:14 UTC): goal — progress survives a restart, by the real path:
 create a codename, complete two missions (results commit + save prompt Yes, 635's card flow), drop the
 FrontEnd entirely, build a fresh FrontEnd on the same profile dir and load the codename; assert unlocked
@@ -16491,7 +16532,45 @@ menu_sp_e2e 9, dossier 7, codename_entry 14, roundtrip 2, menus_e2e 5, mouse_par
 - Report: docs/reports/uncited-gameplay-audit.md. Left: the 10 queued tasks (none started,
   audit-only by design) + the live checks; gap ④/⑤ should rebase onto task 704's
   s/mp-bots-in-match branch.
+- 2026-10-16 s/rocket-glass-08 (task 721): the 08 corridor rocket stops ~5 units
+  short (side-by-side vs PCSX2, 2026-10-16). PS2: ~72 frames launch→explosion,
+  ~24 units at the measured 0.3367 u/frame [L]; port: 56 ticks, 19.25 units —
+  explodes at the far window. Plan: find what the port's rocket hits at 19.25 u
+  and whether the game's bullet passes it (Bullet_CollisionHandler 0x12ce80,
+  HITTEST flags on the segment query, 08's surface material/flags); fix in
+  sim/flow. Test: 08 start shot explodes ~24 units ±1; sister: plain wall still
+  stops on its face. Branch created from origin/master c8186aa1.
+- ROOT CAUSE (rocket-glass-08, 21:45 UTC): the flight ray's first hit down the 08
+  start corridor is the far window's pane at 19.62 u from the spawn — surface byte
+  0x10 (glass), no 0x40/0x80, node pass clear [probe on the port's own loader = disc
+  data]; behind it the plain wall (0x0a) at 22.87 u. The port's HITDATA walk
+  (`flush_world_impacts` → `penetration_roll`) only knew the node/0x40/0x80 pass
+  bits, so the rocket stopped on the pane. The game's handler has a GLASS RULE the
+  port lacked [M Bullet_CollisionHandler 0x12ce80 disasm 0x12cf44..0x12cf64]:
+  `if (!(weapon_data+0x6c & 0x800) && (HITDATA+0x50 & 0x3f) == 0x10) pass = 1` —
+  material 0x10 lets any bullet through, no draw; the gate word is the WEAPON
+  record's +0x6c (the disasm's `*(s0+0x44)` object — +2 is the weapon type word
+  0x50/0x51 = the Q-Claw, +0x70 the explode/effects flags), so the Laser 0x4E
+  (+0x6c = 0x900 [L]) burns the pane while the unguided 0x2d (0x1a200 [L]) passes.
+  The pane-pass also precedes the Q-Claw type-word check in the game's order.
+  Fix: the rule added to `penetration_roll(_node)` (new `flags6c` param, callers
+  pass their weapon's +0x6c: drone.rs flush walk + the drone-bullet walk), no RNG
+  drawn, stream unchanged. Effect: the rocket pierces the pane the tick it crosses
+  it, flies on ~10 ticks and explodes on the wall face — the port's blast moved
+  19.62 → 22.9 u, matching the PS2's ~24 u / ~72 frames within the task's ±1.
+  Pinned rocket_glass08_live (3 tests: the unit glass rule incl. the laser gate +
+  no-draw; the 08 start shot explodes past the pane at z −100.0, 21.9–24.4 u; the
+  sister floor shot still stops on the aimed face — pre-fix tree explodes at the
+  pane per the probe, so the repro fails without the fix). Suite queued.
+  Branch continued on the merged origin/master 170bcf01 (WORKLOG conflict kept both).
 
+## hatch-02-intro — s/hatch-02-intro (started 2026-10-16 ~19:33 UTC)
+- Task 715: the hatch in 07000002's intro cut-scene never opens (playtest 1014-1725 [intro02]).
+  Plan: find the hatch object the 02 intro's script animates (script lib / NIS streams /
+  Script_AnimStart + object event), then find why the port's run doesn't move it (wrong object,
+  missing event type, or unresolved placement). Test via the real path; pin with a test.
+- Setup reused from prior session: repo, work/ (decomp, symtab, EE snapshots), ISO all present.
+  Branch cut from origin/master @ c8186aa1.
 ## fix-space-pane (2026-10-16, branch mine/space-panels)
 
 Two 0700001b gaps against a PCSX2 gameplay-start capture.
@@ -16725,3 +16804,628 @@ Work Log:
 
 Stage Summary:
 - The GPU skinning path now carries SkinIt's morph term: the weights upload per tick, the targets once, the shader displaces the bind-pose vertices before the palette blend — faces move in play (drone-backed, un-gated) and in every render path (--shot, the live window). Report: docs/reports/fix-gpu-facial-morphs.md (live checks inside).
+
+## fe-audit (2026-10-16, branch mine/fe-audit) — 22:55 UTC
+
+The front-end audit (test-audit.md) fixed against the decompile, each item re-read first. Port:
+Page::Start re-keyed to the title 0x40000009 (P_LANGUAGE 0x40000034 split off) [M 0x2029e0:302/321];
+the intro run is a menu background movie with GameFlow in state 2 and its own pages (P_INTRO /
+P_PARISENUM / P_ESTHERO) — Main opens only when 0x073B0048 ends [M 0x20a060:16-45], the 180-tick
+grace now reaches the window (lib.rs's state-6 intercept no longer sees the intro), the boot logos
+are unskippable [M 0x209e88:41,55; 0x215a50:6]; NightFire/Codenames page changes are 0x13-tick
+delayed with input blocked, the destination blocks 0xf more [M 0x2169b8, 0x216b38, 0x20aec0:75-76];
+cursors: codename row 1 from Main [M 0x20aec0:96-97], difficulty index 0 [M 0x216bf8:12], mission
+list highest unlocked [M 0x20b608:58-64]; difficulty + dossier wheels wrap [M 0x2214f0:102,
+0x221810:136]; failed missions open the fail menu over the paused mission with no load [M
+0x182c60:77-80]; Pause Quit → mission list [M 0x204408:141-152]; Results 0x5d Dossier / 0x5e Stats
+[M 0x208e78:222-230]; the win movie skips at once [M 0x215100:13-15]; MP Points/Duration lists [M
+0x20f790:21-76], the scenario page re-selects +0x1A4's row (boot 1 = Arena) [M 0x217348:25,
+0x1c7e78:30], Quick Game Back pops to the scenario page; Main's mouse box ends at 354. The
+difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0xc = 1/2/3, all
+unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
+lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
+start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+## rocket-trail-gas (2026-10-16, branch s/rocket-trail-gas) — start 20:05 UTC
+- Task: audit the gas puffs a rocket spawns against the game — Bullet_DoTrails 0x12d890
+  (trail smoke kind 0x0200001f: spawn interval, start/end scale, rgba, life), the muzzle
+  smoke in Player_MuzzleFlash 0x1a4298 (skipped for +0x68 & 0x2000 records), any launch
+  puff. Compare the port's gas.init calls and gas update per kind; fix mismatches in the
+  sim. Symptom: port fills the 08 corridor with grey haze during a rocket flight; PS2
+  stays mostly clear.
+- Plan: read the decomp of Bullet_DoTrails + Player_MuzzleFlash + the gas functions,
+  audit crates/nf-game gas init/update for kind 0x0200001f, test one 0x2d shot on 08 for
+  puff count/per-puff data/lifetimes, pin with tests, full suite, push.
+
+## rocket-trail-gas (2026-10-16, branch s/rocket-trail-gas) — close-out 20:35 UTC
+- The audit: one 0x2d shot on 08 spawns exactly ONE gas puff in the game — the muzzle smoke.
+  Evidence chain: weapon_data 0x2d [L ee_start_05.bin @ 0x2bf150, rec 0x10c each]:
+  +0x68 = 0x14000 (no 0x2000 → the muzzle smoke runs [M Player_MuzzleFlash 0x1a4298:91-102;
+  the 0x2000-skip records are 0x32/0x33/0x4e/0x4f only]); +0x6c = 0x0001a200 (bit 0x2000
+  fly-light + 0x10000 swoosh ribbon; NONE of Bullet_DoTrails 0x12d890's gas bits 0x2/0x20/
+  0x80000 — those records are 0x1b/0x36/0x69 (bit 2), 0x2a/0x2b (bit 20), 0x41 (bit 0x80000));
+  +0x70 = 0x00000004 (no timer arm — the timer-arm/impact-gas records are the grenades 0x2b/
+  0x34-0x40 and 0x35/0x59/0x5b). Bullet_Init 0x12c5a0 has no Gas_Init — no launch puff. The
+  thin PS2 trail is the swoosh RIBBON (0x2000481, size +0x76 = 240, fed per tick), not gas.
+- Fixes: (1) the port's per-tick cyan stand-in for bit-0x10000 records now gates to the
+  0x20005cd family (base 0x33/0x6a/0x6e — the Samurai bolt) — the rockets get none (this was
+  the port-only grey haze down the 08 corridor); (2) the muzzle puff's decomp-dropped life is
+  0x80 = 128 ticks [M 0x1a43f8 li v0,0x80 → 0x1a442c sw v0,0(sp)] — was [S] 8 — and the packed
+  END rgba is 1 = bytes (0,0,0,1) [M 0x1a4440 delay slot] (scene.rs now init_ex(..., 1, 128));
+  (3) gases_smoke case 7 keeps the puff's own vel and the buoyancy is WldGravity·(REC·−0.02)
+  upward [M 0x1ab2d0:47-65] — the port sank puffs at 0.05·REC with vel dropped; (4) Gas_Init's
+  kind-7 wind velocity ×REC_FRAME_RATE [M 0x1aacc8:108-115] — the generic init_ex arm was ~12×
+  too fast. The trail-smoke site's life 0x78 verified [M 0x12cc28/0x12cc60]. No RNG-stream
+  changes (the muzzle site's 5 missing Gas_Init draws stay the documented G-033 deviation).
+- Tests: crates/nf-view/tests/rocket_trail_gas_live.rs — one 0x2d shot on 07000008 (via the ○
+  twin switch from the panel-given 0x2c): the pool holds ≤1 puff, it carries the muzzle data
+  (mesh 0x02000039, kind 7, scale 0.05→0.1/128, rgba 0x48403080→(0,0,0,1), life 128), the
+  flight runs ≥5 ticks with no new puff, the round resolves to its blast; sister: the 0x2c
+  flight same. Both FAIL on the pre-fix tree (verified by checkout) — the pin is real.
+  Ran before push: nf-game lib (241) + full nf-game, nf-view targets rocket_trail_gas_live /
+  fix_weapon_effects_live / weapon_fx_levels / lighting_live — all green after the
+  origin/master merge (b4161012, WORKLOG conflict = appends only).
+- Report: docs/reports/rocket-trail-gas.md. Left: the unported swoosh ribbon (the thin trail
+  itself — nf-game has no sprite-strip system); the AR-GL 0x1b's bit-0x2 trail smoke has no
+  bullet-path site (the grenade path covers 0x36/0x69 only); the 0x41 small-puff site (bit
+  0x80000); the muzzle site's 5 unconsumed Gas_Init draws (G-033); gases_smoke kinds 3/6/8/0xb
+  motion details (0xb's alpha = life·8.5 override) — no rocket-scope caller.
+- 2026-10-16 s/hint-bar-speed-05 (task 739): playtest 1016-1355 — "the hints are being
+  displayed at 1,000 miles an hour" (07000005). Plan: find the hint pane / context-hint
+  update in the HUD decompile (show duration, scroll/fade rate, per-tick step), find why
+  the port runs it fast (per-frame step at uncapped fps vs per tick, or wrong constant),
+  fix, and pin a test: a hint shows for the game's tick count at 60 Hz and the same at
+  240 rendered fps (frame-rate independent). Branch created from origin/master f09f3c6c.
+- hint-bar-speed-05: traced the hint bar's game timing end to end — `Hint_Update` 0x1b3380:33
+  posts the type-1 INFO message with life 0xB4 = 180 ticks (stack arg confirmed in the disasm at
+  0x1b3450; ThirdIcon_Update 0x196e80:42 the same for "Press Action"), `HUD_UpdateStatusPane`
+  0x19c310 runs per tick from `Player_Update` 0x193600:79, `Text_UpdateMsg` 0x1b11d8:48-50 ticks
+  the pane's HEAD node alone by FRAME_RATE_MUL 1.0, the fade is alpha = time·17 below 15
+  [0x19c310:261-265], the close 16 px/tick. The port's sim already matched all of that (probe:
+  exactly 180) and is frame-rate independent (fixed 60 Hz). The real defect: the port's
+  pickup/script queue (`hud.msgs`) ticked EVERY member in parallel, spending queued texts' lives
+  before they surfaced — they flashed past one after another (the playtest symptom). Fixed to
+  head-only, matching 0x1b11d8 (the same fix objective_msgs got earlier). Tests
+  (hint_bar_timing_live): the 180-tick life, 60 Hz vs 240 rendered fps independence, the time·17
+  fade, the head-ticks-alone sequencing (fails 180→60 on the old code).
+## astronaut-guards-1b (2026-10-16, branch s/astronaut-guards-1b) — start 21:20 UTC
+
+Task 730: zero-G astronaut guards on 0700001b (uncited-audit gap 7) — port the whole actor
+class: skin kind 0x18 forces mode 0x1D + start state AstronautLaunch 0xBD [M 0x14b300:722-727],
+states DSTATE_AstronautCombat 0xC0 (0x174458) / AstronautCombatMove 0xC1 (0x174550) /
+AstronautHit 0xBE (0x174690) / AstronautDeath 0xBF (0x1747b8), float movement
+DroneMove_AstronautCombat 0x154618, bob/float anim DroneMove_AstronautAnim 0x155ea0.
+Acceptance: headless 0700001b load — astronauts drift (no floor snap), float anim runs,
+hit/death variants fire. Branch from origin/master 170bcf01.
+- astronaut-guards-1b (task 730, 2026-10-16): the zero-G astronaut guards on 0700001b (uncited
+  audit gap 7) ported — kind 0x18 forces mode 0x1D + start 0xBD [M 0x14b300:722-727], row 29's
+  start flows through start_state; the five states 0xBD-0xC1 (Launch/Combat/CombatMove/Hit/Death
+  [M 0x16dd28/0x174458/0x174550/0x174690/0x1747b8]); flying physics = no gravity, no floor snap,
+  vel integration + ×0.98 damping while +0x4F8 & 0x40 (DeathMove clears it [M 0x140968:139-141,
+  0x156008:45]); strafe pick 3×FRand(2)−1 · (FRand(10)+10) into a kind-3 AI volume, re-arm
+  60+Rand(150) [M 0x154618]; death routes mode 0x1D → 0xBF (bullet 0x1461c8 + explosive 0x146480);
+  health = weapon_data[0x33]+0xc × difficulty (×3 Drake). Found on the way: on_bullet_resume's
+  0x55 wrapper clobbered an at-once-completed flinch call's queued resume (CallFullyComplete,
+  0x13ab58) — fixed. 4/4 live tests green (astronaut_guards_live.rs). NOT done in the window: the
+  full suite run (the background runner died twice — cargo PATH, then alsa env; restarted too late
+  for the 23:20 sandbox), the Launch AIPath/FollowRoute route walking (the port treats the
+  spawn-hold as the completed route — the game's AssignAIPath nodes sit within 0.3 of the posts
+  [M 00154190:68-96]), and the HitMove bump-source branch (+0x470 has no port field).
+- astronaut-guards-1b suite + regression fix: the fast suite on the merged tree (origin/master
+  f09f3c6c) ran 1946 passed / 7 failed / 72 ignored in 48 min — 3 disc_golden + 3 pylon probes
+  allowed, 1 fix_actors flake (passes 4/4 twice with the suite's own invocation; master passes
+  the same binary). The suite caught the real Drake-defeat regression (the blast kill's bare
+  set_state was clobbered by the next UPDATE's strafe re-assert before it could apply): the kill
+  now routes through msg 9 in one delivery [M 0x146480:103-104], the pick guards health ≤ 0, and
+  AstronautDeath ENTER sets the port's corpse model (the game's 0x200 rides SetAsDead, uncalled
+  by 0xBF [M]). fix_finale 4/4 + astronaut 5/5 + fix_actors 4/4×2 green after the fix.
+
+## light-create-census — census of Light_Create call sites, port missing SIM-side lights
+
+Branch: s/light-create-census (cut from origin/master c8186aa1).
+Task: full census of Light_Create 0x1cc3d8 call sites in ACTION.ELF (arguments, condition,
+ported-or-not with file:line); port every missing light on the SIM side (LightList entries,
+with the game's RNG draw); tests for each newly ported site (light appears with game
+arguments on trigger tick). Known sites listed by the driver: Bullet_DoTrails 0x12d890,
+Bullet_update 0x12e7b0 (ported), GunImp_Update 0x1320d8, DroneWeap_FireWeapon 0x178f68,
+HUD_UpdateNightSightPane 0x19d218, Player_MuzzleFlash 0x1a4298, Player_WeaponFiring
+0x1a5460, Sub_Create 0x1ad6c0, AnimProcessScriptCmds 0x1c1b38, Searchlight_Create,
+parsemap_create_dynamic_objects, Script_LightStart. Explosions are priority (08 rocket
+corridor ~2.5x brighter on PS2).
+
+Work done (same session): full census of all 14 `jal Light_Create` sites (ABI pinned from the
+callee: a0 pos / a1-3 rgb / f12 radius / a4 channel / a5 life / a6 kind / f13 intensity /
+a7 period / stack+0 seed / +8 mask / +16 sound). Driver's list corrected: the site near
+Searchlight_Create is inside Light_SetAmbientRadiators; Searchlight_Create uses psiLight_Create
+directly. Fix: the 0x4E placement light's radius is `(float)(uint)` [M 0x1d0b8c-0x1d0bd0], not
+float bits — the old from_bits made every 0x4E light contribute nothing. Live test
+light_create_census_live.rs (1 passed); nf-game lib 241 passed. Report:
+docs/reports/light-create-census.md (incl. live checks for the radiator-radius discrepancy and
+site 5's rgb table).
+
+
+---
+level-load-time (final)
+- Probe: load_time_probe.rs times nf_view::load for all 27 on-foot levels cold+warm by phase
+  (marks in load_impl + Scene::build via thread-local nf_view::phase_mark). Baseline warm build
+  total 17.61 s/27 levels: pools 8.18, assembly 7.65, session mesh merge 6.95.
+- Cuts (load-side only): pool-slot replay (projectile/tracer/gas/decal/casing/debris — slot 0
+  decodes, slots 1..N replay bit-exactly), reserved final scene arrays, parsed-foreign-archive
+  cache (FIFO 4) for merge_weapon_models with LevelMap/MapObject Clone derives in nf-formats.
+  Build 17.61 → 13.36 s; 07000014 1.469 → 1.236 s, 07000005 0.696 → 0.448 s warm.
+- Proof: load_scene_digest.rs FNV digests captured pre-change on 5 levels (02/05/0c/14/01),
+  pinned as constants in load_scene_equality.rs — all identical after every cut (the harness
+  caught + reverted one wrong "no-op" removal: the assembly bbox re-scan is the only sound cull
+  radius for merged non-World groups; proof commented at the site).
+- Tests: load_scene_equality PASS, async_level_load_live 3/3, nf-view lib 15/15, nf-formats
+  11 passed / 3 failed = the slim ISO's 3 allowed disc_golden. suite.py not runnable here
+  (background jobs reaped between tool calls) — flagged in the report.
+- Report: docs/reports/level-load-time.md; finish.sh 652 done; ntfy sent (curl, EXIT=0).
+
+## hatch-02-intro (2026-10-16, branch s/hatch-02-intro) — close-out
+- Task 715: "the hatch still doesn't open" (playtest 1014-1725 [intro02]). Outcome: **master
+  already behaves like the game** — the playtest predates grates-02's merge. Pinned with
+  crates/nf-view/tests/hatch02_intro_live.rs (2 tests), fail-first proven by reverting ss.rs to
+  the pre-grates-02 tick (366f5d49): the bed-grate E-open test fails there exactly as the
+  playtest describes (closed transform, state stuck 1, t 0.00).
+- The audit trail (all [D], measured through the real loaders): the 02 intro 0x06000084
+  animates NO hatch — camera + 2 anim actors (0x0500004f Mayhew, 0x05000009) + the pearl entity
+  0x020005db (1500 keys, tracks its path to within 0.03 of the last key in the port); its only
+  write is event 0xD [0x47,1] at tick 1539 = the objective announce gate (params are hex — an
+  early probe misread them as decimal 47; levellog pins channel 0x47 = 1 at frame 1540). The
+  four hatches are the SS grates (grates-02's table re-verified); bath_hatch1 #309 has no ch-1
+  writer anywhere (re-scanned all 52 maps). The second cut-scene 0x0600007f (the polySurface2
+  hatch panel, skin 0x05000034) is dormant on the disc: its chain needs ch 0x3b from
+  MultiplexIn #397's AND of ch 0x29/0x2a/0x88/0x49 — zero writers on the disc → ch 53 never
+  rises → SP #399 never plays. Trigger_Tag param map decoded from Trigger_Create 0x1b1720 (out
+  = param 0, ins = params 1..7 u16s, gate = param 9, flag = param 10) — in the report.
+- Tests on the final merged tree (origin/master 170bcf01): batch 1 grate/cutscene set 23 passed
+  (2 ign), batch 2 lib tests nf-formats 79 / nf-view 17 / nf-game 241, batch 3 the
+  cutscene/level slice 43 — 403 passed / 0 failed total. Full suite NOT run: the background
+  runner is reaped between tool calls in this sandbox (empty suite.out) and a foreground full
+  run does not fit the tool windows; the batches cover the affected surface (the merge touched
+  nf-formats/hud, nf-game/drone, nf-view/gpu+hud — all lib tests green). Render asks for the
+  main agent (bed-grate E-open, pavillion grill, the intro's pearl) in the report.
+- Report: docs/reports/hatch-02-intro.md.
+
+mp-backout-after-character (queue 716, branch s/mp-backout-after-character)
+- Started 19:19 UTC 2026-10-16. Task: local MP setup breaks after backing out after setting a
+  character for player 1 (playtest 1015-2231). Walk menus_e2e-style back-out sequences (1 then 2
+  joined players: character pick -> back one page -> main MP menu -> forward again), find the
+  wrong state (enter_mp_setup states 2/3 join slots/cursor/team-character prompts, pair or
+  overlay stack), compare with the game's character page handler Back case, fix, add back-out
+  tests + match-starts-afterwards test.
+
+mp-backout-after-character (queue 716, branch s/mp-backout-after-character)
+- Done 20:45 UTC 2026-10-16. The playtest 1015-2231 walk (pick a character, back out one page,
+  back to the main MP menu, forward again; a match still starts) failed on master in two states,
+  both now fixed and pinned by tests/menus_backout_after_character.rs (actions-only, 1 human FFA
+  + the 2-human host lobby):
+  1. enter_mp_setup kept the agents' ready bytes: the hub's Back re-runs the setup page's enter,
+     and the game clears mpjoin+0x01 for every agent there [M P_MPSETUP 0x20d7a8's 0x4c loop,
+     `pcVar5[1] = '\0'` per slot]. The port now clears all four.
+  2. The re-entered Join Game page kept the stale records: the game memsets the whole mpjoin
+     array on EVERY 0x4c (the DAT_002e1b09 gate is set to 2 in the same arm) and re-seats the
+     defaults — skins 0/1/2/3 (DAT_002dee70/80/90/a0), teams MI6/Phoenix/MI6/Phoenix
+     (DAT_002dee6c/7c/8c/9c) [M P_MPJOIN 0x20ca00's 0x4c]. The port's MpMode-Local route now
+     runs enter_mp_join(): fresh records + defaults every time. The stale ready panel is what
+     made the forward-again walk look broken (its ✕ fell through).
+- Consequential test updates in menus_e2e_mp.rs: the re-seated default team for agent 1 is MI6
+  (1) now [M DAT_002dee6c = 1], so the blind team-Confirm picks MI6 — the team-walk test picks
+  Phoenix explicitly (◀) to keep Alura supplying the other side of C_SBMPOPTIONS' both-sides
+  check; three "team rides" assertions updated with the citation. The old "a ready panel's ✕
+  falls through" assertion became the fresh-join assertions (that behaviour contradicted
+  P_MPJOIN's enter memset).
+- Verification: full 4-crate suite via tools/test/suite.py in 7 foreground chunks on the final
+  tree (merge origin/master = already up to date, branch cut from c8186aa1): 1911 passed, 6
+  failed, 72 ignored — the 6 are exactly the 3 allowed slim-ISO disc_golden + the 3 pre-existing
+  pylon render probes (the master baseline). nf-view alone: 180 passed / 0 failed. No live
+  checks needed: the walk is fully headless and deterministic.
+- Report: docs/reports/mp-backout-after-character.md.
+
+## drone-press-alarm (2026-10-16, branch s/drone-press-alarm) — start 19:30 UTC
+
+Task 717: port NDrone2's PressAlarm chain (RunToAlarm 0x89 / PressAlarm 0x8A / DonePressAlarm 0x8B,
+`NDrone2_FindAlarmPoint` 0x153008) — how a guard picks an alarm panel, the walk + press anims, the
+channel it raises (`DroneFunc_SetMissionFailReason` 0x13e560 reason 0x10 → the nearest Switch obj's
+channel; every disc alarm switch writes 0x61 [S]) and when the attempt is abandoned (impacts →
+`DroneFunc_HandleImpact`, death/stun via the GLOBAL fallback), plus which levels' guards can reach it
+[MsD]. Decompile read so far: the DSTATE trio, `FindAlarmPoint` (AIPoint registry: type 8 = alarm,
+`ClosestAIPoint` 0x151b18 picks enabled+reachable+same-path nearest; +0x44 yaw → Drone+0x734 [M-dis]),
+`Drone_AIPoint` 0x137550 (placement 0xE9: +0x20 pos, +0x40 rot, +0x6 type, +0x14 radius, +0xC param
+[M-dis, the decomp's vec2 offsets are wrong]), `EnemyRunToPoint` 0x168910 (prop 0x56 set → 0x89),
+`DroneTypeSettings` row 14 = start/alt 0x89 (mode 14 = `DroneModeSettings` row 18 AlarmRaiser, init
+0x14df98 sets props 0x23+0x56), `DoModeSettingsNEW` sets props 0x1a+0x56 on 07000009/0A (already
+ported), timer-C payload plumbing in `PreDroneControl` 0x148db0:93-108 (msg 0xC carries +0xCC8).
+Plan: AI-point registry from 0xE9 placements in `attach_level`, real RunToAlarm/PressAlarm/
+DonePressAlarm arms, the EnemyRunToPoint prop-0x56 arm, disc census test, then the suite.
+
+## drone-press-alarm (2026-10-16, branch s/drone-press-alarm) — checkpoint 20:57 UTC (sandbox expiring)
+
+The decompile pass is complete and the chain is ported (RunToAlarm/PressAlarm/DonePressAlarm/
+HostageGoToGoal/JustStand arms, the 0xE9 AI-point + 0x29 switch registry, the EnemyRunToPoint
+prop-0x56 gate; `cargo check -p nf-game` clean) — commits 28582c23 + eb888ad0 pushed. NOT done: the
+HandleImpact 0x1469b8 08/09 guard-reassignment (the disc's real trigger), the two tests, the suite
+run, the seen-and-attacking tick list. Full findings + the live-check list:
+docs/reports/drone-press-alarm.md. Key discovery: the disc's alarm levels are 07000008/09 (impact
+reassignment → FirstAttack +0x5a4=0x89) and 0700000a (9 panels, 10 ch-0x61 switches, prop 0x56 on
+all 20 guards); the disc's alarm channels are 0x61 (0a) and 0x37 (09), and DroneTypeSettings row 14
+= start/alt 0x89 is reached via DroneModeSettings row 18 (AlarmRaiser) or GetDTYPENEW block 3 +
+prop 0x56.
+
+## drone-investigate — STARTED 2026-10-16 19:16 UTC (sandbox ~21:12 UTC)
+- Branch s/drone-investigate cut from origin/master c8186aa1. Suite started in background at 19:14 UTC (suite.out).
+- Task: NDrone2 Investigate state (DSTATE_Investigate 0x7E, 0x168070). Initial reads: handler decomp in hand;
+  task-710 audit claims it is dead on retail (no SetState 0x7E caller) — verifying independently before changing code.
+- Plan: (1) trace dispatch + all entry sites [M]; (2) trace the heard-sound-below-alert-threshold path the game
+  actually takes; (3) compare with nf-game master on 07000005; pin with tests (guard investigates origin + returns;
+  sister hears nothing stays put).
+- Investigate audit done: DSTATE_Investigate 0x7E (0x168070) is reachable ONLY under the Blind Drones cheat —
+  the sole entry in all of ACTION.ELF is CombatOutOfRange 0x164690:30 storing 0x7e to +0x5a2, gated on
+  switch_BLIND_DRONES (written only by the cheat handler C_CHCHBLIND 0x215d60:9); no SetState(0x7e) literal
+  anywhere. The task-710 audit's "no +0x5A2 store" is wrong on that one point (corrected here); its conclusion
+  (dead in normal play) stands. The game's below-threshold sound path is the HeardNoise family 0xa2-0xa5, all
+  already ported on master (drone.rs:4003-4087).
+- Pinning test added: ai_live::two_sounds_send_the_idle_guard_to_investigate_and_back_to_his_post (Level05,
+  guard 9, seed 1): sound share 0.27 → HeardNoise→Aware f101 (no Attack — AlertSound 0x177800); louder sound
+  (0.48 > 0.1) while drawn → Suspect+AlertToPosition f109 [0x16af20:67-75, 0x16b0e0:28-40]; walks 12 units to
+  the origin, SearchArea f535 (span 265 >= the game's 180 [0x165bf0:25]); GoToGoal home f800; Idle back at his
+  post f889, alert 0.000. Sisters: guard 8 (62 units away) stays Idle at his exact post; WaitSwitch waiter 302
+  never moves. ai_live 36/36 green.
+- Report written: docs/reports/drone-investigate.md (finding: 0x7E cheat-only via CombatOutOfRange 0x164690:30
+  + C_CHCHBLIND 0x215d60 — audit's "no +0x5A2 store" corrected; the live below-threshold path is the already-
+  ported HeardNoise family; full [M] chain table; pinning test; per-crate suite totals 754 passed / 5 failed
+  [3 allowed disc_golden slim-ISO + 2 headless-GPU pylon probes, master baseline] / 11 ignored; 2 live checks;
+  Usage: not visible to me). No lib code changed (master already behaves like the game — pinned, per the task).
+
+## gameflow-state-stack
+- Task: port the real GameFlow state stack from ACTION.ELF — GameFlow_Main, GameFlow_PushState /
+  GameFlow_PopState / GameFlow_GetState (0x1c98c8, 0x1c9f38, 0x1c9eb0, 0x1c9e80), the state ids,
+  who pushes/pops what (level load, movie, front end, pause, fade hold), each state's tick — and
+  replace the port's stand-in flow machine where it differs, without breaking the menus (menu e2e
+  + mission_unlock_flow are the guard rails). Test: stack contents across a full SP run match the
+  game's push/pop sequence.
+- Status: started (branch cut from origin/master at e2bdc00f-ish master).
+- Done: the GameFlow stack port finished. Read the four GameFlow functions from ACTION.ELF
+  (GetState 0x1c9e80, PopState 0x1c9eb0, PushState 0x1c9f38, Main 0x1c98c8) + Camera_SetFade
+  0x1bbdd8 / Camera_UpdateGlbVars 0x1bada0 and enumerated all 16 PushState call sites; the
+  decomp's arg mapping was scrambled, so the PushState ABI came from the disassembly
+  (f12 = the duration, a0 = the state, a1 = the colour — Mission_Update's site 0x183054-60).
+  The stand-in's divergences fixed in menu.rs: push_state now takes the caller's duration
+  (the raw game ids 7/0xb/0xd convert inside), the fade-busy abort [M 0x1c9f88], SkipCodeFrame
+  for state 0xe [M case 0xe], and the two missing pushes (C_SBNFMAP's 84-frame mission-pick
+  fade 0x20ba50, C_GCPAUSE's shared RESTART/QUIT fade 0x204408:150). Durations now the game's:
+  60 (mission end 0x183054, MP_Update 0x184ea8), 84 (all the menu handlers' 0x42a00000), 20
+  (SP_Update's 0xd 0x1dbfd8); P_NFMAP's 0xb wait modelled.
+- Tests: new gameflow_stack_sp_run.rs (4 tests — the boot sequence, the full SP run stack
+  contents, the PushState contracts incl. the abort, the SkipCodeFrame freeze); guard rails
+  updated (menus_flow, mission_unlock_flow, movie_playback_flow now drain the 84-frame fade
+  with the site citations). All green: 19 nf-view test files + the lib tests, 0 failures.
+- Not done: the background fast runner was killed by the sandbox three times (last at 21:05
+  with the env sourced) — no suite total line this session; the next session should run it.
+  The trigger-movie push glue (Trigger_Update/Trigger_Activate) is left for a follow-up task.
+- Report: docs/reports/gameflow-state-stack.md.
+
+## drone-abseil-elevator (2026-10-16, branch s/drone-abseil-elevator) — start 20:15 UTC
+
+Task 720: the decompile census lists NDrone2_AbseilHang and the ElevatorJumper states as not cited
+in the port. Find which levels place drones that use them [D the placements / DCVars whose setup
+reaches those states]. Then port both: the hang / descend / land sequence with its anims and
+timings, and the elevator jump [M]. Tests on a level that uses them: the drone runs the sequence
+and lands at the game's position and tick — without those states the drone just stands there.
+Branch created from origin/master 170bcf01.
+## drone-abseil-elevator (2026-10-16, branch s/drone-abseil-elevator) — start 20:15 UTC
+
+Task 720: port the drone abseil family (0x8e–0x92) and the ElevatorJumper (0x8d) the census lists
+as uncited. Disc reach [D nf-extract drones]: the five 0x06000892 placements — 07000011 ×2 (office
+floor Y 46.5) and 0700004a ×3 (the elevator shaft, Y −7.5/−50/−95) — placement msg 0x06000892 →
+mode +0xC5 = 0x1c [M DefaultInit 0x14b300:615-627]; the mode ∈ {0x1b,0x1c} arms the rope flag +0x23
+and start 0x8e [M 0x14b300:757-766]; DroneTypeSettings rows 27/28 start AbseilInit [L]. Ported
+(crates/nf-game/src/drone.rs): the dtypenew-special wiring in Drone::new, the six states in the
+dispatch (Init 0x8e 0x169610, Slide 0x8f 0x169730, Hang 0x90 0x169940, StepOff 0x91 0x1738e0,
+AbseilDeath 0x92 0x169b28, ElevatorJumper 0x8d 0x169488), the rope descent in `NDrone2_Move`'s
++0x23 branch (0x14eff8) and the collision handler's air branch (0x140968:75-111: probe, pos +=
+vel/60, no gravity/zeroing). The descent math is interpreter-verified against the REAL function run
+in this repo's EE interpreter (nf-formats::ee::Machine): vel += normalise(rope−pos)·(REC·+0x50),
+the old velocity kept, accumulating — with the EE FPU round-toward-zero (mul.s/add.s chop, div.s
+nearest) and the VU chop on the vector ops; the unit tests pin the interpreter's exact f32 bits.
+Findings: ElevatorJumper 0x8d, AbseilStepOff 0x91 and AbseilDeath 0x92 have NO decomp writer (every
+SetState constant and +0x5a2 write accounted; no DroneTypeSettings row starts there) — the docs'
+"07000014's Rook = ElevatorJumper" gloss has no code path; the tests drive 0x8d directly (door
+scan 0x14a940 within 2.0 → OpenDoor 0x14aa38 → danim 0x1e + timer C 30 → Attack 0x56). Landing =
+the feet probe (anim+0x60 & 8), not an anim end; mode 0x1b drops the rope to −1000 [M 0x169730:24]
+(no disc instance — tested through the same path). Tests: drone.rs unit 2 (interpreter-pinned math,
+the air collision branch) + nf-view live 3/3 green on the real levels (the WAIT_SWITCH gate ch 0x13
+[D], Init→Slide→Hang, the follow-down/hang-band/×0.98 decay, the probe landing, the jumper door →
+jump → Attack → combat chain). Ran: nf-game lib 243 passed, nf-view abseil_elevator_live 3 passed.
+The full background suite could not complete inside the sandbox window (started 20:15 on the
+pre-task tree, killed; the final tree ran the touched crates only) — see the report.
+
+## pickups-g029 (2026-10-16, branch s/pickups-g029) — start 20:29 UTC
+
+Task 724 (GAPS G-029 open half): pickups — auto-switch to a better weapon on pickup (the game's
+rule and its option gate), level-placed vs script-spawned pickup differences, respawning pickups
+(multiplayer and any single-player cases) [M Pickup_Create 0x18dda0, Pickup_Update 0x18e148 and
+the take path]. Tests for each rule on a real level. Update GAPS.md with what is closed.
+Plan: read the decompile take path + auto-switch logic, find the port's pickup code, compare rule
+by rule, pin each rule with a test on a real level, fix divergences. Branch created from
+origin/master 170bcf01.
+- 2026-10-16 s/pickups-g029 (task 724): the G-029 open half closed. (1) The auto-switch OPTION
+  GATE is now read: `Player_EquipWeapon` 0x1a8a58:76 gates the IsBetterWeapon request on
+  `(&DAT_002a38d2)[player·0x158]` [M]; `BestWeapon` 0x2bede0 = 18 u16 ids [M ELF bytes, matches
+  the port's BEST_WEAPON]; the drain consults the new `Drones::auto_switch` (default 1 =
+  Input_Init 0x17edd8 / [L ee_start_05 0x2a38d2]; the persisted `PlayerOptions::auto_equip_best`
+  is the same bit). (2) Placed vs script: the call-site disassembly (0x1d05ac parsemap case 0xf0,
+  0x1d8be0-0x1d8c20 Script_CreateEntity case 0xf0 — N32 ABI, stack args recovered) shows the SAME
+  record fields (+0x2c type, +0x30 id, +0x34 rounds, +0x38 switch, +0x3c sound, +0x40 respawn),
+  rest = 1, lifetime 0; differences: the script arm passes label 0 (delay slot `sw $zero,
+  0x20($sp)`) — the reservation's `label = p(6)` fixed to 0 — and the fresh-spawn arm now carries
+  the respawn word (`PendingPickup.respawn` = param 5 [M 0x1d8bfc]). (3) Respawn pinned
+  end-to-end on the census's real material: 07000004 places weapon 0x12 with respawn 2 (3x) —
+  take → hidden/state 2 for 60·2·10 = 1200 ticks → returns → retakeable; 07000008's safe script
+  0600004c reserves the rocket + ammo with respawn 0xFFFF (stays forever), label 0. Tests:
+  crates/nf-view/tests/pickups_g029_live.rs (census, gate off/on, respawn cycle, placed-vs-script)
+  + fix_auto_switch_live/fix_safe08_live/pickups08_live green; nf-game lib 241, nf-view lib 17.
+  The full suite did not fit the window (the background runner died as a background job; the
+  foreground touched-crate runs are listed in the report).
+
+- 2026-10-16 s/ps2sinf-remaining (task 726, GAPS G-046): the remaining sim call
+  sites still use the host's sin/cos/atan where the game uses its own PS2Sinf /
+  trig (bit-exact proven, 40/40 [verify ledger]). Plan: list every remaining
+  f32::sin/cos/tan/atan2 in nf-game and nf-view's sim side that stands in for a
+  game trig call, find the game's function at each site [M], swap to the port's
+  bit-exact version. Keep walk*/walkreal* and the AI traces green; report every
+  site that changed a trace with before/after; update GAPS.md.
+  Branch created from origin/master 170bcf01.
+- ps2sinf-remaining: the census found every remaining GAME_EXACT host-trig stand-in and
+  swapped it (G-046 closed): bullet spread rebuilt to Vec_Spherical_2_Cartesian 0x1e3948's
+  lanes (the port's old cone had θ/φ swapped — y = r·sinφ biased up in the game, cosφ in the
+  port); movement axes/look/ladder snap/creep/wire sway/world spheres/pickup spin all on
+  PS2Sinf lanes with EE ops; searchlight steer + root_yaw on atan2f_libm; NEW
+  trig::acosf_libm = __ieee754_acosf 0x233228 (fdlibm e_acosf, constants [L 0x30b4b0-4dc])
+  feeding the anim/door slerp weights (Spline_Interp 0x1e1858's recip-mul order) and the
+  drone head-track measurement; world_fx emitter cone rebuilt to the game's stored dir
+  (sin p·cos t, cos p, sin p·sin t) [M 0x17b504-0x17b53c]. walkreal/ai_traces/ai_live(35)/
+  drone_portcheck(5)/fix_portonly_review(3)/doors/searchlight/pickup/grenade/explode/wire/
+  ladder/facial/anim_events/rng/impact_remainder + nf-game lib (242, incl. the new acosf
+  test) green before AND after — no pinned trace changed state. nf-view's remaining host
+  trig is presentation-side (camera/HUD/fx); DRIVING.ELF's tan/atan2 sites have no trig
+  decomp files (left, documented).
+
+## ninja-melee (2026-10-16, branch s/ninja-melee) — start 20:47 UTC
+
+Task 728: audit gap ③ — the Ninja drones' melee chain, DSTATE 0xab-0xb3 [M], isn't ported. The
+ported NinjaAttack router (kiko.rs ports 0xa6-0xaa + 0xb2) collapses the close band into standing
+and shooting. Port: the approach (NinjaGetCloseToPlayer 0xab), the attack selection, each strike's
+anim and damage (NinjaSword 0xac), the block/dodge states (Somersault 0xad, Backflip 0xae,
+Sideflip 0xb3/Left 0xaf/Right 0xb0), NoRoute 0xb1 (star throwing), and the transitions
+[0x16c650..0x16d878]. Do it on the level that places Ninjas [D] (assassin 07000004/16 chaser).
+Tests: a Ninja engages Bond in melee with the game's sequence and damage; states follow the game's
+transitions over a scripted fight. Deadline 22:26 UTC for new work.
+- Branch created from origin/master 170bcf01. work/ + ISO already in sandbox from prior task.
+- ninja-melee: settled the state-id table from the EE snapshot [L 0x29b300] — 0xaf is the ±3
+  Sideflip router (0x173e08), 0xb0/0xb1 the anim-0x68/0x69 flips, 0xb3 NoRoute (the audit's gap ③
+  ids were shifted by one). Ported the full chain in drone.rs: 0xab run-in (+180 timer), 0xac
+  sword (anim 0x6d → 0xa7; damage rides the anim melee event → CloseCombatImpact), 0xad/0xae/
+  0xb0/0xb1 evasion flips (invalidate route, variant Rand(3), Fire(1), EXIT clears +0x3B), 0xb2
+  replaced with the real handler (TIMER_C +180, somersault/sideflip alternatives), 0xb3 NoRoute
+  (TIMER_C +30, star throws, re-route to 0xa7 when a route exists), 0xa7's real close-band
+  routing, 0xa8/0xa9's no-route → 0xb3 arms, melee band +0xEC (4.0/2.0 ninja, DefaultInit
+  0x14b300:744-753) and the +0x2C8 attack-hold counter [S seen-gated]. Tests
+  ninja_melee_live.rs (both green): the 07000004 assassin closes and swings with the game's
+  transitions, throws and landed damage; NoRoute throws and recovers. Touched crates run:
+  nf-game 54 binaries all ok; nf-view fix_finale_live 4 + ninja_melee_live 2 passed. The fast
+  runner was started per the driver but this sandbox kills background processes between tool
+  calls (both attempts died in the build phase, suite.out 0 bytes) — no window left to run it in
+  the foreground; report: docs/reports/ninja-melee.md.
+
+- mp-host-match-logic close-out: the live host now RUNS the match logic — create_mode_objects
+  at MP_Start (the game's draw order, before the humans' spawn picks), update_objects every
+  frame (MP_ObjectUpdate 0x18b198; the lockstep rig's order, on_hill false — no hill box
+  parsed), the humans' slot positions refreshed per tick, player_killed on the death's start
+  tick (Player_CheckForDeath 0x190810:91's site; the killer from the last-shooter word +0x20),
+  the bots' frags + human-damage gate through the real rules (player_killed /
+  register_bullet_hit 0x1857c0), the 5 s respawn (Player_HandleDeath 0x190bb0:41-54 → the new
+  MpMatch::mp_respawn = MP_ReSpawn 0x185368: gates → policy pick → apply, health
+  armor_bonus+100, the body moves), and the request_debriefing → open_mp_debriefing handover
+  (the fe re-created, the sim freezes behind the page). Tests: mp_host_match_live 2/2 — the
+  local deathmatch (kill scores → 300-tick respawn at the policy's point → frag limit → the
+  debriefing board) and the audit's CTF live-vs-headless parity. mp_match_rules 10/10,
+  mp_debriefing 14/14, net_match_live 3/3, mp_bots_live/mp_core_live/mp_menu_flow/
+  mp_debriefing_flow/mp_net_lobby/menus_e2e_mp all green on the merged tree.
+
+## script-negative-delay (2026-10-16, branch s/script-negative-delay) — start 21:45 UTC
+
+Task 732 (GAPS G-047): on 0700001b all 16 solar panels shatter at t=5 and the girder frames are
+empty (side-by-side vs PCSX2 2026-10-16). Cause: script 0x06000832 stream 11 Event 3 p0=0 sets
+SCRIPTINFO+0x9C (delay) to −1; a NEGATIVE delay HOLDS the script [M Script_Update 0x1da9c4/0x1da9d0:
+only a positive delay counts down] until SP_UnPause 0x1dca58 clears it — for the panels, when
+SP_Update's damage path (0x1dc1c0-0x1dc330) accumulates SP_GetHitDamage 0x1dc5f8 to 20. The port's
+Script::update (crates/nf-game/src/nis.rs) runs a negative delay as 0 — wrong. Plan: (1) negative
+delay holds; (2) port SP_GetHitDamage + SP_Update damage path; (3) held entity takes its first
+key's position (entity_start currently makes identity matrix, only interp positions); (4) re-check
+EVERY script with Event 3 p0=0 (0x0600006f, MP set 0x0600003c..45, lift 0x06000571) and the other
+unpause callers (Switch_Update, NDrone2_KickObject); keep fix_finale_live + 4a lift green.
+
+- script-negative-delay (task 732, GAPS G-047): the negative-delay hold + the SP hit-damage
+  unpause are in. [M disasm 0x1da9c4-0x1da9dc] settles Script_Update's gate: delay == 0 runs,
+  delay < 0 branches to the epilogue (no store, no decrement — HOLD), only a positive delay
+  counts down; the fix-finale-blockers "negative runs like 0" reading was wrong and made all 16
+  of 0700001b's solar panels shatter at t5. Ported: Player.hit_points (param 7 int→float [M
+  SP_CreateScriptPlayer 0x1db9a8 puVar2[5]]), Player.damage/tick_damage, the bullet pass's
+  per-tick contact gather on the held hit-point players' current stream objects (the
+  SP_GetHitDamage 0x1dc5f8 read set; mask 0 filters nothing [M 0x1ece30:24-31],
+  Collide_GetDamageNObjects sums all [M 0x1ee220]) and Player::update's damage tail —
+  SP+0x18 accumulates; at the threshold SP_UnPause 0x1dca58 (the one-tick +0x2c flag, delay 0)
+  and the threshold is subtracted [M 0x1dc2f8-0x1dc318]. Held-entity placement: NO code change —
+  Script_EntityStart tails with Script_Interp [M 0x1d8d78] and the port's entity_start already
+  interp's at creation; the probe showed all 16 held panels exactly at their placements (the
+  GAPS [S] origin-stacking guess did not reproduce). Sisters: 0x0600006f is played by nothing in
+  the port (the pre-existing open question, fix-cutscene-actors report) so the hold cannot touch
+  it; the MP 0x0600003c..45 set has no port references; the lift 0x06000571 holds at t1611 and
+  resumes through the game's case-2 mask&1/out rule — ch 0x22 rises when the hold engages [S
+  stand-in: the disc scans (the 11 scripts' 0xD/0x11 events, the placements, the 13 plates) find
+  no writer, the same shape as ch 0x4a; docs/levels/0700004a.md §6]; Switch_Update's and
+  NDrone2_KickObject's unpause calls were already ported. Tests: solar_panels_live 2/2 (16
+  panels hold in place after 600 ticks; the real fire path shatters only the shot one — the 10
+  debris pieces play, the other 15 stay held), nis::tests::negative_delay_holds... (synthetic
+  hold, first-key placement, positive-delay countdown sister), fix_finale_live 4/4. Suite on the
+  final tree: see the report. Report: docs/reports/script-negative-delay.md.
+
+## scary-link-routing (738)
+
+- Scope: the uncited-audit runner-up "Scary-link routing" (`AINetwork_SetLinksFlagInCircle`
+  0x15b548) — make the port's route state carry the game's link flags.
+- Forensics: the flag store is `MAPLINK+4` (u16) on the 0x10-byte links array at `*(net+0x3c)`;
+  `+6` is the used counter the A* multiplies into its cost [M `AINetwork_DoAStarPath` 0x1571b0,
+  disasm 0x1575e4-0x1575e8: `lhu +6`, `lwc1 +0xc`]. Writers of `+4`: `ClearLinkFlags` 0x15b498
+  (per-cycle reset — also zeroes `+6`), `SetLinksFlagInCircle` 0x15b548 (clear-then-set with the
+  ±2 height gate and the closest-point 2D test), `LinkCreep_ForNodes` 0x159810 / `LinkCreep_Calc`
+  0x159b10 (the 0x10 creep marker). Call chain: `control_movement_object_handler` 0x1336f8 →
+  `Drone_InitComms` 0x139520:125-126 → `ClearLinkFlags(0x310)` + `Drone_BuildDynamicAwarePoints`
+  0x138b10, whose record-id switch flags 12.0/0x100 for bullets 0x2a/0x2c-0x2f (bullets ARE class
+  5 [M `Bullet_init` 0x12c5a0:87]) and 0x34/0x6c/0x3b-0x40, 8.0/0x100 for 0x37 (skip stuck),
+  3.0/0x200 for 0x36.
+- **The census result**: no code in ACTION.ELF READS `MAPLINK+4` — every `lhu/lh/lw +4` site in the
+  AI range is accounted for (the two `ReachedDestNode` 0x153598 / `ReactToDroneAlertMsg` 0x143824
+  sites read `SMI+4`, the state id, not link flags; the flags are WRITE-ONLY state). The A* honours
+  flags by NOT honouring them; the audit's "guards path straight through grenade radii" causality
+  is refuted at the decompile level — the flee system (HandleExplosives 0x1435f0 → msg 0x21 →
+  0x86/0x87/0x88, already ported G-026) is the game's actual avoidance. Pinned by the sister test
+  `astar_still_walks_a_scary_flagged_link`.
+- Ported: `nav::LinkFlags` + `Network::clear_link_flags` / `set_links_flag_in_circle` (exact
+  0x15b548 geometry), `Drones.link_flags` / `Drone.link_flags` (the `used` swap pattern),
+  `hazard_link_flag` (the record switch), the per-cycle clear+flag at the InitComms pass
+  (drone.rs, next to the existing used rebuild). Tests: flag geometry + cycle clear, the
+  A*-through-scary-link sister, the record-switch table.
+- Left: the class-0x2a ('*') gas objects' 3.0/0x200 flagging (the port has no gas object walk
+  here yet) and the LinkCreep 0x10 marker (write-only, no reader) — both documented [S].
+
+- 2026-10-16 nis-event9-cnis (task 733): NIS event 9 (cam2mode) and the C_NIS_Handler
+  mission-driven cut-scene route aren't ported (uncited-audit gap 10). Plan: read the
+  docs/systems/uncited-audit.md entry, port event 9 and the C_NIS_Handler route from the
+  decompile [M], find every script/level that uses them [D], add a test that fails without
+  the change plus a sister, run the touched crates + the fast suite.
+  Branch created from origin/master f09f3c6c.
+- nis-event9-cnis: ported NIS event 9 (cam2mode) end to end — `Script_EventHandler` 0x1d94c0 case 9
+  → `Player_Cam2Mode` 0x195fc8 (`Request::Cam2Mode`, drained on the view side), `Player_PositionCamera`
+  0x18f5d8 case 2's behind-Bond orbit as `Sim::cam2_camera()` (10 units behind on the XZ at Bond's Y,
+  the atan2 look, `viewer+0x108 = 1.0`), the view-model hide, and the C_NIS_Handler 0x205f10 msg-0x4b
+  boot as `Sim::nis_page_boot` (+ `fmv_script`). Census [D] (nf-formats/tests/nis_event9_census.rs):
+  event 9 fires exactly once on the disc — 07000001's 0600005b stream 4, mode 1 (the EXIT arm; no
+  disc script enters the orbit) — and NO authored def for page 0x1000003e exists anywhere on NTSC-U,
+  so the C_NIS route is data-dead (the boot is ready; only the resolver is missing). script_census
+  pin + docs updated (kind 9 handled: 12 of 14, HANDLED_EVENT_KINDS 15). Tests: the event-9 unit
+  test (fails on the old tree — kind 9 fell to the unhandled Event arm), the real-script exit-arm
+  test, the [M]-pinned orbit-params test, and the boot/gate test. Sandbox note: ALSA needs
+  PKG_CONFIG_PATH (compile) AND LIBRARY_PATH (link) wrapped in scripts/nfenv.sh (uncommitted).
+
+## tase-scream-broadcast (2026-10-16, branch s/tase-scream-broadcast) — start 23:10 UTC
+
+Task 736 (the uncited-gameplay audit runner-up): entering the tase state broadcasts
+`NDrone2_DroneAlertToPosition` 0x14a498 with prop 0x32 — the port screams only on bullets and
+punches (drone.rs handle_taser is cited as partial). Plan: read the audit entry
+(docs/systems/uncited-audit.md), port the tase arm from the decompile [M], add a fail-first test
+through the real input path + a sister, run the touched crates + the full suite.
+
+- tase-scream-broadcast (task 736): the tase ENTER screams. [M NDrone2_DSTATE_Taser 0x162b98
+  case-1 tail, disasm 0x162d0c-0x162d40] — prop 0x32 set, +0x4F8 & 8 clear (the once-per-life bit
+  the hurt scream shares, DroneFunc_SendHurtMessage 0x145e28:11-13/32 — the port's `screamed`),
+  +0xC5 (the active type id, the port's `dtype`) != 2 — then the msg-0x12 broadcast
+  NDrone2_DroneAlertToPosition 0x14a498 from the victim's position. The port screamed only on
+  bullets/punches (the audit runner-up). The arm reuses send_hurt_scream's pending_shout queue
+  (the shared pass drains to every present, enabled drone within 20 u [M Drone_SM_BroadcastMsg
+  0x14a498 tail]; the cel word obj+0x20 stays the port's [S] local-scream shape). Test:
+  tase_scream_live through the real input path (Stunner 0x4a equipped, aimed, held) — fail-first
+  shown (arm stashed → the scream assert fails at the fall); the sister holds the once bit across
+  a re-tase cycle (release → STUNNED → re-fall → the ENTER re-runs → the bit survives).
+  fix_stunner_press_live 3/3. Full suite on the final tree: 1946-class total in the report.
+  Notable sandbox finding: 07000005's spawn-courtyard exits all cross script 0x06000952's
+  stream-4 event 5 (Drone_EnableAll(0) [M Script_EventHandler 0x1d94c0 case 5]) — a cut-scene
+  freeze that stops every guard's timers, so a walk-away recovery cycle is not drivable there
+  (probe evidence: with the freeze the STUNNED timer never fires; without it the +300 re-arm
+  fires on schedule).
+
+- 2026-10-16 s/door-guard-pairing (task 737): audit runner-up — NDrone2_DoorGuardHandler
+  0x1416d8 and SetDronePartner 0x141360; CivilianDoorGuard 0x31 (0x160648) is a const with no
+  arms (WORKLOG 3969). Plan: read the uncited-audit entry, port the pairing + the handler on the
+  levels that place door guards [D], tests fail-first with a sister. Branch created from
+  origin/master f09f3c6c.
+- door-guard-pairing: ported SetDronePartner 0x141360 + NDrone2_DoorGuardHandler 0x1416d8 and the
+  CivilianDoorGuard 0x31 state (0x160648 — the const had no arms, WORKLOG 3969). The pairing runs
+  as a Drones-level pre-pass (the game pairs inside the 0x31 ENTER; the port's handle lacks the
+  list access [*S one-tick deviation]): candidates = same mode 0x16, enabled, healthy, not
+  deleted, partnerless, RAW |yaw − yaw| < 2.0 [M 0x141360:90 — the unwrapped ABS is what keeps
+  the two 07000007 pairs from cross-pairing]; mutual +0x2BC; the angle-difference sign picks the
+  planes' owner (the other gets +0x2CC = 0xff = the mirror [M 0x141360:123-174]) and
+  plane_from_two_vectors_and_point 0x1e4498 builds three planes (the 0x2F0/0x300 derived formulas
+  ported verbatim — for a z-axis pair the cross with (0,0,1) is the game's own zero normal). The
+  zone read [M 0x1416d8:16-73]: the 0xff holder mirrors the partner's value; the owner gates on
+  the opponent (the port: los [S stand-in for +0x170]) and the RAW yaw gate, then the plane bands
+  s0 < −6 → 0, < 0 → 3, < 2 → 2, < 6 → 1. The 0x31 arms [M 0x160648]: the armed-person check
+  (NearArmedPerson 0x1787c8 — the zones only play for an unarmed Bond) → the prop-0x33 shout +
+  Attack; zone 1 face + the idle replay; zone 2 the 0x5f challenge + ChooseSFX(0x4f, 0x50) (the
+  owner only); zone 3 ChooseSFX(0x8f, 0x92) + SetMissionFailReason(0xc) + Attack; zone 0 the idle
+  replay; TIMER_C cycles the idle anims 0x24/0x25/0x26 by the +0xCC8 payload at
+  (Rand(20)+5)·FRAME_RATE_INT (FRAME_RATE_INT = 30 [M the DEAD arm's DAT_00298F58 = 10·FRI]).
+  Census [D through the port's loader]: 07000007 is the ONLY story level placing door guards —
+  6 (placements 404/417/441/442 active, 448/449 waiting on switch channel 21); every other story
+  level has none. Tests (door_guard_live): the census pin, the mutual pairs + the exact [M] plane
+  formulas, the armed sister (hostile, no challenge), the unarmed challenge (0x5f + step 2), the
+  restricted band → the fail reason 0xc + hostile, and the waiting pair activating through ch 21.
+  3/3 pass. Report: docs/reports/door-guard-pairing.md.
+- 2026-10-16 s/pause-music-1b (task 740): Music still plays during the pause menu on
+  0700001b (playtest 1016-1355); earlier fixes stopped it on other levels. Plan: find
+  what is different on 1b (the level's music source or stream, a script-driven track,
+  the space ambience) and pause or stop it the way the game's pause does
+  [M the pause entry's music calls]. Test: pausing on 1b silences the level music;
+  unpausing resumes it. Sister: 05 still behaves. Branch created from origin/master
+  f09f3c6c.
+- pause-music-1b: the pause entry's music calls ported — UpdateMusicalEvents' SFXPaused freeze
+  (0x114e70:61-64; the level-start restart excepted, 0x114e70:43-54) mirrored on the App's pause
+  edge + every sound_tick; UpdateMFX_HT_Level_SpaceStationD 0x114d60 (1b's own updater: the intro
+  cinema 0x0600085c's end restarts the track at section 0, the empty-combat alert arm jumps
+  end_calm 10 instant + FadeDown + WaitForEnd); the Esc arm's ScriptCam gate (0x193600:72 — the
+  port opened a pause over the 1b intro cinema that the game refuses). The engine-level pause
+  probe (pause_music_1b_probe) proved the mixer hold identical on 1b and 05 before the fixes
+  (1b: track 35 sec 4 + 10 ambients; 05: track 15 sec 0 + 2 items). Tests: 2 music unit tests
+  (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
+  binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
+  the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+
+## frag-throw-timing (741)
+
+- Symptom (playtest 1016-1355, 07000014): frag grenades leave the hand before the throw animation
+  finishes — the port spawns them too early. Goal: the game's release frame for the frag throw
+  (the fire script's spawn frame / the release-frame family [M Player_WeaponFiring 0x1a5460,
+  +0x44]) and a fix that spawns the grenade on exactly that tick, measured from the press.
+- Started: reading the decompile.
+- The release path audited end to end [M]: `Player_WeaponFiring` 0x1a5460 tail — the fire tick
+  queues the fire script, and for the `+0x6C & 0x400` + `+0xB4` family (the hand grenades
+  [L ee_start_05.bin 0x34: +0x6C 0x8c08, +0xB4 0x0600049e]) stores view state 0xb and the script
+  rate 1.5 (`AnimList+0x98 = 0x3fc00000`, disasm 0x1a6250 area); case 9's release check
+  (0x1a2e38:411-422) never runs for the family — the state leaves 9 inside the fire tick. Case 0xb
+  (0x1a2e38:499-507) waits `AnimScriptIsStopped` (the ended bit `+0x78 & 0x10000000`, set by
+  `AnimScriptEnd` 0x1c1930:30) then queues the +0xB4 script; case 0xc (0x1a2e38:505-519, disasm
+  0x1a3268-0x1a32c4) carries the release check `+0x44 <= AnimList(4)+0x90` — the +0xB4 playhead,
+  which starts at 1.0 [M AnimScriptInit 0x1c1600:37] and advances 1.0/tick [M AnimScriptTick
+  0x1c2630 mode 0].
+- Frag facts [L ee_start_05.bin record 0x34 / the port's script parse]: +0x44 = 26, fire
+  0x0600049d = 70 frames (pin sound 0x1e4 at frame 16), fire_last 0x0600049e = 35 frames. Release
+  = 46 ticks of fire script at 1.5× + 25 ticks of the +0xB4 = press+71. The port released at
+  press+17 (the case-9 check on the fire script's playhead-26 crossing) — the repro test measured
+  exactly 17 before the fix.
+- Bisect: fix-player2 eb1564b7 introduced the release check against the FIRE script's playhead
+  (release +25 at 1.0×; the playtest 1014-1725 "released while I'm still pulling the pin");
+  f986a6b3 (the 1.5× throw-cadence commit, Oct 15) moved the same wrong-gate check to +17 — the
+  playtest 1016-1355 "way too soon, opposite direction". grenade-rattle2 (693b) touched the
+  bounce-speed cap, not the release. The root error in both: the check ran during the fire script;
+  the game's check for this family lives in the post-script state 0xc against the +0xB4 playhead.
+- Fix: scene.rs's release block gates the family on `view_script == +0xB4` (the case-0xc phase)
+  before running `release_frame_reached`. Test: frag_throw_timing_live (press+71, not the
+  playhead-26 crossing, the fire script still playing at tick ≤20, one grenade per press, the
+  record speed); the sister pins the fire script uninterrupted past the old crossing.
+- The three tests that pinned the old gate (fix_grenade_release_live's release + launch-position,
+  remote_mine_detonate's release frame) contradicted the decompile — fixed per the task rule, with
+  the addresses in the assertions: the release is the +0xB4 playhead reaching +0x44 (case 0xc
+  [M 0x1a2e38:505-519]), the frag at press+71, the mine (fire 40 frames at 1.5× = 26 ticks) at
+  press+51. All four grenade-family test files green on the fixed tree.

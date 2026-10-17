@@ -1,5 +1,5 @@
 //! fix-progress: the difficulty factor measured LIVE — a guard's bullet damage to Bond through the
-//! real AI path (`Drones::tick`), at the default difficulty (2) and at Agent (1), against
+//! real AI path (`Drones::tick`), at the default difficulty (2 = Agent) and at Operative (1) [D difficulty 0x2df4c0 +0xc], against
 //! `Player_HandlePain` 0x1902c8's per-difficulty `Plr_DMod_*` ([L] 07000005: 0.6 / 0.7 / 1.0,
 //! ReadTuningVars 0x1d3a80). The harness is ai_live.rs's Level05, minimised.
 

@@ -31,11 +31,20 @@ impl CreepWall {
     /// The wall's axis endpoints: pos ± fwd(yaw + π/2) · half_len [M 0x196758:80-90: the two vectors
     /// `p + d` and `p − d` with `d = Cartesian(len, yaw + π/2, 0)`].
     pub fn endpoints(&self) -> (V3, V3) {
-        let (s, c) = (self.yaw + std::f32::consts::FRAC_PI_2).sin_cos();
-        let d = [s * self.half_len, 0.0, c * self.half_len];
+        // G-046: d = Vec_Spherical_2_Cartesian(len, yaw + π/2, 0) [M 0x196758:80-90]: the game's θ add is
+        // an EE add.s and the φ = 0 lane still multiplies by cos(0) = sinf(1.5707964) = 0x3f800001 [M
+        // 0x1e3948], so the game's d carries that factor; the ± sums are EE add.s/sub.s.
+        let a = crate::trig::ee_add(self.yaw, crate::trig::HALF_PI);
+        let mul = nf_formats::ps2float::mul;
+        let c0 = crate::trig::sinf(crate::trig::HALF_PI); // cos(0), 0x3f800001 [M 0x1e3948's φ lane]
+        let d = [
+            mul(mul(self.half_len, crate::trig::sinf(a)), c0),
+            0.0,
+            mul(mul(self.half_len, crate::trig::cosf(a)), c0),
+        ];
         (
-            [self.pos[0] + d[0], self.pos[1], self.pos[2] + d[2]],
-            [self.pos[0] - d[0], self.pos[1], self.pos[2] - d[2]],
+            [crate::trig::ee_add(self.pos[0], d[0]), self.pos[1], crate::trig::ee_add(self.pos[2], d[2])],
+            [crate::trig::ee_sub(self.pos[0], d[0]), self.pos[1], crate::trig::ee_sub(self.pos[2], d[2])],
         )
     }
 

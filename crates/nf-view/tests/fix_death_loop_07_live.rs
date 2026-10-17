@@ -202,7 +202,9 @@ fn the_fail_menu_replay_row_serves_the_entry_checkpoint_not_the_dying_state() {
     fe.mission = nf_view::menu::CAMPAIGN.iter().position(|c| c.3 == 0x0700_0005).unwrap(); // 07's mission row
     fe.mission_ended(Outcome::Failed, Stats::default());
     assert_eq!(fe.page, Page::Results);
-    assert_eq!(fe.requested_level.take(), Some(nf_view::menu::FRONTEND_LEVEL), "the end's own load first");
+    // fe-audit: the failure itself loads nothing — the fail menu sits over the paused mission
+    // [M Mission_Update 0x182c60:77-80]; only the answered row loads [M 0x216618:19-21].
+    assert_eq!(fe.requested_level, None, "the failure requests no level [M 0x182c60:77-80]");
     assert!(fe.action(Action::Confirm), "REPLAY (row 0)");
     assert_eq!(fe.requested_level, Some(0x0700_0007), "REPLAY → the mission's level [M 0x216618:20]");
     assert!(fe.flow.warm_reset, "the warm arm [M 0x216618:20]");

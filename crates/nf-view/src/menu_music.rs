@@ -51,7 +51,7 @@ pub enum MusicCmd {
 /// The front end's audio state. One instance lives in [`crate::menu::FrontEnd`].
 pub struct MenuMusic {
     /// The game's `menu_movie` @ 0x2e1c48 [M action-symtab]: true while the jingle pair is up.
-    /// `MenuManager_Create` resets it to 0 on every manager create [M 0x21b908:127].
+    /// `MenuManager_Create` resets it to 0 on every manager create [M 0x21b908:125].
     pub jingles_up: bool,
     /// The game's `DAT_002e1b11` [M 0x1dceb8 case 0x7000048]: the front-end bank alternation.
     /// false → the NEXT front-end load takes bank hash 0xc (jingle 0x1d7), true → 0x38 (jingle
@@ -134,7 +134,7 @@ impl MenuMusic {
         }
     }
 
-    /// The credits page closed [M 0x2152b0:20-38, the 0x4d arm]: `SFXStopMusic`, restore the
+    /// The credits page closed [M 0x2152b0:54-65, the 0x4d arm]: `SFXStopMusic`, restore the
     /// saved volume, and restart the pair if it is down (the arm also restarts it — the credits
     /// always leave it down, so the pair always comes back).
     pub fn credits_leave(&mut self) {
@@ -201,7 +201,7 @@ impl MenuMusic {
 /// The host's per-redraw front-end music step, extracted from `App::menu_music_tick`
 /// (crates/nf-view/src/lib.rs) so the flows are drivable headless. One call per redraw beside
 /// `movie_tick`: runs the page-change transitions — the credits' leave when the page moved off
-/// Credits [M 0x2152b0:20-38], then the new page's enter (the manager's msg-0x44 re-sends 0x4c
+/// Credits [M 0x2152b0:54-65], then the new page's enter (the manager's msg-0x44 re-sends 0x4c
 /// to the new page [M 0x21c858:345-346]) — and drains the queued commands.
 ///
 /// The caller applies the returned commands to the sound driver exactly as `menu_music_tick`
@@ -209,12 +209,11 @@ impl MenuMusic {
 /// loaded level (a mission's bank resolves neither jingle [D SB_12]); `StopJingles`,
 /// `StartMusic`, `StopMusic`, `MusicVolume` and `FadeDownMusic` always run.
 pub fn fe_music_step(fe: &mut crate::menu::FrontEnd, music_page: &mut Option<Page>) -> Vec<MusicCmd> {
-    // The intro run owns the screen: the game's up-page is P_INTRO until the movies end [M
-    // 0x209e88's page change follows the movies] — the port's early page flip to Main (the
-    // menus_flow draw contract) is NOT the game's msg-0x44 to Main, and firing Main's 0x4c here
-    // restarted the jingle UNDER the intro (menu-audio-state). Hold the transition: the
-    // intro-end restart (open_pair_sfx) collapses the pair, and the real page enter after it
-    // sends nothing while the pair is up.
+    // The intro run owns the screen: the up-page is P_INTRO / P_PARISENUM / P_ESTHERO until the
+    // movies end [M 0x209e88:49-51, 0x20a060:44-45] — none of them starts the jingle pair on its
+    // 0x4c, and their movie starts remove it. Hold the transition: the finish arm's restart
+    // (open_pair_sfx) brings the pair back, and the real page enter after it sends nothing
+    // while the pair is up.
     if fe.intro_playing {
         return fe.music.take_cmds();
     }
@@ -230,4 +229,14 @@ pub fn fe_music_step(fe: &mut crate::menu::FrontEnd, music_page: &mut Option<Pag
 
 impl Default for MenuMusic {
     fn default() -> Self { Self::new() }
+}
+
+/// menu-music-stack: whether a drained menu sfx event goes to the driver. The page-open pair (0x1d7 /
+/// 0x470) does NOT: the music channel (`MusicCmd::StartJingle`) is its single owner and starts only the
+/// loaded front-end bank's one jingle [M Sound_Ready 0x1dceb8:91-96 — bank 0xc carries 0x1d7, bank 0x38
+/// 0x470; the game never has both resident]. The port's driver searches EVERY resident slot (spares
+/// included), so sending the pair through as well stacked the same song twice plus the other one — the
+/// user's "the menu music is playing multiple songs" (playtests 1015, 1016).
+pub fn menu_sfx_reaches_driver(id: u32) -> bool {
+    !matches!(id, crate::menu::SFX_MENU_OPEN_MOVE | crate::menu::SFX_MENU_OPEN_SELECT)
 }

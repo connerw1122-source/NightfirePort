@@ -167,9 +167,11 @@ fn guard_throws_a_grenade_on_level_02() {
     assert!(sim2.grenades.len() == grenades_before, "guard out of range (dist 30) does not throw");
 }
 
-/// Unforced: a grenade guard on 07000009, Bond in range (15 m), run 1800 ticks (30 s at 60 Hz).
-/// The guard should decide to throw through its own decision tree, with the game's RNG.
-/// On 07000009, guards have dtype=0xd, mode_normal=0 → mode 9 (HostageKillerAttack — a combat guard).
+/// Unforced: a grenade guard on 07000002 (the test loads Level02 — the old doc said 07000009), Bond in
+/// range (15 m), run 1800 ticks (30 s at 60 Hz). The guard should decide to throw through its own
+/// decision tree, with the game's RNG. [S unverified: the dtype=0xd / mode 9 note below was written
+/// for 07000009 and is not re-checked for 07000002.]
+/// (07000009 note: guards have dtype=0xd, mode_normal=0 → mode 9 (HostageKillerAttack — a combat guard).)
 /// Sister: Bond at 30 m (out of range) → no throw in the same number of ticks.
 #[test]
 fn guard_decides_to_throw_grenade_unforced() {

@@ -23,7 +23,7 @@
 //!   * `SShd` type **1 = 16-bit little-endian PCM** (Nightfire: all 20 audio-bearing movies — kind 1, 48000 Hz,
 //!     2 channels, interleave 512; the body is exactly `seconds · rate · channels · 2` bytes, e.g. 07100001.PSS:
 //!     8,194,048 = 42.67 s × 48000 × 4). The `interleave` and the game's own volume path (`changeInputVolume`)
-//!     are unchanged; the samples are plain interleaved i16 LE pairs, not ADPCM frames.
+//!     are unchanged; the samples are i16 LE, BLOCK-interleaved by `interleave` bytes per channel (L block, R block, …) [D 2026-10-16], not ADPCM frames.
 
 use crate::buf::{invalid, Result};
 use crate::vag::{decode_frame, History, Variant, FRAME_BYTES, FRAME_SAMPLES};
@@ -279,17 +279,26 @@ impl<'a> Audio<'a> {
     /// Seconds at the header rate.
     pub fn seconds(&self) -> f64 { self.samples() as f64 / self.header.rate as f64 }
 
-    /// Decodes both channels (a mono stream is duplicated). PCM (kind 1): interleaved i16 LE pairs, in file
-    /// order. ADPCM (kind 0x10): the port's SPU ADPCM decoder ([`crate::vag::decode_frame`], rounded form), each
+    /// Decodes both channels (a mono stream is duplicated). PCM (kind 1): i16 LE, block-interleaved by `interleave`
+    /// bytes per channel. ADPCM (kind 0x10): the port's SPU ADPCM decoder ([`crate::vag::decode_frame`], rounded form), each
     /// channel one continuous stream from zero history, at the header rate. A trailing partial block is dropped.
     pub fn decode(&self) -> Vec<[i16; 2]> {
         if self.header.kind == AUDIO_TYPE_PCM {
+            // movie-audio: the PCM body is BLOCK-interleaved like the ADPCM one — `interleave` bytes of
+            // the left channel, then `interleave` bytes of the right, in turn [D measured 2026-10-16 on
+            // 073B0048: the block reading's mean |Δ| per sample is 350 vs 607 read sample-interleaved].
+            // Read as L R pairs, each channel got every OTHER sample of one channel (double speed, high
+            // pitched) with a channel swap at every 512-byte block (static) — the user's playtest.
             let ch = self.header.channels as usize;
+            let il = (self.header.interleave as usize).max(2);
+            let per_block = il / 2; // samples per channel per block
             let n = self.body.len() / (2 * ch);
             let mut out = vec![[0i16; 2]; n];
             for i in 0..n {
+                let (blk, off) = (i / per_block, i % per_block);
                 for c in 0..ch {
-                    let at = (i * ch + c) * 2;
+                    let at = blk * il * ch + c * il + off * 2;
+                    if at + 1 >= self.body.len() { break; }
                     let v = i16::from_le_bytes([self.body[at], self.body[at + 1]]);
                     out[i][c] = v;
                     if ch == 1 { out[i][1] = v; }
@@ -360,18 +369,27 @@ mod tests {
     /// interleaved i16 LE pairs in file order (a sine sweep survives the round trip; RC2's 0x10 still parses).
     #[test]
     fn pcm_audio_kind_1() {
-        let pcm: Vec<i16> = (0..256i32).map(|i| ((i * 137) % 6553) as i16 - 3276).collect();
+        // Block-interleaved stereo: `interleave` bytes of L, then the same of R, per block [L the disc's
+        // movies — tests/movie_audio_layout_live.rs; the sample-interleaved reading played static at
+        // the wrong pitch, playtest 1016]. Two blocks of 256 samples per channel.
+        let l: Vec<i16> = (0..512i32).map(|i| ((i * 137) % 6553) as i16 - 3276).collect();
+        let r: Vec<i16> = (0..512i32).map(|i| -(((i * 59) % 4099) as i16)).collect();
         let mut body = Vec::new();
-        for v in &pcm { body.extend_from_slice(&v.to_le_bytes()); }
+        for blk in 0..2 {
+            for v in &l[blk * 256..blk * 256 + 256] { body.extend_from_slice(&v.to_le_bytes()); }
+            for v in &r[blk * 256..blk * 256 + 256] { body.extend_from_slice(&v.to_le_bytes()); }
+        }
         let bytes = [audio_header_kind(AUDIO_TYPE_PCM, 48000, 2, 512, body.len() as u32), body].concat();
         // The RC2-era parser rejected this outright: kind 1 is PCM, not SPU ADPCM.
         assert_eq!(u32::from_le_bytes(bytes[8..12].try_into().unwrap()), AUDIO_TYPE_PCM);
         let a = Audio::parse(&bytes).unwrap();
         assert_eq!((a.header.kind, a.header.rate, a.header.channels, a.header.interleave), (1, 48000, 2, 512));
-        assert_eq!(a.samples(), 128);
+        assert_eq!(a.samples(), 512);
         let out = a.decode();
-        assert_eq!(out.len(), 128);
-        assert!(out.iter().zip(pcm.chunks_exact(2)).all(|(o, l)| o[0] == l[0] && o[1] == l[1]));
+        assert_eq!(out.len(), 512);
+        assert!(out.iter().enumerate().all(|(i, o)| o[0] == l[i] && o[1] == r[i]), "L and R come back from their blocks");
+        // Sister: the old sample-interleaved reading would pair L[0] with L[1].
+        assert_ne!(out[0], [l[0], l[1]]);
         // ADPCM kind 0x10 still parses (the RC2 path is unchanged).
         let adpcm = [audio_header(48000, 2, 0x20, 64), vec![0x11u8; 64]].concat();
         let a = Audio::parse(&adpcm).unwrap();

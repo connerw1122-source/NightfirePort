@@ -244,13 +244,18 @@ impl Pickup {
     /// concatenated per tick — about +Y by 1/60 rad.
     pub fn spin_tick(&mut self) {
         if !self.spin { return; }
-        let a = 1.0f32 / 60.0;
-        let (s, c) = a.sin_cos();
+        // G-046: the spin is RotMatrix((0, REC_FRAME_RATE, 0)) [M 0x18e148:193-201] — REC_FRAME_RATE
+        // 0x3c888889 [L ee_snapshot 0x30d0dc], its sines PS2Sinf3 lanes [M RotMatrix 0x1e2368:28-31],
+        // the row products/sums EE mul.s/add.s.
+        let a = f32::from_bits(0x3c88_8889);
+        let s = crate::trig::sinf(a);
+        let c = crate::trig::cosf(a);
+        let mul = nf_formats::ps2float::mul;
         // Rotate the matrix's x/z rows about Y, keeping the translation row.
         for r in 0..3 {
             let (x, z) = (self.m[r][0], self.m[r][2]);
-            self.m[r][0] = x * c + z * s;
-            self.m[r][2] = z * c - x * s;
+            self.m[r][0] = crate::trig::ee_add(mul(x, c), mul(z, s));
+            self.m[r][2] = crate::trig::ee_sub(mul(z, c), mul(x, s));
         }
     }
 

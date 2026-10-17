@@ -28,8 +28,7 @@ fn to_missions(fe: &mut FrontEnd) {
     to_main(fe);
     assert!(act(fe, Action::Confirm), "NightFire");
     assert_eq!(fe.page, Page::Codename);
-    assert!(act(fe, Action::Down));
-    assert_eq!(fe.cursor, 1, "Play without saving");
+    assert_eq!(fe.cursor, 1, "opened from Main on Play without saving [M P_NFSELECT 0x20aec0:96-97]");
     assert!(act(fe, Action::Confirm), "the confirm box opens");
     assert!(act(fe, Action::Confirm), "the box's yes");
     assert_eq!(fe.page, Page::Difficulty);
@@ -41,7 +40,11 @@ fn to_missions(fe: &mut FrontEnd) {
 fn a_fresh_profile_can_start_the_first_on_foot_mission() {
     let mut fe = FrontEnd::new();
     to_missions(&mut fe);
-    assert_eq!(fe.cursor, 0, "a fresh profile opens on Paris Prelude");
+    // The list opens on the HIGHEST unlocked row — The Exchange on a fresh profile (rows 0-1
+    // [D sp_level .data]) [M P_NFMAP 0x20b608:60-64]. Up reaches Paris Prelude.
+    assert_eq!(fe.cursor, 1, "a fresh profile opens on The Exchange [M 0x20b608:60-64]");
+    assert!(act(&mut fe, Action::Up));
+    assert_eq!(fe.cursor, 0, "Paris Prelude");
     // Paris Prelude is a DRIVING mission (0x09000001): the port can't play it — a notice, no
     // request, and the flow is NOT left in the DRIVING.ELF state.
     assert!(act(&mut fe, Action::Confirm));
@@ -99,8 +102,9 @@ fn to_scenario(fe: &mut FrontEnd) {
 fn local_mp_backs_out_of_setup_and_still_reaches_one_match_request() {
     let mut fe = FrontEnd::new();
     to_scenario(&mut fe);
-    // Row 1 = Arena (free-for-all) → the map page → setup on the CHARACTER prompt (no team pick).
-    assert!(act(&mut fe, Action::Down));
+    // Row 1 = Arena (free-for-all) — the wheel opens there, the row of MPSettings+0x1A4 = 1 [M
+    // P_MPSCENARIO 0x217348:25; bootup 0x1c7e78:30] → the map page → setup on the CHARACTER prompt.
+    assert_eq!(fe.mp_scenario_row, 1);
     assert!(act(&mut fe, Action::Confirm), "the scenario");
     assert_eq!(fe.page, Page::MpMap);
     assert!(act(&mut fe, Action::Confirm), "the map");
@@ -157,17 +161,18 @@ fn quick_game_back_out_and_restart() {
     let mut fe = FrontEnd::new();
     to_scenario(&mut fe);
     // Row 0 = Quick Game → straight to the confirm page [M C_SBMPSCEN:48-145].
+    assert!(act(&mut fe, Action::Up), "the wheel opens on Arena; Up reaches Quick Game");
+    assert_eq!(fe.mp_scenario_row, 0);
     assert!(act(&mut fe, Action::Confirm));
     assert_eq!(fe.page, Page::MpConfirm);
+    // fe-audit: Back is the manager's 0x5f pop — the Quick Game open PUSHED the scenario page
+    // [M Menu_ChangePageCloseIris 0x202190:8-9 with DAT_002e1adc = 0; 0x21c858 case 0x44] and
+    // P_MPCONFIRM 0x20ec00 has no back arm. The old walk went to MpOptions → MpSetup.
     assert!(act(&mut fe, Action::Back));
-    assert_eq!(fe.page, Page::MpOptions);
-    assert!(act(&mut fe, Action::Back));
-    assert_eq!(fe.page, Page::MpSetup);
-    // The quick game's scenario is FFA: the character prompt, not the team one.
-    assert_ne!(fe.mp_setup_state, 2, "no team prompt for a free-for-all");
-    assert!(act(&mut fe, Action::Confirm));
-    assert!(act(&mut fe, Action::Confirm));
-    assert!(act(&mut fe, Action::Confirm), "Continue");
+    assert_eq!(fe.page, Page::MpScenario, "Quick Game's Back pops to the scenario page");
+    assert_eq!(fe.mp_scenario_row, 1, "the re-open selects +0x1A4 = 1, Arena [M 0x217348:25, 0x20c600:54]");
+    assert!(act(&mut fe, Action::Up));
+    assert!(act(&mut fe, Action::Confirm), "Quick Game again");
     assert_eq!(fe.page, Page::MpConfirm);
     assert!(act(&mut fe, Action::Confirm));
     assert!(fe.requested_level.is_some(), "the match still starts after backing out");
@@ -177,6 +182,7 @@ fn quick_game_back_out_and_restart() {
 fn a_notice_is_dismissed_by_back_too_and_swallows_other_keys() {
     let mut fe = FrontEnd::new();
     to_missions(&mut fe);
+    assert!(act(&mut fe, Action::Up), "the list opens on The Exchange [M 0x20b608:60-64]; Up to Paris Prelude");
     assert!(act(&mut fe, Action::Confirm), "Paris Prelude → the notice");
     assert!(fe.notice.is_some());
     assert!(!act(&mut fe, Action::Up));

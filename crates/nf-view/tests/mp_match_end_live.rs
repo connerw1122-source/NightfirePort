@@ -38,7 +38,7 @@ fn handover_fe(board: nf_game::mp::debrief::MpDebriefing, settings: &nf_game::mp
     fe.show_mp_debriefing(board);
     fe.requested_level = Some(nf_view::menu::FRONTEND_LEVEL);
     fe.flow.reset_map_level_to_load(nf_view::menu::FRONTEND_LEVEL, false, false);
-    fe.flow.push_state(nf_view::menu::ST_FADE_HOLD);
+    fe.flow.push_state(7, 60); // the raw id [M 0x184bd0 case 4: PushState(0x42700000, 7) = 60.0f]
     fe
 }
 

@@ -12,7 +12,7 @@
 //!   row 0 → `ResetMap_LevelToLoad(GameState._12_4_, 1, 1)` + `Player_RamLoad(Bond, 1)`
 //!   (0x216618:19-21) — the CURRENT level (GameState+0xC), `IsWarmReset = 1`, no 0x70→0x71 remap;
 //!   row 1 → `ResetMap_LevelToLoad(Mission_BaseMapHCode(), 0, 1)` (BaseMap, cold, :15-17);
-//!   row 2 → `GameState+0x28 = 0x4000001c` + `ResetMap_LevelToLoad(0x7000048, 0, 0)` (the front end).
+//!   row 2 → `GameState+0x1c = 0x4000001c` + `ResetMap_LevelToLoad(0x7000048, 0, 0)` (the front end).
 //! - The warm reload keeps the switch channels (`Init_SwitchChannels` only runs `IsWarmReset == 0`,
 //!   0x1d5080:48-50) and `Player_RamLoad` restores them from the RamSave (0x1957a8:17-20). The
 //!   RamSave the restart restores is the ENTRY checkpoint — `Player_RamSave` ran at the previous

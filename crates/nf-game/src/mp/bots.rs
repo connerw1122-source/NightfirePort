@@ -393,7 +393,7 @@ pub const fn state_type(state: u32) -> u8 {
 // which state it switches to), so phase 4 turns the arms into real calls.
 // Compiled only for tests or with the `mp-bots` feature — nothing calls it.
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// A bot message id, the way `NDrone2_DSTATE_BotGlobal` switches on `*msg` [M 0x16E060].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct BotMsg {
@@ -405,7 +405,7 @@ pub struct BotMsg {
 }
 
 /// What the game does per message — the skeleton's outcome descriptors.
-#[cfg(any(test, feature = "mp-bots"))]
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BotGlobalOutcome {
     /// `return 0` without action (msg 0x00 and the 0x2F..0x39/0x3E/0x3F block).
@@ -452,7 +452,7 @@ pub enum BotGlobalOutcome {
 /// `scenario` is MPSettings+0x420 (the mode word — the 0x40/0x41 arms read it);
 /// `has_opponent` mirrors `Drone+0x170 != 0`; `goal_slot_flag` mirrors the
 /// `BOT_vars+0x771` re-entry flag.
-#[cfg(any(test, feature = "mp-bots"))]
+
 pub fn bot_global_dispatch(
     msg: BotMsg,
     scenario: u32,
@@ -556,16 +556,16 @@ pub fn bot_global_dispatch(
 // the ignore block returns 1 while the default arm returns 0 (re-delivery) [M :757/:115];
 // msg 3 is the per-tick heartbeat with the death branch inside it, not "killed" [M :84-519].
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 use crate::drone::Rng;
-#[cfg(any(test, feature = "mp-bots"))]
+
 use crate::world::CollisionWorld;
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// The fixed 60 Hz frame count the timers use [L docs/systems/sound.md:394 `FRAME_RATE_INT`].
 pub const FRAME_RATE_INT: u32 = 60;
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// One 0x50-byte goal slot (`BOT_vars+0x00` / `+0x50`) — offsets per [M docs/fields/bot-vars.md].
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct GoalSlot {
@@ -609,7 +609,7 @@ pub struct GoalSlot {
     pub subtype: u8,
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 impl Default for GoalSlot {
     fn default() -> Self {
         GoalSlot {
@@ -634,7 +634,7 @@ impl Default for GoalSlot {
     }
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// One registered MP pickup — the `MP_PICKUP` row subset the goal machine reads
 /// [M 0x189d80 `MP_RegisterPickup`, 0x126b88:386-460, 0x129958].
 #[derive(Clone, Debug, PartialEq)]
@@ -653,7 +653,7 @@ pub struct BotPickup {
     pub visit: [f32; 4],
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// One row of the `BOT_vars+0xB0` per-player info block (`BOT_setOtherPlayerInfo` 0x125390).
 #[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct OtherPlayer {
@@ -675,7 +675,7 @@ pub struct OtherPlayer {
     pub score: f32,
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// The world view one brain reads each tick — the port's `MPGame`/`MPSettings`/object stand-ins.
 /// Every field carries its game origin; the collision world stands in for `BoundsTest` LOS
 /// (the same *Deviation* `nav.rs` documents).
@@ -707,7 +707,7 @@ pub struct BotCtx<'a> {
     pub stationary: bool,
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// The bot's weapon fire parameters — lifted from `weapon_data` by the caller
 /// (`BOTWEAP_InitWeapon` 0x129e48 sets the default; `DroneWeap_NextBulletTime` 0x179d40 reads).
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -721,7 +721,7 @@ pub struct BotWeapon {
     pub aggression_mul: f32,
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// The `BOT_vars_t` subset the ported states touch — every field carries its offset in the comment.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BotVars {
@@ -766,7 +766,7 @@ pub struct BotVars {
     pub resume_state: u16,       // Drone+0x5A6 (the 0xF6 door-detour resume marker)
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 impl Default for BotVars {
     fn default() -> Self {
         BotVars {
@@ -809,7 +809,7 @@ impl Default for BotVars {
     }
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// One fired shot (the port's `DroneWeap_FireWeapon` event — the caller spawns the bullet).
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct BotShot {
@@ -819,7 +819,7 @@ pub struct BotShot {
     pub weapon: u8,
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// One MP bot brain: the `BotVars` slot, the SM state and the per-tick driver
 /// (`Drone_Control` → `ControlSTANDARD` → `SendMsgSelf(3)` → `RouteMsgDCV` order).
 pub struct BotBrain {
@@ -847,7 +847,7 @@ pub struct BotBrain {
     pending: Option<u8>,
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 /// `BOTSTATE_getStateType` is already above; the states the port dispatches to.
 mod st {
     pub use super::state::*;
@@ -860,7 +860,7 @@ mod st {
     pub const BOT_SEEN_OPPONENT: u8 = 0xEC; // Stub: ENTER → 0xCF [M 0x175268:9-13]
 }
 
-#[cfg(any(test, feature = "mp-bots"))]
+
 impl BotBrain {
     /// `BOT_init` 0x1249e8 (the port's lift of the BOT_vars-relevant half) + the 0xC3 ENTER
     /// chain [M 0x1748c8:16-18: setNearestNavNode, +0x766 = 0, SetState(0xF9)]:

@@ -15,31 +15,31 @@ fn the_roll_follows_the_decompile_rule_for_a_fixed_seed() {
     for seed in 0..16u32 {
         let mut rng = nf_game::drone::Rng::new(seed);
         let before = (rng.x, rng.y);
-        assert!(!nf_game::effect::penetration_roll(&mut rng, 0x0a, 0x06), "plain stone never pierces");
+        assert!(!nf_game::effect::penetration_roll(&mut rng, 0x0a, 0x06, 0), "plain stone never pierces");
         assert_eq!((rng.x, rng.y), before, "no 0x80 → no draw");
     }
     // The weapons 0x50/0x51 skip the arm entirely — even with 0x80 set, no draw [M 0x12cfbc].
     let mut rng = nf_game::drone::Rng::new(1);
     let before = (rng.x, rng.y);
-    assert!(!nf_game::effect::penetration_roll(&mut rng, 0x8a, 0x50));
-    assert!(!nf_game::effect::penetration_roll(&mut rng, 0x8a, 0x51));
+    assert!(!nf_game::effect::penetration_roll(&mut rng, 0x8a, 0x50, 0));
+    assert!(!nf_game::effect::penetration_roll(&mut rng, 0x8a, 0x51, 0));
     assert_eq!((rng.x, rng.y), before, "weapons 0x50/0x51 never draw");
     // 0x40 alone: forced pierce, still no draw [M 0x12cfd0].
     let mut rng = nf_game::drone::Rng::new(1);
     let before = (rng.x, rng.y);
-    assert!(nf_game::effect::penetration_roll(&mut rng, 0x4a, 0x06), "bit 0x40 forces the pierce");
+    assert!(nf_game::effect::penetration_roll(&mut rng, 0x4a, 0x06, 0), "bit 0x40 forces the pierce");
     assert_eq!((rng.x, rng.y), before, "bit 0x40 draws nothing");
     // 0x80: exactly one Rand_Rand(0x3f) draw and the pierce == bit 0 of the roll.
     for seed in 0..64u32 {
         let mut ref_rng = nf_game::drone::Rng::new(seed);
         let roll = ref_rng.rand(0x3f); // the game's draw
         let mut rng = nf_game::drone::Rng::new(seed);
-        let pierce = nf_game::effect::penetration_roll(&mut rng, 0x8a, 0x06);
+        let pierce = nf_game::effect::penetration_roll(&mut rng, 0x8a, 0x06, 0);
         assert_eq!(pierce, roll & 1 != 0, "seed {seed}: pierce must equal roll bit 0");
         assert_eq!((rng.x, rng.y), (ref_rng.x, ref_rng.y), "seed {seed}: exactly one draw, the same one");
         // Sister: the forced 0x40 ORs over the roll (always pierce, one draw).
         let mut rng2 = nf_game::drone::Rng::new(seed);
-        assert!(nf_game::effect::penetration_roll(&mut rng2, 0xca, 0x06), "0x40|0x80 always pierces");
+        assert!(nf_game::effect::penetration_roll(&mut rng2, 0xca, 0x06, 0), "0x40|0x80 always pierces");
     }
 }
 

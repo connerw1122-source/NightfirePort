@@ -57,7 +57,9 @@ impl Wire {
     pub fn create(p: &Placement, obj: Option<&MapObject>) -> Option<Wire> {
         let o = obj?;
         let yaw = p.rotation[1];
-        let (s, c) = yaw.sin_cos();
+        // G-046: the object-matrix yaw rows are PS2Sinf-built [M Control_BuildWorldSph 0x133070's matrix;
+        // nf-formats::placement::object_matrix already runs anim::sinf] — the port's rebuild follows.
+        let (s, c) = (crate::trig::sinf(yaw), crate::trig::cosf(yaw));
         // The world sphere: the glist bounds centre through the yaw-only object matrix + translation
         // (the same computation as `Ladder::create` / `Bond::sphere_centre`) [M 0x133070].
         let centre = [
@@ -202,8 +204,9 @@ pub fn icons(level: &Level) -> Vec<Icon> {
             let Some(o) = obj else { continue };
             // The world sphere through the yaw-only object matrix + translation (the same
             // computation as `Wire::create`) [M Control_BuildWorldSph 0x133070, via 0x1c9680:40].
+            // G-046: the yaw rows are PS2Sinf-built [M] — the port's rebuild follows.
             let yaw = p.rotation[1];
-            let (s, c) = yaw.sin_cos();
+            let (s, c) = (crate::trig::sinf(yaw), crate::trig::cosf(yaw));
             let centre = [
                 p.translation[0] + o.centre[0] * c + o.centre[2] * s,
                 p.translation[1] + o.centre[1],

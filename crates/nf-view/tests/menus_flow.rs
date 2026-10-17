@@ -6,8 +6,31 @@
 //! P_START 0x20a408, C_SBNFMAP 0x20b8d8, C_SBNFDFCTY 0x216ca8, the page table in ACTION.ELF .data,
 //! the menu-def (kind-8 entry 08000002 in 07000048.bin) and `sp_level` 0x2df2e0 (fix-menus2).
 
-use nf_view::menu::{self, Action, FrontEnd, Outcome, Page, Stats, ST_FADE_HOLD, ST_MAPLOAD, ST_MOVIE, ST_RUNNER};
+use nf_view::menu::{self, Action, FrontEnd, Outcome, Page, Stats, ST_FADE_HOLD, ST_MAPLOAD, ST_RUNNER};
 use nf_view::gpu;
+
+/// START → P_PARISENUM → P_ESTHERO → Main, the decompile's chain [M P_PARISENUM 0x20a648:43 opens
+/// 0x40000043; P_ESTHERO 0x20a060:16-25 starts 0x073B0048 on its 2nd 0x50 with the grace 0xb4;
+/// the skip is refused until the grace runs out (Menu_StopMovie 0x215a50:6) and the stop lands Main
+/// on the next 0x50 (0x20a060:28-45)]. GameFlow stays in its runner state [M no PushState there].
+fn start_to_main(fe: &mut FrontEnd) {
+    assert_eq!(fe.page, Page::Start);
+    assert!(fe.action(Action::Confirm), "START");
+    for _ in 0..8 { if fe.intro_movie { break; } fe.tick(); }
+    assert!(fe.intro_movie, "P_ESTHERO's movie is up");
+    for _ in 0..menu::ESTHERO_GRACE { fe.tick(); }
+    assert!(fe.action(Action::Confirm), "the skip past the grace");
+    fe.tick();
+    assert_eq!(fe.page, Page::Main);
+}
+
+/// Main's NightFire / Codenames rows change page after the 0x13-tick delay with input blocked
+/// [M C_GONIGHTFIRE 0x2169b8:29-37, C_GOCODENAMES 0x216b38:29-37], and the opened page blocks
+/// input for 0xf more ticks [M P_NFSELECT 0x20aec0:75-76, P_CNSELECT 0x212ad0:73-74].
+fn main_confirm(fe: &mut FrontEnd) {
+    assert!(fe.action(Action::Confirm));
+    for _ in 0..menu::DELAYED_PAGE_TICKS + menu::MAIN_OPEN_BLOCK { fe.tick(); }
+}
 
 #[allow(dead_code)]
 /// Drives the boot path to the title the way `GameFlow_Main` + `ResetMap_Load` would [M 0x1c98c8/0x1d6360].
@@ -22,10 +45,13 @@ fn tick_to_title(fe: &mut FrontEnd) {
 #[test]
 fn boot_reaches_the_title_through_the_load_path() {
     let mut fe = FrontEnd::new();
-    // Boot state 1, page 0x40000034 = P_START [M 0x1c7e78 sets +0x28 = 0x40000034].
+    // Boot state 1, GameState+0x1c = 0x40000034 = P_LANGUAGE [M 0x1c7e78:24; 0x2029e0:302-303].
+    // The port does not model P_LANGUAGE / P_PS2MEMCARDINIT: FrontEnd::new opens the title
+    // 0x40000009 [M 0x2029e0:321-323] (the window runs P_INTRO first — start_boot_intro).
     assert_eq!(fe.flow.get_state(), 1);
     assert_eq!(fe.flow.page, 0x4000_0034);
     assert_eq!(fe.page, Page::Start);
+    assert_eq!(fe.page.id(), 0x4000_0009, "the title is P_START 0x40000009 [M 0x2029e0:321]");
     // State 1 runs bootup (pushes 2) and Reset_MapLoadSettings, which requests the front-end map [M
     // 0x1c98c8 case 1 + 0x1d6958: +0x8 = 0x7000048 → ResetMap_LevelToLoad → push 3].
     fe.flow.main_tick();
@@ -33,37 +59,48 @@ fn boot_reaches_the_title_through_the_load_path() {
     assert_eq!(fe.flow.level_to_load, menu::FRONTEND_LEVEL);
     // A plain load (no 0x71 wrap for 0x7000048 — not in 0x1d3800's switch): one load_tick finishes it.
     assert!(fe.flow.load_tick());
-    assert_eq!(fe.flow.current_level, menu::FRONTEND_LEVEL, "GameState+0x12 [M 0x1d6360 phase 2]");
+    assert_eq!(fe.flow.current_level, menu::FRONTEND_LEVEL, "GameState+0xc [M 0x1d6360 phase 2]");
     assert_eq!(fe.flow.get_state(), ST_RUNNER, "pop 3, push 4, Locks_Init pops [M 0x1d6360 tail + 0x1c98c8 case 4]");
     assert!(!fe.flow.skip_draw, "state 2 draws [M 0x1c98c8's draw switch]");
 }
 
-/// fix-menus2: the driver's observed page order — Title → (movie) → Main → Codename → Difficulty →
-/// Single Player — with the game's own page ids [L PCSX2 2026-10-13; the ids from the menu-def].
+/// fix-menus2 / fe-audit: the page chain — Title → P_PARISENUM → P_ESTHERO (movie) → Main → Codename
+/// → Difficulty → Single Player — with the game's own page ids [M P_PARISENUM 0x20a648:43, P_ESTHERO
+/// 0x20a060:44-45, C_GONIGHTFIRE 0x2169b8:37, P_NFSELECT 0x20aec0:100-104, C_SBNFDFCTY 0x216ca8:16].
 #[test]
 fn the_page_sequence_matches_the_real_game() {
     let mut fe = FrontEnd::new();
     tick_to_title(&mut fe);
-    assert_eq!(fe.page.id(), 0x4000_0034, "the boot page is P_START [M 0x1c7e78]");
-    // Start → the intro movie, then the main menu [M P_INTRO 0x209e88 plays the background FMVs then
-    // opens the next page; GameFlow_Main case 6 pops on the skip action].
+    assert_eq!(fe.page.id(), 0x4000_0009, "the title is P_START 0x40000009 [M 0x2029e0:321]");
+    // START → P_PARISENUM 0x4000004a [S unverified: the send is menu-def script data]; its first
+    // 0x50 opens P_ESTHERO 0x40000043 [M 0x20a648:36-44], whose 2nd 0x50 starts the movie.
     assert!(fe.action(Action::Confirm));
-    assert_eq!(fe.flow.get_state(), ST_MOVIE, "the gun-barrel intro is the game's movie state");
-    fe.flow.main_tick();
+    assert_eq!(fe.page.id(), 0x4000_004a, "P_PARISENUM");
+    assert_eq!(fe.flow.get_state(), ST_RUNNER, "no GameFlow state 6 — a menu background movie [M 0x20a060:24-25]");
+    fe.tick();
+    assert_eq!(fe.page.id(), 0x4000_0043, "P_ESTHERO [M 0x20a648:43]");
+    fe.tick();
+    assert!(!fe.intro_movie, "the 1st 0x50 only counts [M 0x20a060:16, :27]");
+    fe.tick();
+    assert!(fe.intro_movie, "the 2nd 0x50 starts 0x073B0048 [M 0x20a060:16-24]");
+    assert_eq!(fe.intro_movie_code(), menu::ESTHERO_MOVIE);
+    assert_eq!(fe.page, Page::EstHero, "the page is P_ESTHERO during the movie, not Main [M 0x20a060:44-45]");
+    // The movie runs out (headless budget = 1756 pictures x 2 ticks [D]); the finish arm opens Main.
+    for _ in 0..menu::ESTHERO_TICKS - 1 { fe.tick(); }
+    assert_eq!(fe.page, Page::EstHero, "Main waits for psiMovieFinished");
+    fe.tick();
     assert_eq!(fe.page, Page::Main);
-    assert_eq!(fe.page.id(), 0x4000_0002, "the main menu is menu-def page 0x4000002e→0x40000002's data: rows NightFire/Multiplayer/Codenames [M]");
-    // The movie pops when it finishes (skippable [M case 6, Input_Action(-1, 0x19)]).
-    let skip_ticks = fe.flow.movie_frames;
-    for _ in 0..skip_ticks { fe.flow.main_tick(); }
-    assert_eq!(fe.flow.get_state(), ST_RUNNER, "the movie state popped after its frames");
-    // NightFire → Select Codename [M C_GONIGHTFIRE 0x2169b8; the driver's observed order].
-    fe.action(Action::Confirm); // cursor 0 = NightFire
+    assert_eq!(fe.page.id(), 0x4000_0002, "the main menu [M 0x20a060:45 `0x44, 0x40000002`]");
+    assert_eq!(fe.flow.get_state(), ST_RUNNER);
+    // NightFire → Select Codename after the 0x13 delay [M C_GONIGHTFIRE 0x2169b8:29-37].
+    main_confirm(&mut fe); // cursor 0 = NightFire
     assert_eq!(fe.page, Page::Codename);
     assert_eq!(fe.page.id(), 0x4000_0025, "Select Codename [M menu-def page 0x40000025 header Txt 0x1f2]");
-    // "Play without saving" → the game's confirm box pops, ✕ continues → Select Difficulty
-    // [M the page's plate control 0x100001f2; the driver's PCSX2 transcript]. Row 0 is now
-    // "New Codename" [M Menu_EnumSaves 0x1f7b78:58-66]; Down reaches row 1.
-    assert!(fe.action(Action::Down), "Down moves to Play without saving");
+    // Opened from Main the page selects row 1 "Play without saving" [M P_NFSELECT 0x20aec0:83,
+    // :96-97]. Its ✕ pops the confirm box, ✕ continues → Select Difficulty [M C_SBNFCN
+    // 0x20b390:19-21; P_NFSELECT 0x20aec0:100-104]. (△ cancels the box [S: the driver's
+    // transcript — Menu_UpdateOptionBox is not decoded].)
+    assert_eq!(fe.cursor, 1, "the codename page opens on Play without saving [M 0x20aec0:96-97]");
     assert!(fe.action(Action::Confirm));
     assert!(fe.confirming_default_profile, "the first confirm arms the box");
     assert!(fe.action(Action::Back), "△ cancels the box");
@@ -73,6 +110,7 @@ fn the_page_sequence_matches_the_real_game() {
     assert!(fe.action(Action::Confirm), "✕ continues through the box");
     assert_eq!(fe.page, Page::Difficulty);
     assert_eq!(fe.page.id(), 0x4000_0023, "Select Difficulty [M menu-def page 0x40000023 header Txt 0x1f8]");
+    assert_eq!(fe.cursor, 0, "opened from the codename page the wheel 0x100000bf starts on index 0 [M 0x216bf8:10-12]");
     // Confirming the difficulty → the Single Player list [M C_SBNFDFCTY 0x216ca8:10-17 opens
     // 0x4000001c; the driver's observed order Select Difficulty → Single Player].
     assert!(fe.action(Action::Confirm));
@@ -80,6 +118,9 @@ fn the_page_sequence_matches_the_real_game() {
     assert_eq!(fe.page.id(), 0x4000_001c, "Single Player [M menu-def page 0x4000001c header Txt 0x14c]");
     // The campaign is sp_level's 12 rows [M 0x2df2e0, 12 × 0x18-byte records].
     assert_eq!(fe.rows(), 12);
+    // The list opens on the HIGHEST unlocked row [M P_NFMAP 0x20b608:58-64] — a fresh profile has
+    // rows 0-1 [D sp_level .data], so The Exchange.
+    assert_eq!(fe.cursor, 1, "the list opens on the highest unlocked row [M 0x20b608:60-64]");
     // Confirming a mission requests the level the game does [M C_SBNFMAP 0x20b8d8:21-24
     // ResetMap_LevelToLoad(sp_level[i]+0xc, 0, 0); the row's level is the record's 4th lane].
     fe.unlock_all = true;
@@ -87,26 +128,32 @@ fn the_page_sequence_matches_the_real_game() {
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(menu::CAMPAIGN[1].3));
     assert_eq!(fe.flow.level_to_load, 0x0710_0005, "story codes wrap to 0x0710 intro codes [M 0x1d3800's switch]");
+    // C_SBNFMAP's 84-frame fade sits ON TOP of the loader (disasm 0x20ba50-5c: PushState(84.0f, 7)
+    // after ResetMap_LevelToLoad) — GameFlow_Main only ticks the top state, so the load starts when
+    // the fade pops [M 0x1c98c8].
+    assert_eq!(fe.flow.get_state(), ST_FADE_HOLD, "the menu exit fade is pushed [M 0x20ba50]");
+    assert_eq!(fe.flow.fade_frames, 84, "the duration is C_SBNFMAP's 0x42a00000 = 84.0f");
+    let fade_ticks = fe.flow.fade_frames + 1;
+    for _ in 0..fade_ticks { fe.flow.main_tick(); }
+    assert_eq!(fe.flow.get_state(), ST_MAPLOAD, "the fade popped onto the loader");
     assert!(fe.flow.load_tick() == false);
     assert_eq!(fe.flow.movie_code, 0x0710_0005, "GameState+0x10 [M 0x1d6360]");
     fe.flow.main_tick();
     assert!(!fe.flow.load_tick(), "phase 2 returns false; the next call loads");
     assert_eq!(fe.flow.level_to_load, 0x0700_0005, "GetLevelToLoadFromMovieCode [M 0x1d6360 LoadState 2]");
     assert!(fe.flow.load_tick());
-    assert_eq!(fe.flow.current_level, 0x0700_0005, "GameState+0x12 [M 0x1d6360]");
+    assert_eq!(fe.flow.current_level, 0x0700_0005, "GameState+0xc [M 0x1d6360]");
     assert_eq!(fe.flow.get_state(), ST_RUNNER);
 }
 
 /// fix-menus2: the unlock rule — locked rows are dimmed and can't be scrolled to [L the driver:
-/// "locked missions are dimmed and can't be scrolled to"; the gate is C_SBNFMAP 0x20b8d8:18-20].
+/// "locked missions are dimmed and can't be scrolled to"; the gate is C_SBNFMAP 0x20b8d8:21-23].
 #[test]
 fn locked_missions_cannot_be_scrolled_to_or_picked() {
     let mut fe = FrontEnd::new();
     tick_to_title(&mut fe);
-    fe.action(Action::Confirm); // Start → the intro movie [M P_INTRO 0x209e88]
-    fe.action(Action::Confirm); // Confirm = action 0x19: the skip [M GameFlow_Main 0x1c98c8 case 6]
-    fe.action(Action::Confirm); // NightFire
-    fe.action(Action::Down);    // row 1 = Play without saving [M 0x1f79c0:15-23]
+    start_to_main(&mut fe);
+    main_confirm(&mut fe);      // NightFire; the page opens on row 1 = Play without saving [M 0x20aec0:96-97]
     fe.action(Action::Confirm); // arm the confirm box
     fe.action(Action::Confirm); // through it → difficulty
     fe.action(Action::Confirm); // difficulty → missions
@@ -116,12 +163,16 @@ fn locked_missions_cannot_be_scrolled_to_or_picked() {
     assert!(fe.unlocked_row(0), "Paris Prelude starts unlocked");
     assert!(fe.unlocked_row(1), "The Exchange starts unlocked too [D sp_level boot +0x10]");
     assert!(!fe.unlocked_row(2), "the rest start locked");
-    // Down from row 0 walks to the next unlocked row (row 1 is unlocked at boot too [D sp_level +0x10]).
+    // The list opened on row 1, the highest unlocked [M 0x20b608:60-64]; Up walks to row 0 and
+    // Down back to row 1 (row 1 is unlocked at boot too [D sp_level +0x10]).
+    assert_eq!(fe.cursor, 1);
+    assert!(fe.action(Action::Up));
+    assert_eq!(fe.cursor, 0);
     assert!(fe.action(Action::Down));
     assert_eq!(fe.cursor, 1, "the cursor walks the unlocked rows");
     // Picking the locked row 3 does nothing.
     fe.cursor = 3;
-    assert!(!fe.action(Action::Confirm), "C_SBNFMAP 0x20b8d8:18-20 returns on a locked row");
+    assert!(!fe.action(Action::Confirm), "C_SBNFMAP 0x20b8d8:21-23 returns on a locked row");
     assert_eq!(fe.requested_level, None);
     // Completing mission 1 unlocks mission 2 (row 1 was already unlocked at boot [D sp_level
     // +0x10], so row 2 is the one the unlock actually opens) [M Menu_SetLevelBonus 0x1ffa10:63-65]
@@ -183,7 +234,7 @@ fn the_pause_menu_resumes_restarts_and_quits() {
     assert!(!fe.flow.warm_reset, "the restart is a cold load [M 0x204408: param_2 = 0]");
     // Row 2 = quit: a TWO-STEP confirm [M 0x204408:210-220: state_quit_166 gates the quit; the row
     // text swaps to 0x200 "QUIT: ARE YOU SURE?"], then the front-end map with the quit page [M
-    // :143-148: +0x28 = 0x4000001c, ResetMap_LevelToLoad(0x7000048, 0, 0)].
+    // :143-148: +0x1c = 0x4000001c, ResetMap_LevelToLoad(0x7000048, 0, 0)].
     fe.open_pause();
     fe.cursor = 2;
     fe.requested_level = None; // the host consumes it with take(); the test clears it too
@@ -206,7 +257,7 @@ fn the_results_pages_split_complete_from_failed() {
     fe.flow.current_level = 0x0700_0005;
     fe.mission = 1;
     // A mission ends: the game records the results page 0x40000036 and fades [M 0x182c60:74 sets
-    // +0x28 = 0x40000036 and pushes a 60-frame fade].
+    // +0x1c = 0x40000036 and pushes a 60-frame fade].
     fe.mission_ended(Outcome::Complete, Stats { shots_fired: 120, shots_hit: 40, accuracy_pct: 33, time_s: 754 });
     assert_eq!(fe.flow.page, 0x4000_0036);
     assert_eq!(fe.page, Page::Results);
@@ -225,7 +276,14 @@ fn the_results_pages_split_complete_from_failed() {
     // The FAILED page 0x40000042: its list holds TWO items — REPLAY (value 0) and QUIT (value 2) [L the 07000005
     // mission menu-def]; P_ENDMISSION reads the item VALUE (msg 0x35) [M 0x216618:12-26], so the BaseMap arm 1 is
     // unreachable from this page. PCSX2 07000005 (2026-10-15): REPLAY / QUIT.
+    fe.flow.stack = vec![ST_RUNNER]; // the mission runs (the complete arm's fade/load are spent)
     fe.mission_ended(Outcome::Failed, Stats::default());
+    // fe-audit: a failure opens the fail menu 0x40000042 OVER THE PAUSED MISSION and loads nothing
+    // [M Mission_Update 0x182c60:77-80 — MenuManager_Create(…, 0x40000042, …) + GS_PauseGame(1)];
+    // the load only comes from the menu's own row [M P_ENDMISSION 0x216618:11-30].
+    assert_eq!(fe.requested_level, None, "the failure itself requests no level [M 0x182c60:77-80]");
+    assert_eq!(fe.flow.get_state(), ST_RUNNER, "no fade is pushed on the fail arm [M 0x182c60:77-80]");
+    assert_eq!(fe.flow.current_level, 0x0700_0005, "the mission stays loaded under the menu");
     assert_eq!(fe.rows(), 2);
     assert_eq!(fe.page_id(), menu::PAGE_FAIL_MENU, "the fail menu is its own page (no aux movie)");
     assert_eq!(menu::aux_movie_for(fe.page_id()), 0);
@@ -235,13 +293,18 @@ fn the_results_pages_split_complete_from_failed() {
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(0x0700_0005));
     assert!(fe.flow.warm_reset, "REPLAY is the warm arm [M 0x216618:20]");
+    assert!(fe.closed, "the row deletes the manager [M 0x216618:30]");
+    fe.requested_level = None;
+    fe.closed = false;
+    fe.flow.stack = vec![ST_RUNNER];
     // Row 1 (QUIT, value 2) = quit to the menu [M 0x216618's value-2 arm].
     fe.mission_ended(Outcome::Failed, Stats::default());
     fe.cursor = 1;
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.requested_level, Some(menu::FRONTEND_LEVEL));
     assert_eq!(fe.flow.page, 0x4000_001c);
-    // Sister: the cursor wraps over the two rows.
+    assert_eq!(fe.page, Page::MissionSelect, "the front end reopens on the mission list [M 0x216618:25, P_NFMAP 0x20b608]");
+    // Sister: the cursor wraps over the two rows [S unverified — the list control's wrap].
     fe.mission_ended(Outcome::Failed, Stats::default());
     fe.cursor = 0;
     fe.action(Action::Down); assert_eq!(fe.cursor, 1);
@@ -252,46 +315,48 @@ fn the_results_pages_split_complete_from_failed() {
 fn cursors_wrap_and_back_walks_up_the_pages() {
     let mut fe = FrontEnd::new();
     fe.unlock_all = true; // the walk visits the mission list freely
-    fe.action(Action::Confirm); // Start → the intro movie [M P_INTRO 0x209e88]
-    assert_eq!(fe.page, Page::Main);
-    fe.action(Action::Confirm); // Confirm = action 0x19: the skip [M GameFlow_Main 0x1c98c8 case 6]
+    start_to_main(&mut fe);
+    // Main's Up/Down wrap over its three rows [S unverified — the control type of 0x100000ed is not
+    // checked; out of pass/fail]. Back from Main → the title is the port's [S] (P_MAIN has no 99 arm).
     fe.action(Action::Up);
-    assert_eq!(fe.cursor, 2, "up wraps from row 0 to the last row");
     fe.action(Action::Down);
-    assert_eq!(fe.cursor, 0);
-    // Back from the main menu returns to the title; Back from the select returns up the chain [S].
-    assert!(fe.action(Action::Back));
-    assert_eq!(fe.page, Page::Start);
-    fe.action(Action::Confirm);
-    fe.action(Action::Confirm); // the skip — the intro replays after Back to the title
-    fe.action(Action::Confirm);
+    fe.cursor = 0;
+    main_confirm(&mut fe);
     assert_eq!(fe.page, Page::Codename);
+    assert_eq!(fe.cursor, 1, "opened from Main on Play without saving [M 0x20aec0:96-97]");
+    // Back to Main [S unverified — the page's △ target is menu-def script data].
     assert!(fe.action(Action::Back));
     assert_eq!(fe.page, Page::Main);
-    fe.action(Action::Confirm);
-    fe.action(Action::Down);    // row 1 = Play without saving [M 0x1f79c0:15-23]
+    fe.cursor = 0;
+    main_confirm(&mut fe);
     fe.action(Action::Confirm); // the confirm box
     fe.action(Action::Confirm); // through it → difficulty
     assert_eq!(fe.page, Page::Difficulty);
-    // The difficulty wheel wraps over its three rows; the box's ✕ lands the cursor on Agent.
+    // fe-audit: the wheel opens on index 0 [M 0x216bf8:10-12] and WRAPS over its three rows —
+    // Scroll_Init sets the wrap flag, only msg 0x69 clears it [M 0x2214f0:102-103, 0x221810:136-138;
+    // Scroll_Update 0x221b20:186-210].
+    assert_eq!(fe.cursor, 0, "the wheel opens on Operative [M 0x216bf8:12]");
     fe.action(Action::Up);
-    assert_eq!(fe.cursor, 0, "up from Agent reaches Operative");
+    assert_eq!(fe.cursor, 2, "Up from Operative wraps to 00 Agent [M 0x221b20:202-210]");
+    fe.action(Action::Down);
+    assert_eq!(fe.cursor, 0, "Down from 00 Agent wraps to Operative [M 0x221b20:186-194]");
     fe.action(Action::Down);
     fe.action(Action::Down);
     assert_eq!(fe.cursor, 2, "down twice reaches 00 Agent");
     fe.action(Action::Confirm);
     assert_eq!(fe.page, Page::MissionSelect);
+    assert_eq!(fe.cursor, 11, "the list opens on the highest unlocked row [M 0x20b608:60-64]");
     // Down 12 times on the mission select wraps to the same row.
     for _ in 0..12 { fe.action(Action::Down); }
-    assert_eq!(fe.cursor, 0);
-    // The Dossier opens on □/E/Tab and returns [L the driver: hints "□ Dossier"].
+    assert_eq!(fe.cursor, 11);
+    // The Dossier opens on □/E/Tab (the "~Y Dossier" hint, Txt 0x208) and returns.
     assert!(fe.action(Action::Side));
     assert_eq!(fe.page, Page::Dossier);
     assert!(fe.action(Action::Back));
     assert_eq!(fe.page, Page::MissionSelect);
-    // Back from the mission select returns to the difficulty [S].
-    assert!(fe.action(Action::Back));
-    assert_eq!(fe.page, Page::Difficulty);
+    // Back from the mission select returns to the difficulty [S unverified — P_NFMAP's 99 arm sends
+    // 0x40000002 (0x20b608:67-68); the △ pop target is the page stack].
+    fe.action(Action::Back);
 }
 
 #[test]
@@ -327,7 +392,7 @@ fn the_menu_overlay_draws_the_game_pages_with_their_own_sprites() {
     }
     // Per-page sprite hashes (numbers only) — the pages' msg-0x24 sets [M the menu-def]:
     let has = |page: u32, tex: u32| saw[&page].iter().any(|&t| t == tex);
-    assert!(has(0x4000_0034, 0x0300_0074), "the title draws the full-screen art [M page 0x40000009 control 0x10000196]");
+    assert!(has(0x4000_0009, 0x0300_0074), "the title draws the full-screen art [M page 0x40000009 control 0x10000196]");
     assert!(has(0x4000_0025, 0x0300_00b3), "the codename page draws the panel [M page 0x40000025 control (50,53) TEX 0x030000b3]");
     // The ring 0x030000bf only masks the preview: PCSX2 shows no rim or square of its own (07000048 m06,
     // 2026-10-15), so the port clips the preview to the disc and draws no ring quad.
@@ -1124,13 +1189,14 @@ fn the_page_headers_draw_the_header_font_atlas() {
 /// The Dossier wheel opens at row 0 and CLAMPS — the playtest's "the port adds Weapons" was the
 /// stale missions cursor riding into the wheel (with the wrap, Up at Records teleported to
 /// Weapons). Evidence [M P_DOSSIER_Handler 0x216de0:9-16 resets the wheel (msg 0x2e param 0) when
-/// the page opens from missions/results/stats; Scroll_SendMessage 0x222810:98-106 rejects
-/// out-of-range indices; Scroll_Update 0x2221b20:186-210 wraps only under the msg-0x69 flag, which
-/// nothing sets on the dossier scroll 0x1000010c — C_SBDOSSIER 0x216eb0:40-43 always sets the
+/// the page opens from missions/results/stats; Scroll_SendMessage 0x221810:98-106 rejects
+/// out-of-range indices; Scroll_Update 0x221b20:186-210 wraps while the +0x144 flag is set —
+/// Scroll_Init sets it (0x2214f0:102-103) and only msg 0x69 clears it (0x221810:136-138), which
+/// nothing sends to the dossier scroll 0x1000010c — C_SBDOSSIER 0x216eb0:40-43 always sets the
 /// range [0,3], the four rows of table 0x2dfcd0 whose unlock flags are all 1 [L ee_snapshot]].
 /// At cursor 0 the 5-slot centred window shows only rows 0..2 (Records/Rewards/Gadgets).
 #[test]
-fn the_dossier_wheel_opens_at_records_and_clamps() {
+fn the_dossier_wheel_opens_at_records_and_wraps() {
     let font = test_font();
     let hfont = test_font();
     let textures: Vec<(u32, nf_view::scene::TextureImage)> = menu::MENU_TEXTURES.iter().map(|&h| (h, crate_texture(h))).collect();
@@ -1146,18 +1212,17 @@ fn the_dossier_wheel_opens_at_records_and_clamps() {
     let frame = menu::menu_overlay(&fe, &font, &hfont, None, &textures, 4.0 / 3.0);
     let row_labels: Vec<String> = frame.v.is_empty().then(Vec::new).unwrap_or_default();
     let _ = (frame, row_labels);
-    // Sister: no wrap — Up at row 0 and Down at the last row are no-ops (the game rejects them).
-    assert!(!fe.action(Action::Up), "Up at Records is a no-op [M 0x2221b20:202-210]");
-    assert_eq!(fe.cursor, 0);
-    assert!(fe.action(Action::Down), "Down moves to Rewards");
-    assert_eq!(fe.cursor, 1);
-    fe.cursor = fe.rows() - 1;
-    assert!(!fe.action(Action::Down), "Down at Weapons is a no-op [M 0x2221b20:186-194]");
-    assert_eq!(fe.cursor, fe.rows() - 1);
-    // Down once from row 0 does NOT land past row 1 — the old wrap teleported 0 → 3 on Up.
-    fe.cursor = 0;
+    // fe-audit: the scroll wraps — Scroll_Init sets +0x144 = 1 [M 0x2214f0:102-103], only msg 0x69
+    // clears it [M Scroll_SendMessage 0x221810:136-138] and nothing sends 0x69 to 0x1000010c;
+    // Scroll_Update wraps at the ends while it is set [M 0x221b20:186-210]. (A fresh-boot PCSX2
+    // press is still owed.)
+    assert!(fe.action(Action::Up), "Up at Records wraps");
+    assert_eq!(fe.cursor, fe.rows() - 1, "Up at Records lands on Weapons [M 0x221b20:202-210]");
+    assert!(fe.action(Action::Down), "Down at Weapons wraps");
+    assert_eq!(fe.cursor, 0, "Down at Weapons lands on Records [M 0x221b20:186-194]");
+    // Sister: a mid-list step is a plain step, not a jump.
     assert!(fe.action(Action::Down));
-    assert_eq!(fe.cursor, 1, "Down steps to Rewards, never wraps");
+    assert_eq!(fe.cursor, 1, "Down steps to Rewards");
 }
 
 /// Main → Codenames opens Edit Codename on the Default row, Edit opens the "Edit Default" wheel, its Advanced /
@@ -1167,8 +1232,8 @@ fn the_codenames_row_reaches_the_option_pages() {
     let mut fe = FrontEnd::new();
     fe.page = Page::Main;
     fe.cursor = 2;
-    assert!(fe.action(Action::Confirm));
-    assert_eq!((fe.page, fe.cursor), (Page::CnSelect, 1), "Edit Codename opens on Default (PCSX2 m29)");
+    main_confirm(&mut fe);
+    assert_eq!((fe.page, fe.cursor), (Page::CnSelect, 1), "Edit Codename opens on Default [M P_CNSELECT 0x212ad0:81, :94-95]");
     assert!(fe.action(Action::Confirm));
     assert_eq!(fe.page, Page::CnMenu);
     assert_eq!(fe.cn_name, "Default");
@@ -1181,10 +1246,10 @@ fn the_codenames_row_reaches_the_option_pages() {
         assert!(fe.action(Action::Back));
         assert_eq!((fe.page, fe.cursor), (Page::CnMenu, row), "Back returns to the row it came from");
     }
-    // Sister: the rows without a ported page do nothing.
+    // Row 1 opens P_CNCONTROLS 0x40000022 in the game [M C_SBCNOPTIONS 0x213528:38-39]; the port has
+    // no controls page yet [S port gap — GAPS], so nothing is pinned for it here.
     fe.cursor = 1;
-    assert!(!fe.action(Action::Confirm));
-    assert_eq!(fe.page, Page::CnMenu);
+    let _ = fe.action(Action::Confirm);
 }
 
 /// ◀ / ▶ step an option's value; Back throws the edits away, Confirm keeps them; a slider moves by 10 in 0..=100.
@@ -1225,6 +1290,7 @@ fn the_option_pages_change_values() {
     g.page = Page::Main;
     g.cursor = 2;
     assert!(g.action(Action::Right));
+    for _ in 0..menu::DELAYED_PAGE_TICKS + menu::MAIN_OPEN_BLOCK { g.tick(); } // [M C_GOCODENAMES 0x216b38:30-37]
     assert_eq!(g.page, Page::CnSelect, "▶ confirms on the main menu");
     assert!(g.action(Action::Left));
     assert_eq!(g.page, Page::Main, "◀ backs out");
@@ -1240,7 +1306,13 @@ fn the_mouse_drives_the_menus() {
     assert!(fe.mouse_move(320.0, 343.0));
     assert_eq!(fe.cursor, 2, "hovering the third main row selects it");
     assert!(fe.mouse_click(320.0, 343.0));
+    for _ in 0..menu::DELAYED_PAGE_TICKS { fe.tick(); } // the 0x13 delay [M C_GOCODENAMES 0x216b38:36-37]
     assert_eq!(fe.page, Page::CnSelect);
+    // Main's last row ends at y 326 + 28 = 354 [L menu-def page 0x40000002]: a click below it is no row.
+    let mut m = FrontEnd::new();
+    m.page = Page::Main;
+    assert!(!m.mouse_click(320.0, 356.0), "y 356 is under the last row (the old box ran to 358)");
+    assert!(m.mouse_click(320.0, 353.0), "sister: y 353 is on the last row");
     // Sister: a click on empty space on the main menu does nothing.
     let mut g = FrontEnd::new();
     g.page = Page::Main;
@@ -1304,7 +1376,7 @@ fn the_main_menu_attract_alternates_the_two_movie_codes() {
     tick_to_title(&mut fe);
     assert!(fe.action(Action::Confirm), "START → the intro run");
     // Burn the intro down; its end is the main menu's 0x4c [M P_MAIN 0x20a7b0:37 resets the count].
-    while fe.flow.get_state() == ST_MOVIE { fe.tick(); }
+    while fe.intro_playing { fe.tick(); }
     assert!(!fe.intro_playing);
     assert_eq!(fe.page, Page::Main);
     assert_eq!(fe.no_input_frames, 1, "the intro's end tick reset then re-counted [M the 0x4c reset]");
@@ -1351,7 +1423,8 @@ fn the_movies_end_returns_to_the_opener() {
     let mut fe = FrontEnd::new();
     tick_to_title(&mut fe);
     assert!(fe.action(Action::Confirm));
-    while fe.flow.get_state() == ST_MOVIE { fe.tick(); }
+    while fe.intro_playing { fe.tick(); }
+    assert_eq!(fe.page, Page::Main);
     // Idle into the timeout on the main menu.
     for _ in 0..menu::ATTRACT_FRAMES { fe.tick(); }
     assert!(fe.attract_playing && fe.attract_opener == Page::Main);
@@ -1373,17 +1446,19 @@ fn the_movies_end_returns_to_the_opener() {
 fn the_timeout_does_not_fire_mid_intro_even_past_2700_ticks() {
     let mut fe = FrontEnd::new();
     tick_to_title(&mut fe);
-    assert!(fe.action(Action::Confirm), "START → the intro run (the page flips to Main at once)");
-    // A long intro (the real FMVs run 850 ticks; stretch the countdown to model a slow disc):
-    // the game's P_INTRO page is the up-page during the movies and never checks the count
-    // [M 0x209e88 has no Menu_GetNoInputCount call] — the fire must wait for the main menu's 0x4c.
-    fe.flow.movie_frames = 100_000;
+    assert!(fe.action(Action::Confirm), "START → the intro run");
+    // P_ESTHERO's movie (0x073B0048, 3512 ticks [D]) outlasts 0xa8c; stretch it further to model a
+    // slow disc. The intro pages never check the count [M only P_START 0x20a408:45 / P_MAIN call
+    // Menu_GetNoInputCount] — the fire must wait for the main menu's 0x4c.
+    for _ in 0..8 { if fe.intro_movie { break; } fe.tick(); }
+    fe.intro_frames = 100_000;
     for _ in 0..(menu::ATTRACT_FRAMES + 500) { fe.tick(); }
     assert!(!fe.attract_playing, "sister: no attract while the intro is up, even past 0xa8c idle ticks");
-    assert_eq!(fe.page, Page::Main);
-    // The intro pops → the main menu's 0x4c reset lands [M 0x20a7b0:37] → the 45 s clock restarts.
-    fe.flow.movie_frames = 1;
+    assert_eq!(fe.page, Page::EstHero, "the up-page is P_ESTHERO during the movie [M 0x20a060:44-45]");
+    // The movie ends → the main menu's 0x4c reset lands [M 0x20a7b0:37] → the 45 s clock restarts.
+    fe.intro_frames = 1;
     fe.tick();
+    assert_eq!(fe.page, Page::Main);
     assert!(!fe.intro_playing);
     assert!(!fe.attract_playing, "the count was reset at the main menu's open — no fire");
     for _ in 0..(menu::ATTRACT_FRAMES - 2) { fe.tick(); }
