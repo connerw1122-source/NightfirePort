@@ -18794,3 +18794,24 @@ real input path to every objective (optionals included) and the exit into the ne
 and un-ignore crates/nf-view/tests/walkreal_0700000b_live.rs; fix every blocker on the way with a
 focused test + a sister that fails on the old code. Known open items to start from: the roof
 helicopter (task 750h2) and the executive-floor locks. Branch = origin/master 92db2533.
+
+## level-0b-complete (2026-10-17, branch s/level-0b-complete)
+Task 711b. (1) The doc's biggest open question RESOLVED: obj10's ch 0x59 + the fall-web's
+ch 0x57 are written by the roof cut-scene script 060004FA (pack 0790000b, SP wedge #177, out
+ch 0x2D, mask 1): stream 6 → ch 0x57 @0x991, stream 13 → ch 0x59 @0x991, stream 14 → ch 0x2A
+@0x990 (the roof helicopter #328's gate — flight 060008BE 299 ticks → out ch 0x66; the ch-100
+countdown pulse is unarmed, param 9 = 0), stream 12/15 pulse ch 0x77 / clear ch 0x76; event 6
+at 0x98f re-places Bond at key 448 [−14.71, 58.00, −2.06] — the helipad deck, inside
+lift_stop_trigger #245 [D pack dump + placements]. The lift ride UP is this cut-scene; the
+walkreal now fires only its gate and plays the whole script for real. (2) walkreal_0700000b_live
+un-ignored + green (2 tests): the full route spawn → obj6/7/8 → the real Q-Worm shot → the
+roof cut-scene → the REAL deck walk (+471 ticks) → the parachute touch → the jump → ch 100 →
+0x0730000b. New focused test with a pre-gate sister baseline. load_warm went single-load (the
+double load OOM-killed the sandbox). walker_b2's `lenient` made pub (additive). (3) Still open:
+ch 0x54/0x06 (obj9's OR) and ch 0x2D (the cut-scene's own-out gate) have NO writer in any dump
+reachable here (triggers, 20 level scripts, 3 packs, copter scripts, placement params,
+drone-props) — candidates: a Monitor-class control func or the 0a carry; live checks listed in
+the report. The balcony→exec leg (the physical cab carry, no moving-platform floor) and the
+boardroom-row transits stay documented stand-ins. The full suite.py did not fit the window
+(the sandbox OOM-kills concurrent heavy tests); ran the task's two test binaries green on the
+slim ISO. Report: docs/reports/level-0b-complete.md.
