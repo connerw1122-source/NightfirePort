@@ -1014,7 +1014,7 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
             // The gate scan reads the carried channels on a warm transition (the save mirrors the live
             // globals — `Player_RamSave` snapshots them at the exit [M 0x195670:13-15]).
             let scan: nf_game::triggers::Channels = match save {
-                Some(s) => nf_game::triggers::Channels { v: s.channels.clone(), time: s.ch_time.clone() },
+                Some(s) => nf_game::triggers::Channels { v: s.channels.clone(), time: s.ch_time.clone(), writes: None, script_channels: Default::default() },
                 None => nf_game::triggers::Channels::default(),
             };
             if let Some(i) = nf_game::player::pick_start(&starts, &scan) {

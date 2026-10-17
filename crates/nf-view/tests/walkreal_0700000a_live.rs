@@ -81,7 +81,6 @@ fn shoot_at(w: &mut Walker, target: [f32; 3], range: f32, max_ticks: u32, label:
 }
 
 #[test]
-#[ignore = "the cab mouth's SS lift doors (placements 524/525, channel param 0x00 [D]; keys 0-3 closed, key 4 slid aside [D parse]) stand closed at key 0 forever in the port (SsList::tick targets key 0 when the channel is 0) and are solid since fix-party-mission item 7 (Ss.hash joins set_dynamic) — Bond pins at z 12.4 leaving the cab. The game's own 0a start snapshot holds them CLOSED as well [L ee_start_0700000a.bin: leaf matrices (−2.973,1.303,13.031) @0xE2E2A4 and (−4.893,1.275,13.031) @0xE2E314] — the game opens them during the arrival via a writer the port lacks (the channel param is 0, so the writer is a script/trigger, not the SS channel). Live check for the main agent: gdbwatch switch_channels (0x26fc90) and the leaf obj+0x90 during the real 09→0a intro — the writer instruction names the opener"]
 fn walk_office_floor_qworm_keyboard_hatch() {
     let mut w = load_carry(None);
     {
@@ -92,6 +91,24 @@ fn walk_office_floor_qworm_keyboard_hatch() {
     // The arrival plate fires under Bond's feet (ch 0x47, objective 3).
     w.wait(30);
     assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(0x47), "the arrival plate #58 → ch 0x47 [D]");
+
+    // The cab-mouth SS lift doors (placements 524/525) sweep OPEN at create and hold the end pose
+    // (state param 0 = 1 armed, wrap flag 1, ch 0 [D]; SS_Update 0x1a9948's state-1 sweep + the
+    // wrap-hold [M, grates-02]) — the old ignore's "missing writer" premise is stale: the sweep IS
+    // the writer, and the [L] start snapshot caught t = 0 before the first update. The walk below
+    // would pin at z 12.4 if this regressed. The sweep runs 75 ticks (rate 0 → SS_Create's
+    // default 75 [M 0x1a9c58:51]); wait it out.
+    for _ in 0..150 {
+        let done = w.scene.sim.as_ref().unwrap().drones.sss.list.iter()
+            .filter(|s| s.placement == 524 || s.placement == 525)
+            .all(|s| s.state == 0 || s.state == 0x40);
+        if done { break; }
+        w.wait(5);
+    }
+    assert!(w.scene.sim.as_ref().unwrap().drones.sss.list.iter()
+        .filter(|s| s.placement == 524 || s.placement == 525)
+        .all(|s| s.state == 0 || s.state == 0x40),
+        "the cab leaves finished their create sweep (the wrap disarms to state 0 with wrap_flag 1 [M 0x1a9948:119-128])");
 
     // Out of the lift cab (+z past the SS lift doors) and the corridor loop west, along the AI
     // graph's own node chain (path 4 — nav_route's A* can't start inside the cab, the port's
@@ -132,8 +149,13 @@ fn walk_office_floor_qworm_keyboard_hatch() {
     assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(0x48),
         "ch 0x48 (objective 4) driven at the documented blocker");
 
-    // The security keyboard: SP #60's activation writer is the documented placement-transform
-    // blocker (docs/levels/0700000a.md) — drive ch 0x3A there as the doc's walkthrough does.
+    // The security keyboard: the REAL E activation is proven by keyboard_0700000a_live — the
+    // mode-64 preload's keyboard entity (0x020005E1, baked-absolute at (−1.54, 1.33, 8.48) r 0.66
+    // [M 0x1db9a8's load beat + 0x133070]) is E-able from the corridor wedge at (−3.00, 9.68) and
+    // the activation writes ch 0x3A [M SP_Activate 0x1dc338 + SP_Update 0x1dbda8 state 1]. The
+    // walk keeps the direct channel drive because the SP-write → AND-mux #741 (0x49) follow did
+    // not fire in the session's probe within 6 ticks (the same write via set_channel does fire
+    // it — the open item in docs/reports/level-0a-complete.md); the route shape is unchanged.
     assert!(w.follow_nav_route([-6.0, 1.3, 14.0], "to the security centre"), "no nav route to the keyboard");
     w.scene.sim.as_mut().unwrap().drones.set_channel(0x3a);
     w.wait(6);
@@ -166,6 +188,15 @@ fn walk_office_floor_qworm_keyboard_hatch() {
     {
         let sim = w.scene.sim.as_ref().unwrap();
         assert_eq!(sim.drones.level_exit, Some(0x0700_000b), "the hatch loads 0700000b [D]");
+        // The hatch voice plate (#757, out ch 0xB7, lock ch 0x3A [D]): the game's lock DISABLES a
+        // trigger while its channel is on [M Trigger_Update's `lock != 0 && ch.on(lock)` gate] —
+        // the plate plays the May-Hatch line on EARLY approaches (ch 0x3A still off) and is dead
+        // once the keyboard is done, which is the state this walk arrives in.
+        assert!(!sim.drones.channels.on(0xb7), "the voice plate #757 is lock-disabled once ch 0x3A is on [M triggers.rs's lock gate]");
+        // The keyboard-lasers switch (#643, out ch 0x3B, gate ch 0x3C [D]) never fired: its gate
+        // has no writer in 0a's data [D trig/nis dumps] and the switch sits at the origin
+        // (placement transform [D]) — inert on fresh-boot data, asserted end-to-end here.
+        assert!(!sim.drones.channels.on(0x3b), "the keyboard-lasers switch stays inert through the whole route [D+M 0x1b02a8's gate check]");
     }
     eprintln!("[0a] walked to the hatch in {} ticks; stuck {}; falls {}", w.total_ticks, w.report.stuck_events.len(), w.report.falls.len());
     for f in &w.report.falls { eprintln!("[0a] fall: {f}"); }

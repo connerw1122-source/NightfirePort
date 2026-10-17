@@ -2544,6 +2544,32 @@ impl Sim {
                     }
                 }
             }
+            // The drone victims: `NDrone2_DealWithObjHit` 0x13fff0 gives NPCs the same class-0x27
+            // treatment — the who masks naming the drone class bit 8 (07000008's kill-floor quads
+            // #42-44, who 0x18 = classes 3+2, type 6, 1000 damage [D params]) are delivered for
+            // it. The capsule is the trigger walk's drone body ([pos−1.0 … head], r 0.4 — the
+            // Toucher law drone.rs builds for `Trigger_Calc`); the delivery is the explosion
+            // path's flat subtract (`health -= damage · damage_taken`, `last_damage` stamped —
+            // the drones' own update's health ≤ 0 selector picks the death). A one-shot volume
+            // fired by any victim retires for all of them (the shared obj state [M 0x17e5d0:41-47]).
+            let drone_capsules: Vec<(usize, [f32; 3], [f32; 3])> = self.drones.list.iter().enumerate()
+                .filter(|(_, x)| x.enabled)
+                .map(|(i, x)| (i, [x.pos[0], x.pos[1] - 1.0, x.pos[2]], x.head()))
+                .collect();
+            let mut drone_apps: Vec<(usize, f32)> = Vec::new();
+            for h in self.hurts.iter_mut() {
+                let gate_on = self.drones.channels.on(h.gate as u32);
+                for (i, a, b) in &drone_capsules {
+                    if let Some((dmg, _ty)) = h.update_touch(gate_on, *a, *b, 0.4, true) {
+                        drone_apps.push((*i, dmg));
+                    }
+                }
+            }
+            for (i, dmg) in drone_apps {
+                let x = &mut self.drones.list[i];
+                x.last_damage = dmg;
+                x.health -= dmg * x.damage_taken;
+            }
             // `Player_MonitorAir` 0x191a70:101-124 [M]: the head crossing cel+0x90 starts the dive
             // loop (`Sound_Stop()` of the old handle, then `Sound_Play3D(100, −1, −1, 0x27, objPos)`
             // saved at BL+0x89C) and, on surfacing, stops it and plays the gasp `Sound_Play(100,
@@ -6509,6 +6535,38 @@ impl Scene {
             // the port has not ported (the next session's item, with the live check).
             let instances = level.instances(true).0;
             let mut world = nf_game::world::CollisionWorld::build_scoped(level, &instances, Some(scope_graph(&cel_graph)));
+            // The parse-wide cell counter replay of `parse_cel_graph` (sub-maps first, main last),
+            // paired with the `instances(true)` resolution so each pushed object (`stat.owners`'
+            // source, in push order) maps to its placement's OWN graph cell — replicating
+            // `build_scoped`'s push filter (collision present, not the 0x1000 missile flag).
+            let inst_cells: Vec<usize> = {
+                let main = level.main_map();
+                let mut v = Vec::new();
+                let mut cell_counter = 0usize;
+                for (mi, map) in level.maps.iter().enumerate() {
+                    for p in &map.placements {
+                        if !p.creates_cel() { continue; }
+                        if Some(mi) == main {
+                            let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else if (p.index as usize) < map.objects.len() { Some((mi, p.index as usize)) } else { None };
+                            if let Some((om, oi)) = target {
+                                let obj = &level.maps[om].objects[oi];
+                                if obj.collision.is_some() && obj.flags & 0x1000 == 0 { v.push(cell_counter); }
+                            }
+                        }
+                        cell_counter += 1;
+                    }
+                }
+                v
+            };
+            // The owner pick below measures each candidate room's OWN collision
+            // (`Collide_SphereIntersect` 0x1ec940 scoped to the room [M 0x1c9150]). `build_scoped`
+            // keys its buckets by push ordinal, which is not the graph cell index once sub-maps
+            // add cels first — the pick then measured other rooms' geometry: 07000002's bathhouse
+            // floor (generic placement 270) hung on the big room 13 instead of the bathhouse room
+            // [L 2026-10-17 fresh-boot snapshot: generic cel 0x17086f0 rides the +0x18 chain of room
+            // 0x17087b0, sphere (−38.15, 7.24, 7.97) r 6.11 = the port's cell 185], so the floor
+            // vanished through the doorway. Key the buckets by each object's own cell first.
+            world.attribute_scope(&inst_cells.iter().map(|&c| Some(c as u32)).collect::<Vec<_>>());
             // fix-portal4: the +0x18 chains hang by the game's build_FindCel (0x1c8cb0) owner pick
             // over each generic's sphere centre — needs the scoped world for the tie-break rays.
             build_chains(&mut cel_graph, Some(&world));
@@ -6526,35 +6584,14 @@ impl Scene {
             // (the outdoor room) stood [L ee_start_05.bin: the trench room's chain holds all 58
             // trench generics; the outdoor room's 41 hold none near it].
             {
-                let main = level.main_map();
                 let mut node_owner: Vec<Option<u32>> = vec![None; cel_graph.cells.len()];
                 for (o, ch) in cel_graph.chains.iter().enumerate() {
                     for &n in ch { if (n as usize) < node_owner.len() { node_owner[n as usize] = Some(o as u32); } }
                 }
-                // The parse-wide cell counter replay of `parse_cel_graph` (sub-maps first, main
-                // last), paired with the `instances(true)` resolution so the pushed-object index
-                // (`stat.owners`' source) maps to its placement's cell — replicating
-                // `build_scoped`'s push filter (collision present, not the 0x1000 missile flag).
-                let mut instance_cell: Vec<Option<u32>> = Vec::new();
-                let mut cell_counter = 0usize;
-                for (mi, map) in level.maps.iter().enumerate() {
-                    for p in &map.placements {
-                        if !p.creates_cel() { continue; }
-                        if Some(mi) == main {
-                            let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else if (p.index as usize) < map.objects.len() { Some((mi, p.index as usize)) } else { None };
-                            if let Some((om, oi)) = target {
-                                let obj = &level.maps[om].objects[oi];
-                                if obj.collision.is_some() && obj.flags & 0x1000 == 0 {
-                                    let c = cell_counter;
-                                    let f16 = cel_graph.cells.get(c).map(|n| n.flags & 0xffff).unwrap_or(0);
-                                    let owner = if matches!(f16, 0xc023 | 0xc047) { Some(c as u32) } else { node_owner.get(c).copied().flatten() };
-                                    instance_cell.push(owner);
-                                }
-                            }
-                        }
-                        cell_counter += 1;
-                    }
-                }
+                let instance_cell: Vec<Option<u32>> = inst_cells.iter().map(|&c| {
+                    let f16 = cel_graph.cells.get(c).map(|n| n.flags & 0xffff).unwrap_or(0);
+                    if matches!(f16, 0xc023 | 0xc047) { Some(c as u32) } else { node_owner.get(c).copied().flatten() }
+                }).collect();
                 world.attribute_scope(&instance_cell);
             }
             crate::phase_mark("b9a collision world + scope", t); let mut t9 = std::time::Instant::now();

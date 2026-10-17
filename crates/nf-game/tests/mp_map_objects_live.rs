@@ -107,7 +107,7 @@ fn probe_gondola_script_ticks() {
     for (i, p) in scripts.players.iter().enumerate() {
         println!("  player {i}: placement {} scripts {:?} modes {:?} mask {} state {}", p.placement, p.scripts, p.modes, p.mask, p.state);
     }
-    let mut ch = nf_game::triggers::Channels { v: vec![0u8; 256], time: vec![0u32; 256] };
+    let mut ch = nf_game::triggers::Channels { v: vec![0u8; 256], time: vec![0u32; 256], writes: None, script_channels: Default::default() };
     let mut w = ProbeWorld;
     let idx = scripts.players.iter().position(|p| p.scripts[0] == 0x0600_0058)
         .expect("skyrail: no script player for 0x06000058 (the gondola)");

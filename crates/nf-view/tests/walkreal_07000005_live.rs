@@ -75,12 +75,58 @@ fn walk_to_the_gatehouse_and_ride_the_truck() {
     let sim = w.scene.sim.as_ref().unwrap();
     assert!(sim.drones.channels.on(0x70), "the crouched ride parks on the ch-0x70 plate [D; fix-truck]");
     assert_eq!(sim.drones.level_exit, Some(0x0700_0006), "the truck chain's ch 0x1D ends the level into 07000006");
+    // The objective chain: the spawn reveal plate fired on the boot tick (the walker's first step)
+    // [L ee_start_05.bin switch_channels[0x45] = 1 at boot], so the monitor announced the mission's
+    // first objective (state 3). It is NOT complete here: its condition ch 0x46 has no writer on
+    // 07000005 — the OR #498 on 07000006 (list 0x50/0x51/0x52) is the writer [D triggers dump], and
+    // the live ride-time snapshot agrees: record state 3 with ch 0x73 (the truck script's end) on
+    // [L ee_snapshot.bin @0x2a3e28+0x14 = 3, switch_channels = {45, 73, 97}].
+    assert!(sim.drones.channels.on(0x45), "the ch-0x45 reveal plate fired [L ee_start_05]");
+    assert!(!sim.drones.channels.on(0x46), "ch 0x46 has no writer on 07000005 [D the full placement+script census]");
+    assert_eq!(sim.drones.mission.states[0][0], 3, "the objective sits announced, not complete [L ee_snapshot record state 3]");
     eprintln!("[05] truck route done in {} ticks; falls: {:?}", w.total_ticks, w.report.falls);
+
+    // The game's own hand-over: Player_RamSave at the exit [M 0x1b2318] → the warm load of
+    // 07000006 → start #496 (the 0x1D-gated truck-ride spawn, level_carry_live pins the position).
+    let save = nf_game::player::RamSave::capture(&sim.drones.health, sim.gun.switch_request,
+        &sim.drones.inventory, &sim.drones.channels);
+    drop(w);
+    let mut next = Walker::new(nf_view::load_with_carry(&iso, "07000006.bin", false, Some(&save))
+        .expect("load 07000006 with the truck route's save"));
+    {
+        let sim = next.scene.sim.as_ref().unwrap();
+        assert!((sim.bond.pos[0] - 57.18).abs() < 2.0 && (sim.bond.pos[2] - 22.61).abs() < 2.0,
+            "the truck route spawns at the 0x1D entry [D placement 496], got {:?}", sim.bond.pos);
+    }
+    next.wait(2); // Mission_Init latches on the first tick (the port's init-per-tick latch)
+    {
+        let sim = next.scene.sim.as_ref().unwrap();
+        // The truck-ride spawn (57.18, 39.73, 22.61) sits INSIDE the 0x51 arrival plate cluster
+        // (#743-745/#497, (55.3-58.8, 39.2-39.9, 21.2-23.9) [D dump]) — the real game's arrival:
+        // the plate fires on the first tick, OR #498 raises ch 0x46, and the monitor completes the
+        // carried "Breach the castle walls" record and reveals the part-1 record [M 0x1827d8
+        // cases 1/3; the live ride-time snapshot sat at state 3 only because it was taken on 05
+        // (L ee_snapshot), before any arrival plate could fire].
+        assert!(sim.drones.channels.on(0x51), "the truck-ride spawn's arrival plate raises ch 0x51 [D #743-745]");
+        assert!(sim.drones.channels.on(0x46), "OR #498 (0x50|0x51|0x52) writes the objective's condition ch 0x46 [D dump]");
+        assert_eq!(sim.drones.mission.states[0][0], 4,
+            "'Breach the castle walls' completes at the 07000006 arrival [M 0x1827d8 case 3; D OR #498]");
+        assert_eq!(sim.drones.mission.states[1][0], 3,
+            "the next objective (part 1, cond ch 0x02) reveals on ch 0x46 [M the record's enable byte 0x46; L ee_start_05 @0x2a3e40+0x0f]");
+        eprintln!("[05] the objective chain complete: 05 record state 4, 06 record state 3, ch 0x46 on");
+    }
 }
 
 /// The cable route: the west walk, the ladder, the upper ledge, the E-grabbed wire ride, the zip
-/// door's fallback exit. IGNORED with the truck test (walkreal-a parked mid-task; the west anchors
-/// are untested beyond the ladder).
+/// door's fallback exit. STILL IGNORED (level-05-complete 2026-10-17): the walk reaches the ladder
+/// top [61.64, 34.62, 89.20] through the real path, but the ledge west of it dead-ends — every yaw
+/// sweep from the top stalls at x ≈ 57.9-58.0 (Bond holds y 34.7, grounded flickering, the yaw-5.89
+/// walk drops off the ledge's south edge to y 28) — the wire #251 grab spot (−23.5, 34.5, 6.3) is
+/// unreachable from here. Whether that wall is the game's own collision (the tower's
+/// Object_Tower_Gate_* / the BlockingPolys family — the level's 0x19 census has 113 entries, several
+/// named BlockingPoly_*), or the port's collision of it, or simply the wrong lane (the disc's real
+/// route to the cable may cross the gatehouse interior or drop to the west road), needs the main
+/// agent's render/trace: see docs/reports/level-05-complete.md "Live checks for the main agent".
 #[test]
 #[ignore]
 fn walk_the_west_ledge_and_cross_the_cable() {

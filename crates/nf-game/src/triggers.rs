@@ -134,11 +134,30 @@ impl Toucher {
 
 /// The channel table (`switch_channels`) with the frame each channel was last set (`switch_channels_time`).
 #[derive(Clone, Debug)]
-pub struct Channels { pub v: Vec<u8>, pub time: Vec<u32> }
+pub struct Channels { pub v: Vec<u8>, pub time: Vec<u32>,
+    /// channel-persistence: when `Some`, every `set` (and the direct `v[..]` writers) records
+    /// `(channel, value, frame, source)` — the per-tick writer census's probe. Source 0 = an object
+    /// writer (the trigger/door/sensor/flicker/emitter families), 1 = the script path (the script
+    /// event 0xD / 0x11 writes and the SP out — data-driven from the disc's own scripts [M
+    /// 0x1d94c0]). `None` otherwise (no cost).
+    pub writes: Option<Vec<(u8, u8, u32, u8)>>,
+    /// channel-persistence: every channel a script op has ever written in this level — the script
+    /// event 0xD / 0x11 writes (`Script_EventHandler` 0x1d94c0) and the SP out writes — accumulated
+    /// so the census can tell script-owned channels (data-driven from the disc's own scripts) from
+    /// a port-only writer. The [S] stand-ins deliberately do NOT land here.
+    pub script_channels: std::collections::BTreeSet<u8> }
 
-impl Default for Channels { fn default() -> Channels { Channels { v: vec![0; 256], time: vec![0; 256] } } }
+impl Default for Channels { fn default() -> Channels { Channels { v: vec![0; 256], time: vec![0; 256], writes: None, script_channels: std::collections::BTreeSet::new() } } }
 
 impl Channels {
+    /// channel-persistence: the script-path write — the game's `Script_EventHandler` 0x1d94c0 case
+    /// 0xD / 0x11 and the SP out write (`SP_Update`'s tail). Same array write + nonzero stamp as
+    /// `set` (the script path stamps [M 0x1d94c0:112]), recorded with source 1.
+    pub fn set_script(&mut self, c: u32, value: u8, frame: u32) {
+        self.set(c, value, frame);
+        if let Some(w) = &mut self.writes { if let Some(last) = w.last_mut() { last.3 = 1; } }
+    }
+
     /// Channel 0 is a real channel: the game's readers index `switch_channels[ch]` directly —
     /// `SS_Update` 0x1a9948:20-23 reads AND writes `switch_channels[ss.ch]` for any channel word
     /// including 0 (the 0c pulley winches #351/#364/#377 listen on ch 0 [D]), and the trigger/AND
@@ -147,10 +166,20 @@ impl Channels {
     pub fn on(&self, c: u32) -> bool { self.v.get(c as usize).is_some_and(|&x| x != 0) }
     pub fn set(&mut self, c: u32, value: u8, frame: u32) {
         if c > 255 { return; }
+        // channel-persistence: the NF_CHWATCH write watch — env holds the channel number; every
+        // matching write prints the value and a backtrace (the writer hunt's probe; additive).
+        {
+            static WATCH: std::sync::OnceLock<Option<u32>> = std::sync::OnceLock::new();
+            let w = *WATCH.get_or_init(|| std::env::var("NF_CHWATCH").ok().and_then(|v| u32::from_str_radix(v.trim_start_matches("0x"), 16).ok()));
+            if w == Some(c) {
+                eprintln!("[chwatch] frame {frame} set ch 0x{c:02x} = {value} from\n{}", std::backtrace::Backtrace::force_capture());
+            }
+        }
         // The game stamps `switch_channels_time` on EVERY nonzero write in its trigger and script paths
         // [M 0x1b1a78:87,107,188-189 — the type-2 OR, the AND write, the Out copy; Script_EventHandler 0xD],
         // not only on the rising edge (trigger-port-check #4): a re-set channel refreshes its SEQ_AND window.
         if value != 0 { self.time[c as usize] = frame; }
+        if let Some(w) = &mut self.writes { w.push((c as u8, value, frame, 0)); }
         // NF_LEVELLOG=1: every switch-channel write that turns a channel on (rising edge), with the frame
         // and the new value. Lets the user trace e.g. ch 0x1D being set by the EndLevel script's event 0x11.
         if std::env::var("NF_LEVELLOG").is_ok_and(|v| v == "1") && value != 0 && self.v[c as usize] == 0 {
@@ -196,6 +225,17 @@ fn segment_segment(p1: V3, q1: V3, p2: V3, q2: V3) -> f32 {
     };
     let (c1, c2) = (lerp(p1, q1, s), lerp(p2, q2, t));
     dot(sub(c1, c2), sub(c1, c2)).sqrt()
+}
+
+/// The capsule-vs-mesh contact the trigger `contains` uses, shared with the hurt volumes
+/// (the game's object collision picks a class-0x27 hurt volume's glist cels with the player's
+/// capsule [M Player_DealWithObjHit 0x194458:95-103; the exact BL pick rule is the port's
+/// trigger-contact approximation]).
+pub fn capsule_hits_tris(a: V3, b: V3, r: f32, tris: &[[V3; 3]]) -> bool {
+    tris.iter().any(|t| {
+        segment_hits_triangle(a, b, t) || point_triangle(a, t) <= r || point_triangle(b, t) <= r
+            || (0..3).any(|k| segment_segment(a, b, t[k], t[(k + 1) % 3]) <= r)
+    })
 }
 
 /// Whether the segment a–b crosses triangle t.
@@ -305,10 +345,7 @@ impl Trigger {
             && (0..3).all(|k| c.b[k] >= self.lo[k] && c.b[k] <= self.hi[k]) {
             return true;
         }
-        self.tris.iter().any(|t| {
-            segment_hits_triangle(c.a, c.b, t) || point_triangle(c.a, t) <= c.r || point_triangle(c.b, t) <= c.r
-                || (0..3).any(|k| segment_segment(c.a, c.b, t[k], t[(k + 1) % 3]) <= c.r)
-        })
+        capsule_hits_tris(c.a, c.b, c.r, &self.tris)
     }
 
     /// `Trigger_Hit` (0x1B1FC8) for a Touch / TouchOnce trigger. The 0x18 branch is an AND-chain [M 0x1b1fc8:56-123]:

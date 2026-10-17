@@ -18463,3 +18463,403 @@ directly. Report: docs/reports/level-07-interactables.md.
   monitor call stands in when the exit races the hand. The obj0 asserts resolve their record
   indexes from the LEVELS table (master's 05-08 records sit in front of 01's; a hardcoded
   [0][0] named 05's record). Suite: see docs/reports/level-01-complete-2.md.
+## level-05-complete (2026-10-17, branch s/level-05-complete) — started 12:10 UTC
+Task: play 07000005 (Mayhew A, castle approach) from start to finish through the real input
+path (Sim::step_bond + level scripts/triggers), complete every objective including optional
+ones, exit the way the game does; fix every blocker the walk hits (each with a focused test
+that fails on the old code); report objectives/route/remaining gaps. Known open items:
+the #[ignore]d walkreal_07000005_live test, the truck hand-over to 06, the helicopters.
+
+## level-05-complete (2026-10-17, branch s/level-05-complete) — completed 13:2x UTC
+The 07000005 walk (walkreal_07000005_live, truck test un-ignored) drives the real path end to end:
+cold start #26 → the ch-0x45 spawn reveal plate ON THE BOOT TICK → the road to the gatehouse → the
+SP #38 hand-over (ch 0x5C) → the crouched truck ride → the ch-0x70 park plate → mux #316 AND(70,71,72)
+→ 0x65 → SP #320's event 0x11 → ch 0x1D → level_exit 07000006 (5687 ticks, no falls) → the RamSave
+carry → the 0x1D start #496 on 07000006 → the spawn sits inside the 0x51 arrival plates → OR #498 →
+ch 0x46 → the monitor completes "Breach the castle walls" (state 4) and reveals part 1 (state 3).
+The objective census resolution: ch 0x45's writer IS on-disc (placement 36 — the level page's old
+"not on-disc" note was a census miss); ch 0x46 has NO writer on 05 — its writer is 07000006's OR
+#498 over the three arrival routes' plates (0x50 zip landing / 0x51 truck spawn / 0x52 gate walk)
+[D dumps; L ee_start_05 record @0x2a3e28, L ee_snapshot record state 3 with channels {45,73,97} after
+the truck script's 0x73]. Fix: the player trigger toucher builds at pos − 0.6 (was − 0.4) — the reach
+measured from live play: the boot plate sits 0.557 below the position reference [L ee_start_05
+glb_players→+0xc4 = 24.9633 vs plate 24.4065] and the crouch-only park plate bounds the standing reach
+at 0.65 on the port's geometry (the game's own window is [0.557, 0.575]); sisters green (the standing
+ride, fix_truck_live, level_carry 8/8, walkreal 01/02/04, nf-game units). Remaining: the cable route
+stays #[ignore]d — the ledge west of ladder #151's top dead-ends at x ≈ 58 (a 16-yaw sweep stalls,
+yaw 5.89 drops to y 28); needs the main agent's render/trace. Pre-existing divergence found: the
+helicopter SC3 chain (0x06000047) falsely raises ch 0x4B at boot tick ~299 [L ee_snapshot has it off;
+ch 0x4B is 07000008's gondola record's condition] — helicopters are 750h2's; live checks listed in
+docs/reports/level-05-complete.md.
+
+## level-05-complete-2 (2026-10-17, branch s/level-05-complete-2) — started
+Task 705e: the held level-05-complete (32f6a18) merge fix. The trigger-reach change (the toucher at
+pos − 0.6 instead of pos − 0.4 in drone.rs) breaks two tests that pass without it:
+fix_mission_live::objective_announces_on_its_enable_channel_and_completes_on_its_condition (the 05
+reveal plate #36 now fires on frame 1 — decide from [L ee_start_05.bin] and fix the TEST if the boot
+snapshot already has ch 0x45 = 1) and npc_doors_live::the_escort_opens_his_door_without_bonds_help
+(the escort never entered DSTATE_OpenDoor at the courtyard shoji — find which plate Bond now touches
+on that walk and whether the game fires it). Make the reach evidence-backed on every level; make both
+pass with my own tests. Branch = origin/master 0603094e + the held branch origin/s/level-05-complete
+32f6a18 (both WORKLOG sides kept; the 07000005 objectives section takes the held branch's corrected
+census).
+
+## level-05-complete-2 (2026-10-17, branch s/level-05-complete-2) — the held 05 completion, unheld
+Merged the held branch (both WORKLOG sides kept; the 05 objectives section takes the corrected
+census). Test-1 (fix_mission objective lifecycle) fixed per [L ee_start_05 @0x26fc90 = {0x45}] —
+the game's boot already carries the enable, so the announce happens on the boot tick through the
+real plate path; the test now pins that (fails on the old −0.4 reach — built-in sister). Reach A/B
+probe: the escort-walk channel-write SETS are identical at −0.4 and −0.6 (6-tick guard-kill phase
+shift only) — the reach is behaviour-neutral on 01; −0.56 refuted (the 05 boot plate needs ≥ 0.570
+on the port's spawn; the port window is [0.570, 0.65)). Real port gap found+fixed: the 0.4–1.0
+special-node dispatch tier (LinkCreep_AtSpecialNode 0x159dd0 → NDrone2_DroneNearPos 0x143e68's
+player tier, constants exact; the list-walk tier [S] unported) — a drone blocked at a closed door
+now dispatches when the player stands close. The escort door test remains red under every ordering
+this sandbox can produce (harness guard-clear phase shift steals the door work; the creep stall
+0.4–1.0 with nobody within 0.55 never dispatches) — #[ignore]d with the diagnosis, live checks
+listed in docs/reports/level-05-complete-2.md. Green: npc_doors 6+1ig, walkreal 05/01/02/04,
+fix_truck 2, level_carry 8, mayhew_handover 2, nf-game units 276. The full suite.py never fits
+(background processes die between tool calls here).
+- 2026-10-17 s/p2k-fire-07 (task 707c): started. Task: the P2K never fires on
+  07000007 after the disguise lock — after the hall walk-in releases the weapon
+  lock (ch 0x48, the P2K auto-drawn), holding fire through Sim::step_bond for
+  100 ticks never spawns a shot. Find the fire gate (suspects: the weapon-lock
+  auto-draw's switch state vs the fire path's lockout [M Player_Weapon
+  0x1a24c8:242-275]), fix it with a game address, un-ignore
+  the_party_vase_breaks_on_a_p2k_round (vase, statue #109, window #298 break on
+  the real path), sister: shot still refused while the lock channel holds.
+  In progress.
+- 2026-10-17 s/p2k-fire-07 (task 707c): DONE. The P2K fire gate on 07000007 found: NOT a
+  weapon-lock fire lockout — Player_Weapon 0x1a24c8:242-275 only reroutes the cycle actions and
+  writes the rising-edge auto-draw BL+0x63 = 2; the gate is the hall plate's control-taking
+  cut-scene (0x06000073), whose script event 4 (Player_Disable [M 0x1d94c0]) holds Bond and
+  zeroes the trigger in step_bond. The old ignored test never skipped it. Fixed in the test:
+  release_weapon_lock skips the scene with the game's own skip action (skip_request, [M nis.rs]),
+  the_party_vase_breaks_on_a_p2k_round un-ignored — vase #49, window #298, statue #109 break on
+  the real path (press/release semi-auto cycles, the half-PI pitch unit, the settled-stand
+  re-aim); new sister the_lock_holds_the_shot_refused pins the refused P2K selection and no P2K
+  round while ch 0x48 holds. No engine code changed. Ran: interact_07000007_live 7/0,
+  walkreal_07000007_live 2/0, lighting_live 5/0 (suite.py background-killed by the sandbox as
+  before; the foreground runs stand in). Report: docs/reports/p2k-fire-07.md (carries the
+  bullet-through-floor observation at the vase stand + the live checks).
+- 2026-10-17 s/level-06-complete (task 706b): "play 07000006 (Mayhew B: the castle interior to the
+  party) from start to finish". Plan: (1) a live walk test (walkreal_07000006_live.rs, un-ignored)
+  that plays the level through the real input path and completes EVERY objective — the optional
+  ones too — and exits the way the game does; every cut-scene plays (skipped only with the game's
+  own skip action), every scripted event fires. (2) fix every blocker the walk hits (collision,
+  doors, triggers, scripts, AI, missing channel writers), each with a focused test + sister that
+  fails on the old code. (3) the report: objective list with how each completes [M]/[D], the
+  route, anything the walk still cannot do + the exact reason. Known open items: Rook stuck in
+  the doorway (×2), the alarm panel, the Drake cut-scene lag/artifacts. Branch from origin/master
+  0603094e; the level-06-interactables census (706a) is already on master.
+- level-06-complete progress: the walkreal (walkreal_07000006_live.rs, new) walks 07000006 from
+  the truck-ride spawn through the real input path — the WineTruck dismount (the spawn stands on
+  the bed; the open south side), the driver-greeting plates + the OR #498 ch-0x46 objective
+  reveal, the dock west lane, the well courtyard's west rim, the garden hedge gap, E-doors #47 /
+  #59 / #71 / #72 through use_door, the guardroom FuseBox #747's Laser cut (ch 57+103; the walk
+  also measured ch 55 rising — the beam clips the alarm bundle), and the tunnel climb to the
+  upper gallery (y≈50.1). Two open items, both probed and documented in the report: the scripted
+  guard #438 engages in the guardroom and never dies (8 real-fire rounds; invulnerability
+  suspect), and the gallery→dressing-room leg has no walked connection in the port's collision
+  (the lip blocks walk+jump; the east corridor is walled both ends; no door; AI point 5 patrols
+  at y 54.7 above the tunnel — a stair volume the floor rays miss is the suspect). The exit
+  chain (LoadPoint #746 → ch 0x83 → the dressing scene → ch 0x02 → level_exit 07000007) stays
+  pinned green by walk_07000006_live (2/2). Both walkreal tests are #[ignore] with the exact
+  blockers in their headers. Suite: the 06 binaries green (walk 2/2, interact 9/9, fusebox 4/4);
+  the full four-crate suite did not fit the window (the background runner dies between tool
+  calls here) — next session runs it on this branch.
+- 2026-10-17 s/level-08-complete (task 708b): started. Task: live walk test
+  walkreal_07000008_live.rs playing 07000008 (Mayhew D: the gondola) start to finish via the
+  real input path — every objective (0x4000004 the safe/briefcase ch 0x4a; 0x4000005 the
+  gondola escape ch 0x4b; the intro plate #237 ch 0x49 completes 07's carried objective),
+  every cut-scene (SP #294 the station intro, SP #295 the ride 0x0600004C, SP #296 the
+  bottom cinematic), the scripted chain to the helicopter → ch 100 → level_exit 0x07300008.
+  Known open items: Zoe shooting at Bond at the gondola (750r), the guards breaking the glass
+  at the start (750p), the safe/briefcase, the rocket blast lighting (GAPS G-049).
+  Census basis: docs/levels/07000008.md (level-08-interactables). In progress.
+- 2026-10-17 s/level-08-complete (task 708b): DONE. walkreal_07000008_live.rs (new, 3 tests, all
+  passing): the full 07000008 gondola walk through the real input path — the intro plate ch 0x49
+  (07's carried objective folds) + the station scene → the descent → the LASER-cut fusebox wires
+  (ch 137; the wire filter drops guns, keeps the Laser [M 0x1ece30]) → the safe bolts burned
+  (ch 134/135 → mux ch 136) → the briefcase (ch 0x4a = objective 1 → 4) → the descent along the
+  level's own nav chain → the WEST boarding (the east face is the script-glass, obj_type 0x20 =
+  Break_Create [M 0x1d8968]) → the floor plate ch 4 → mux ch 1 → SP #295 the ride — the carriage
+  CARRIES Bond down the whole cable (y 27.9 → 13.5, no falls; set_dynamic movers +
+  Control_InheritVelocity) → ch 83 at script tick 1410 → the bottom cinematic ch 5 → the copter
+  ch 0x4b (objective 2 → 4) → ch 100 → the mission end (6, 0x0730008, the driving hand-off).
+  THE FIX (drone.rs): team-2 allies never take the player as opponent [M FindOpponent 0x1424e0:101]
+  — look_for_opponent refuses team 2 and the alert-fold keeps the ally's base state; the
+  reproduction was the playtest's "Zoe shooting at Bond" (the ally reached alert 1.0 on the
+  guards' gunfire and the fold put her into the player-hunting ATTACK). Ran: walkreal_07000008_live
+  3/3, nf-game 534/0, the ally siblings 14/0 (escort_follow/fix_actors/mayhew_handover/
+  mayhew_end_transition/fix_npcs; suite.py background-killed by the sandbox as before).
+  Report: docs/reports/level-08-complete.md.
+- 2026-10-17 s/level-05-interactables-2 (task 705d): started. Task: finish the HELD 05
+  interactables (705a, 41f5ae1) — merge it onto master and fix the three breaks:
+  searchlight_live::channels_and_tracking_behave (the own-housing skip pushes the spot ray
+  start past its end; dir_unit assumes a 100-unit ray), and the two 07000016 finale tests
+  (the hurt param map made #309 HurtPoly-ShuttleLaunch deal 1000 through the chaser fight —
+  the held hurt.rs lost Hurt_Update 0x17e5d0's who-mask/gate state machine; ch 243's writer
+  timing to be checked against [M 0x182c60]). Single hurt system on Sim.hurts; damage stays
+  1000. In progress.
+
+## level-05-interactables (2026-10-17)
+
+Branch `s/level-05-interactables` off master d628f01f. Task: 07000005 (Mayhew A, the castle
+approach) — the census of every interactive thing (buttons, doors, triggers, pickups, wires,
+ladders, vehicles...) with params + channel wiring + [M] behaviour + port status into
+docs/levels/07000005.md; then one real-input-path live test per KIND with a sister; then the
+model/texture sweep (every placement's mesh resolves, no white fallbacks). Working notes as I go.
+- 2026-10-17 s/level-05-interactables (task 705a): level 07000005 "Mayhew A (the castle approach)" —
+  the interactables census (363 placements, dispatcher 0x1d04f0's creator per kind, params + channel
+  wiring + [M] behaviour + port status) into docs/levels/07000005.md §7; two corrections: TouchOnce
+  #36 IS the ch-0x45 reveal writer (out 69), and the searchlight roles are param 0 = 1 head /
+  2 psiLight. The hurt volumes 0xE4 ported (class-0x27 capsule damage [M 0x194458:95-103] through
+  pain_generic's type-1..7 no-armour switch [M 0x1902c8:84-104]); the searchlight spot ray skips the
+  head's own gfx box ([M 0x1eae80:57-59] the own-cel exclusion — the ray used to hit the platform at
+  t≈0 and no head could arm). One live test per KIND through the real input path (11/11, sisters):
+  plates+OR mux, doors (locked refuse), ladder, pickups (armour/bonus), searchlight sweep + the [L]
+  orphan light, SC3 plate → copter gate, ledge plate → sound trigger, ch 0x22 → spawner, grapple
+  aim, the valley hurt fall; the census test asserts 0 unresolved meshes + 0 white-fallback
+  materials of 3576. Repairs: nf-extract ai_sim + 19 nf-game tests' stale attach_level calls. Left:
+  the walkreal west anchors + the jump-grab (020-fix-wire), the window-ledge plunge catch, the #36
+  plate vs the toucher stand-in. Run: nf-game 61/61 binaries, nf-formats/nf-audio, the nf-view
+  touched neighbourhood + walk slices; the full remaining nf-view sweep did not fit (suite.py
+  background-killed in this sandbox). Report: docs/reports/level-05-interactables.md.
+- 2026-10-17 s/level-05-interactables-2 (task 705d): DONE. The HELD 05 work (705a, 41f5ae1) merged
+  onto master 0083ce97 and the three breaks fixed. (1) searchlight spot ray: the own-housing skip
+  slab-tested the head's LOCAL-space gfx box against WORLD ray coordinates — the ray from the head at
+  (−57.03, 37.84, −59.97) crossed the ±0.27 origin-anchored box 57 units out, the skip pushed the
+  start past the real hit (fraction 0.228) and the re-lit dark head's spot stayed at −10000. The skip
+  now transforms into the part's local space (the bullet stand-in's own convention) and keeps the
+  100-unit ray's parametrization (skip as a ray fraction, ≤ 4 world units; the sub-segment's t
+  rebased), [M Collide_PickObj 0x1eae80:57-59]. (2) hurt.rs rebuilt as the ONE system on Sim.hurts:
+  the held param map (0 type, 1 damage, 2 gate, 3 sound, 4 who, 5 one-shot [M Hurt_Create 0x17e870])
+  + the tris contact + the restored Hurt_Update 0x17e5d0 state machine (the live every-tick 0x20 gate
+  law [M :26-37], the gated volume's channel-VALUE mask [M :97-99], the ungated who law — who 1
+  collects nothing [M :57-95], the one-shot retire [M :129-132]); the Drones.hurts copy the held
+  branch added is gone; 7 nf-game unit tests cover the law (incl. #309's gated-who-1 shape). (3) the
+  07000016 finale: the divergence is the disc's own exhaust order — SP #272's 0x0600090a stream 6
+  pulses ch 0xf3 (243) at script ticks 1611→2170 [D event-0xd scriptlog], BEFORE the ch-0xf0 spawner
+  write at 2180 [D]; #309 (gate 0xf3, 1000 [D]) is live in between, the pack cinema's snap leaves
+  Bond inside it on the silo floor, and Mission_Update 0x182c60's ch-0x62 fail arm
+  (Player_SetHealth(0), MissionState 3, LevelToEndTo 0x7000048 [M :21-43]) outranks the ch-100
+  completion — the tests' parked-in-the-pit Bond contradicted the game's leave-the-pit-during-the-
+  launch route (they passed on master only because master's #309 read damage from param 4 = 1.0 into
+  an origin-anchored box); both tests re-seat Bond on the upper floor once the cinema hands control
+  back. Damage stays 1000. Run: nf-game 536/0 (all binaries, --test-threads=2), nf-view slices —
+  the three fixed binaries (searchlight_live 3, fix_finale_live 2, spurious_complete_16_live 2), the
+  searchlight neighbours 10, hurt_02_live 1, interact_07000005_live 11, interact_07000006_live 9,
+  walk_07000005 2, walkreal_07000005 2, mayhew_handover 2, level_carry 8, fix_truck 2, wire 1,
+  casings16 2, fix_mission 4, levels_sweep 3, walk_07000008 4, walk_0700000a 3, mission_unlock_flow 3
+  — 0 failures. Report: docs/reports/level-05-interactables-2.md.
+- 2026-10-17 s/channel-persistence: started. Task: switch-channel values written
+  from outside the channel's own owners are cleared by some port system within
+  one tick (Channels::set(0x33,1) then one step_bond reads it back 0) where the
+  game's switch_channels array (0x26fc90) persists until written [M: find every
+  writer]. Fix so only the game's writers write; persistence test (600 ticks) +
+  a census across all on-foot levels (port rewrites vs the game's writer set);
+  re-run the level walks and the lift/door tests. Found by 750q
+  (docs/reports/cutscene-guard-models.md, "Open port bug"). In progress.
+- 2026-10-17 s/channel-persistence: DONE. The 750q "open port bug" (a hand-written
+  switch-channel cleared within one tick) resolved as the disc's own OUT copy: 07000001's
+  placement #296 (out 0x32 → input 51 = 0x33 [D]) rewrites ch 0x33 from ch 0x32 EVERY tick
+  [M Trigger_Update 0x1b1a78 case 5] — the channel was owned all along; the port is faithful.
+  The writer inventory audited against the decompile (docs/systems/channel-persistence.md):
+  touch clear+OR [0x1b1900/0x1b1a78 case 2], the TOUCH_ONCE case-1 fall-through `|= hit`
+  every tick (the port's hit-only write lands the same values), the mux recompute (cases
+  3/4/0xC), the OUT copy (case 5), the sensors [0x1af618], flickers [0x1ab960], emitters
+  [0x17b080], doors [0x135618 transition-only], switches, Mission_Init [0x182270 load-time],
+  the level latches [0x1b1900:21-26], Drone_InitComms ch 0x97 unstamped [0x139520], script
+  events 0xD/0x11 + SP outs [0x1d94c0], script-created triggers [0x1d8968] — no port-only
+  per-tick writer. New tests (channel_persist_live.rs, 3): ch 0x3c (census-verified unowned
+  on 01) holds 600 real-input ticks; the 0x33 OUT-copy pin (tracks ch 0x32 within one tick
+  both ways); the census across all 23 on-foot levels — every recorded per-tick write's
+  channel must be a live game owner (or the documented [S] stand-ins 4a 0x22/0x4a), script
+  writes tagged at the source. Channels gained the None-gated census probes (`writes`,
+  `script_channels`) and `set_script`; the door's transition mirror routes through `set`
+  (identical stamps [0x135618]). Ran: channel_persist_live 3/3 over all levels, doors_01
+  2/2, doors_live 2/2, npc_doors_live 7/7, walkreal_0700004a 1 ignored (pre-existing),
+  walkreal_07000001 2/2, fix_truck 2/2, walk_07000005 2/2. Report:
+  docs/reports/channel-persistence.md.
+- 2026-10-17 s/level-08-interactables-2 (task 708c): started. Task: finish the 08
+  interactables re-land — ONE hurt system from origin/master's hurt.rs +
+  docs/systems/hurt-volumes.md (Sim.hurts), porting 708a's fuller semantics
+  (Hurt_Update 0x17e5d0, drone victims), passing the four master tests
+  (fix_finale_live, spurious_complete_16_live, hurt_02_live:83,
+  interact_07000006_live) plus hurt_07000008_live; coordinate with 705d on the
+  ShuttleLaunch ch 0xf3 / Mission state 6 timing [M 0x182c60]. In progress.
+
+---
+
+## level-08-interactables (s/level-08-interactables)
+
+Task: every interactive thing and every model on 07000008 (Mayhew D: the gondola).
+Plan: census in docs/levels/07000008.md; then drive Bond through the real input path to one
+instance of every KIND on the level (use key, gadget, shooting, walking in) and fix what
+doesn't work — starting from the open items: Zoe shooting at Bond at the gondola (750r),
+the guards breaking the glass at the start (750p), the safe/briefcase, the rocket blast
+lighting (GAPS G-049). Then every model/mesh/skin/texture resolves.
+
+### level-08-interactables — session result
+
+Census §7 in docs/levels/07000008.md (the per-kind interactables table, disc probe
+census_07000008.rs). The Hurt kind (0xE4) implemented (hurt.rs + the sim tick; 07000008's
+#42-44 are the y −24.1 valley kill floor — live at load, who 0x18). Models: 4486 materials /
+562 textures / 0 white fallbacks, all placed drones skinned. Finding: the plunge death NIS
+holds the falling body forever (no post-death-NIS mission fail) — blocks the kill-floor fall
+end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interactables.md.
+- 2026-10-17 s/level-08-interactables-2 (task 708c): DONE. The re-land: ONE hurt
+  system on master's Sim.hurts — the drone victims added via Hurt::update_touch
+  (class 3 → who bit 8 [M 0x17e5d0:57-95]; the trigger-walk drone capsule r 0.4;
+  the explosion path's flat-subtract delivery; a one-shot retires for all
+  victims), Hurt.hits = the port's mechanism witness; 708a's Drones::hurts
+  variant retired; the 08 tests moved onto sim.hurts; the system doc's
+  merged-port section + the 705d ShuttleLaunch live check. The four master tests
+  the held branch broke all pass unchanged (fix_finale 4/0, spurious_complete_16
+  2/0 — #309 stays disabled through the fight, hurt_02 1/0, interact_07000006
+  9/0 — #373 inert). Ran (foreground; background jobs die in this sandbox):
+  nf-game lib 279/0 + integration 0 FAIL; hurt_07000008_live 2/0, census_07000008
+  2/0, models_sweep_07000008_live 2/0, interact_07000005_live 11/0, the
+  interact/walk families green (01 10/0 incl. the escort, 03/04/06/07, walks
+  01/08/16/03-real), ~66 more nf-view binaries 0 FAIL; nf-formats green but the
+  3 expected slim-ISO disc_golden failures; nf-audio 15/0. Left: the death-NIS
+  terminal fail (708a's finding) still blocks the kill-floor landing pin; the
+  drone-side delivery needs the live check. Report:
+  docs/reports/level-08-interactables-2.md.
+- 2026-10-17 s/level-09-complete (task 709b): started. Task: the live walk of
+  07000009 (Night of the Agent, Tower A) start to finish through the real input
+  path — every objective (the optional ones too), every cut-scene (skipped only
+  with the game's own skip), every scripted event, the exit the game's way.
+  Known open items to start from: the elevator buttons (task 700's findings,
+  s/elevator-buttons-09), the lobby laser grid art (s/laser-scripts, held for a
+  render check), the security-room monitor. walkreal_07000009_live.rs is to be
+  un-ignored and extended. In progress.
+- 2026-10-17 s/level-09-complete (task 709b): DONE. walkreal_07000009_live.rs
+  rewritten (3 tests, un-ignored as it already was): the writer pin (SP #70's
+  shape, the panel entity, the SS door pair); the FULL start-to-finish walk —
+  spawn #68 → the arrival plate #248 (ch 0x51) → the AI graph's stairs → the
+  lobby on the lenient nav graph → the REAL E-press on the elevator panel's
+  script entity (the elevator-buttons mechanism, no channel stand-in) → ch 0x39
+  → AND mux #274 → ch 0x46 → objective 0x4000017 state 4 → the FX entity B →
+  the LIFTDOORS SS pose open and disarm → the cab → TOUCH_ONCE #67 ch 0x32 →
+  LOAD_LEVEL #63 → level_exit 0700000a, with the mission rows asserted at the
+  start and the exit (obj 0x4000016 flags-2 sits 2 = no alarm; 0x4000017 = 4;
+  0x4000018 announced 3 when its enable ch 0x46 fired [M 0x1827d8:55-67]) —
+  4260 ticks, 0 stuck, 0 falls; the alarm fail-path sister (E an alarm switch →
+  ch 0x7C → OR mux #278 → ch 0x61 → ch 99 → state 5). Level-doc fix: the
+  monitor census line was wrong — ZERO 0x30 placements in all 40 maps [D probe;
+  M 0x1d04f0 case 0x30] (the security-room monitor WALL is baked art). Walk
+  findings: the security door E works (state 0x4 pos01 1.0) but the north-wall
+  furniture belt (a console at ≈(−23.5, 38.2)) and the raised desk platform
+  body-block direct steers — the route uses the guards' own nav graph; the
+  laser toggle switch #71 stays unreachable (its placement is the origin — the
+  position is scripted; the port's switch use targets placements). Ran:
+  walkreal_07000009_live 3/3, elevator_buttons_09_live 3/3, the four-crate
+  suite build + the run in flight on this tree (the 3 allowed disc_golden
+  failures only, so far). Report: docs/reports/level-09-complete.md.
+- 2026-10-17 s/level-0a-interactables (task 710a): STARTED. Tower B (the office
+  floor, 0700000a): the interactables census in docs/levels/0700000a.md, one
+  live test per KIND through the real input path, every placement's mesh/skin
+  resolving. Known open items: the cab mouth's SS lift doors (placements
+  524/525) stay closed at key 0; the keyboard lasers. In progress.
+- 2026-10-17 s/level-09-interactables (task 709a): "every interactive thing and every model on
+  07000009 (Night of the Agent (Tower A))". Plan: (1) the census from the disc (nf-formats parse
+  of 07000009.bin) into docs/levels/07000009.md — every touch/use/shoot/ride placement by type
+  with parameters + channel wiring, [M] game behaviour, port status; known open items: the
+  ELEVATOR BUTTONS (task 700 owns them — reuse s/elevator-buttons-09 findings), the lobby laser
+  grid art (s/laser-scripts, held for a render check), the security-room monitor. (2) one
+  real-input live test per KIND (nf_view::load + Sim::step_bond), each with a sister that fails
+  without the operation. (3) every placement's mesh/skin resolves (no white fallback,
+  NF_TEX_TRACE=1). Branch from origin/master 0603094e.
+- level-09-interactables progress: the all-map census probe (census_07000009.rs --ignored;
+  40 maps, main m39 = 288 placements / 23 kinds) and the doc rewrite — 0x20 is breakable GLASS
+  (17 Break_Create placements, kind 2, bullets + sound 0x2E [M 0x12b970]), the six 0xdb doors,
+  NO 0x30 Monitor anywhere on the disc, 0x71 = rotor_init (not a spawner), the four
+  SoundTriggers, the pickups (armour kind 3 + two BOND_BONUS kind 6). The real find: the
+  guards' WAIT_SWITCH channel is drone param 3 = 0x51 = the arrival plate #248's out
+  [M 0x15b830/0x15b960 case 3] and the port never re-sampled it for frozen drones — two guards
+  froze forever, unkillable (15 rounds, zero damage through Drone_CollisionHandler 0x140968:62's
+  enabled gate); fixed by sampling the channel for waiting frozen drones in tick_inner. 12 live
+  kind tests green (alarm switch E → ch 0x7C → 0x61 → fail; glass shot; door E + the locked
+  shutter; armour walk-over; liftside touch plate ch 0xAB; guard stands) + sisters. Left: two
+  lobby guards re-freeze after the frame-1 wake (gdbwatch ask), the E-route pick runs from the
+  camera not the player head [M 0x1a5170:101-106] (ignored test + live check), the
+  NF_TEX_TRACE sweep test. docs/reports/level-09-interactables.md.
+- 2026-10-17 s/level-09-interactables-2 (task 709c): STARTED. Re-doing the HELD 09 interactables work
+  (709a, 45c5dc5): scope its 19-line drone.rs change to what the game does (cite it), keep the
+  census/interact tests, make the four master tests pass again (ai_live drone 66 pulse,
+  fix_cutscenes2 drake flythrough, spawner_kill gate pair swap, kimiko_actors draw set). Sandbox
+  window ~18:08-20:08 UTC.
+- 2026-10-17 s/level-09-interactables-2 (task 709c): DONE. The held 09 work un-held. (1) The
+  tick-head frozen-wait wake loop is DROPPED, not scoped: the game's wake poll rides the drone's
+  OWN control run (ControlSTANDARD 0x1490f0:81 self-sends msg 3 every frame; Drone_Control
+  0x139268 has no enable gate) and the port's per-slot channel_on sampling + the WAIT_SWITCH
+  UPDATE arm already are that mechanism in the game's newest-first order — the head loop was an
+  earlier out-of-order poll that saw 07000005's mux-270-rewritten 0xA4 pulse (ai_live drone 66)
+  and woke the Drake/gate-pair casts (the other three tests). All four now pass on master's
+  drone.rs: ai_live 36/0, fix_cutscenes2_live 5/0, spawner_kill_live 5/0, kimiko_actors_live
+  2/0. (2) The 709a re-freeze was the loop's own artifact (its frame-1 wake raced the intro's
+  start path, which re-entered WaitSwitch on the woken drones); with the loop gone all six
+  ch-0x51 drones sit enabled through the intro (3000-tick trace), so the gdbwatch ask is
+  withdrawn. (3) The kill test un-ignored and passing: its zero damage was its own K5-darts
+  weapon (0x43 — DealWithObjHit case 5 0x13fff0:269-306 routes 0x43/0x44 to the zero-damage
+  dart msg 0x19; switch_to_armed stops at the first gun with ammo); cycle_to_lethal walks to
+  the P2K (0x2) and the car-park guard dies to the real fire path (hp 10 → −1.8, corpse).
+  interact_07000009_live 13/0/1 ignored (the E-route camera pick, pre-existing). (4) Docs:
+  drone-ai.md (dispatcher wiring, self-msg-3 wake, the DefaultInit +0x134/+0x136 at-creation
+  snapshot and Global 0x15b830's snapshot-read, Patrol 0x15c498's msg-1 consume, the
+  disasm-corrected NDrone2_Enable masks [M-dis 0x149dd0]) and 07000009.md's guard section
+  rewritten. Census + kind tests from 709a kept. Neighbours: walk_09 3/0, walkreal_09 2/0,
+  elevator_buttons_09 3/0, drone_portcheck_live 5/0, fix_ai_remainder_live 2/0, spawner_kill
+  9/0, fix_portonly_review_live 3/0, fix_party_mission_live 9/0, cutscene_08_actors_live 2/0,
+  nf-game lib 278/0. The full suite.py did not fit: the sandbox kills background processes
+  between tool calls (two starts died in the build phase); the foreground runs above are the
+  verification. Report: docs/reports/level-09-interactables-2.md.
+- 2026-10-17 s/level-0a-interactables (task 710a): DONE. Tower B (0700000a). (1) The census —
+  every main-map placement type with its parsemap creator [M 0x1d04f0], params, channel wiring
+  and port status in docs/levels/0700000a.md (0x24/1, 0xEA/19, 0xE8/1, 0x35/3, 0xD9/5, 0x29/9,
+  0xEB/30, 0x20/45, 0xF0/5, 0xDB/19, 0xE2/3, 0xE4/5, 0x22/1, 0x27/6, 0x30/1, 0x71/1, 0xFB/1,
+  0xFA/1 + the AI infra; no safes/keypads/terminals/searchlights/fuseboxes/vents/wires/grapple/
+  vehicles on this level [D]). (2) The two known open items RESOLVED without code changes: the
+  cab-mouth SS lift doors (524/525) were never missing a writer — their state param 0 = 1
+  (armed [D]) sweeps them open at create and the wrap holds the pose [M SS_Update 0x1a9948 +
+  grates-02]; the walkreal is UN-IGNORED and walks the full route spawn → Q-Worm PC → keyboard →
+  hatch → 0700000b. The keyboard-lasers switch (#643) is provably INERT on fresh-boot data: gate
+  ch 0x3C has no writer in the triggers/switches/scripts [D], the load snapshot carries ch 0x47
+  only [L ee_start_0700000a.bin @0x26fc90], and Switch_Activate 0x1b02a8's gate check refuses
+  the toggle [M] — asserted end-to-end. (3) Seven per-kind live tests (interactables_0700000a_live):
+  the SS create sweep, the armour walk-over (50.0 [M 0x18e650 case 3]), the vending glass under
+  fire (Break_Kill), the laser-web crossing (ch 0x1F; the lock = disable-while-on [M]), the alarm
+  switch's class-3 refusal (E does nothing to ch 0x61 [M 0x1b02a8]) + the door-E control arm,
+  the vent ladder climb (grab + ascend [M 0x196118/0x196310]), the shaft hurt kill (1000 damage
+  [D #745-749]). All 7 + the walkreal + walk_0700000a_live 3 + walkreal_07000009_live 3 +
+  nf-game lib 279 + textures_live (every texture resolves) green on the final tree (merged with
+  origin/master batch 1017z). (4) Models: the loader census "0 unresolved", 0 untextured
+  materials (no white-fallback print), textures_live green; the GPU NF_TEX_TRACE sweep is not
+  headless-runnable. The full suite.py did not fit the window (the sandbox kills background
+  processes between tool calls; foreground 10-min tool windows cover ~77 of 522 binaries) — the
+  foreground runs above are the verification. Report: docs/reports/level-0a-interactables.md.
+- 2026-10-17 s/level-0a-complete (task 710b): STARTED. Tower B (0700000a) end-to-end play task:
+  the live walk test must complete EVERY objective (optional included) and exit the way the
+  game does. Branch created from origin/master (f53df46b) and merged s/level-0a-interactables
+  (the census, the un-ignored walkreal, the 7 kind tests, the level doc) — work continues from
+  there.
+- 2026-10-17 s/level-0a-complete (task 710b): the keyboard RESOLVED through the real input path.
+  (1) The prior "the game's own use ray has no target" premise was STALE: SP #60's mode-64
+  preload (SP_CreateScriptPlayer 0x1db9a8's load beat, the elevator-buttons-09 mechanism this
+  repo already ports) runs script 0x06000597's t=0 Entity op, so the keyboard prop (glist
+  0x020005E1, Script_EntityStart 0x1d8d78's obj+0xE4 = the owner SP, Control_BuildWorldSph
+  0x133070's baked-absolute model sphere) exists from level load at (−1.54, 1.33, 8.48) r 0.66 —
+  E-able from the corridor wedge at (−3.00, 1.10, 9.68) where the cab's east wall (x ≈ −2.0,
+  z 8.5–12.5 [D probe segments]) stops the walk. keyboard_0700000a_live pins it: walk → wedge →
+  pulse E → ch 0x3A on [M SP_Activate 0x1dc338 + SP_Update 0x1dbda8 state 1's toggle; pulses,
+  not holds — every dispatch toggles the out channel]. (2) The SP-write → AND-mux #741 (0x49)
+  follow did not fire within 6 ticks in the probe while the identical set_channel write fires it
+  — the open item carried in the report. (3) The Q-Worm PC cubicle stands: the wedge at
+  (−16.19, −30.42) is 1.87 from the PC and the standing eye-ray still clips the partition at
+  t 0.36, y 1.53 < 1.75 [D probe]; the install keeps the documented blocker + the live check.
+  (4) The exit route: nav from the lobby to the hatch was NOT verified this session (the probe
+  spent its window on the keyboard) — the walkreal's SW-office route with the ch-0x30 door drive
+  is unchanged and green. Suite: the touched crates' tests (interactables 7/0, keyboard 1/0,
+  walk 3/0, walkreal 1/0) on the final tree.

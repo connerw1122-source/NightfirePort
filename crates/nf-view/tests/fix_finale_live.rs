@@ -62,10 +62,26 @@ fn the_07000016_chasers_defeat_completes_the_final_mission() {
         sim.drones.channels.set(0x81, 1, sim.drones.frame);
     }
     // Play the chain out: the cinema (750 ticks) + the shuttle script + the spawner waves.
+    // The launch script's own exhaust gate: stream 6's event-0xd writes raise ch 0xf3 (243) at
+    // script tick 1611 and drop it at 2170 [D 0x0600090a scriptlog + params] — the
+    // HurtPoly-ShuttleLaunch #309 (gate 0xf3, 1000 damage [D]) is LIVE for those ~560 ticks, and
+    // the pack cinema's snap leaves Bond on the silo floor INSIDE the volume (3.57, −23.18,
+    // −179.55). The disc's order puts the pulse BEFORE the spawner writes (ch 0xf0 at tick 2180
+    // [D]) — the chaser fight never overlaps it — and the mission can only complete from a live
+    // Bond (Mission_Update 0x182c60 case 1 folds ch 100 → state 6, but its ch-0x62 fail arm —
+    // Player_SetHealth(0), MissionState 3, LevelToEndTo 0x7000048 [M 0x182c60:21-43] — outranks
+    // it). So the game's player leaves the pit during the launch; the test walks the same route:
+    // once the cinema hands control back, Bond is re-seated on the upper floor the descent came
+    // from, outside the volume, for the rest of the chain.
     let chaser = {
         let mut found = None;
+        let mut re_seated = false;
         for _ in 0..4000u32 {
             scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+            if !re_seated && !scene.sim.as_ref().unwrap().disabled {
+                re_seated = true;
+                scene.sim.as_mut().unwrap().bond.pos = [2.5, 1.2, -153.9];
+            }
             let sim = scene.sim.as_ref().unwrap();
             if let Some(i) = sim.drones.list.iter().position(|d| d.present && !d.corpse && d.skin & 0xffff == 0x1e && d.dtype == 0xf && d.death_channel == 0x90) {
                 found = Some(i);
