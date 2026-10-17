@@ -17915,3 +17915,33 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   passed / 6 failed (3 tolerated slim-ISO disc_golden + 3 GPU-less pylon render probes); the
   final merged-tree re-run did not fit the sandbox window. Report:
   docs/reports/laser-scripts.md.
+
+## start-slot-0x2d (2026-10-17, branch s/start-slot-0x2d) — started 04:45 UTC
+
+Task 751: the second start-position set (type 0x2D, 51 placements, one per level including every
+MP map) — `Player_AddNewStartPos(..., 0)` 0x195c00. The port registers only the 0x24 starts
+(nf-view lib.rs `level_starts`), so on levels that ship both (07000007 has 5 of type 0x2D) Bond
+may spawn at the wrong start. Porting the registration and `Player_Start`'s pick across both sets
+[M 0x190fd0]; test on real levels through the real path with a sister assertion; update the
+script census handled sets. In progress.
+
+## start-slot-0x2d (2026-10-17, branch s/start-slot-0x2d) — implemented 05:20 UTC
+
+Task 751: the second start-position set (0x2D, 51 placements on the disc). Registered through the
+game's own shape: `Player_AddNewStartPos` 0x195c00 stores a u16 KIND at entry+0x22 — type 0x24
+passes 1 (`parsemap_create_dynamic_objects` 0x1d04f0 case 0x24, disasm 0x1d0a00 `addiu a2,$zero,1`),
+type 0x2D passes 0 (case 0x2d, disasm 0x1d0e98 `move a2,$zero`) — and `Player_Start` 0x190fd0 picks
+KIND-1 ONLY in both passes (disasm 0x191028/0x1910b0 `bne v0,1`). So the census's "Bond may spawn
+at the wrong start" is REFUTED: the 0x2D records are written and read by nothing on-foot (MP spawns
+come from `MP_Start` 0x183a50's `MP_GetSpawnPoint`); what the port lacked was the registration
+itself. Ported: `LevelStart.kind`, `starts_from_placements` (the shared registration — main map,
+parse order, `flags & 0xa000 == 0` eligibility [M 0x1d1b68:93]), kind-aware `pick_start`; nf-view
+`level_starts` delegates. Fail-first proof: 0x2D arm disabled → the registration test (2 vs 3) and
+the disc sweep on 07000007 ((2,0) vs (2,4)) FAIL; restored → 8/8. Tests: 5 headless rule pins with
+sisters + 3 ISO live (sweep totals 38 kind-1 / 18 kind-0 on main maps [D] = census's 51 − 33
+shell-map (0,0,0) dummies; 0700000b's real 0x2D comes FIRST in parse order and the load must still
+land on the only 0x24; 07000007 cold load still opens at the party plate #0 (33.4,44.5,−70.6)).
+Census handled sets 61 → 62 (0x2D moved); doc tables + task 9 struck PORTED with the correction;
+docs/systems/player-starts.md written; 07000007.md §1 lists the five 0x2D records. Live checks
+requested: PCSX2 fresh-boot spawn measurements on 07000007 (expect 33.4,44.5,−70.6) and 0700000b
+(expect 28.9,13.3,28.7, NOT the leading 0x2D at 9.9,48.5,21.5). Suite running.

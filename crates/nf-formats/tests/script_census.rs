@@ -22,8 +22,11 @@ const HANDLED_TRIGGER_ACTIONS: usize = 7;
 /// sensor-volumes: 0x28 joined it (crate::sensor, `Sensor_Create` 0x1af010).
 /// music-triggers: 0xFB joined it (nf-game/src/worldobj.rs `MusicTrigger` — `MusicTrigger_Create`
 /// 0x1b30e0's gates and `MusicTrigger_Update` 0x1b31a0's countdown / `Music_Event(p2, 2)`).
+/// start-slots: 0x2D joined it (nf-game/src/player.rs `starts_from_placements` — the main map's
+/// 0x24/0x2d placements register with the game's kind at entry+0x22 [M 0x195c00:33, disasm
+/// 0x1d0a00/0x1d0e98]; `Player_Start` 0x190fd0 picks kind-1 only).
 /// (batch-1016c: s/hurt-volumes dropped at the merge — 0xE4 stays unhandled.)
-const HANDLED_PLACEMENT_TYPES: usize = 61;
+const HANDLED_PLACEMENT_TYPES: usize = 62;
 
 fn census() -> Option<&'static Census> {
     static C: OnceLock<Option<Census>> = OnceLock::new();
@@ -192,20 +195,22 @@ fn trigger_action_census_matches_the_doc() {
 fn placement_type_census_matches_the_doc() {
     let Some(c) = census() else { eprintln!("skip: NF_ISO not set"); return };
     assert_eq!(c.placements, 7372, "dynamic-eligible placement records (flags bit 0xa000 clear)");
-    // The 13 unhandled-or-ignored types, most-occurring first (docs/systems/script-census.md).
+    // The 12 unhandled-or-ignored types, most-occurring first (docs/systems/script-census.md).
     // cover-nodes: 0xE5 (584) / 0xE6 (384) moved out of this list; ai-points: 0xE9 (162);
-    // sensor-volumes: 0x28 (62); music-triggers: 0xFB (15) — the port now creates and runs them.
-    let want: &[(u8, u64)] = &[(0xe4, 64), (0x2d, 51),
+    // sensor-volumes: 0x28 (62); music-triggers: 0xFB (15); start-slots: 0x2d (51) — the port now
+    // creates and runs them (0x2d registers into the start lists with kind 0).
+    let want: &[(u8, u64)] = &[(0xe4, 64),
         (0xff, 39), (0x27, 41), (0xdd, 33), (0xf6, 33), (0xf7, 33), (0x2c, 15), (0x39, 8),
         (0xf3, 8), (0x2b, 3), (0x38, 1), (0xf4, 1)];
     for (t, n) in want { assert_eq!(c.placement_types.get(t), Some(n), "type 0x{t:02x}"); }
     let unhandled: u64 = want.iter().map(|(_, n)| n).sum();
-    assert_eq!(unhandled, 330, "records on unhandled types (192 game-handled + 138 neither side touches)");
+    assert_eq!(unhandled, 279, "records on unhandled types (141 game-handled + 138 neither side touches)");
     assert_eq!(*c.placement_types.get(&0xe5).unwrap(), 584, "cover corner placements");
     assert_eq!(*c.placement_types.get(&0xe6).unwrap(), 384, "cover low placements");
     assert_eq!(*c.placement_types.get(&0xfb).unwrap(), 15, "music trigger placements");
+    assert_eq!(*c.placement_types.get(&0x2d).unwrap(), 51, "second start-position set (18 main-map + 33 shell-map dummies)");
     assert_eq!(c.placement_types.values().sum::<u64>(), 7372, "type histogram covers every record");
-    assert_eq!(HANDLED_PLACEMENT_TYPES, 61, "53 sim + 8 draw-only (game: 73 spawn cases)");
+    assert_eq!(HANDLED_PLACEMENT_TYPES, 62, "53 sim + 8 draw-only + 0x2d start-slots (game: 73 spawn cases)");
 }
 
 #[test]

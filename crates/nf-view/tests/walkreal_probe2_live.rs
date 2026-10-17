@@ -66,7 +66,8 @@ fn probe2_starts() {
             );
         }
     }
-    // `level_starts` (nf-view lib.rs): the MAIN map's 0x24 placements only.
+    // `level_starts` (nf-view lib.rs): the MAIN map's start placements — this probe rebuilds the
+    // kind-1 (0x24) set only; the full registration incl. the 0x2d kind-0 set is start_slot_0x2d's.
     let starts: Vec<LevelStart> = main.map(|m| {
         level.maps[m].placements.iter()
             .filter(|p| p.flags & 0xff == 0x24)
@@ -75,6 +76,7 @@ fn probe2_starts() {
                 yaw: p.rotation[1],
                 gate: p.params.iter().find(|(i, _)| *i == 0).map_or(0, |&(_, v)| v as u16),
                 p3: 0, // fix-world-gravity's LevelStart.p3 (this test's starts are not the load path)
+                kind: 1, // type 0x24 registers as kind 1 [M 0x1d04f0 case 0x24, disasm 0x1d0a00]
             })
             .collect()
     }).unwrap_or_default();
