@@ -18864,11 +18864,21 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   is unchanged and green. Suite: the touched crates' tests (interactables 7/0, keyboard 1/0,
   walk 3/0, walkreal 1/0) on the final tree.
 
-## level-01-complete-3 (2026-10-17, branch s/level-01-complete-3) — started
-Task 701d: the held level-01-complete-2 (701c, a141125d) merged onto origin/master d56aceb6
-breaks escort_follow_07000001_live::escort_at_walking_speed_keeps_the_games_distance_and_the_exit_opens
-(line 289: the AND plate must fire with Bond AND the contact inside [M Trigger_Hit 0x1b1fc8]),
-which passes on master. Find which part of the 53-line drone.rs change moves the contact
-(follow distance / stop rule / the plate approach), keep it to what the game does [M], make
-both the escort test and walkreal_07000001_live pass. Branch = the held tree + master d56aceb6
-(both WORKLOG sides kept).
+## level-01-complete-3 (2026-10-17, branch s/level-01-complete-3)
+Task 701d. The merged tree (held 701c + master d56aceb6; the WORKLOG conflict kept both sides)
+reproduces the hold: escort_follow_07000001_live FAILED at line 289, walkreal_07000001_live 3/3
+green. Bisection (all four scan states verified): THE MOVER IS THE ARMED-PEER SCAN'S LOS GATE —
+the prop-0x50 hide-arm gate is innocent; master's simple scan passes the escort but stalls the
+walk's contact in PlayerInWay (0x1e) mid-route. The decompile chain: the game's peer sight is
+DroneVision_CanSeeObjectFrom 0x176f18:56-104 — bone-5 head, an AINetwork_TestRayCels pretest,
+then Collide_LineOfSight with MASK 0xa27 — the port's unmasked world.segment (world.rs:1252) is
+STRICTER and blocks the living guard 3.9 from Mayhew at the stairwell (logged: every candidate
+los false); the same strictness is what fixes the walk's phantom balcony guard. NEW FINDING
+(capstone disasm 0x177538-0x177578 + 0x177640): the held branch's weapon gate is MISAPPLIED —
+the peer test qualifies a NULL weapon record or byte+0x62 == 0x47 EXACTLY, not obj_armed's
+[2..0x46]∪[0x6a..0x71]; the exit scan re-sights only non-remembered candidates (+0x2b8). FIX
+PATH for the next session: port the 0xa27 mask (a segment_masked) → both tests should pass for
+the game's reasons; the weapon gate drops with it. Blocked: the escort stays red this window;
+live checks (the 0xa27 ray, the AND latch semantics, Mayhew's prop 0x50, the +0x62 byte) listed
+in the report. Ran: escort_follow + walkreal_07000001 binaries on the final tree; the suite
+total line not reached. Report: docs/reports/level-01-complete-3.md.
