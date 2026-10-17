@@ -183,17 +183,12 @@ fn walk_the_gondola_to_the_briefcase_and_back() {
 /// The ride continuation: board the parked cabin (the floor plate ch 4 → mux → ch 1), ride the
 /// carriage (ch 83 at tick 1410), the bottom cinematic (ch 5), the helicopter (ch 0x4B) →
 /// ch 100 → level_exit 0x0730008.
-/// IGNORED with the exact blocker: the parked cabin's DOORWAY is shut by its script-entity door
-/// leaves (0x2000477/0x2000478 at (111.99, 32.35, −126.27) [D the object dump]) — Bond stands on
-/// the east ledge at (114.24, 27.87, −126.6) and the walk west is solid; the floor plate's box is
-/// x 111.10..112.92, y 26.77..29.21, z −128.10..−126.75 [D the trigger's tri bbox] — INSIDE the
-/// cabin, behind those leaves. E-pulses on the leaves do nothing in the port; the game's opener
-/// (a door-open writer the port lacks — a script stream or a use on the cabin) is the live check
-/// in the report. Everything the ride needs is verified present: the carriage entities (44, all
-/// with collision shapes [D the shape probe]) join set_dynamic, the plate is live, SP #295 is
-/// preloaded (state 1, mode 64 [D]) and the lib holds 0x0600004C.
+/// The cabin boards from the WEST: the east face carries the script-entity glass panes
+/// (obj_type 0x20 → Break_Create [M 0x1d8968:88-90] — the cabin's windows), the west doorway is
+/// open; the floor plate's box is x 111.10..112.92, y 26.77..29.21, z −128.10..−126.75 [D the
+/// trigger's tri bbox]. The carriage entities (44, all with collision shapes [D the shape probe])
+/// join set_dynamic, SP #295 is preloaded (state 1, mode 64 [D]) and the lib holds 0x0600004C.
 #[test]
-#[ignore = "the gondola cabin's script-entity doors are shut in the port; the opener is unlocated (the live check in docs/reports/level-08-complete.md)"]
 fn walk_the_gondola_ride_to_the_end() {
     let iso = iso();
     let mut w = Walker::new(nf_view::load(&iso, "07000008.bin", false).expect("load 07000008"));
@@ -203,32 +198,25 @@ fn walk_the_gondola_ride_to_the_end() {
     }
     w.wait_enabled(3000, "the station start");
     // The briefcase chain is prerequisite for the ride (mux #235 ANDs ch 0x4A with the floor ch 4):
-    // drive the same walked chain at unit cost — the plate is the real-input part under test here.
+    // the channel stands in for the walked chain (walk_the_gondola_to_the_briefcase_and_back
+    // drives it through the real path); the teleport lands Bond at the lower landing — the spot
+    // the walked route reaches — and the DESCENT and the boarding run through the real input.
     {
         let sim = w.scene.sim.as_mut().unwrap();
         let f = sim.drones.frame;
         sim.drones.channels.set(0x4a, 1, f);
+        sim.bond.pos = [150.0, 43.5, -116.0];
+        sim.bond.grounded = true;
     }
+    w.wait(30);
     // ── the gondola: the floor plate → mux → the ride script ────────────────────────────────────
-    // The room door swung shut behind Bond: E it again on the way out (the game's own toggle).
-    for (name, at) in [
-        ("back through the room", [158.0f32, 43.0, -119.0]),
-        ("to the door inside", [155.5, 42.5, -121.0]),
-    ] {
-        w.walk_nav_to(at, name, 1.3);
-    }
-    w.walk_to(Wp { at: [154.5, 42.5, -121.2], act: Act::Use { use_ticks: 240 }, arrive: 1.1 }, "E the secure room door outbound");
-    // The descent follows the level's own nav nodes ([D path-2/5 dump]): the mid doors (135.5,36,
-    // −112) → the y-33.9 hall (118.2,−107.9 / 113.2,−106.3) → the stairwell top (108.2,31.4,−106.2)
-    // → the stairs south down to (107.25,27.65,−119.5) → the lower level east (110.7,−121.5) → the
-    // gondola mouth. The old z−119 anchor at y 33.5 had no floor — Bond walked off the hall's edge
-    // onto the y-17.5 plunge quad and the death NIS fired (the F5 symptom's real geometry).
     // The outbound descent follows path 2's own link chain ([D the path-2 dump]): the landing
     // east (147.3/149.3/151.2/153, y 42.4, z −120.5) → the north ramp (153.1, 41.15, −115.95) →
     // (153.16, 39.65, −111.63) → (148.29, 38.4, −110.84) → the mid level (143.32, 36.4, −111.43)
     // → west past the mid doors (135.1, −111/−113.5) → (132.1, −112.27) → the long link to
     // (120.5, 34.04, −112.51) → the y-33.9 hall.
     for (name, at) in [
+        ("the landing east", [151.2f32, 42.5, -120.5]),
         ("through the door", [153.0f32, 42.5, -120.7]),
         ("the landing east", [151.2, 42.5, -120.5]),
         ("the ramp south", [153.1, 41.2, -116.0]),
@@ -252,21 +240,22 @@ fn walk_the_gondola_ride_to_the_end() {
     // mouth. Walk the east ledge south; the plate's volume (12 tris = its box) touches Bond's body.
     for (name, at) in [
         ("the lower level east", [110.7f32, 27.7, -121.5]),
-        ("the gondola mouth", [113.5, 27.4, -121.9]),
-        ("the east ledge", [114.2, 27.0, -123.5]),
+        ("the gondola mouth", [112.0, 27.4, -122.0]),
+        ("the platform west", [110.3, 27.3, -122.2]),
+        ("the west ledge south", [110.0, 27.0, -124.5]),
+        ("the west ledge at the cabin", [110.0, 27.0, -126.3]),
     ] {
         w.walk_nav_to(at, name, 1.4);
     }
     {
-        // South along the ledge, polling for the plate; the cabin's open side is west.
+        // East into the open west doorway, polling for the plate.
         let mut last = [0.0f32, 0.0];
         let mut still = 0u32;
-        for t in 0..2400u32 {
+        for t in 0..1200u32 {
             if w.scene.sim.as_ref().unwrap().drones.channels.on(4) { break; }
             let sim = w.scene.sim.as_ref().unwrap();
             let p = sim.bond.pos;
-            // South to the cabin's mid (z −126.3 — the doors' row), then WEST into the mouth.
-            let target = if p[2] > -125.8 { [114.0f32, 27.0, -126.3] } else { [112.5f32, 27.7, -126.3] };
+            let target = [112.0f32, 28.0, -127.0];
             let use_key = if (p[0] - last[0]).abs() < 0.01 && (p[2] - last[1]).abs() < 0.01 {
                 still += 1; still % 30 == 0
             } else { still = 0; last = [p[0], p[2]]; false };
@@ -274,7 +263,7 @@ fn walk_the_gondola_ride_to_the_end() {
             let err = walker::wrap_pi(desired - sim.bond.yaw);
             let input = Input { turn: err.clamp(-0.08, 0.08), forward: if err.abs() > 1.0 { 0.0 } else { 1.0 }, ..Default::default() };
             w.tick(input, use_key);
-            if t % 400 == 0 {
+            if t % 300 == 0 {
                 let sim = w.scene.sim.as_ref().unwrap();
                 eprintln!("[08 board t{t}] bond {:?} ch4 {}", sim.bond.pos, sim.drones.channels.on(4) as u8);
             }
@@ -332,14 +321,17 @@ fn walk_the_gondola_ride_to_the_end() {
         w.tick(Input::default(), false);
     }
     assert_eq!(obj08(&w).1, 4, "objective 'Escape with Zoe in gondola' completes on ch 0x4b [L record 3]");
-    // ch 0x4B → mux #276 → ch 100 → the mission ends the level into the driving hand-off.
-    let mut exit = None;
+    // ch 0x4B → mux #276 → ch 100 → the mission ends the level. The DRIVING hand-off is logged
+    // (state 6 + LevelToEndTo 0x0730008), not a level_exit — the port skips driving codes
+    // [M 0x182c60:85-116; mission.rs to_end match; docs/systems/mission.md §4].
+    let mut end = (0u32, 0u32);
     for _ in 0..600 {
-        exit = w.scene.sim.as_ref().unwrap().drones.level_exit;
-        if exit.is_some() { break; }
+        let sim = w.scene.sim.as_ref().unwrap();
+        end = (sim.drones.mission.status(), sim.drones.mission.to_end);
+        if end.0 == 6 { break; }
         w.tick(Input::default(), false);
     }
-    assert_eq!(exit, Some(0x0730_0008), "the mission ends the level into 0x0730008 [M 0x182c60:85-116]");
+    assert_eq!(end, (6, 0x0730_0008), "the mission completes into the driving hand-off 0x0730008 [M 0x182c60:85-116]");
     eprintln!("[08] the gondola walked start to finish in {} ticks; falls {:?}", w.total_ticks, w.report.falls);
 }
 
