@@ -371,8 +371,9 @@ fn cursors_wrap_and_back_walks_up_the_pages() {
     // Down 12 times on the mission select wraps to the same row.
     for _ in 0..12 { fe.action(Action::Down); }
     assert_eq!(fe.cursor, 11);
-    // The Dossier opens on □/E/Tab (the "~Y Dossier" hint, Txt 0x208) and returns.
-    assert!(fe.action(Action::Side));
+    // The Dossier opens on □/E/Tab (the "~Y Dossier" hint, Txt 0x208) and returns — through the
+    // CloseIris delay [M C_SBNFMAP 0x20b8d8:48, G-048(1)].
+    iris_side(&mut fe);
     assert_eq!(fe.page, Page::Dossier);
     assert!(fe.action(Action::Back));
     assert_eq!(fe.page, Page::MissionSelect);
