@@ -17885,3 +17885,11 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- 2026-10-17 s/level-07-complete (task 707b): started. Task: live walk test
+  walkreal_07000007_live.rs playing 07000007 (Mayhew C: the party) start to
+  finish via the real input path — every objective (0x4000002 on ch 0x48; 0x4000003
+  completes on 07000008's intro plate ch 0x49), every cut-scene (SP #419 Drake
+  reveal 0x06000072, SP #420 the control-taking 0x06000073), the scripted events,
+  then the exit #418 → 07000008. Known open items to start from: the guests'/guards'
+  party rules; Mayhew's walk to the exit before the mid cut-scene (user report).
+  Census basis: docs/levels/07000007.md (level-07-interactables). In progress.
