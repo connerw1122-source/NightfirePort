@@ -1656,6 +1656,11 @@ impl Default for CardFlow {
 }
 
 /// The front end: which page is up, the cursor, and the flow machine it drives.
+/// Playtest convenience (the user, 2026-10-16: "unlock all the levels"): the window sets this at start
+/// (on by default, `--locked` keeps the game's progression) and every `FrontEnd` it creates — the boot,
+/// the pause, the quit, the MP debriefing — opens every mission. Tests never set it [S port choice].
+pub static UNLOCK_ALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub struct FrontEnd {
     pub flow: GameFlow,
     pub page: Page,
@@ -2078,7 +2083,7 @@ impl FrontEnd {
         // post-unlock session and read 1 everywhere].
         unlocked[0] = true;
         unlocked[1] = true;
-        let mut fe = FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, requested_difficulty: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0, intro_list: &INTRO_MOVIES, intro_end: Page::Start, intro_ticks: 0,
+        let mut fe = FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, requested_difficulty: None, confirming_quit: false, confirming_default_profile: false, unlock_all: UNLOCK_ALL.load(std::sync::atomic::Ordering::Relaxed), unlocked, closed: false, intro_playing: false, intro_index: 0, intro_list: &INTRO_MOVIES, intro_end: Page::Start, intro_ticks: 0,
             backdrop_live: false,
             // fix-pause-menu: the pause page's own state (each on its line [WORKLOG lesson 4]).
             confirming_restart: false,

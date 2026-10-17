@@ -4063,6 +4063,9 @@ pub fn run() -> Result<()> {
     }
     // fix-menus: the front end — the level code, the game's strings, and the boot page.
     app.level_code = u32::from_str_radix(level.trim_end_matches(".bin"), 16).unwrap_or(0);
+    // Every mission open in the window unless `--locked` (the user's playtest request, 2026-10-16) — set
+    // before any front end exists, so the boot, pause, quit and debriefing managers all see it.
+    menu::UNLOCK_ALL.store(!std::env::args().any(|a| a == "--locked"), std::sync::atomic::Ordering::Relaxed);
     if front_end {
         app.fe = Some(menu::FrontEnd::new());
         // boot-flow: the window boot runs P_INTRO's EA + MGM logos before the title [M 0x209e88];
