@@ -27,18 +27,24 @@ fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 // Re-pinned at rocket-look: the swoosh ribbon pools (2 meshes x 128 slots) and Bond's projectile slots
 // 8 -> 32 per projectile mesh add attachments (+496..+640) and their vertices, plus one material (the
 // ribbons' additive batch); characters, colliders, cels, drones and pickups are unchanged on all 5.
+// Re-pinned at drone-skins-g021: the captains draw their swapped skins (`NDrone2_DefaultInit`
+// 0x14b300:563-565 — 07000002's two kind-1 captains and 07000001's now build the captain skin's
+// meshes) and 07000014's 0x050000b1 session merge is gone (carried only by 07000015/16 [D] — the
+// game's hashtable misses it, AnimObjectNew 0x1be910:44-46): 02 +259 tris/+2 materials, 14
+// −127984 tris/−462 materials/−23 characters, 01 +57 verts; 05 and 0c unchanged byte-for-byte.
 const BASELINE: &[(&str, &str)] = &[
-    ("07000002.bin", "c582e1cecfa95882 4477000 9358692 5507 4334210 81 9682 255 28 25 8"),
+    ("07000002.bin", "ed227b3359d91458 4477259 9358977 5509 4334469 81 9682 255 28 25 8"),
     ("07000005.bin", "6a43ad2ce9dee894 4377695 9151611 3576 4293354 73 9731 106 19 16 6"),
     ("0700000c.bin", "15de2f0294792a8a 4871632 10240830 8177 4680808 96 10996 170 22 40 15"),
-    ("07000014.bin", "507c3355ead4823c 7335190 15226002 7226 7182053 134 13485 176 41 37 32"),
-    ("07000001.bin", "8c9aa4f6a555441e 4389556 9198708 3678 4307151 76 9696 156 11 20 6"),
+    ("07000014.bin", "9b6adc00c78ec278 7208206 14968788 6764 7055069 111 13428 176 41 37 32"),
+    ("07000001.bin", "bd2fdeb04005586a 4389613 9198819 3678 4307208 76 9696 156 11 20 6"),
 ];
 
 #[test]
 fn the_cut_costs_build_the_same_scene() {
     let Some(iso) = iso() else { return };
     if cfg!(debug_assertions) { eprintln!("scene equality: release-only, skipped on a debug build"); return; }
+    let mut drifted: Vec<String> = Vec::new();
     for (level, expected) in BASELINE {
         let scene = nf_view::load(&iso, level, false).unwrap_or_else(|e| panic!("{level}: {e}"));
         let sim = scene.sim.as_ref().expect("a level scene carries a sim");
@@ -50,9 +56,11 @@ fn the_cut_costs_build_the_same_scene() {
             scene.characters.len(), scene.attachments.len(), scene.colliders.len(), scene.cels.len(),
             sim.drones.list.len(), sim.drones.pickups.len());
         // [S port engineering] scene-equality of the load-time cuts (digests re-captured on master bee8c129), no game claim
-        assert_eq!(&got, expected, "{level}: the built scene changed (level-load-time cuts must be scene-preserving)");
+        eprintln!("{level}: {got}");
+        if &got != expected { drifted.push(format!("{level}: got {got}, pinned {expected}")); }
         assert!(scene.vertices.len() > 0, "{level}: the pin must not be vacuous");
     }
+    assert!(drifted.is_empty(), "the built scenes changed (level-load-time cuts must be scene-preserving):\n{}", drifted.join("\n"));
 }
 
 /// The same FNV-1a field walk `tests/load_scene_digest.rs` runs (kept in sync; see that file).
