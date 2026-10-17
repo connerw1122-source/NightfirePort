@@ -3406,6 +3406,14 @@ impl Sim {
                             // 0x1c6d40; L weapon_data +0x40 = 1], re-firing the op-1 60×/s).
                             let looped = self.sfx.as_ref().map(|t| t.get(id)).is_some_and(|e| e.looped);
                             if looped { self.drones.audio.play_loop(id, camera); } else { self.drones.audio.play3d(id, camera, None); }
+                            // The same `Sound_Play3D` is what the guards hear [M AnimProcessScriptCmds 0x1c1b38 op 1 →
+                            // Sound_Play3D 0x1dd548; Sound_Alertness 0x1ddc48 skips looped sounds]: the gunshot alerts
+                            // exactly when, and as loudly as, the fire script's own sound. A fire script with no op-1
+                            // makes no noise — the held Stunner's 0x0600048a has none [D], and the old hardcoded
+                            // "every other weapon is a P2K shot" table fed a 0x403 gunshot (weight 65) every tick of
+                            // the hold: the tased guard maxed his alertness, reacted in 0 ticks and shot Bond before
+                            // the tase could drop him (playtest 1016).
+                            if let Some(e) = self.sfx.as_ref().map(|t| t.get(id)) { self.drones.hear(camera, e); }
                             if std::env::var_os("NF_SOUNDLOG").is_some() { eprintln!("tick {}: gun script {:08x} frame {f}: sound {:#x} (remapped from {:#x} for weapon {:#x}, looped {looped})", self.drones.frame, self.view_script, id, c.args[1], wid); }
                         }
                     }
@@ -3691,17 +3699,9 @@ impl Sim {
                         // 0x4b/0x4d swing on 0x0600048d, which carries no op-1 at all [D] — equally silent.
                         // The old `_` arm fed both the 0x403 gunshot (weight 65, outer 40 [L]): every
                         // punch alerted the room like a P2K shot.
-                        let hearing_id = match self.gun.weapon {
-                            1 | 0x4b | 0x4d => 0x142,
-                            7 | 9 => 2,
-                            3 | 5 => 2,
-                            0x14 => 0x1fb,
-                            0x1e..=0x23 => 0x284,
-                            0x10 => 0x602,
-                            0x16 | 0x17 => 0x604,
-                            _ => 0x403,
-                        };
-                        let sound = self.sfx.as_ref().map(|t| t.get(hearing_id)).unwrap_or(nf_formats::sfx::SfxHearing { id: hearing_id, inner: 0.0, outer: 0.0, weight: 0.0, looped: false, cull: false });
+                        // The shot's hearing rides the fire script's op-1 `Sound_Play3D` above (the view-script
+                        // sound loop), not the spawn: a silent placeholder here.
+                        let sound = nf_formats::sfx::SfxHearing { id: 0, inner: 0.0, outer: 0.0, weight: 0.0, looped: true, cull: false };
                         // fix-sg5-casings [M Bullet_init_casing_ex 0x12f678:160]: the game ejects the
                         // shell at the view-model gun bone's world position (`AnimGetBoneWorldTrans`
                         // VECTOR out) — hand the posed gun matrix (`Player_PositionGun` 0x1a3b40's

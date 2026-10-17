@@ -6911,8 +6911,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 dr.send(d, &mut self.rng, frame, msg::BULLET);
             }
         }
-        let mut bm = [[0.0f32; 4]; 4];
-        bm[0][0] = 1.0; bm[1][1] = 1.0; bm[2][2] = 1.0; bm[3] = [pos[0], pos[1], pos[2], 1.0];
+        // `Explode_Create` aligns the blast script to face the closest player before playing it:
+        // dir = normalize(ClosestPlayerPnt − pos), `Mat_Align2Dir(script, dir, (0,1,0) @0x2d6210,
+        // (1,0,0) @0x2d6220)` [M 0x17cbd0:69-75, :96]. The script's keyed light/sprite offsets are in
+        // that frame, so the blast's light sits on the player's side of the hit surface. The port
+        // played it unrotated: a blast on a wall put its light flush with (or behind) the face the
+        // player sees, and the VU1 N·L term left the wall dark (08's end wall, G-049).
+        let to_player = [player_pos[0] - pos[0], player_pos[1] - pos[1], player_pos[2] - pos[2]];
+        let mut bm = crate::searchlight::align2dir(to_player, [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]);
+        bm[3] = [pos[0], pos[1], pos[2], 1.0];
         // The blast script plays at scale = SCRIPTINFO+0x94 = the CALLER's f12: the 0x4/fuse arms
         // pass weapon_data+0x08, the Samurai bolt's 0x100000/0x200000 arms pass 1.0 [M disasm
         // 0x12ce1c-0x12ce2c f12 = weapon_data+0x08; 0x12d0ec-0x12d0f0 f12 = 0x3f800000; 0x17cbd0
@@ -7575,6 +7582,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
     /// `PlayerHealth::apply`; this is only the sound). The 0x600 arm is the MP assassin special.
     pub fn play_pain_grunt(&mut self, pos: V3) {
         self.audio.play3d(0x88, pos, None);
+    }
+
+    /// The hearing half of `Sound_Play3D` for a sound the caller already started: the drones hear every
+    /// non-looped `Sound_Play3D` next frame (`Sound_Alertness` 0x1ddc48 skips looped ones).
+    pub fn hear(&mut self, pos: V3, h: nf_formats::sfx::SfxHearing) {
+        if h.looped { return; }
+        self.sounds.push(Sound { id: h.id, pos, inner: h.inner, outer: h.outer, weight: h.weight });
     }
 
     /// `play_sound`, returning the sound's handle.
