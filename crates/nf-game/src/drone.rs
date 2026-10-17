@@ -10209,25 +10209,6 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // positions; at the tick's tail every mover tests its squared step against the level's
         // glass (only on GameState+0x12 == 0x0700001, only kind 2 — crate::breakable).
         let drone_from: Vec<V3> = self.list.iter().map(|d| d.pos).collect();
-        // `NDrone2_DSTATE_WaitSwitch` 0x15b960 case 3: the switch-channel EVENT wakes a waiting
-        // drone even while `NDrone2_Enable(0)`-frozen (the game's channel message reaches the
-        // state machine regardless of the freeze). The port's disabled drones receive no UPDATE
-        // (every tick loop filters on `enabled`), so the channel is sampled here for the waiting
-        // ones — 07000009's guards wait on ch 0x51, the arrival touch plate #248's out [D drone
-        // param 3 = 0x51], which fires on the first collide pass and must wake them all.
-        for i in 0..self.list.len() {
-            let wake = {
-                let dr = &self.list[i];
-                dr.present && !dr.enabled && dr.state == state::WAIT_SWITCH
-                    && dr.switch_channel != 0 && self.channels.on(dr.switch_channel as u32)
-            };
-            if wake {
-                let dr = &mut self.list[i];
-                dr.enabled = true;
-                let s = dr.start_state(d);
-                dr.set_state(s);
-            }
-        }
         let _prof_all = crate::prof::scope("drones.tick (total)");
         let prof_pre = crate::prof::scope("drones: shared passes");
         self.frame += 1;
