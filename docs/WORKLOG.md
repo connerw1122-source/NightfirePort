@@ -18489,3 +18489,29 @@ fix_truck 2, level_carry 8, mayhew_handover 2, nf-game units 276. The full suite
   walkreal_07000007_live 2/0, lighting_live 5/0 (suite.py background-killed by the sandbox as
   before; the foreground runs stand in). Report: docs/reports/p2k-fire-07.md (carries the
   bullet-through-floor observation at the vase stand + the live checks).
+- 2026-10-17 s/level-06-complete (task 706b): "play 07000006 (Mayhew B: the castle interior to the
+  party) from start to finish". Plan: (1) a live walk test (walkreal_07000006_live.rs, un-ignored)
+  that plays the level through the real input path and completes EVERY objective — the optional
+  ones too — and exits the way the game does; every cut-scene plays (skipped only with the game's
+  own skip action), every scripted event fires. (2) fix every blocker the walk hits (collision,
+  doors, triggers, scripts, AI, missing channel writers), each with a focused test + sister that
+  fails on the old code. (3) the report: objective list with how each completes [M]/[D], the
+  route, anything the walk still cannot do + the exact reason. Known open items: Rook stuck in
+  the doorway (×2), the alarm panel, the Drake cut-scene lag/artifacts. Branch from origin/master
+  0603094e; the level-06-interactables census (706a) is already on master.
+- level-06-complete progress: the walkreal (walkreal_07000006_live.rs, new) walks 07000006 from
+  the truck-ride spawn through the real input path — the WineTruck dismount (the spawn stands on
+  the bed; the open south side), the driver-greeting plates + the OR #498 ch-0x46 objective
+  reveal, the dock west lane, the well courtyard's west rim, the garden hedge gap, E-doors #47 /
+  #59 / #71 / #72 through use_door, the guardroom FuseBox #747's Laser cut (ch 57+103; the walk
+  also measured ch 55 rising — the beam clips the alarm bundle), and the tunnel climb to the
+  upper gallery (y≈50.1). Two open items, both probed and documented in the report: the scripted
+  guard #438 engages in the guardroom and never dies (8 real-fire rounds; invulnerability
+  suspect), and the gallery→dressing-room leg has no walked connection in the port's collision
+  (the lip blocks walk+jump; the east corridor is walled both ends; no door; AI point 5 patrols
+  at y 54.7 above the tunnel — a stair volume the floor rays miss is the suspect). The exit
+  chain (LoadPoint #746 → ch 0x83 → the dressing scene → ch 0x02 → level_exit 07000007) stays
+  pinned green by walk_07000006_live (2/2). Both walkreal tests are #[ignore] with the exact
+  blockers in their headers. Suite: the 06 binaries green (walk 2/2, interact 9/9, fusebox 4/4);
+  the full four-crate suite did not fit the window (the background runner dies between tool
+  calls here) — next session runs it on this branch.
