@@ -278,6 +278,7 @@ impl Walker {
             sim.gun.clip as i32 + sim.gun.spare as i32
         };
         let before = ammo(self);
+        let mut tried: Vec<[f32; 3]> = Vec::new();
         for attempt in 0..4 {
             let Some(target) = self.scene.sim.as_ref().unwrap().drones.pickups.iter()
                 .filter(|p| !p.gone)
@@ -285,8 +286,12 @@ impl Walker {
                 // cannot always climb; the drops land at the guards' feet [L drop positions].
                 .filter(|p| (p.m[3][1] - self.pos[1]).abs() < 1.5)
                 .map(|p| [p.m[3][0], p.m[3][1], p.m[3][2]])
+                // A box the walker just wedged on is not the box a player keeps trying: exclude
+                // the already-tried spots so the next attempt takes the next-nearest.
+                .filter(|p| !tried.iter().any(|t| dxz(*t, *p) < 0.5))
                 .min_by(|a, b| dxz(*a, self.pos).total_cmp(&dxz(*b, self.pos)))
             else { break };
+            tried.push(target);
             let d = dxz(target, self.pos);
             if d > 45.0 { break; }
             eprintln!("[walk] {label}: resupply attempt {attempt} at ({:.1},{:.1},{:.1}) (d {:.1})", target[0], target[1], target[2], d);
