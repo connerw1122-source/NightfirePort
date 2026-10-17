@@ -116,17 +116,33 @@ fn the_ambient_patrol_copters_never_spot_or_draw_on_07000005() {
     for tick in 0..500 {
         sim.tick(&d, &player);
         for (i, c) in sim.copters.iter().enumerate() {
-            assert_eq!(c.state, 1, "copter {i} left the patrol state at t{tick} ({}): the +0x74 = 100 latch must gate the case-1 spot check [M 0x17dbb8:140]", c.state);
+            if c.gate == 0 {
+                // #241 runs the state machine: case 0 -> 1 on its first tick, and the +0x74 = 100
+                // latch keeps it in patrol forever [M 0x17dbb8:140's conjunct].
+                assert_eq!(c.state, 1, "copter {i} left the patrol state at t{tick} ({}): the +0x74 = 100 latch must gate the case-1 spot check [M 0x17dbb8:140]", c.state);
+            } else {
+                // The gate early-return [M 0x17dbb8 head: record+0x70 != 0 and
+                // switch_channels[+0x70] == 0 returns before the state machine]: #242's gate is
+                // 0x42 [L the level's params] and this window's scripts never open it (the
+                // probed run: state 0, un-started, t = 0 across all 500 ticks), so it stays idle
+                // — the game's gate is the one-shot that starts the actor on the rising edge.
+                assert_eq!(c.state, 0, "copter {i} ran with its gate {:#x} shut at t{tick} (state {}): Copter_Update returns before the state machine [M 0x17dbb8 head]", c.gate, c.state);
+                assert!(!c.started, "copter {i} started with its gate {:#x} shut at t{tick} [M 0x17dbb8 head]", c.gate);
+            }
+            // The latch's teeth on BOTH copters: no attackmode draw ever leaves the spot check,
+            // and no turret tick [M 0x17dbb8:140's conjunct, :184 inside it; :197].
             assert_eq!(c.attackmode, 0, "copter {i} drew the attackmode at t{tick}: no Rand_Rand(10) may leave the latch [M 0x17dbb8:140's conjunct, :184 inside it]");
             assert_eq!(c.gun_shots, 0, "copter {i} ticked the turret at t{tick}: Copter_FireGun is case-2 only [M 0x17dbb8:197]");
         }
     }
-    // The sisters that keep this from passing vacuously: the patrol still FLIES — the spline
-    // playhead advanced by the route's dt (0.191 [L the framelist node]) every tick — and the
-    // draw-count for the whole window matches master's stream (the copter added zero draws).
+    // The sisters that keep this from passing vacuously: the free patrol still FLIES — the spline
+    // playhead advanced by the route's dt (0.191 [L the framelist node]) every tick — while the
+    // gated #242 never moved (the early-return sister that fails if the gate check vanishes).
     let t0 = sim.copters[0].t;
     assert!(t0 > 80.0, "the #241 patrol never flew (t = {t0} after 500 ticks): the latch must not stop Copter_Move [M 0x17dbb8:139]");
     assert!(t0 < 100.0, "the #241 playhead ran away (t = {t0}): 499 moves x 0.191 = 95.3");
+    let c1 = &sim.copters[1];
+    assert!(!c1.started && c1.t == 0.0, "#242 flew behind its shut gate 0x42 (started {}, t = {}): Copter_Update returns before Copter_Move [M 0x17dbb8 head]", c1.started, c1.t);
 }
 
 /// The missile-arm pod pick draws from the shared stream on EVERY state-2 even-attackmode tick,
