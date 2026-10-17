@@ -18607,3 +18607,23 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   (fix_finale_live, spurious_complete_16_live, hurt_02_live:83,
   interact_07000006_live) plus hurt_07000008_live; coordinate with 705d on the
   ShuttleLaunch ch 0xf3 / Mission state 6 timing [M 0x182c60]. In progress.
+
+---
+
+## level-08-interactables (s/level-08-interactables)
+
+Task: every interactive thing and every model on 07000008 (Mayhew D: the gondola).
+Plan: census in docs/levels/07000008.md; then drive Bond through the real input path to one
+instance of every KIND on the level (use key, gadget, shooting, walking in) and fix what
+doesn't work — starting from the open items: Zoe shooting at Bond at the gondola (750r),
+the guards breaking the glass at the start (750p), the safe/briefcase, the rocket blast
+lighting (GAPS G-049). Then every model/mesh/skin/texture resolves.
+
+### level-08-interactables — session result
+
+Census §7 in docs/levels/07000008.md (the per-kind interactables table, disc probe
+census_07000008.rs). The Hurt kind (0xE4) implemented (hurt.rs + the sim tick; 07000008's
+#42-44 are the y −24.1 valley kill floor — live at load, who 0x18). Models: 4486 materials /
+562 textures / 0 white fallbacks, all placed drones skinned. Finding: the plunge death NIS
+holds the falling body forever (no post-death-NIS mission fail) — blocks the kill-floor fall
+end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interactables.md.
