@@ -18719,3 +18719,21 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   breakables nobody shot. Work in progress: merged origin/master, reproducing, then scoping the
   breach to the game's rule [M Break_Update 0x12bfd8: class-0x02 contacts damage only on
   0x70000001 kind 2] so the sister passes alongside the breach tests.
+
+- glass-breach-guards-3 (s/glass-breach-guards-3): the merge landed (WORKLOG union resolved, no
+  code conflicts), the breach arm's contact re-scoped and the remaining sister breaker diagnosed
+  to the tick. The contact now stands in for the game's collision pair [M 0x12bfd8:15]: the
+  step must CROSS the pane's bounds (grow 0), not close within the 0.55 hull zone — the grown
+  zone fired ~0.6 before any physical engagement. Green on this tree: nf-game lib 278/278,
+  breakable units 4/4, glass_breach_live 1/1 (pane 130 still breaks on through-movement, east
+  121 intact), walkreal_07000001_live 2/2, escort_follow 1/1, fix_portonly_review 3/3,
+  rocket_glass08_live 3/3, interact_07000001_live 9/10. REMAINING: the sister
+  (interact_07000001_live.rs:171) — the port's g0 (drone 0, group 0, PLACED at −4.92, 6.34,
+  −0.09 — 0.92 from pane 130's z=−1.01 sheet) enters state 3 (PlayScript, [M StateFuncs[3]])
+  at the enable (t2121) and his scripted root motion crosses the pane's plane at t2142
+  (0xB+23), killing the health-0 pane inside the sister's window (ends 0xB+122). The game's
+  evidenced breach is 0xB+911 [D the observed run] — the game's g0 does not arrive before it.
+  The held tree (pre-merge, with the channel-clearing bug) broke at t911; the merged tree
+  (channel persistence fixed) breaks at 0xB+23 — the guard walk to the glass runs ~888 ticks
+  too early/too short in the port. Next window: the scripted-move (root-motion) collision /
+  timing for state 3, not the contact rule. Report: docs/reports/glass-breach-guards-3.md.
