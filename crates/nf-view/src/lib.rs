@@ -2135,6 +2135,11 @@ impl App {
             Some(Ok(scene)) => {
                 let name = level_archive_name(load.next);
                 self.swap_in_scene(scene, load.ptp_return);
+                // The level now running (GameState+0xc [M ResetMap_Load phase 2]). It was only ever
+                // set from the command line, so a mission reached through the menus still read as the
+                // front end: Esc found "no mission", released the mouse, and the next Esc quit the
+                // game (playtest 1016 "esc is just closing the game").
+                self.level_code = load.next;
                 // A real level loaded from the front end: the menu manager is gone [M the MP
                 // confirm's / the SP pick's MenuManager_Delete — "the host closing the overlay once
                 // the load leaves the front-end map"]. The MP start loads its arena directly (no
