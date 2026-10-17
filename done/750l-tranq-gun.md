@@ -37,3 +37,8 @@ say so in the report. Never weaken a decompile-backed test to make code pass.
 
 ---
 claimed-by: sandbox5 at 2026-10-17T03:17Z
+
+---
+## Report (done, 2026-10-17T04:28Z)
+
+Closed by the driver: the report is on `s/tranq-gun` (docs/reports/tranq-gun.md); the worker didn't run finish.sh.
