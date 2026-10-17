@@ -58,6 +58,11 @@ pub struct Break {
     /// stops drawing a dead one (the movement handler's delete pass removes the object
     /// [M 0x12b970:41 — obj+0xFE bit 0]).
     pub matrix: [[f32; 4]; 4],
+    /// The collision-shape key the World indexes the object's tris under (the object's hashcode,
+    /// else the anonymous `(map, object)` synthetic [S — world.rs's own rule]) — the intact
+    /// object's per-tick `set_dynamic` injection looks the shape up by it (glass-breach: an alive
+    /// breakable blocks bodies, a dead one injects nothing [M 0x12b970:60]). 0 = no shape.
+    pub shape_key: u32,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -101,6 +106,18 @@ impl Breaks {
             let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map_or(0, |&(_, v)| v);
             let (lo, hi) = bounds(level, m, p);
             let p2 = param(2);
+            // The collision-shape key (the same resolution `bounds` uses): the target object's
+            // hashcode, else world.rs's anonymous (map, object) synthetic [S — the shapes index's
+            // own rule]; 0 when the placement resolves to no object (no shape to inject).
+            let shape_key = {
+                let res = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else { Some((m, p.index as usize)) };
+                res.filter(|&(om, oo)| level.maps[om].objects.get(oo).is_some())
+                    .map(|(om, oo)| {
+                        let hc = level.maps[om].objects[oo].hashcode;
+                        if hc == u32::MAX { 0x8000_0000 | ((om as u32) << 16) | oo as u32 } else { hc }
+                    })
+                    .unwrap_or(0)
+            };
             list.push(Break {
                 placement: i,
                 lo,
@@ -110,6 +127,7 @@ impl Breaks {
                 filter: if p2 == 0 { 0 } else { !(p2 as u16) },
                 dead: false,
                 matrix: object_matrix(p.rotation, p.translation),
+                shape_key,
             });
         }
         Breaks { list }
@@ -118,7 +136,11 @@ impl Breaks {
     fn seg_box(a: V3, b: V3, lo: V3, hi: V3) -> bool {
         // Same rule as crate::props::seg_box: the bullet segment's AABB against the bounds grown
         // by 0.1 (the contact registers on the sphere touching the glist bounds).
-        let (g, mut mn, mut mx) = (0.1, [0.0; 3], [0.0; 3]);
+        Self::seg_box_grow(a, b, lo, hi, 0.1)
+    }
+
+    fn seg_box_grow(a: V3, b: V3, lo: V3, hi: V3, g: f32) -> bool {
+        let (_, mut mn, mut mx) = (g, [0.0; 3], [0.0; 3]);
         for k in 0..3 {
             mn[k] = a[k].min(b[k]);
             mx[k] = a[k].max(b[k]);
@@ -148,6 +170,14 @@ impl Breaks {
     /// The drone-contact arm ([M Break_Update 0x12bfd8:23-34 — only on GameState+0x12 ==
     /// 0x7000001, only kind == 2, damage = the drone's squared step × 20]). `level_01` is the
     /// caller's `GameState+0x12 == 0x07000001` check.
+    ///
+    /// The contact test grows the pane's bounds by the class-2 body radius (`Bond`'s capsule
+    /// RADIUS 0.55 [M player.rs]; the drones' hull is the same scale [S]): the game feeds the arm
+    /// from the pane's `obj+0xD0` contact list, whose entries exist as soon as the body's
+    /// collision hull TOUCHES the pane's glist (a moving body registers while still outside the
+    /// mesh — the same list the bullet arm filters [M 0x12bfd8:15], whose 0.1 grow is the small
+    /// bullet sphere). A strict point-in-box never fires on the disc's flat pane sheets (pane
+    /// 130's z pair −1.01/−1.01 [D nf_view bounds]).
     pub fn drone_step(&mut self, drone_from: V3, drone_to: V3, level_01: bool) -> Vec<BreakEffect> {
         let mut kills = Vec::new();
         if !level_01 { return kills; }
@@ -157,9 +187,8 @@ impl Breaks {
         if sq == 0.0 { return kills; }
         let dmg = sq * 20.0;
         for br in self.list.iter_mut().filter(|b| !b.dead && b.kind == 2) {
-            // The contact is the drone's body inside the glass bounds this tick.
-            let inside = drone_to.iter().zip(br.lo).zip(br.hi).all(|((&v, l), h)| v >= l && v <= h);
-            if inside {
+            // The contact: this tick's step reaches the pane's body-radius-grown bounds.
+            if Self::seg_box_grow(drone_from, drone_to, br.lo, br.hi, 0.55) {
                 br.health -= dmg;
                 if br.health < 0.0 {
                     br.dead = true;
@@ -182,7 +211,7 @@ mod tests {
     use super::*;
 
     fn one(kind: u8, health: f32) -> Breaks {
-        Breaks { list: vec![Break { placement: 0, lo: [4.0, 7.0, -3.0], hi: [6.0, 9.0, -1.0], kind, health, filter: 0, dead: false, matrix: [[0.0; 4]; 4] }] }
+        Breaks { list: vec![Break { placement: 0, lo: [4.0, 7.0, -3.0], hi: [6.0, 9.0, -1.0], kind, health, filter: 0, dead: false, matrix: [[0.0; 4]; 4], shape_key: 0 }] }
     }
 
     #[test]

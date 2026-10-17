@@ -40,11 +40,11 @@ fn the_woken_guards_smash_through_the_entry_hall_glass() {
         assert_eq!(sim.level, 0x0700_0001);
         // [D placements] the entry-hall panes exist, are kind 2, health 0, and start intact.
         for pl in ENTRY_PANES {
-            let b = sim.drones.breakables.list.iter().find(|b| b.placement == pl)
+            let b = sim.drones.breaks.list.iter().find(|b| b.placement == pl)
                 .unwrap_or_else(|| panic!("breakable placement {pl} exists [D]"));
             assert_eq!(b.kind, 2, "pane {pl} is the glass kind [D]");
             assert_eq!(b.health, 0.0, "pane {pl} carries health 0 — any brush kills [D param 1]");
-            assert!(!b.broken, "pane {pl} starts intact [D]");
+            assert!(!b.dead, "pane {pl} starts intact [D]");
         }
         assert!(!sim.drones.channels.on(0xb), "ch 0xB is off at spawn [L ee_start_07000001.bin 0x26fc90]");
     }
@@ -75,8 +75,8 @@ fn the_woken_guards_smash_through_the_entry_hall_glass() {
         let sim = scene.sim.as_ref().unwrap();
         for pl in ENTRY_PANES {
             if broken_at.is_none() {
-                if let Some(b) = sim.drones.breakables.list.iter().find(|b| b.placement == pl) {
-                    if b.broken { broken_at = Some((t, pl)); }
+                if let Some(b) = sim.drones.breaks.list.iter().find(|b| b.placement == pl) {
+                    if b.dead { broken_at = Some((t, pl)); }
                 }
             }
         }
@@ -86,7 +86,7 @@ fn the_woken_guards_smash_through_the_entry_hall_glass() {
             if dr.pos[2] < -1.25 && crossed.is_none() { crossed = Some((t, i)); }
         }
         if t % 300 == 0 {
-            let broken: Vec<usize> = sim.drones.breakables.list.iter().filter(|b| b.broken).map(|b| b.placement).collect();
+            let broken: Vec<usize> = sim.drones.breaks.list.iter().filter(|b| b.dead).map(|b| b.placement).collect();
             let mut line = format!("t{t}: broken {broken:?}");
             for &i in &waiters { let dr = &sim.drones.list[i]; line += &format!(" | g{i} z {:.2} st {:#x}", dr.pos[2], dr.state); }
             seen.push(line);
@@ -105,6 +105,6 @@ fn the_woken_guards_smash_through_the_entry_hall_glass() {
     // the sister: a NON-entry pane (the east-wing radioroom glass 121) stays intact unless a
     // guard paths there (pin the observed state, not an absolute).
     let sim = scene.sim.as_ref().unwrap();
-    let east = sim.drones.breakables.list.iter().find(|b| b.placement == 121).expect("pane 121 exists [D]");
-    eprintln!("[breach] east pane 121 broken = {} (informational)", east.broken);
+    let east = sim.drones.breaks.list.iter().find(|b| b.placement == 121).expect("pane 121 exists [D]");
+    eprintln!("[breach] east pane 121 broken = {} (informational)", east.dead);
 }
