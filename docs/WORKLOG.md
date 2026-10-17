@@ -18836,3 +18836,23 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   (channel persistence fixed) breaks at 0xB+23 — the guard walk to the glass runs ~888 ticks
   too early/too short in the port. Next window: the scripted-move (root-motion) collision /
   timing for state 3, not the contact rule. Report: docs/reports/glass-breach-guards-3.md.
+
+- 2026-10-17 s/glass-breach-guards-4 (task 705g): finish the 08 glass-breach guards (held at
+  merge twice). Created from origin/s/glass-breach-guards-3 + merged origin/master (f53df46b;
+  only docs/WORKLOG.md conflicted — master's file kept, the guards block appended). ROOT CAUSE
+  FOUND: the class-2 pane drain reads the hitter's +0x30/+0x40 pair [M Break_Update 0x12bfd8:26-27]
+  and the movement pass copies +0x30 → +0x40 per object AFTER its anim/root-motion processing in
+  the same walk [M 0x1336f8:212] — a root-motion-carried step (g0's replayed intro-script walk-by,
+  which the port demonstrably carries across pane 130's sheet at 0xB+23) drains 0; the AI steering
+  step is the move that shows in the pair. Landed: `Drone::scripted_move` (set in `root_motion`,
+  reset at the head of `Drones::tick_inner`) and the scripted-walk gate in
+  `Breaks::drone_step` (crates/nf-game/src/breakable.rs) + the sister unit test. The held branch's
+  breaker was g0's scripted crossing all along — the breach squad never crosses in the port (the
+  charge stalls at the glass line, front-door pathing); glass_breach_live re-pinned to the [D]
+  premise (pane 130 whole at 0xB+122, the breach watch informational). Green: breakable units 5/5,
+  glass_breach_live 1/1, interact_07000001_live 10/10 (THE MERGE BLOCKER passes),
+  rocket_glass08_live 3/3, escort_follow_07000001_live 1/1, fix_portonly_review_live 3/3.
+  REMAINING: the breach delivery — the game's runner crosses at 0xB+911 [D 750p]; the port's
+  squad charge stalls at the glass line (their AI paths at the closed front door instead of
+  through the pane). Live checks listed in the report. Report:
+  docs/reports/glass-breach-guards-4.md.
