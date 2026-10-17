@@ -131,40 +131,35 @@ fn the_target_dies_to_the_real_fire_path() {
 }
 
 /// KIND: the TouchOnce "MultiplexOut" 0xEE (#46, out 0x54, list [0x64] [D params]) —
-/// `Trigger_MultiplexOut` copies ch 0x54 into ch 0x64 (the mission-complete channel) while Bond
-/// stands inside. Sister: walking in BEFORE the kill (ch 0x54 off) copies nothing.
+/// `Trigger_Update` case 5 is a pure channel mux: it writes `switch_channels[list[i]] =
+/// switch_channels[out]` for every non-zero list word EVERY tick, no touch/hit check
+/// (`Trigger_Hit` is not consulted [M 0x1b1a78:147-160]; the placement has no collision mesh —
+/// [D] unbounded lo/hi — and needs none). Sister: the ticks BEFORE the kill copy nothing.
 #[test]
 fn the_out_trigger_copies_only_after_the_kill() {
     let iso = iso();
     let mut w = load_ready(&iso);
-    let centre = {
-        let sim = w.scene.sim.as_ref().unwrap();
-        let t = sim.drones.triggers.iter()
-            .find(|t| t.kind == nf_game::triggers::kind::OUT).expect("the MultiplexOut");
-        [(t.lo[0] + t.hi[0]) * 0.5, (t.lo[1] + t.hi[1]) * 0.5, (t.lo[2] + t.hi[2]) * 0.5]
-    };
-    // SISTER: ticks with the target alive and Bond away from the trigger — no 0x54, no 0x64.
+    // SISTER: ticks with the target alive and no shots — no 0x54, no 0x64.
     for _ in 0..300 { w.tick(Default::default(), false); }
     {
         let sim = w.scene.sim.as_ref().unwrap();
         assert!(!sim.drones.channels.on(0x54), "the target still lives (no shots)");
         assert!(!sim.drones.channels.on(0x64), "no copy while the out channel is off");
     }
-    // The kill, then the walk back in.
+    // The kill: the death channel rises, the mux mirrors it the same tick.
     let target_i = w.scene.sim.as_ref().unwrap().drones.list.iter()
         .position(|d| d.skin == 0x0500_001e).expect("the target");
     let _ = w.shoot(target_i, "the target");
-    let mut raised = false;
+    let mut copied = false;
     for _ in 0..900u32 {
         w.tick(Default::default(), false);
-        if w.scene.sim.as_ref().unwrap().drones.channels.on(0x54) { raised = true; break; }
+        let sim = w.scene.sim.as_ref().unwrap();
+        if sim.drones.channels.on(0x54) && sim.drones.channels.on(0x64) { copied = true; break; }
     }
-    assert!(raised, "the kill raised ch 0x54");
-    w.walk_nav_to(centre, "the MultiplexOut (target dead)", 0.6);
-    for _ in 0..180 { w.tick(Default::default(), false); }
     let sim = w.scene.sim.as_ref().unwrap();
-    assert!(sim.drones.channels.on(0x64),
-        "standing in the OUT trigger copies 0x54 → 0x64 [M Trigger_MultiplexOut]");
+    assert!(sim.drones.channels.on(0x54), "the kill raised ch 0x54");
+    assert!(copied,
+        "the OUT mux copies 0x54 → 0x64 wherever Bond stands [M Trigger_Update 0x1b1a78 case 5]");
 }
 
 /// KIND: ripples 0x21 (`Ripples_Create` 0x1acc90 / `Ripples_Update` 0x1ac028 — one gas ring per
