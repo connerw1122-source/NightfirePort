@@ -118,8 +118,15 @@ fn walk_to_the_gatehouse_and_ride_the_truck() {
 }
 
 /// The cable route: the west walk, the ladder, the upper ledge, the E-grabbed wire ride, the zip
-/// door's fallback exit. IGNORED with the truck test (walkreal-a parked mid-task; the west anchors
-/// are untested beyond the ladder).
+/// door's fallback exit. STILL IGNORED (level-05-complete 2026-10-17): the walk reaches the ladder
+/// top [61.64, 34.62, 89.20] through the real path, but the ledge west of it dead-ends — every yaw
+/// sweep from the top stalls at x ≈ 57.9-58.0 (Bond holds y 34.7, grounded flickering, the yaw-5.89
+/// walk drops off the ledge's south edge to y 28) — the wire #251 grab spot (−23.5, 34.5, 6.3) is
+/// unreachable from here. Whether that wall is the game's own collision (the tower's
+/// Object_Tower_Gate_* / the BlockingPolys family — the level's 0x19 census has 113 entries, several
+/// named BlockingPoly_*), or the port's collision of it, or simply the wrong lane (the disc's real
+/// route to the cable may cross the gatehouse interior or drop to the west road), needs the main
+/// agent's render/trace: see docs/reports/level-05-complete.md "Live checks for the main agent".
 #[test]
 #[ignore]
 fn walk_the_west_ledge_and_cross_the_cable() {
