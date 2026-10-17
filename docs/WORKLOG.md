@@ -16727,3 +16727,10 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+## drake-fight-1b (2026-10-17, branch s/drake-fight-1b) — started 00:07 UTC
+
+Task 745: port the 0700001b final fight's mechanics [M + D] — Drake's AI and phases, the missile
+launch sequence (channels 1..8, MissileDeploy, SpaceMissile_Update's states), win/fail conditions.
+Tests: a scripted headless run reaches each phase on the game's triggers; the mission completes or
+fails on the game's conditions. Reading the decompile first.
