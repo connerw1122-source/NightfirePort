@@ -196,21 +196,17 @@ fn trigger_action_census_matches_the_doc() {
 fn placement_type_census_matches_the_doc() {
     let Some(c) = census() else { eprintln!("skip: NF_ISO not set"); return };
     assert_eq!(c.placements, 7372, "dynamic-eligible placement records (flags bit 0xa000 clear)");
-    // The 12 unhandled-or-ignored types, most-occurring first (docs/systems/script-census.md).
+    // The 11 unhandled-or-ignored types, most-occurring first (docs/systems/script-census.md).
     // cover-nodes: 0xE5 (584) / 0xE6 (384) moved out of this list; ai-points: 0xE9 (162);
     // sensor-volumes: 0x28 (62); music-triggers: 0xFB (15); start-slots: 0x2d (51) — the port now
-    // creates and runs them (0x2d registers into the start lists with kind 0).
+    // creates and runs them (0x2d registers into the start lists with kind 0); movie-trigger-41:
+    // 0xF4 (1) — the movie-player trigger.
     let want: &[(u8, u64)] = &[(0xe4, 64),
-    // cover-nodes: 0xE5 (584) / 0xE6 (384) moved out; ai-points: 0xE9 (162);
-    // sensor-volumes: 0x28 (62); music-triggers: 0xFB (15); movie-trigger-41: 0xF4 (1) —
-    // the port now creates and runs the movie-player trigger.
-    let want: &[(u8, u64)] = &[(0xe4, 64), (0x2d, 51),
         (0xff, 39), (0x27, 41), (0xdd, 33), (0xf6, 33), (0xf7, 33), (0x2c, 15), (0x39, 8),
         (0xf3, 8), (0x2b, 3), (0x38, 1)];
     for (t, n) in want { assert_eq!(c.placement_types.get(t), Some(n), "type 0x{t:02x}"); }
     let unhandled: u64 = want.iter().map(|(_, n)| n).sum();
-    assert_eq!(unhandled, 279, "records on unhandled types (141 game-handled + 138 neither side touches)");
-    assert_eq!(unhandled, 329, "records on unhandled types (193 game-handled + 136 neither side touches)");
+    assert_eq!(unhandled, 278, "records on unhandled types (140 game-handled + 138 neither side touches)");
     assert_eq!(*c.placement_types.get(&0xe5).unwrap(), 584, "cover corner placements");
     assert_eq!(*c.placement_types.get(&0xe6).unwrap(), 384, "cover low placements");
     assert_eq!(*c.placement_types.get(&0xfb).unwrap(), 15, "music trigger placements");
