@@ -18367,3 +18367,44 @@ Work Log:
   models_sweep_07000006_live (2 — 5940 materials / 447 textures / 0 white fallback; all drone
   skins present). The one unported interactive KIND on this level: Hurt volumes (0xE4, the well
   shaft's #373 type-6 1000-damage kill volume [M Hurt_Create 0x17e870]).
+
+## level-05-complete (2026-10-17, branch s/level-05-complete) — started 12:10 UTC
+Task: play 07000005 (Mayhew A, castle approach) from start to finish through the real input
+path (Sim::step_bond + level scripts/triggers), complete every objective including optional
+ones, exit the way the game does; fix every blocker the walk hits (each with a focused test
+that fails on the old code); report objectives/route/remaining gaps. Known open items:
+the #[ignore]d walkreal_07000005_live test, the truck hand-over to 06, the helicopters.
+
+## level-05-complete (2026-10-17, branch s/level-05-complete) — completed 13:2x UTC
+The 07000005 walk (walkreal_07000005_live, truck test un-ignored) drives the real path end to end:
+cold start #26 → the ch-0x45 spawn reveal plate ON THE BOOT TICK → the road to the gatehouse → the
+SP #38 hand-over (ch 0x5C) → the crouched truck ride → the ch-0x70 park plate → mux #316 AND(70,71,72)
+→ 0x65 → SP #320's event 0x11 → ch 0x1D → level_exit 07000006 (5687 ticks, no falls) → the RamSave
+carry → the 0x1D start #496 on 07000006 → the spawn sits inside the 0x51 arrival plates → OR #498 →
+ch 0x46 → the monitor completes "Breach the castle walls" (state 4) and reveals part 1 (state 3).
+The objective census resolution: ch 0x45's writer IS on-disc (placement 36 — the level page's old
+"not on-disc" note was a census miss); ch 0x46 has NO writer on 05 — its writer is 07000006's OR
+#498 over the three arrival routes' plates (0x50 zip landing / 0x51 truck spawn / 0x52 gate walk)
+[D dumps; L ee_start_05 record @0x2a3e28, L ee_snapshot record state 3 with channels {45,73,97} after
+the truck script's 0x73]. Fix: the player trigger toucher builds at pos − 0.6 (was − 0.4) — the reach
+measured from live play: the boot plate sits 0.557 below the position reference [L ee_start_05
+glb_players→+0xc4 = 24.9633 vs plate 24.4065] and the crouch-only park plate bounds the standing reach
+at 0.65 on the port's geometry (the game's own window is [0.557, 0.575]); sisters green (the standing
+ride, fix_truck_live, level_carry 8/8, walkreal 01/02/04, nf-game units). Remaining: the cable route
+stays #[ignore]d — the ledge west of ladder #151's top dead-ends at x ≈ 58 (a 16-yaw sweep stalls,
+yaw 5.89 drops to y 28); needs the main agent's render/trace. Pre-existing divergence found: the
+helicopter SC3 chain (0x06000047) falsely raises ch 0x4B at boot tick ~299 [L ee_snapshot has it off;
+ch 0x4B is 07000008's gondola record's condition] — helicopters are 750h2's; live checks listed in
+docs/reports/level-05-complete.md.
+
+## level-05-complete-2 (2026-10-17, branch s/level-05-complete-2) — started
+Task 705e: the held level-05-complete (32f6a18) merge fix. The trigger-reach change (the toucher at
+pos − 0.6 instead of pos − 0.4 in drone.rs) breaks two tests that pass without it:
+fix_mission_live::objective_announces_on_its_enable_channel_and_completes_on_its_condition (the 05
+reveal plate #36 now fires on frame 1 — decide from [L ee_start_05.bin] and fix the TEST if the boot
+snapshot already has ch 0x45 = 1) and npc_doors_live::the_escort_opens_his_door_without_bonds_help
+(the escort never entered DSTATE_OpenDoor at the courtyard shoji — find which plate Bond now touches
+on that walk and whether the game fires it). Make the reach evidence-backed on every level; make both
+pass with my own tests. Branch = origin/master 0603094e + the held branch origin/s/level-05-complete
+32f6a18 (both WORKLOG sides kept; the 07000005 objectives section takes the held branch's corrected
+census).
