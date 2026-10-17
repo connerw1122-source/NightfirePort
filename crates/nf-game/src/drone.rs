@@ -6908,7 +6908,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // selector (mode 0x1D → AstronautDeath 0xBF [M 0x146480:103-104], else 0x44)
                 // applies inside THIS delivery — a bare set_state here sat pending and was
                 // clobbered by the next UPDATE's state re-assert (the astronaut strafe pick).
-                dr.send(d, &mut self.rng, frame, msg::BULLET);
+                // Every other kind keeps master's kill arm (the death anim set at once): routing their
+                // kills through msg 8 too lost the protected guest's ch-0x60 raise
+                // (fix_actors_live, [M 0x145bd0 reason 3]) — the batch merge 2026-10-16.
+                if dr.health <= 0.0 && dr.mode != 0x1D { dr.health = 0.0; dr.set_state(state::DEATH_ANIM); }
+                else { dr.send(d, &mut self.rng, frame, msg::BULLET); }
             }
         }
         // `Explode_Create` aligns the blast script to face the closest player before playing it:
