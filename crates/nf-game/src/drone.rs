@@ -314,6 +314,16 @@ pub mod anim_state {
     /// the stored fall anim +0xCD8 is 0x32, else 0x2f [M 0x162eb0 case 1]).
     pub const STUNNED_TWITCH_A: u16 = 0x2f;
     pub const STUNNED_TWITCH_B: u16 = 0x30;
+    // The ninja's anim set (kiko.rs documents the addresses): the backflip 0x66, the
+    // advance-and-throw 0x67, the sideflips 0x68/0x69, the somersault 0x6a, the run-in 0x6b and
+    // the sword slash 0x6d [M 0x16cdd0..0x16d878 CallAnim arguments].
+    pub const NINJA_BACKFLIP: u16 = 0x66;
+    pub const NINJA_ADVANCE: u16 = 0x67;
+    pub const NINJA_SIDEFLIP_LEFT: u16 = 0x68;
+    pub const NINJA_SIDEFLIP_RIGHT: u16 = 0x69;
+    pub const NINJA_SOMERSAULT: u16 = 0x6a;
+    pub const NINJA_RUN_IN: u16 = 0x6b;
+    pub const NINJA_SWORD: u16 = 0x6d;
 }
 
 /// Read-only game data the AI consults.
@@ -538,6 +548,13 @@ pub struct Drone {
     pub next_state: Option<u8>,
     pub entered: u32,
     pub timer_c: Option<u32>,
+    /// The ninja melee band `Drone+0xEC` (`NDrone2_DefaultInit` 0x14b300:378 = 4.0 for everyone;
+    /// mode 0xd, the ninja, 0x14b300:751 = 2.0): the attack states' evasion-band gate.
+    pub melee_min_dist: f32,
+    /// `Drone+0x2C8`: the attack-hold tick counter (`NDrone2_PreDroneControl` 0x148db0:29-34,
+    /// incremented while +0x2A is set, reset otherwise). [S] the port gates it on the seen latch —
+    /// the +0x2A writer is untraced.
+    pub attack_hold: u32,
     /// Timer D (`Drone+0xCD0`): the sniper cover's 6-s return-to-cover timer.
     pub timer_d: Option<u32>,
     /// `Drone+0x734`: the assigned alarm point's facing yaw — `FindAlarmPoint` 0x153008:26-30 stores
@@ -1182,6 +1199,9 @@ impl Drone {
             head_yaw: 0.0, head_pitch: 0.0, tracking: false, track_recheck: 0, aim_pitch: 0.0,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(), voice_type: voice_type(skin), female: matches!(skin & 0xffff, 0x0e | 0x0f | 0x10 | 0x11 | 0x52 | 0x15 | 0x20 | 0x22..=0x24 | 0x17 | 0x18 | 0x2b | 0x2d | 0x34 | 0x3b | 0x3c | 0x5e), attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(), free_root: false, bounded: true, dtype: param(15) as u8, mode_normal: param(16) as u8, mode_alert: param(21) as u8, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, screamed: false, scare_shouted: false, pending_shout: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
+            // ninja-melee: the melee band +0xEC (4.0 generic, 2.0 for the ninja — set after the
+            // mode is resolved in `type_setup`) and the +0x2C8 attack-hold counter.
+            melee_min_dist: 4.0, attack_hold: 0,
             door_open_at: 0,
             hit_door: None, door_return: 0, door_node: None, door_attempt: false, pending_door_msg: false, hit_door_open: true,
             // fix-nav-remainder: the kick-node outbox + the ScriptPlayer binding (fields on
@@ -1287,6 +1307,11 @@ impl Drone {
     fn type_setup(&mut self, d: &Data) {
         if self.mode_normal == self.mode_alert || self.second_tag == 0x65 { self.second_tag = 0; }
         self.mode = self.dtype_of(d, self.dtype, self.mode_normal);
+        // `NDrone2_DefaultInit` (0x14b300): +0xEC = 4.0 for everyone (:378); mode 0xd (the ninja,
+        // :744-753) also sets health 100.0, +0x8F0 = 8.0, the props 0x35/0x36/0x3c, +0xB4 = 0 and
+        // +0xEC = 2.0 — the melee band the ninja attack states roll their evasions under.
+        self.melee_min_dist = if self.mode == 0xd { 2.0 } else { 4.0 };
+        if self.mode == 0xd { self.health = 100.0; self.max_health = 100.0; }
         self.alt_mode = if self.second_tag == 0 || self.second_tag == 0x65 { 0 }
             else if self.second_channel == 0 && self.alert_floor >= 1.0 { 0 }
             else { self.dtype_of(d, self.dtype, self.mode_alert) };
@@ -5097,31 +5122,299 @@ impl Drone {
             // Case 3 sets the drone's +0x38 byte (no ported reader — not modelled); UPDATE falls
             // through to the game's default (unhandled → the GLOBAL handler), like KickObject's.
             (ALLY_LEAD_DONE, msg::ENTER) => { self.call_anim(d, anim_state::ALERT_IDLE, 0, 0); true } // [M 0x15f2e8 case 1: 0x21]
-            // ---- fix-finale-blockers (crates/nf-game/src/kiko.rs has the addresses and the tags) ----
+            // ---- fix-finale-blockers + ninja-melee (crates/nf-game/src/kiko.rs has the addresses
+            // and the tags; the state-id ↔ function table is NDrone2_StateFuncs [L 0x29b300]) ----
             // NinjaStand 0xa6 (0x16b990) ENTER: the eyes datum then SetState(0xa7) — the BLIND_DRONES
             // cheat is not modelled, so the fall-through is the only arm.
             (0xa6, msg::ENTER) => { self.set_state(crate::kiko::NINJA_ATTACK); true }
-            // NinjaAttack 0xa7 (0x16bb50): alert 1.0, the distance bands; UPDATE re-routes each tick.
+            // NinjaAttack 0xa7 (0x16bb50): ENTER — vision on, +0x4F8 |= 0x80000000, alert 1.0, then
+            // the distance routing (bands or the close-band evasion / sword / stand-fire choice);
+            // UPDATE re-routes each tick while no transition is pending.
             (crate::kiko::NINJA_ATTACK, msg::ENTER) => {
                 self.vision_on = true;
+                self.bounded = true; // +0x4F8 |= 0x80000000 [M 0x16bb50 case 1]
+                self.alert = 1.0;    // +0x50C = 1.0
+                self.ninja_attack_route(d, rng, frame, true);
+                true
+            }
+            (crate::kiko::NINJA_ATTACK, msg::UPDATE) => {
+                if self.next_state.is_none() { self.ninja_attack_route(d, rng, frame, false); }
+                true
+            }
+            // NinjaAttackLongRange 0xa8 (0x16bfc0): ENTER — anim 0x67 + Fire(1). UPDATE — ≤12 → 0xa7;
+            // MoveToObject(2.0): arrived(3) → 0xb2, moving → anim 0x67 with the +0x2C8/Rand(2)/
+            // Rand(10) sideflip chain, 10 → stay, else (no route) → 0xb3 NoRoute.
+            (crate::kiko::NINJA_LONG_RANGE, msg::ENTER) => {
+                self.vision_on = true;
+                self.alert = 1.0; // +0x50C = 1.0 [M 0x16bfc0 case 1]
+                self.call_anim(d, anim_state::NINJA_ADVANCE, 0, 0);
+                self.fire(d, rng, frame, true);
+                true
+            }
+            (crate::kiko::NINJA_LONG_RANGE, msg::UPDATE) => {
+                if self.next_state.is_none() {
+                    if self.dist <= 12.0 { self.set_state(crate::kiko::NINJA_ATTACK); }
+                    else {
+                        let mv = self.move_to_object(d, 2.0, true);
+                        if mv == 3 { self.set_state(crate::kiko::NINJA_STAND_FIRE); }
+                        else if mv < 3 {
+                            self.call_anim(d, anim_state::NINJA_ADVANCE, 0, 0);
+                            // +0x2C8 < 0x1F → stay; Rand(2) == 0 → stay; Rand(10) != 0 → stay;
+                            // then the ±3 sideflip probe [M 0x16bfc0 case 3 <3 arm].
+                            if self.attack_hold >= 0x1f && rng.rand(2) != 0 && rng.rand(10) == 0
+                                && (self.can_move(d, 3.0, 0.0) || self.can_move(d, -3.0, 0.0)) {
+                                self.set_state(crate::kiko::NINJA_SIDEFLIP);
+                            }
+                        }
+                        else if mv != 10 { self.set_state(crate::kiko::NINJA_NO_ROUTE); }
+                    }
+                }
+                true
+            }
+            // NinjaAttackMidRange 0xa9 (0x16c248): ENTER — alert 1.0, TIMER_C at +60, Fire(1), no
+            // anim. UPDATE — 6<≤12 MoveToObject(2.0): moving → anim 0x67, arrived → 0xb2, no route
+            // → 0xb3, 10 → stay; else → 0xa7. TIMER_C — seen (+0x228 & 4) & Rand(3) == 0 → 0xb2;
+            // after 30 held ticks the somersault / 10% sideflip alternatives; else re-arm at +30.
+            (crate::kiko::NINJA_MID_RANGE, msg::ENTER) => {
+                self.vision_on = true;
                 self.alert = 1.0;
-                self.set_state(crate::kiko::ninja_band(self.dist));
+                self.timer_c = Some(frame + 60); // FRAME_RATE_DIV·60 [M 0x16c248 case 1]
+                self.fire(d, rng, frame, true);
                 true
             }
-            (crate::kiko::NINJA_ATTACK, msg::UPDATE) => { if self.next_state.is_none() { self.set_state(crate::kiko::ninja_band(self.dist)); } true }
-            // The bands 0xa8/0xa9/0xaa (0x16bfc0/0x16c248/0x16c650): advance, then re-dispatch
-            // through 0xa7 (the melee/throwing-star anims need the ninja set — not modelled [S]).
-            (crate::kiko::NINJA_LONG_RANGE | crate::kiko::NINJA_MID_RANGE | crate::kiko::NINJA_SHORT_RANGE, msg::ENTER) => {
-                self.call_anim(d, self.walk_anim(d), 0, 0);
+            (crate::kiko::NINJA_MID_RANGE, msg::UPDATE) => {
+                if self.next_state.is_none() {
+                    if self.dist > 6.0 && self.dist <= 12.0 {
+                        let mv = self.move_to_object(d, 2.0, true);
+                        if mv < 3 { self.call_anim(d, anim_state::NINJA_ADVANCE, 0, 0); }
+                        else if mv == 3 { self.set_state(crate::kiko::NINJA_STAND_FIRE); }
+                        else if mv != 10 { self.set_state(crate::kiko::NINJA_NO_ROUTE); }
+                    } else { self.set_state(crate::kiko::NINJA_ATTACK); }
+                }
                 true
             }
-            (crate::kiko::NINJA_LONG_RANGE | crate::kiko::NINJA_MID_RANGE | crate::kiko::NINJA_SHORT_RANGE, msg::UPDATE) => {
-                if self.next_state.is_none() { self.set_state(crate::kiko::NINJA_ATTACK); }
+            (crate::kiko::NINJA_MID_RANGE, msg::TIMER_C) => {
+                if self.next_state.is_none() {
+                    if self.los && rng.rand(3) == 0 { self.set_state(crate::kiko::NINJA_STAND_FIRE); } // +0x228 & 4
+                    else if self.attack_hold > 0x1e {
+                        if self.can_move(d, 0.0, 5.0) && self.dist > 5.0 && self.dist < 7.0 {
+                            self.set_state(crate::kiko::NINJA_SOMERSAULT);
+                        } else if rng.rand(10) == 0 && (self.can_move(d, 3.0, 0.0) || self.can_move(d, -3.0, 0.0)) {
+                            self.set_state(crate::kiko::NINJA_SIDEFLIP);
+                        } else { self.timer_c = Some(frame + 30); }
+                    } else { self.timer_c = Some(frame + 30); } // FRAME_RATE_DIV·30 [M 0x16c248 case 0xc]
+                }
                 true
             }
-            // StandFire 0xb2 (0x16d5b8): hold at the melee band and re-dispatch.
-            (crate::kiko::NINJA_STAND_FIRE, msg::ENTER) => { self.call_anim(d, anim_state::AIM_STAND, 0, 0); true }
-            (crate::kiko::NINJA_STAND_FIRE, msg::UPDATE) => { if self.next_state.is_none() { self.set_state(crate::kiko::NINJA_ATTACK); } true }
+            // NinjaAttackShortRange 0xaa (0x16c650): ENTER — anim 0x6b, TIMER_C at +120+FRand(120),
+            // Fire(1), 1/3 → 0xab; EXIT — +0x3B = 0. UPDATE — >6 → 0xa7; 2<≤6 the (dead at the
+            // ninja's 2.0 band) min-dist roll, the +0x2C8 Rand(2) evasion chain, then fire (the
+            // sword ≤ 2 tail routes through 0xa7); ≤2 → 0xa7. TIMER_C — Rand(2) → 0xab else the
+            // evasion chain.
+            (crate::kiko::NINJA_SHORT_RANGE, msg::ENTER) => {
+                self.vision_on = true;
+                self.alert = 1.0; // +0x50C = 1.0 [M 0x16c650 case 1]
+                self.call_anim(d, anim_state::NINJA_RUN_IN, 0, 0);
+                self.timer_c = Some(frame + 120 + rng.frand(120.0) as u32); // 2·FRAME_RATE_INT + FRand(2·FRAME_RATE_INT)
+                self.fire(d, rng, frame, true);
+                if rng.rand(3) == 0 { self.set_state(crate::kiko::NINJA_GET_CLOSE); }
+                true
+            }
+            (crate::kiko::NINJA_SHORT_RANGE, msg::EXIT) => { self.firing = false; true } // +0x3B = 0 [M case 2]
+            (crate::kiko::NINJA_SHORT_RANGE, msg::UPDATE) => {
+                if self.next_state.is_none() {
+                    self.desired_yaw = self.yaw_to_opp; // SetAngleToObj [M case 3]
+                    if self.dist > 6.0 || self.dist <= 2.0 {
+                        self.set_state(crate::kiko::NINJA_ATTACK);
+                    } else {
+                        // dist < +0xEC → Rand(10) evasion roll (dead with the ninja's 2.0 band
+                        // inside 2<dist≤6, kept for the generic 4.0) [M 0x16c650:53-79].
+                        if self.dist < self.melee_min_dist && rng.rand(10) == 0 {
+                            if self.can_move(d, 3.0, 0.0) || self.can_move(d, -3.0, 0.0) { self.set_state(crate::kiko::NINJA_SIDEFLIP); }
+                            else if self.can_move(d, 0.0, -5.0) { self.set_state(crate::kiko::NINJA_BACKFLIP); }
+                        }
+                        if self.next_state.is_none() && !(!self.burst_done && self.firing) {
+                            // +0x2C8 == 0 → fire; else Rand(2): != 0 → the ±3 / −5 evasion chain,
+                            // == 0 → fire; the ≤2 sword tail is unreachable in this band [M 0x16c650:83-131].
+                            if self.attack_hold == 0 { self.fire(d, rng, frame, true); }
+                            else if rng.rand(2) != 0 {
+                                if self.can_move(d, 3.0, 0.0) || self.can_move(d, -3.0, 0.0) { self.set_state(crate::kiko::NINJA_SIDEFLIP); }
+                                else if self.can_move(d, 0.0, -5.0) { self.set_state(crate::kiko::NINJA_BACKFLIP); }
+                                else { self.fire(d, rng, frame, true); }
+                            } else { self.fire(d, rng, frame, true); }
+                        }
+                    }
+                }
+                true
+            }
+            (crate::kiko::NINJA_SHORT_RANGE, msg::TIMER_C) => {
+                if self.next_state.is_none() {
+                    if rng.rand(2) != 0 { self.set_state(crate::kiko::NINJA_GET_CLOSE); }
+                    else if rng.rand(10) == 0 && (self.can_move(d, 3.0, 0.0) || self.can_move(d, -3.0, 0.0)) {
+                        self.set_state(crate::kiko::NINJA_SIDEFLIP);
+                    } else if self.can_move(d, 0.0, -5.0) {
+                        self.set_state(crate::kiko::NINJA_BACKFLIP);
+                    } else { self.set_state(crate::kiko::NINJA_GET_CLOSE); }
+                }
+                true
+            }
+            // NinjaGetCloseToPlayer 0xab (0x16cb70): ENTER — anim 0x6b, TIMER_C at +180, Fire(1)
+            // (the shared tail). UPDATE — ≤2 → 0xac; MoveToObject(2.0): direct(2) with a clear 5.0
+            // forward hop and 5<dist<7 → 0xad somersault, moving → anim 0x67 + the fire gate,
+            // 10 → stay, else → 0xa7. TIMER_C → 0xaa.
+            (crate::kiko::NINJA_GET_CLOSE, msg::ENTER) => {
+                self.vision_on = true;
+                self.call_anim(d, anim_state::NINJA_RUN_IN, 0, 0);
+                self.timer_c = Some(frame + 180); // FRAME_RATE_INT·3 [M 0x16cb70 case 1]
+                self.fire(d, rng, frame, true);
+                true
+            }
+            (crate::kiko::NINJA_GET_CLOSE, msg::UPDATE) => {
+                if self.next_state.is_none() {
+                    self.desired_yaw = self.yaw_to_opp;
+                    if self.dist > 0.0 && self.dist <= 2.0 {
+                        self.set_state(crate::kiko::NINJA_SWORD);
+                    } else {
+                        match self.move_to_object(d, 2.0, true) {
+                            2 => {
+                                if self.can_move(d, 0.0, 5.0) && self.dist > 5.0 && self.dist < 7.0 {
+                                    self.set_state(crate::kiko::NINJA_SOMERSAULT);
+                                } else { self.ninja_refire(d, rng, frame); }
+                            }
+                            0 | 1 => {
+                                self.call_anim(d, anim_state::NINJA_ADVANCE, 0, 0);
+                                self.ninja_refire(d, rng, frame);
+                            }
+                            10 => {}
+                            _ => self.set_state(crate::kiko::NINJA_ATTACK),
+                        }
+                    }
+                }
+                true
+            }
+            (crate::kiko::NINJA_GET_CLOSE, msg::TIMER_C) => { self.set_state(crate::kiko::NINJA_SHORT_RANGE); true }
+            // NinjaSword 0xac (0x16d100): ENTER — ≤2 → the 0x6d slash (done → 0xa7; the decompiler
+            // dropped CallAnim's blend 0 — every sibling strike passes an explicit next state and a
+            // sword state with none could never exit), else → 0xa7. UPDATE — seen + angle. The
+            // slash's damage rides the anim's melee event (DroneWeap_CloseCombatImpact).
+            (crate::kiko::NINJA_SWORD, msg::ENTER) => {
+                self.vision_on = true;
+                if self.dist > 0.0 && self.dist <= 2.0 {
+                    self.call_anim(d, anim_state::NINJA_SWORD, crate::kiko::NINJA_ATTACK, 0);
+                } else { self.set_state(crate::kiko::NINJA_ATTACK); }
+                true
+            }
+            (crate::kiko::NINJA_SWORD, msg::UPDATE) => { self.desired_yaw = self.yaw_to_opp; true }
+            // NinjaSomersault 0xad (0x16d298): ENTER — invalidate the attack route, anim 0x6a
+            // (done → 0xac), Fire(1). UPDATE — angle + re-fire when the anim/burst ends.
+            (crate::kiko::NINJA_SOMERSAULT, msg::ENTER) => {
+                self.vision_on = true;
+                self.croute = None; // NDrone2_InvalidateAttackRoute [M 0x155020]
+                self.call_anim(d, anim_state::NINJA_SOMERSAULT, crate::kiko::NINJA_SWORD, 0);
+                self.fire(d, rng, frame, true);
+                true
+            }
+            // NinjaBackflip 0xae (0x16d430): anim 0x66, variant Rand(3)!=0, done → 0xa7, Fire(1).
+            (crate::kiko::NINJA_BACKFLIP, msg::ENTER) => {
+                self.vision_on = true;
+                self.croute = None;
+                let variant = if rng.rand(3) != 0 { 1 } else { 0 };
+                self.call_anim_variant(d, anim_state::NINJA_BACKFLIP, variant, crate::kiko::NINJA_ATTACK, 0);
+                self.fire(d, rng, frame, true);
+                true
+            }
+            // NinjaSideflip 0xaf (0x173e08): the ENTER-only ±3 dispatcher — both clear → Rand(2)
+            // between the flips, only +3 → 0xb0, only −3 → 0xb1, neither → 0xa7.
+            (crate::kiko::NINJA_SIDEFLIP, msg::ENTER) => {
+                self.vision_on = true;
+                let plus = self.can_move(d, 3.0, 0.0);
+                let minus = self.can_move(d, -3.0, 0.0);
+                let next = match (plus, minus) {
+                    (true, true) => if rng.rand(2) != 0 { crate::kiko::NINJA_SIDEFLIP_RIGHT } else { crate::kiko::NINJA_SIDEFLIP_LEFT },
+                    (true, false) => crate::kiko::NINJA_SIDEFLIP_LEFT,
+                    (false, true) => crate::kiko::NINJA_SIDEFLIP_RIGHT,
+                    (false, false) => crate::kiko::NINJA_ATTACK,
+                };
+                self.set_state(next);
+                true
+            }
+            // NinjaSideflipLeft 0xb0 (0x16cdd0) / Right 0xb1 (0x16cf68): anim 0x68 / 0x69 (variant
+            // Rand(3)==0 / !=0, done → 0xa7) + Fire(1); EXIT — +0x3B = 0 (the flips only).
+            (crate::kiko::NINJA_SIDEFLIP_LEFT, msg::ENTER) => {
+                self.vision_on = true;
+                self.croute = None;
+                let variant = if rng.rand(3) == 0 { 1 } else { 0 };
+                self.call_anim_variant(d, anim_state::NINJA_SIDEFLIP_LEFT, variant, crate::kiko::NINJA_ATTACK, 0);
+                self.fire(d, rng, frame, true);
+                true
+            }
+            (crate::kiko::NINJA_SIDEFLIP_RIGHT, msg::ENTER) => {
+                self.vision_on = true;
+                self.croute = None;
+                let variant = if rng.rand(3) != 0 { 1 } else { 0 };
+                self.call_anim_variant(d, anim_state::NINJA_SIDEFLIP_RIGHT, variant, crate::kiko::NINJA_ATTACK, 0);
+                self.fire(d, rng, frame, true);
+                true
+            }
+            (crate::kiko::NINJA_SOMERSAULT | crate::kiko::NINJA_BACKFLIP | crate::kiko::NINJA_SIDEFLIP_LEFT | crate::kiko::NINJA_SIDEFLIP_RIGHT, msg::UPDATE) => {
+                self.desired_yaw = self.yaw_to_opp;
+                if self.burst_done || !self.firing { self.fire(d, rng, frame, true); }
+                true
+            }
+            (crate::kiko::NINJA_SIDEFLIP_LEFT | crate::kiko::NINJA_SIDEFLIP_RIGHT, msg::EXIT) => { self.firing = false; true }
+            // NinjaStandFire 0xb2 (0x16d5b8): ENTER — anim 0x6b, TIMER_C at +180, Fire(1). UPDATE —
+            // stay while the anim plays; then the somersault (clear 5.0 hop, 5<dist<7) / 10%
+            // sideflip alternatives after the first held tick, else re-fire. TIMER_C → 0xa7.
+            (crate::kiko::NINJA_STAND_FIRE, msg::ENTER) => {
+                self.vision_on = true;
+                self.call_anim(d, anim_state::NINJA_RUN_IN, 0, 0);
+                self.timer_c = Some(frame + 180); // FRAME_RATE_INT·3 [M 0x16d5b8 case 1]
+                self.fire(d, rng, frame, true);
+                true
+            }
+            (crate::kiko::NINJA_STAND_FIRE, msg::UPDATE) => {
+                self.desired_yaw = self.yaw_to_opp;
+                if !self.burst_done && self.firing { return true; }
+                if self.attack_hold != 0 {
+                    if self.can_move(d, 0.0, 5.0) && self.dist > 5.0 && self.dist < 7.0 {
+                        self.set_state(crate::kiko::NINJA_SOMERSAULT);
+                        return true;
+                    }
+                    if rng.rand(10) == 0 && (self.can_move(d, 3.0, 0.0) || self.can_move(d, -3.0, 0.0)) {
+                        self.set_state(crate::kiko::NINJA_SIDEFLIP);
+                        return true;
+                    }
+                }
+                self.fire(d, rng, frame, true);
+                true
+            }
+            (crate::kiko::NINJA_STAND_FIRE, msg::TIMER_C) => { self.set_state(crate::kiko::NINJA_ATTACK); true }
+            // NinjaNoRoute 0xb3 (0x16d878): ENTER — alert 1.0, TIMER_C at +30, anim 0x6b, Fire(1)
+            // (the star throw). UPDATE — re-fire + angle + mirror +0x3B from the seen bit.
+            // TIMER_C — MoveToObject(2.0): a route again (≤3) → 0xa7, else re-arm at +30.
+            (crate::kiko::NINJA_NO_ROUTE, msg::ENTER) => {
+                self.alert = 1.0;
+                self.timer_c = Some(frame + 30); // FRAME_RATE_DIV·30 [M 0x16d878 case 1]
+                self.vision_on = true;
+                self.call_anim(d, anim_state::NINJA_RUN_IN, 0, 0);
+                self.fire(d, rng, frame, true);
+                true
+            }
+            (crate::kiko::NINJA_NO_ROUTE, msg::UPDATE) => {
+                if !(!self.burst_done && self.firing) {
+                    self.fire(d, rng, frame, true);
+                    self.desired_yaw = self.yaw_to_opp;
+                    self.firing = self.los; // +0x3B = (+0x228 >> 2) & 1 [M 0x16d878 case 3]
+                }
+                true
+            }
+            (crate::kiko::NINJA_NO_ROUTE, msg::TIMER_C) => {
+                if self.next_state.is_none() {
+                    if self.move_to_object(d, 2.0, true) <= 3 { self.set_state(crate::kiko::NINJA_ATTACK); }
+                    else { self.timer_c = Some(frame + 30); }
+                }
+                true
+            }
             // KikoMission 0x19 (0x15df28): the route chase — done → prop 0x1d clear → StandBlind.
             // Its sound-class msgs are ignored on 0x07000016 (case 0x11..0x1f `return 1`).
             (crate::kiko::KIKO_MISSION, msg::ENTER) => { self.vision_on = true; self.call_anim(d, 0x34, 0, 0); true }
@@ -5467,6 +5760,40 @@ impl Drone {
     }
 
     fn can_backoff(&self, d: &Data) -> bool { self.prop(d, 0x06) && self.can_do(d, anim_state::BACKOFF) && self.can_move(d, 0.0, -1.8) }
+
+    /// NinjaAttack 0xa7's ENTER/UPDATE routing [M 0x16bb50 case 1/case 3]: >12 → 0xa8, >6 → 0xa9,
+    /// 2<≤6 → 0xaa; the close band (≤2) rolls inline — ENTER: dist < +0xEC → 10% ±3 sideflip (0xaf)
+    /// else the −5 backflip test (0xae), then Rand(2): sword 0xac inside (0, 2], else 0xb2;
+    /// UPDATE: ≥ the band → stay, else the backflip first and then the 10% sideflip.
+    fn ninja_attack_route(&mut self, d: &Data, rng: &mut Rng, _frame: u32, enter: bool) {
+        if self.dist > 2.0 {
+            self.set_state(crate::kiko::ninja_band(self.dist));
+            return;
+        }
+        if enter {
+            if self.dist < self.melee_min_dist && rng.rand(10) == 0 {
+                if self.can_move(d, 3.0, 0.0) || self.can_move(d, -3.0, 0.0) { self.set_state(crate::kiko::NINJA_SIDEFLIP); return; }
+                if self.can_move(d, 0.0, -5.0) { self.set_state(crate::kiko::NINJA_BACKFLIP); return; }
+            }
+            if rng.rand(2) == 0 {
+                if self.dist > 0.0 && self.dist <= 2.0 { self.set_state(crate::kiko::NINJA_SWORD); }
+                // else: the game's `return 1` — stay [M 0x16bb50:78-84]
+            } else {
+                self.set_state(crate::kiko::NINJA_STAND_FIRE);
+            }
+        } else {
+            if self.dist >= self.melee_min_dist { return; } // [M 0x16bb50:117]
+            if self.can_move(d, 0.0, -5.0) { self.set_state(crate::kiko::NINJA_BACKFLIP); return; }
+            if rng.rand(10) != 0 { return; }
+            if self.can_move(d, 3.0, 0.0) || self.can_move(d, -3.0, 0.0) { self.set_state(crate::kiko::NINJA_SIDEFLIP); }
+        }
+    }
+
+    /// The moving states' shared tail: fire unless the anim still plays while the trigger is held
+    /// (`+0x3C == 0 && +0x3B != 0` stays, else `DroneWeap_Fire(1)`) [M 0x16cb70:59-63 tail].
+    fn ninja_refire(&mut self, d: &Data, rng: &mut Rng, frame: u32) {
+        if self.burst_done || !self.firing { self.fire(d, rng, frame, true); }
+    }
 
     /// `NDrone2_ChooseCombatMove` (0x150c18): an option list (dodge, strafe, roll, step, crouch, stand) picked at
     /// random, each case falling through to the next when it fails; left/right order random.
@@ -9013,6 +9340,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             if let Some((t, m)) = dr.delayed { if frame >= t { dr.delayed = None; dr.send(d, rng, frame, m); } }
             if dr.alert < 1.0 && dr.alert > dr.alert_floor { dr.alert -= 1.0 / (60.0 * 50.0); }
             if dr.alert < dr.alert_floor { dr.alert = dr.alert_floor; }
+            // `NDrone2_PreDroneControl` 0x148db0:29-34: +0x2C8 counts while +0x2A is set, resets
+            // otherwise. [S] the port gates the counter on the seen latch — the +0x2A writer is
+            // untraced; it gates the ninja states' somersault/sideflip alternatives.
+            if dr.seen { dr.attack_hold = dr.attack_hold.saturating_add(1); } else { dr.attack_hold = 0; }
             drop(_pc);
             { let _p = crate::prof::scope("drone: UPDATE msg (AI)"); dr.send(d, rng, frame, msg::UPDATE); }
             // The route's door node dispatched inside the state machine: resolve the node → door
@@ -10089,6 +10420,8 @@ mod tests {
             tase_fall_anim: 0,
             stationary: false, alpha: 255.0, raise: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
+            // ninja-melee: the melee band +0xEC and the +0x2C8 attack-hold counter (defaults).
+            melee_min_dist: 4.0, attack_hold: 0,
             captain: false, snap: 0.0, event_20: false, event_21: false, holstered: false, anim_sounds: Vec::new(),
             voice_type: 0, female: false, attack_talked: false, voice: None, voice_finished: true, talks: Vec::new(), patrol_cooldown: 0, footstep: false, anim_stops: Vec::new(), drops: Vec::new(),
             free_root: false, bounded: true, dtype: 0, mode_normal: 0, mode_alert: 0, mode: 0, alt_mode: 0, team: 1, alt_state: 0, scared_radius: 20.0, screamed: false, scare_shouted: false, pending_shout: None, alert_block: 0.0,
