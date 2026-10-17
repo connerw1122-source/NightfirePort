@@ -17719,3 +17719,13 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+
+## cutscene-guard-models (2026-10-17, branch s/cutscene-guard-models) — started 04:40 UTC
+
+Task 750q: the user's "cutscenes not matching guard models" (screenshot nf-shots/002-07000001.png — an
+07000001 cut-scene with guards). For each cut-scene actor the game picks a skin: the script's actor
+entries, the hashtable substitutions per level, drone-backed actors using the placed guard's own skin.
+Plan: decompile the actor create path for script anims (Script_AnimStart / the skin lookup), list for
+07000001 and two other levels' cut-scenes each actor's skin hash in the port vs the game's resolution,
+fix the port's choice [M]. Deliverable is data + getters (no drawing) for the main agent's render-check,
+docs first (docs/systems/<name>.md), tests with numbers/ids only. In progress.
