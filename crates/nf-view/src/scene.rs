@@ -5290,6 +5290,10 @@ impl Scene {
         // the ladder sweep below draws them exactly once (fix-ladder2: the ladders were invisible because
         // `instances(cels_only=true)` skips every placement without 0x8000).
         instances.retain(|i| !matches!(i.placement.flags & 0xff, 0x2a | 0x22 | 0xd4));
+        // The breakables (0x20, `Break_Create` 0x12c230) leave the static draw: they ride the posed
+        // door/SS slot space below so a killed one stops drawing (`Break_Kill` 0x12b970 sets
+        // obj+0xFE bit 0 and the delete pass removes the object [M]). `own_cells` drops them too.
+        instances.retain(|i| !(i.placement.flags & 0xff == 0x20 && !i.placement.creates_cel()));
         let (mut char_instances, chars_missing) = level.character_instances();
         // drone-skins-g021: the drone's object is built from the hash `NDrone2_DefaultInit`
         // 0x14b300:563-565 hands `AnimObjectNew` — the placement param 0 as the captain swap
@@ -5475,10 +5479,11 @@ impl Scene {
                     v.push(cel_graph.own_cells_main.get(pi).copied().flatten().unwrap_or(u32::MAX));
                 }
                 if cels_only {
-                    // `scene_instances(true)`'s extension: the static dynamic entities (0x20/0xe2,
-                    // non-cel placements) appended after the cel placements, in placement order.
+                    // `scene_instances(true)`'s extension: the static dynamic entities (0xe2,
+                    // non-cel placements) appended after the cel placements, in placement order —
+                    // minus the 0x20 breakables the retain above moved to the posed slots.
                     for (pi, p) in level.maps[m].placements.iter().enumerate() {
-                        if !resolved(p) || p.creates_cel() || !matches!(p.flags & 0xff, 0x20 | 0xe2) { continue; }
+                        if !resolved(p) || p.creates_cel() || p.flags & 0xff != 0xe2 { continue; }
                         if p.flags & 0xff == 0xe2 && p.extra[7] & 0xffff != 0 { continue; }
                         v.push(u32::MAX);
                     }
@@ -6350,6 +6355,24 @@ impl Scene {
                 let Some((map, object)) = target else { continue };
                 let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
                 add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some((n_doors + si) as u16), None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+            }
+            // The breakables (0x20, `Break_Create` 0x12c230): `nf_game::breakable::Breaks::create`'s
+            // order (every 0x20 placement, placement order) after the SS slots — posed at their
+            // placement matrix while alive and collapsed once `Break_Kill` 0x12b970 marks them dead
+            // [M obj+0xFE bit 0 → the delete pass]. A cel-creating 0x20 keeps its static cel draw
+            // and its slot stays empty.
+            let n_ss = ss_list.list.len();
+            let mut bi = 0usize;
+            for p in level.maps[m].placements.iter().filter(|p| p.flags & 0xff == 0x20) {
+                let slot = n_doors + n_ss + bi;
+                bi += 1;
+                if p.creates_cel() { continue; }
+                let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() }
+                    else if (p.index as usize) < level.maps[m].objects.len() { Some((m, p.index as usize)) } else { None };
+                let Some((map, object)) = target else { continue };
+                if let Ok(h) = std::env::var("NF_HIDE") { if h.split(',').any(|n| !n.is_empty() && level.maps[map].objects[object].name.contains(n)) { continue; } }
+                let inst = Instance { map, object, matrix: nf_formats::placement::object_matrix(p.rotation, p.translation), placement: p.clone() };
+                add_instance(level, &inst, Layer::Character, None, &mut groups, None, None, Some(slot as u16), None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
             }
             // Level-placed pickups (`Pickup_Create` 0x18dda0): `View_DrawObjectGlist` 0x1e6780 draws
             // `obj+0xD8` at `obj+0x90` — the same object carries the glist the renderer draws [M], so the
@@ -7712,8 +7735,12 @@ impl Scene {
             for k in 0..(l.pick_base - l.door_base) as usize {
                 // The door region also holds the SimpleScripts' matrices (map-tower2): the ss vertices
                 // index `n_doors + k`, and `pick_base − door_base` = max door-or-ss index + 1.
+                // After the SS slots: the breakables (`Breaks::create` order), alive → placement matrix.
+                let brk = |k: usize| k.checked_sub(s.drones.doors.list.len() + s.drones.sss.list.len())
+                    .and_then(|bi| s.drones.breaks.list.get(bi));
                 let dpos = s.drones.doors.list.get(k).map(|d| d.matrix[3])
-                    .or_else(|| s.drones.sss.list.get(k - s.drones.doors.list.len()).map(|q| q.matrix[3]));
+                    .or_else(|| s.drones.sss.list.get(k - s.drones.doors.list.len()).map(|q| q.matrix[3]))
+                    .or_else(|| brk(k).map(|b| b.matrix[3]));
                 // A door linked to a portal (`build_LinkDoors2Portals` 0x1c8ac8, `obj+0xF0 |= 0x8000`) straddles the
                 // two cels its portal joins (`Collide_StraddleCels` 0x1eac98) and draws while EITHER is visible — the
                 // shut door is what you see from the near side once its portal stops the walk (render, 07000001: the
@@ -7727,7 +7754,11 @@ impl Scene {
                 if !straddle_seen && dpos.is_some_and(|p3| !vis_room([p3[0], p3[1], p3[2]])) { p[l.door_base as usize + k] = FAR; continue; }
                 p[l.door_base as usize + k] = match s.drones.doors.list.get(k) {
                     Some(d) => d.matrix,
-                    None => s.drones.sss.list.get(k - s.drones.doors.list.len()).map_or(FAR, |q| q.matrix),
+                    None => match s.drones.sss.list.get(k - s.drones.doors.list.len()) {
+                        Some(q) => q.matrix,
+                        // `Break_Kill` 0x12b970: obj+0xFE bit 0 → the delete pass removes the object [M].
+                        None => brk(k).filter(|b| !b.dead).map_or(FAR, |b| b.matrix),
+                    },
                 };
             }
             for k in 0..(l.n_mats - l.pick_base) as usize {

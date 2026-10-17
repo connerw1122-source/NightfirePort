@@ -54,6 +54,10 @@ pub struct Break {
     pub filter: u16,
     /// obj+0xFE bit 0 — set by Break_Kill [M 0x12b970], gates Break_Update [M 0x12bfd8:14].
     pub dead: bool,
+    /// The placement transform (`object_matrix`) — the draw matrix while alive; the renderer
+    /// stops drawing a dead one (the movement handler's delete pass removes the object
+    /// [M 0x12b970:41 — obj+0xFE bit 0]).
+    pub matrix: [[f32; 4]; 4],
 }
 
 #[derive(Clone, Debug, Default)]
@@ -105,6 +109,7 @@ impl Breaks {
                 health: f32::from_bits(param(1)),
                 filter: if p2 == 0 { 0 } else { !(p2 as u16) },
                 dead: false,
+                matrix: object_matrix(p.rotation, p.translation),
             });
         }
         Breaks { list }
@@ -177,7 +182,7 @@ mod tests {
     use super::*;
 
     fn one(kind: u8, health: f32) -> Breaks {
-        Breaks { list: vec![Break { placement: 0, lo: [4.0, 7.0, -3.0], hi: [6.0, 9.0, -1.0], kind, health, filter: 0, dead: false }] }
+        Breaks { list: vec![Break { placement: 0, lo: [4.0, 7.0, -3.0], hi: [6.0, 9.0, -1.0], kind, health, filter: 0, dead: false, matrix: [[0.0; 4]; 4] }] }
     }
 
     #[test]

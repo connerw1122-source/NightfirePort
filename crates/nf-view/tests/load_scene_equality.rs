@@ -35,12 +35,16 @@ fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 // game's hashtable misses it, AnimObjectNew 0x1be910:44-46): 02 +259 tris/+2 materials, 14
 // −127984 tris/−462 materials/−23 characters, 01 +57 verts; 05 and 0c unchanged byte-for-byte.
 // (Merged onto 1017m: 07000014 also carries the laser delta above.)
+// Re-pinned at the breakables draw (main-agent render check, 07000007): the 0x20 placements left the
+// static World draw for the posed door/SS slot space (a broken one stops drawing — `Break_Kill`
+// 0x12b970), so 01/02/14's World materials merge into per-slot Character groups: vertices and
+// triangles unchanged, materials and the Character-vertex split move; 05 and 0c carry no 0x20.
 const BASELINE: &[(&str, &str)] = &[
-    ("07000002.bin", "ed227b3359d91458 4477259 9358977 5509 4334469 81 9682 255 28 25 8"),
+    ("07000002.bin", "d7e8f00ded57dd1f 4477259 9358977 5347 4339965 81 9682 205 28 25 8"),
     ("07000005.bin", "6a43ad2ce9dee894 4377695 9151611 3576 4293354 73 9731 106 19 16 6"),
     ("0700000c.bin", "15de2f0294792a8a 4871632 10240830 8177 4680808 96 10996 170 22 40 15"),
-    ("07000014.bin", "b4c74c581dc67abb 7208306 14968956 6769 7055169 111 13430 176 41 37 32"),
-    ("07000001.bin", "bd2fdeb04005586a 4389613 9198819 3678 4307208 76 9696 156 11 20 6"),
+    ("07000014.bin", "b4011376b5d7991f 7208306 14968956 6767 7055181 111 13430 173 41 37 32"),
+    ("07000001.bin", "d50702caf2606dc5 4389613 9198819 3484 4316311 76 9696 101 11 20 6"),
 ];
 
 #[test]
