@@ -51,7 +51,7 @@ trigger/script placement that raises it, the chime SoundTrigger), from the disc 
 - `idling_at_the_start_awards_nothing`: 600 ticks at the cold start — count 0, flash 0, all ten
   bond channels off, neither chime plays.
 
-Result: **2/2 pass** (9.15 s wall). "Reproduce first": on the pre-fix tree this test cannot
+Result: **2/2 pass** (9.1 s wall). The flash is pinned exactly: 200 at the award tick, 198 the next (−2/tick), still even and below 198 at the exit. "Reproduce first": on the pre-fix tree this test cannot
 compile (no `bond_moment_flash` field) — the missing state IS the symptom; the count and chime
 assertions pin the already-ported halves so the whole chain is now guarded end to end (the
 per-tick assertion fails if anyone breaks the award fold, the SoundTriggers, or the gate).

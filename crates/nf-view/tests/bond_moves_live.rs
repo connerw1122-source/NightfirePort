@@ -57,6 +57,7 @@ fn truck_ride_awards_bond_move_101_with_flash_and_chime() {
     // The ride: per tick, watch the award (count 0→1), the flash and the chime.
     let mut award_tick: Option<u32> = None;
     let mut flash_at_award: Option<u16> = None;
+    let mut flash_next: Option<u16> = None;
     let mut t65: Option<u32> = None;
     let mut t69: Option<u32> = None;
     let mut chime_tick: Option<u32> = None;
@@ -77,6 +78,8 @@ fn truck_ride_awards_bond_move_101_with_flash_and_chime() {
         if award_tick.is_none() && sim.drones.progress.stats().bond_moments >= 1 {
             award_tick = Some(w.total_ticks);
             flash_at_award = Some(sim.drones.health.bond_moment_flash);
+        } else if award_tick.is_some() && flash_next.is_none() {
+            flash_next = Some(sim.drones.health.bond_moment_flash);
         }
         if chime_tick.is_none() && sim.drones.sound_triggers.playing(331) { chime_tick = Some(w.total_ticks); }
         if sim.drones.level_exit.is_some() { break; }
@@ -95,12 +98,13 @@ fn truck_ride_awards_bond_move_101_with_flash_and_chime() {
     let t65 = t65.expect("ch 0x65 must rise (the AND completes)");
     assert!((award_tick as i32 - t65 as i32).abs() <= 1, "the award tick {award_tick} rides with ch 0x65 {t65}");
 
-    // THE HUD FLAG: 200 at the award tick, then the pane's countdown −2/tick [M 0x199448:25, 0x19b9c8:258-260].
+    // THE HUD FLAG: 200 at the award tick, then the pane's countdown −FRAME_RATE_MUL = 2/tick
+    // [M 0x199448:25; 0x19b9c8:258-260 — the (short)(timer − FRAME_RATE_MUL) float step].
     assert_eq!(flash_at_award, Some(200), "the award writes BL+0x948 = 200");
+    assert_eq!(flash_next, Some(198), "the next pane update subtracts 2");
     let decay = sim.drones.health.bond_moment_flash;
     assert_eq!(decay % 2, 0, "the countdown steps by FRAME_RATE_MUL = 2");
-    assert!(decay < 200, "the flash decays after the award tick (now {decay})");
-
+    assert!(decay < 198, "the flash keeps decaying after the award tick (now {decay})");
     // THE CHIME: the level's SoundTrigger (placement 82, gate 0x65 → id 331) played.
     let chime_tick = chime_tick.expect("the gate-0x65 SoundTrigger must play id 331 on the award");
     assert!(chime_tick >= award_tick.saturating_sub(1) && chime_tick <= award_tick + 5,
