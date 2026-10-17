@@ -113,7 +113,7 @@ fn three_guided_rockets_leave_no_looping_whoosh_behind() {
 
         // The whoosh follows the rocket [M Bullet_update 0x12e7b0:104]: sample the tracked position
         // and the bullet's position on the way out; each tick the whoosh moves with the rocket
-        // (0.2525 u/tick [L record +0x20 × the measured scale]) and never drifts off it.
+        // (ramping from the quarter speed to 0.2525 u/tick [L] — rocket-ramp) and never drifts off it.
         let (mut p0, mut b0): (Option<[f32; 3]>, Option<[f32; 3]>) = (None, None);
         let mut samples = 0;
         for _ in 0..200 {
@@ -124,8 +124,10 @@ fn three_guided_rockets_leave_no_looping_whoosh_behind() {
                 if let (Some(w0), Some(b0)) = (p0, b0) {
                     let drift = (w[0] - b[0]).powi(2) + (w[1] - b[1]).powi(2) + (w[2] - b[2]).powi(2);
                     let moved = (w[0] - w0[0]).powi(2) + (w[1] - w0[1]).powi(2) + (w[2] - w0[2]).powi(2);
-                    // One flight tick moves ~0.25² = 0.064 u²; a stuck whoosh moves 0.
-                    assert!(moved > 0.01, "rocket {rocket}: the whoosh never moved (tracked {w:?} vs {w0:?}) — the game's Sound_SetPosition per tick is missing");
+                    // A stuck whoosh moves 0; the rocket's slowest tick is its quarter-speed start
+                    // (0.0625 u = 0.0039 u², then +2%/tick [M Bullet_DoTrails 0x12d890:134-138] —
+                    // rocket-ramp), so 0.03 u/tick (0.0009 u²) separates the two.
+                    assert!(moved > 0.0009, "rocket {rocket}: the whoosh never moved (tracked {w:?} vs {w0:?}) — the game's Sound_SetPosition per tick is missing");
                     assert!(drift < 25.0, "rocket {rocket}: the whoosh drifted {drift:.1} u² off the rocket ({w:?} vs {b:?})");
                     samples += 1;
                 }

@@ -50,18 +50,20 @@ fn give_and_select(scene: &mut Scene, weapon: u8) {
     for _ in 0..10 { step(scene, Input::default(), false); }
 }
 
-/// The Scorpion's rockets fly at the game's flight speed: the Heatseeker 0x2e at 0.2525 u/tick
-/// (0.25 [L +0x20] × the 0x200 quarter [M 0x12c5a0:207-211] × 4.04) and the Unguided 0x2f at
-/// 0.336667 (= the measured 0x2d's flight — its +0x6C is byte-identical [L]) — not the init-only
-/// 0.0625/0.0833 the playtest called "way too slow". Sisters: the pair keeps the records' own
-/// +0x20 ratio (3/4), the homing bit lands on the bullet the game's way (0x2e true, 0x2f false
-/// [L +0x6C 0x32200 vs 0x1a200]), and neither twin rides the camera (no 0x4 [L]).
+/// The Scorpion's rockets leave at the record's quarter speed and ramp up 2% of +0x20 per tick
+/// [M Bullet_init 0x12c5a0:207-211; Bullet_DoTrails 0x12d890:134-138] to the game's flight speed:
+/// the Heatseeker 0x2e cruises at 0.0625 + 38 × 0.005 = 0.2525 u/tick and the Unguided 0x2f at
+/// 0.0833 + 38 × 0.00667 = 0.336667 (= the measured 0x2d's flight [L PCSX2 2026-10-14] — its +0x6C
+/// is byte-identical [L]) — not the init-only 0.0625/0.0833 the playtest called "way too slow".
+/// Sisters: the homing bit lands on the bullet the game's way (0x2e true, 0x2f false [L +0x6C 0x32200
+/// vs 0x1a200]), and neither twin rides the camera (no 0x4 [L]). (rocket-ramp: the old pin read an
+/// early-flight displacement against a constant ×4.04 stand-in.)
 #[test]
 fn the_scorpion_rockets_fly_at_the_game_flight_speed() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     for (weapon, want, want_homing) in [
-        (0x2eu8, 0.25 * 0.25 * 4.04, true),
-        (0x2fu8, 0.333_333_3 * 0.25 * 4.04, false),
+        (0x2eu8, 0.2525f32, true),
+        (0x2fu8, 0.336_666_6f32, false),
     ] {
         let mut scene = nf_view::load_weapons(&iso, "07000005.bin", false, &[0x2e, 0x2f]).expect("load 07000005 with the Scorpion merged (the --give path)");
         for _ in 0..30 { step(&mut scene, Input::default(), false); }
@@ -78,25 +80,20 @@ fn the_scorpion_rockets_fly_at_the_game_flight_speed() {
         // rides the camera (no 0x4 — only the Sentinel's 0x2c does).
         assert_eq!(b.homing, want_homing, "weapon {weapon:#04x}'s +0x6C 0x20000 homing bit");
         assert!(!b.guided_cam, "weapon {weapon:#04x} has no 0x4 guided-cam bit");
-        // Ride a few ticks (the homing one may steer — the displacement magnitude still carries
-        // the speed: the direction stays unit, the step length is untouched [M 0x12f358]).
-        let start = b.pos;
+        // Ride until the ramp is done (38 ticks) or the rocket dies; the speed field is BU+0xF8.
+        let mut last = b.speed;
         let mut steps = 0u32;
-        for _ in 0..8 {
+        for _ in 0..60 {
             step(&mut scene, Input::default(), false);
             let sim = scene.sim.as_ref().unwrap();
             match sim.drones.player_bullets.last() {
-                Some(bb) if !bb.dead => steps += 1,
+                Some(bb) if !bb.dead && bb.weapon == weapon as u16 => { last = bb.speed; steps += 1; }
                 _ => break,
             }
         }
-        let sim = scene.sim.as_ref().unwrap();
-        let b = sim.drones.player_bullets.last().unwrap();
-        let d = ((b.pos[0] - start[0]).powi(2) + (b.pos[1] - start[1]).powi(2) + (b.pos[2] - start[2]).powi(2)).sqrt();
-        assert!(steps >= 4, "the rocket flew {steps} ticks — too short to measure");
-        let per_tick = d / steps as f32;
-        eprintln!("[scorpion] weapon {weapon:#04x}: {per_tick:.5} u/tick over {steps} ticks (want {want:.5})");
-        assert!((per_tick - want).abs() < want * 0.05,
-            "the {weapon:#04x} rocket flies at {per_tick:.5} u/tick, the game's flight speed is {want:.5} (master's init-only speed was 4.04× slower — the playtest's complaint)");
+        eprintln!("[scorpion] weapon {weapon:#04x}: speed {last:.5} after {steps} ticks (want {want:.5})");
+        assert!(steps >= 40, "the rocket flew {steps} ticks — too short to reach its cruise");
+        assert!((last - want).abs() < 1e-4,
+            "the {weapon:#04x} rocket cruises at {last:.5} u/tick, the game's flight speed is {want:.5} (master's init-only speed was 4.04× slower — the playtest's complaint)");
     }
 }

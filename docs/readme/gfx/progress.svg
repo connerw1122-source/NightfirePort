@@ -1,0 +1,114 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="880" height="640" viewBox="0 0 880 640" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+  <title>NightfirePort status as of 2026-10-16</title>
+  <!-- self-contained card so it reads on both GitHub themes -->
+  <rect x="0.5" y="0.5" width="879" height="639" rx="10" fill="#f6f8fa" stroke="#d0d7de"/>
+
+  <text x="24" y="38" font-size="18" font-weight="600" fill="#1f2328">NightfirePort — status at a glance</text>
+  <text x="856" y="38" font-size="12" fill="#656d76" text-anchor="end">as of 2026-10-16</text>
+
+  <!-- ===== Decompile coverage ===== -->
+  <text x="24" y="76" font-size="13" font-weight="600" fill="#1f2328">Decompile coverage: functions of each PS2 program cited in the Rust crates or docs</text>
+
+  <g font-size="12">
+    <!-- row 1: ACTION.ELF functions -->
+    <text x="24" y="104" fill="#1f2328" font-weight="600">ACTION.ELF</text>
+    <text x="118" y="104" fill="#656d76">functions</text>
+    <rect x="250" y="93" width="500" height="14" rx="3" fill="#e1e4e8"/>
+    <rect x="250" y="93" width="356.5" height="14" rx="3" fill="#2f6fcf"/>
+    <text x="762" y="104" fill="#1f2328">71.3 %  <tspan fill="#656d76">2,166 of 3,038</tspan></text>
+
+    <!-- row 2: ACTION.ELF bytes -->
+    <text x="118" y="134" fill="#656d76">code bytes</text>
+    <rect x="250" y="123" width="500" height="14" rx="3" fill="#e1e4e8"/>
+    <rect x="250" y="123" width="421.5" height="14" rx="3" fill="#2f6fcf"/>
+    <text x="762" y="134" fill="#1f2328">84.3 %  <tspan fill="#656d76">of 1,273,792</tspan></text>
+
+    <!-- row 3: SFX.IRX functions -->
+    <text x="24" y="172" fill="#1f2328" font-weight="600">SFX.IRX</text>
+    <text x="118" y="172" fill="#656d76">functions</text>
+    <rect x="250" y="161" width="500" height="14" rx="3" fill="#e1e4e8"/>
+    <rect x="250" y="161" width="271.5" height="14" rx="3" fill="#2f6fcf"/>
+    <text x="762" y="172" fill="#1f2328">54.3 %  <tspan fill="#656d76">153 of 282</tspan></text>
+
+    <!-- row 4: SFX.IRX bytes -->
+    <text x="118" y="202" fill="#656d76">code bytes</text>
+    <rect x="250" y="191" width="500" height="14" rx="3" fill="#e1e4e8"/>
+    <rect x="250" y="191" width="386" height="14" rx="3" fill="#2f6fcf"/>
+    <text x="762" y="202" fill="#1f2328">77.2 %  <tspan fill="#656d76">of 84,564</tspan></text>
+
+    <!-- row 5: DRIVING.ELF functions -->
+    <text x="24" y="240" fill="#1f2328" font-weight="600">DRIVING.ELF</text>
+    <text x="118" y="240" fill="#656d76">functions</text>
+    <rect x="250" y="229" width="500" height="14" rx="3" fill="#e1e4e8"/>
+    <rect x="250" y="229" width="15.5" height="14" rx="3" fill="#2f6fcf"/>
+    <text x="762" y="240" fill="#1f2328">3.1 %  <tspan fill="#656d76">286 of 9,169</tspan></text>
+
+    <!-- row 6: DRIVING.ELF bytes -->
+    <text x="118" y="270" fill="#656d76">code bytes</text>
+    <rect x="250" y="259" width="500" height="14" rx="3" fill="#e1e4e8"/>
+    <rect x="250" y="259" width="33.5" height="14" rx="3" fill="#2f6fcf"/>
+    <text x="762" y="270" fill="#1f2328">6.7 %  <tspan fill="#656d76">of 2,090,256</tspan></text>
+  </g>
+
+  <text x="24" y="300" font-size="11.5" fill="#656d76">"Cited" means the function's address or name appears somewhere in the crates or docs. It is an upper bound on "ported":</text>
+  <text x="24" y="316" font-size="11.5" fill="#656d76">the port-map docs grade each function ported / partial / stub / stand-in / not started. Three functions are proven bit-exact against PCSX2.</text>
+
+  <!-- ===== Playable? ===== -->
+  <line x1="24" y1="338" x2="856" y2="338" stroke="#d0d7de"/>
+  <text x="24" y="364" font-size="13" font-weight="600" fill="#1f2328">What runs today</text>
+
+  <!-- card 1: on-foot -->
+  <g transform="translate(24 380)">
+    <rect x="0.5" y="0.5" width="268" height="200" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="14" y="26" font-size="13" font-weight="600" fill="#1f2328">On-foot levels</text>
+    <rect x="178" y="12" width="76" height="20" rx="10" fill="#2f6fcf"/>
+    <text x="216" y="26" font-size="11" font-weight="600" fill="#ffffff" text-anchor="middle">playable</text>
+    <g font-size="11.5" fill="#1f2328">
+      <text x="14" y="54">27 archives on the disc; all 27 load and</text>
+      <text x="14" y="70">run 1,800 headless ticks without a panic.</text>
+      <text x="14" y="92">Headless walkthroughs complete the story</text>
+      <text x="14" y="108">levels, with 2 documented stand-ins.</text>
+      <text x="14" y="130">Menus, briefing, level, outro and results</text>
+      <text x="14" y="146">run end to end.</text>
+      <text x="14" y="168" fill="#656d76">Still unported per level: some placement</text>
+      <text x="14" y="184" fill="#656d76">creators (rigid bodies, cars, particles, weather).</text>
+    </g>
+  </g>
+
+  <!-- card 2: driving -->
+  <g transform="translate(306 380)">
+    <rect x="0.5" y="0.5" width="268" height="200" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="14" y="26" font-size="13" font-weight="600" fill="#1f2328">Driving missions</text>
+    <rect x="158" y="12" width="96" height="20" rx="10" fill="#e1e4e8"/>
+    <text x="206" y="26" font-size="11" font-weight="600" fill="#1f2328" text-anchor="middle">not playable</text>
+    <g font-size="11.5" fill="#1f2328">
+      <text x="14" y="54">5 of the 12 campaign rows are driving.</text>
+      <text x="14" y="70">The menu shows a notice and skips them.</text>
+      <text x="14" y="92">Merged as model code only: vehicle</text>
+      <text x="14" y="108">physics, road network, AI traffic, HUD</text>
+      <text x="14" y="124">data, mission scripts.</text>
+      <text x="14" y="146">DRIVING.ELF is a second, stripped engine;</text>
+      <text x="14" y="162">3.1 % of its functions are cited.</text>
+      <text x="14" y="184" fill="#656d76">8-phase plan; input mapping designed only.</text>
+    </g>
+  </g>
+
+  <!-- card 3: multiplayer -->
+  <g transform="translate(588 380)">
+    <rect x="0.5" y="0.5" width="268" height="200" rx="8" fill="#ffffff" stroke="#d0d7de"/>
+    <text x="14" y="26" font-size="13" font-weight="600" fill="#1f2328">Multiplayer</text>
+    <rect x="150" y="12" width="104" height="20" rx="10" fill="#2f6fcf"/>
+    <text x="202" y="26" font-size="11" font-weight="600" fill="#ffffff" text-anchor="middle">local + online</text>
+    <g font-size="11.5" fill="#1f2328">
+      <text x="14" y="54">Local Quick Game to arena, end to end.</text>
+      <text x="14" y="70">Online host / join over UDP lockstep,</text>
+      <text x="14" y="86">direct IP:port, no relay.</text>
+      <text x="14" y="108">8 on-foot arenas parse; 13 modes mapped.</text>
+      <text x="14" y="130" fill="#656d76">Bots: data and state merged, not wired</text>
+      <text x="14" y="146" fill="#656d76">into the sim yet (mp-bots feature).</text>
+      <text x="14" y="168" fill="#656d76">Split screen: planned, not implemented.</text>
+    </g>
+  </g>
+
+  <text x="24" y="616" font-size="11.5" fill="#656d76">Test suite on master: 2,055 passed, 0 failed, 74 ignored. Decompile counts are from the Ghidra index and a grep of 1,300 source and doc files.</text>
+</svg>

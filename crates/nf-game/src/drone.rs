@@ -7103,6 +7103,29 @@ fn seg_point_dist2(a: V3, b: V3, p: V3) -> f32 {
     q[0] * q[0] + q[1] * q[1] + q[2] * q[2]
 }
 
+/// A swoosh ribbon segment (`Swoosh_Create` 0x18d8e8 / `Swoosh_Update` 0x18d200, object class 0x41): the
+/// rocket's smoke trail. The record [M 0x18d8e8]: +0x00 the head (`head`, fed the rocket's position each
+/// tick), +0x10 the tail (`tail` — also the object's position), +0x20 the life left and +0x22 the start
+/// life (both `len / FRAME_RATE_MUL`), +0x24 the kind (1 = the rocket ribbon: a +0.001 drift on x and y
+/// every tick [M 0x18d200:52-63]). `Swoosh_Update` kills it when the life reaches 0; the draw sits at the
+/// tail, `Mat_Align2Dir(tail − head, up = viewer − tail)` scaled (life/max, 1, |tail − head|), alpha
+/// byte life·128/max [M 0x18d200:45-80] — nf-view draws it.
+#[derive(Clone, Debug)]
+pub struct Swoosh {
+    pub head: V3,
+    pub tail: V3,
+    pub life: i16,
+    pub max: i16,
+    /// The ribbon mesh: 0x2000918 (`SwooshStart`, Bullet_init's first segment) or 0x2000481 (`Swoosh`,
+    /// the chained ones) [M 0x12c5a0:116-133, 0x12d890:202-236].
+    pub mesh: u32,
+    pub kind: u8,
+}
+
+/// The swoosh pool's size (the game allocates control objects; the port keeps a fixed pool and drops a
+/// create when it is full, like `control_create_object` failing [M 0x18d8e8:20-23]).
+pub const SWOOSH_POOL: usize = 512;
+
 /// One of Bond's bullets (`Player_WeaponInitBullet` → `Bullet_init` / `Bullet_update` with owner = player).
 #[derive(Clone, Debug)]
 pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelled: f32, pub range: f32, pub damage: f32, pub weapon: u16, pub first: bool, pub dead: bool,
@@ -7141,6 +7164,12 @@ pub struct PlayerBullet { pub pos: V3, pub dir: V3, pub speed: f32, pub travelle
     /// delete (disasm 0x12e680 `lw a0, 0xf0(s2)` → `jal Sound_Stop` → `sw zero, 0xf0(s2)`).
     /// rocket-sound-leak: on its own line (merge lesson 4).
     pub snd: crate::sound::Handle,
+    /// `BU+0x38`: the current swoosh segment (an index into `Drones::swooshes`) for `+0x6C & 0x10000`
+    /// records [M Bullet_init 0x12c5a0:116-133]; rocket-swoosh, on its own line (merge lesson 4).
+    pub swoosh: Option<u16>,
+    /// `obj+0xEC`: the spawn frame — `Bullet_DoTrails` chains a new segment when
+    /// `(frame − born) % weapon+0x74 == 0` [M 0x12d890:208].
+    pub born: u32,
 }
 
 /// fix-weapon-fire-modes: the guided missile's look-input steering (`Bullet_update` 0x12e7b0:177-244,
@@ -7561,6 +7590,8 @@ pub struct Drones {
     /// The gas/smoke puffs (`Gas_Init` 0x1aacc8 / `gases_smoke` 0x1ab2d0, crates/nf-game/src/gas.rs):
     /// muzzle smoke, broken-searchlight smoke, bullet trails. Fixed slot pool, updated per tick.
     pub gas: crate::gas::GasPool,
+    /// rocket-swoosh: the swoosh ribbons (`Swoosh`), a fixed pool of `SWOOSH_POOL` slots.
+    pub swooshes: Vec<Option<Swoosh>>,
     /// Bond's weapon byte (player `anim+0x62`; the P2K = 2).
     pub bond_weapon: u8,
     /// Weather (`DrawSnow`: a `SNOW_gen` placement, type 0xDF): the drop type and volumes from the level, built at the
@@ -7874,6 +7905,7 @@ impl Drones {
             node_kicks: None,
             kicked_nodes: Default::default(),
             gas: Default::default(),
+            swooshes: Vec::new(),
             // fix-death-restart: the death sequence + the fail-menu policy (fields on their own lines
             // — the shared-constructor collisions, merge lesson 4).
             letterbox: false, view_fade: None, view_fade_script: false, script_cam_prev: false, script_msgs: Vec::new(), text_flush: false,
@@ -8270,7 +8302,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // 0x2f = 0.336667 u/tick (= the measured 0x2d's — its flags are identical). Playtest
             // 1016-1355 (MP): "Scorpion rockets are way too slow" — the port flew them init-only
             // (0.0625 / 0.0833). Live check: gdbwatch BU+0xF8 through a 0x2e/0x2f flight.
-            if matches!(weapon, 0x2c | 0x2d | 0x2e | 0x2f) { speed *= 4.04; }
+            // rocket-ramp: the ×4.04 stand-in above is gone — the measured 0.33666 is the END of
+            // `Bullet_DoTrails`' quarter-speed ramp (0.0833 + 38 × 0.00667 [M 0x12d890:134-138]), which
+            // the trail pass in `update_player_bullets` now runs; the rocket leaves the launcher at the
+            // quarter speed, as in the game (the PS2's launch plume is the slow rocket by the camera).
+            // rocket-swoosh [M Bullet_init 0x12c5a0:116-133]: a `+0x6C & 0x10000` record whose base is
+            // not 0x33/0x6a/0x6e starts its ribbon at the spawn point — `Swoosh_Create(spawn, spawn,
+            // weapon+0x76, 0x2000918, kind 1)` (the 0x20005cd family keeps its gas stand-in).
+            let swoosh_seg = {
+                let f6c = u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap());
+                let base = u16::from_le_bytes([w[0x02], w[0x03]]);
+                if f6c & 0x1_0000 != 0 && !matches!(base, 0x33 | 0x6a | 0x6e) {
+                    self.swoosh_create(from, from, i16::from_le_bytes([w[0x76], w[0x77]]), 0x0200_0918, 1)
+                } else { None }
+            };
             self.player_bullets.push(PlayerBullet {
                 pos: from, dir, speed, travelled: 0.0, range: f(0x1c), damage: f(0x0c), weapon: weapon as u16, first: true, dead: false, bounces: 0,
                 homing: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x2_0000 != 0,
@@ -8284,6 +8329,8 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 guided_cam: u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x4 != 0,
                 // rocket-sound-leak: BU+0xF0 — the launch whoosh's handle (0 when the weapon plays none).
                 snd: whoosh,
+                swoosh: swoosh_seg,
+                born: self.frame,
             });
         }
         // `Bullet_init_casing` 0x12fde0 (Player_WeaponInitBullet 0x1a4bf0:306, right after the
@@ -8491,6 +8538,31 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 else if s0 < 6.0 { 1 }
                 else { 0 };
             self.list[i].door_zone = zone;
+        }
+    }
+
+    /// `Swoosh_Create` 0x18d8e8: a new segment from `head` back to `tail` (the object sits at the tail),
+    /// life = max = `len` (÷ FRAME_RATE_MUL = 1; the MPSettings word 384 halving is 0 on this build [L]).
+    /// None when the pool is full (the game's `control_create_object` failing returns 0).
+    pub fn swoosh_create(&mut self, head: V3, tail: V3, len: i16, mesh: u32, kind: u8) -> Option<u16> {
+        let sw = Swoosh { head, tail, life: len, max: len.max(1), mesh, kind };
+        if let Some(i) = self.swooshes.iter().position(|s| s.is_none()) { self.swooshes[i] = Some(sw); return Some(i as u16); }
+        if self.swooshes.len() >= SWOOSH_POOL { return None; }
+        self.swooshes.push(Some(sw));
+        Some((self.swooshes.len() - 1) as u16)
+    }
+
+    /// `Swoosh_Update` 0x18d200 for every live segment: the life ticks down and the object deletes at 0
+    /// [M :45-48]; kind 1 drifts +0.001 on x and y [M :52-63]. The draw-side matrix/alpha live in nf-view.
+    fn update_swooshes(&mut self) {
+        for slot in self.swooshes.iter_mut() {
+            let Some(s) = slot else { continue };
+            s.life -= 1;
+            if s.life < 1 { *slot = None; continue; }
+            if s.kind != 0 {
+                s.head[0] += 0.001; s.tail[0] += 0.001;
+                s.head[1] += 0.001; s.tail[1] += 0.001;
+            }
         }
     }
 
@@ -9000,6 +9072,33 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // ones — a pierce/ricochet revived its bullet above (dead = false, handle kept, the game's
         // Bullet_Delete never ran for it); the pre-fix leak never stopped the looped whoosh at all
         // (playtest 1015-1738).
+        // rocket-swoosh: `Bullet_DoTrails` 0x12d890:202-236 for the flying `+0x6C & 0x10000` rounds —
+        // every `weapon+0x74` ticks from the spawn frame a new segment chains on (`Swoosh_Create(rocket,
+        // the old segment's head, weapon+0x76, 0x2000481, 1)`, stored as the current one); on the other
+        // ticks the current segment's head follows the rocket. The spawn tick (state 0) runs no trail.
+        // No RNG draws (determinism).
+        let mut bullets = std::mem::take(&mut self.player_bullets);
+        let now = self.frame;
+        for b in bullets.iter_mut().filter(|b| !b.dead && b.born != now) {
+            let Some(w) = d.weapons.records.get(b.weapon as usize) else { continue };
+            // rocket-ramp: `Bullet_DoTrails` 0x12d890:134-138 — a `+0x6C & 0x200` (quarter-speed) round
+            // gains 2% of the record's +0x20 speed per tick while below it (BU+0xF8 += +0x20 · 0.02); the
+            // Sentinel 0x2d ends at 0.33666 u/tick, the PCSX2-measured cruise [L 2026-10-14].
+            if u32::from_le_bytes(w[0x6c..0x70].try_into().unwrap()) & 0x200 != 0 {
+                let full = f32::from_le_bytes(w[0x20..0x24].try_into().unwrap());
+                if b.speed < full { b.speed += full * 0.02; }
+            }
+            let Some(si) = b.swoosh else { continue };
+            let period = i16::from_le_bytes([w[0x74], w[0x75]]).max(1) as u32;
+            let pos = b.pos;
+            if self.frame.wrapping_sub(b.born) % period == 0 {
+                let old_head = self.swooshes.get(si as usize).and_then(|s| s.as_ref()).map_or(pos, |s| s.head);
+                if let Some(n) = self.swoosh_create(pos, old_head, i16::from_le_bytes([w[0x76], w[0x77]]), 0x0200_0481, 1) { b.swoosh = Some(n); }
+            } else if let Some(Some(s)) = self.swooshes.get_mut(si as usize) {
+                s.head = pos;
+            }
+        }
+        self.player_bullets = bullets;
         for b in self.player_bullets.iter().filter(|b| b.dead) {
             if b.snd != 0 { self.audio.stop(b.snd); }
         }
@@ -9538,6 +9637,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         // The gas puffs (`gases_smoke` 0x1ab2d0 runs in the object handler every frame).
         self.gas.update();
+        self.update_swooshes();
         // fix-grenade-throw: the smoke clouds' lifetime countdown (`Occlude_Update` 0x17eba0:
         // obj+0xF4 − 1 per tick, 0 → dead).
         for c in &mut self.smoke_clouds { c.ticks -= 1; }

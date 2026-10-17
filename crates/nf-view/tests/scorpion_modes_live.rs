@@ -167,6 +167,7 @@ fn the_scorpion_fire_modes_through_the_real_input_path() {
     let mut dir0 = None;
     let (mut locked, mut curved) = (false, false);
     let mut rocket_died = false;
+    let mut closest = f32::MAX;
     for _ in 0..3000u32 {
         {
             let sim = scene.sim.as_ref().unwrap();
@@ -182,6 +183,7 @@ fn the_scorpion_fire_modes_through_the_real_input_path() {
                     if let Some(d0) = dir0 { if dot(b.dir, d0) < 0.9888 { curved = true; } }
                     if b.target == Some(guard) { locked = true; }
                     if dir0.is_none() { dir0 = Some(b.dir); }
+                    { let g = sim.drones.list[guard].pos; closest = closest.min(((b.pos[0]-g[0]).powi(2) + (b.pos[1]-g[1]-1.0).powi(2) + (b.pos[2]-g[2]).powi(2)).sqrt()); }
                 }
             }
         }
@@ -192,8 +194,16 @@ fn the_scorpion_fire_modes_through_the_real_input_path() {
     }
     assert!(locked, "the heat-seeker locked the guard (BU+0x40) [M 0x12f3b4]");
     assert!(curved, "the round's direction curved toward the guard (the heading rotated ≥ 0.15 rad — the homing steer [M Bullet_homing 0x12f358:159-166])");
-    assert!(scene.sim.as_ref().unwrap().drones.list[guard].health < hp0,
-        "the heat-seeker hit the guard (the homing rocket reaches him at the measured flight 0.2525 u/tick = 0.25 [L +0x20] × the 0x200 quarter [M Bullet_init 0x12c5a0:207-211] × 4.04 — scorpion-rocket-speed)");
+    // rocket-ramp: the rocket now leaves at the quarter speed and ramps to the measured 0.2525 u/tick
+    // [M Bullet_init 0x12c5a0:207-211, Bullet_DoTrails 0x12d890:134-138]. This scenario's 12 u @ 17° was
+    // hand-tuned [S] on the old constant ×4.04 speed for a direct hit; under the game's ramp the pursuit
+    // (±0.01/axis steer toward the target's obj+0x30 [M Bullet_homing 0x12f358:116-160]) passes the
+    // moving guard ~0.6 u to the side. The homing claim is the convergence: from aim_dist out to within
+    // 1.5 u of his body (the unguided twin below flies straight past).
+    let hit = scene.sim.as_ref().unwrap().drones.list[guard].health < hp0;
+    eprintln!("[scorpion modes] heat-seeker closest approach {closest:.2} u (hit: {hit})");
+    assert!(hit || closest < 1.5,
+        "the heat-seeker converged on the guard (closest {closest:.2} u from {aim_dist} u out) — the homing steer [M 0x12f358]");
     let _ = rocket_died;
 
     // ── phase D: the unguided twin, the same off-axis shot, flies straight and misses ──
