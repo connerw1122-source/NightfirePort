@@ -62,6 +62,12 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
         if !w.shoot(g, &format!("guard {g}")) {
             if w.resupply("ammo retry") { w.shoot(g, &format!("guard {g}")); }
         }
+        // An empty gun cannot finish the fight — if the resupply also failed, move on rather than
+        // hold an empty trigger through the 900-tick reposition windows.
+        if {
+            let sim = w.scene.sim.as_ref().unwrap();
+            sim.gun.clip + sim.gun.spare == 0
+        } { eprintln!("[01] guard {g}: out of ammo and no box reached — leaving him for a later round"); continue; }
     }
     // The contact's hide exit: no armed drone within 14 → timer → Lead [M 0x15ec08]. Walk to him,
     // then escort: follow, and every time he cowers (an armed guard within 14 of him — LeadHide
@@ -70,6 +76,85 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
     let cpos = w.scene.sim.as_ref().unwrap().drones.list[ci].pos;
     let plate = walker::trigger_centre(w.scene.sim.as_ref().unwrap(), walker::trigger_kind::TOUCH, 0x10).expect("the AND-touch plate");
     w.walk_to(Wp { at: cpos, act: Act::None, arrive: 2.5 }, "to the contact");
+
+    // The meet beat — the level's second cut-scene, triggered entirely on disc. SP #276
+    // (placement 276, script 0x06000086, 19 streams, in the level archive [D the disc scan —
+    // pack 07800001 carries only the intro's 0x06000087]) is a mask-1 ScriptPlayer: it triggers
+    // when its own out channel ch 0x33 rises [M SP_Hit 0x1dc470:17-21 flags bit 0x1 +
+    // SP_Update 0x1dbda8 case 0]. The chain: the TOUCH_ONCE plate at (6.8, 6.0, 8.9) (mask 0x08)
+    // writes ch 0x32 [D placement]; the OUT mux (0xEE, out 0x32 → list [0x33]) mirrors
+    // ch[0x32] → ch[0x33] EVERY tick [M Trigger_Update 0x1b1a78 case 5:
+    // switch_channels[list[k]] = switch_channels[out]]; SP #276 fires. So Bond WALKS the plate —
+    // the real player's route into the north-east hall — and the scene plays out untouched
+    // (streams end at frame 280 [D decode], ~4.7 s).
+    w.walk_nav_to([6.8, 6.0, 8.9], "the meet plate (NE hall)", 1.0);
+    // The plate is a TOUCH_ONCE on Bond's capsule — the touch lands when the capsule segment
+    // crosses the volume's top face (feet ≈ the plate's floor 6.04). A nav stop a hair short
+    // never crosses; a player steps ON it. Walk the centre tightly, then sweep the quad.
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let plate = sim.drones.triggers.iter()
+            .find(|t| t.kind == walker::trigger_kind::TOUCH_ONCE && t.out == 0x32)
+            .map(|t| t.centre())
+            .expect("the meet plate");
+        drop(sim);
+        w.walk_to(Wp { at: plate, act: Act::None, arrive: 0.25 }, "onto the meet plate");
+        for (dx, dz) in [(0.0f32, 0.9f32), (0.0, -0.9), (0.9, 0.0), (-0.9, 0.0)] {
+            if w.scene.sim.as_ref().unwrap().drones.channels.on(0x32) { break; }
+            w.walk_to(Wp { at: [plate[0] + dx, plate[1], plate[2] + dz], act: Act::None, arrive: 0.2 },
+                &format!("the meet plate sweep ({dx},{dz})"));
+            if w.scene.sim.as_ref().unwrap().drones.channels.on(0x32) { break; }
+            w.walk_to(Wp { at: plate, act: Act::None, arrive: 0.2 }, "back across the meet plate");
+        }
+        let sim = w.scene.sim.as_ref().unwrap();
+        eprintln!("[01] meet plate: bond at {:?} ch 0x32={} ch 0x33={}", sim.bond.pos,
+            sim.drones.channels.on(0x32), sim.drones.channels.on(0x33));
+        assert!(sim.drones.channels.on(0x32), "walking the meet plate must fire its ch 0x32 [D placement]");
+    }
+    let mut e_at = None;
+    for t in 0..2400u32 {
+        w.tick(Default::default(), false);
+        if w.scene.sim.as_ref().unwrap().drones.channels.on(0xe) { e_at = Some(t); break; }
+    }
+    eprintln!("[01] the meet scene (0x06000086) wrote ch 0xE at +{e_at:?} — stream 9's event 0xD ch 0xE val 1 [D decode]");
+    assert!(e_at.is_some(), "the meet plate must fire ch 0x32 → the 0x33 mirror → SP #276 must play and write ch 0xE");
+    // ch 0xE is the start channel of four hall guards [D placements; the probe's drone table]:
+    // skins 0x39/0x36/0x38/0x3a at (−12.2,17.2), (5.4,14.4), (9.1,17.0), (5.9,17.9).
+    w.wait(120);
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let states: Vec<u8> = sim.drones.list.iter()
+            .filter(|d| d.switch_channel == 0xe)
+            .map(|d| d.state)
+            .collect();
+        assert_eq!(states.len(), 4, "four drones wait on ch 0xE [D placements]");
+        assert!(states.iter().all(|&s| s != nf_game::drone::state::WAIT_SWITCH),
+            "every ch-0xE guard must have left WAIT_SWITCH when the scene wrote the channel (states {states:?})");
+    }
+
+    // The hall detour: the disc's AND mux (kind 3, out 0x99 = 153, list [0x11,0x12,0x13] [D the
+    // placement]) fires when the three named guards are dead — their death channels are 0x13,
+    // 0x11, 0x12 [D placement params]. A real player clearing the north-east hall fires this
+    // scripted event; the walk does it through the real fire path before the escort.
+    let named: Vec<usize> = {
+        let sim = w.scene.sim.as_ref().unwrap();
+        (0..sim.drones.list.len())
+            .filter(|&i| [0x11u8, 0x12, 0x13].contains(&sim.drones.list[i].death_channel))
+            .collect()
+    };
+    assert_eq!(named.len(), 3, "three guards carry death channels 0x11/0x12/0x13 [D]");
+    for g in named {
+        let gpos = w.scene.sim.as_ref().unwrap().drones.list[g].pos;
+        w.walk_nav_to(gpos, &format!("approach hall guard {g}"), 3.0);
+        if !w.shoot(g, &format!("hall guard {g}")) {
+            if w.resupply("hall ammo") { w.shoot(g, &format!("hall guard {g}")); }
+        }
+    }
+    w.wait(30);
+    assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(0x99),
+        "AND(0x11,0x12,0x13) must raise ch 153 once the three named guards are dead [D mux placement]");
+    eprintln!("[01] the hall AND fired: ch 153 on at tick {}", w.total_ticks);
+
     let mut settled = cpos;
     // The contact's park from the previous round: two rounds inside ~1 unit with no guard to
     // clear means the lead machine wedged on geometry — Bond walks PAST him toward the plate
@@ -180,6 +265,10 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
                 let sim = w.scene.sim.as_ref().unwrap();
                 if sim.gun.clip + sim.gun.spare < 8 { drop(sim); w.resupply("ammo"); }
             }
+            // Skip the hopeless fight: no ammo and no box reached — the round loop retries after
+            // the drops land (every killed guard drops his weapon [L the 01 drops]).
+            let ammo_now = w.scene.sim.as_ref().unwrap().gun.clip + w.scene.sim.as_ref().unwrap().gun.spare;
+            if ammo_now == 0 { eprintln!("[01] guard {g}: skipped — dry"); continue; }
             let mut killed = w.shoot(g, &format!("guard {g}"));
             if !killed {
                 // Out of ammo mid-fight: resupply and retry once.
@@ -227,13 +316,40 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
     let sim = w.scene.sim.as_ref().unwrap();
     let on_plate = sim.bond.pos[0] < -32.0 && sim.bond.pos[2] > 12.0;
     assert!(on_plate, "Bond must walk onto the LoadPointActivator plate (at {:?})", sim.bond.pos);
-    if sim.drones.channels.on(0x10) {
-        assert_eq!(sim.drones.level_exit, Some(0x0700_0002), "the exit fires to 07000002");
-        eprintln!("[01] level_exit at tick {} — walked {} ticks total", w.total_ticks, w.total_ticks);
-    } else {
-        eprintln!("[01] the AND-touch did not fire: the escort's root-motion stall left the contact at {:?} (route MOVING, no threat) — see docs/reports/walkreal-a.md",
-            sim.drones.list[ci].pos);
+    // The AND-touch now fires every run (the walkreal-01-cover walker): Bond AND the skin-0x4F
+    // contact on the plate [M Trigger_Hit 0x1b1fc8's filter list] → ch 0x10 → the LOAD_LEVEL
+    // exit's gate [M Trigger_Update 0x1b1a78 case 10].
+    assert!(sim.drones.channels.on(0x10), "the AND-touch must fire with Bond AND the contact on the plate (contact at {:?})",
+        sim.drones.list[ci].pos);
+    drop(sim);
+    // obj0 "Escort Mayhew to bunker" (text 0x04000006) watches ch 0x47 [L mission::c07000001,
+    // ee_start_05 @ 0x2a3eb8]. The disc carries NO ch-0x47 writer — the same census as ch 0x33:
+    // every placement, trigger, mux, script and pickup scanned, the only 0xD writes are 0xB and
+    // 0xE [D walkreal_probe01] — the un-ported mission/dialogue layer owns the write. The walk
+    // hands it at the level's own beat — the AND just fired, i.e. Mayhew reached the bunker
+    // plate — and pins the REAL monitor's consequences [M 0x1827d8]:
+    {
+        let sim = w.scene.sim.as_mut().unwrap();
+        assert_eq!(sim.drones.mission.states[0][0], 3, "obj0 announced (immediate reveal, enable 0) [M 0x1827d8 case 0]");
+        let frame = sim.drones.frame;
+        sim.drones.channels.set(0x47, 1, frame);
     }
+    w.wait(30);
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert_eq!(sim.drones.mission.states[0][0], 4, "obj0 completes through the real monitor [M 0x1827d8 case 3]");
+        // 0x47 is ALSO the enable channel of 07000002's first two objectives (parts of the same
+        // mission 0x07000001 [L mission::c07000002]) — case 1 has no level gate, so they announce
+        // from inside 07000001 the moment the hand lands:
+        assert_eq!(sim.drones.mission.states[1][0], 3, "07000002 'Destroy Mayhew's computer' announces on the 0x47 enable [M 0x1827d8 case 1]");
+        assert_eq!(sim.drones.mission.states[1][1], 3, "07000002 'Rescue geisha girls' announces on the 0x47 enable");
+        assert_eq!(sim.drones.mission.states[1][2], 1, "07000002 'Find door to servants quarters' still waits on enable 0x4c");
+        // No ch 100 here: the success channel is the AND over BOTH parts' conditions
+        // [M 0x1827d8:119-123], and 07000002's 0x48/0x4b/0x4d are still off.
+        assert!(!sim.drones.channels.on(100), "the mission spans 07000002 — success waits for its objectives");
+    }
+    assert_eq!(w.scene.sim.as_ref().unwrap().drones.level_exit, Some(0x0700_0002), "the exit fires to 07000002");
+    eprintln!("[01] level_exit to 07000002 at tick {} — walked {} ticks total", w.total_ticks, w.total_ticks);
     for f in &w.report.falls { eprintln!("[01] fall: {f}"); }
 }
 
@@ -274,3 +390,39 @@ fn the_plate_refuses_bond_alone() {
     }
 }
 
+
+/// Sister: Bond never walks the meet plate (he stays at the spawn side of the bar), so the
+/// TOUCH_ONCE at (6.8,6.0,8.9) never writes ch 0x32, the 0xEE mirror never raises ch 0x33
+/// [M Trigger_Update 0x1b1a78 case 5], SP #276 (mask 1 = its own out channel [M SP_Hit
+/// 0x1dc470:17-21]) never triggers, and the four hall guards waiting on ch 0xE never start.
+#[test]
+fn the_hall_guards_wait_for_the_meet_scenes_channel() {
+    let iso = iso();
+    let mut w = Walker::new(nf_view::load(&iso, "07000001.bin", false).expect("load"));
+    for _ in 0..4000u32 {
+        w.tick(Default::default(), false);
+        if w.scene.sim.as_ref().unwrap().drones.channels.on(0xb) { break; }
+    }
+    w.wait_enabled(6000, "the intro tail");
+    // Long past the scene's 280-frame span [D decode]: the plate stays untouched.
+    w.wait(2400);
+    let sim = w.scene.sim.as_ref().unwrap();
+    assert!(!sim.drones.channels.on(0x32), "the meet plate never fired (Bond kept away)");
+    assert!(!sim.drones.channels.on(0x33), "the 0x33 mirror follows ch 0x32 [M case 5]");
+    assert!(!sim.drones.channels.on(0xe), "ch 0xE never rises without the scene");
+    let waiting: Vec<u8> = sim.drones.list.iter()
+        .filter(|d| d.switch_channel == 0xe)
+        .map(|d| d.state)
+        .collect();
+    assert_eq!(waiting.len(), 4, "four drones wait on ch 0xE [D placements]");
+    if waiting.iter().any(|&s| s != nf_game::drone::state::WAIT_SWITCH) {
+        for (i, d) in sim.drones.list.iter().enumerate() {
+            if d.switch_channel == 0xe {
+                eprintln!("[01 sister] ch-0xE drone {i} skin {:#x} at {:?} state={:#x} enabled={} health={:.0} anim {:?}",
+                    d.skin, d.pos, d.state, d.enabled, d.health, d.anim.danim);
+            }
+        }
+    }
+    assert!(waiting.iter().all(|&s| s == nf_game::drone::state::WAIT_SWITCH),
+        "every ch-0xE guard must sit in WAIT_SWITCH while the meet plate is unfired (states {waiting:?}) [M NDrone2_DSTATE_Global]");
+}

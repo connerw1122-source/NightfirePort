@@ -17885,6 +17885,32 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+
+- 2026-10-17 s/level-01-complete: branch started (from origin/master d628f01f) for the 07000001
+  Paris Prelude (Castle A) start-to-finish walk: extend + un-ignore
+  crates/nf-view/tests/walkreal_07000001_live.rs, play every objective (optional included)
+  through the real input path, exit the way the game does; fix each blocker with a focused
+  test + sister. Known open items: the escort route and its doors; the shoji door drawn black
+  (GAPS G-050). Work continues below.
+
+- 2026-10-17 s/level-01-complete: the 07000001 census + walk work — the meet-plate chain (the
+  TOUCH_ONCE at (6.8,6.0,8.9) writes 0x32, the 0xEE OUT mux mirrors it to 0x33 every tick [M
+  Trigger_Update 0x1b1a78 case 5: switch_channels[list[k]] = switch_channels[out] — verified
+  against the decompile after an initial misread of case 0xC, which is the OR mux], mask-1 SP
+  #276 (script 0x06000086, 19 streams, in the level archive) plays on 0x33 and its stream 9
+  writes ch 0xE → the four hall guards leave WAIT_SWITCH); scripts 0x06000096/97 (SP #79) exist
+  nowhere on the disc [D the whole-disc kind-7 scan] — SP #79 is dead in the shipped game too;
+  the hall AND(0x11,0x12,0x13)→153 fired live at tick 7902 through the real fire path (killing
+  the named trio also starts guards 14/15 — their switch channels ARE the trio's death
+  channels); obj0's ch 0x47 has no disc writer (census re-run — the only 0xD writes are 0xB and
+  0xE) — handed at the plate AND, the real monitor completes it and announces 07000002's first
+  two objectives cross-level (enable 0x47, no level gate [M 0x1827d8 case 1]); the walk itself
+  blocks at the escort's LeadHide on the upstairs guard 2 (balcony y 10.2, armed_peer 13.7):
+  the solo approach through door #2 (−14.1,13.1) wedges at the 3000-tick cap with Bond
+  grounded=false in the frame — the level's known open item (the escort route and its doors).
+  The resupply retry now excludes wedged boxes (next-nearest), the sisters are green. Report:
+  docs/reports/level-01-complete.md.
+
 - 2026-10-17 s/laser-scripts (task 750i): The user: "lasers arent accurate to the port look
   closely at their scripts". Plan: list every laser object (placement type, script ids — the
   beam's on/off cycle, sweep, colour/alpha keys, sound), decode those scripts fully
