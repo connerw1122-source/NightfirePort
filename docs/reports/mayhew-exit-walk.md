@@ -35,25 +35,32 @@ The mid cut-scene is the **truck hand-over**:
 
 `nf_view::load("07000005.bin")` + `step_bond` inputs only:
 
-1. **The chain works when Bond reaches the gatehouse edge inside the window** — the new test
-   `crates/nf-view/tests/mayhew_handover_live.rs::the_walk_to_the_gatehouse_fires_the_handover_
-   window_and_rides_out`: the real-input walk arrives at (99.69, 25.94, 106.98) at t ≈ 373,
-   **ch 0x5C fires at t 1884** (the script's own window opens at 1882 [D]), SP #38 re-places
-   Bond on the truck bed, ch 0x71 follows the ride west of the gatehouse. GREEN.
+1. **The chain works end to end when Bond reaches the gatehouse edge inside the window** — the
+   new test `crates/nf-view/tests/mayhew_handover_live.rs::the_walk_to_the_gatehouse_fires_the_
+   handover_window_and_rides_out`: the real-input walk arrives at (99.69, 25.94, 106.98) at
+   t ≈ 373, **ch 0x5C fires at t 1884** (the script's own window opens at 1882 [D]), SP #38
+   re-places Bond on the truck bed, Bond crouches (the game's ride stance [D fix-truck]) and
+   the crouched ride parks on ch 0x70 — the chain ends the level: **level_exit 0x07000006**.
+   GREEN. The sisters hold: `walk_07000005_live` 2/2, `fix_truck_live` 2/2.
 2. **The manual turn+forward walk from the spawn stalls** — the same walk driven as a raw
    turn-toward-target + forward loop (what a thumb does) oscillates at
    (101.11..101.27, 24.94, 107.45..107.80) for 2400 ticks and never reaches the plate's XZ
-   (needs x ≤ 100.44); the walker's nav walk crosses the same stretch fine. The ignored
-   `walkreal_07000005_live::walk_to_the_gatehouse_and_ride_the_truck` parks on the same spot
-   ("the walked Bond stops 1.1 below and the chain never fires — 0x5c/0x70 dead for 9000
-   ticks" — its own comment). With the window only 430 ticks wide, a player who stalls once
-   loses the hand-over for that truck pass — the reported bug.
+   (needs x ≤ 100.44); the walker's nav walk crosses the same stretch fine. The collision
+   there [D Room_Road_A1 tris]: the walkway/plateau surface (y 24.75-25.11) ends at z ≈ 105.8
+   and x ≈ 101.4, the arch's south face rises from y 20.4 to 23.75 along it, and the lane
+   south of z 106 sits at 23.75 — a beeline at z ≈ 107.5 walks into the arch face. The
+   ignored `walkreal_07000005_live::walk_to_the_gatehouse_and_ride_the_truck` parks on the
+   same spot ("the walked Bond stops 1.1 below and the chain never fires — 0x5c/0x70 dead for
+   9000 ticks" — its own comment). With the window only 430 ticks wide (7.2 s [D]), a player
+   who fumbles the approach loses the hand-over for that truck pass (the truck script is
+   one-shot; the level remains completable through the gate door #118, fallback 0x1F [D]).
 3. Sister `the_handover_never_fires_for_bond_who_stays_at_the_spawn` — no walk → ch 0x5C low
    through the whole window, no exit. GREEN.
 
 ## What ran
 
-- `mayhew_handover_live` 2/2 (NF_ISO, release, --test-threads=1).
+- `mayhew_handover_live` 2/2 (NF_ISO, release, --test-threads=1; the full-ride version).
+- `walk_07000005_live` 2/2, `fix_truck_live` 2/2 (the sisters — no interference).
 - `walkreal_07000001_live` 2/2 (the escort level, unchanged — the sanity side).
 - The fast suite (`tools/test/suite.py`) **could not run in this sandbox**: background jobs
   are reaped between tool calls here (setsid/nohup detached runs died within one tool call,
