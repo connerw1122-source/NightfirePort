@@ -7294,6 +7294,13 @@ pub struct Drones {
     /// The pending level-exit request: when a `LOAD_LEVEL` (0xE8) trigger fires, the next level's hashcode
     /// (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad` 0x1d3800). The main loop reads this to reload [M].
     pub level_exit: Option<u32>,
+    /// The movie-player trigger's request: the OUT slot's value (`Trigger_Update` case 0xd /
+    /// `Trigger_Activate` type 0xd latch it into `GameState+0x10` and push GameFlow states 6 +
+    /// 8 [M 0x1b1f60-0x1b1f78 / 0x1b2318:56-61]). The game's own state-6 body pops immediately
+    /// when no movie is playing (`psiMovieFinished` 0x1082e8 = `BGFMVPlaying == 0`) and NOTHING
+    /// on this path starts one or loads a level — the disc's single record carries code 0 [D
+    /// 07000041 #81 params] — so the host consumes and drops it (a view-side fade would go here).
+    pub movie_request: Option<u32>,
     /// The mission's own end (`Mission_Update` 0x182c60 case 4's `ResetMap_LevelToLoad(LevelToEndTo)`
     /// to the front end or an outro/interlude code, not the next 0x0700 level): the host runs the
     /// game's end sequence (the outro movie when the level has one, then the results page).
@@ -7586,6 +7593,7 @@ impl Drones {
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
         let mut drones = Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), player_pos: [0.0; 3], bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), shake: 0.0, health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), link_flags: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, mission_end: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
+            movie_request: None,
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, hold_npcs: false, hold_active: false,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), ai_points: Vec::new(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
@@ -7913,6 +7921,23 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         match scripts.objects.list.get(o) {
             Some(Some(crate::nis::Obj::Entity { matrix, .. })) => Some([matrix[3][0], matrix[3][1], matrix[3][2]]),
             Some(Some(crate::nis::Obj::Anim { skin, script, frame, .. })) => crate::nis::World::discrete0(d, *skin, *script, *frame).map(|m| [m[3][0], m[3][1], m[3][2]]),
+            _ => None,
+        }
+    }
+
+    /// `script_obj_pos` plus the object's yaw: an Entity's matrix forward row (`m[2][0].atan2(m[2][2])`
+    /// — the same extraction `PlayerEnable`'s `Bond::stand_at` uses, crates/nf-view/src/scene.rs:2656),
+    /// an Anim's discrete-0 root matrix's forward row. `Drone_CoderCreate` 0x13a108 passes the rot
+    /// VECTOR (prev_obj+0x50, 0x1d96dc `addiu a1,s5,80`) to `Drone_Create`, which copies it to
+    /// DIVars+0x20 [M 0x136be0:51-58]; the port's script objects keep only the keyed matrix, so the
+    /// yaw comes from its forward row [S — a live check could confirm the game's rot→yaw read].
+    pub fn script_obj_pos_yaw(scripts: &crate::nis::Scripts, d: &Data, o: usize) -> Option<(V3, f32)> {
+        let m = |m: nf_formats::anim::Mat4| ([m[3][0], m[3][1], m[3][2]], m[2][0].atan2(m[2][2]));
+        match scripts.objects.list.get(o) {
+            Some(Some(crate::nis::Obj::Entity { matrix, .. })) => Some(m(*matrix)),
+            Some(Some(crate::nis::Obj::Anim { skin, script, frame, .. })) => {
+                crate::nis::World::discrete0(d, *skin, *script, *frame).map(m)
+            }
             _ => None,
         }
     }
@@ -8913,6 +8938,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         for i in hits {
             let (sets, next) = self.triggers[i].activate_request(&self.channels);
             for (c, v) in &sets { self.channels.set(*c as u32, *v, frame); }
+            // `Trigger_Activate` 0x1b2318's type-0xd arm [M :53-61]: the `mask & 4` gate, then
+            // `GameState+0x10 = ext+0x20` (the full u32), `GameState+0x14 = 0`, push 6 + push 7
+            // (Camera_SetFade(6, 300.0f, 1) → state 8, 0x43960000 @0x1b2318:60). No channel
+            // writes, no level load, NO spent latch (the game can re-fire every E press).
+            if self.triggers[i].kind == crate::triggers::kind::MOVIE && self.triggers[i].mask & 4 != 0 {
+                self.movie_request = Some(self.triggers[i].movie_code);
+            }
             if let Some(next) = next {
                 if self.level_exit.is_none() {
                     self.level_exit = Some(next);
@@ -9078,6 +9110,85 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // [M 0x114e70]; the IOP's `SFXUpdate` step 3 then FadeAndKills every sound that
                 // started while the NIS played — the mid-line dialogue dies inside the skip's fade
                 // window (playtest 1014-1725: "the dialogue still kept going") [M sound.md §6].
+                // NIS event 8: `Drone_CoderCreate` 0x13a108 — the coder/gadget drone spawn. The
+                // event's params land in the throwaway level_tag CoderCreate builds on its stack
+                // (memset 0xb0 @0x13a150-0x13a15c, then slot 0 = p0 @0x13a160 `sw s0,44(sp)`,
+                // slot 1 = p1 @0x13a168 `sw s1,48(sp)`, slot 9 = p3 @0x13a170 `sw s2,80(sp)`;
+                // param 2 is DEAD — the callee never reads its 5th argument [M 0x13a108-0x1cc no
+                // t0 use]) — so the port's `Drone::new` param map is {0: skin, 1: start script,
+                // 9: setup}. `Drone_Create` 0x136be0 copies the pos/rot and runs
+                // `NDrone2_CreateObj` (class 2, `LList_Add` 0x298E14 [M 0x14d7c8:10-14,29-30]) +
+                // `NDrone2_PostLoad_Init` [M 0x14d890]; the state is IDLE — the caller hard-codes
+                // argument 7 = 4 (`addiu t2,zero,4` @0x1d96ec → `sh s5,1442(v0)` @0x13a1a0).
+                // `obj == None` (the previous stream record has no object) skips the call in the
+                // game (`beq s5,zero` @0x1d96d4) — the disc's only firing (0600005b stream 9,
+                // previous record = stream 8, which creates nothing) is exactly this no-op [D].
+                crate::nis::Request::CoderCreate { obj, skin, script, setup } => {
+                    let Some(o) = obj else { continue };
+                    let Some((pos, yaw)) = Self::script_obj_pos_yaw(&self.scripts, d, o) else { continue };
+                    let param = |k: u32| match k { 0 => skin, 1 => script, 9 => setup, _ => 0 };
+                    let mut dr = { let rng = &mut self.rng; Drone::new(d, pos, yaw, param, rng) };
+                    dr.state = state::IDLE;
+                    dr.present = true;
+                    dr.enabled = true;
+                    dr.started = false;
+                    self.spawn_counter += 1;
+                    dr.spawn_seq = self.spawn_counter;
+                    dr.spawn_frame = self.frame;
+                    let idx = self.list.len();
+                    dr.index = idx;
+                    dr.sm_id = idx as u32;
+                    self.list.push(dr);
+                    self.llist.push(idx);
+                    // `NDrone2_DefaultInit` 0x14b300:609 → `PlrStat_LogEnemySpawned(0)` per created
+                    // drone (the same tally the spawner's spawn arm runs) [M].
+                    self.progress.log_enemy_spawned(self.mission.status());
+                }
+                // NIS event 0xa: `Break_DoBreak(prev_obj+0xC0)` 0x12c168 — break the first class-0x20
+                // object whose world bounding sphere (obj+0x80/+0x8C) contains the position [M
+                // 0x12c180-0x12c1cc], deleting it (obj+0xFE |= 1 [M 0x12b998-0x12b9ac in
+                // `Break_Kill` 0x12b970]) and playing the break sound at the object: 0x2e for a
+                // type-2 (glass) breakable, else 0x5f2/0x5f3 by `Rand_Rand(100) < 41` [M
+                // 0x12b9b4-0x12b9f0]. The game scans the CONTROL list — placed 0x20 breakables
+                // (Break_Create) and script-created 0x20 entities alike; the port models only the
+                // script-created ones (`Objects.list`, the Entity command's obj_type is the game's
+                // obj+0xFF class byte), and its entities carry no bounding sphere, so the match is
+                // the first kind-0x20 entity within 1.0 of the position [S — the disc's single
+                // firing (0600005b stream 8, position = stream 7's anim object) finds NO script
+                // entity of that class either way; the near misses are the placed glass panels the
+                // port does not simulate — a live check could measure the game's sphere radius].
+                crate::nis::Request::DoBreak { at } => {
+                    let Some(o) = at else { continue };
+                    let Some(pos) = Self::script_obj_pos(&self.scripts, d, o) else { continue };
+                    // First class-0x20 object in list order whose sphere contains the position
+                    // [M 0x12c180-0x12c1cc — first hit wins]. The port's script entities carry no
+                    // bounding sphere: the centre is the matrix translation, the radius a 1.0
+                    // stand-in [S — see the arm's header note].
+                    let hit = self.scripts.objects.list.iter().position(|x| match x {
+                        Some(crate::nis::Obj::Entity { kind: 0x20, matrix, .. }) => {
+                            let c = [matrix[3][0], matrix[3][1], matrix[3][2]];
+                            (c[0] - pos[0]).powi(2) + (c[1] - pos[1]).powi(2) + (c[2] - pos[2]).powi(2) < 1.0
+                        }
+                        _ => false,
+                    });
+                    let Some(i) = hit else { continue };
+                    let (centre, glass) = match &self.scripts.objects.list[i] {
+                        Some(crate::nis::Obj::Entity { matrix, params, .. }) => (
+                            [matrix[3][0], matrix[3][1], matrix[3][2]],
+                            params.first().copied().unwrap_or(0) == 2,
+                        ),
+                        _ => continue,
+                    };
+                    // `Break_Kill` 0x12b970: obj+0xFE |= 1 (the delete flag — the port's `None`) [M
+                    // 0x12b998-0x12b9ac]; the sound at the object's world sphere centre [M
+                    // 0x12b9f4-0x12ba40]: 0x2e for a type-2 (glass) breakable, else 0x5f2 on
+                    // `Rand_Rand(100) < 41`, else 0x5f3 [M 0x12b9b4-0x12b9f0]. The glass
+                    // shatter / debris passes (`ShatterPolyRecurse`, `Debris_Create_Loop`
+                    // 0x1ed548) are draw-side and not modelled [M 0x12b9b0-0x12bb3c].
+                    self.scripts.objects.list[i] = None;
+                    let id = if glass { 0x2e } else if self.rng.rand(100) < 41 { 0x5f2 } else { 0x5f3 };
+                    self.audio.play3d(id, centre, None);
+                }
                 crate::nis::Request::Event { kind: 0x40, params } => {
                     self.music.event(5, params.first().copied().unwrap_or(0));
                 }
@@ -9863,6 +9974,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         self.level_exit = Some(self.triggers[index].next_level);
                         self.music.event(3, 1);
                     }
+                }
+                // The movie trigger (0xF4 → action 0xd): `Trigger_Update` case 0xd latched
+                // `movie_fired` this tick (the channel clear already applied) — carry the OUT
+                // slot's u32 into `movie_request` the way the game writes `GameState+0x10` [M
+                // 0x1b1f68]. No level load and no music sting ride it: the game's pushed state 6
+                // pops immediately when no movie is playing (0x1082e8) and nothing on the path
+                // starts one; the fade state 8 is view-side [M 0x1c98c8 case 8].
+                if self.triggers[index].kind == crate::triggers::kind::MOVIE && self.triggers[index].movie_fired {
+                    self.triggers[index].movie_fired = false;
+                    self.movie_request = Some(self.triggers[index].movie_code);
                 }
                 // NF_LEVELLOG=1: once per second, log each LOAD_LEVEL trigger's gate channel, whether the gate
                 // is on, and whether the trigger has fired. Lets the user see why the level doesn't end —

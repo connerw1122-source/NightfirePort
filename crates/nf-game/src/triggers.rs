@@ -15,6 +15,8 @@ pub mod kind {
     pub const OUT: u8 = 5;
     pub const LOAD_LEVEL: u8 = 10;
     pub const OR: u8 = 0xc;
+    /// The movie-player trigger (`Trigger_MoviePlayer` 0x1b2a08 writes action 0xd into slot 0).
+    pub const MOVIE: u8 = 0xd;
 }
 
 /// `GetLevelToLoadFromMovieCode` (0x1d3560), disasm-checked against the decomp: the movie-code →
@@ -110,6 +112,14 @@ pub struct Trigger {
     pub success: u8,
     /// `LOAD_LEVEL` fallback channel (`Trigger_Activate` 0x1b2318:92-98): param 3 — set when the key gate blocks. [M]
     pub fallback: u8,
+    /// Movie trigger (0xF4): the OUT slot's FULL 32-bit value — `Trigger_MoviePlayer` 0x1b2a08 copies
+    /// old param 0 into slot 1 (`sw v0,48(s0)` @0x1b2a6c) and `Trigger_Create` 0x1b1720:68 takes it as a
+    /// u32 into ext+0x20 (`__s[8] = *(undefined4 *)(param_3 + 0x30)`), the word both case-0xd paths
+    /// latch into `GameState+0x10` (0x1b1f68 / 0x1b2318:58). The port's `out: u8` would truncate it.
+    pub movie_code: u32,
+    /// Movie trigger: case 0xd fired this tick (its input channel was armed and on — the channel clear
+    /// already applied). The control-list walk drains it into `Drones::movie_request` [M 0x1b1f24-0x1b1f78].
+    pub movie_fired: bool,
 }
 
 /// A body that can touch triggers: capsule axis from `a` to `b`, radius, drone (true) or Bond, drone skin hash.
@@ -222,6 +232,13 @@ impl Trigger {
             // p1 (key) and p2 (gate) are read back by `Trigger_Activate` (+0x26/+0x28) — the list keeps p1..p4.
             // [M Trigger_Update 0x1b1a78:162-166, Trigger_Activate 0x1b2318:64-111, 0x1b2950].
             kind::LOAD_LEVEL => (0, 0xE, (1..=4).map(&q).collect(), q(10), q(11) != 0, q(0), q(2) as u8, q(1) as u8, q(4) as u8, q(3) as u8),
+            // `Trigger_MoviePlayer` 0x1b2a08 (disasm): backs the 0x84-byte param block up to TmpParam
+            // (0x319b88), then writes slot 0 = 0xd (@0x1b2a58), slot 1 = TmpParam[0] = old p0 (@0x1b2a6c),
+            // slot 2 = TmpParam[2] = old p2 (@0x1b2a74) and slot 9 = TmpParam[1] = old p1 (@0x1b2a7c) —
+            // NOT the mux shift (slot 2 keeps old p2, and slot 9 is REWRITTEN with old p1). Slots 3-8 and
+            // 10-11 keep the placement's raw p3..p8/p10/p11. `Trigger_Create` reads out = slot 1 (u32),
+            // inputs = slots 2..8, mask = slot 9, lock = slot 10, hide = slot 11 [M 0x1b1720:67-88].
+            kind::MOVIE => (q(0), q(1), (2..=8).map(&q).collect(), q(9), q(10) != 0, 0, 0, 0, 0, 0),
             // The mux family (0xEC AND / 0xED SEQ_AND / 0xEE Out / 0xEF OR): the wrapper backs the params up and
             // writes slot[k] = p(k-1) for k = 2..7 ONLY — the loop bound is `while (uVar3 < 8)` [M 0x1b2c68], so
             // slot 8 keeps raw p8 and slots 9-11 are never touched. `Trigger_Create` copies 7 input ushorts from
@@ -233,7 +250,8 @@ impl Trigger {
         let mask = if mask == 0 { 2 } else { mask };
         if matches!(kind, kind::TOUCH | kind::TOUCH_ONCE) && out_ch == 0x7d { return None; }
         let filter_gate = if matches!(kind, kind::TOUCH | kind::TOUCH_ONCE) { list.get(4).copied().unwrap_or(0) as u8 } else { 0 };
-        let mut t = Trigger { placement, kind, out: out_ch as u8, mask, list, lock: lock as u8, hide, glist_0x10: true, filter_gate, tris: Vec::new(), lo: [0.0; 3], hi: [0.0; 3], gone: false, script: None, next_level, gate, key_gate, success, fallback };
+        let mut t = Trigger { placement, kind, out: out_ch as u8, mask, list, lock: lock as u8, hide, glist_0x10: true, filter_gate, tris: Vec::new(), lo: [0.0; 3], hi: [0.0; 3], gone: false, script: None, next_level, gate, key_gate, success, fallback, movie_code: 0, movie_fired: false };
+        if kind == kind::MOVIE { t.movie_code = out_ch; }
         t.set_tris(tris);
         Some(t)
     }
@@ -428,6 +446,27 @@ impl Trigger {
                 if self.success != 0 { ch.set(self.success as u32, 1, frame); }
                 self.gone = true;
             }
+            // `Trigger_Update` case 0xd [M 0x1b1a78 case 0xd, disasm 0x1b1f24-0x1b1f78]: fires only when
+            // the FIRST input slot (ext+0x26) is non-zero AND that channel is on; then it CLEARS the
+            // channel (`sb zero,0(a0)` @0x1b1f48), latches ext+0x20 (the out/movie code) into
+            // `GameState+0x10` and 0 into `GameState+0x14` (0x1b1f60/0x1b1f68 — GameState = 0x2a3768
+            // [L symtab]), and pushes GameFlow states 6 (movie; f12 = 0.0) and 7 (→ `Camera_SetFade(6,
+            // 30.0, 1)` + state 8, `GameFlow_PushState` 0x1c9f38:16-22) — 0x41f00000 = 30.0f @0x1b1f6c.
+            // NOTHING on this path starts a movie or loads a level: state 6's body pops immediately
+            // when `BGFMVPlaying == 0` (`psiMovieFinished` 0x1082e8) and only `ResetMap_Load` phase 2
+            // (0x1d6360:173) ever reads `GameState+0x10` — with phase 0 overwriting it first
+            // (0x1d6360:103). The two state pushes are the view's business; the port carries the
+            // code in `Drones::movie_request` via `movie_fired`. The game has NO spent latch here —
+            // a re-armed input fires again (`gone` stays false). The disc's single record (07000041
+            // #81: params (0, 4, 0) [D]) has input slot 0 → the FIRST guard fails every frame —
+            // inert from this path by design.
+            kind::MOVIE => {
+                let input = self.list.first().copied().unwrap_or(0);
+                if input != 0 && ch.on(input) {
+                    ch.set(input, 0, frame);
+                    self.movie_fired = true;
+                }
+            }
             _ => {}
         }
     }
@@ -441,7 +480,7 @@ pub fn build(level: &Level) -> Vec<Trigger> {
     for (i, p) in map.placements.iter().enumerate() {
         let param = |k: u32| p.params.iter().find(|(j, _)| *j == k).map(|&(_, v)| v).unwrap_or(0);
         let kind = match p.flags { 0xea => kind::TOUCH_ONCE, 0xeb => kind::TOUCH, 0xec => kind::AND, 0xed => kind::SEQ_AND, 0xee => kind::OUT,
-            0xef => kind::OR, 0xe8 => kind::LOAD_LEVEL, 0xdc => param(0) as u8, _ => continue };
+            0xef => kind::OR, 0xe8 => kind::LOAD_LEVEL, 0xf4 => kind::MOVIE, 0xdc => param(0) as u8, _ => continue };
         // Every trigger family — typed 0xEA-0xEF wrappers and the raw 0xDC alike — shares one param
         // layout: the type byte at p0 (the typed wrappers overwrite it), out = p1, inputs = p2..p8,
         // mask = p9, lock = p10, hide = p11 [M Trigger_Create 0x1b1720:61-91; the 0xEA-0xEF wrappers
@@ -473,7 +512,7 @@ mod tests {
     fn plate(kind: u8, out: u8, mask: u32, list: Vec<u32>) -> Trigger {
         // A 2 × 2 horizontal quad at y = 0 around the origin.
         let (a, b, c, d) = ([-1.0, 0.0, -1.0], [1.0, 0.0, -1.0], [1.0, 0.0, 1.0], [-1.0, 0.0, 1.0]);
-        Trigger { placement: 0, kind, out, mask, list, lock: 0, hide: false, glist_0x10: true, filter_gate: 0, tris: vec![[a, b, c], [a, c, d]], lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], gone: false, script: None, next_level: 0, gate: 0, key_gate: 0, success: 0, fallback: 0 }
+        Trigger { placement: 0, kind, out, mask, list, lock: 0, hide: false, glist_0x10: true, filter_gate: 0, tris: vec![[a, b, c], [a, c, d]], lo: [-1.0, 0.0, -1.0], hi: [1.0, 0.0, 1.0], gone: false, script: None, next_level: 0, gate: 0, key_gate: 0, success: 0, fallback: 0, movie_code: 0, movie_fired: false }
     }
 
     #[test]
@@ -497,6 +536,68 @@ mod tests {
         let drone_plate = plate(kind::TOUCH_ONCE, 0x30, 0x10, vec![]);
         assert!(!drone_plate.hit(&ch, &on));
         assert!(drone_plate.hit(&ch, &[Toucher { drone: true, ..on[0] }]));
+    }
+
+    /// The movie trigger (0xF4 → action 0xd), `Trigger_Update` case 0xd [M 0x1b1a78:190-201, disasm
+    /// 0x1b1f24-0x1b1f78]: fires only when the FIRST input slot is non-zero AND its channel is on;
+    /// the fire CLEARS that channel (so it cannot re-fire until something re-arms it) and raises
+    /// `movie_fired` for the walk to carry into `Drones::movie_request` (the game latches ext+0x20
+    /// into GameState+0x10 and pushes states 6/8 — no level load, no spent latch).
+    /// Sister 1: the input slot zero → the first guard (`lhu v0,38(s0); beq v0,zero` @0x1b1f24-28)
+    /// fails even with the channel itself armed — the disc's only 0xF4 record (07000041 #81,
+    /// params (0, 4, 0) [D]) is in this shape, so its update path is inert by design.
+    /// Sister 2: input slot armed but the channel off → the second guard
+    /// (`lbu v1,0(a0); beq v1,zero` @0x1b1f3c-40) fails; the channel is NOT cleared.
+    #[test]
+    fn movie_trigger_fires_on_armed_input_and_the_discs_record_cannot() {
+        let mut ch = Channels::default();
+        // A movie trigger whose input slot is armed (the game's ext+0x26 = the placement's p2).
+        let mut movie = plate(kind::MOVIE, 0, 4, vec![0x2a]);
+        movie.movie_code = 0x0720_004a;
+        let touchers: [Toucher; 0] = [];
+        // Sister 2 first: the channel off → nothing (and the channel is not cleared).
+        movie.update(&mut ch, &touchers, 2);
+        assert!(!movie.movie_fired, "channel off → no fire");
+        // Fire: the channel on → cleared + the movie code carried.
+        ch.set(0x2a, 1, 1);
+        movie.update(&mut ch, &touchers, 3);
+        assert!(movie.movie_fired, "input slot non-zero + channel on → case 0xd fires [M 0x1b1f24-0x1b1f48]");
+        assert!(!ch.on(0x2a), "the fire clears the input channel [M 0x1b1f48 `sb zero,0(a0)`]");
+        assert_eq!(movie.movie_code, 0x0720_004a, "the out slot's full u32 rides (ext+0x20 → GameState+0x10 [M 0x1b1f68])");
+        assert!(!movie.gone, "case 0xd has no spent latch — the trigger stays [M: no ext+0x38=99 write in the arm]");
+        // The port's re-arm rule: the walk drains `movie_fired`; a re-armed channel fires again.
+        movie.movie_fired = false;
+        ch.set(0x2a, 1, 4);
+        movie.update(&mut ch, &touchers, 5);
+        assert!(movie.movie_fired, "re-armed → fires again (no latch in the game's arm)");
+        // Sister 1: the disc's record shape — input slot 0 (p2 = 0 [D]) — never fires, even with
+        // channel 0 armed (channel 0 is a real channel, but the SLOT guard fails first).
+        let mut discs = plate(kind::MOVIE, 0, 4, vec![0]);
+        discs.movie_code = 0;
+        ch.set(0, 1, 6);
+        discs.update(&mut ch, &touchers, 7);
+        assert!(!discs.movie_fired, "input slot 0 → the first guard fails [M 0x1b1f24-0x1b1f28] — the 07000041 record's update path is inert");
+        assert!(ch.on(0), "channel 0 untouched (the clear only runs on a fire)");
+    }
+
+    /// The E-key path: `Trigger_Activate` 0x1b2318's type-0xd arm [M :53-61] — the `mask & 4` gate
+    /// (the port models as: activate_request's `_` arm writes nothing, and the walk checks the kind
+    /// + mask itself, 0x1b2318 has NO cancel-channel, key-gate or channel-write arm for 0xd and NO
+    /// spent latch). Sister: a mask without bit 4 → nothing.
+    #[test]
+    fn movie_trigger_activate_gates_on_mask_bit4() {
+        let ch = Channels::default();
+        let mut movie = plate(kind::MOVIE, 0, 4, vec![0]);
+        movie.movie_code = 0;
+        // The port's contract: the `_` arm of activate_request returns no writes and no level for
+        // action 0xd — the movie request is raised by the walk's kind check (mask & 4 [M 0x1b2318:55]).
+        let (sets, next) = movie.activate_request(&ch);
+        assert!(sets.is_empty() && next.is_none(), "action 0xd writes no channel and loads no level [M 0x1b2318:53-61]");
+        assert_eq!(movie.movie_code, 0, "the disc's record carries movie code 0 [D placement params]");
+        // The walk's gate shape, pinned directly: mask & 4 decides.
+        assert!(movie.mask & 4 != 0, "the disc's mask (p1 = 4 [D]) passes the gate");
+        let blocked = Trigger { mask: 8, ..movie.clone() };
+        assert!(blocked.mask & 4 == 0, "sister: mask 8 fails the `mask & 4` gate [M 0x1b2318:55-57]");
     }
 
     /// `LOAD_LEVEL` (0xE8): `Trigger_Update` case 10 fires when `switch_channels[gate]` is non-zero — no touch check.

@@ -101,6 +101,21 @@ pub enum Request {
     /// time)` — a HUD message from the text bank shown for `time` frames [M 0x1db2b8:9-12]. The raw
     /// label travels (the Lang table lives above nf-game); nf-view binds it like the pickup messages.
     Text { label: u32, time: u16 },
+    /// Event 8: `Drone_CoderCreate(prev_obj+0xC0, prev_obj+0x50, p0, p1, p2, p3, 4)` [M
+    /// `Script_EventHandler` 0x1d94c0 case 8, disasm 0x1d96d4-0x1d96f4] — the coder/gadget drone
+    /// spawn at the PREVIOUS stream object's position/rotation (the same record(i−1) gate as events
+    /// 6/0xB/0xF [M 0x1d94c0:75-96]); a NULL object skips the call entirely (`beq s5,zero`
+    /// @0x1d96d4). The 7th argument is hard-coded 4 (`addiu t2,zero,4` @0x1d96ec) = the drone's
+    /// start state IDLE (`DCVars+0x5A2`, 0x13a1a0). Event params: p0 = the skin hash, p1 = the
+    /// start script, p2 = DEAD (CoderCreate never reads its 5th argument — no t0 use in
+    /// 0x13a108-0x1cc [M]), p3 = the setup/weapon selector. Drained by `Drones::drain_script_requests`.
+    CoderCreate { obj: Option<usize>, skin: u32, script: u32, setup: u32 },
+    /// Event 0xa: `Break_DoBreak(prev_obj+0xC0)` [M `Script_EventHandler` case 0xa, disasm
+    /// 0x1d96bc-0x1d96c8] — the script-driven breakable break at the PREVIOUS stream object's
+    /// position (the event itself passes none — the disc's single firing is `Event(0x0a, [])` [D
+    /// script-census]); a NULL object skips the call (`beq s5,zero` @0x1d96bc). Drained by
+    /// `Drones::drain_script_requests`.
+    DoBreak { at: Option<usize> },
 }
 
 #[derive(Clone, Debug, Default)]
@@ -853,6 +868,19 @@ impl Script {
             // `Player_ChangeSubState(player, 0)` [M 0x195fc8:7-16]. Drained by the view's
             // player_events loop (the orbit needs the viewer's Bond).
             9 => out.push(Request::Cam2Mode { mode: g(0) }),
+            // Event 8 (`Drone_CoderCreate` 0x13a108): the coder-drone spawn — see `Request::CoderCreate`.
+            // The previous-stream object is the position source; `kind` must be 1/2 else the game's
+            // object pointer stays NULL and the whole call is skipped [M 0x1d94c0:75-96 + 0x1d96d4].
+            8 => {
+                let prev = i.checked_sub(1).map(|j| &self.streams[j]).filter(|s| matches!(s.kind, 1 | 2)).and_then(|s| s.obj);
+                out.push(Request::CoderCreate { obj: prev, skin: g(0), script: g(1), setup: g(3) });
+            }
+            // Event 0xa (`Break_DoBreak` 0x12c168): the script-driven break at the previous stream
+            // object's position — see `Request::DoBreak`. Same NULL skip [M 0x1d96bc].
+            0xa => {
+                let prev = i.checked_sub(1).map(|j| &self.streams[j]).filter(|s| matches!(s.kind, 1 | 2)).and_then(|s| s.obj);
+                out.push(Request::DoBreak { at: prev });
+            }
             _ => out.push(Request::Event { kind, params: p }),
         }
     }
