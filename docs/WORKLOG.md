@@ -17885,3 +17885,10 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+- 2026-10-17 s/level-02-interactables (task 702a): level work — 07000002 The Exchange (Castle B).
+  Census of every interactive placement (buttons, lifts+call buttons, doors, SimpleScripts, triggers,
+  pickups, safes, keypads, monitors, lasers, glass, searchlights, cameras, turrets, fuseboxes, vents,
+  hatches, ladders, grapple points, vehicles) from the disc parse into docs/levels/07000002.md; drive
+  one of each kind through the real input path (Sim::step_bond + use key/gadget/shot), fix what fails;
+  every placement's model resolves (no missing hash, no white fallback). Known open items: pond hut,
+  deep-water ladders, the bath hatch, the grates. Started from origin/master d628f01f.
