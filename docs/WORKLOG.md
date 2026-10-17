@@ -17921,3 +17921,24 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   (13ca8758): drone.rs conflicts resolved keep master's door-guard fn + the smoke fn both, and the
   blast damage arm takes the smoke side (the msg-9 routing with its tip's GLOBAL-fallback damage
   arm) — reproduce before any fix.
+- 2026-10-17 s/guard-blast-smoke2 (task 761): finish guard-blast-smoke (HELD at the 2026-10-16
+  merge) — both held tests green on the tree merged with origin/master d628f01f. The ground truth
+  the merge turned on: a state reacts to a frag ONLY through its own DSTATE's case 9 —
+  Drone_ExplosiveHit 0x13aab8 applies no damage outside SendMsgSelf(9), RouteMsgDCV's unhandled
+  fallback re-calls ProcessStateMachine with the state arg 0 [M-dis 0x171ec8-0x171ef0], and
+  DSTATE_Global 0x15b830 handles only msgs 0/1/10/0x1d. The as-loaded yard trio on 07000005 sits
+  in WaitSwitch 0x15b960 (msgs 0/1/3/0xe — no case 9) with switch_channels[0] = 0 [L the EE
+  snapshot 0x26fc90], so the game's frag kills nobody there: frag_at_the_same_spot_kills_the_trio
+  now primes the trio into Idle (case 9 → HandleImpact(0x56,0) [M 0x15bf18]) and accepts the death
+  selector's own 0x45 [M 0x1465e4-0x14697c], and the new sister
+  frag_at_the_waitswitch_trio_takes_nothing pins the drop. The protected guest's kill rode msg 9
+  fine but its OnInitDeath verdict drained a tick late (spawn_blast runs after the victim's
+  in-loop drain): SetMissionFailReason 0x13e560 writes switch_channels[0x60] = 1 inside the ENTER,
+  the same instant as the corpse — the drain pass now runs after spawn_blast at the tick's tail,
+  and killing_a_protected_guest_fails_the_mission_but_scaring_him_does_not is green with the
+  fail_label + ch 0x60 intact. Keep-green set run: blast_smoke_live 36 (its cover::build/Data
+  signature updated to master's), astronaut_guards_live 4, ai_live 4, guard_drops_flashbang_live
+  5, fix_actors_live 4. Full suite on the final tree (the fast runner in 7 foreground chunks —
+  background jobs die between tool calls in this sandbox): 2073 passed, 6 failed, 74 ignored;
+  the 6 = the 3 allowed disc_golden (slim ISO) + the 3 known no-GPU pylon probes, all pre-existing
+  on master. Report: docs/reports/guard-blast-smoke2.md.
