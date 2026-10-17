@@ -164,11 +164,21 @@ fn bullets_shatter_the_glass_and_vases_and_the_sister_stays_whole() {
     } else {
         assert!(dead >= 1 && kills >= 1, "the kill records queue for the presentation [M 0x12b970]");
     }
-    // Sister: a fresh load, no shots — every breakable whole.
+    // Sister: a fresh load, no shots — the scenery the guards cannot touch stays whole. The
+    // game's own intro smashes the entry-hall glass: the woken squad's class-2 contact [M
+    // Break_Update 0x12bfd8:23-34] is the user-reported breach scene (docs/systems/glass-breach.md),
+    // and the re-land's contact rule reproduces it. So the pin is the kind gate [M :25 — the
+    // class-2 drain hits kind 2 only]: nothing but glass may die without a bullet, and every
+    // kind-0 vase stays whole (the old "every breakable whole" pin predated the working breach
+    // and contradicted the game's scene).
     let mut w2 = Walker::new(nf_view::load(&iso, "07000001.bin", false).expect("reload"));
     past_intro(&mut w2);
     let s2 = w2.scene.sim.as_ref().unwrap();
-    assert!(s2.drones.breaks.list.iter().all(|b| !b.dead), "unshot scenery stays whole (the sister)");
+    let dead: Vec<_> = s2.drones.breaks.list.iter().filter(|b| b.dead).collect();
+    assert!(dead.iter().all(|b| b.kind == 2),
+        "without a shot only glass dies — the class-2 contact is kind-2-gated [M 0x12bfd8:25], got {:?}",
+        dead.iter().map(|b| (b.placement, b.kind)).collect::<Vec<_>>());
+    eprintln!("[sister] guards' breach killed (kind-2 only): {:?}", dead.iter().map(|b| b.placement).collect::<Vec<_>>());
 }
 
 #[test]
