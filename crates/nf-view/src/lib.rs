@@ -1499,7 +1499,7 @@ fn front_end_menu(args: &[String], scene: &scene::Scene, front_end: bool, iso_pa
         fe.open_pause();
     }
     if fe.page == menu::Page::Pause {
-        if let Some(sim) = scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); }
+        if let Some(sim) = scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); fe.stats = pause_stats(sim); }
         // objective-hints: pre-open the ✕ hint box for the render (the row the cursor stands on) —
         // the same state `FrontEnd::action`'s Confirm sets on the OBJECTIVES tab [M 0x204408
         // 0x205b98-0x205c34: control 1's activation reads control 8's row and opens the ok-only
@@ -3705,7 +3705,7 @@ impl ApplicationHandler for App {
                             }
                         }
                         if fe.page == menu::Page::Pause {
-                            if let Some(sim) = self.scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); }
+                            if let Some(sim) = self.scene.sim.as_ref() { fe.pause_objectives = pause_objective_rows(sim); fe.stats = pause_stats(sim); }
                         }
                         let mut f = match &self.scene.hud {
                             Some(tables) => menu::menu_overlay(fe, &tables.font, &tables.font_header, lang, &self.scene.hud_textures, aspect),
@@ -4224,6 +4224,21 @@ fn pause_objective_rows(sim: &scene::Sim) -> Vec<menu::PauseObjective> {
     (0..m.num_vis_objectives()).filter_map(|i| m.objective_state(i))
         .map(|o| menu::PauseObjective { text: o.text, hint: o.hint, done: o.state == 4 })
         .collect()
+}
+
+/// bonus-007: the pause SCORE tab's live counters, straight off the progress layer — the game's
+/// handler fills its list box from `PlrMissionStats` [M C_GCPAUSE_Handler 0x204408:447-498; the
+/// record layout is docs/fields/player-stats.md]. Shots/accuracy/time keep their existing fill.
+fn pause_stats(sim: &scene::Sim) -> menu::Stats {
+    let s = sim.drones.progress.stats();
+    menu::Stats {
+        bond_moves: s.bond_moments,
+        dispatched: s.dispatched,
+        subdued: s.disabled,
+        surrendered: s.surrendered,
+        bonus_pickups: s.bonus_pickups,
+        ..menu::Stats::default()
+    }
 }
 
 /// The mission-flow movie glue (the GameFlow state-6 briefing/outro and its decode-ahead), one call

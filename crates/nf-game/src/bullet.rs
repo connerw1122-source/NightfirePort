@@ -159,7 +159,13 @@ pub flash_alpha: f32,
 /// melee hit (weapon 0x65 → −0.1, 0x66/99 → +0.1, gated on the record's u16 `+0x10 & 1`),
 /// `Player_Update` decays it ×0.9/tick [M disasm 0x1937a4-0x1937d8] and adds it to the move vec's
 /// Y before `obj+0x50 += move` [M disasm 0x193ccc-0x193cf0]. fix-bond-damage.
-pub hit_push: f32 }
+pub hit_push: f32,
+/// `BL+0x948`: the 007-bonus flash timer. `PlrStat_DoneBondMoment` 0x199448:25 writes 200 on the
+/// award (only on the award — `BondMoments[id−0x65] == 0` branch); `HUD_UpdateHealthPane`
+/// 0x19b9c8:232-260 counts it down by FRAME_RATE_MUL (2 at the port's 60 Hz) per pane update and
+/// animates the health pane's 007 icon only while it is ≥ 101 (below 100 the sprite's alpha is 0 —
+/// the sin-bounce runs 200→101, ~0.83 s). Data the draw code reads; nothing draws here. bonus-007.
+pub bond_moment_flash: u16 }
 
 impl Default for PlayerHealth {
     fn default() -> Self {
@@ -172,6 +178,7 @@ impl Default for PlayerHealth {
             hit_push: 0.0,
             flash_total: 0.0,
             flash_alpha: 0.0,
+            bond_moment_flash: 0,
         }
     }
 }
@@ -279,7 +286,7 @@ mod tests {
     #[test]
     fn armour_bypass_by_pain_type() {
         // 07000005 at difficulty 1: damage_factor 0.6, so 30.0 -> 18.0 effective.
-        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, hit_push: 0.0, flash_total: 0.0, flash_alpha: 0.0 };
+        let mut h = PlayerHealth { health: 100.0, armour: 50.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, hit_push: 0.0, flash_total: 0.0, flash_alpha: 0.0, bond_moment_flash: 0 };
         let mut rng = crate::drone::Rng::new(0);
         h.pain_generic(&mut rng, 30.0, 1, 0x0700_0005, 6); // fall damage
         assert_eq!(h.armour, 50.0, "a fall must not drain armour [M 0x1902c8:84-104]");

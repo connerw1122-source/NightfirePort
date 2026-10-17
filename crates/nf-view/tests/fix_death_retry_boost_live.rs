@@ -61,7 +61,7 @@ fn boost_is_a_max_picked_by_the_difficulty_global() {
     assert_eq!(nf_game::player::continue_health_boost(0), 50.0, "0 → the else arm too (the boot snapshot's in-play value)");
     assert_eq!(nf_game::player::CONTINUE_HEALTH_BOOST, [50.0, 50.0, 50.0], "[L ee_start_05.bin 0x30cc34..3c]");
     // A low buffer rises to the floor...
-    let hp = nf_game::bullet::PlayerHealth { health: 10.0, armour: 25.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, flash_total: 0.0, flash_alpha: 0.0, hit_push: 0.0 };
+    let hp = nf_game::bullet::PlayerHealth { health: 10.0, armour: 25.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, flash_total: 0.0, flash_alpha: 0.0, hit_push: 0.0, bond_moment_flash: 0 };
     let inv = nf_game::pickup::Inventory::empty(0x72, 0x30);
     let ch = nf_game::triggers::Channels { v: vec![0u8; 256], time: vec![0u32; 256] };
     let mut low = RamSave::capture(&hp, 2, &inv, &ch);
@@ -87,7 +87,7 @@ fn boost_is_a_max_picked_by_the_difficulty_global() {
 /// [M :158-305]). A 10.0 buffer comes back at 10.0, armour as saved.
 #[test]
 fn without_the_boost_the_buffer_restores_raw() {
-    let hp = nf_game::bullet::PlayerHealth { health: 10.0, armour: 25.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, flash_total: 0.0, flash_alpha: 0.0, hit_push: 0.0 };
+    let hp = nf_game::bullet::PlayerHealth { health: 10.0, armour: 25.0, flash: 0.0, dir_bits: 0, flashbang: 0.0, flash_total: 0.0, flash_alpha: 0.0, hit_push: 0.0, bond_moment_flash: 0 };
     let inv = nf_game::pickup::Inventory::empty(0x72, 0x30);
     let ch = nf_game::triggers::Channels { v: vec![0u8; 256], time: vec![0u32; 256] };
     let save = RamSave::capture(&hp, 2, &inv, &ch);

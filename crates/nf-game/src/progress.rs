@@ -479,7 +479,10 @@ impl Progress {
     }
 
     fn stats_mut(&mut self) -> &mut PlrMissionStats { &mut self.stats[0] }
-    fn stats(&self) -> &PlrMissionStats { &self.stats[0] }
+    /// The slot-0 record — the SP player's tally (the Log functions' slot; the results screen and
+    /// the Mission Stats page read this through the port's rows). bonus-007 makes it public: the
+    /// Bond-moves count (`+0x20`) and the rest of the rows are state the view's draw code reads.
+    pub fn stats(&self) -> &PlrMissionStats { &self.stats[0] }
 
     /// The Log wrappers (slot 0; the gate lives in `PlrMissionStats`).
     pub fn log_shot_fired(&mut self, ms: u32) { self.stats_mut().log_shot_fired(ms); }

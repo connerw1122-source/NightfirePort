@@ -10969,6 +10969,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }
         }
         self.health.flash = (self.health.flash - 1.0).max(0.0);
+        // bonus-007: the 007-bonus flash timer `BL+0x948` — `HUD_UpdateHealthPane` 0x19b9c8:258-260
+        // subtracts FRAME_RATE_MUL (2 at the port's 60 Hz) from it every pane update (the same
+        // per-tick place the port already decays the pane's `flash`).
+        self.health.bond_moment_flash = self.health.bond_moment_flash.saturating_sub(2);
         // fix-grenade-types: the flashbang whiteout counts down ONE tick per tick (the game decrements
         // BL+0x91C per tick and fades at the half point — `Player_Update` 0x193600:328-336; the amount
         // was set to FRAME_RATE·f·10 = 600·f ticks [M 0x196040 + 0x12e0b8]). The old self-fraction
@@ -11008,8 +11012,19 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // LogSeenOpponent latch outboxes, folded here like the other Log counters.
             for _ in 0..detected { self.progress.log_detected(ms); }
             // `Trigger_Calc` 0x1b1900:12-17: channels 0x65..0x6E on → `PlrStat_DoneBondMoment(0, ch)`
-            // (the BondMoments gate makes repeats inert).
-            for id in 0x65u32..=0x6E { if self.channels.on(id) { self.progress.done_bond_moment(ms, id); } }
+            // (the BondMoments gate makes repeats inert). On the award itself the game ALSO writes
+            // `glb_blokes[0]+0x948 = 200` — the HUD's 007-icon flash timer [M 0x199448:23-25; the
+            // write sits inside the same `BondMoments[id−0x65] == 0` branch, so a re-risen channel
+            // never re-flashes]. bonus-007.
+            for id in 0x65u32..=0x6E {
+                if !self.channels.on(id) { continue; }
+                let idx = (id - 0x65) as usize;
+                let had = self.progress.bond_moments[idx];
+                self.progress.done_bond_moment(ms, id);
+                if had == 0 && self.progress.bond_moments[idx] != 0 {
+                    self.health.bond_moment_flash = 200;
+                }
+            }
             // `PlrStat_LogHealth` 0x199620 ← `Player_SetHealth` 0x1960b8:14: the snapshot GetScore's
             // row 6 reads; the port writes it once per tick (the game's last write wins too).
             self.progress.log_health(ms, self.health.health);

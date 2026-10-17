@@ -1432,7 +1432,15 @@ pub enum Outcome { Complete, Failed }
 /// Mission-end stats for the results screen [S — P_NFRESULTS 0x208e78 renders the stats; the fields
 /// the port tracks are the player state's own counters].
 #[derive(Clone, Debug, Default)]
-pub struct Stats { pub shots_fired: u32, pub shots_hit: u32, pub accuracy_pct: u32, pub time_s: u32 }
+pub struct Stats { pub shots_fired: u32, pub shots_hit: u32, pub accuracy_pct: u32, pub time_s: u32,
+    /// bonus-007: the pause SCORE tab's live counters, synced by the host from the running Sim's
+    /// progress layer — `PlrMissionStats` +0x20 (Bond moves), +0x0C (dispatched), +0x10 (subdued),
+    /// +0x14 (surrendered), +0x24 (the 007 bonus pickups) [M docs/fields/player-stats.md].
+    pub bond_moves: u32,
+    pub dispatched: u32,
+    pub subdued: u32,
+    pub surrendered: u32,
+    pub bonus_pickups: u32 }
 
 /// The results page's fields, built on page enter from the live progress layer — P_NFRESULTS
 /// 0x208e78 case 0x4c: `PlrStat_GetScore(0)` (the commit), the medal compare of the last score
@@ -7271,15 +7279,17 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
             };
             put(h, 0, &lbl(0x1000_0204, "Category"), &lbl(0x1000_01e1, "Current"), &lbl(0x1000_01e2, "Target"), cream);
             let rows: [(u32, bool, String, String); 9] = [
-                (0x165, false, "0".into(), t[0].to_string()),                    // Bond Moves
-                (0x15a, false, String::new(), String::new()),                    // Opponents (no values)
-                (0x15b, true, "0".into(), t[1].to_string()),                     // Dispatched
-                (0x15c, true, "0".into(), t[2].to_string()),                     // Subdued
-                (0x16e, true, "0".into(), t[3].to_string()),                     // Surrendered
+                // bonus-007: the counters read the LIVE progress layer (host-synced into fe.stats) —
+                // the port's old hardcoded "0"s hid every award the sim made.
+                (0x165, false, st.bond_moves.to_string(), t[0].to_string()),      // Bond Moves
+                (0x15a, false, String::new(), String::new()),                     // Opponents (no values)
+                (0x15b, true, st.dispatched.to_string(), t[1].to_string()),       // Dispatched
+                (0x15c, true, st.subdued.to_string(), t[2].to_string()),          // Subdued
+                (0x16e, true, st.surrendered.to_string(), t[3].to_string()),      // Surrendered
                 (0x15e, false, st.accuracy_pct.to_string(), t[5].to_string()),   // Accuracy Rating
                 (0x15f, false, "100".into(), "100".into()),                      // Health Remaining [M the literal 100]
                 (0x160, false, time_s(st.time_s), time_s(t[7])),                 // Time
-                (0x161, false, "0".into(), t[8].to_string()),                    // 007 Bonus
+                (0x161, false, st.bonus_pickups.to_string(), t[8].to_string()),   // 007 Bonus
             ];
             for (k, (id, indent, cur, tgt)) in rows.iter().enumerate() {
                 let name = if *indent { format!("  {}", lbl(*id, "")) } else { lbl(*id, "") };
