@@ -6444,6 +6444,8 @@ impl Drones {
                 deleted: false,
                 live_matrix: m,
                 subs: Vec::new(),
+                // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
+                hidden: false,
             });
         }
         if let Some(p) = ps.iter().find(|p| p.flags & 0xff == 0xdf) {

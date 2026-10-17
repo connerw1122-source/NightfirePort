@@ -16724,3 +16724,13 @@ suite.
   (+0x36 = 0, only SP_HideObj — copter-only — ever sets it, and SP_Update ticks Script_Update
   while +0x36 == 0), but the port's nis::Player::prime skips mask==0, so the gondola never
   loads: probe test shows info[0] = None. Fix: prime mask-0 SPs like the game.
+- mp-map-objects fix 1 (gondolas): nis::Player::prime no longer skips mask-0 SPs — the game
+  primes every placed SP with mode A >= 2 at create regardless of mask [M SP_CreateScriptPlayer
+  0x1db9a8:72-76 (mask 0 -> state 6) + SP_LoadScript 0x1dbc08; SP_Update 0x1dbda8:57-59 stops
+  only on the +0x36 disabled byte, whose sole writer SP_HideObj 0x1dcbf0 only the copter calls].
+  New Player.hidden field (+0x36, defaults false, gates the whole update) models the byte; the
+  one level-load-hidden SP (07000005's 0x16ddb40 pair, +0x36 = 1 [L], setter unknown) is a live
+  check — it is NOT a placed 0xD9 (07000005's main map has no mask-0 mode>=2 placement), so the
+  change cannot unhide it. Probe: Skyrail gondola now loads (play 0x9) and the two carriages
+  (0x0200037a + sub 0x0200038a) ride the loop phase-shifted [D placement 4]. nf-game suite:
+  470 passed / 0 failed.
