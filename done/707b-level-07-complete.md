@@ -47,3 +47,7 @@ claimed-by: sandbox3 at 2026-10-17T13:30Z
 ## Report (done, 2026-10-17T14:31Z)
 
 Closed by the driver: the report is on `s/level-07-complete` (docs/reports/level-07-complete.md); the worker didn't run finish.sh.
+
+---
+## Report from the worker (done, 2026-10-17T15:04Z)
+
