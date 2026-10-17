@@ -3618,6 +3618,10 @@ impl ApplicationHandler for App {
                         }
                         _ => g.renderer.upload_skin(&g.queue, pal, cols),
                     }
+                    // fix-gpu-facial-morphs: the facial morph weights ride the same tick — the
+                    // shader blends them into the bind-pose vertices before the palette (the
+                    // shot path's `update_skin` does the same upload).
+                    g.renderer.upload_morph_weights(&g.queue, &self.scene);
                 }
                 let frame = match g.surface.get_current_texture() {
                     wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,

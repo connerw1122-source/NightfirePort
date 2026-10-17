@@ -41,6 +41,8 @@ fn full_layout(scene: &Scene) -> nf_view::scene::SkinLayout {
         col_pick: attaches as u32,
         col_sl: (attaches + picks) as u32,
         col_one,
+        wt_stride: 0,
+        n_tgt: 0,
     }
 }
 
