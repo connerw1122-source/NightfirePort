@@ -18376,3 +18376,17 @@ Work Log:
   real-input live test per KIND (nf_view::load + Sim::step_bond), each with a sister that fails
   without the operation. (3) every placement's mesh/skin resolves (no white fallback,
   NF_TEX_TRACE=1). Branch from origin/master 0603094e.
+- level-09-interactables progress: the all-map census probe (census_07000009.rs --ignored;
+  40 maps, main m39 = 288 placements / 23 kinds) and the doc rewrite — 0x20 is breakable GLASS
+  (17 Break_Create placements, kind 2, bullets + sound 0x2E [M 0x12b970]), the six 0xdb doors,
+  NO 0x30 Monitor anywhere on the disc, 0x71 = rotor_init (not a spawner), the four
+  SoundTriggers, the pickups (armour kind 3 + two BOND_BONUS kind 6). The real find: the
+  guards' WAIT_SWITCH channel is drone param 3 = 0x51 = the arrival plate #248's out
+  [M 0x15b830/0x15b960 case 3] and the port never re-sampled it for frozen drones — two guards
+  froze forever, unkillable (15 rounds, zero damage through Drone_CollisionHandler 0x140968:62's
+  enabled gate); fixed by sampling the channel for waiting frozen drones in tick_inner. 12 live
+  kind tests green (alarm switch E → ch 0x7C → 0x61 → fail; glass shot; door E + the locked
+  shutter; armour walk-over; liftside touch plate ch 0xAB; guard stands) + sisters. Left: two
+  lobby guards re-freeze after the frame-1 wake (gdbwatch ask), the E-route pick runs from the
+  camera not the player head [M 0x1a5170:101-106] (ignored test + live check), the
+  NF_TEX_TRACE sweep test. docs/reports/level-09-interactables.md.
