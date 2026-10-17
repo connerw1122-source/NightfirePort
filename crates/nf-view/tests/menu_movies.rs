@@ -212,7 +212,9 @@ fn the_start_intro_plays_then_the_main_menu_and_skips_past_the_grace() {
     assert!(fe.action(Action::Confirm), "START");
     assert!(fe.intro_playing, "the intro run is up");
     assert_eq!(fe.page, Page::ParisEnum, "START opens P_PARISENUM 0x4000004a [S unverified: menu-def script]");
-    fe.tick(); // P_PARISENUM's 0x50 → P_ESTHERO [M 0x20a648:43]
+    // G-048(4): P_PARISENUM's 0x50s wait on the card machine before the 0x44 fires
+    // [M 0x20a648:36-47; the old single-tick transition was the [S] guess].
+    for _ in 0..32 { fe.tick(); if fe.page == Page::EstHero { break; } }
     fe.tick(); // P_ESTHERO's 1st 0x50 counts [M 0x20a060:27]
     fe.tick(); // the 2nd starts the movie [M 0x20a060:16-24]
     assert!(fe.intro_movie);
@@ -234,11 +236,13 @@ fn the_start_intro_plays_then_the_main_menu_and_skips_past_the_grace() {
     fe.tick();
     assert!(!fe.intro_playing);
     assert_eq!(fe.page, Page::Main);
-    // Sister: without a skip the run ends by itself at the budget.
+    // Sister: without a skip the run ends by itself at the budget (the card walk's ticks ride
+    // the same budget loop — G-048(4)).
     let mut fe = FrontEnd::new();
     for _ in 0..8 { fe.tick(); }
     fe.action(Action::Confirm);
-    for _ in 0..3 + nf_view::menu::ESTHERO_TICKS - 1 { fe.tick(); }
+    for _ in 0..32 { fe.tick(); if fe.page == Page::EstHero { break; } }
+    for _ in 0..2 + nf_view::menu::ESTHERO_TICKS - 1 { fe.tick(); }
     assert_eq!(fe.page, Page::EstHero, "one tick before the budget runs out");
     fe.tick();
     assert!(!fe.intro_playing, "the run ends when the movie ends [M 0x20a060:28-45]");
