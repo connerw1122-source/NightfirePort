@@ -359,16 +359,21 @@ fn a_bullet_shatters_the_glass_breakable() {
     };
     drop(sim);
     // Stand square in front of the pane (it faces +z): the muzzle's right-hand offset must stay
-    // inside the pane's 0.75u width, so the stand point is the perpendicular one.
-    let front = [centre[0], centre[1], centre[2] + 1.4];
-    {
+    // inside the pane's 0.75u width, so the stand point is the perpendicular one — sampled along
+    // the ray with the eye→centre segment kept clear (a bush would stop the round).
+    for dist in [1.3f32, 1.8, 2.4, 3.0] {
+        let front = [centre[0], centre[1], centre[2] + dist];
         let sim = w.scene.sim.as_ref().unwrap();
-        let floor = sim.world.floor_below([front[0], centre[1] + 1.5, front[2]], 4.0)
-            .unwrap_or(centre[1] - 1.1);
+        let Some(floor) = sim.world.floor_below([front[0], centre[1] + 1.5, front[2]], 4.0) else { continue };
+        let stand = [front[0], floor + 1.1, front[2]];
+        let eye = [stand[0], stand[1] + 1.5, stand[2]];
+        if sim.world.segment_hit(eye, centre).is_some() { continue; }
         drop(sim);
         let sim = w.scene.sim.as_mut().unwrap();
-        sim.bond = nf_game::player::Bond::stand_at(&sim.world, [front[0], floor + 1.1, front[2]],
-            (centre[0] - front[0]).atan2(centre[2] - front[2]));
+        sim.bond = nf_game::player::Bond::stand_at(&sim.world, stand,
+            (centre[0] - stand[0]).atan2(centre[2] - stand[2]));
+        eprintln!("[pane] stand at {stand:?} (clear, {dist} u)");
+        break;
     }
     face_and_fire(&mut w, centre, "the library pane");
     assert!(w.scene.sim.as_ref().unwrap().drones.breakables.broken_at(bi),
