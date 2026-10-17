@@ -17719,3 +17719,13 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+
+## menu-def-runtime (2026-10-17, branch s/menu-def-runtime) — started 05:2x UTC
+
+Task: drive the front end from the game's own menu-def data. Port the parser for the whole
+kind-8 menu-def entry (pages, controls, components, sprites, keyframes, messages) and the
+uncited `Script_*` keyframe runtime (KFRAME/KMSG animation of controls, fades, slides) as a
+pure data/sim layer: given a page id and a tick, produce each control's draw list (position,
+size, colour/alpha, texture, text). Comparison test: runtime tick-0 and settled draw lists vs
+the transcribed constants in `crates/nf-view/src/menu.rs`; report every disagreeing page.
+Drawing code untouched — the main agent wires the runtime into the renderer. In progress.
