@@ -566,6 +566,9 @@ pub struct Drone {
     /// `Drone+0xCC8`: timer C's payload word, sent as the msg-0xC argument (`PreDroneControl`
     /// 0x148db0:106-108) — `PressAlarm` arms 0 then 1 [M 0x168ea8:31, 62]. The shared scratch word's
     /// other readers (Death_Anim/Disabled/UnderCoverIdle/CombatNoRoute) never overlap this state.
+    /// door-guard-pairing uses the same word as the CivilianDoorGuard 0x31 idle cycle's selector
+    /// (the game's TIMER_C msg rides `msg+0x18 = +0xCC8` [M PreDroneControl 0x148db0:106-109];
+    /// batch-1016b merged the two branches' declarations of this one field).
     pub timer_c_payload: u32,
     /// `Drone+0x45` = the placement's param-23 word low byte (`DefaultInit` 0x14b300:266) — the
     /// `DonePressAlarm` return-to-patrol gate (< 2) [M 0x1737d0:40]. 0 on every 07000009/0a guard
@@ -821,9 +824,6 @@ pub struct Drone {
     /// The ENTER ran `SetDronePartner` and the pairing pass has not serviced it yet (the pass runs
     /// at the tick boundary; the game pairs inside the ENTER [S one-tick deviation]).
     pub door_pair_requested: bool,
-    /// `Drone+0xCC8`: timer C's payload (the 0x31 idle cycle's selector; the game's TIMER_C msg
-    /// rides `msg+0x18 = +0xCC8` [M PreDroneControl 0x148db0:106-109]).
-    pub timer_c_payload: u32,
     /// fix-grenade-types: the LIVE player position, mirrored each tick (`Drones::tick`'s shared pass)
     /// — the stun loop's kept-down test is the game's live `DroneFunc_AnyoneNear` positional query
     /// [M 0x14a718 via 0x1631c0 case 0xc], not the cached opp `dist` (a stunned guard's perception
@@ -1216,7 +1216,7 @@ impl Drone {
             mission_path_dist: 0.0,
             stun_until: 0, player_pos: [0.0; 3],
             down: false,
-            door_partner: None, door_side: 0, door_planes: [[0.0; 4]; 3], door_zone: 0, door_idle_anim: 0x24, door_zone_step: 0, door_pair_requested: false, timer_c_payload: 0,
+            door_partner: None, door_side: 0, door_planes: [[0.0; 4]; 3], door_zone: 0, door_idle_anim: 0x24, door_zone_step: 0, door_pair_requested: false,
             tase_accum: 0,
             tase_recover: 0,
             tase_fall_anim: 0,
@@ -10774,7 +10774,7 @@ mod tests {
             mission_path_dist: 0.0,
             stun_until: 0, player_pos: [0.0; 3],
             down: false,
-            door_partner: None, door_side: 0, door_planes: [[0.0; 4]; 3], door_zone: 0, door_idle_anim: 0x24, door_zone_step: 0, door_pair_requested: false, timer_c_payload: 0,
+            door_partner: None, door_side: 0, door_planes: [[0.0; 4]; 3], door_zone: 0, door_idle_anim: 0x24, door_zone_step: 0, door_pair_requested: false,
             tase_accum: 0,
             tase_recover: 0,
             tase_fall_anim: 0,
