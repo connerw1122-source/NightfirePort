@@ -18419,3 +18419,16 @@ directly. Report: docs/reports/level-07-interactables.md.
   the_party_vase_breaks_on_a_p2k_round (vase, statue #109, window #298 break on
   the real path), sister: shot still refused while the lock channel holds.
   In progress.
+- 2026-10-17 s/p2k-fire-07 (task 707c): DONE. The P2K fire gate on 07000007 found: NOT a
+  weapon-lock fire lockout — Player_Weapon 0x1a24c8:242-275 only reroutes the cycle actions and
+  writes the rising-edge auto-draw BL+0x63 = 2; the gate is the hall plate's control-taking
+  cut-scene (0x06000073), whose script event 4 (Player_Disable [M 0x1d94c0]) holds Bond and
+  zeroes the trigger in step_bond. The old ignored test never skipped it. Fixed in the test:
+  release_weapon_lock skips the scene with the game's own skip action (skip_request, [M nis.rs]),
+  the_party_vase_breaks_on_a_p2k_round un-ignored — vase #49, window #298, statue #109 break on
+  the real path (press/release semi-auto cycles, the half-PI pitch unit, the settled-stand
+  re-aim); new sister the_lock_holds_the_shot_refused pins the refused P2K selection and no P2K
+  round while ch 0x48 holds. No engine code changed. Ran: interact_07000007_live 7/0,
+  walkreal_07000007_live 2/0, lighting_live 5/0 (suite.py background-killed by the sandbox as
+  before; the foreground runs stand in). Report: docs/reports/p2k-fire-07.md (carries the
+  bullet-through-floor observation at the vase stand + the live checks).
