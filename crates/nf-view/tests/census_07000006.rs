@@ -46,3 +46,35 @@ fn dump_07000006_placements_by_kind() {
         }
     }
 }
+
+/// The disc-wide Hurt (0xE4) survey: every hurt placement's damage type / who-mask / gate across
+/// the story levels — decides whether the Hurt kind port changes visible play (who 1 = the inert
+/// configuration 07000006's #373 carries; who 0x10 = the player class bit that CAN fire
+/// [M Hurt_Update 0x17e5d0's class-bit table]). Opt-in NF_ISO; prints only.
+#[test]
+#[ignore = "assertion-free disc survey; run with --ignored"]
+fn survey_0xe4_hurt_placements_across_the_story_levels() {
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set"); return };
+    let img = IsoImage::open(iso).expect("open iso");
+    let (entries, bin) = nf_formats::disc::files_bin_entries(&img).expect("FILES.BIN");
+    let levels: &[&str] = &["07000001", "07000002", "07000003", "07000004", "07000005", "07000006",
+        "07000007", "07000008", "07000009", "0700000a", "0700000b", "0700000c", "0700000d",
+        "07000011", "07000012", "07000013", "07000014", "07000015", "07000016", "0700001b",
+        "07000041", "0700004a", "0700004b"];
+    for lv in levels {
+        let Some(fe) = entries.iter().find(|e| e.name.eq_ignore_ascii_case(&format!("{lv}.bin"))) else { continue };
+        let data = img.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64).expect("read");
+        let Ok(level) = Level::parse(&data) else { eprintln!("{lv}: parse failed"); continue };
+        let Some(mm) = level.main_map() else { continue };
+        for (i, p) in level.maps[mm].placements.iter().enumerate() {
+            if p.flags & 0xff != 0xe4 { continue; }
+            let g = |k: u32| p.params.iter().find(|(j, _)| *j == k).map_or(0, |&(_, v)| v);
+            let (dtype, dmg, gate, who) = (g(0), g(1), g(2), g(4));
+            // The start law [M 0x17e5d0 state 0]: gated → the channel value starts it; no gate +
+            // who 0 → starts at once; no gate + who != 0 → fires only when who & collected bits
+            // (8/0x10/2) — who 1 collects nothing (inert).
+            let live = if gate != 0 { "GATED" } else if who == 0 { "LIVE" } else if who & 0x1a != 0 { "LIVE" } else { "inert" };
+            println!("{lv} #{i} type {dtype} dmg {dmg} gate {gate:#x} who {who:#x} -> {live}");
+        }
+    }
+}

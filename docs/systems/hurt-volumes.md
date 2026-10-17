@@ -95,3 +95,28 @@ volumes).
 2. Watch `Hurt_GetDamage` 0x17ea18's caller during any hurt-volume touch on any level (e.g. the
    0700000c fires/steam if they are Hurt placements) — settles the damage-application point the
    port plan's step 3 needs.
+
+## The disc-wide survey (the kind's live placements) [D; the census probe `survey_0xe4_hurt_placements_across_the_story_levels`]
+
+The start law [M 0x17e5d0 state 0]: gated → the channel starts it; no gate + who 0 → starts at
+once; no gate + who ≠ 0 → fires only when `who & {8, 0x10, 2}` — **who 1 collects nothing (the
+inert configuration)**.
+
+| Level | Placements | Type / damage / gate / who | Verdict |
+|---|---|---|---|
+| 07000002 | #13 | 1 / 1 / gate 0x8d / 1 | GATED |
+| 07000005 | #328–330, #334–340 | 6 / 1000 / – / 1 | inert |
+| 07000005 | **#331–333** | 6 / 1000 / – / **0** | **LIVE (start at load)** |
+| 07000006 | #373 | 6 / 1000 / – / 1 | inert (this level's only one) |
+| 07000008 | **#42–44** | 6 / 1000 / – / **0x18** | **LIVE (classes 3+2: drones AND the player)** |
+| 0700000a | **#745–749** | 6 / 1000 / – / **0x18** | **LIVE** |
+| 07000011 | **#271–273** | 6 / 1000 / – / **0** | **LIVE** |
+| 07000015 | **#464–471, #525** | 6 / 1000 / – / **0** | **LIVE** |
+| 07000016 | #309, #352 | 2 / 1000 / 0xf3; 4 / 1000 / 0xcb / 1 | GATED |
+| 0700001b | **#17** | **2 / 50** / – / **0** | **LIVE** (the space level's smaller hurt) |
+| 0700001b | #259 | 1 / 50 / gate 0x12 / 1 | GATED |
+| 0700004b | #147 | 6 / 1000 / – / 1 | inert |
+
+So the kind port is visible play on 05 / 08 / 0a / 11 / 15 / 1b — not on 06 (whose only placement
+is the inert one). The 07000005 #331–333 trio sits at the chasm the plunge triggers already cover
+[docs/levels/07000005.md] — worth checking whether the game doubles the kill (plunge + hurt) there.

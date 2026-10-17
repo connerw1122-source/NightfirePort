@@ -64,9 +64,11 @@ through the disc hash table [D census probe]. Nothing to fix.
 
 - **The Hurt (0xE4) kind is still unimplemented** — with the crucial nuance that 07000006's only
   placement is game-inert (the who-mask law above), so implementing it changes nothing on THIS
-  level. The spec (`docs/systems/hurt-volumes.md`) is ready; levels that configure who = 0x10
-  (if any) are where it becomes visible — a grep over the disc's 0xE4 placements by param 4 would
-  find them.
+  level. The spec (`docs/systems/hurt-volumes.md`) now carries the disc-wide survey: LIVE hurt
+  placements exist on 05 (#331–333, who 0), 08 (#42–44) and 0a (#745–749) (who 0x18 = the player
+  AND drones), 11 (#271–273) and 15 (#464–471, #525) (who 0), 1b #17 (type 2, 50 dmg) — that is
+  where the port becomes visible; the gated rows (02/16/1b #259) and the inert who-1 rows (05
+  most, 06, 4b) complete the map.
 - **Live checks for the main agent** (also in the spec): (1) PCSX2 fresh boot, drop Bond down the
   well — measure the real shaft depth and the post-landing health (the port's shaft floor is ~5 m
   below the lip and the drop is survivable; is the real one a kill?); (2) the `Hurt_GetDamage`
