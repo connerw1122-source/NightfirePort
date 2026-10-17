@@ -4145,8 +4145,17 @@ impl Sim {
         if self.drones.hud_frozen {
             return;
         }
-        for m in &mut self.hud.msgs { m.time -= 1.0; }
-        self.hud.msgs.retain(|m| m.time > 0.0);
+        // The pickup/script pane (viewer 0, TXTMSG type 6/4): the head ticks alone, exactly like
+        // every other status pane. `Text_UpdateMsg` 0x1b11d8:48-73 decrements ONLY the pane's head
+        // node (`*param_3` — the out-param the pane state machine 0x19c310 re-looks-up on expiry),
+        // so a message queued behind another keeps its FULL life until it reaches the front; the
+        // port used to tick every member in parallel, which expired the queued texts before they
+        // ever showed — they flashed past one per frame once they surfaced (playtest 1016-1355,
+        // "the hints are being displayed at 1,000 miles an hour", 07000005).
+        if let Some(m) = self.hud.msgs.front_mut() {
+            m.time -= 1.0;
+            if m.time <= 0.0 { self.hud.msgs.pop_front(); }
+        }
         if self.hud.msgs.is_empty() {
             if self.hud.bar_close > 0.0 { self.hud.bar_close = (self.hud.bar_close - 16.0).max(0.0); }
         } else {
