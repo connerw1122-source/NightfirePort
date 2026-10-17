@@ -18275,3 +18275,12 @@ Work Log:
   0x4D as that layer would (marked [S]) and the report lists the live check. Tests: hostage_save_
   07000002_live 2/2 (the captive pin + the save-on-captor-death, the second fails on the old code),
   walkreal_07000002_live 1/1 (the full route), nf-game lib 261. Report: docs/reports/level-02-complete.md.
+- 2026-10-17 s/level-04-interactables (task 704a): level 07000004 "Enemies Vanish (Castle D)" —
+  census of every interactive placement (buttons/switches, lifts+call buttons+doors, doors,
+  SimpleScripts, ScriptPlayers, triggers, pickups/racks, safes, keypads, monitors, lasers,
+  glass/destroyables, searchlights, cameras, turrets, fuseboxes, vents, hatches, ladders, grapple
+  points, vehicles) into docs/levels/07000004.md; drive one instance of every KIND through the real
+  input path (nf_view::load, Sim::step_bond, use key, gadgets, weapons) with one live test per kind +
+  failing sister; every placement's mesh/skin resolves (no missing hash, no white fallback);
+  key-gated route + cable car pieces are the known open items. Suite: tools/test/suite.py in the
+  background from the first minutes.

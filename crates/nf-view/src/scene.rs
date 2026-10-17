@@ -6536,7 +6536,7 @@ impl Scene {
             // Hint_Create's stage gate 0x1b3248) — the game loads with GameState+0x28 already
             // holding the menu's pick [M C_SBNFDFCTY 0x216ca8:15].
             drones.set_difficulty(difficulty);
-            drones.attach_level(level);
+            drones.attach_level(level, d.level_id);
             crate::phase_mark("b9b nav/cover/volumes/drone creates", t9);
             // fix-door-portal-links (G-035): `build_LinkDoors2Portals` (0x1c8ac8) runs at load — each
             // portal-linked door (placement param 4) takes the portal quad it sits in; the vision

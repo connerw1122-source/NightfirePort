@@ -57,6 +57,7 @@ fn main() -> Result<()> {
         "triggers" => triggers(&IsoImage::open(a(1)?)?, a(2)?),
         "nis" => nis(&IsoImage::open(a(1)?)?, a(2)?, args.get(3).map(|h| u32::from_str_radix(h, 16)).transpose()?),
         "placements" => placements(&IsoImage::open(a(1)?)?, a(2)?, u32::from_str_radix(a(3)?, 16)?),
+        "placements-all" => placements_all(&IsoImage::open(a(1)?)?, a(2)?),
         "sfx" => sfx(&IsoImage::open(a(1)?)?, &args[2..]),
         "coll-probe" => coll_probe(&IsoImage::open(a(1)?)?, a(2)?),
         "coll-check" => coll_check(&IsoImage::open(a(1)?)?),
@@ -672,6 +673,26 @@ fn ai_sim(iso: &IsoImage, level_name: &str, bond: [f32; 3], frames: u32) -> Resu
 
 /// The main map's placements of one type (flags word, hex): translation, rotation, the raw words +0x24..+0x47, the
 /// parameters, and the referenced object's glist boxes.
+/// `placements-all <iso> <level>`: every placement of every map, kind = flags & 0xff, with params
+/// (the interactables census dump; the filter-free companion of `placements`).
+fn placements_all(iso: &IsoImage, level_name: &str) -> Result<()> {
+    let (entries, bin) = disc::files_bin_entries(iso)?;
+    let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
+    let data = iso.read_bytes(bin.lba as u64 * 2048 + fe.offset as u64, fe.size as u64)?;
+    let level = nf_formats::level::Level::parse(&data)?;
+    let main = level.main_map().context("no main map")?;
+    for m in 0..level.maps.len() {
+        if m != main && std::env::var_os("NF_ALL_MAPS").is_none() { continue; }
+        for (i, p) in level.maps[m].placements.iter().enumerate() {
+            let target = if p.by_hash() { level.by_hash.get(&p.hashcode).copied() } else { Some((m, p.index as usize)) };
+            let obj = target.and_then(|(om, oi)| level.maps[om].objects.get(oi));
+            println!("map {m} placement {i}: kind {:02x} flags {:08x} t {:?} r {:?} params {:?} object {:?} hash {:08x} idx {}",
+                p.flags & 0xff, p.flags, p.translation, p.rotation, p.params, obj.map(|o| &o.name), p.hashcode, p.index);
+        }
+    }
+    Ok(())
+}
+
 fn placements(iso: &IsoImage, level_name: &str, kind: u32) -> Result<()> {
     let (entries, bin) = disc::files_bin_entries(iso)?;
     let fe = entries.iter().find(|e| e.name.eq_ignore_ascii_case(level_name)).context("no such level")?;
