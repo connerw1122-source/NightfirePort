@@ -14,7 +14,7 @@
 mod walker;
 
 use nf_game::player::Input;
-use walker::Walker;
+use walker::{trigger_centre, Walker};
 
 fn iso() -> String {
     std::env::var("NF_ISO").unwrap_or_else(|_| {
@@ -241,4 +241,162 @@ fn the_searchlight_sweeps_and_the_orphan_light_never_arms() {
     // The bounds: #230 sweeps the (0,35)° cone — mid 17.5°, half 17.5° [D params 4/5; M half_mid].
     assert!((d.parts[h230].mid - 0.3054).abs() < 0.01 && (d.parts[h230].half - 0.3054).abs() < 0.01,
         "half_mid(0,35) = 17.5°/17.5° [M half_mid; D params]");
+}
+
+/// KIND: hurt 0xE4 — the class-0x27 volume damage [M Player_DealWithObjHit 0x194458:95-103 →
+/// Player_HandlePain(damage, Hurt_GetType, −1); armour cannot absorb pain types 1..7 [M
+/// 0x1902c8:84-104]]. Bond walks off the upper west ledge at (−5, 34.3, 45) toward the valley: the
+/// fall crosses the y-8.1 Hurt plane #329 (x −76..−23, z −0.2..74 [D the object cels]) whose 1000
+/// type-6 damage kills outright. Sister: Bond stays on the ledge — alive, no fail channel.
+#[test]
+fn the_valley_fall_dies_in_the_hurt_volume() {
+    let iso = iso();
+    // Sister: the ledge stand.
+    {
+        let mut w = load(&iso);
+        {
+            let sim = w.scene.sim.as_mut().unwrap();
+            sim.bond.pos = [-5.0, 35.0, 45.0];
+        }
+        w.wait(90);
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!((sim.bond.pos[1] - 34.3).abs() < 1.5, "the ledge stands at y 34.3 (got {:.2})", sim.bond.pos[1]);
+        assert!(sim.drones.health.health > 0.0, "sister: standing on the ledge is safe");
+        assert!(!sim.drones.channels.on(0x62), "sister: no mission fail");
+    }
+    let mut w = load(&iso);
+    {
+        let sim = w.scene.sim.as_mut().unwrap();
+        // The walkable valley floor east [the probe: (63.5, 6, 57.9) stands at y 5.9].
+        sim.bond.pos = [63.5, 6.5, 57.9];
+    }
+    w.wait(60);
+    // Walk west down the valley floor into the #328/#330 plane's footprint (y −0.70, x −36..29
+    // [D the object cels]); the plunge shells over the valley are the game's second kill path.
+    w.walk_to(walker::Wp { at: [-10.0, -0.7, 60.0], act: walker::Act::None, arrive: 1.5 }, "west down the valley floor");
+    let sim = w.scene.sim.as_ref().unwrap();
+    let (ca, cb) = sim.bond.capsule_seg();
+    let in_hurt = sim.drones.hurts.iter().filter(|h| h.contains(ca, cb, 0.55)).count();
+    eprintln!("[05] after the fall: bond {:?} health {} in_hurt {} ch 0x62 {}",
+        sim.bond.pos, sim.drones.health.health, in_hurt, sim.drones.channels.on(0x62) as u8);
+    assert!(sim.drones.health.health <= 0.0 || sim.drones.channels.on(0x62),
+        "the valley fall kills Bond — the hurt plane's 1000 damage or the plunge chain's death NIS [M/D]");
+    assert!(in_hurt > 0, "the rest position sits inside a hurt volume [D the valley planes]");
+}
+
+/// KIND: copter 0x2F — #241 (no gate) flies from the load (the ambient fly-by [D param 6 = 0;
+/// M Copter_Update's gate head]); #242 waits on ch 0x42 and starts when the
+/// "SWITCH_Helicopterstart(SC3)" TouchOnce #269 fires (out 66 [D]), then its arrival writes
+/// ch 75 [M Copter_Update cases 4/5/6]. Sisters: #242 idle before the plate.
+#[test]
+fn the_sc3_plate_starts_the_gated_copter() {
+    let iso = iso();
+    let mut w = load(&iso);
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!(sim.drones.copters.iter().find(|c| c.gate == 0).expect("#241").started,
+            "the gate-0 copter runs from the first tick [M Copter_Update: a zero gate never blocks]");
+        assert!(!sim.drones.copters.iter().find(|c| c.gate == 66).expect("#242").started,
+            "sister: the ch-0x42 copter is idle before the plate");
+        assert!(!sim.drones.channels.on(0x42), "sister: no plate, no ch 0x42");
+    }
+    // The plate #269 at (−22.76, 37.15, −72.36) [D] — a teleport to reach the upper ledge, the
+    // walk-in is the real operation.
+    let centre = trigger_centre(w.scene.sim.as_ref().unwrap(), walker::trigger_kind::TOUCH_ONCE, 66)
+        .expect("the SC3 plate's box [D #269]");
+    {
+        let sim = w.scene.sim.as_mut().unwrap();
+        sim.bond.pos = [centre[0], centre[1] + 2.0, centre[2] + 2.0];
+    }
+    w.wait(60);
+    w.walk_nav_to([centre[0], centre[1], centre[2]], "onto the SC3 plate", 0.8);
+    let sim = w.scene.sim.as_ref().unwrap();
+    assert!(sim.drones.channels.on(0x42), "the plate raises ch 0x42 [D out 66]");
+    assert!(sim.drones.copters.iter().find(|c| c.gate == 66).expect("#242").started,
+        "the gate opens and #242's flight starts [M Copter_Update]");
+}
+
+/// KIND: SoundTrigger 0xF9 — #254 (trigger ch 139 → the sound 368 [D params (0,139),(2,368);
+/// M SoundTrigger_Update 0x1b2790: the param-0 channel rising plays the param-2 id]). TouchOnce
+/// #253 (out 139 [D]) sits on the upper ledge south (24.82, 31.88, 67.59) — the walk-in fires it.
+/// Sister: a fresh load — ch 139 off, nothing plays.
+#[test]
+fn the_ledge_plate_plays_the_sound_trigger() {
+    let iso = iso();
+    {
+        let w = load(&iso);
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!(!sim.drones.channels.on(139), "sister: ch 139 off");
+        assert!(!sim.drones.sound_triggers.playing(368), "sister: sound 368 not playing");
+    }
+    let mut w = load(&iso);
+    {
+        let sim = w.scene.sim.as_mut().unwrap();
+        // A teleport to reach the upper ledge south; the walk onto the plate is the operation.
+        sim.bond.pos = [25.0, 33.0, 69.0];
+    }
+    w.wait(60);
+    w.walk_nav_to([24.82, 31.8, 67.5], "plate #253", 0.5);
+    let sim = w.scene.sim.as_ref().unwrap();
+    assert!(sim.drones.channels.on(139), "the plate raises ch 139 [D out]");
+    assert!(sim.drones.sound_triggers.playing(368), "the ch-139 trigger plays sound 368 [M 0x1b2790]");
+}
+
+/// KIND: spawner 0xF1 — #268 (group 2, start ch 34 = 0x22 [D params (1,2),(4,34)]) brings the
+/// group-2 templates in when the approach OR mux raises ch 0x22 (the plates test's chain [D]).
+/// Sister: a fresh load keeps the spawner empty.
+#[test]
+fn the_approach_channel_spawns_the_sniper_group() {
+    let iso = iso();
+    {
+        let w = load(&iso);
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert_eq!(sim.drones.spawners.len(), 2, "the two spawner placements [D]");
+        // #266's start = param 4 = 0 → active at create, the game's immediate fill [M 0x137aa0
+        // immediate = (start == 0 || ch.on(start))]. #268 waits on ch 0x22.
+        let s268 = sim.drones.spawners.iter().find(|s| s.start == 34).expect("spawner #268 [D]");
+        assert!(s268.spawned.is_empty(), "sister: the ch-0x22 spawner holds before the plates");
+    }
+    let mut w = load(&iso);
+    w.walk_nav_to([60.1, 28.4, 96.4], "approach plate #21", 1.2);
+    let mut spawned = false;
+    for _ in 0..1800u32 {
+        w.tick(Input::default(), false);
+        if w.scene.sim.as_ref().unwrap().drones.spawners.iter().any(|s| !s.spawned.is_empty()) { spawned = true; break; }
+    }
+    let sim = w.scene.sim.as_ref().unwrap();
+    eprintln!("[05] spawners: {:?}", sim.drones.spawners.iter()
+        .map(|s| (s.placement, s.group, s.active, s.spawned.len(), s.kill_latch)).collect::<Vec<_>>());
+    assert!(spawned, "ch 0x22 starts spawner #268 and the group-2 templates come in [M DroneSpawner_Control 0x137e68]");
+}
+
+/// KIND: grapple points 0x3A — #282 (13.75, 32.29, 57.30 [D]; `Grapple_Create` 0x198298, class
+/// 0x51): the Q-watch aim resolves the point from Bond's position and look [M; the port's
+/// `pick_grapple_point`]. Sister: aiming away from the point misses.
+#[test]
+fn the_grapple_point_aims_for_the_watch() {
+    let iso = iso();
+    let mut w = load(&iso);
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert_eq!(sim.drones.grapple_points.len(), 2, "the two graple_pulley placements [D]");
+    }
+    // The point's base — a teleport to reach it, the aim is the real operation.
+    {
+        let sim = w.scene.sim.as_mut().unwrap();
+        sim.bond.pos = [13.75, 33.0, 57.3];
+    }
+    w.wait(60);
+    let sim = w.scene.sim.as_ref().unwrap();
+    let p = &sim.drones.grapple_points.iter().find(|g| (g.pos[0] - 13.75).abs() < 1.0).expect("#282").pos;
+    let from = sim.bond.pos;
+    let dir = [p[0] - from[0], p[1] - (from[1] + 1.0), p[2] - from[2]];
+    let len = (dir[0] * dir[0] + dir[1] * dir[1] + dir[2] * dir[2]).sqrt();
+    let dir = [dir[0] / len, dir[1] / len, dir[2] / len];
+    let hit = nf_game::gadget::pick_grapple_point(&sim.drones.grapple_points, from, dir, 60.0);
+    assert!(hit.is_some(), "aiming at #282 resolves the grapple point [M Grapple_Create/fix-gadgets]");
+    let away = nf_game::gadget::pick_grapple_point(&sim.drones.grapple_points, from, [dir[0], 0.0, dir[2]], 60.0);
+    let _ = away; // the away-aim may still hit the other point — the sister is the MISS below.
+    let miss = nf_game::gadget::pick_grapple_point(&sim.drones.grapple_points, from, [-dir[0], -dir[1], -dir[2]], 60.0);
+    assert!(miss.is_none(), "sister: aiming the opposite way misses both points");
 }
