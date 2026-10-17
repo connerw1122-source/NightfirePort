@@ -120,26 +120,75 @@ fn walk_start_to_the_st1_plate_and_the_photograph() {
         assert_eq!(sim.drones.mission.states[11][1], 4, "objective 2 completes [M 0x1827d8:88-99]");
     }
 
-    // Leg 3: the yard stand-in (Door_secret1 is an unported 0xE2 SS [D; the doc's gap list]) —
-    // east of the doorway (the closed 0xE2 door's slab holds collision in the port), then the
-    // real yard walk west.
+    // Leg 3 (REAL): the secret door. The player touch plate (out ch 2 [D #559]) and the
+    // patrolling guard's drone touch (out ch 3 [D #558]) AND together (the mux [D #560]) → ch 8
+    // opens `Door_secret1` #544 — "a guard's patrol is part of the key" [D]. The door SS sweeps
+    // on its channel (`SS_Update` 0x1a9948's state machine; the `SS_Operate` channel half
+    // [M 0x1a9df8:46-51]) and the posed slab's collision follows it (`set_dynamic` —
+    // fix-party-mission item 7). The reach stand-in: the display ground → the plate area (the
+    // same unported 0xE2 vent/pulley gap as legs 1-2); the chain below is all real.
+    let (plate2, plate3) = {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let pick = |out: u8, what: &str| {
+            sim.drones.triggers.iter()
+                .find(|t| (t.kind == 1 || t.kind == 2) && t.out == out && !t.tris.is_empty())
+                .map(|t| (t.placement, t.centre(), t.kind))
+                .unwrap_or_else(|| panic!("the out-ch {out} touch plate ({what}) [D]"))
+        };
+        (pick(2, "the player plate #559"), pick(3, "the guard plate #558"))
+    };
+    eprintln!("[0c] the secret-door plates: player {:?} guard {:?}", plate2, plate3);
+    {
+        // Sister: the AND is cold before Bond touches the plate — ch 8 off even if the guard has
+        // already crossed #558 (the mux needs both [D #560]).
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!(!sim.drones.channels.on(8), "the secret door's ch 8 is off before the chain runs [D #560]");
+    }
     {
         let sim = w.scene.sim.as_mut().unwrap();
-        sim.bond.pos = [56.5, 2.8, -176.5];
+        sim.bond.pos = [plate2.1[0], plate2.1[1] + 0.6, plate2.1[2]];
         sim.bond.vel = [0.0; 3];
     }
-    // Land, then stand up (crouch is the edge-triggered toggle — docs/systems/input.md §+0x12c
-    // mask 8; the fall lands him still crouched from the corridor walk).
-    for _ in 0..200 {
-        if w.scene.sim.as_ref().unwrap().bond.grounded { break; }
-        w.tick(nf_game::player::Input::default(), false);
+    w.wait(20);
+    eprintln!("[0c] the secret-door reach stand-in (the same 0xE2 gap) — on the player plate");
+    {
+        // Bond STANDS on the plate: the player touch writes ch 2 [D #559].
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!(sim.drones.channels.on(2), "the player touch plate fires ch 2 under Bond [D #559]");
     }
+    // Wait for the guard: the AND needs his drone touch on #558 (ch 3). The patrol crosses it
+    // on its own clock — the walk holds the plate until ch 8 rises (the mux fires), ≤ 24k ticks.
+    let mut and_at = None;
+    for _ in 0..24_000 {
+        w.tick(nf_game::player::Input::default(), false);
+        if w.scene.sim.as_ref().unwrap().drones.channels.on(8) { and_at = Some(w.total_ticks); break; }
+    }
+    assert!(and_at.is_some(), "the guard's drone touch + the player touch never raised ch 8 (the AND [D #560]) within 24k ticks");
+    eprintln!("[0c] the AND fired at +{:?} — the door sweeps", and_at.map(|t| t));
+    // The sweep: the door SS holds its last posed key after the wrap (states 0/0x40 never
+    // re-pose [M 0x1a9948:119-128]), so one pulse opens it for good. Give it 300 ticks.
+    w.wait(300);
+    // The doorway is OPEN: a chest-height ray through it passes (the posed slab's collision
+    // follows the sweep — set_dynamic, fix-party-mission item 7).
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let door = sim.drones.sss.list.iter().find(|s| s.channel == 8).expect("the ch-8 door SS [D #544]");
+        eprintln!("[0c] the door SS after the pulse: state {:#x} t {} pos {:?}", door.state, door.t, door.pos());
+    }
+    // Walk through: from the plate east to the yard below (the old stand-in's landing spot).
+    w.walk_to(Wp::new(56.5, 2.8, -176.5).r(1.8), "through the secret door onto the yard");
+    {
+        let sim = w.scene.sim.as_ref().unwrap();
+        assert!(sim.bond.pos[0] > 30.0, "Bond crossed the doorway for real (x {:?})", sim.bond.pos[0]);
+    }
+    eprintln!("[0c] the secret door walked through — the yard below");
+    // Stand up (crouch is the edge-triggered toggle — docs/systems/input.md §+0x12c
+    // mask 8; the fall lands him still crouched from the corridor walk).
     w.tick(nf_game::player::Input { crouch: true, ..Default::default() }, false);
     for _ in 0..60 {
         if !w.scene.sim.as_ref().unwrap().bond.crouched { break; }
         w.tick(nf_game::player::Input::default(), false);
     }
-    eprintln!("[0c] the secret-door stand-in (the port's 0xE2 gap) — the yard below");
     // Leg 4: the yard walk south-east then west to the ladder base (the yard ground 0.4-0.9
     // [D probes]; the crate wall blocks z -176..-182 at x 45.5 [D probes]).
     w.walk_to(Wp::new(56.0, 1.5, -183.5).r(1.8), "the yard south");

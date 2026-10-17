@@ -481,6 +481,14 @@ impl CollisionWorld {
         Some(GroundMotion { delta: [cur[3][0] - prev[3][0], cur[3][1] - prev[3][1], cur[3][2] - prev[3][2]], turn, pivot: [cur[3][0], cur[3][1], cur[3][2]] })
     }
 
+    /// The dynamic objects' `(id, lo, hi)` boxes this tick — the contact-list source for
+    /// `SS_Operate` 0x1a9df8 (the game's collision pass registers every overlapping body into the
+    /// SS object's `obj+0xD0` contact list; the port queries the same registered dynamic set).
+    pub fn dynamic_boxes(&self) -> Vec<(u64, V3, V3)> {
+        let d = self.dynamic.read().unwrap();
+        d.geo.objects.iter().zip(&d.movers).map(|(o, (id, _, _))| (*id, o.lo, o.hi)).collect()
+    }
+
     fn stat_segment(&self, from: V3, to: V3) -> Option<f32> { segment_in(&self.stat, from, to) }
 
     /// Every triangle of the objects whose box meets `lo`..`hi`, static first.
