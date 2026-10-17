@@ -799,6 +799,31 @@ pub struct Drone {
     /// picks the twitch anim from it (0x30 when 0x32, else 0x2f [M 0x162eb0 case 1]) and the
     /// STUNNED msg-7 arm re-falls only when it is NOT 0x32 [M 0x162eb0 case 7].
     pub tase_fall_anim: u16,
+    /// `Drone+0x2BC` (guard-blast-smoke's neighbour: the door-guard pairing, `SetDronePartner`
+    /// 0x141360): the partner's obj in the game; the port's drone index.
+    pub door_partner: Option<usize>,
+    /// `Drone+0x2CC`: the door-guard zone byte — 0xff = "mirror the partner's read", else the last
+    /// zone `NDrone2_DoorGuardHandler` 0x1416d8 computed (0 none / 1 approach / 2 challenge /
+    /// 3 the restricted band) [M 0x141838].
+    pub door_side: u8,
+    /// `Drone+0x2E0/0x2F0/0x300`: the three `plane_equ_tag`s `SetDronePartner` builds on the
+    /// evaluating guard [M 0x141360:124-173] — {a, b, c, d} each, `side = a·x + b·y + c·z + d`.
+    pub door_planes: [[f32; 4]; 3],
+    /// The zone this tick (the pre-pass's result, read by the 0x31 UPDATE arm — the game computes
+    /// it inside the UPDATE; the port's pre-pass has the partner list access [S deviation]).
+    pub door_zone: u8,
+    /// `Drone+0xCD8` (the shared scratch, the 0x31 use): the current idle anim (0x24/0x25/0x26)
+    /// cycled by timer C [M 0x160648 case 0xc].
+    pub door_idle_anim: u32,
+    /// `Drone+0xCDC`: the last zone the UPDATE acted on (4 = the ENTER value; the anim replays only
+    /// on a change) [M 0x160648:63-103].
+    pub door_zone_step: u32,
+    /// The ENTER ran `SetDronePartner` and the pairing pass has not serviced it yet (the pass runs
+    /// at the tick boundary; the game pairs inside the ENTER [S one-tick deviation]).
+    pub door_pair_requested: bool,
+    /// `Drone+0xCC8`: timer C's payload (the 0x31 idle cycle's selector; the game's TIMER_C msg
+    /// rides `msg+0x18 = +0xCC8` [M PreDroneControl 0x148db0:106-109]).
+    pub timer_c_payload: u32,
     /// fix-grenade-types: the LIVE player position, mirrored each tick (`Drones::tick`'s shared pass)
     /// — the stun loop's kept-down test is the game's live `DroneFunc_AnyoneNear` positional query
     /// [M 0x14a718 via 0x1631c0 case 0xc], not the cached opp `dist` (a stunned guard's perception
@@ -1191,6 +1216,7 @@ impl Drone {
             mission_path_dist: 0.0,
             stun_until: 0, player_pos: [0.0; 3],
             down: false,
+            door_partner: None, door_side: 0, door_planes: [[0.0; 4]; 3], door_zone: 0, door_idle_anim: 0x24, door_zone_step: 0, door_pair_requested: false, timer_c_payload: 0,
             tase_accum: 0,
             tase_recover: 0,
             tase_fall_anim: 0,
@@ -2606,6 +2632,106 @@ impl Drone {
                 true
             }
             (_, msg::EXIT) => true,
+            _ => false,
+        })
+    }
+
+    /// CivilianDoorGuard 0x31 (0x160648) — the door-guard pair on 07000007 [D the census in the
+    /// report]. The pairing + the zone read live in `Drones::door_guard_pass` (list access); this
+    /// handles the state machine: ENTER/EXIT/UPDATE/TIMER_C/impacts/alerts.
+    fn handle_door_guard(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        if !matches!(s, CIVILIAN_DOOR_GUARD) { return None; }
+        Some(match (s, m) {
+            // ENTER (0x160648 case 1): the pairing request, `+0x4F8 |= 0x10000 | 0x2000`, the
+            // return state 0x56, anim 0x24 with `+0xCD8 = 0x24`, `+0xCDC = 4`, and timer C at
+            // frame + Rand(25)·FRAME_RATE_INT with the payload `+0xCC8 = 1`.
+            (CIVILIAN_DOOR_GUARD, msg::ENTER) => {
+                self.door_pair_requested = true; // `NDrone2_SetDronePartner(0x16, dc)` [M 0x160694]
+                self.vision_on = true;
+                self.return_state = ATTACK;
+                self.door_idle_anim = 0x24;
+                self.door_zone_step = 4;
+                self.call_anim(d, 0x24, 0, 0);
+                self.timer_c_payload = 1; // `+0xCC8 = 1` [M 0x160648:31]
+                self.timer_c = Some(frame + rng.rand(25) * 30); // FRAME_RATE_INT = 30 [M 0x2446's DEAD arm]
+                true
+            }
+            // EXIT (case 2): `+0x44 = 1`.
+            (CIVILIAN_DOOR_GUARD, msg::EXIT) => { true }
+            // UPDATE (case 3): an armed opponent within the game's gates → hostile; else the zone
+            // dispatch (the zone itself is the pre-pass's `door_zone`).
+            (CIVILIAN_DOOR_GUARD, msg::UPDATE) => {
+                // `NDrone2_NearArmedPerson(20.0)` 0x1787c8: the opponent exists (+0x228 & 4) and is
+                // armed (`DroneWeap_OpponentHasWeapon`) — the port's stand-in: the guard sees the
+                // player and Bond's weapon is not the fists [S stand-in, the prop-0x3c gate rides
+                // the state's own prop set].
+                if self.los && self.bond_armed {
+                    // 0x160648:39-57: `+0x4F8 |= 0x8000000`; prop 0x33 (once, `+0x4F8 & 0x200000`):
+                    // `+0x4FC |= 1`, `DroneAlertToObject(20, 20, 0.759, dc, 0x11, player)`, the
+                    // 0x200000 latch; then `+0x44 = 1`, `+0x5A2 = 0x56`, SetState(0x56 Attack).
+                    if self.prop(d, 0x33) && !self.surrender_logged {
+                        self.pending_shout = Some((msg::SHOUT, self.pos));
+                        self.surrender_logged = true; // the 0x200000 latch (a free scratch — 0x31 never surrenders)
+                    }
+                    self.return_state = ATTACK;
+                    self.set_state(ATTACK);
+                    return Some(true);
+                }
+                match self.door_zone {
+                    // zone 1 (0x160648:60-70): face the opponent; a step change replays the idle anim.
+                    1 => {
+                        self.desired_yaw = self.yaw_to_opp;
+                        if self.door_zone_step != 1 {
+                            self.door_zone_step = 1;
+                            self.call_anim(d, self.door_idle_anim as u16, 0, 0);
+                        }
+                    }
+                    // zone 2 (0x160648:73-85): the challenge — anim 0x5f variant 1 once, the
+                    // speech (only the guard whose `+0x2CC != 0xff` — the planes' owner), face.
+                    2 => {
+                        if self.door_zone_step != 2 {
+                            self.door_zone_step = 2;
+                            self.call_anim_variant(d, 0x5f, 1, 0, 0);
+                            if self.door_side != 0xff {
+                                // DroneFunc_ChooseSFX(0x4f, 0x50) 0x1497e8: a + Rand(b − a) [M].
+                                let id = 0x4f + rng.rand(2) as u32;
+                                self.sfx_reqs.push((id, self.pos));
+                            }
+                        }
+                        self.desired_yaw = self.yaw_to_opp;
+                    }
+                    // zone 3 (0x160648:89-94): the speech, the mission-fail reason 0xc, Attack.
+                    3 => {
+                        let id = 0x8f + rng.rand(4) as u32;
+                        self.sfx_reqs.push((id, self.pos));
+                        self.fail_reason = Some(crate::ally::mission_fail_reason(0xc));
+                        self.set_state(ATTACK);
+                    }
+                    // zone 0 (0x160648:96-103): `+0x694 = +0xC24`; a step change replays the idle anim.
+                    _ => {
+                        if self.door_zone_step != 0 {
+                            self.door_zone_step = 0;
+                            self.call_anim(d, self.door_idle_anim as u16, 0, 0);
+                        }
+                    }
+                }
+                true
+            }
+            // TIMER_C (case 0xc): the idle-anim cycle 0x24 → 0x25 → 0x26 → 0x24 by the payload
+            // `+0xCC8`, re-armed at frame + (Rand(20) + 5)·FRAME_RATE_INT each time.
+            (CIVILIAN_DOOR_GUARD, msg::TIMER_C) => {
+                let (anim, next_payload) = match self.timer_c_payload {
+                    1 => (0x25, 2),
+                    0 => (0x24, 1),
+                    _ => (0x26, 0),
+                };
+                self.door_idle_anim = anim;
+                self.call_anim(d, anim as u16, 0, 0);
+                self.timer_c = Some(frame + (rng.rand(20) + 5) * 30);
+                self.timer_c_payload = next_payload;
+                true
+            }
             _ => false,
         })
     }
@@ -4070,6 +4196,7 @@ impl Drone {
         }
         if let Some(r) = self.handle_death(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_knockout(d, rng, frame, s, m) { return r; }
+        if let Some(r) = self.handle_door_guard(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_scary(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_cover(d, rng, frame, s, m) { return r; }
         if let Some(r) = self.handle_grenade_throw(d, rng, frame, s, m) { return r; }
@@ -7526,6 +7653,120 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
     /// Bond's bullets for one tick (`Bullet_update`, `Collide_Update`): the segment of max(step, 1) units against the
     /// world and every live drone's boxes (`Collide_PickObj` sphere r 1.05 around the hips, then `Collide_Jointy`); the
     /// nearest wins. A drone hit sends msg 8 (`Drone_BulletHit`).
+    /// `NDrone2_SetDronePartner` 0x141360 + `NDrone2_DoorGuardHandler` 0x1416d8, run as a tick
+    /// pre-pass over the CivilianDoorGuard (0x31) guards. The game pairs inside the ENTER and
+    /// reads the zone inside the 0x31 UPDATE [M 0x160694, 0x160814]; the port's `handle` lacks
+    /// the list access the two need.
+    fn door_guard_pass(&mut self, d: &Data, player: &Player) {
+        // ---- SetDronePartner(kind 0x16, dc) [M 0x141360] ----
+        // Candidates: drones of the same mode (+0xC5 == 0x16 — the caller passes 0x16), enabled
+        // (`+0x4F8 & 0x600 == 0 && & 0x100 != 0`), health > 0, class != 0x11, not deleted
+        // (obj+0xFE & 1 == 0), partnerless, within 2.0 rad of the caller's yaw (+0x34); the
+        // nearest by `Vec_SqDist2D`. The pair is mutual; the sign of
+        // `Vec_AngleDifference(my_yaw, atan2(dir))` picks which side holds the planes (its own
+        // `+0x2CC = 0xff`... the OTHER's — see below), and `plane_from_two_vectors_and_point`
+        // 0x1e4498 builds three planes on the evaluating guard.
+        for i in 0..self.list.len() {
+            let (requested, mode, my_yaw, my_pos) = {
+                let dr = &self.list[i];
+                (dr.door_pair_requested, dr.mode, dr.yaw, dr.pos)
+            };
+            if !requested { continue; }
+            self.list[i].door_pair_requested = false;
+            let mut best: Option<(usize, f32)> = None;
+            for j in 0..self.list.len() {
+                if j == i { continue; }
+                let o = &self.list[j];
+                // The candidate gates [M 0x141360:70-104]: the same kind byte, eligible flags,
+                // partnerless. (The game walks the obj list; the port walks the drones.)
+                if o.mode != mode || o.mode != 0x16 { continue; }
+                if !o.present || o.corpse || !o.enabled || o.health <= 0.0 { continue; }
+                if o.door_partner.is_some() { continue; }
+                // The RAW |yaw − yaw| < 2.0 — not the wrapped angle difference [M 0x141360:90
+                // `ABS(*(float *)(iVar1 + 0x34) - *(float *)(iVar3 + 0x34)) < 2.0`]: the two
+                // 07000007 pairs face ~4.7 rad apart and never cross-pair.
+                if (my_yaw - o.yaw).abs() >= 2.0 { continue; }
+                let dx = o.pos[0] - self.list[i].pos[0];
+                let dz = o.pos[2] - self.list[i].pos[2];
+                let sq = dx * dx + dz * dz;
+                if best.map_or(true, |(_, b)| sq < b) { best = Some((j, sq)); }
+            }
+            let Some(j) = best.map(|(j, _)| j) else { continue };
+            // The pair is mutual [M 0x141360:96, 113: `me->0x2BC = candidate; candidate->0x2BC = me`].
+            self.list[i].door_partner = Some(j);
+            self.list[j].door_partner = Some(i);
+            // The planes: `dir = normalise(partner − me)`; `diff = Vec_AngleDifference(my_yaw,
+            // atan2(dir.x, dir.z))` [M 0x141360:115-121]. diff < 0 → MY +0x2CC = 0xff and the
+            // planes are built on the PARTNER (through the partner, normal −dir); else the
+            // PARTNER's +0x2CC = 0xff and the planes are built on ME (normal +dir)
+            // [M 0x141360:123-174]. The evaluator is the guard whose +0x2CC != 0xff.
+            let dir = {
+                let dx = self.list[j].pos[0] - self.list[i].pos[0];
+                let dy = self.list[j].pos[1] - self.list[i].pos[1];
+                let dz = self.list[j].pos[2] - self.list[i].pos[2];
+                let len = (dx * dx + dy * dy + dz * dz).sqrt();
+                if len > 1e-9 { [dx / len, dy / len, dz / len] } else { [0.0, 0.0, 1.0] }
+            };
+            let diff = angle_difference(my_yaw, atan2_approx(dir[0], dir[2])); // [M 0x141360:121 — this one IS Vec_AngleDifference]
+            let (evaluator, anchor, other, neg) = if diff < 0.0 {
+                self.list[i].door_side = 0xff;
+                (j, self.list[j].pos, self.list[i].pos, -1.0)
+            } else {
+                self.list[j].door_side = 0xff;
+                (i, self.list[i].pos, self.list[j].pos, 1.0)
+            };
+            // plane0 = cross(v0, (0, 0, 1)) through the anchor [M 0x141360:132-133 / 0x1e4498];
+            // v0 = ∓dir. The derived plane1/plane2 formulas are the decompile's own
+            // [M 0x141360:134-149 / 158-173].
+            let v0 = [neg * dir[0], neg * dir[1], neg * dir[2]];
+            let n = [v0[1], -v0[0], 0.0f32]; // cross(v0, (0,0,1)) [M 0x1e4498:11-13]
+            let d0 = -(n[0] * anchor[0] + n[1] * anchor[1] + n[2] * anchor[2]);
+            let (a, b, c) = (n[0], n[1], n[2]);
+            let planes = [
+                [a, b, c, d0],
+                // +0x2F0: {−c, b, a, d0 + a·ax + c·ox + c·az − a·oz} [M 0x141360:141-149]
+                [-c, b, a, d0 + a * anchor[0] + c * other[0] + c * anchor[2] - a * other[2]],
+                // +0x300: {c, b, −a, d0 + (a − c)·ax + (c + a)·az} [M 0x141360:134-145]
+                [c, b, -a, d0 + (a - c) * anchor[0] + (c + a) * anchor[2]],
+            ];
+            self.list[evaluator].door_planes = planes;
+        }
+        // ---- DoorGuardHandler [M 0x1416d8] ----
+        // Needs an opponent (+0x170; the port's stand-in: the guard currently sees Bond [S]) whose
+        // yaw is within 2.0 rad of the guard's; the planes' owner evaluates, the 0xff holder
+        // mirrors the partner's value (the game reads the partner's +0x2CC directly).
+        let bond_yaw = atan2_approx(player.aim[0], player.aim[2]);
+        for i in 0..self.list.len() {
+            if self.list[i].state != state::CIVILIAN_DOOR_GUARD { continue; }
+            let Some(p) = self.list[i].door_partner else { self.list[i].door_zone = 0; continue; };
+            if self.list[i].door_side == 0xff {
+                // The mirror: the game returns the partner's +0x2CC [M 0x1416d8:19-21].
+                self.list[i].door_zone = self.list[p].door_side;
+                continue;
+            }
+            // The opponent gates [M 0x1416d8:16-24]: +0x170 != 0 and |opp yaw − my yaw| < 2.0.
+            // The RAW |opp yaw − my yaw| < 2.0 gate [M 0x1416d8:22 — the same unwrapped ABS].
+            if !self.list[i].los || (bond_yaw - self.list[i].yaw).abs() >= 2.0 {
+                self.list[i].door_zone = 0;
+                continue;
+            }
+            let side = |pl: [f32; 4]| pl[0] * player.pos[0] + pl[1] * player.pos[1] + pl[2] * player.pos[2] + pl[3];
+            let s0 = side(self.list[i].door_planes[0]);
+            let s1 = side(self.list[i].door_planes[1]);
+            let s2 = side(self.list[i].door_planes[2]);
+            // The bands [M 0x1416d8:55-73]: s1 < 0 → 0; s2 < 0 → 0; s0 < −6 → 0; < 0 → 3;
+            // < 2 → 2; < 6 → 1; else 0.
+            let zone = if s1 < 0.0 { 0 }
+                else if s2 < 0.0 { 0 }
+                else if s0 < -6.0 { 0 }
+                else if s0 < 0.0 { 3 }
+                else if s0 < 2.0 { 2 }
+                else if s0 < 6.0 { 1 }
+                else { 0 };
+            self.list[i].door_zone = zone;
+        }
+    }
+
     fn update_player_bullets(&mut self, d: &Data, player_pos: V3) {
         self.player_impacts.clear();
         self.bullet_paths.clear();
@@ -8955,6 +9196,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // NoBunching's candidate snapshot (present, enabled, non-corpse — the game's chain rides
         // +0x4F8 bits the port does not model), indexed by drone index.
         let bunching_ok: Vec<bool> = self.list.iter().map(|x| x.present && x.enabled && !x.corpse).collect();
+        // door-guard-pairing: `SetDronePartner` (0x141360) + `NDrone2_DoorGuardHandler` (0x1416d8)
+        // for the CivilianDoorGuard pairs. The game pairs inside the 0x31 ENTER and runs the zone
+        // read inside the 0x31 UPDATE; the port's pre-pass has the list access the per-drone
+        // `handle` lacks — one tick after the ENTER for the pairing [*suggested* deviation], the
+        // same tick for the zone (the vision pass above has run).
+        self.door_guard_pass(d, player);
         // `Trigger_Calc`, then every object in the control list (newest first = reverse placement order): triggers and
         // drones interleaved, so a channel a trigger pulses is seen only by the objects updated after it.
         // The player toucher keeps the historical stand-in (`Toucher::player(pos − 0.4)`, reach
@@ -10527,6 +10774,7 @@ mod tests {
             mission_path_dist: 0.0,
             stun_until: 0, player_pos: [0.0; 3],
             down: false,
+            door_partner: None, door_side: 0, door_planes: [[0.0; 4]; 3], door_zone: 0, door_idle_anim: 0x24, door_zone_step: 0, door_pair_requested: false, timer_c_payload: 0,
             tase_accum: 0,
             tase_recover: 0,
             tase_fall_anim: 0,

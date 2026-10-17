@@ -17178,3 +17178,32 @@ through the real input path + a sister, run the touched crates + the full suite.
   freeze that stops every guard's timers, so a walk-away recovery cycle is not drivable there
   (probe evidence: with the freeze the STUNNED timer never fires; without it the +300 re-arm
   fires on schedule).
+
+- 2026-10-16 s/door-guard-pairing (task 737): audit runner-up — NDrone2_DoorGuardHandler
+  0x1416d8 and SetDronePartner 0x141360; CivilianDoorGuard 0x31 (0x160648) is a const with no
+  arms (WORKLOG 3969). Plan: read the uncited-audit entry, port the pairing + the handler on the
+  levels that place door guards [D], tests fail-first with a sister. Branch created from
+  origin/master f09f3c6c.
+- door-guard-pairing: ported SetDronePartner 0x141360 + NDrone2_DoorGuardHandler 0x1416d8 and the
+  CivilianDoorGuard 0x31 state (0x160648 — the const had no arms, WORKLOG 3969). The pairing runs
+  as a Drones-level pre-pass (the game pairs inside the 0x31 ENTER; the port's handle lacks the
+  list access [*S one-tick deviation]): candidates = same mode 0x16, enabled, healthy, not
+  deleted, partnerless, RAW |yaw − yaw| < 2.0 [M 0x141360:90 — the unwrapped ABS is what keeps
+  the two 07000007 pairs from cross-pairing]; mutual +0x2BC; the angle-difference sign picks the
+  planes' owner (the other gets +0x2CC = 0xff = the mirror [M 0x141360:123-174]) and
+  plane_from_two_vectors_and_point 0x1e4498 builds three planes (the 0x2F0/0x300 derived formulas
+  ported verbatim — for a z-axis pair the cross with (0,0,1) is the game's own zero normal). The
+  zone read [M 0x1416d8:16-73]: the 0xff holder mirrors the partner's value; the owner gates on
+  the opponent (the port: los [S stand-in for +0x170]) and the RAW yaw gate, then the plane bands
+  s0 < −6 → 0, < 0 → 3, < 2 → 2, < 6 → 1. The 0x31 arms [M 0x160648]: the armed-person check
+  (NearArmedPerson 0x1787c8 — the zones only play for an unarmed Bond) → the prop-0x33 shout +
+  Attack; zone 1 face + the idle replay; zone 2 the 0x5f challenge + ChooseSFX(0x4f, 0x50) (the
+  owner only); zone 3 ChooseSFX(0x8f, 0x92) + SetMissionFailReason(0xc) + Attack; zone 0 the idle
+  replay; TIMER_C cycles the idle anims 0x24/0x25/0x26 by the +0xCC8 payload at
+  (Rand(20)+5)·FRAME_RATE_INT (FRAME_RATE_INT = 30 [M the DEAD arm's DAT_00298F58 = 10·FRI]).
+  Census [D through the port's loader]: 07000007 is the ONLY story level placing door guards —
+  6 (placements 404/417/441/442 active, 448/449 waiting on switch channel 21); every other story
+  level has none. Tests (door_guard_live): the census pin, the mutual pairs + the exact [M] plane
+  formulas, the armed sister (hostile, no challenge), the unarmed challenge (0x5f + step 2), the
+  restricted band → the fail reason 0xc + hostile, and the waiting pair activating through ch 21.
+  3/3 pass. Report: docs/reports/door-guard-pairing.md.
