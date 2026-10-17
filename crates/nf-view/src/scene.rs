@@ -203,6 +203,10 @@ pub struct Material {
     /// data has almost no 0x80/0x100 on world cels, 0x8a0/0x28a0 on character/weapon skins, 0x100 on
     /// effect objects [D probe in lighting_live.rs].
     pub lflags: u16,
+    /// The skinned owner of a Character/Effect draw: (character index, attachment slot) — the renderer
+    /// re-centres the draw's light pick on the owner's live palette root every frame (the game's
+    /// obj+0x80 world sphere follows the object). `None` = a static draw (its `centre` stands).
+    pub skin: Option<(u32, Option<u32>)>,
     pub first_index: u32,
     pub index_count: u32,
 }
@@ -4782,6 +4786,8 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 /// Grouped by layer, then (world layers) the object — the game sorts cels per object (`View_AddCels`) — then texture
 /// and draw state. The value keeps the object's world centre and scaled radius for the per-frame sort + frustum cull.
 pub type GroupKey = (Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u16);
+/// The group key's slot-2 tag for a per-character group (see `add_instance`'s `ikey`).
+const SKIN_TAG: u32 = 0x5c1d_0000;
 type Groups = BTreeMap<GroupKey, (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>, u32)>;
 
 /// ── Pool-slot replay (level-load-time) ───────────────────────────────────────────────────────────
@@ -4929,7 +4935,16 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
     // 0x1e6538 / `View_SetupRenderModes` 0x1e78b0 (the anim-object path) pass its u16 to
     // `Lights_CalcClosestLights`. `MapObject.flags` is that word [D level.rs ENTITY_PARAMS +4].
     let lflags = (obj.flags & 0xffff) as u16;
-    let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) } else { [0; 3] };
+    // World layers key each object apart (centre). Characters and their attachments key per character
+    // (and per attachment slot): the game picks the ≤2 lights PER OBJECT at the object's own world sphere
+    // [M View_DrawObjList 0x1e69a0:73-81 → Lights_CalcClosestLights(obj+0x80, obj+0xF0)]; the shared
+    // `[0; 3]` key merged every character with the same texture into ONE draw lit at ONE centre (the
+    // last instance's — the bind-time origin for script actors), so cut-scene faces got no point lights
+    // (the user, 2026-10-16: "work on character lighting. especially in cutscenes"). The tag SKIN_TAG in
+    // slot 2 lets the material build recover the (character, attachment) pair.
+    let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) }
+        else if let (Layer::Character, Some((ci, att))) = (layer, character) { [ci, att.map_or(0, |a| a + 1), SKIN_TAG] }
+        else { [0; 3] };
     // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none. The GS applies each DIRECT
     // write immediately at its position in the packet, so a write between batch 2 and batch 3 affects batch 3
     // onward — we apply the writes per-batch, not per-leaf (the old per-leaf approach made the sniper's gun body
@@ -6227,7 +6242,8 @@ impl Scene {
         }
         crate::phase_mark("b5 characters + attachments + pools", t); t = std::time::Instant::now();
         let mut char_vertex_start = None;
-        for ((layer, _, _, chain, key, draw, lflags), (vs, is, cv, centre, mut radius, cel, node)) in groups {
+        for ((layer, ikey, _, chain, key, draw, lflags), (vs, is, cv, centre, mut radius, cel, node)) in groups {
+            let skin = (ikey[2] == SKIN_TAG).then(|| (ikey[0], ikey[1].checked_sub(1)));
             if is.is_empty() { continue; }
             // fix-render-artifacts: the cull sphere must contain the group's DRAWN geometry — the glist
             // radius can undershoot it (0700000c's floor decal: glist r 0.6 vs a 0.87 half-diagonal box),
@@ -6248,7 +6264,7 @@ impl Scene {
             }
             if matches!(layer, Layer::Character | Layer::Effect) && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
             let base = vertices.len() as u32;
-            materials.push(Material { layer, draw, centre, radius, cel, chain, node, key, lflags, first_index: indices.len() as u32, index_count: is.len() as u32 });
+            materials.push(Material { layer, draw, centre, radius, cel, chain, node, key, lflags, skin, first_index: indices.len() as u32, index_count: is.len() as u32 });
             indices.extend(is.iter().map(|i| i + base));
             vertices.extend(vs);
             char_verts.extend(cv);
