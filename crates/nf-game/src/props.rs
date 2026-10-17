@@ -37,6 +37,22 @@ pub struct CamSubject {
 }
 
 #[derive(Clone, Debug)]
+pub struct Break {
+    pub placement: usize,
+    pub lo: V3,
+    pub hi: V3,
+    /// instance[0] — the break type: 2 = glass (`ShatterPolyRecurse`), anything else = debris
+    /// (`Debris_Create_Loop`) [M 0x12b970:84-121; `Break_Create` 0x12c230:20 stores param 0].
+    pub kind: u8,
+    /// instance+4 — the damage pool [M `Break_Create` 0x12c230:21-25 converts param 1 int→float;
+    /// `Break_Update` 0x12bfd8:34-42 subtracts each class-5 contact's HITDATA+8 into it]. The disc's
+    /// 0x20 placements all carry param 1 = 0, so the first positive-damage contact kills [D census].
+    pub health: f32,
+    /// obj+0xfe bit 0 — killed; the movement handler's delete pass removes the object [M 0x12b970:41].
+    pub dead: bool,
+}
+
+#[derive(Clone, Debug)]
 pub struct Destroy {
     pub placement: usize,
     pub lo: V3,
@@ -62,6 +78,7 @@ pub struct Destroy {
 pub struct Props {
     pub subjects: Vec<CamSubject>,
     pub destroy: Vec<Destroy>,
+    pub breaks: Vec<Break>,
 }
 
 /// One placement's target object's bounds placed by the placement transform (the game's contact
@@ -106,6 +123,9 @@ impl Props {
                 // (as f32; the tag holds a float the handler subtracts into), tag+0x16 (kind) =
                 // param 2's low byte, tag+0x08 (smash blast damage) = param 5 [M disasm].
                 0xe1 => props.destroy.push(Destroy { placement: i, lo, hi, channel: param(0) as u8, health: param(3) as f32, dead: false, kind: (param(2) & 0xff) as u8, blast_damage: param(5) as f32 }),
+                // `Break_Create` 0x12c230: instance[0] = param 0 (the type), instance+4 =
+                // (float)param 1 (the pool, the game's int→float convert) [M 0x12c230:18-25].
+                0x20 => props.breaks.push(Break { placement: i, lo, hi, kind: param(0) as u8, health: param(1) as f32, dead: false }),
                 _ => {}
             }
         }
@@ -161,6 +181,20 @@ impl Props {
                 }
             }
         }
+        // `Break_Update` 0x12bfd8: the class-5 (bullet) contacts subtract the bullet's damage
+        // (HITDATA+8) from the pool; pool < 0 → `Break_Kill` 0x12b970 (obj+0xfe bit 0 — the
+        // delete pass removes the object that tick; no switch channel is written [M 0x12b970]).
+        // `Break_Kill`'s type-1 sound draws `Rand_Rand(100)` in the game (0x12b970:48); the port
+        // does not model the break sounds, so no draw is taken [S port choice — keeps the shared
+        // stream where it is; noted in the report].
+        for br in self.breaks.iter_mut().filter(|b| !b.dead) {
+            if Self::seg_box(a, b, br.lo, br.hi) {
+                br.health -= damage;
+                if br.health < 0.0 {
+                    br.dead = true;
+                }
+            }
+        }
         smashes
     }
 }
@@ -174,6 +208,7 @@ mod tests {
             subjects: vec![CamSubject { placement: 0, lo: [4.0, 7.0, -111.0], hi: [6.0, 9.0, -109.0], channel: 0x1c, hit: false }],
             destroy: vec![Destroy { placement: 1, lo: [133.0, 4.0, -270.0], hi: [137.0, 7.0, -268.0], channel: 0x1f, health: 100.0, dead: false,
             kind: 1, blast_damage: 100.0 }],
+            breaks: vec![Break { placement: 2, lo: [60.0, 43.9, -42.3], hi: [60.5, 44.4, -41.9], kind: 1, health: 0.0, dead: false }],
         }
     }
 
@@ -211,5 +246,27 @@ mod tests {
         let mut ch = Channels::default();
         p.bullet_hit([20.0, 5.5, -270.5], [20.0, 5.5, -267.5], 0x1e, 10.0, &mut ch, 1);
         assert!(!ch.on(0x1f) && !p.destroy[0].dead, "a miss never damages the door");
+    }
+
+    #[test]
+    fn one_bullet_kills_the_zero_pool_breakable() {
+        let mut p = box_props();
+        let mut ch = Channels::default();
+        assert!(!p.breaks[0].dead, "the vase stands before the shot");
+        // The 07000007 vase #49's box (60.0,43.9,-42.3)..(60.5,44.4,-41.9) with the disc's pool
+        // (float)param1 = 0.0 [D census; M 0x12c230:21-25]: any positive damage crosses below
+        // zero → `Break_Kill` [M 0x12bfd8:34-42, 0x12b970:41].
+        p.bullet_hit([60.2, 44.1, -41.0], [60.2, 44.1, -43.0], 0x1e, 1.0, &mut ch, 5);
+        assert!(p.breaks[0].dead, "the first bullet kills the zero-pool vase [M]");
+        // A sister: no bullet — the vase stands (the operation is what kills it).
+        let mut p = box_props();
+        let mut ch = Channels::default();
+        for f in 0..10 { p.bullet_hit([10.0 + f as f32, 44.1, -41.0], [10.0 + f as f32, 44.1, -43.0], 0x1e, 1.0, &mut ch, f); }
+        assert!(!p.breaks[0].dead, "shots that never touch the box leave the vase [M]");
+        // The kill writes NO channel [M 0x12b970 — no switch_channels store in the function].
+        let mut p = box_props();
+        let mut ch = Channels::default();
+        p.bullet_hit([60.2, 44.1, -41.0], [60.2, 44.1, -43.0], 0x1e, 1.0, &mut ch, 5);
+        assert!(!ch.on(1), "the break writes no channel (contrast Destroy [M 0x12c318:35])");
     }
 }
