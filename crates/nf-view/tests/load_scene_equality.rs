@@ -17,12 +17,15 @@ fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 /// `(hash, vertices, indices, materials, char_verts, characters, attachments, colliders, cels, drones, pickups)`
 /// from `load_scene_digest.rs` on the pre-optimization tree. The full FNV hash pins the contents;
 /// the counts pin the shape.
+// Re-pinned at merge batch 1016b: master gained scene content since the branch cut (e.g. the
+// quiver bolt pool); the digests were re-captured on origin/master bee8c129 (no cuts) and the
+// merged tree (cuts) builds them identically on all 5 levels.
 const BASELINE: &[(&str, &str)] = &[
-    ("07000002.bin", "6bbb4c6306c70474 4287776 8959032 4535 4144986 81 8512 255 28 25 8"),
-    ("07000005.bin", "e3c8e19d127a5c75 4188471 8751951 2675 4104130 73 8561 106 19 16 6"),
-    ("0700000c.bin", "6cb700bc1ebcd7b7 4671326 9814296 7018 4480502 96 9775 170 22 40 15"),
-    ("07000014.bin", "f047324d10f28fb2 7044932 14617596 5283 6891795 134 12168 176 41 61 32"),
-    ("07000001.bin", "ff90935baf229b74 4200332 8799048 2781 4117927 76 8526 156 11 20 6"),
+    ("07000002.bin", "d2d94af0cf17010d 4303432 8995716 4540 4160642 81 9186 255 28 25 8"),
+    ("07000005.bin", "7099e4ac4aae4104 4204127 8788635 2680 4119786 73 9235 106 19 16 6"),
+    ("0700000c.bin", "a4a2155d96a2f706 4687168 9851358 7026 4496344 96 10452 170 22 40 15"),
+    ("07000014.bin", "826b23eb71554128 7060774 14654658 5293 6907637 134 12845 176 41 37 32"),
+    ("07000001.bin", "d053e1db8a46c7a3 4215988 8835732 2786 4133583 76 9200 156 11 20 6"),
 ];
 
 #[test]
