@@ -18660,3 +18660,8 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   walkreal_07000009_live 3/3, elevator_buttons_09_live 3/3, the four-crate
   suite build + the run in flight on this tree (the 3 allowed disc_golden
   failures only, so far). Report: docs/reports/level-09-complete.md.
+- 2026-10-17 s/level-0a-interactables (task 710a): STARTED. Tower B (the office
+  floor, 0700000a): the interactables census in docs/levels/0700000a.md, one
+  live test per KIND through the real input path, every placement's mesh/skin
+  resolving. Known open items: the cab mouth's SS lift doors (placements
+  524/525) stay closed at key 0; the keyboard lasers. In progress.
