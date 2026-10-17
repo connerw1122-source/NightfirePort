@@ -2374,6 +2374,10 @@ impl Sim {
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             input.fire = trigger;
+            // The zero-g auto-stabiliser reads the game's action 0xe — the same pad button the
+            // keyboard path splits into the use key (E) and reload (R) [M Player_ZeroG 0x192ab0:
+            // 163-166]. OR both edges in; the field is only read in the zero-g substates.
+            input.stabilise = input.stabilise || use_key || reload;
             // The queries' start cel (obj+0x20 — fix-safe08b): the game's per-tick relink is the STATEFUL
             // `control_handle_cel_change` 0x133288 (supersedes fix-08-collision2's FindCel-at-pos root —
             // the same `build_FindCel` 0x1c8cb0 two-ray tie-break that fix kept, but as
