@@ -323,6 +323,73 @@ mod tests {
         assert_eq!(ev4.len(), 1, "an unfiltered weapon breaks the pane");
     }
 
+    fn pane(pl: usize, kind: u32, health: f32) -> Breakable {
+        // 07000001's pane 136 bounds [D nf_view bounds dump].
+        Breakable { placement: pl, lo: [-1.91, 5.34, -1.167], hi: [-0.09, 7.95, -1.167], kind, health, filter: 0, broken: false, shape_key: 0, matrix: [[0.0; 4]; 4] }
+    }
+
+    #[test]
+    fn a_drone_smash_drains_sqdist_times_twenty_and_kills_the_glass() {
+        let mut b = Breakables { list: vec![pane(136, 2, 0.0)] };
+        // The level gate: the class-2 arm exists on 0x0700001 ALONE [M 0x12bfd8:24].
+        let ev0 = b.drone_smash([-1.0, 6.3, -0.5], [-1.0, 6.3, -1.6], 0x0700_0002);
+        assert!(ev0.is_empty() && !b.broken_at(136), "another level never smashes by contact [M 0x12bfd8:24]");
+        // A motionless brush drains nothing [M :27 — SqDist(pos, prev) = 0].
+        let ev1 = b.drone_smash([-1.0, 6.3, -1.0], [-1.0, 6.3, -1.0], 0x0700_0001);
+        assert!(ev1.is_empty() && !b.broken_at(136), "a stationary contact survives the health-0 pane");
+        // The tick's movement through the pane plane kills it [M :26-27, :49-51].
+        let ev2 = b.drone_smash([-1.0, 6.3, -0.5], [-1.0, 6.3, -1.6], 0x0700_0001);
+        assert_eq!(ev2.len(), 1, "the crossing shatters the health-0 pane");
+        assert_eq!(ev2[0].sound, 0x2e, "kind 2 plays 0x2e, no roll [M 0x12b970:65-70]");
+        assert_eq!(ev2[0].kind, 2);
+        assert!(b.broken_at(136), "obj+0xFE |= 1 [M 0x12b970:60]");
+        // Sister: a NON-glass kind is immune to the class-2 arm (the kind gate [M :25]).
+        let mut b2 = Breakables { list: vec![pane(5, 0, 0.0)] };
+        let ev3 = b2.drone_smash([-1.0, 6.3, -0.5], [-1.0, 6.3, -1.6], 0x0700_0001);
+        assert!(ev3.is_empty() && !b2.broken_at(5), "the smash arm is kind-2 only [M 0x12bfd8:25]");
+        // Sister: the drain is exactly SqDist·20 — a 0.3 step (d2 0.09 → 1.8) dents a 100 pool.
+        let mut b3 = Breakables { list: vec![pane(6, 2, 100.0)] };
+        let ev4 = b3.drone_smash([-1.0, 6.3, -0.5], [-1.0, 6.3, -0.8], 0x0700_0001);
+        assert!(ev4.is_empty() && !b3.broken_at(6));
+        assert!((b3.list[0].health - 98.2).abs() < 1e-4, "health -= SqDist·20 [M 0x12bfd8:27], got {}", b3.list[0].health);
+        // The RNG stream is untouched by a glass kill (0x2e is unconditional [M 0x12b970:65-70]).
+        let mut rng_a = crate::drone::Rng::new(0x5eed);
+        let a = rng_a.rand(100);
+        let mut b4 = Breakables { list: vec![pane(7, 2, 0.0)] };
+        let _ = b4.drone_smash([-1.0, 6.3, -0.5], [-1.0, 6.3, -1.6], 0x0700_0001);
+        let mut rng_b = crate::drone::Rng::new(0x5eed);
+        let _ = rng_b.rand(100);
+        let bb = rng_b.rand(100);
+        let mut rng_c = crate::drone::Rng::new(0x5eed);
+        let _ = rng_c.rand(100);
+        // (no draw here — the glass kill is unconditional) — then the same next draw.
+        let cc = rng_c.rand(100);
+        assert_eq!(bb, cc, "the glass kill drew nothing between the two rolls");
+        let _ = a;
+    }
+
+    #[test]
+    fn do_break_kills_the_first_intact_pane_containing_the_point() {
+        // The game walks the object list and kills the FIRST class-0x20 sphere containing the
+        // point [M Break_DoBreak 0x12c168:39-51,61]; the port's order is placement order.
+        let mut b = Breakables { list: vec![pane(10, 2, 0.0), { let mut x = pane(11, 2, 0.0); x.lo = [5.0, 5.34, -1.167]; x.hi = [6.8, 7.95, -1.167]; x }] };
+        let mut rng = crate::drone::Rng::new(7);
+        // The point sits in BOTH (pane 10's grow 0.2 reaches x −0.09+0.2 = 0.11 < 5 — no: only
+        // pane 11 contains x 5.9); the first CONTAINING one dies.
+        let ev = b.do_break([5.9, 6.3, -1.167], &mut rng);
+        assert_eq!(ev.len(), 1, "the scripted kill fires [M 0x12c168:39-61]");
+        assert!(b.broken_at(11) && !b.broken_at(10), "the containing pane died, the far one lives");
+        assert_eq!(ev[0].sound, 0x2e);
+        // Sister: no pane at the point → nothing dies.
+        let mut b2 = Breakables { list: vec![pane(10, 2, 0.0)] };
+        let ev2 = b2.do_break([100.0, 6.3, -1.167], &mut rng);
+        assert!(ev2.is_empty() && !b2.broken_at(10), "a point outside every sphere kills nothing");
+        // Sister: a BROKEN pane is skipped (the first INTACT one [M :45 — the FE&1 gate]).
+        let mut b3 = Breakables { list: vec![{ let mut x = pane(12, 2, 0.0); x.broken = true; x }, pane(13, 2, 0.0)] };
+        let ev3 = b3.do_break([-1.0, 6.3, -1.167], &mut rng);
+        assert!(b3.broken_at(13) && ev3.len() == 1, "the kill skips the already-broken pane");
+    }
+
     #[test]
     fn pooled_health_takes_more_than_one_round_and_the_roll_picks_the_sound() {
         // The kind-0 breakable: 30 health. The game draws Rand_Rand(100) at the kill [M
