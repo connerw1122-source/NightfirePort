@@ -16822,3 +16822,33 @@ mp-backout-after-character (queue 716, branch s/mp-backout-after-character)
   pylon render probes (the master baseline). nf-view alone: 180 passed / 0 failed. No live
   checks needed: the walk is fully headless and deterministic.
 - Report: docs/reports/mp-backout-after-character.md.
+
+## drone-press-alarm (2026-10-16, branch s/drone-press-alarm) — start 19:30 UTC
+
+Task 717: port NDrone2's PressAlarm chain (RunToAlarm 0x89 / PressAlarm 0x8A / DonePressAlarm 0x8B,
+`NDrone2_FindAlarmPoint` 0x153008) — how a guard picks an alarm panel, the walk + press anims, the
+channel it raises (`DroneFunc_SetMissionFailReason` 0x13e560 reason 0x10 → the nearest Switch obj's
+channel; every disc alarm switch writes 0x61 [S]) and when the attempt is abandoned (impacts →
+`DroneFunc_HandleImpact`, death/stun via the GLOBAL fallback), plus which levels' guards can reach it
+[MsD]. Decompile read so far: the DSTATE trio, `FindAlarmPoint` (AIPoint registry: type 8 = alarm,
+`ClosestAIPoint` 0x151b18 picks enabled+reachable+same-path nearest; +0x44 yaw → Drone+0x734 [M-dis]),
+`Drone_AIPoint` 0x137550 (placement 0xE9: +0x20 pos, +0x40 rot, +0x6 type, +0x14 radius, +0xC param
+[M-dis, the decomp's vec2 offsets are wrong]), `EnemyRunToPoint` 0x168910 (prop 0x56 set → 0x89),
+`DroneTypeSettings` row 14 = start/alt 0x89 (mode 14 = `DroneModeSettings` row 18 AlarmRaiser, init
+0x14df98 sets props 0x23+0x56), `DoModeSettingsNEW` sets props 0x1a+0x56 on 07000009/0A (already
+ported), timer-C payload plumbing in `PreDroneControl` 0x148db0:93-108 (msg 0xC carries +0xCC8).
+Plan: AI-point registry from 0xE9 placements in `attach_level`, real RunToAlarm/PressAlarm/
+DonePressAlarm arms, the EnemyRunToPoint prop-0x56 arm, disc census test, then the suite.
+
+## drone-press-alarm (2026-10-16, branch s/drone-press-alarm) — checkpoint 20:57 UTC (sandbox expiring)
+
+The decompile pass is complete and the chain is ported (RunToAlarm/PressAlarm/DonePressAlarm/
+HostageGoToGoal/JustStand arms, the 0xE9 AI-point + 0x29 switch registry, the EnemyRunToPoint
+prop-0x56 gate; `cargo check -p nf-game` clean) — commits 28582c23 + eb888ad0 pushed. NOT done: the
+HandleImpact 0x1469b8 08/09 guard-reassignment (the disc's real trigger), the two tests, the suite
+run, the seen-and-attacking tick list. Full findings + the live-check list:
+docs/reports/drone-press-alarm.md. Key discovery: the disc's alarm levels are 07000008/09 (impact
+reassignment → FirstAttack +0x5a4=0x89) and 0700000a (9 panels, 10 ch-0x61 switches, prop 0x56 on
+all 20 guards); the disc's alarm channels are 0x61 (0a) and 0x37 (09), and DroneTypeSettings row 14
+= start/alt 0x89 is reached via DroneModeSettings row 18 (AlarmRaiser) or GetDTYPENEW block 3 +
+prop 0x56.
