@@ -30,3 +30,6 @@ say so in the report. Never weaken a decompile-backed test to make code pass.
 
 
 (Requeued: 705f ended blocked with an empty report and no branch — a sandbox failure, not a task problem.)
+
+---
+claimed-by: sandbox1 at 2026-10-17T19:49Z
