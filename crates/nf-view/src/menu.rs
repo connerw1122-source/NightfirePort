@@ -1126,6 +1126,82 @@ pub const MP_WEAPON_SETS: [u32; 11] = [0x1a0, 0x1a2, 0x1a4, 0x1a6, 0x1a8, 0x24f,
 /// fresh roster's +0x2c = 0 re-selects the "0" node [M bootup_bootup's roster loop].
 pub const MP_HANDICAPS: [(i32, &str); 8] =
     [(-75, "-75"), (-50, "-50"), (-25, "-25"), (0, "0"), (25, "+25"), (50, "+50"), (75, "+75"), (100, "+100")];
+
+/// mp-screens: the Confirm page's Weapon Set row's per-value labels [M P_MPCONFIRM 0x20ec00's
+/// switch at :248-270 — 0→0x1a0, 1→0x1a2, 2→0x1a4, 3→0x1a6, 4→0x1a8, 5→0x24f, 6→0x3db, 7→0x3dc,
+/// 8→0x3dd, 9→0x3de, 10→0x1b2; the row's own title is 0x24d].
+pub const MP_CONFIRM_WEAPON_LABELS: [u32; 11] =
+    [0x1a0, 0x1a2, 0x1a4, 0x1a6, 0x1a8, 0x24f, 0x3db, 0x3dc, 0x3dd, 0x3de, 0x1b2];
+
+/// mp-screens: one Setup-page panel's line for the draw code (see `mp_setup_panels`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MpSetupPanel {
+    /// mpjoin+0 — the panel hides (msg 0x2b 1) when false [M 0x20d7a8:73-78].
+    pub joined: bool,
+    /// mp_stuff+0x360+p: 0 = unjoined (nothing drawn), 2 = team list, 3 = character list,
+    /// 4 = handicap list, 5 = done [M 0x20d7a8's 0x4c + C_RBMPSETUP 0x20de58's 0x4b steps].
+    pub state: u32,
+    /// The 0x100001a2 prompt label: 0x37c team / 0x37d character [M 0x20d7a8:33,47].
+    pub prompt_label: u32,
+    /// The pick text: the bound team/character name, or the handicap's raw .data string
+    /// [D 0x30d390..0x30d3c8].
+    pub pick: String,
+    /// MPSettings+p·0x30+0x2c — the page-enter default 1/3/2/0 [M 0x20d7a8:20-23].
+    pub handicap: Option<i32>,
+}
+
+/// mp-screens: the Confirm page's content (see `mp_confirm_summary`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct MpConfirmSummary {
+    /// MPSettings+0x1A4 & 0x20000000 — the header/picture split [M 0x20ec00:160-172].
+    pub team_game: bool,
+    /// 0x1000023f's text: 0x295 free-for-all / 0x1c8 team [M :162-172].
+    pub header_label: u32,
+    /// The joined humans, blue = team 1 or a free-for-all [M :176-186].
+    pub humans: Vec<MpConfirmAgent>,
+    /// The bots' portrait columns' fill counts (0x10000233 blue / 0x10000234 red; a free-for-all
+    /// fills blue only) [M :320-389].
+    pub bots_blue: u32,
+    pub bots_red: u32,
+    /// The six summary rows [M :275-318].
+    pub rows: MpConfirmRows,
+}
+
+/// One joined human's panel line [M :176-215].
+#[derive(Clone, Debug, PartialEq)]
+pub struct MpConfirmAgent {
+    /// Blue (0x10000237/0x10000235/0x10000238) or red (0x10000239/0x10000236/0x1000023a).
+    pub blue: bool,
+    /// The record's name [M :190-191 — msg 0x18 with the MPSettings name buffer].
+    pub name: String,
+    /// The handicap value (the line renders "%s%d" with 0x30d3e0, or 0x30d2d8 when negative
+    /// [M :203-207]).
+    pub handicap: i32,
+}
+
+/// The six summary rows' ids and rendered values [M :275-318].
+#[derive(Clone, Debug, PartialEq)]
+pub struct MpConfirmRows {
+    /// 0x1000022d "MAP" + the arena's mp_level name label (record+4 via GetItemFromHash type 8).
+    pub map_label: u32,
+    pub map_name_label: u32,
+    /// 0x1000022e "SCENARIO" + the mp_scenario name label (record+4, type 13).
+    pub scenario_label: u32,
+    pub scenario_name_label: u32,
+    /// 0x1000022f "WEAPON SET" (0x24d) + the per-value label.
+    pub weapon_label: u32,
+    /// 0x10000230 TIME (0x3d8) / LIVES (0x3d7, scenario 0x10); NONE (0x3ca) at −1 — the
+    /// scenarios 0x40000800/0x60001000 bind 0x10001de instead.
+    pub time_label: u32,
+    /// 0x10000231 POINTS (0x3d6) / NONE (0x3ca).
+    pub points_label: u32,
+    /// 0x10000232 friendly fire (0x3da).
+    pub friendly_fire_label: u32,
+    /// The rendered "label: value" strings the game sprintf's into the row buffers.
+    pub time_row: String,
+    pub points_row: String,
+    pub friendly_fire_row: String,
+}
 /// The P_MPSETUP per-agent prompt labels [M P_MPSETUP 0x20d7a8: state 2 (team) binds 0x37c, state
 /// 3 (character) binds 0x37d; USATxt "Choose Team"/"Choose Character"].
 pub const MP_SETUP_TEAM_PROMPT: u32 = 0x37c;
@@ -5848,6 +5924,112 @@ impl FrontEnd {
         } else {
             self.mp_setup_state = 3;
             self.mp_setup_sel = self.mp_join[0].skin as usize;
+        }
+    }
+
+    // ── mp-screens: the draw-side data for the two pages the overlay left empty ────────────────
+
+    /// The Setup page's per-agent panel data [M P_MPSETUP 0x20d7a8:15-89]. The game walks the 4
+    /// `mpjoin` records: per agent, msg 0x39 finds/creates the per-slot list (control
+    /// 0x100001a1), the prompt text rides 0x100001a2 — a team game binds 0x37c ("choose your
+    /// team") and fills the list with Phoenix 0x1c7 / MI6 0x1c8 (state `mp_stuff+0x360+p = 2`),
+    /// a free-for-all binds 0x37d ("choose your character") and `Menu_GetMPSkins` fills the list
+    /// (state 3) with the agent's team byte forced to 1 (MI6). An unjoined agent's 4 controls
+    /// hide (msg 0x2b, 1) — 0x1000022a finish, 0x100001a1 list, 0x100001a2 prompt, 0x100001a0
+    /// plate; a joined one gets the manager's 0x5a activate. C_RBMPSETUP 0x20de58's confirm
+    /// steps the state 2 → 3 → 4 (the handicap list, the 8 .data strings 0x30d390..0x30d3c8)
+    /// → 5 and writes `MPSettings+p·0x30+0x2c` — the page-enter defaults are per-agent
+    /// `PlayerSetting+0x156` = 1/3/2/0 [M 0x20d7a8:20-23: DAT_002a3b76=1, 0x2a3e26=3,
+    /// 0x2a3cce=2, 0x2a3a1e=0]. The port's state machine (mp_setup_state 2/3/4/5) drives agent
+    /// 1; this getter hands the draw code every panel's line. Public: the overlay and the tests.
+    pub fn mp_setup_panels(&self, lang: Option<&nf_formats::hud::Lang>) -> [MpSetupPanel; 4] {
+        let bind = |id: u32| lang.and_then(|l| l.bind(id)).map(str::to_string).unwrap_or_else(|| format!("<{id:#x}>"));
+        let team_game = self.mp_scenario & 0x2000_0000 != 0;
+        let defaults = [1i32, 3, 2, 0]; // [M 0x20d7a8:20-23's DAT_002a3b76=1, 0x2a3e26=3, 0x2a3cce=2, 0x2a3a1e=0]
+        std::array::from_fn(|p| {
+            let a = &self.mp_join[p.min(3)];
+            let (state, prompt, pick) = if !a.joined {
+                (0u32, 0u32, String::new())
+            } else if team_game {
+                // The state-2 team list [M 0x20d7a8:44-54]: the pick is mpjoin+4 (0/1 → 0x1c7/0x1c8).
+                (2, 0x37c, bind([0x1c7, 0x1c8][(a.team == 1) as usize]))
+            } else if self.mp_setup_state == 4 && p == 0 {
+                // C_RBMPSETUP's state-4 handicap list [M 0x20de58's 0x4b state-3 arm] — agent 1's
+                // active pick (the port's single keyboard agent drives the shared state). The
+                // list items are raw .data strings, not Txt labels [D 0x30d390..0x30d3c8].
+                (4, 0x37d, MP_HANDICAPS[self.mp_setup_sel.min(MP_HANDICAPS.len() - 1)].1.to_string())
+            } else {
+                (3, 0x37d, bind(MP_CHARACTERS[(a.skin as usize).min(MP_CHARACTERS.len() - 1)].1))
+            };
+            MpSetupPanel {
+                joined: a.joined,
+                state,
+                prompt_label: prompt,
+                pick,
+                handicap: if a.joined { Some(if p == 0 { self.mp_handicap } else { defaults[p] }) } else { None },
+            }
+        })
+    }
+
+    /// The Confirm page's whole content [M P_MPCONFIRM 0x20ec00's 0x4c arm, lines 143-389]. The
+    /// game hides every panel first (msg 0x2b, 1), then fills: the header 0x1000023f = Txt(0x295)
+    /// free-for-all / Txt(0x1c8) team with the picture control 0x1000023e shown 1/2; per joined
+    /// human (blue = team 1 or a free-for-all, else red): the name 0x10000237/0x10000239, the
+    /// handicap line 0x10000238/0x1000023a = sprintf("%s%d", 0x30d3e0, or 0x30d2d8 when the value
+    /// is negative, the handicap) [M :203-207], the portrait 0x10000235/0x10000236 with msg 0x24
+    /// = `mp_characters_small[char·0x18]` (the icon id); the summary rows 0x1000022d "MAP"
+    /// (0x3d4) + the arena's mp_level name, 0x1000022e "SCENARIO" (0x3d5) + the mp_scenario
+    /// name, 0x1000022f "WEAPON SET" (0x24d) + the per-value label switch (0→0x1a0, 1→0x1a2,
+    /// 2→0x1a4, 3→0x1a6, 4→0x1a8, 5→0x24f, 6→0x3db, 7→0x3dc, 8→0x3dd, 9→0x3de, 10→0x1b2)
+    /// [M :248-270], 0x10000230 the time ("TIME" 0x3d8, or "LIVES" 0x3d7 for the death-limit
+    /// scenario 0x10; "NONE" 0x3ca when −1 — the scenarios 0x40000800/0x60001000 bind 0x10001de
+    /// instead) [M :273-303], 0x10000231 the points ("POINTS" 0x3d6 / "NONE" 0x3ca)
+    /// [M :305-311], 0x10000232 friendly fire (0x3da: OFF 0x1b6 / ON 0x1b7 from +0x198)
+    /// [M :313-318]; the bots' portrait columns 0x10000233 (blue) / 0x10000234 (red), 10 slots
+    /// each, shown per enabled bot with msg 0x24 = the character icon (a free-for-all fills the
+    /// blue column only) [M :320-389]. Public: the draw code and tests.
+    pub fn mp_confirm_summary(&self, lang: Option<&nf_formats::hud::Lang>) -> MpConfirmSummary {
+        let bind = |id: u32| lang.and_then(|l| l.bind(id)).map(str::to_string).unwrap_or_else(|| format!("<{id:#x}>"));
+        let team_game = self.mp_scenario & 0x2000_0000 != 0;
+        let humans: Vec<MpConfirmAgent> = self.mp_join.iter().enumerate().filter(|(_, a)| a.joined).map(|(p, a)| {
+            let blue = a.team == 1 || !team_game;
+            MpConfirmAgent { blue, name: if a.codename.is_empty() { format!("Player {}", p + 1) } else { a.codename.clone() }, handicap: if p == 0 { self.mp_handicap } else { 0 } }
+        }).collect();
+        // The bots' columns: a free-for-all fills the blue column only (the 0x4c's arm — the
+        // `if (+0x420 & 0x20000000) == 0` jump straight to 0x10000233); a team game splits by
+        // the bot's team byte [M :337-352].
+        let bots: Vec<bool> = self.mp_bots.iter().map(|b| b.enabled && (!team_game || b.team_mi6)).collect();
+        let weapon_label = MP_CONFIRM_WEAPON_LABELS[self.mp_weapon_set.min(10) as usize];
+        let time_row = if self.mp_time_limit != -1 {
+            if self.mp_scenario == 0x10 { format!("{}: {}", bind(0x3d7), self.mp_time_limit) }
+            else { format!("{}: {}", bind(0x3d8), self.mp_time_limit) }
+        } else if self.mp_scenario == 0x40000800 || self.mp_scenario == 0x60001000 {
+            format!("{}: {}", bind(0x10001de), bind(0x3ca))
+        } else {
+            format!("{}: {}", bind(0x3d8), bind(0x3ca))
+        };
+        let points_row = if self.mp_frag_limit == -1 { format!("{}: {}", bind(0x3d6), bind(0x3ca)) }
+            else { format!("{}: {}", bind(0x3d6), self.mp_frag_limit) };
+        // The rows' value names come off the wheel records [M :281-296 — `Menu_GetItemFromHash`
+        // over mp_level 0x2df400 (type 8) / mp_scenario 0x2df508 (type 13), the name at record+4;
+        // the port's tables carry the same name labels].
+        let map_name = MP_MAP_ROWS.iter().find(|r| r.3 == self.mp_level).map_or(0, |r| r.1);
+        let scenario_name = MP_SCENARIO_ROWS.iter().find(|r| r.3 == self.mp_scenario).map_or(0, |r| r.1);
+        MpConfirmSummary {
+            team_game,
+            header_label: if team_game { 0x1c8 } else { 0x295 },
+            humans,
+            bots_blue: bots.iter().filter(|&&b| b).count() as u32,
+            bots_red: bots.iter().filter(|&&b| !b).count() as u32,
+            rows: MpConfirmRows {
+                map_label: 0x3d4, map_name_label: map_name,
+                scenario_label: 0x3d5, scenario_name_label: scenario_name,
+                weapon_label,
+                time_label: if self.mp_scenario == 0x10 { 0x3d7 } else { 0x3d8 },
+                points_label: 0x3d6, friendly_fire_label: 0x3da,
+                time_row, points_row,
+                friendly_fire_row: format!("{}: {}", bind(0x3da), bind(if self.mp_friendly_fire == 0 { 0x1b6 } else { 0x1b7 })),
+            },
         }
     }
 

@@ -1399,6 +1399,28 @@ pub fn cutscene_frame(win_w: f32, win_h: f32) -> (f32, [f32; 4]) {
 /// the fade, the letterbox bars and the op-0x14 sprites (`Scene::script_overlay_hud`). The shot
 /// path used to draw `overlay_for` alone, so the Kimiko-scene compare frames showed no letterbox
 /// bars; the window path always appended the script overlay (App redraw) and now both do.
+/// mp-screens: the spot shot's movie gates, mirrored from the redraw's `movie_up` decision
+/// (the window's per-frame composition). Inputs: the front-end's movie states (state-6 briefing,
+/// the intro pair, the attract movie, whether the ONE player holds a looping page backdrop, the
+/// briefing's `movie_pending`, a player at all). Returns `(want_frame, blank_rule)`:
+/// `blank_rule` decides the overlay — `Blank::Always` (the state-6 briefing blits over the empty
+/// backdrop whether or not a frame has landed yet), `Blank::WithFrame` (the intro/attract FMV
+/// owns the screen once a frame exists), `Blank::Never` (the looping page backdrop draws UNDER
+/// the overlay — the pages' controls paint over their backdrop [M movies.md §Presentation]) or
+/// no movie at all. The frame is pulled only when a movie is up (an extra `present()` would step
+/// the page loop). Pure so the tests pin the window parity without a GPU.
+pub fn spot_movie_gates(state6: bool, intro_up: bool, attract_up: bool, looping: bool, movie_pending: bool, has_movie: bool) -> (bool, Blank) {
+    let flow_up = state6 && !intro_up && has_movie;
+    if flow_up { return (true, Blank::Always); }
+    if intro_up || attract_up { return (true, Blank::WithFrame); }
+    if looping && !movie_pending { return (true, Blank::Never); }
+    (false, Blank::Never)
+}
+
+/// The overlay rule a movie-up shot uses (see `spot_movie_gates`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blank { Always, WithFrame, Never }
+
 pub fn shot_hud(scene: &scene::Scene, aspect: f32, menu: Option<&gpu::HudFrame>) -> gpu::HudFrame {
     let mut f = menu.map_or_else(|| overlay_for(scene, aspect), |m| m.clone());
     f.append(&scene.script_overlay_hud(aspect));
@@ -2652,14 +2674,55 @@ impl App {
             .unwrap_or_else(|| { let p = self.cam.pos; format!("camera {:.2},{:.2},{:.2}", p.x, p.y, p.z) });
         let line = format!("{level:08x} {spot} frame {}", self.anim_time as u32);
         let _ = std::fs::write(png.with_extension("txt"), format!("{line}\n"));
-        let fe_menu = self.fe.as_ref().and_then(|fe| self.scene.hud.as_ref().map(|t| {
-            let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
-            menu::menu_overlay(fe, &t.font, &t.font_header, lang, &self.scene.hud_textures, 1280.0 / 720.0)
-        }));
-        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref(), None) {
+        // mp-screens: capture what the window shows — the page's looping backdrop rides the ONE
+        // movie plane and the redraw blanks/replaces the overlay by the same gates. spot_shot
+        // dropped the frame (movie: None): with `fe.backdrop_live` standing (the live loop set
+        // it) the overlay skips its dark plate, the movie plane draws nothing and a front-end
+        // page shots the raw black void of the front-end level — the user's all-dark
+        // nf-shots/001-07000048.png (F12 on a menu page).
+        let (movie_owned, overlay_blank) = self.spot_movie_frame();
+        let fe_menu = if overlay_blank {
+            // The intro/attract/briefing movie owns the screen — the redraw sends an empty HUD
+            // frame there (the quad draws inside render(), before the HUD).
+            Some(gpu::HudFrame::default())
+        } else {
+            self.fe.as_ref().and_then(|fe| self.scene.hud.as_ref().map(|t| {
+                let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
+                menu::menu_overlay(fe, &t.font, &t.font_header, lang, &self.scene.hud_textures, 1280.0 / 720.0)
+            }))
+        };
+        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref(), movie_owned.as_ref()) {
             Ok(()) => format!("saved {} ({line})", png.display()),
             Err(e) => format!("screenshot failed: {e} ({line})"),
         }
+    }
+
+    /// mp-screens: the spot shot's movie composition — the same gates the redraw uses
+    /// (lib.rs's `movie_up`): the state-6 briefing, the intro pair, the attract movie and the
+    /// page's looping aux backdrop, all through the ONE player. Returns the frame to draw on the
+    /// movie plane (owned — the player's buffer borrows end here) and whether the overlay must be
+    /// blank (the movie owns the screen). Public to the tests through `crate::spot_movie_gates`.
+    fn spot_movie_frame(&mut self) -> (Option<(u32, u32, Vec<u8>)>, bool) {
+        let state6 = self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() == menu::ST_MOVIE);
+        let intro_up = self.fe.as_ref().is_some_and(|fe| fe.intro_playing);
+        let attract_up = self.fe.as_ref().is_some_and(|fe| fe.attract_playing);
+        let looping = self.movie.as_ref().is_some_and(|p| p.is_looping());
+        let pending = self.fe.as_ref().is_some_and(|fe| fe.flow.movie_pending);
+        let (want_frame, blank) = spot_movie_gates(state6, intro_up, attract_up, looping, pending, self.movie.is_some());
+        let frame = if want_frame { self.movie.as_mut().and_then(|p| p.present()).map(|(w, h, rgba)| (w, h, rgba.to_vec())) } else { None };
+        if let Some(fe) = self.fe.as_mut() {
+            // The redraw keeps `backdrop_live` in step with the live frame (the overlay's
+            // dark-plate gate reads it — menu.rs's plate skip).
+            if looping { fe.backdrop_live = frame.is_some(); }
+        }
+        // The overlay: blank when the movie owns the screen — the briefing always (the redraw's
+        // flow_up arm), the intro/attract once a frame exists; the page backdrop draws under.
+        let overlay_blank = match blank {
+            Blank::Always => true,
+            Blank::WithFrame => frame.is_some(),
+            Blank::Never => false,
+        };
+        (frame, overlay_blank)
     }
 
     /// fix-weapon-assets: true when the weapon's first-person assets are absent (its `+0xDC` skin
