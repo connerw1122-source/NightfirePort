@@ -543,6 +543,8 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
         }
     }
     phase_mark("03 level+levelbin parse, skeletons, 07F sequences", t); t = std::time::Instant::now();
+    // The level's own sleeve, before any merge lends foreign ones (see the substitution below).
+    let own_sleeve = SLEEVES.iter().copied().find(|h| level.by_hash.contains_key(h));
     merge_weapon_models(&iso, &read, &archive[..8], &mut level)?;
     phase_mark("04 weapon-models merge", t); t = std::time::Instant::now();
 
@@ -735,6 +737,14 @@ fn load_impl(iso_path: &str, archive: &str, all: bool, save: Option<&nf_game::pl
     // present → celglist 0 (nothing drawn). The port applies it once here, after the session
     // merges above, so every downstream reader (character_instances' mesh walk, the scene build,
     // the sim) sees exactly the hashes the game's runtime skin records carry.
+    // `AnimSleeveGetEntity(0)` picks the FIRST present entity of SleeveEnts, and the game's level only
+    // ever holds its own Bond's sleeve. The session/give merges can lend other levels' sleeves earlier
+    // in that list (they ride in on borrowed skins), which then won over the level's own: the 08
+    // launcher drew another level's grey glove instead of the tuxedo cuff and bare hand (PCSX2 side
+    // by side, 2026-10-17). A level with its own sleeve drops the borrowed ones before the pick.
+    if let Some(own) = own_sleeve {
+        for h in SLEEVES { if h != own { level.by_hash.remove(&h); } }
+    }
     {
         let present = |h: u32| level.by_hash.contains_key(&h);
         for sk in level.skins.values_mut() { sk.substitute_sleeves(present); }
@@ -1399,6 +1409,28 @@ pub fn cutscene_frame(win_w: f32, win_h: f32) -> (f32, [f32; 4]) {
 /// the fade, the letterbox bars and the op-0x14 sprites (`Scene::script_overlay_hud`). The shot
 /// path used to draw `overlay_for` alone, so the Kimiko-scene compare frames showed no letterbox
 /// bars; the window path always appended the script overlay (App redraw) and now both do.
+/// mp-screens: the spot shot's movie gates, mirrored from the redraw's `movie_up` decision
+/// (the window's per-frame composition). Inputs: the front-end's movie states (state-6 briefing,
+/// the intro pair, the attract movie, whether the ONE player holds a looping page backdrop, the
+/// briefing's `movie_pending`, a player at all). Returns `(want_frame, blank_rule)`:
+/// `blank_rule` decides the overlay — `Blank::Always` (the state-6 briefing blits over the empty
+/// backdrop whether or not a frame has landed yet), `Blank::WithFrame` (the intro/attract FMV
+/// owns the screen once a frame exists), `Blank::Never` (the looping page backdrop draws UNDER
+/// the overlay — the pages' controls paint over their backdrop [M movies.md §Presentation]) or
+/// no movie at all. The frame is pulled only when a movie is up (an extra `present()` would step
+/// the page loop). Pure so the tests pin the window parity without a GPU.
+pub fn spot_movie_gates(state6: bool, intro_up: bool, attract_up: bool, looping: bool, movie_pending: bool, has_movie: bool) -> (bool, Blank) {
+    let flow_up = state6 && !intro_up && has_movie;
+    if flow_up { return (true, Blank::Always); }
+    if intro_up || attract_up { return (true, Blank::WithFrame); }
+    if looping && !movie_pending { return (true, Blank::Never); }
+    (false, Blank::Never)
+}
+
+/// The overlay rule a movie-up shot uses (see `spot_movie_gates`).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Blank { Always, WithFrame, Never }
+
 pub fn shot_hud(scene: &scene::Scene, aspect: f32, menu: Option<&gpu::HudFrame>) -> gpu::HudFrame {
     let mut f = menu.map_or_else(|| overlay_for(scene, aspect), |m| m.clone());
     f.append(&scene.script_overlay_hud(aspect));
@@ -1799,6 +1831,13 @@ struct App {
     music_bank_flip: bool,
     music_loaded_bank: u32,
     music_master: i32,
+    /// create-save (profile-session): the codename session the game keeps in globals OUTSIDE
+    /// every menu manager — the save slot `DAT_002e1ae0` + the working codename buffer
+    /// `DAT_002e1ae8` [M C_KEYBOARD 0x213a98:53-57 writes them; P_NFRESULTS 0x208e78:30/145/194
+    /// reads them after fresh managers] — plus the port's card dir. Stashed from the front end
+    /// on every manager drop (`stash_profile_session`) and inherited into every fresh one
+    /// (`inherit_profile_session`), the music statics' pattern.
+    profile_session: menu::ProfileSession,
     /// The game's strings (USATxt.dat) for the front end when the loaded map has no Sim to hold them.
     lang: Option<nf_formats::hud::Lang>,
     /// The gamepad backend (fix-input), behind the `gamepad` cargo feature. `None` without a pad
@@ -1887,6 +1926,9 @@ impl App {
             return;
         }
         if fe.page == menu::Page::Pause && a == MA::Back {
+            // profile-session: the pause front end drops here — the session stands [M the
+            // globals outlive MenuManager_Delete; the next manager inherits].
+            self.stash_profile_session();
             self.fe = None; // resume [S: the game's resume is its own row; Back resumes too]
             if self.scene.sim.is_some() { self.grab(true); }
             return;
@@ -1897,6 +1939,9 @@ impl App {
 
     /// After a menu action (key, click or hover): the page's sounds, the level it requested and its close.
     fn menu_after(&mut self) {
+        // profile-session: every action may move the session (a create, a codename load, a
+        // results save) — keep the standing copy current so any manager drop hands it on.
+        self.stash_profile_session();
         let Some(fe) = self.fe.as_mut() else { return };
         // difficulty-effects: the difficulty page's confirm writes GameState+0x28 at pick time
         // [M C_SBNFDFCTY 0x216ca8:15] — the game keeps it across loads; the port stores it on
@@ -2003,6 +2048,7 @@ impl App {
             });
         }
         self.stash_music_statics();
+        self.stash_profile_session();
         self.fe = None;
         if self.scene.sim.is_some() { self.grab(true); }
     }
@@ -2028,6 +2074,25 @@ impl App {
         fe.music.bank_flip = bank_flip;
         fe.music.loaded_bank = loaded_bank;
         fe.music.music_master = master;
+    }
+
+    /// create-save (profile-session): the stash side — the manager drop leaves the codename
+    /// session standing, exactly as the game's globals survive MenuManager_Delete [M
+    /// 0x2e1ae0/0x2e1ae8 .data]. Only a front end WITH a card updates the stash: a dirless
+    /// one (the headless render paths never reach the App) must not clobber it.
+    fn stash_profile_session(&mut self) {
+        if let Some(fe) = self.fe.as_ref() {
+            if fe.profile_dir.is_some() {
+                self.profile_session = menu::ProfileSession::from_fe(fe);
+            }
+        }
+    }
+
+    /// The create side of [`App::stash_profile_session`]: a fresh front end inherits the
+    /// standing session — the card dir + its enumeration [M Menu_EnumSaves 0x1f7b78] and the
+    /// codename in play (the pause's `get_or_insert_with`, the results/debriefing handovers).
+    fn inherit_profile_session(&self, fe: &mut menu::FrontEnd) {
+        self.profile_session.apply_to(fe);
     }
 
     // ── net-match-host: the online session's app surface ────────────────────────────────────────
@@ -2066,6 +2131,9 @@ impl App {
         let (opts, warn) = settings::load_default();
         if let Some(w) = warn { eprintln!("[settings] {w}"); }
         fe.opts = opts;
+        // profile-session: keep the standing codename session (the other re-creates' rule).
+        let session = self.profile_session.clone();
+        session.apply_to(fe);
         fe.net_notice = Some(msg.to_string());
         fe.page = menu::Page::MpJoin;
         fe.cursor = 0;
@@ -2229,6 +2297,7 @@ impl App {
                     && self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() != menu::ST_MOVIE)
                 {
                     self.stash_music_statics();
+                    self.stash_profile_session();
                     self.fe = None;
                 }
                 // The mission takes the mouse on arrival. The briefing path closed its front end at
@@ -2342,10 +2411,14 @@ impl App {
         // The same music-statics inheritance `demo_results` runs (frontend-music): the match ran
         // with no front end, so the statics come from the last stash.
         if let Some(old) = self.fe.take() {
+            self.profile_session = menu::ProfileSession::from_fe(&old);
             Self::inherit_music_statics(&mut fe, old.music.bank_flip, old.music.loaded_bank, old.music.music_master);
         } else {
             Self::inherit_music_statics(&mut fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
         }
+        // profile-session: the fresh manager inherits the standing session (the game's globals
+        // outlive the handover [M 0x2e1ae0/0x2e1ae8]).
+        self.inherit_profile_session(&mut fe);
         // The game's handover deletes the menu manager with the match-start request; the fresh
         // manager boots into the runner state [M 0x1c98c8 case 1] — the flow must be live for the
         // page's own `reset_map_level_to_load`-shaped pushes.
@@ -2374,10 +2447,17 @@ impl App {
         // stash outlives the dropped manager (menu-audio-state): a mission runs with no front
         // end at all, so the statics come from the last stash when the results open.
         if let Some(old) = self.fe.take() {
+            // profile-session: the drop's stash — the codename session stands [M the globals].
+            self.profile_session = menu::ProfileSession::from_fe(&old);
             Self::inherit_music_statics(&mut fe, old.music.bank_flip, old.music.loaded_bank, old.music.music_master);
         } else {
             Self::inherit_music_statics(&mut fe, self.music_bank_flip, self.music_loaded_bank, self.music_master);
         }
+        // profile-session: the fresh manager inherits the standing session — without it the
+        // results page's save gate (`1 < DAT_002e1ae0` [M 0x208e78:30/194]) never held and
+        // finishing a mission under a codename could not save progress (the user's report's
+        // other half).
+        self.inherit_profile_session(&mut fe);
         // settings-persist: this fresh front end boots the option file's values too — its
         // defaults would otherwise ride the results page's quit back into the front end.
         let (opts, warn) = settings::load_default();
@@ -2400,7 +2480,13 @@ impl App {
                 let b = sim.drones.mission.base_map;
                 let base = if b == u32::MAX || b == 0 { self.level_code } else { b };
                 let diff = sim.drones.progress.difficulty;
-                fe.results_enter(&mut sim.drones.progress, base, 6, diff, lang.as_ref());
+                if fe.results_enter(&mut sim.drones.progress, base, 6, diff, lang.as_ref()) {
+                    // profile-session: the game writes its MSSN/BNUS from the same live state
+                    // the results page reads [M PlrStat_GetScore's DoneBetter commit rides the
+                    // enter 0x1984b0:301-308; Menu_UpdateMessageBox case 1 then saves it] —
+                    // merge the sim's tally into the profile BEFORE the save prompt can run.
+                    fe.sync_profile_progress(&sim.drones.progress);
+                }
             }
         }
         self.fe = Some(fe);
@@ -2661,14 +2747,55 @@ impl App {
             .unwrap_or_else(|| { let p = self.cam.pos; format!("camera {:.2},{:.2},{:.2}", p.x, p.y, p.z) });
         let line = format!("{level:08x} {spot} frame {}", self.anim_time as u32);
         let _ = std::fs::write(png.with_extension("txt"), format!("{line}\n"));
-        let fe_menu = self.fe.as_ref().and_then(|fe| self.scene.hud.as_ref().map(|t| {
-            let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
-            menu::menu_overlay(fe, &t.font, &t.font_header, lang, &self.scene.hud_textures, 1280.0 / 720.0)
-        }));
-        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref(), None) {
+        // mp-screens: capture what the window shows — the page's looping backdrop rides the ONE
+        // movie plane and the redraw blanks/replaces the overlay by the same gates. spot_shot
+        // dropped the frame (movie: None): with `fe.backdrop_live` standing (the live loop set
+        // it) the overlay skips its dark plate, the movie plane draws nothing and a front-end
+        // page shots the raw black void of the front-end level — the user's all-dark
+        // nf-shots/001-07000048.png (F12 on a menu page).
+        let (movie_owned, overlay_blank) = self.spot_movie_frame();
+        let fe_menu = if overlay_blank {
+            // The intro/attract/briefing movie owns the screen — the redraw sends an empty HUD
+            // frame there (the quad draws inside render(), before the HUD).
+            Some(gpu::HudFrame::default())
+        } else {
+            self.fe.as_ref().and_then(|fe| self.scene.hud.as_ref().map(|t| {
+                let lang = self.lang.as_ref().or_else(|| self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()));
+                menu::menu_overlay(fe, &t.font, &t.font_header, lang, &self.scene.hud_textures, 1280.0 / 720.0)
+            }))
+        };
+        match shot(&self.scene, &self.cam, &png.to_string_lossy(), self.choice, self.anim_time, self.opts, self.notex, self.nofog, fe_menu.as_ref(), movie_owned.as_ref()) {
             Ok(()) => format!("saved {} ({line})", png.display()),
             Err(e) => format!("screenshot failed: {e} ({line})"),
         }
+    }
+
+    /// mp-screens: the spot shot's movie composition — the same gates the redraw uses
+    /// (lib.rs's `movie_up`): the state-6 briefing, the intro pair, the attract movie and the
+    /// page's looping aux backdrop, all through the ONE player. Returns the frame to draw on the
+    /// movie plane (owned — the player's buffer borrows end here) and whether the overlay must be
+    /// blank (the movie owns the screen). Public to the tests through `crate::spot_movie_gates`.
+    fn spot_movie_frame(&mut self) -> (Option<(u32, u32, Vec<u8>)>, bool) {
+        let state6 = self.fe.as_ref().is_some_and(|fe| fe.flow.get_state() == menu::ST_MOVIE);
+        let intro_up = self.fe.as_ref().is_some_and(|fe| fe.intro_playing);
+        let attract_up = self.fe.as_ref().is_some_and(|fe| fe.attract_playing);
+        let looping = self.movie.as_ref().is_some_and(|p| p.is_looping());
+        let pending = self.fe.as_ref().is_some_and(|fe| fe.flow.movie_pending);
+        let (want_frame, blank) = spot_movie_gates(state6, intro_up, attract_up, looping, pending, self.movie.is_some());
+        let frame = if want_frame { self.movie.as_mut().and_then(|p| p.present()).map(|(w, h, rgba)| (w, h, rgba.to_vec())) } else { None };
+        if let Some(fe) = self.fe.as_mut() {
+            // The redraw keeps `backdrop_live` in step with the live frame (the overlay's
+            // dark-plate gate reads it — menu.rs's plate skip).
+            if looping { fe.backdrop_live = frame.is_some(); }
+        }
+        // The overlay: blank when the movie owns the screen — the briefing always (the redraw's
+        // flow_up arm), the intro/attract once a frame exists; the page backdrop draws under.
+        let overlay_blank = match blank {
+            Blank::Always => true,
+            Blank::WithFrame => frame.is_some(),
+            Blank::Never => false,
+        };
+        (frame, overlay_blank)
     }
 
     /// fix-weapon-assets: true when the weapon's first-person assets are absent (its `+0xDC` skin
@@ -3003,6 +3130,21 @@ impl ApplicationHandler for App {
                         }
                         return;
                     }
+                    // create-save: the name page's typing — a typed letter/digit presses the
+                    // grid cell the game's own keyboard sends [M C_KEYBOARD 0x213a98 msg 0x4b:
+                    // the cell types the first byte of its text; the port's PC stand-in [S],
+                    // the grid stays the reference — docs/systems/profile-session.md], and
+                    // Backspace is the ← cell 1000 [M :39-42, the erase]. The other keys fall
+                    // to key_action below: Enter/Space press the focused cell (the ✓ holds the
+                    // focus on open [M 0x213790:47-48]), Esc backs out.
+                    if self.fe.as_ref().is_some_and(|fe| fe.page == menu::Page::CnName && fe.cn_profile_mode) {
+                        let fe = self.fe.as_mut().unwrap();
+                        let consumed = match k {
+                            KeyCode::Backspace => fe.cn_press(menu::FrontEnd::CN_KEY_DELETE),
+                            _ => menu::cnname_char_key(k).is_some_and(|cell| fe.cn_press(cell)),
+                        };
+                        if consumed { return; }
+                    }
                     // Windows key auto-repeat never confirms, backs out or skips: the game's actions
                     // are edge-triggered [M Input_Action(.., 1)], and a held Enter's repeats skipped
                     // the briefing the moment it started (playtest 1015-2231 "no intro"). Held
@@ -3062,6 +3204,7 @@ impl ApplicationHandler for App {
                             if self.scene.sim.is_some() && self.level_code != 0 && self.level_code != menu::FRONTEND_LEVEL
                                 && self.scene.sim.as_ref().and_then(|s| s.script_camera()).is_none() {
                                 let base = self.scene.sim.as_ref().map(|s| s.drones.mission.base_map).filter(|&b| b != 0 && b != u32::MAX).unwrap_or(self.level_code);
+                                let fresh_fe = self.fe.is_none();
                                 let fe = self.fe.get_or_insert_with(|| {
                                     let mut fe = menu::FrontEnd::new();
                                     // frontend-music: the fresh manager still meets the game's
@@ -3074,6 +3217,14 @@ impl ApplicationHandler for App {
                                     fe.opts = opts;
                                     fe
                                 });
+                                // profile-session: a FRESH pause manager inherits the standing codename
+                                // session [M the globals outlive the manager] — the pause's quit to
+                                // the front end must keep the codename in play. (Field-disjoint reads:
+                                // `fe` borrows `self.fe`, the session sits beside it.)
+                                if fresh_fe {
+                                    let session = self.profile_session.clone();
+                                    session.apply_to(fe);
+                                }
                                 fe.flow.current_level = self.level_code;
                                 // RESTART reloads the running mission's base map [M 0x204408:138-141
                                 // Mission_BaseMapHCode()]: a level started straight from the command line never
@@ -3476,6 +3627,7 @@ impl ApplicationHandler for App {
                                 && self.fe.as_ref().map_or(true, |fe| fe.mp_debriefing.is_none())
                             {
                                 let m = sim.mp.as_ref().unwrap();
+                                let fresh_fe = self.fe.is_none();
                                 let fe = self.fe.get_or_insert_with(|| {
                                     let mut fe = menu::FrontEnd::new();
                                     // batch-1016b: the re-created manager inherits the music statics
@@ -3487,6 +3639,12 @@ impl ApplicationHandler for App {
                                     fe.opts = opts;
                                     fe
                                 });
+                                // profile-session: a fresh debriefing manager inherits the standing
+                                // codename session (the pause's rule — the game's globals stand).
+                                if fresh_fe {
+                                    let session = self.profile_session.clone();
+                                    session.apply_to(fe);
+                                }
                                 fe.open_mp_debriefing(m);
                                 debrief_opened = true; // the grab waits for the sim borrow (below)
                             }
@@ -3513,10 +3671,20 @@ impl ApplicationHandler for App {
                             }
                         }
                         if let Some(next) = sim.drones.level_exit.take() {
-                            let resolved = nf_game::triggers::resolve_exit_code(next);
-                            if resolved != next { eprintln!("level: exit {next:08x} resolves to {resolved:08x} [M 0x1d3560]"); }
-                            eprintln!("level: exit trigger fired → loading {resolved:08x}");
-                            self.pending_level = Some(resolved);
+                            // mayhew-end-transition: the exit hold — `Trigger_Activate` pushed
+                            // `GameFlow_PushState(300.0f, 7, 0xff)` AFTER `ResetMap_LevelToLoad`
+                            // [M 0x1b2318:90-92]: the loader (state 3) sits UNDER the fade (state
+                            // 8), which pops only when the 300-frame fade ends [M 0x1c9f38:18-24,
+                            // 0x1c98c8:173-189]. Defer the drain while the hold runs; the load
+                            // starts the frame after it clears (docs/systems/exit-hold.md).
+                            if sim.drones.exit_hold.is_some() {
+                                sim.drones.level_exit = Some(next);
+                            } else {
+                                let resolved = nf_game::triggers::resolve_exit_code(next);
+                                if resolved != next { eprintln!("level: exit {next:08x} resolves to {resolved:08x} [M 0x1d3560]"); }
+                                eprintln!("level: exit trigger fired → loading {resolved:08x}");
+                                self.pending_level = Some(resolved);
+                            }
                         }
                         if !self.noclip {
                             let h = sim.bond.head();
@@ -4057,7 +4225,7 @@ pub fn run() -> Result<()> {
     // `--hold-npcs` (dev): the window run holds every guard in place, still shootable.
     if dev && args.iter().any(|a| a == "--hold-npcs") { if let Some(sim) = scene.sim.as_mut() { sim.drones.hold_npcs = true; } }
     let force_channel = if dev { args.iter().position(|a| a == "--set-channel").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u8>().ok()) } else { None };
-    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, fe_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, pending_mp_debrief: None, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
+    let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, fe_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, pending_mp_debrief: None, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, profile_session: menu::ProfileSession::default(), #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
         audio_paused: false, loading_art: None, loading_hint: Default::default(), menu_pointer: None,
         net: None, net_lobby: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,
@@ -4127,6 +4295,26 @@ pub fn run() -> Result<()> {
                 Err(e) => eprintln!("USATxt.dat: {e} — menu labels show their label ids"),
             },
             None => eprintln!("no USATxt.dat in FILES.BIN — menu labels show their label ids"),
+        }
+        // create-save (profile-session): the port's memory card IS the config dir (the
+        // settings' own directory, %APPDATA%\NightfirePort — docs/systems/profile-session.md).
+        // The boot enumerates the saved codenames the way the game's card enums run [M
+        // Menu_EnumSaves 0x1f7b78] — without it the name page's ✓ refused silently
+        // (`request_create` without a dir) and Select Codename listed nothing: the user's
+        // "you wont let me create a save", 2026-10-16. The validator's reserved names come
+        // from the two def_codename labels through the language bank [M Menu_IsValidCodename
+        // 0x1f9930 strstr's the uppercased name against them — 0x29b "New Codename",
+        // 0x211 "Default"; both [D USATxt.dat]].
+        app.profile_session.dir = settings::config_dir();
+        if let Some(fe) = app.fe.as_mut() {
+            let session = app.profile_session.clone();
+            session.apply_to(fe);
+            if let Some(lang) = app.lang.as_ref() {
+                fe.cn_reserved = vec![
+                    lang.bind(0x29b).unwrap_or("New Codename").to_string(),
+                    lang.bind(0x211).unwrap_or("Default").to_string(),
+                ];
+            }
         }
         eprintln!("[front end] title screen (P_START 0x40000009); Enter/click = start, arrows = move, Esc = back");
     } else {

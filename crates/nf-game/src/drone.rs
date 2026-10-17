@@ -139,6 +139,21 @@ pub mod state {
     /// `DSTATE_Stunned_Recover` 0x1630b8 — the get-up anim 0x76 with follow-on 0x56 + ChangeWeapon(6)
     /// for non-civilians [M case 1]; another tase (msg 7) re-runs the fall.
     pub const STUNNED_RECOVER: u8 = 0x4c;
+    /// The dart-sleep family (tranq-gun): `DSTATE_StunDartImpact` 0x163430 — the K5 dart's msg-0x19
+    /// landing state: RecoverTime (+0xCE0), the rifle-class weapon drop, AlertStatusSet(0) and the
+    /// Rand(2) sleep-fall anim 0x2B/0x2C with follow-on Loop 0x51 [M case 1].
+    pub const STUN_DART_IMPACT: u8 = 0x50;
+    /// `DSTATE_StunDartLoop` 0x163570 — the asleep state: down flag +0x2F (EXIT clears), the wake
+    /// timer +0xCC4 = now + +0xCE0; msg 6 → PainTalk + 0x42, msg 7/0x19 re-arms the timer, TIMER_C
+    /// → Recover 0x52 unless AnyoneNear(2.0) re-arms 300 [M cases 1/2/6/7/0xc].
+    pub const STUN_DART_LOOP: u8 = 0x51;
+    /// `DSTATE_StunDartRecover` 0x163700 — the get-up 0x76 with follow-on Attack 0x56
+    /// (non-civilians); msg 0x19 re-sleeps (→ 0x50) [M case 1/0x19].
+    pub const STUN_DART_RECOVER: u8 = 0x52;
+    /// `DSTATE_ReturnToPatrolPath` 0x172810 — the dart band's sighted wake target: ENTER re-finds
+    /// the mission path (not modelled [S]) and falls to GO_TO_GOAL 0x63 with the Global resume
+    /// +0x5a2 = 0x14 [M case 1].
+    pub const RETURN_TO_PATROL_PATH: u8 = 0x15;
     /// The scary-object family (`DroneFunc_ConsiderExplosive` 0x1431c0 → `RunAwayFromObject` 0x86 [M 0x1431c0:194-195];
     /// `HideFromScaryObject` 0x87 waits out the flee deadline +0x324 → 0x88 [M 0x168d18:39-44];
     /// `RecoverFromScaryObject` 0x88: +0x5A0 != 0x89 → Attack 0x56 [M 0x173658:33-42]). Names per the port's
@@ -279,6 +294,12 @@ pub mod msg {
     /// The stun-grenade broadcast (`Bullet_DoTrails` 0x12d890's `+0x70 & 0x2000` flash arm →
     /// `Drone_MessageObjVicinity(20.0, 0x18, …)` 0x12e0c0 [M]; `DroneFunc_HandleImpact` case 0x18).
     pub const FLASH: u8 = 0x18;
+    /// The tranquilizer-dart hit (`NDrone2_DealWithObjHit` 0x13fff0:269-306 → msg 0x19 with the
+    /// HITDATA): the Korsakov K5's bullets 0x43/0x44 route here instead of msg 8 — the sleep dart
+    /// (tranq-gun). The carrying states forward it to `DroneFunc_HandleImpact` case 0x19 → the
+    /// StunDart family; `DSTATE_Attack` 0x164210 and the FirstAttack wrapper have NO case 0x19 —
+    /// a guard in full combat ignores the dart.
+    pub const STUN_DART: u8 = 0x19;
 }
 
 /// Anim states (`DroneAnimStates` index).
@@ -328,6 +349,10 @@ pub mod anim_state {
     pub const STUNNED_B: u16 = 0x2e;
     /// The get-up (`StunGrenadeRecover` 0x163350 ENTER: `CallAnim(0, 0x76, 0, 0x56 non-civilian)`).
     pub const STUN_GET_UP: u16 = 0x76;
+    /// The dart-only sleep-fall anims — `DSTATE_StunDartImpact` 0x163430 case 1's `Rand_Rand(2)`
+    /// pair (no other DSTATE calls 0x2B/0x2C [M decompile grep, tranq-gun]).
+    pub const DART_FALL_A: u16 = 0x2b;
+    pub const DART_FALL_B: u16 = 0x2c;
     /// The taser fall (`DSTATE_Taser` 0x162b98 ENTER: `Rand_Rand(2)` → `CallAnim(0, 0x31/0x32, 0, 0)`;
     /// 0 when the draw is 0 → 0x32, else 0x31 [M 0x162b98:44-56]). A set without the datum falls back
     /// to 0x24 inside `DroneAnim_CallAnim` [M 0x13ab58:106-114] — the TIMER_C band then never opens
@@ -835,6 +860,10 @@ pub struct Drone {
     /// stat 0 [M 0x147188 cases 0x4a/0x4c; +0xB9 = 0 at run time [L 07000005]]. Set by the TASER
     /// enter; spent by the STUNNED enter (+0xCC4) and its msg-0x19-class re-arms.
     pub tase_recover: u32,
+    /// `Drone+0xCE0` for the dart family (tranq-gun): `DSTATE_StunDartImpact`'s ENTER writes
+    /// `RecoverTime(HITDATA)` [M 0x163430:16-19]; the loop's ENTER spends it at +0xCC4 [M 0x163570
+    /// case 1]. One value per stun family in the game; the port keeps the taser's separate.
+    pub dart_recover: u32,
     /// `Drone+0xCD8`: the fall anim the TASER enter rolled [M 0x162b98:44-48]. The STUNNED enter
     /// picks the twitch anim from it (0x30 when 0x32, else 0x2f [M 0x162eb0 case 1]) and the
     /// STUNNED msg-7 arm re-falls only when it is NOT 0x32 [M 0x162eb0 case 7].
@@ -1272,6 +1301,7 @@ impl Drone {
             door_partner: None, door_side: 0, door_planes: [[0.0; 4]; 3], door_zone: 0, door_idle_anim: 0x24, door_zone_step: 0, door_pair_requested: false,
             tase_accum: 0,
             tase_recover: 0,
+            dart_recover: 0,
             tase_fall_anim: 0,
             // fix-finale-blockers: 07000016's chaser (skin 0x0500001e, dtype 0xf, no placement death
             // channel [D]) carries 0x90 at init — the defeat stand-in documented in kiko.rs [S].
@@ -2264,6 +2294,10 @@ impl Drone {
     /// it through the unhandled→GLOBAL fallback [M 0x15b960 `return 0` + the SM fallback], so the
     /// port intercepts before the state match exactly like msg 8/6/7.
     fn on_flash(&mut self, d: &Data, _rng: &mut Rng, _frame: u32, _s: u8) -> bool {
+        // tranq-gun: DSTATE_StunDartImpact has NO case 0x18 — a flash during the sleep-fall is
+        // unhandled → GLOBAL → dropped [M 0x163430 switch]. The LOOP/RECOVER states forward 0x18 to
+        // HandleImpact (→ 0x4D) — the fall-through below reaches the same SetState.
+        if _s == state::STUN_DART_IMPACT { return true; }
         if self.prop(d, 0x1c) { return true; }
         // A flashed WaitSwitch guard responds to the real event: the port's `drawn = enabled &&
         // visible` [S — the game's obj+0xF0 & 0x30 re-enable path for a flashed waiter is unpinned;
@@ -2297,13 +2331,17 @@ impl Drone {
     /// arrives only via a scripted Message, since the bullet scan skips corpses.
     fn on_impact(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, punch: bool) -> bool {
         // The stun families: a bullet (msg 8/9) → Death_Anim 0x44 [M 0x172bb0/0x1631c0/0x163350 case 8/9
-        // → `Drone_SM_SetState(0x44)`; the taser family 0x162b98/0x162eb0/0x1630b8 case 8/9 the same].
-        // msg 6 (punch): no case in the stun-grenade family or the TASER/Recover states (dropped);
-        // DSTATE_Stunned 0x162eb0 case 6 → PainTalk + SetState(0x42 KnockedOut_Anim).
+        // → `Drone_SM_SetState(0x44)`; the taser family 0x162b98/0x162eb0/0x1630b8 case 8/9 the same;
+        // the dart family 0x163430/0x163570/0x163700 case 8/9 the same, tranq-gun]. msg 6 (punch): no
+        // case in the stun-grenade family or the TASER/Recover/dart-IMPACT/RECOVER states (dropped);
+        // DSTATE_Stunned 0x162eb0 case 6 → PainTalk + SetState(0x42 KnockedOut_Anim) and
+        // DSTATE_StunDartLoop 0x163570 case 6 → the same (tranq-gun: punching a sleeper puts him out
+        // for good).
         if matches!(s, state::STUN_GRENADE_IMPACT | state::STUN_GRENADE_LOOP | state::STUN_GRENADE_RECOVER
-                | state::TASER | state::STUNNED | state::STUNNED_RECOVER) {
+                | state::TASER | state::STUNNED | state::STUNNED_RECOVER
+                | state::STUN_DART_IMPACT | state::STUN_DART_LOOP | state::STUN_DART_RECOVER) {
             if punch {
-                if s == state::STUNNED { self.set_state(state::KNOCKED_OUT_ANIM); }
+                if s == state::STUNNED || s == state::STUN_DART_LOOP { self.pain_talk(d); self.set_state(state::KNOCKED_OUT_ANIM); }
                 return false;
             }
             self.set_state(state::DEATH_ANIM);
@@ -4203,6 +4241,152 @@ impl Drone {
         dx * dx + dz * dz < 16.0 && dy.abs() <= 3.0
     }
 
+    /// `DroneFunc_RecoverTime` 0x147188 for the HITDATA in `self.hit` — the sleep/stun length.
+    /// The weapon switch (gated in the game on the bullet obj's class 5, which every port bullet
+    /// carries): **0x43 → k=60, 0x44 → k=120**, 0x35 → 30, 0x4a/0x4c → 10, default → 60; the value
+    /// is `FRAME_RATE_INT·k·0.01·(200 − Drone+0xB9)` = 60·k·2 with `+0xB9 = 0` at run time
+    /// ([L] ee_start_05.bin: all 13 drones read +0xB9 = 0) → K5 base 7200 ticks (120 s), K5
+    /// upgrade 14400 (240 s), taser 1200, stun grenade 3600. Callers: the dart family's +0xCE0
+    /// and the msg-7/0x19 re-arms [M 0x163430:16-19, 0x163570:35-42, 0x162eb0:54-60].
+    fn hit_recover_time(&self) -> u32 {
+        let k: u32 = match self.hit.map_or(0, |h| h.weapon) {
+            0x35 => 30,
+            0x43 => 60,
+            0x44 => 120,
+            0x4a | 0x4c => 10,
+            _ => 60,
+        };
+        120 * k
+    }
+
+    /// The dart's ENTER weapon drop, `+0xDA ∈ {5, 6, 9}` [M 0x163430:20-27]. `+0xDA` is
+    /// `NDrone2_DefaultInit`'s anim-set byte, keyed on the held weapon id by its second switch
+    /// [M 0x14b300:281-313]: weapons {0x16,0x18,0x19,0x1a,0x1b} → 5, {0x12,0x14,0x15,0x30,0x32,0x33,
+    /// 0x6a,0x6e} → 6 (unless the skin's +0xD8 is 0xb/0x18 — the port does not model +0xD8 [S]),
+    /// {0x1c,0x1d,0x2a..0x2d} → 9; the pistol class {2,6,10,0xb,0xe,0x10,0x3b..0x40} → 4 (KEPT) and
+    /// the snipers {0x1e,0x1f,0x24,0x25} → 0x13 (KEPT). [L] ee_start_05.bin: the Paris guards read
+    /// wep 22 (0x16) → +0xDA = 5 and wep 36 (0x24) → +0xDA = 19 — both arms confirmed live.
+    fn held_weapon_drops_on_dart(&self) -> bool {
+        matches!(self.weapon, 0x12 | 0x14 | 0x15 | 0x16..=0x1d | 0x2a..=0x2d | 0x30 | 0x32 | 0x33 | 0x6a | 0x6e)
+    }
+
+    /// The dart-sleep family (tranq-gun): `DSTATE_StunDartImpact` 0x163430, `DSTATE_StunDartLoop`
+    /// 0x163570, `DSTATE_StunDartRecover` 0x163700 — plus the case-0x19 re-arms the TASER loop
+    /// (0x162eb0:54-60) and the stun-grenade loop (0x1631c0:67-72) carry themselves. The msg-6/8
+    /// arms route through `on_impact`'s stun-family arm like the other stun families.
+    fn handle_dart(&mut self, d: &Data, rng: &mut Rng, frame: u32, s: u8, m: u8) -> Option<bool> {
+        use state::*;
+        // The taser/stun-grenade loops' own case-0x19 arms: a dart re-arms THEIR wake timer with
+        // the dart's RecoverTime [M 0x162eb0:54-60, 0x1631c0:67-72].
+        if m == msg::STUN_DART && matches!(s, STUNNED | STUN_GRENADE_LOOP) {
+            self.timer_c = Some(frame + self.hit_recover_time());
+            return Some(true);
+        }
+        if !matches!(s, STUN_DART_IMPACT | STUN_DART_LOOP | STUN_DART_RECOVER) { return None; }
+        Some(match (s, m) {
+            (_, 0) | (_, 10) => true,
+            (STUN_DART_IMPACT, msg::ENTER) => {
+                // +0xCE0 = RecoverTime(HITDATA) [M 0x163430:16-19 → 0x147188]; the drop bands
+                // {5,6,9} → DropWeapon + ChangeWeapon(1) [M 0x163430:20-27]; mode +0xC5 0x11/0x0C →
+                // SetMissionFailReason(0xE) — the default arm: ch 99, NO label [M 0x13e560];
+                // AlertStatusSet(0) — the guard goes fully calm (the taser's arm is 2).
+                self.dart_recover = self.hit_recover_time();
+                if self.held_weapon_drops_on_dart() {
+                    self.drop_weapon(d, rng);
+                    self.weapon = 1;
+                }
+                if self.dtype == 0x11 || self.dtype == 0x0c {
+                    self.fail_reason = Some(crate::ally::mission_fail_reason(0xe));
+                }
+                self.alert = 0.0;
+                self.vision_on = false;
+                self.firing = false;
+                // Rand_Rand(2): 0 → anim 0x2C, else 0x2B (the dart-only sleep-fall anims), follow-on
+                // Loop 0x51 [M 0x163430:35-43].
+                let a = if rng.rand(2) == 0 { anim_state::DART_FALL_B } else { anim_state::DART_FALL_A };
+                self.call_anim(d, a, STUN_DART_LOOP, 0);
+                true
+            }
+            (STUN_DART_LOOP, msg::ENTER) => {
+                // +0xCC4 = now + +0xCE0, +0xCC8 = 0, +0xCC0 = 1 (TIMER_C armed), +0x2F = 1 (the DOWN
+                // flag; its EXIT clears it) [M 0x163570 case 1/2].
+                self.timer_c = Some(frame + self.dart_recover);
+                self.down = true;
+                true
+            }
+            (STUN_DART_LOOP, msg::EXIT) => { self.down = false; true }
+            (STUN_DART_LOOP, msg::TASE) | (STUN_DART_LOOP, msg::STUN_DART) => {
+                // msg 7/0x19: re-arm +0xCC4 = now + RecoverTime(HITDATA) — a second dart (or a tase)
+                // extends the sleep from NOW [M 0x163570 case 7/0x19].
+                self.timer_c = Some(frame + self.hit_recover_time());
+                true
+            }
+            (STUN_DART_LOOP, msg::TIMER_C) => {
+                // case 0xc: `DroneFunc_AnyoneNear(2.0)` keeps him under (re-arm 300); clear → Recover
+                // 0x52 [M 0x163570 case 0xc].
+                if self.stun_kept_down() { self.timer_c = Some(frame + 300); } else { self.set_state(STUN_DART_RECOVER); }
+                true
+            }
+            (STUN_DART_RECOVER, msg::ENTER) => {
+                // case 1: +0x4F8 |= 0x10000; the get-up 0x76 with the follow-on — `IsCivilian` is
+                // team != 1 [M 0x14aae0], so the CIVILIAN arm reads the impact resume (SMI+0x10) and
+                // only a team-1 guard wakes into Attack 0x56 [M 0x163700:19-29].
+                let next = if self.team == 1 { ATTACK } else { self.impact_resume };
+                self.call_anim(d, anim_state::STUN_GET_UP, next, 0);
+                true
+            }
+            (STUN_DART_RECOVER, msg::STUN_DART) => { self.set_state(STUN_DART_IMPACT); true }
+            // case 7 → HandleImpact — the intercept's handle_dart None falls to on_tase [M 0x163700 case 7].
+            (STUN_DART_RECOVER, msg::TASE) => return None,
+            // The family's own switch covers every other message → unhandled → GLOBAL → dropped
+            // (0x50 has no case 6/7/0x18/0x19; 0x51's case 6 rides on_impact; GLOBAL 0x15b830 drops
+            // the rest) [M 0x163430/0x163570/0x163700 switches].
+            _ => true,
+        })
+    }
+
+    /// `DroneFunc_HandleImpact` case 0x19 (0x1469b8:315-361) for every state that carries the case.
+    /// The states WITHOUT case 0x19 — `DSTATE_Attack` 0x164210 and the whole FirstAttack wrapper,
+    /// COMBAT 0x58/COMBAT_NEW_SIGHTING 0x5b, BulletImpact 0x55, the death/stun-terminal families,
+    /// the bots/ninjas/astronauts, WaitSwitch, GLOBAL — return unhandled → GLOBAL → dropped (the
+    /// set is the state-table 0x29b300 × decompile cross-check, docs/systems/tranq-dart.md).
+    fn on_dart_impact(&mut self, d: &Data, _rng: &mut Rng, _frame: u32, s: u8) -> bool {
+        use state::*;
+        if !matches!(s, PLAY_SCRIPT | IDLE | ALERT | PATROL | HOSTAGE_IDLE | CIVILIAN | CIVILIAN_SCARED | CIVILIAN_HIDING
+                | CIVILIAN_PATROL | CIVILIAN_MISSION | ALLY_LEAD_INIT | ALLY_LEAD | PLAYER_IN_WAY | LEAD_HIDE
+                | ALLY_LEAD_WAIT | LEAD_MISSION_WAIT | LEAD_BOND_COMBAT | ALLY_LEAD_DONE | FOLLOW_INIT | FOLLOW
+                | FOLLOW_WAIT | FOLLOW_DONE | GO_TO_GOAL_ALLY | SNIPER_IDLE | SNIPER_AIM | SNIPER_FIRE | SNIPER_RELOAD
+                | PARTY_GIRL | CIVILIAN_GUARD | CIVILIAN_DOOR_GUARD | TRUCK_DRIVER_INIT | TRUCK_DRIVER_INIT_ALERT
+                | TRUCK_DRIVER_IDLE | TRUCK_DRIVER_MISSION | AMBUSH_WAIT | SURRENDER_ANIM | SURRENDERED
+                | UNSURRENDER_ANIM | STUNNED_RECOVER | STUN_GRENADE_RECOVER | PUNCH_IMPACT | COMBAT_NO_MOVE
+                | COMBAT_OUT_OF_RANGE | COMBAT_NO_SIGHT | COMBAT_DRONE_AHEAD | COMBAT_NO_ROUTE | ALERT_TO_POSITION
+                | GO_TO_GOAL | SEARCH_AREA | DRAW_WEAPON | AIM_STAND | AIM_STAND_FIRE | AIM_STAND_RELOAD | AIM_BACKOFF
+                | AIM_CROUCH | AIM_CROUCH_FIRE | AIM_CROUCH_RELOAD | STEP_AIM_LEFT | STEP_AIM_RIGHT | STRAFE_AIM_LEFT
+                | STRAFE_AIM_RIGHT | STRAFE_DODGE_LEFT | STRAFE_DODGE_RIGHT | ROLL_LEFT_CROUCH | ROLL_RIGHT_CROUCH
+                | DRONE_STUCK | OPEN_DOOR | KICK_OBJECT | ACTION_ANIM | STAND_FIDDLE | RUN_AWAY_FROM_OBJECT
+                | HIDE_FROM_SCARY_OBJECT | RUN_FOR_COVER | UNDER_COVER_INIT | UNDER_COVER_IDLE | UNDER_COVER_AIM
+                | UNDER_COVER_FIRE | UNDER_COVER_SNIPER_FIRE | UNDER_COVER_SNIPER_RELOAD | UNDER_COVER_RETURN
+                | UNDER_COVER_LEAVE_NOW | HEARD_NOISE_AWARE | HEARD_NOISE_SUSPECT | HEARD_NOISE_ALERT) {
+            return false;
+        }
+        // `PlrStat_LogShotHitEnemy(0)` — UNCONDITIONAL here (no team gate; the msg-8 route's gate
+        // lives in NDrone2_HitDamage, which the dart route never reaches) [M 0x1469b8:316, 0x199840].
+        self.hit_log = self.hit_log.saturating_add(1);
+        // The resume stamp +0x118 = the current state when valid (≠0, not 0x53..0x55) [M :317-330].
+        let u10 = self.state;
+        if u10 != 0 && !(0x53..=0x55).contains(&u10) { self.impact_resume = u10; }
+        // The Tower band (level ∈ {0x07000009, 0x0700000a}; `GameState._12_4_ + 0xf8fffff7 < 2`):
+        // unsighted → the resume slot = 0x14 CivilianPatrol; sighted → the alert-plumbing block
+        // (unmodelled, the same block the port's flash path skips) and the resume = 0x15
+        // ReturnToPatrolPath [M 0x1469b8:331-357]. The tower guards are team 3 — `IsCivilian`
+        // civilians — so THIS resume is what their wake follows [M 0x163700:19-29, 0x14aae0].
+        if d.level == 0x0700_0009 || d.level == 0x0700_000a {
+            self.impact_resume = if !self.sighted { CIVILIAN_PATROL } else { RETURN_TO_PATROL_PATH };
+        }
+        self.set_state(STUN_DART_IMPACT);
+        true
+    }
+
     // ---- state machine -----------------------------------------------------------------------------------------
 
     fn set_state(&mut self, s: u8) {
@@ -4448,8 +4632,27 @@ impl Drone {
         // IS the base DSTATE, so its case 7 (the accumulator + the fall) is the GLOBAL fallback,
         // exactly like msg 8/6 [M 0x1469b8 case 7].
         if m == msg::TASE {
+            // The dart loop's OWN case-7 arm re-arms the sleep (it must not reach the tase
+            // accumulator) [M 0x163570 case 7]; the 0x50/0x52 states fall through — 0x52's case 7
+            // forwards to HandleImpact (the accumulator) and 0x50's missing case drops via GLOBAL.
+            if let Some(r) = self.handle_dart(d, rng, frame, s, m) { return r; }
             if let Some(r) = self.handle_taser(d, rng, frame, s, m) { return r; }
             return self.on_tase(d);
+        }
+        // tranq-gun: the K5's sleep dart. The dart family handles its own case-0x19 arms; every
+        // other carrying state falls to `on_dart_impact` = `DroneFunc_HandleImpact` case 0x19 [M
+        // 0x1469b8:315-361]; the NON-carrying states return false → GLOBAL → dropped (Attack 0x56
+        // and its wrapper 0x164210 have no case 0x19 — a guard in full combat ignores the dart).
+        if m == msg::STUN_DART {
+            if let Some(r) = self.handle_dart(d, rng, frame, s, m) { return r; }
+            return self.on_dart_impact(d, rng, frame, s);
+        }
+        // tranq-gun: the dart family's OWN switch covers every other message (the same shape as
+        // the taser block above): unhandled → GLOBAL → dropped — a sleeper is blind, deaf and
+        // unalertable [M 0x163430/0x163570/0x163700 switches + GLOBAL 0x15b830's arms].
+        if matches!(s, STUN_DART_IMPACT | STUN_DART_LOOP | STUN_DART_RECOVER) {
+            if let Some(r) = self.handle_dart(d, rng, frame, s, m) { return r; }
+            return true;
         }
         // fix-stunner-press: the taser family's OWN switch covers every other message — the game's
         // family DSTATEs unhandle (→ GLOBAL = HandleImpact → default: dropped [M 0x1469b8:366]), so
@@ -4605,6 +4808,10 @@ impl Drone {
                 if self.wait_channel_on { self.on_bullet(d, rng, frame, s); }
                 true
             }
+            // `DSTATE_ReturnToPatrolPath` 0x172810 (tranq-gun: the tower band's sighted wake
+            // target): ENTER re-finds the mission path (ReFindMissionPath 0x153a30 — not modelled
+            // [S]) and falls to GO_TO_GOAL 0x63 with the Global resume +0x5a2 = 0x14 [M case 1].
+            (RETURN_TO_PATROL_PATH, msg::ENTER) => { self.set_state(GO_TO_GOAL); true }
             (INIT_PATROL, msg::ENTER) => {
                 let patrols = (self.prop(d, 0x24) || self.prop(d, 0x25)) && self.assign_path(d, 4);
                 self.set_state(if patrols { PATROL } else { IDLE });
@@ -7036,6 +7243,27 @@ pub fn flash_amount(head: V3, blast: V3, px: f32, pz: f32, yaw: f32, has_los: bo
     f
 }
 
+/// frag-throw-timing2: what the stun flash actually consumed at one pop — the exact inputs the
+/// sim recorded where it called `flash_amount` [M Bullet_DoTrails 0x12d890's flash arm,
+/// 0x12dfb0-0x12e0b8]: the blast position, the player eye the dist and LOS legs ran from, the
+/// facing yaw (the cel+0x54 stand-in), the LOS branch taken, and the factor f the formula
+/// returned (`flash_alpha` is that f, `flashbang`/`flash_total` are 600·f [M 0x12e0b8 +
+/// 0x196040]). Port-side instrumentation with NO game counterpart (the game computes and
+/// forgets): it exists so a test can assert the flash against the geometry it actually used
+/// instead of a reconstruction from the last grenade position seen before the pop — with the
+/// case-0xc release timing the grenade is still in flight at the pop, so a reconstruction
+/// drifts (the 741 hold: alpha 0.673 vs the reconstruction's 0.758/0.379).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlashProbe {
+    pub blast: V3,
+    pub head: V3,
+    pub px: f32,
+    pub pz: f32,
+    pub yaw: f32,
+    pub los: bool,
+    pub f: f32,
+}
+
 /// Stand-in for the renderer's "drawn" (`obj+0xFC`) ONLY: within 60° of Bond's aim (or within 2 units) and any of
 /// five body points in line of sight from his eye (thin occluders hide one ray, not a cel). The SPawner's
 /// "player can see the spot" gate is a different reader — `drone_position_visible` below; guards-0c-b decoupled
@@ -7294,6 +7522,14 @@ pub struct Drones {
     /// The pending level-exit request: when a `LOAD_LEVEL` (0xE8) trigger fires, the next level's hashcode
     /// (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad` 0x1d3800). The main loop reads this to reload [M].
     pub level_exit: Option<u32>,
+    /// mayhew-end-transition: the exit hold — `Trigger_Activate`'s `GS_PauseGame(1)` +
+    /// `GameFlow_PushState(300.0f, 7, 0xff)` [M 0x1b2318:90-92]. While it stands the world is
+    /// frozen (the game's clock stops while paused [M 0x1c98c8:44-47]) and the loader waits
+    /// under the fade (state 8 pops onto state 3 = `ResetMap_Load` only when the fade ends
+    /// [M 0x1c9f38:18-24, 0x1c98c8:173-189]); the host defers the `level_exit` drain until it
+    /// clears. Set by BOTH `Trigger_Activate` arms (the auto-fire and the use key); NOT by the
+    /// script event-0x12 loadmap [M 0x1d94c0:194-199]. See docs/systems/exit-hold.md.
+    pub exit_hold: Option<ExitHold>,
     /// The mission's own end (`Mission_Update` 0x182c60 case 4's `ResetMap_LevelToLoad(LevelToEndTo)`
     /// to the front end or an outro/interlude code, not the next 0x0700 level): the host runs the
     /// game's end sequence (the outro movie when the level has one, then the results page).
@@ -7519,6 +7755,10 @@ pub struct Drones {
     /// `Create_SpaceMissile` [M 0x1a9ef0:62]: per missile 0 idle, 1 launch script playing,
     /// 2 disarmed, 3 launched [M 0x1aa118 disasm]. `HUD_UpdateSpacePane` 0x19d3b8 reads it.
     pub missile_deploy: [u8; 8],
+    /// frag-throw-timing2: the last stun flash's recorded inputs (the `FlashProbe` doc). One
+    /// pop deep — each new pop overwrites it; cleared nowhere (the probe is read-after-pop by
+    /// tests; the flash state itself decays independently).
+    pub flash_probe: Option<FlashProbe>,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -7578,6 +7818,20 @@ impl Data<'_> {
         // archive's full set) gives no parts.
         pose().unwrap_or_default()
     }
+}
+
+/// mayhew-end-transition: one active exit hold (docs/systems/exit-hold.md). `total` = the fade
+/// duration `GameFlow_PushState` was given (300 frames from `Trigger_Activate` [M 0x1b2318:92,
+/// 0x43960000 = 300.0f]); `fade_frames` counts it down on the fixed tick (the game advances the
+/// fade on the render-side `Camera_UpdateAll` [M 0x1c9790 tail] — same 300-frame length).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExitHold {
+    /// The level `Trigger_Activate` passed to `ResetMap_LevelToLoad` (ext+0x20) [M 0x1b2318:91].
+    pub next: u32,
+    /// The fade frames left; the overlay alpha is `1 − left/total` (linear [M 0x1bbdd8:11-33]).
+    pub fade_frames: u32,
+    /// The duration the push carried (300 on every trigger exit today).
+    pub total: u32,
 }
 
 impl Drones {
@@ -7652,8 +7906,31 @@ impl Drones {
             driving_stats: Default::default(),
             driving_result: crate::ptp::DriveResult::Success,
             driving_return: None,
+            // frag-throw-timing2: the stun flash's recorded geometry (own line — merge lesson 4).
+            flash_probe: None,
+            // mayhew-end-transition: no hold at build (own line — merge lesson 4).
+            exit_hold: None,
     };
         drones
+    }
+
+    /// mayhew-end-transition: one tick of the exit hold — the fade counts down (the game advances
+    /// it on the every-frame `Camera_UpdateAll` [M 0x1c9790 tail]) while the world stays frozen;
+    /// returns true while the WORLD must skip this tick. The expiry tick stays frozen too: the
+    /// game's state 8 pops straight onto state 3 (`ResetMap_Load`) [M 0x1c98c8:173-189] — the
+    /// host drains `level_exit` that frame and the load replaces the scene before the next tick.
+    pub fn tick_exit_hold(&mut self) -> bool {
+        let Some(h) = self.exit_hold.as_mut() else { return false };
+        h.fade_frames = h.fade_frames.saturating_sub(1);
+        if h.fade_frames == 0 { self.exit_hold = None; }
+        true
+    }
+
+    /// The draw code's fade read: `(frames_left, total)` while the exit fade runs — the black
+    /// overlay's alpha is `1 − left/total` (linear, the rate `Camera_SetFade` stored
+    /// [M 0x1bbdd8:11-33]). `None` = no hold (the scene draws normally).
+    pub fn exit_fade(&self) -> Option<(u32, u32)> {
+        self.exit_hold.as_ref().map(|h| (h.fade_frames, h.total))
     }
 
     /// `GameState+0x28`'s setter (C_SBNFDFCTY_Handler 0x216ca8 stores the difficulty page's
@@ -8409,10 +8686,13 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     dr.bond_aiming = self.bond_aiming;
                     // `NDrone2_DealWithObjHit` case 5 (0x13fff0:269-306): the SHOOTER is the player, so the
                     // weapon decides the message — 1 (fists), 0x4B, 0x4D → msg 6 (punch); 0x4A / 0x4C →
-                    // msg 7 (the tase — the zero-damage dart that stuns, fix-stunner-press); anything
-                    // else msg 8 (`Drone_BulletHit`). Both paths bump +0x1D8 and stamp +0x2B4 (last hit by) first.
+                    // msg 7 (the tase — the zero-damage dart that stuns, fix-stunner-press); 0x43 / 0x44 →
+                    // msg 0x19 (the K5's sleep dart, tranq-gun — HitDamage is never called on this
+                    // route); anything else msg 8 (`Drone_BulletHit`). Both paths bump +0x1D8 and stamp
+                    // +0x2B4 (last hit by) first.
                     let m = if matches!(b.weapon, 1 | 0x4b | 0x4d) { msg::PUNCH }
                         else if matches!(b.weapon, 0x4a | 0x4c) { msg::TASE }
+                        else if matches!(b.weapon, 0x43 | 0x44) { msg::STUN_DART }
                         else { msg::BULLET };
                     dr.send(d, rng, frame, m);
                     self.last_flinch = dr.global_flinch;
@@ -8918,6 +9198,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     self.level_exit = Some(next);
                     self.music.event(3, 1);
                     self.triggers[i].gone = true;
+                    // mayhew-end-transition: the use-key arm runs the SAME `Trigger_Activate`
+                    // tail [M 0x1b2318:89-96 via `Player_Activate` 0x1a5170:100-108] — the hold
+                    // goes here too (docs/systems/exit-hold.md).
+                    if self.exit_hold.is_none() {
+                        self.exit_hold = Some(ExitHold { next, fade_frames: 300, total: 300 });
+                    }
                 }
             } else if !sets.is_empty() {
                 // TouchOnce: latch gone so it doesn't fire again.
@@ -9858,10 +10144,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // `LOAD_LEVEL` (0xE8): when the exit trigger fires, carry the next level's hashcode for the main loop
                 // to reload (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad`). Also post `Music_Event(3, 1)`
                 // (the end-sting) and `GS_PauseGame(1)` (the pause during transition) [M 0x1b2318:108-110].
+                // mayhew-end-transition: `GS_PauseGame(1)` is now MODELLED, not just cited — the exit
+                // hold freezes the world for the 300 frames of the push that follows
+                // `GameFlow_PushState(300.0f, 7, 0xff)` [M 0x1b2318:90-92]; the host defers the
+                // `level_exit` drain until it clears (docs/systems/exit-hold.md).
                 if self.triggers[index].kind == crate::triggers::kind::LOAD_LEVEL && self.triggers[index].gone && self.triggers[index].next_level != 0 {
                     if self.level_exit.is_none() {
                         self.level_exit = Some(self.triggers[index].next_level);
                         self.music.event(3, 1);
+                        // [M 0x1b2318:90-92] GS_PauseGame(1) + PushState(300.0f, 7) — the hold.
+                        if self.exit_hold.is_none() {
+                            self.exit_hold = Some(ExitHold { next: self.triggers[index].next_level, fade_frames: 300, total: 300 });
+                        }
                     }
                 }
                 // NF_LEVELLOG=1: once per second, log each LOAD_LEVEL trigger's gate channel, whether the gate
@@ -10942,6 +11236,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             // the crosshair ray's bearing (both are the camera's yaw at the blast) [*suggested*].
                             let yaw = atan2_approx(player.aim[0], player.aim[2]);
                             let f = flash_amount(head, pos, player.pos[0], player.pos[2], yaw, has_los);
+                            // frag-throw-timing2: record the exact geometry the flash consumed (the
+                            // `FlashProbe` doc) — the test asserts against these, not a reconstruction.
+                            self.flash_probe = Some(FlashProbe { blast: pos, head, px: player.pos[0], pz: player.pos[2], yaw, los: has_los, f });
                             // `Player_SetFlashBang` [M 0x196040]: BL+0x963 = (u8)(f·255), BL+0x918 = BL+0x91C =
                             // FRAME_RATE·f·10 = 600·f ticks (the remaining and the total — the total counts down
                             // per tick and gates the plateau/fade switch [M 0x193600:328-336]).
@@ -11245,6 +11542,7 @@ mod tests {
             door_partner: None, door_side: 0, door_planes: [[0.0; 4]; 3], door_zone: 0, door_idle_anim: 0x24, door_zone_step: 0, door_pair_requested: false,
             tase_accum: 0,
             tase_recover: 0,
+            dart_recover: 0,
             tase_fall_anim: 0,
             stationary: false, alpha: 255.0, raise: None,
             velocity: [0.0; 3], in_air: false, on_surface: true,
