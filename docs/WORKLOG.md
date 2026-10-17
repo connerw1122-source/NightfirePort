@@ -17430,3 +17430,9 @@ through the real input path + a sister, run the touched crates + the full suite.
   functional on master when Bond reaches the gatehouse edge inside the t 1882..2312 window;
   the open item stays the manual beeline stall at (101.2, 24.94) — the walkway lip / arch
   face there, and what the player actually steers in play (the live checks in the report).
+- mayhew-exit-walk (03:20 UTC): walkreal_07000005_live::walk_to_the_gatehouse_and_ride_the_truck
+  UN-PARKED and GREEN (1 passed, the cable sister still ignored) — the approach target moved to
+  the walkway's west edge (98.6, 26.0, 106.5) instead of the arch-face line (100, 26, 108); the
+  walked ride parks at (29.86, 37.93, 52.4) at t 5687 with no falls, ch 0x70/0x1D and the exit
+  through the real walked path. The whole truck-exit chain is now double-pinned (the walkreal
+  harness + mayhew_handover_live).
