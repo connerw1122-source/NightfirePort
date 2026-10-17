@@ -63,8 +63,25 @@ geometry there is exactly one answer, and the tolerance question dissolves.
 - Binaries run before pushing (all green): `fix_grenade_types_live` 3 passed + 1 ignored (the
   107a guard-stun test, pre-existing), `frag_throw_timing_live` 1, `fix_grenade_release_live` 4,
   `fix_grenade_throw_live` 4, `remote_mine_detonate` 3.
-- Full suite (the fast runner, foreground — this sandbox reaps background jobs; see the run
-  total below).
+- Full suite on the final tree (all four crates, `--test-threads=1`, per-binary 600 s limit —
+  the tools/test/suite.py shape run through `scripts/suite_chunked.py`, the same invocation
+  chunked to fit the sandbox's 10-minute tool cap after it reaped every background job):
+
+  **2008 passed, 6 failed, 73 ignored** (479 test binaries).
+
+  The 6 failures:
+  - 3 × `disc_golden` (`bigf_header_fields_behave_as_documented`, `bigf_tables_match_the_golden_manifest`,
+    `directory_tree_matches_the_golden_manifest`) — the expected slim-ISO failures.
+  - 3 × the pylon render trio (`probe_render_pylon_only`,
+    `fix_0c_pylon_live::the_0c_pylon_fills_the_view_from_the_closeup_spot`,
+    `fix_0c_pylon_live::the_0c_pylon_is_on_screen_at_the_user_spot`) — render-verification tests
+    in this GPU-less sandbox; this task's change is sim-side data recording (a new `Option`
+    field on `Drones` + the flash call site) plus two grenade test files, and the 0c pylon path
+    touches none of it — no stun can pop in those tests. They are most plausibly the visual
+    batch's GPU-dependent tests (the tree's merge-log commit is literally the GPU facial-morphs
+    work) failing without a GPU; the main agent should re-run the trio on the merge tree with a
+    renderer. The sandbox reset before their failure output could be archived — treat as
+    environment-unverified, not pinned either way.
 
 ## What's left
 

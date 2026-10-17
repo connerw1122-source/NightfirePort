@@ -17439,3 +17439,19 @@ through the real input path + a sister, run the touched crates + the full suite.
   at the flash_amount call) and assert the test against exactly those; keep the branch's own
   frag_throw_timing_live green. Branch = origin/s/frag-throw-timing 7f41e160 merged with
   origin/master 31dd6161 (the frag-throw work is already an ancestor of master).
+- frag-throw-timing2 completion: restored the held 741 work by reverting the batch's revert
+  (the case-0xc release gate [M 0x1a2e38:505-519] + frag_throw_timing_live + the family test
+  windows), reproducing the hold's failure exactly (alpha 0.6732224 vs the reconstruction's
+  0.7584983/0.37924916), then fixing it the task's way: the sim now records the flash's exact
+  inputs at the flash_amount call (Drones::flash_probe = FlashProbe{blast, head, px, pz, yaw,
+  los, f} [M 0x12dfb0-0x12e0b8]; port-side instrumentation, no game counterpart) and both stun
+  tests assert against exactly those — alpha == flash_amount(recorded) at 1e-6, the total
+  600·f exact, the remaining count within one countdown tick (the pop step's own decay [M
+  0x193600]), plus the sister that the recorded blast is the grenade's own pop position (the
+  record dies the same tick; measured drift 0.615 u — the pop does catch the grenade in
+  flight). Doc: docs/systems/stun-flash.md. Binaries green: fix_grenade_types_live 3+1
+  ignored (107a's pre-existing ignore), frag_throw_timing_live 1, fix_grenade_release_live 4,
+  fix_grenade_throw_live 4, remote_mine_detonate 3. Full suite on the final tree: 2008
+  passed, 6 failed, 73 ignored (479 binaries) — the 3 slim-ISO disc_golden + the pylon render
+  trio (GPU-less sandbox, sim-side change cannot reach them; flagged for the main agent's
+  render). Report: docs/reports/frag-throw-timing2.md.
