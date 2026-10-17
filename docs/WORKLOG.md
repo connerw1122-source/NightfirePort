@@ -17668,3 +17668,30 @@ fix_ladder2_live 4, fix_ladder_live 3, fix_swim_live 4, fix_swim_vent_live 2, fi
   walked ride parks at (29.86, 37.93, 52.4) at t 5687 with no falls, ch 0x70/0x1D and the exit
   through the real walked path. The whole truck-exit chain is now double-pinned (the walkreal
   harness + mayhew_handover_live).
+- 2026-10-17 s/zoe-gondola-08 (task 750d): user: "zoe shoots at you when you get to the
+  gondola" — Zoe is an ally (07000007/08; the gondola is on 07000008) and an ally must
+  never target Bond. Plan: reproduce on the real path (walk to the gondola, log Zoe's
+  team +0x44, target, state and shots), find why she targets Bond (her team/kind setup
+  at spawn or by script, the target selection's team filter Check_Targ/the opponent
+  pick), port the game's rule with [M] citations. Test: she never fires at Bond through
+  the gondola sequence; sister: she still fires at enemies if the game has her fight
+  there. Branch created from origin/master 31dd6161.
+- zoe-gondola-08: the ally opponent rule ported — NDrone2_FindOpponent 0x1424e0 stores Bond
+  into Drone+0x170 only when the drone's OWN team +0x44 != 2 [M disasm 0x142e04-0x142e0c], and
+  the team-2 ally scan stores team-1 candidates only [M 0x143100-0x143104]; the Attack entry
+  DroneVision_EnemyLookForOpponent 0x177ed0 requires +0x170 != 0 [M :18-20] and a script-playing
+  fully-alert drone never attacks out of its script [M :12-14]. The port's opponent was
+  implicitly Bond (docs/port-map/guard-ai.md), so Zoe (dtype 0xC → team 2 [M 0x14cbd8 store
+  0x14ccd8]) — who spawns at the cable car in COMBAT_NO_MOVE with alert 1.0 — saw Bond at the
+  gondola and fired at him: fail-first capture "Zoe never fires at the ride + ambush (1 shots,
+  last at frame Some(6426))" (zoe_failfirst.log, master's drone.rs). Fix: the team-2 gates in
+  look_for_opponent (no ATTACK entry) + fire/handle_firing/fire_weapon (no bullet, no shot
+  count, no clip spend — the game's empty-+0x170 no-op), plus the missing PLAY_SCRIPT alert
+  gate. The ally-vs-team-1-candidate scan (0x142e88..) stays unported [S: what's left]. Tests
+  zoe_gondola_08_live 2/2 on 07000008 (the real trigger path: plate #237 → the walk → the
+  boarding → the ride + the ch-0x35 ambush), sisters: a team-1 guard under the same conditions
+  fires (10 shots), the Mayhew escort fix_actors_live 4/4, walk_07000008_live 3/3,
+  tase_scream_live 1/1. Ran nf-game 485/485 (57 binaries), nf-view 141/141 (killed at the
+  10-min tool cap mid-alphabet, 0 failures) + the 4 neighbour live binaries. The full suite
+  died 3x in this sandbox (background procs are reaped between tool calls) — the foreground
+  crate runs stand in (pause-music-1b precedent). Report: docs/reports/zoe-gondola-08.md.
