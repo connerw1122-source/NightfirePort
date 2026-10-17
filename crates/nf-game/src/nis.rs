@@ -835,12 +835,12 @@ impl Script {
                 if let Some(o) = prev { self.pending_weapon.push((o, w)); }
             }
             0xc => self.flags |= 0x10,
-            0xd => if g(0) != 0 { ch.set(g(0), g(1) as u8, frame); },
+            0xd => if g(0) != 0 { ch.set_script(g(0), g(1) as u8, frame); ch.script_channels.insert(g(0) as u8); },
             0xe => self.streams[i].flags |= 1,
             0x10 => self.flags |= 0x20,
             0x11 => {
                 let (c, v) = if ch.on(g(0)) { (g(1), g(3)) } else { (g(2), g(3)) };
-                if c != 0 { ch.set(c, v as u8, frame); }
+                if c != 0 { ch.set_script(c, v as u8, frame); ch.script_channels.insert(c as u8); }
             }
             // Event 0x12: `ResetMap_LevelToLoad(level, 1, 0)` — the script-driven level transition (e.g. the truck
             // parking at the end of 07000005) [M Script_EventHandler 0x1d94c0:189-199]. `g(0)` is the next level's
@@ -1407,7 +1407,7 @@ impl Player {
             7 => self.load(lib, objs, ch, w, frame, out),
             _ => {}
         }
-        if self.out != 0 && trig { ch.set(self.out as u32, value as u8, frame); }
+        if self.out != 0 && trig { ch.set_script(self.out as u32, value as u8, frame); ch.script_channels.insert(self.out as u8); }
         // `SP_Update`'s damage tail [M 0x1dc1c0-0x1dc330, after the mode switch and the out-channel
         // write]: a HELD current script (`SCRIPTINFO+0x9c != 0`) on a player with hit points
         // (`SP+0x14 != 0`) adds the tick's bullet damage on its stream objects (`SP_GetHitDamage`

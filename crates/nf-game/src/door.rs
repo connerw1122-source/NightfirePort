@@ -348,10 +348,12 @@ impl Doors {
         if new & 0x10 != 0 && old & 0x10 == 0 && sc != 0xffff { sounds.push((sc, pos)); }
         if ch != 0 {
             // `Door_SetState` (0x135618:26): the channel mirrors the OLD state's "in motion" bits (0xc), timestamped
-            // every motion transition. The game reads `+0xf4 & 0xc` BEFORE writing the new state [M].
+            // every motion transition. The game reads `+0xf4 & 0xc` BEFORE writing the new state [M]. channel-persistence:
+            // this goes through `Channels::set` — the game's write lands in `switch_channels` and stamps
+            // `switch_channels_time` exactly when the mirrored bits are nonzero (set's nonzero stamp), and the port's
+            // writer census sees it like every other write.
             let moving = (old & 0xc) != 0;
-            channels.v[ch as usize] = moving as u8;
-            if moving { channels.time[ch as usize] = frame; }
+            channels.set(ch as u32, moving as u8, frame);
         }
         let d = &mut self.list[i];
         d.state = new;
