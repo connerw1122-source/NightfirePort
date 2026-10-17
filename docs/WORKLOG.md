@@ -17832,3 +17832,31 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   (wgpu request_adapter NotFound, active_backends 0x0 — no GPU in this sandbox; the tests
   never construct a FrontEnd, unrelated to this task). Report:
   docs/reports/create-save.md.
+- 2026-10-17 s/mp-screens (task 750): "Missing mp screens" (2026-10-16 evening). Plan: list every
+  multiplayer front-end page (the ACTION.ELF .data page table, the P_MP* handlers, the menu-def
+  pages) and which the port lacks or leaves blank (character select, team setup, scenario options,
+  map select, bot setup, the per-player confirm/ready screens, the results/debriefing pages);
+  port each missing page's data/state/flow in menu.rs with [M] citations (no drawing — the main
+  agent draws); plus the F12 spot_shot all-dark-image bug on front-end pages (nf-shots/
+  001-07000048.png). Report the page list ported/missing. Branch from origin/master 31dd6161.
+- mp-screens: the census (research agent + spot reads) — the MP front end is 13 pages bound by
+  Handler_HandleMessage 0x2029e0's dispatch (no static table): P_MAIN 0x20a7b0 → P_MPJOIN
+  0x20ca00 → P_MPSCENARIO 0x217348 (Quick Game = row 0) → P_MPMAP 0x217468 → P_MPSETUP
+  0x20d7a8 → P_MPOPTIONS 0x217678 → {P_MPRULES 0x20f790, P_MPPLAYERMODS 0x2104d0,
+  P_MPENVIROMODS 0x210030, P_MPBOTS 0x217790 → P_MPBOTCHOOSE 0x210cd8 → P_MPBOTSETUP 0x211270}
+  → P_MPCONFIRM 0x20ec00 (launch: +0x180=1, ×60, ResetMap_LevelToLoad) → (pause quit routes
+  0x40000033) P_MPDEBRIEFING 0x212198. The port had the ids/flow already (mp-menu-flow); the
+  DRAW left exactly two pages empty — menu_overlay's `MpSetup | MpConfirm => {}`. Data now in
+  FrontEnd::mp_setup_panels (the 0x37c/0x37d prompts, states 2/3/4/5, the handicap defaults
+  1/3/2/0 [M 0x20d7a8:20-23]) and FrontEnd::mp_confirm_summary (the six summary rows with the
+  exact label ids — MAP 0x3d4, SCENARIO 0x3d5, WEAPON SET 0x24d + the 0x1a0..0x1b2 switch, TIME
+  0x3d8/LIVES 0x3d7/NONE 0x3ca, POINTS 0x3d6, FF 0x3da + 0x1b6/0x1b7, the blue/red panels, the
+  bots' portrait columns [M 0x20ec00:143-389]); no drawing (the main agent draws). The census +
+  field map: docs/systems/mp-screens.md. The F12 all-dark shot (nf-shots/001-07000048.png):
+  spot_shot passed no movie frame while fe.backdrop_live stood — plate skipped, plane empty,
+  the front-end level's void rendered black; now spot_movie_gates mirrors the redraw's movie_up
+  (briefing Always / intro+attract WithFrame / page backdrop Never) and the live frame rides to
+  the plane. Tests mp_screens 5/5 (they caught a real getter bug: the bots' columns counted
+  disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
+  (suite.py background-killed as in prior sandboxes; the foreground run stands in).
+  Report: docs/reports/mp-screens.md.
