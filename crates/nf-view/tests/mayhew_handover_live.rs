@@ -70,15 +70,33 @@ fn the_walk_to_the_gatehouse_fires_the_handover_window_and_rides_out() {
     eprintln!("[05] ch 0x5C fired at t {fired_at}");
     assert!(fired_at >= 1882 && fired_at <= 2400,
         "the fire lands inside the script's own window (t 1882..2312 [D]), got {fired_at}");
-    // The hand-over + the ride: Bond ends up parented to the truck (ch 0x71) and the ride
-    // carries him into the castle after the truck leaves the gatehouse (t 2312).
+    // The hand-over + the ride: Bond ends up parented to the truck (ch 0x71); the game's ride
+    // stance is crouched [D fix-truck's trace] — the walked Bond crouches once the hand-over
+    // re-enables him — and the crouched ride parks on the ch-0x70 plate, the chain ends the
+    // level into 07000006 [D mux #316 → SP #320 → ch 0x1D → #118].
     let mut rode = false;
-    for _ in 0..2400u32 {
-        w.tick(Default::default(), false);
+    let mut crouched = false;
+    let mut input = nf_game::player::Input::default();
+    let mut exited = None;
+    for _ in 0..6800u32 {
         let sim = w.scene.sim.as_ref().unwrap();
-        if sim.drones.channels.on(0x71) && sim.bond.pos[0] < 90.0 { rode = true; break; }
+        let on_bed = sim.drones.channels.on(0x71);
+        let west = sim.bond.pos[0] < 90.0;
+        if !crouched && on_bed && west && !sim.bond.crouched {
+            crouched = true;
+            input.crouch = true;
+        } else {
+            input.crouch = false;
+        }
+        drop(sim);
+        w.tick(input, false);
+        let sim = w.scene.sim.as_ref().unwrap();
+        if on_bed && west { rode = true; }
+        if let Some(l) = sim.drones.level_exit { exited = Some(l); break; }
     }
     assert!(rode, "the hand-over puts Bond on the truck bed (ch 0x71) and the ride carries him west of the gatehouse");
+    assert_eq!(exited, Some(0x0700_0006),
+        "the crouched ride parks on ch 0x70 and the chain ends the level into 07000006 [D docs/levels/07000005.md §3]");
 }
 
 /// Sister: Bond who stays at the spawn never fires the hand-over — the plate's window opens
