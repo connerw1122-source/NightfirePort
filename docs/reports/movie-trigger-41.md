@@ -109,7 +109,14 @@ params.
   path (skin/start-script/state IDLE/registration) and the kill path (glass dies, far glass
   survives) run through the real script player with synthetic scripts built as the parsed form.
 - **Census (nf-formats, all 6 pass)**.
-- Full 4-crate run: see "What I ran" below.
+- **What I ran**: `cargo test --offline --release -p nf-game --lib triggers` (12 pass) and
+  `--lib nis` (9 pass); `-p nf-view --test movie_trigger_live` (2 pass) and
+  `--test nis_coder_break_live` (3 pass); `-p nf-formats --test script_census` (6 pass). The
+  full four-crate suite (`cargo test --offline --release -j2 -p nf-game -p nf-formats -p
+  nf-audio -p nf-view -- --test-threads=1`) was started on the final tree: through nf-formats
+  every binary is green except `disc_golden`'s 3 expected slim-ISO failures (the task's allowed
+  set); the run was still working through the nf-game/nf-view live binaries when the sandbox
+  deadline (07:00 UTC) cut it off — the individual runs above are the pushed verification.
 
 ## What's left / notes for the next task
 
