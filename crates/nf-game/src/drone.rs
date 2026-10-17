@@ -4555,11 +4555,29 @@ impl Drone {
                 }
             }
             (PLAY_SCRIPT, msg::UPDATE) => {
-                // The game's msg-3 also attacks a fully-alerted drone (`NDrone2_SeenAndAttacking`), but
-                // the trace's guard stays in 3 for ~350 lines — the port's creation alert for it is
-                // unresolved (the port's start_state mapped it to ATTACK; see the report), so only the
-                // look runs here for now.
+                // The game's msg-3 (0x15ba68 case 3) runs the look only while `+0xcdc != 0` and — because
+                // `DroneVision_EnemyLookForOpponent` itself returns 0 for a fully-alert script-playing drone
+                // [M 0x177ed0:12-14] — it can never transition one; the game's alert music event
+                // (`NDrone2_SeenAndAttacking` 0x145150) is not ported (music bookkeeping only, no SetState).
                 if let Some(n) = self.look_for_opponent(d) { self.set_state(n) }
+                true
+            }
+            // The game's PlayScript hears like any guard [M 0x15ba68 cases 0x11/0x12/0x14/0x15/0x16/0x1e →
+            // `DroneVision_EnemyAlerts` 0x177c18 → SetState(result)]: a gunshot (0x14 → AlertSound 0x177800)
+            // pulls the script-playing guard out into the heard-noise chain. Without this arm the port's only
+            // exit from a fully-alert PLAY_SCRIPT was the msg-3 look — which the game's own gate closes
+            // [M 0x177ed0:12-14] — so a guard under fire stayed in his script forever (held merge 750d:
+            // cover_nodes_live a_06 "no guard entered the cover states under fire"). SCREAM/SHOUT already
+            // route here through the broadcast pre-dispatch [M 0x177c18 cases 0x11/0x12].
+            (PLAY_SCRIPT, msg::SOUND) => {
+                if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); }
+                true
+            }
+            // [M 0x15ba68 case 0x1e → EnemyAlerts 0x177c18 case 0x1e → 0x56 ATTACK], the same route the
+            // IDLE/ALERT/PATROL arm takes (dtype 9 / 0x12 / 0x1e special cases not modelled, as there).
+            (PLAY_SCRIPT, msg::ALARM) => {
+                if !self.investigating { self.resume_state = s; self.home = self.feet(); }
+                self.set_state(ATTACK);
                 true
             }
             (WAIT_SWITCH, msg::ENTER) => { self.enabled = false; self.vision_on = false; self.watching = false; true }

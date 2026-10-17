@@ -36,10 +36,18 @@ fn the_rocket_leaves_the_launcher_not_the_eye() {
     let side = [off[0] - look[0] * along, off[1] - look[1] * along, off[2] - look[2] * along];
     let side_d = (side[0] * side[0] + side[1] * side[1] + side[2] * side[2]).sqrt();
     assert!(side_d > 0.05, "the rocket starts off the eye's line (towards the launcher), off-axis {side_d:.3}");
-    // Sister: it still flies at the aiming point — 256 units out it is within 4 units of head + look·256
-    // (the record's own spread, `bullet::spread`, accounts for the rest; ~1°).
+    // Sister: it still flies at the aiming point — 256 units out it is within the record's own spread
+    // envelope of head + look·256. The game's cone offset is `mul(frand(2·s) − s, 0.0014)` with s =
+    // record+0x24 [M Bullet_init 0x12c5a0's spread cone, the port's bullet::spread — Vec_Spherical_2_Cartesian
+    // 0x1e3948], so the max lateral miss at 256 is 256·s·0.0014 (+ the normalisation slop). The old magic
+    // 4.0 was tighter than the record's own envelope and only held while Zoe's phantom combat chain burned
+    // shared-RNG draws on 07000008 — she must never fire at Bond [M FindOpponent 0x142e0c keeps +0x170 empty
+    // for team 2] — so with the team-2 gates the draw order changed and this roll lands at 4.28, inside
+    // the envelope.
     let far = [start[0] + b.dir[0] * 256.0, start[1] + b.dir[1] * 256.0, start[2] + b.dir[2] * 256.0];
     let aim = [head[0] + look[0] * 256.0, head[1] + look[1] * 256.0, head[2] + look[2] * 256.0];
     let miss = ((far[0] - aim[0]).powi(2) + (far[1] - aim[1]).powi(2) + (far[2] - aim[2]).powi(2)).sqrt();
-    assert!(miss < 4.0, "aimed at the aiming point, missed by {miss:.2}");
+    let s = f32::from_le_bytes(wd.records[0x2d][0x24..0x28].try_into().unwrap());
+    let bound = 256.0 * s * 0.0014 + 0.05;
+    assert!(miss < bound, "aimed at the aiming point, missed by {miss:.2} (envelope {bound:.2})");
 }
