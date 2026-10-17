@@ -18758,3 +18758,7 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   nf-game lib 278/0. The full suite.py did not fit: the sandbox kills background processes
   between tool calls (two starts died in the build phase); the foreground runs above are the
   verification. Report: docs/reports/level-09-interactables-2.md.
+- 2026-10-17 s/level-0b-interactables (task 711a): STARTED. Census of every placement a player can
+  touch, use, shoot or ride on 0700000b (Tower C: executive floor + roof), one real-input-path test
+  per KIND, every model/skin resolving. Known opens: roof helicopter (750h2), executive-floor locks.
+  Sandbox window ~20:26-22:26 UTC.
