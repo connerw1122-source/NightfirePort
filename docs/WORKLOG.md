@@ -18415,3 +18415,65 @@ directly. Report: docs/reports/level-07-interactables.md.
   (master's Breaks, extended with the level-03 version's bullet reject mask,
   glass pierce, per-kind sounds, census), move the level-03 tests and fixes
   onto it, keep both branches' tests green. In progress.
+
+---
+- 2026-10-17 s/level-03-interactables (task 703a): every interactive thing and every model on
+  07000003 (Alpine Escape, Castle C). Plan: census from the disc parse (nf-extract placements
+  07000003.bin) by kind with the 0x1d04f0 dispatch semantics and port status into
+  docs/levels/07000003.md; drive one instance of every kind through the real input path
+  (walk/aim/E/fire/gadgets via step_bond) in interact_07000003_live.rs, one live test per KIND
+  with a sister that fails without the operation; fix every kind that does not do what the game
+  does; model/skin audit (no missing hash, no white fallback — NF_TEX_TRACE=1). Known open item:
+  the key-gated route (walk tests note a key gate ch 0x52). Branch from origin/master d628f01f.
+- 2026-10-17 s/glass-breach-guards (task 750p): "beginning of mayhew level guards are supposed
+  to break through the glass" (playtest 1016-evening). 750e glass-shatter ported the breakables
+  core on s/glass-shatter (Break_Create 0x12c230 / Break_Update 0x12bfd8 / Break_Kill 0x12b970,
+  NOT yet on master) — build on it. Plan: find the Mayhew-start glass-breach scripted event
+  (placements/scripts/triggers, docs/levels/), port the event + the guards' entry, the
+  guards-smash-glass arm 0x12bfd8:23-34 (level 07000001) as it applies, reproduce fail-first
+  through the real path (panes break + guards come in at the game's time), then fix.
+  Branch created from origin/master 50d51ae7.
+- glass-shatter (s/glass-shatter): started. Task: breakable glass cannot be shattered — find the game's
+  breakable-glass objects and break path (pane object types/scripts, Bullet_CollisionHandler 0x12ce80 object-hit
+  arms, Bullet_handle_object_destruction, break script/effect/sound ids) on 07000005/06/08, port it, test on the
+  real path. Worklog started; branch pushed early per sandbox-expiry protocol.
+
+- glass-shatter (s/glass-shatter): the breakables ported (crate::breakable). Placement 0x20 →
+  Break_Create 0x12c230 (class 0x20, data {kind=param 0, health=f32 bits of param 1,
+  filter=~u16 param 2}); Break_Update 0x12bfd8's bullet damage (Collide_FilterBullets
+  0x1ece30 reject on weapon+0x10 & (filter|0x106), health -= HITDATA+8, kill < 0), Break_Kill
+  0x12b970's sounds (kind 2 → 0x2e; else Rand_Rand(100)<0x29 → 0x5f2/0x5f3 — the game's own
+  draw, on the shared stream only at a non-glass kill) wired into update_player_bullets beside
+  props.bullet_hit; panes never stop bullets (their collision tris are material 0x10 [D], the
+  0x12cf44 glass rule passes). Disc census: 443 breakables (259 kind 2); 08 has 3
+  Glass_Controlroom* panes, 06 one Window_Securityroom, 05 none. Tests: 4 unit tests green
+  (nf-game lib). NOT green yet: the live real-path test (crates/nf-view/tests/breakables_live.rs,
+  uncommitted-wip pattern committed as probe_glass_shot) — the harness fires (clip decrements)
+  but no player_bullets appear; needs the next window. Report: docs/reports/glass-shatter.md.
+- glass-breach-guards: the Mayhew-start breach ported — the guards-smash-glass arm (Break_Update
+  0x12bfd8:23-34: level 0x7000001, class-2 hitters, kind-2 panes, health −= SqDist(pos,prev)·20,
+  Break_Kill at < 0) over the new Drone.prev_pos (obj+0x40, 0x1336f8:212) + Bond's player_pos
+  cache; Break_DoBreak 0x12c168 via NIS event 0x0a (Request::BreakAt, the previous-stream rule
+  0x1d94c0:94-96); the 0x20 panes left the static collision bake and inject via set_dynamic
+  (intact = solid, broken = gone [M 0x12b970:60]). The chain [D]: the intro 06000087's ch 11 →
+  the 0xF1 spawner #297 (mode 2, group 1, start 11) releases the 5-guard squad → they charge →
+  pane 130 shatters and a guard crosses at t911 (glass_breach_live, fail-first captured: 0/55
+  panes broke on master while the squad pressed the wall 3300 ticks). Tests: 6 breakable units
+  (the drain/gates/no-draw/order) + nf-game lib 267/267 + walk_07000001 3/3 + the stun trio.
+  NOT done: the full suite (the sandbox's background reaping + the window), the escort test's
+  new swarm interaction (the report), the 0x08 coder event. Report: docs/reports/glass-breach-guards.md.
+- 2026-10-17 s/level-03-interactables (task 703a): the census (docs/levels/07000003.md) — all 511
+  placements by kind; THE KEY-GATE CHAIN IS ON THE DISC (correction): 0x52 ← AND #435 = AND(0x4E,
+  0x51); 0x51 ← AND #436 = AND(0x4F, 0x50); 0x4E ← the key pickup script 0x06000563 stream 1 spawns
+  (kind 2, switch ch 0x4E [D script decode]); 0x4F/0x50 have no disc writer — the guests LISTEN on
+  them (param 6 → second_channel [M drone.rs]). The secret-bedroom puzzle: TouchOnce #504 (mask 4 =
+  E-usable) writes ch 0x31 = door #4's lock channel; the SS #502 (mask 0x1) can never write it
+  [M SS_Update 0x1a9948:20-25 suppresses the write when mask bit 0 set]. Merged s/glass-breach-guards
+  (the breakables core — this level has 97 kind-0x20 placements, master had no 0x20 consumer);
+  nf-game lib 267/267 after. Tests interact_07000003_live: 9/9 green (ladder climb, destroyable
+  smash, data kinds always; 6 walks env-gated NF_INTERACT03_ALL — the kind-0 swing doors wedge the
+  nav walker and the pane/guest shots need one repro pass; the key spawn's trigger arm is the open
+  question, live checks listed in the report). Models: kind-census 511 resolved / 0 unresolved, no
+  NF_TEX_TRACE fallbacks on load. Ran: nf-game lib, interact/walk/walkreal 07000003, glass_breach +
+  breakables — all green; the full suite did not fit the window (background reaping). Report:
+  docs/reports/level-03-interactables.md.

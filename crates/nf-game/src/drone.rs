@@ -9116,12 +9116,22 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // 0x600004f, other non-zero → 0x6000052 [M 0x12bc50-0x12bd20]; damage = tag+0x08, the
             // placement's param 5 [M 0x12bd04]; attacker = the bullet's owner, the player here →
             // usize::MAX; no weapon record → weapon_type 0 in the explosion record).
-            // The breakable scenery takes the bullet this tick ([M Break_Update 0x12bfd8:44-48 —
-            // the class-5 contact subtracts its damage; Break_Kill 0x12b970 sets obj+0xFE bit 0
-            // and plays the kill sound; no channel is written]). The kill records queue for the
-            // view (sound + shatter/debris presentation).
-            self.break_kills.extend(self.breaks.bullet_hit(b.pos, end, b.weapon, b.damage)
-                .into_iter().map(|k| (k.placement, k.kind, k.sound)));
+            // The breakable scenery takes the bullet this tick ([M Break_Update 0x12bfd8:15 — the
+            // contacts filter through `Collide_FilterBullets(list, filter | 0x106)`, dropping
+            // class-5 hitters whose `weapon_definition+0x10` word ANDs the mask [M 0x1ece30:24-33;
+            // disc words: guns 0x0008, Laser 0x0002, watch 0x0100 (L dump)] — then :36-51 the
+            // damage subtracts and Break_Kill 0x12b970 sets obj+0xFE bit 0, plays the kill sound
+            // (kind 2 → 0x2e; the others roll 0x5f2/0x5f3 [M 0x12b970:65-76]) and plays it at
+            // obj+0x80 like every direct game call; no channel is written). The pane never stops
+            // the round: its surface byte 0x10 passes the glass rule [M 0x12cf44..0x12cf64]. The
+            // kill records queue for the view (shatter/debris presentation).
+            let weapon_mask = d.weapons.records.get(b.weapon as usize).map_or(0u16, |r| u16::from_le_bytes([r[0x10], r[0x11]]));
+            let pane_kills = self.breaks.bullet_hit(b.pos, end, weapon_mask, b.damage, &mut self.rng);
+            for k in &pane_kills {
+                // `Sound_Play3D(100.0, -1.0, -1.0, id, obj+0x80, custom=0)` [M 0x12b970:69,75].
+                self.audio.play3d(k.sound as u32, k.pos, None);
+            }
+            self.break_kills.extend(pane_kills.into_iter().map(|k| (k.placement, k.kind, k.sound)));
             // The monitor consoles take the bullet too (`Monitor_ApplyDamage` — state 3 +
             // `Explode_Create` 0x6000027; the game's r·6 radius reads the placed sphere, the
             // port's blast queue takes the historical radius stand-in).
@@ -10026,6 +10036,19 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 crate::nis::Request::DoBreak { at } => {
                     let Some(o) = at else { continue };
                     let Some(pos) = Self::script_obj_pos(&self.scripts, d, o) else { continue };
+                    // The game walks the CONTROL list — the placed 0x20 breakables (created at
+                    // parsemap, list-earlier) and script-created 0x20 entities alike — first hit
+                    // wins [M Break_DoBreak 0x12c168:39-51]. The placed panes first (the re-land
+                    // of level-03-interactables' `do_break`), the standard Break_Kill inside.
+                    let placed = self.breaks.do_break(pos, &mut self.rng);
+                    if !placed.is_empty() {
+                        for ev in &placed {
+                            // `Sound_Play3D(100.0, -1.0, -1.0, id, obj+0x80, custom=0)` [M 0x12b970:69,75].
+                            self.audio.play3d(ev.sound as u32, ev.pos, None);
+                        }
+                        self.break_kills.extend(placed.into_iter().map(|k| (k.placement, k.kind, k.sound)));
+                        continue;
+                    }
                     // First class-0x20 object in list order whose sphere contains the position
                     // [M 0x12c180-0x12c1cc — first hit wins]. The port's script entities carry no
                     // bounding sphere: the centre is the matrix translation, the radius a 1.0
@@ -10747,6 +10770,15 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // same set_dynamic now (the game's Collide_Update is post-walk [M 0x1336f8:238]). Id: high bit 40 + the door index.
             parts.extend(drones.doors.list.iter().enumerate().filter(|(_, x)| x.glist != 0)
                 .map(|(k, x)| (0x100_0000_0000 | k as u64, x.glist, x.matrix)));
+            // The breakable panes (glass-breach, re-land of level-03-interactables): the INTACT
+            // pane is a solid body this tick (`Collide_PickObj` walks the cel-linked objects
+            // whatever moved them); a BROKEN pane injects nothing — `Break_Kill`'s obj+0xFE |= 1
+            // takes it out of the world, the collision "goes away" [M 0x12b970:60] and the guards
+            // walk through the opening. The static bake excludes the 0x20 placements (world.rs).
+            // Id: high bit 42 + placement (bit 41 is the SimpleScripts').
+            parts.extend(drones.breaks.list.iter()
+                .filter(|s| !s.dead && s.shape_key != 0)
+                .map(|s| (0x300_0000_0000 | s.placement as u64, s.shape_key, s.matrix)));
             // The SimpleScripts too (fix-party-mission item 7): the safe door (ch 136) and the doorway
             // bolt (ch 137) are solid at their posed matrix, like the doors. Id: bit 41 + the ss index.
             parts.extend(drones.sss.list.iter().enumerate().filter(|(_, x)| x.hash != 0)
@@ -12264,15 +12296,24 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         self.prev_event2 = self.music.events[2];
         self.music.update(self.iop_section);
         // The drone-contact pass ([M Break_Update 0x12bfd8:23-34]: class-2 contacts damage kind-2
-        // breakables by the squared step × 20, on 07000001 only). The kills join the view queue.
+        // breakables by the squared step × 20, on 07000001 only — every drone's (tick-start, now)
+        // pair, then Bond's: the player is a class-2 body to the collision pass too, and
+        // `player_pos` holds the tick-start cache (level-03-interactables' re-land). The kills
+        // join the view queue; the game plays the kind-2 sound inside the kill [M 0x12b970:69].
         let level_01 = d.level == 0x0700_0001;
+        let mut contact_kills = Vec::new();
         for (dr, from) in self.list.iter().zip(drone_from) {
             if !dr.present || dr.corpse { continue; }
-            let kills = self.breaks.drone_step(from, dr.pos, level_01);
-            if !kills.is_empty() {
-                self.break_kills.extend(kills.into_iter().map(|k| (k.placement, k.kind, k.sound)));
-            }
+            contact_kills.extend(self.breaks.drone_step(from, dr.pos, level_01));
         }
+        if level_01 {
+            contact_kills.extend(self.breaks.drone_step(self.player_pos, player.pos, level_01));
+        }
+        for k in &contact_kills {
+            // `Sound_Play3D(100.0, -1.0, -1.0, id, obj+0x80, custom=0)` [M 0x12b970:69,75].
+            self.audio.play3d(k.sound as u32, k.pos, None);
+        }
+        self.break_kills.extend(contact_kills.into_iter().map(|k| (k.placement, k.kind, k.sound)));
     }
 }
 
