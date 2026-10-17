@@ -120,7 +120,7 @@ pub enum StartError {
 }
 
 /// The movie PCM output: a cpal stream playing the whole track from memory (`open_pcm_out`), opened
-/// with the first picture. Gain `MOVIE_GAIN` (the boot-default `MovieVolume`).
+/// with the first picture. Gain `movie_gain(volume)` (the boot default is `MOVIE_GAIN`).
 #[cfg(feature = "movies")]
 struct PcmOut {
     _stream: cpal::Stream,
@@ -158,6 +158,10 @@ pub struct Player {
     /// The ONE decoder path: the closed-GOP streaming worker.
     #[cfg(feature = "movies")]
     stream: Option<MovieStream>,
+    /// `MovieVolume` [M 0x1081a8's store]: the start site's SFX volume in the game's
+    /// SfxMasterVolume scale (0..100), captured once — the game reads it back only in
+    /// `audioDecStart` [M 0x107360], so a mid-movie options change does not reach a playing movie.
+    volume: u32,
     /// The movie's interleaved stereo PCM and its rate. The device stream opens with the FIRST
     /// picture (`present`), not at `start`: the mission flow starts the briefing during the map-load
     /// fade (decode-ahead), and the audio ran seconds ahead of a picture that wasn't showing yet.
@@ -188,26 +192,33 @@ struct Timing {
 impl Player {
     /// `psiStartBackgroundMovie__FUiScUi` 0x001081a8 for one of the mission-flow codes: gate on the
     /// `UsingMovie` whitelist, open `cdrom0:\movies\30_FPS\%8.8x.pss;1`, start decoding + audio.
-    /// (The game's `loop` and `volume` args are 0 / `SFXGetVolume()` at every mission-flow site
-    /// [M]; the port plays once at fixed volume.)
-    pub fn start(iso_path: &str, code: u32) -> Result<Player, StartError> {
-        Self::open(iso_path, code, false)
+    /// `volume` is the start site's `SFXGetVolume()` — every `psiStartBackgroundMovie` caller
+    /// passes it [M Menu_PlayMovie 0x215990:18-19, P_INTRO 0x209e88:62, P_ATTRACT 0x20a1f0:36,
+    /// P_FMVPLAYER 0x20ad30:26, P_TRAILER 0x214f10:20, ResetMap_Load 0x1d6360; see
+    /// `lib.rs::movie_sfx_volume` for the port's read]. The game's `loop` arg is 0 here.
+    pub fn start(iso_path: &str, code: u32, volume: u32) -> Result<Player, StartError> {
+        Self::open(iso_path, code, false, volume)
     }
 
     /// The front end's start site: `Menu_PlayMovie(aux, 0, 1, 0, 0, 0)` — loop = 1 [M
     /// `Manager_SendMessage` 0x21c858:338] — for the page backdrop; the intro pair plays once
     /// (`P_INTRO_Handler` 0x209e88 waits `psiMovieFinished`), so it uses `start`. The same
-    /// whitelist gates every code [M 0x107eb8].
-    pub fn start_looping(iso_path: &str, code: u32) -> Result<Player, StartError> {
-        Self::open(iso_path, code, true)
+    /// whitelist gates every code [M 0x107eb8]; the volume is `Menu_PlayMovie`'s own
+    /// `SFXGetVolume()` [M 0x215990:18-19].
+    pub fn start_looping(iso_path: &str, code: u32, volume: u32) -> Result<Player, StartError> {
+        Self::open(iso_path, code, true, volume)
     }
 
-    fn open(iso_path: &str, code: u32, looping: bool) -> Result<Player, StartError> {
+    /// `MovieVolume` as started [M 0x1081a8's store; the game's only later read is
+    /// `audioDecStart` 0x107360 — a mid-movie options change never reaches the player].
+    pub fn volume(&self) -> u32 { self.volume }
+
+    fn open(iso_path: &str, code: u32, looping: bool, volume: u32) -> Result<Player, StartError> {
         if !USING_MOVIE.contains(&code) { return Err(StartError::NotWhitelisted); }
         let iso = nf_formats::iso9660::IsoImage::open(iso_path).map_err(|e| StartError::NoMovieData(e.to_string()))?;
         let m = Movie::load(&iso, &format!("{code:08X}")).map_err(|e| StartError::NoMovieData(e.to_string()))?;
         #[cfg(not(feature = "movies"))]
-        { let _ = (&m, looping); Ok(Player { code, looping, last: None, tick: 0, started: None, ended: true, timing: Timing::default() }) }
+        { let _ = (&m, looping); Ok(Player { code, looping, volume, last: None, tick: 0, started: None, ended: true, timing: Timing::default() }) }
         #[cfg(feature = "movies")]
         {
             // Audio first: the whole PCM is in memory after the demux; each decoded frame's slice
@@ -221,7 +232,7 @@ impl Player {
                 Ok(s) => Some(s),
                 Err(e) => { eprintln!("movie: {code:08x}: {e}"); None }
             };
-            Ok(Player { code, looping, last: None, tick: 0, started: None, ended: stream.is_none(), stream, pcm: std::sync::Arc::new(pcm), rate, _pcm: None, timing: Timing::default() })
+            Ok(Player { code, looping, volume, last: None, tick: 0, started: None, ended: stream.is_none(), stream, pcm: std::sync::Arc::new(pcm), rate, _pcm: None, timing: Timing::default() })
         }
     }
 
@@ -282,8 +293,10 @@ impl Player {
                         // looping movie restarts the walk with the video [M 0x00108060].
                         // movie-audio: the audio is the device's own stream (`open_pcm_out` plays the
                         // whole track at its rate); per-picture pushes starved and dropped it.
+                        // movie-volume: the start's `MovieVolume` sets the gain (the game applies it
+                        // once, in audioDecStart [M 0x107360]).
                         if self.last.is_none() && self._pcm.is_none() {
-                            self._pcm = open_pcm_out(self.pcm.clone(), self.rate, self.looping);
+                            self._pcm = open_pcm_out(self.pcm.clone(), self.rate, self.looping, movie_gain(self.volume));
                         }
                         self.timing.shown += 1;
                         let rgba = nf_formats::mpeg2::yuv420_to_rgb8(&f);
@@ -374,16 +387,42 @@ fn chrono_now() -> String {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| format!("t={}", d.as_secs())).unwrap_or_default()
 }
 
-/// movie-volume: the game's movie gain. `psiStartBackgroundMovie` stores `MovieVolume = SFXGetVolume()`
-/// (= `SfxMasterVolume`, 100 at boot [L 0x30c95c]) and `audioDecStart` 0x107360:9 calls
-/// `changeInputVolume(MovieVolume * 100)` → `sceSdSetParam` on both cores' input volume (0xf80 / 0x1080) [M
-/// 0x1078c8]: 10000 of the SPU2's 0x7fff full-scale volume register [S: the 15-bit register range, the
-/// SPU2 spec]. The port played the PCM at full scale — about 3x too loud (playtest 1016). The options'
-/// SFX volume is not plumbed into the player yet; this is the boot default.
+/// movie-volume: the game's movie gain chain. `psiStartBackgroundMovie` stores
+/// `MovieVolume = SFXGetVolume()` (= `SfxMasterVolume` when the sound option is on, 100 at boot
+/// [L 0x30c95c; the ==0 branch returns 1, M 0x116e18]) and `audioDecStart` 0x107360:2-9 calls
+/// `changeInputVolume(MovieVolume * 100)` [M the mult at 0x107380], which writes the value to the
+/// SPU2 core-0 input-volume pair (entries 0xf80 / 0x1080) via the same `sceSdSetParam` RPC its
+/// `changeMasterVolume` 0x107860 uses for the master pair (0x980/0xa80 + core in bit 0; the R
+/// channel sits at L+0x100) [M]. `MovieVolume` (0x30c6a8) has exactly two readers in the whole
+/// decompile — that store and `audioDecStart` — so the volume is captured once at start and a
+/// mid-movie options change never reaches a playing movie. `CleanUpBGFMV` 0x108700 →
+/// `audioDecReset` 0x1073d8 → `changeInputVolume(0)` silences the path on teardown [M].
+///
+/// The register's full scale is the SPU2 volume register's signed-16-bit 0x7fff [S unverified —
+/// the SPU2's input-volume DSP curve is hardware, not in any decompile; the game's own voice/reverb
+/// writes use 0x3fff as 100% (sound.md §5.4), so 0x7fff is the other candidate. Boot gain
+/// 10000/0x7fff ≈ 0.305 matches playtest 1016's "full scale is about 3x too loud"; 10000/0x3fff
+/// ≈ 0.610 would be only 1.6x. A live check is requested in docs/reports/movie-volume-options.md].
+pub const MOVIE_FULL_SCALE: f32 = 32767.0;
+
+/// The port's movie gain for `movie_volume` in the game's SfxMasterVolume scale (0..100):
+/// `changeInputVolume(MovieVolume * 100)` units over the register's full scale.
+pub fn movie_gain(movie_volume: u32) -> f32 {
+    movie_input_volume(movie_volume) as f32 / MOVIE_FULL_SCALE
+}
+
+/// `audioDecStart` 0x107360:2-3's argument: the input-volume register value the game writes for
+/// `MovieVolume` [M]. The options' SFX volume N reaches the movie path as N*100.
+pub fn movie_input_volume(movie_volume: u32) -> u32 { movie_volume * 100 }
+
+/// The boot default: `SfxMasterVolume` is 100 in the fresh-boot EE snapshot [L 0x30c95c], so the
+/// boot movie gain is `movie_gain(100)`. Before movie-volume-options the port played every movie
+/// at this fixed gain — about 3x too loud (playtest 1016) — because the options' SFX volume was
+/// not plumbed into the player.
 pub const MOVIE_GAIN: f32 = (100.0 * 100.0) / 32767.0;
 
 #[cfg(feature = "movies")]
-fn open_pcm_out(src: std::sync::Arc<Vec<i16>>, rate: f64, looping: bool) -> Option<PcmOut> {
+fn open_pcm_out(src: std::sync::Arc<Vec<i16>>, rate: f64, looping: bool, gain: f32) -> Option<PcmOut> {
     use cpal::traits::{DeviceTrait, HostTrait, StreamTrait};
     if nf_audio::silent() || src.len() < 4 { return None; }
     let Some(device) = cpal::default_host().default_output_device() else { eprintln!("movie: no output device; running silent"); return None };
@@ -409,7 +448,7 @@ fn open_pcm_out(src: std::sync::Arc<Vec<i16>>, rate: f64, looping: bool) -> Opti
                 }
                 let i = pos as usize;
                 let t = (pos - i as f64) as f32;
-                let at = |k: usize, c: usize| src[2 * k + c] as f32 / 32768.0 * MOVIE_GAIN;
+                let at = |k: usize, c: usize| src[2 * k + c] as f32 / 32768.0 * gain;
                 let l = at(i, 0) * (1.0 - t) + at(i + 1, 0) * t;
                 let r = at(i, 1) * (1.0 - t) + at(i + 1, 1) * t;
                 for (k, out) in frame.iter_mut().enumerate() { *out = if k % 2 == 0 { l } else { r }; }
@@ -421,6 +460,56 @@ fn open_pcm_out(src: std::sync::Arc<Vec<i16>>, rate: f64, looping: bool) -> Opti
     };
     if let Some(s) = &stream { if let Err(e) = s.play() { eprintln!("movie audio: {e}"); } }
     stream.map(|s| PcmOut { _stream: s, played, frames })
+}
+
+/// movie-volume-options: the SfxMasterVolume → movie-gain mapping, pure so the default-feature
+/// suite runs it (the audio itself stays behind `movies` + NF_SILENT — no test plays sound).
+#[cfg(test)]
+mod volume_tests {
+    use super::*;
+
+    /// The boot chain: the front end's SFX volume 100 (the boot `SfxMasterVolume` [L 0x30c95c])
+    /// reaches `changeInputVolume` as 100*100 = 10000 [M audioDecStart 0x107360:2-3 mult] and the
+    /// gain equals the fixed `MOVIE_GAIN` the port played everything at before the options were
+    /// plumbed — boot behaviour must not move. Sister: a mid-range volume 37 follows the same
+    /// ×100 → /0x7fff chain (3700 register units, 3700/32767 gain).
+    #[test]
+    fn the_boot_volume_gives_the_old_fixed_gain() {
+        assert_eq!(movie_input_volume(100), 10000, "audioDecStart's changeInputVolume argument [M 0x107360]");
+        assert_eq!(movie_gain(100), MOVIE_GAIN);
+        assert_eq!(MOVIE_GAIN, 10000.0 / MOVIE_FULL_SCALE);
+        // Sister: a non-default volume follows the same mapping (N → N*100 register units).
+        assert_eq!(movie_input_volume(37), 3700);
+        assert_eq!(movie_gain(37), 3700.0 / MOVIE_FULL_SCALE);
+    }
+
+    /// The endpoints: SFX 0 mutes the movie (the game writes register 0 [M 0x107360]), and the
+    /// gain stays a plain fraction of the source samples (no extra shaping). Sister: 50 gives
+    /// exactly half the boot gain — the mapping is linear in the option [S the linear scale, see
+    /// MOVIE_FULL_SCALE's note].
+    #[test]
+    fn the_gain_is_linear_and_zero_mutes() {
+        assert_eq!(movie_gain(0), 0.0);
+        assert_eq!(movie_gain(50), movie_gain(100) / 2.0);
+    }
+
+    /// The host reads the movie's start volume from the front end's SFX option — the port's
+    /// `SfxMasterVolume` static [M P_CNAVOPTIONS 0x214818:74 writes the static from the page;
+    /// LS_LoadGlobalSettings 0x1cdbc8:70 loads straight into it]. A mid-range option rides
+    /// through unchanged, a missing key boots 100 [L 0x30c95c]. Sister: another value 55 —
+    /// every start site reads the option fresh, like the game's `SFXGetVolume()` call at each
+    /// `psiStartBackgroundMovie` [M 0x215990:18].
+    #[test]
+    fn the_start_volume_comes_from_the_options_sfx() {
+        let mut fe = crate::menu::FrontEnd::new();
+        assert_eq!(crate::movie_sfx_volume(&fe), 100, "the boot default with the default map's 100");
+        fe.opts.insert(0x1000_0134, 37);
+        assert_eq!(crate::movie_sfx_volume(&fe), 37);
+        fe.opts.insert(0x1000_0134, 55);
+        assert_eq!(crate::movie_sfx_volume(&fe), 55);
+        fe.opts.remove(&0x1000_0134);
+        assert_eq!(crate::movie_sfx_volume(&fe), 100, "a missing key falls back to the boot default [L 0x30c95c]");
+    }
 }
 
 #[cfg(all(test, feature = "movies"))]
@@ -450,6 +539,26 @@ mod tests {
         // "0x7100001" trimmed is 7 and looked up as the file 7100001.PSS, which no image has.)
         let m2 = Movie::load(&iso, "0x07100001").unwrap();
         assert_eq!(m2.name, m.name);
+    }
+
+    /// movie-volume-options: the player carries the start site's volume, and the gain the PCM
+    /// callback applies is `movie_gain(volume)`. The volume is captured once at `start` — the
+    /// game's `MovieVolume` has exactly two readers, its store and `audioDecStart` [M 0x1081a8 +
+    /// 0x107360], so a mid-movie options change never reaches the running player (there is no
+    /// re-read path: `volume()` stays what `start` was given). Sister: a second start with the
+    /// boot volume 100 carries 100 and its gain equals the fixed `MOVIE_GAIN`. Needs real movie
+    /// data (the slim on-foot image has none — `Movie::load` fails first, as the game's
+    /// `strFileOpen` would).
+    #[test]
+    fn the_player_captures_the_start_volume_once() {
+        let Some(path) = std::env::var("NF_MOVIE_ISO").ok().or_else(|| std::env::var("NF_ISO").ok()) else { eprintln!("skip: NF_MOVIE_ISO/NF_ISO not set"); return };
+        let Ok(p) = Player::start(&path, 0x0710_0001, 37) else { eprintln!("skip: no movie data on this image"); return };
+        assert_eq!(p.volume(), 37, "the start volume is the player's MovieVolume [M 0x1081a8]");
+        assert_eq!(movie_gain(p.volume()), 3700.0 / MOVIE_FULL_SCALE, "the callback's gain is the ×100 register value over the full scale");
+        // Sister: the boot volume still gives today's fixed gain.
+        let Ok(p100) = Player::start(&path, 0x0710_0001, 100) else { eprintln!("skip: no movie data on this image"); return };
+        assert_eq!(p100.volume(), 100);
+        assert_eq!(movie_gain(p100.volume()), MOVIE_GAIN);
     }
 
     /// fix-menu-backdrop: the FIRST chunk carries the first GOP, not the bare sequence header. The
@@ -849,7 +958,7 @@ mod lag_tests {
     #[test]
     fn a_late_picture_catches_up_to_the_audio_clock() {
         let Some(path) = iso() else { return };
-        let Ok(mut p) = Player::start(&path, 0x0730_0004) else { return };
+        let Ok(mut p) = Player::start(&path, 0x0730_0004, 100) else { return };
         // Let the decoder build its lead, as during the map-load fade.
         std::thread::sleep(std::time::Duration::from_secs(2));
         let now = std::time::Instant::now();

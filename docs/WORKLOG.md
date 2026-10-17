@@ -18051,3 +18051,34 @@ narrowed to the script stream (Script_EventHandler 0x1d94c0:166,187 [M]; Mission
 full suite could not finish (sandbox ALSA link env fixed at 08:09, no time to rerun) — see the
 report. Live checks for the main agent: laser charge writer, ch 0x45 gdbwatch, crouch render,
 driving EAddTimer on an overdrawn timer.
+- 2026-10-17 s/movie-volume-options (task 756): movie audio volume follows the options' SFX
+  volume. Plan: psiStartBackgroundMovie stores MovieVolume = SFXGetVolume() (= SfxMasterVolume,
+  100 at boot [L 0x30c95c]); audioDecStart 0x107360:9 calls changeInputVolume(MovieVolume * 100)
+  which sceSdSetParam's both cores' input volume (0xf80 / 0x1080) [M 0x1078c8]. Decompile the
+  scale, mirror the options-page SFX mapping in Player::start(.., volume), apply the gain in
+  open_pcm_out's callback, document docs/systems/movies.md, tests (boot gain == today's
+  MOVIE_GAIN; options N -> N*100 input volume; sister assertions; NF_SILENT). Branch from
+  origin/master 3456a72f.
+- 2026-10-17 s/movie-volume-options (task 756) DONE: the movie gain follows the options' SFX
+  volume. Chain [M]: psiStartBackgroundMovie 0x1081a8 stores MovieVolume (0x30c6a8) from
+  SFXGetVolume() 0x116e18 (= SfxMasterVolume 0x30c95c, 100 at boot [L]; 1 while
+  switch_CONFIG_SOUND==0) — every caller passes it (Menu_PlayMovie 0x215990:18, P_INTRO
+  0x209e88:62, P_ATTRACT 0x20a1f0:36, P_FMVPLAYER 0x20ad30:26, P_TRAILER 0x214f10:20,
+  ResetMap_Load 0x1d6360); audioDecStart 0x107360 applies it ONCE as changeInputVolume(v*100) —
+  MovieVolume has exactly two readers in the decompile, so mid-movie option changes never reach a
+  playing movie; changeInputVolume 0x1078c8 writes the core-0 input-volume L/R pair (0xf80/0x1080;
+  the encoding — core in bit 0, R at L+0x100 — from changeMasterVolume 0x107860); teardown zeroes
+  it (CleanUpBGFMV 0x108700 → audioDecReset 0x1073d8). Options mapping [M 0x214818]: UI slider
+  0..0x14 ×5 → SfxMasterVolume 0..100; the port's fe.opts[0x1000_0134] already stores the raw
+  scale, so movie_sfx_volume(fe) reads it (missing key = boot 100) and all five Player::start
+  sites pass it; movie_gain = v*100/0x7fff applies once per player in open_pcm_out's callback.
+  The 0x7fff-vs-0x3fff full scale stays [S] (hardware, not in any decompile; playtest 1016's ~3x
+  supports 0x7fff) with three live checks requested in the report. Tests: 3 pure mapping tests
+  (default features), a movies-feature lib test that starts 07100001 at 37 and 100 (the slim ISO
+  carries it), and the movie-flow integration binaries updated (movie_playback_flow 10/10,
+  menu_movies 8/8, movie_pacing_live 1/1). Suite run per-crate/batch with suite.py's flags
+  (background jobs die between tool calls here): nf-game 61 bins 509/0; nf-formats+nf-audio 96/3
+  (the 3 allowed disc_golden); nf-view lib 27/27 with movies; fix_0c_pylon_live's 2 failures
+  verified on pure master too (no GPU in this sandbox); briefing_plays_live + 3 backdrop tests
+  need the full ISO (07100005/07330048 are stubs on the slim image). Report:
+  docs/reports/movie-volume-options.md.

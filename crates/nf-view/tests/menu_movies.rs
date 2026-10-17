@@ -325,7 +325,7 @@ fn the_menu_backdrop_plate_yields_to_the_movie_plane() {
 #[test]
 fn the_menu_loop_plays_through_the_one_player_path() {
     let path = std::env::var_os("NF_MOVIE_ISO").or_else(|| std::env::var_os("NF_ISO")).unwrap_or_default();
-    let mut p = match nf_view::movie::Player::start_looping(path.to_string_lossy().as_ref(), 0x0733_0048) {
+    let mut p = match nf_view::movie::Player::start_looping(path.to_string_lossy().as_ref(), 0x0733_0048, 100) {
         Ok(p) => p,
         Err(e) => { eprintln!("skip: {e:?}"); return }
     };

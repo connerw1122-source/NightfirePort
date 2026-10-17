@@ -79,7 +79,7 @@ fn the_backdrop_still_frame12_matches_the_whole_es_decode() {
 #[test]
 fn the_windowed_loop_player_starts_and_advances_on_the_main_page() {
     let Some(path) = iso_path() else { eprintln!("skip: no NF_MOVIE_ISO/NF_ISO with movie data"); return };
-    let mut p = match nf_view::movie::Player::start_looping(&path, 0x0733_0048) {
+    let mut p = match nf_view::movie::Player::start_looping(&path, 0x0733_0048, 100) {
         Ok(p) => p,
         Err(e) => panic!("the main page's backdrop player refused to start: {e:?}"),
     };
