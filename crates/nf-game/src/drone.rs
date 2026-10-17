@@ -1650,7 +1650,8 @@ impl Drone {
     fn update_patrol_route(&mut self, d: &Data, _rng: &mut Rng, frame: u32) {
         let feet = self.feet();
         let Some(route) = self.route.as_mut() else { self.request_anim(d, anim_state::STAND_IDLE); return };
-        let (code, reached) = route.follow(d.nav, feet);
+        let ppos = self.player_pos;
+        let (code, reached) = route.follow(d.nav, feet, &|p| Drone::ppos_near(ppos, p));
         let target = route.target;
         if let Some(node) = reached {
             let flags = d.nav.paths[route.path].nodes[node as usize].flags;
@@ -1731,10 +1732,20 @@ impl Drone {
     /// `CallAnim(0x1e)` = RUN on code 0/2), look-around/stand when the creep is blocked (the game's route creep byte
     /// 9/0xc — the port's BLOCKED code), and `true` once the route ARRIVED (the caller clears prop 0x1D and falls to
     /// Civilian).
+
+    /// `NDrone2_DroneNearPos` 0x143e68's player tier: the player within 0.55 2D (`SqDist2D <
+    /// 0.3025`) and 2.0 in y of the position → "a drone is near". The list-walk tier (a counting
+    /// class drone within the caller's radius) is not modelled — the class bits live behind the
+    /// dropped float argument and the +0x4f8 word mapping [S unverified].
+    fn ppos_near(pp: V3, p: V3) -> bool {
+        let dx = pp[0] - p[0]; let dz = pp[2] - p[2];
+        dx * dx + dz * dz < 0.3025 && (pp[1] - p[1]).abs() < 2.0
+    }
     fn update_mission_route(&mut self, d: &Data, _rng: &mut Rng, _frame: u32, moving_anim: u16) -> bool {
         let feet = self.feet();
         let Some(route) = self.route.as_mut() else { self.request_anim(d, anim_state::STAND_IDLE); return false };
-        let (code, reached) = route.follow(d.nav, feet);
+        let ppos = self.player_pos;
+        let (code, reached) = route.follow(d.nav, feet, &|p| Drone::ppos_near(ppos, p));
         let target = route.target;
         // `NDrone2_ReachedDestNode` (0x153358, via `LinkCreep_Handler` 0x15a2c8): a reached door node
         // parks the drone in `DSTATE_OpenDoor` (fix-npc-doors-escort); the kick/action/fiddle nodes
@@ -3850,7 +3861,8 @@ impl Drone {
             let route = self.croute.as_mut().unwrap();
             route.remaining = route.distance(d.nav, feet);
             if route.remaining < 2.0 { return 3; }
-            let r = route.follow(d.nav, feet);
+            let ppos = self.player_pos;
+            let r = route.follow(d.nav, feet, &|p| Drone::ppos_near(ppos, p));
             // `LinkCreep_Handler` (0x15a2c8) runs `ReachedDestNode` for EVERY followed route — the
             // repositioning drives through door/kick/action nodes like any other (fix-nav-remainder).
             // The successor node is the one AFTER the reached node in the route's node list (the
@@ -7018,7 +7030,8 @@ impl Drone {
         route.remaining = route.distance(d.nav, feet);
         if route.remaining < 2.0 { return 3; }
         if !follow { return 0; }
-        let (mut code, reached) = route.follow(d.nav, feet);
+        let ppos = self.player_pos;
+        let (mut code, reached) = route.follow(d.nav, feet, &|p| Drone::ppos_near(ppos, p));
         // `LinkCreep_Handler` (0x15a2c8) dispatches `NDrone2_ReachedDestNode` for the combat route
         // too: `NDrone2_MoveToObject` 0x151618:65 → `NDrone2_FollowRoute` 0x155be0:43 →
         // `AINetwork_FollowRoute` 0x15b110:21 → `LinkCreep_Handler` — a chasing guard reaching a

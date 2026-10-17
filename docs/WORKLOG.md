@@ -18408,3 +18408,20 @@ on that walk and whether the game fires it). Make the reach evidence-backed on e
 pass with my own tests. Branch = origin/master 0603094e + the held branch origin/s/level-05-complete
 32f6a18 (both WORKLOG sides kept; the 07000005 objectives section takes the held branch's corrected
 census).
+
+## level-05-complete-2 (2026-10-17, branch s/level-05-complete-2) — the held 05 completion, unheld
+Merged the held branch (both WORKLOG sides kept; the 05 objectives section takes the corrected
+census). Test-1 (fix_mission objective lifecycle) fixed per [L ee_start_05 @0x26fc90 = {0x45}] —
+the game's boot already carries the enable, so the announce happens on the boot tick through the
+real plate path; the test now pins that (fails on the old −0.4 reach — built-in sister). Reach A/B
+probe: the escort-walk channel-write SETS are identical at −0.4 and −0.6 (6-tick guard-kill phase
+shift only) — the reach is behaviour-neutral on 01; −0.56 refuted (the 05 boot plate needs ≥ 0.570
+on the port's spawn; the port window is [0.570, 0.65)). Real port gap found+fixed: the 0.4–1.0
+special-node dispatch tier (LinkCreep_AtSpecialNode 0x159dd0 → NDrone2_DroneNearPos 0x143e68's
+player tier, constants exact; the list-walk tier [S] unported) — a drone blocked at a closed door
+now dispatches when the player stands close. The escort door test remains red under every ordering
+this sandbox can produce (harness guard-clear phase shift steals the door work; the creep stall
+0.4–1.0 with nobody within 0.55 never dispatches) — #[ignore]d with the diagnosis, live checks
+listed in docs/reports/level-05-complete-2.md. Green: npc_doors 6+1ig, walkreal 05/01/02/04,
+fix_truck 2, level_carry 8, mayhew_handover 2, nf-game units 276. The full suite.py never fits
+(background processes die between tool calls here).
