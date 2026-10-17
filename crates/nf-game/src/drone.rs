@@ -6963,6 +6963,27 @@ pub fn flash_amount(head: V3, blast: V3, px: f32, pz: f32, yaw: f32, has_los: bo
     f
 }
 
+/// frag-throw-timing2: what the stun flash actually consumed at one pop — the exact inputs the
+/// sim recorded where it called `flash_amount` [M Bullet_DoTrails 0x12d890's flash arm,
+/// 0x12dfb0-0x12e0b8]: the blast position, the player eye the dist and LOS legs ran from, the
+/// facing yaw (the cel+0x54 stand-in), the LOS branch taken, and the factor f the formula
+/// returned (`flash_alpha` is that f, `flashbang`/`flash_total` are 600·f [M 0x12e0b8 +
+/// 0x196040]). Port-side instrumentation with NO game counterpart (the game computes and
+/// forgets): it exists so a test can assert the flash against the geometry it actually used
+/// instead of a reconstruction from the last grenade position seen before the pop — with the
+/// case-0xc release timing the grenade is still in flight at the pop, so a reconstruction
+/// drifts (the 741 hold: alpha 0.673 vs the reconstruction's 0.758/0.379).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct FlashProbe {
+    pub blast: V3,
+    pub head: V3,
+    pub px: f32,
+    pub pz: f32,
+    pub yaw: f32,
+    pub los: bool,
+    pub f: f32,
+}
+
 /// Stand-in for the renderer's "drawn" (`obj+0xFC`) ONLY: within 60° of Bond's aim (or within 2 units) and any of
 /// five body points in line of sight from his eye (thin occluders hide one ray, not a cel). The SPawner's
 /// "player can see the spot" gate is a different reader — `drone_position_visible` below; guards-0c-b decoupled
@@ -7432,6 +7453,10 @@ pub struct Drones {
     /// game's `Text_AddMsg` 0x1b0c30 drops type-4 adds while it is 0, so the port gates both this
     /// track and the `script_msgs` drain on it (the fresh profile's default is Off [M profile.rs]).
     pub subtitle_track: crate::subtitle::SubtitleTrack,
+    /// frag-throw-timing2: the last stun flash's recorded inputs (the `FlashProbe` doc). One
+    /// pop deep — each new pop overwrites it; cleared nowhere (the probe is read-after-pop by
+    /// tests; the flash state itself decays independently).
+    pub flash_probe: Option<FlashProbe>,
 }
 
 /// `NDrone2_DefaultInit` (0x14b300): the voice set `+0xD8` from the character id (skin 0x05000000 + id).
@@ -7561,6 +7586,8 @@ impl Drones {
             driving_stats: Default::default(),
             driving_result: crate::ptp::DriveResult::Success,
             driving_return: None,
+            // frag-throw-timing2: the stun flash's recorded geometry (own line — merge lesson 4).
+            flash_probe: None,
     };
         drones
     }
@@ -10791,6 +10818,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                             // the crosshair ray's bearing (both are the camera's yaw at the blast) [*suggested*].
                             let yaw = atan2_approx(player.aim[0], player.aim[2]);
                             let f = flash_amount(head, pos, player.pos[0], player.pos[2], yaw, has_los);
+                            // frag-throw-timing2: record the exact geometry the flash consumed (the
+                            // `FlashProbe` doc) — the test asserts against these, not a reconstruction.
+                            self.flash_probe = Some(FlashProbe { blast: pos, head, px: player.pos[0], pz: player.pos[2], yaw, los: has_los, f });
                             // `Player_SetFlashBang` [M 0x196040]: BL+0x963 = (u8)(f·255), BL+0x918 = BL+0x91C =
                             // FRAME_RATE·f·10 = 600·f ticks (the remaining and the total — the total counts down
                             // per tick and gates the plateau/fade switch [M 0x193600:328-336]).
