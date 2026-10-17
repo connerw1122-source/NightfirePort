@@ -17891,3 +17891,27 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   bunker door → sensor 0x81 → locked plates → Load Point → refuse → hand-set 0x4C → exit) is already on
   master but the objective channels 0x48/0x49/0x4A/0x4C/0x4D have no writers on disc per the level scan —
   this task digs for the real writers (mission/dialogue layer, script packs) and ports what the walk needs.
+- 2026-10-17 s/level-02-complete (task 702b): 07000002 (The Exchange Castle B) played start to finish
+  through the real input path with EVERY objective. The disc bindings this task established: ch 0x4C
+  is AND trigger tr[030] = AND(0x48, 0x4B) [D — the old "no path to 0x4C" scan was wrong]; ch 0x48 is
+  the Destroy prop pl[011] (0xE1, param 0 = 72) — Mayhew's computer, shot out, Destroy_CollisionHandler
+  0x12bd48 writes it [M; the 07000002-only PlrStat branch in Destroy_Smash 0x12bb60:42-55 pins the
+  object]; the geisha rescue channels 0x49/0x4A are the hostage drones' placement param 6, written by
+  DroneFunc_HostageSaved 0x1441c0 when the captor dies [M 0x15cb78:24-36 / 0x144030]; the mid-scene
+  gate 0x35 is SEQ_AND tr[033] (0x3B=AND #397(0x29,0x2A,0x88,0x49), 0x3C=touch tr[032]) and starts SP
+  #399 on its own out-channel gate [M SP_Update flags bit 1]. Port fix: the Hostage (0x0A) →
+  HostageSaved (0x0C) state path with the captor link (new fields captor/hostage_searched), the
+  ENTER arms writing second_channel through the Drones raise writer, and the Drones-tick captor
+  bind (nearest armed guard, SetupHostageKiller 0x144030) + freed check [M 0x15cb78:24-36]. The
+  intro cut-scene plays in full (skip off): stream 7 fires event 0x0D(47,1) at scene tick 1539 →
+  ch 0x47 [D + L NF_SCRIPTLOG run]. The walkreal_07000002 walk: spawn → intro → ladder → garden →
+  west wing → geisha 1 rescued by real shots (0x49, 0x3B) → 0x3C/0x35 mid-scene gate → doorway
+  sensor 0x81 → computer shot (0x48) → locked plates (ambush outcome) → geisha 2 (0x4A → 0x4B →
+  0x4C, the disc's own AND chain) → E at the Load Point loads 07000003 with the EARNED key gate —
+  no hand-set 0x4C any more. 0x4D (obj2 "Find door to servants quarters") has NO writer in any
+  ported mechanism (all 35 triggers, doors, pickups, locks, kind-7 script events, the full
+  switch_channels writer sweep) — the remaining mechanism is the un-ported Monitor console (type
+  0x30; Monitor_Update 0x1afcc8 writes the target object's data+0x5C channel [M]); the walk hands
+  0x4D as that layer would (marked [S]) and the report lists the live check. Tests: hostage_save_
+  07000002_live 2/2 (the captive pin + the save-on-captor-death, the second fails on the old code),
+  walkreal_07000002_live 1/1 (the full route), nf-game lib 261. Report: docs/reports/level-02-complete.md.

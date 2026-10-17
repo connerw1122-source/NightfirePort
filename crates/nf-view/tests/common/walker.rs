@@ -100,7 +100,7 @@ pub struct Walker {
     stuck_cycles: u32,
     sidestep: i32,
     max_y: f32,
-    lenient: bool,
+    pub lenient: bool,
 }
 
 /// The stuck dump, public for the walkreal tests' own aim loops (walkreal-b2).
@@ -375,6 +375,38 @@ impl Walker {
     /// corner pins the sidestep) he walks the NAV GRAPH to a flank point — perpendicular to the
     /// guard bearing, alternating the side and growing the offset 3→5→7 — and re-checks. The
     /// 900-tick no-damage fallback (4 repositions) stays for clear-aim-but-missing cases.
+    /// Fire at a fixed world point (a Destroy prop: `Destroy_CollisionHandler` 0x12bd48 reads the
+    /// bullet's damage against the tag's health; the port's bullet pass checks the segment against
+    /// the prop's bounds [crates/nf-game/src/props.rs]). Aims the view each tick; taps the trigger
+    /// when the view is on the point. Returns when `done` (polled by the caller's closure) or the cap.
+    pub fn shoot_point(&mut self, at: V3, label: &str, done: impl Fn(&nf_view::scene::Sim) -> bool) -> bool {
+        for t in 0..2400u32 {
+            {
+                let sim = self.scene.sim.as_ref().unwrap();
+                if done(sim) { return true; }
+                let bp = sim.bond.pos;
+                let dx = at[0] - bp[0];
+                let dz = at[2] - bp[2];
+                let dy = at[1] - (bp[1] + sim.bond.eye - sim.bond.crouch_drop);
+                let desired = dx.atan2(dz);
+                let err = wrap_pi(desired - sim.bond.yaw);
+                let want_pitch = (dy / dxz(bp, at).max(0.5)).atan() / std::f32::consts::FRAC_PI_2;
+                let perr = want_pitch - sim.bond.pitch;
+                let on_target = err.abs() < 0.02 && perr.abs() < 0.028 && t % 16 == 0;
+                let input = Input {
+                    turn: err.clamp(-0.08, 0.08),
+                    look: perr.clamp(-0.08, 0.08),
+                    ..Default::default()
+                };
+                drop(sim);
+                self.tick_fire(input);
+                let _ = on_target;
+            }
+        }
+        eprintln!("[walk] {label}: shoot_point cap");
+        false
+    }
+
     pub fn shoot(&mut self, di: usize, label: &str) -> bool {
         let mut hp0 = self.scene.sim.as_ref().unwrap().drones.list[di].health;
         let mut repositions = 0i32;
