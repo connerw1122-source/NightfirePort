@@ -1944,15 +1944,27 @@ impl BotBrain {
             return; // now < the deadline [M 0x17a080:27]
         }
         let dx = target.pos[0] - self.pos[0];
+        let dy = target.pos[1] - self.pos[1];
         let dz = target.pos[2] - self.pos[2];
-        let d = (dx * dx + dz * dz).sqrt();
-        let dir = [dx / d, 0.0, dz / d];
+        // The shot is 3-D: the aim layer tracks the opponent's body position (BOT_opponentTargetting
+        // copies the opponent's +0x30 pos into the +0x130 aim target [M 0x125b30:74-78]) and the
+        // drone fires along the aim — the arenas' floors differ in height, a horizontal-only shot
+        // passes under/over the target body.
+        let d3 = (dx * dx + dy * dy + dz * dz).sqrt();
+        if d3 < 1e-4 {
+            return;
+        }
+        let dir = [dx / d3, dy / d3, dz / d3];
         self.yaw = crate::trig::atan2_approx(dz, dx); // the aim layer's turn [S — see above]
-        // the aim cone [M 0x178c48: dot > 0.9998]
+        // the aim cone [M 0x178c48: dot > 0.9998] — the horizontal facing
         // the game's PS2Sinf/PS2Cosf (0x120700) — see the ATAN2_APPROX note above: std trig is
         // libm-dependent; the game's own approximations are not.
         let facing = [crate::trig::cosf(self.yaw), 0.0, crate::trig::sinf(self.yaw)];
-        let dot = facing[0] * dir[0] + facing[2] * dir[2];
+        let flat = (dx * dx + dz * dz).sqrt();
+        if flat < 1e-4 {
+            return;
+        }
+        let dot = facing[0] * (dx / flat) + facing[2] * (dz / flat);
         if dot <= 0.9998 {
             return;
         }
@@ -2172,7 +2184,12 @@ mod brain_tests {
         now: f32,
         stationary: bool,
         /// The `CanSeeObject` stand-in: when false the human row never carries the seen bit.
+        /// mp-bots-spawn: the game's FindOpponent tests CanSeeObject per candidate [M 0x1424e0:158+]
+        /// — the flag now swaps a blocking wall into the world instead of pre-clearing the row's
+        /// seen bit (an empty collision world reads as clear LOS, which is the game's own answer).
         vision: bool,
+        /// The wall the `vision == false` world carries (between the bot and the player).
+        wall: Vec<[[f32; 3]; 3]>,
     }
 
     impl Rig {
@@ -2186,7 +2203,11 @@ mod brain_tests {
             brain.vars.weapon_id = 0x02;
             brain.vars.clip_rounds = 50;
             Rig {
-                world: CollisionWorld::from_triangles(Vec::new()),
+                world: CollisionWorld::from_triangles(vec![
+                    // the normal faces the bot (the segment test back-face culls [M 0x10a8c8:168])
+                    [[8.0, -1.0, 6.0], [8.0, 4.0, -6.0], [8.0, -1.0, -6.0]],
+                    [[8.0, -1.0, 6.0], [8.0, 4.0, 6.0], [8.0, 4.0, -6.0]],
+                ]),
                 pickups: vec![BotPickup {
                     pos: [6.0, 1.6, 0.0],
                     weapon_id: 0x10,
@@ -2203,7 +2224,21 @@ mod brain_tests {
                 now: 0.0,
                 stationary: false,
                 vision: false,
+                wall: vec![
+                    [[8.0, -1.0, 6.0], [8.0, 4.0, -6.0], [8.0, -1.0, -6.0]],
+                    [[8.0, 4.0, -6.0], [8.0, 4.0, 6.0], [8.0, -1.0, 6.0]],
+                ],
             }
+        }
+
+        /// Swaps the vision world: `false` carries the blocking wall, `true` is empty.
+        fn set_vision(&mut self, vision: bool) {
+            self.vision = vision;
+            self.world = if vision {
+                CollisionWorld::from_triangles(Vec::new())
+            } else {
+                CollisionWorld::from_triangles(self.wall.clone())
+            };
         }
 
         /// Builds the tick's `BotCtx` from owned pieces (the +0xB0 dist² recompute and the
@@ -2311,7 +2346,7 @@ mod brain_tests {
     #[test]
     fn attack_fire_shot_at_stationary_player() {
         let mut r = Rig::new();
-        r.vision = true; // the bot sees the stationary player (the CanSeeObject stand-in)
+        r.set_vision(true); // the bot sees the stationary player (the CanSeeObject stand-in)
         r.pickups.clear(); // nothing to fetch: the idle bot turns to the candidate
         let mut fired_at = None;
         for i in 0..600 {

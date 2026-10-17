@@ -8046,14 +8046,23 @@ impl Sim {
                 let end = [shot.pos[0] + shot.dir[0] * range,
                            shot.pos[1] + shot.dir[1] * range,
                            shot.pos[2] + shot.dir[2] * range];
-                // The other bots: nearest body (radius 0.6 [S]) the ray passes within, world-clear.
-                let clear = world.segment(shot.pos, end).is_none();
+                // The world caps the bullet: the game's shot travels until it hits geometry OR a
+                // body — the old whole-ray clear check discarded every hit that stood in front
+                // of a wall behind the target. The hit fraction caps the body sweep (the game's
+                // bullet → the first hit wins; [S — the shared Bullet system cannot host the
+                // bots, this sweep stands in]).
+                let cap = world.segment(shot.pos, end).unwrap_or(1.0);
+                let capped_end = [shot.pos[0] + (end[0] - shot.pos[0]) * cap,
+                                  shot.pos[1] + (end[1] - shot.pos[1]) * cap,
+                                  shot.pos[2] + (end[2] - shot.pos[2]) * cap];
+                // The other bots: nearest body (radius 0.6 [S]) the ray passes within, before
+                // the world hit.
                 let mut best: Option<(usize, f32)> = None;
-                if clear {
+                {
                     for (j, b) in m.bots.iter().enumerate() {
                         if j == i || b.dead { continue; }
-                        if let Some(t) = ray_body_hit(shot.pos, end, b.brain.pos, 0.6) {
-                            if best.map_or(true, |(_, bt)| t < bt) { best = Some((j, t)); }
+                        if let Some(t) = ray_body_hit(shot.pos, capped_end, b.brain.pos, 0.6) {
+                            if t <= cap && best.map_or(true, |(_, bt)| t < bt) { best = Some((j, t)); }
                         }
                     }
                 }
@@ -8065,7 +8074,8 @@ impl Sim {
                 // (`MP_RegisterBulletHit` 0x1857c0 — the friendly-fire gate + the last-shooter
                 // word the kill credit later resolves; the port has no HitByList), and a blocked
                 // hit deals no damage — the game's own order.
-                let hits_human = human.alive && ray_body_hit(shot.pos, end, human.pos, 0.6).is_some();
+                let hits_human = human.alive
+                    && ray_body_hit(shot.pos, capped_end, human.pos, 0.6).map_or(false, |t| t <= cap);
                 if hits_human {
                     let shooter = m.bots[i].slot;
                     if m.register_bullet_hit(0, shooter) {

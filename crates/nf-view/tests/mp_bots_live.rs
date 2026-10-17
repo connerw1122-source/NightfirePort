@@ -27,7 +27,6 @@ fn quick_game() -> MpSettings {
     s
 }
 
-#[ignore = "704 in progress: the brains tick but stay in BotIdle — the goal picker starves on an empty pickup table (the arena's MP pickups are not lifted into BotPickup yet) and find_opponent never acquires; the next session feeds both — see the report"]
 #[test]
 fn quick_game_bots_play_the_match() {
     let Some(path) = iso() else { eprintln!("skip: NF_ISO not set"); return };
