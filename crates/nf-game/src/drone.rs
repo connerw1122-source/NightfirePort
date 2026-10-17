@@ -655,6 +655,8 @@ pub struct Drone {
     /// The player's target nodes (`NDrone2_NavNodeCache`) and this frame's link used-counts, lent by `Drones::tick`.
     pub target: PlayerTarget,
     pub links_used: Vec<Vec<u16>>,
+    /// This frame's link flag halfwords per path (`MAPLINK+4`), lent by `Drones::tick` like `links_used`.
+    pub link_flags: crate::nav::LinkFlags,
     /// Switch channel the drone waits for (`+0x134`, placement parameter 3; 0 = none), whether that channel is on
     /// this tick (`switch_channels`, lent by `Drones::tick`), and whether the drone is enabled (`NDrone2_Enable`:
     /// disabled drones have object flags 0x30 — not drawn — and no vision).
@@ -1175,6 +1177,7 @@ impl Drone {
             hip_anim: 1.0,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
+            link_flags: Vec::new(),
             switch_channel: param(3) as u8, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: param(4), present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
             cover_rt: Vec::new(), others: Vec::new(), peers: Vec::new(), return_state: 0, second_channel: param(6) as u8, second_tag: param(8),
@@ -6503,6 +6506,22 @@ const LOOK_SHORT: u16 = 0x0b;
 /// `1 − (|angleDiff| − 0.5235988)·0.81851107` clamped [0,1] on `atan2(bx−px, bz−pz)` vs the player's yaw
 /// (cel+0x54; full within 30°, gone past ~139°) — × 0.5 when the head→blast `Collide_LineOfSight` fails.
 /// The 0x3d23d70a-step constants are the disasm's own floats (0.011764706 = 1/85, 0.81851107, π/6).
+/// `Drone_BuildDynamicAwarePoints`' record-id switch (0x138b10:36-160), link-flag half: (radius,
+/// flag) per weapon-record id for `AINetwork_SetLinksFlagInCircle` [M 0x15b548]. `None` = the
+/// switch has no case for the id (0x35 stun and 0x3a tripbomb never flag). A stuck 0x37 mine is
+/// skipped like the game's `obj+0xF4 == 3` arm [M 0x138b10:150]. [S] unverified: the game also
+/// skips 0x34/0x6c/0x3b-0x40 when the record's +0xFC float ≥ 180.0 (0x138b10:100-102) — the port's
+/// thrown objects carry no counterpart field, and the flags are write-only state (no reader in
+/// ACTION.ELF — the report's census), so the gate cannot change routing either way.
+pub fn hazard_link_flag(weapon_type: u16, stuck: bool) -> Option<(f32, u16)> {
+    match weapon_type {
+        0x2a | 0x2c..=0x2f | 0x34 | 0x6c | 0x3b..=0x40 => Some((12.0, 0x100)),
+        0x36 => Some((3.0, 0x200)),
+        0x37 if !stuck => Some((8.0, 0x100)),
+        _ => None,
+    }
+}
+
 pub fn flash_amount(head: V3, blast: V3, px: f32, pz: f32, yaw: f32, has_los: bool) -> f32 {
     let dx = blast[0] - head[0];
     let dy = blast[1] - head[1];
@@ -6691,6 +6710,10 @@ pub struct Drones {
     /// The player as an AI target and this frame's link used-counts per path.
     pub target: PlayerTarget,
     used: Vec<Vec<u16>>,
+    /// The shared link flag halfwords per path (`MAPLINK+4`), cleared and re-flagged each
+    /// InitComms cycle (`AINetwork_ClearLinkFlags` 0x15b498 + `Drone_BuildDynamicAwarePoints`
+    /// 0x138b10), lent into the active drone like `used`.
+    link_flags: crate::nav::LinkFlags,
     /// `switch_channels` and the level's trigger objects (docs/systems/triggers.md).
     pub channels: crate::triggers::Channels,
     pub triggers: Vec<crate::triggers::Trigger>,
@@ -7054,7 +7077,7 @@ impl Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
         for (i, dr) in list.iter_mut().enumerate() { dr.sm_id = i as u32; dr.index = i; }
         let llist = (0..list.len()).collect();
-        let mut drones = Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), player_pos: [0.0; 3], bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), shake: 0.0, health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, mission_end: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
+        let mut drones = Drones { list, frame: 0, los_cursor: 0, llist, rng, lights: Default::default(), player_pos: [0.0; 3], bullets: Vec::new(), grenades: Vec::new(), explosions: Vec::new(), shake: 0.0, health: Default::default(), player_hits: Vec::new(), impacts: Vec::new(), prev_player: None, moved_since: None, target: PlayerTarget::default(), used: Vec::new(), link_flags: Vec::new(), channels: Default::default(), triggers: Vec::new(), spawners: Vec::new(), cover_rt: Vec::new(), sounds: Vec::new(), cover_cursor: 0, cover_counter: 0, player_bullets: Vec::new(), player_impacts: Vec::new(), last_flinch: None, bond_aiming: false, level_exit: None, mission_end: None, bond_weapon: 2, env: None, env_pending: None, fill_rng: Rng::new(0x5eed), last_alarm: None, alarm_sent: false, party_loud: false, iop_section: 0, hud_frozen: false, aim_target: None, aim_offset: [0.0; 2],
             pickups: Vec::new(), inventory: crate::pickup::Inventory::level_start(0x73, 34), taken: Vec::new(), scripts: Default::default(), player_events: Vec::new(), npc_enabled: true, hold_npcs: false, hold_active: false,
             npc_system_disabled: false,
             spawn_counter: 0, audio: Default::default(), script_sounds: Vec::new(), map_sounds: Default::default(), music: Default::default(), attack_gate: Default::default(), alarm_music: [0; 3], voice_last: Vec::new(), patrol_cooldown: 0, searchlights: Default::default(), doors: Default::default(), fuseboxes: Vec::new(), sss: Default::default(), bullet_paths: Vec::new(), props: Default::default(), mission: crate::mission::Mission::new(), mission_carry: None, mission_inited: false, mission_events: Vec::new(), useobjs: Default::default(), ai_points: Vec::new(), bullet_path_weapons: Vec::new(), copters: Vec::new(), locks: Vec::new(), grapple_points: Vec::new(), prev_event2: 0,
@@ -8873,6 +8896,33 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             }).collect();
         }
         self.used = d.nav.paths.iter().map(|p| vec![0; p.links.len()]).collect();
+        // The flag half of the same per-cycle walk: `Drone_InitComms` 0x139520:125 calls
+        // `AINetwork_ClearLinkFlags(0x310)` [M 0x15b498] and then `Drone_BuildDynamicAwarePoints`
+        // [M 0x138b10] re-flags the links inside every live class-5 object's danger radius (the
+        // object walk — bullets AND grenades, `Bullet_init` 0x12c5a0:87 sets obj+0xFF = 5). The
+        // aware-point half of that walk is the port's direct explosive scan below (the report
+        // documents the mapping). Record-id switch [M 0x138b10:36-160]: 0x2a/0x2c-0x2f and
+        // 0x34/0x6c and 0x3b-0x40 → 12.0 / 0x100, 0x36 → 3.0 / 0x200, 0x37 → 8.0 / 0x100 while not
+        // stuck; 0x35 stun and 0x3a tripbomb have NO case.
+        self.link_flags = d.nav.paths.iter().map(|p| vec![0u16; p.links.len()]).collect();
+        for g in &self.grenades {
+            if g.state >= 2 { continue; }
+            if let Some((radius, flag)) = hazard_link_flag(g.weapon_type, g.stuck) {
+                d.nav.set_links_flag_in_circle(&mut self.link_flags, g.pos, radius, flag, 0);
+            }
+        }
+        for b in &self.bullets {
+            if b.state >= 2 { continue; }
+            if let Some((radius, flag)) = hazard_link_flag(b.weapon, false) {
+                d.nav.set_links_flag_in_circle(&mut self.link_flags, b.pos, radius, flag, 0);
+            }
+        }
+        for b in &self.player_bullets {
+            if b.dead { continue; }
+            if let Some((radius, flag)) = hazard_link_flag(b.weapon, false) {
+                d.nav.set_links_flag_in_circle(&mut self.link_flags, b.pos, radius, flag, 0);
+            }
+        }
         let positions: Vec<Option<V3>> = self.list.iter().map(|x| x.enabled.then_some(x.pos)).collect();
         // The armed-peer distances for `NDrone2_NearArmedDrone`'s calls (fix-actors): the nearest
         // started, alive, team-1 drone (positions only here; the per-drone team/started filter runs
@@ -9285,6 +9335,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             dr.wait_channel_on = dr.wait_channel != 0 && self.channels.on(dr.wait_channel as u32);
             { let _p = crate::prof::scope("drone: visible_to (drawn ray)"); dr.drawn = dr.enabled && visible_to(player, d.world, dr.pos, dr.head()); }
             dr.links_used = std::mem::take(&mut self.used);
+            dr.link_flags = std::mem::take(&mut self.link_flags);
             dr.cover_rt = std::mem::take(&mut self.cover_rt);
             let _pc = crate::prof::scope("drone: clones + misc");
             dr.others = positions.clone();
@@ -9497,6 +9548,7 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             let talks = std::mem::take(&mut dr.talks);
             if !talks.is_empty() { talk_queue.push((index, talks)); }
             self.used = std::mem::take(&mut dr.links_used);
+            self.link_flags = std::mem::take(&mut dr.link_flags);
             self.cover_rt = std::mem::take(&mut dr.cover_rt);
             // NDrone2_Steer: exponential turn toward the desired yaw, 0.1 per tick, with the anim's yaw offset added
             // around it (`ControlSTANDARD`): the body faces desired − offset.
@@ -10404,6 +10456,25 @@ mod tests {
     use super::*;
     use crate::world::CollisionWorld;
 
+    /// `Drone_BuildDynamicAwarePoints`' record-id switch [M 0x138b10:36-160]: the (radius, flag)
+    /// pairs fed to `AINetwork_SetLinksFlagInCircle` [M 0x15b548]. Stun 0x35 and tripbomb 0x3a
+    /// have no case; a stuck mine (`obj+0xF4 == 3` [M 0x138b10:150]) is skipped.
+    #[test]
+    fn hazard_link_flag_matches_the_record_switch() {
+        assert_eq!(hazard_link_flag(0x2a, false), Some((12.0, 0x100)));
+        for w in [0x2c, 0x2d, 0x2e, 0x2f] { assert_eq!(hazard_link_flag(w, false), Some((12.0, 0x100))); }
+        assert_eq!(hazard_link_flag(0x34, false), Some((12.0, 0x100)), "frag");
+        assert_eq!(hazard_link_flag(0x35, false), None, "stun: no case");
+        assert_eq!(hazard_link_flag(0x36, false), Some((3.0, 0x200)), "smoke");
+        assert_eq!(hazard_link_flag(0x37, false), Some((8.0, 0x100)), "mine in flight");
+        assert_eq!(hazard_link_flag(0x37, true), None, "stuck mine skips");
+        assert_eq!(hazard_link_flag(0x3a, false), None, "tripbomb: no case");
+        for w in [0x3b, 0x3c, 0x3d, 0x3e, 0x3f, 0x40] { assert_eq!(hazard_link_flag(w, false), Some((12.0, 0x100)), "satchel {w:#x}"); }
+        assert_eq!(hazard_link_flag(0x6c, false), Some((12.0, 0x100)));
+        assert_eq!(hazard_link_flag(0x30, false), None);
+        assert_eq!(hazard_link_flag(0x33, false), None);
+    }
+
     /// A drone with only the collision-relevant fields set (pos, velocity, bounded, free_root, corpse), for the
     /// gravity / down-ray tests. The hip height is the default 1.0 (`Drone::hip`).
     pub(crate) fn drone_at(pos: V3) -> Drone {
@@ -10425,6 +10496,7 @@ mod tests {
             damage_mul: 1.0, alert_bits: 0, light: 1.0, attack_frame: 0, alerted_by_drone: false, watching: false,
             route: None, last_wait: None, idle_timeout: None, delayed: None, sm_id: 0, stand_until: 0,
             croute: None, nav_path: None, move_quad: 0, yaw_offset: 0.0, no_route_odd: false, target: PlayerTarget::default(), links_used: Vec::new(),
+            link_flags: Vec::new(),
             switch_channel: 0, channel_on: false, placement: 0, spawn_seq: 0, spawn_frame: 0, group: 0, present: true, started: false, drawn: true, enabled: true, index: 0, exiting_to: 0, self_msg: None,
             cover: None, cover_side: 0, cover_type: 0, cover_leave: 0, cover_point: pos, goal: None, cover_claimed: false, has_cover: false, cover_tries: 0,
             cover_rt: Vec::new(), others: Vec::new(), peers: Vec::new(), return_state: 0, second_channel: 0, second_tag: 0,
