@@ -17972,3 +17972,25 @@ glass unmodelled, 1.0 stand-in radius [S]); kill = delete + the 0x2e/0x5f2/0x5f3
 Census sets 15→17 / 7→8 / 61→62 + the doc tables. Verified: 2 trigger unit tests + 5 live tests
 (07000041 real path, 07000001 real script path with synthetic-script sisters) + 6 census tests.
 Suite running.
+
+## menu-def-runtime (2026-10-17, branch s/menu-def-runtime) — started 05:2x UTC
+
+Task: drive the front end from the game's own menu-def data. Port the parser for the whole
+kind-8 menu-def entry (pages, controls, components, sprites, keyframes, messages) and the
+uncited `Script_*` keyframe runtime (KFRAME/KMSG animation of controls, fades, slides) as a
+pure data/sim layer: given a page id and a tick, produce each control's draw list (position,
+size, colour/alpha, texture, text). Comparison test: runtime tick-0 and settled draw lists vs
+the transcribed constants in `crates/nf-view/src/menu.rs`; report every disagreeing page.
+Drawing code untouched — the main agent wires the runtime into the renderer.
+
+Done 06:3x UTC: `crates/nf-formats/src/menudef.rs` — the full 0x21b908 tag walk + the
+`Script_*` runtime (RunFrame 0x220580's line/Catmull-Rom interpolation, loops, immediate +
+delayed messages, 0xe1 colour fades, PlayDefault's slot map) behind
+`MenuRuntime::new/page_shown/tick/draw_list`. Disassembly settled five things the C hid: the
+leading format dword, KFRAME {time first … flags last}, KMSG's first dword = TARGET (docs
+corrected in frontend.md), MSG 0x18's label id in B, `Script_CalculateLine` = kf[i]→kf[i+1]
+linear. Tests: 7 unit pins (each citing an address; the CR −3 pin fails under any other
+reading) + the ISO-gated transcription comparison — **zero differences** on every cited
+control; 52/56 PAGE records register, 830 controls. Report:
+docs/reports/menu-def-runtime.md. nf-view/nf-game/nf-audio untouched; their suite run did not
+fit the session window (ALSA prefix + runtime) — flagged in the report.
