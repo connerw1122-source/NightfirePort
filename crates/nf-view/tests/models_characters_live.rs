@@ -1,10 +1,17 @@
 //! models-characters: every skinned character on the disc resolves, poses and draws.
 //!
 //! - G-021: the 33 drone placements whose skin (placement param 0) is not in their level's archive
-//!   resolve from the archive of the flow that holds it [D scan: 0700000c ×7 and 07000014 ×15 want
-//!   0x05000090, 07000014 ×11 want 0x050000b1]. The port merges the foreign archive's maps, skins
-//!   and skeletons (the game's hash tables accumulate every archive loaded in the session —
-//!   `AnimLoadFile` 0x1d8248 registers per map, nothing frees between levels).
+//!   [D scan: 0700000c ×7 and 07000014 ×15 want 0x05000090, 07000014 ×11 want 0x050000b1]. The
+//!   game resolves the 0x05000090 placements through the substitution (`AnimObjectNew` 0x1be910
+//!   disasm 0x1be958-0x1be9b0: on GameState+0xC == 0x0700000c → 0x05000087, on 0x07000014 →
+//!   0x05000093, before the hashtable get). 0x050000b1 resolves for NO fresh story session: it is
+//!   carried only by 07000015/16's archives [D scan], which the story loads after 07000014, the
+//!   session table holds only what loaded containers registered (`AnimLoadFile` 0x1bdf40,
+//!   first-wins, nothing frees — the only deletions are the hashtype-4 pack wipes 0x1d69e8 +
+//!   0x1ca520), so `hashtable_getitem` 0x1ca5b0 misses and `AnimObjectNew` 0x1be910:44-46 returns
+//!   0 — the placement draws no character (`NDrone2_DefaultInit` 0x14b300:563-565 discards the
+//!   return). The port's session gate (drone-skins-g021) models exactly that; the old
+//!   "foreign guards resolve" expectation here pinned the pre-gate port, not the game.
 //! - The gameplay guard: the merge must not touch the level's own per-skeleton sequence lists
 //!   (the order-sensitive data the WORKLOG warns about).
 //!
@@ -12,7 +19,7 @@
 
 fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
 
-fn assert_level_skins_complete(level_name: &str, want_skins: &[u32], min_chars_per_skin: usize) {
+fn assert_level_skins_complete(level_name: &str, want_skins: &[u32], min_chars_per_skin: usize, unresolved_ok: &[u32]) {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
     let mut scene = nf_view::load(&iso, level_name, false).expect("load");
     let sim = scene.sim.as_ref().unwrap();
@@ -25,6 +32,7 @@ fn assert_level_skins_complete(level_name: &str, want_skins: &[u32], min_chars_p
         if p.flags & 0xff != 0x0f { continue; }
         placed += 1;
         let skin = p.params.iter().find(|(k, _)| *k == 0).map(|(_, v)| *v).unwrap_or(0);
+        if unresolved_ok.contains(&skin) { continue; }
         let sk = sim.skins.get(&skin).unwrap_or_else(|| panic!("{level_name} placement #{i}: skin {skin:08x} does not resolve (G-021)"));
         let skeleton = sim.skeletons.get(&sk.skeleton).unwrap_or_else(|| panic!("{level_name} skin {skin:08x}: skeleton {} missing", sk.skeleton));
         assert!(skeleton.bones > 0, "{level_name} skin {skin:08x}: empty skeleton");
@@ -34,7 +42,7 @@ fn assert_level_skins_complete(level_name: &str, want_skins: &[u32], min_chars_p
         assert!(chars_for(skin) >= min_chars_per_skin,
             "{level_name}: only {} characters built for skin {skin:08x} (want ≥ {min_chars_per_skin}) — the placement did not draw", chars_for(skin));
     }
-    eprintln!("[{level_name}] {placed} drone placements, all skins resolve");
+    eprintln!("[{level_name}] {placed} drone placements, all skins resolve (except the listed {:?})", unresolved_ok);
 }
 
 fn placements(iso: &str, level_name: &str) -> Box<[nf_formats::placement::Placement]> {
@@ -50,16 +58,36 @@ fn placements(iso: &str, level_name: &str) -> Box<[nf_formats::placement::Placem
 fn level_main_map(_iso: &str, _level_name: &str) -> usize { 0 }
 
 /// G-021 on 0700000c (the power station): 7 placements want 0x05000090, which lives in
-/// 07000049/0d/16/15's archives [D].
+/// 07000049/0d/16/15's archives [D] — but the game never looks it up: `AnimObjectNew` 0x1be910
+/// :33-39 substitutes 0x05000087 (the own archive's) first, and the port mirrors that at load.
 #[test]
 fn g021_the_power_station_s_foreign_guards_resolve() {
-    assert_level_skins_complete("0700000c.bin", &[0x0500_0090], 7);
+    assert_level_skins_complete("0700000c.bin", &[0x0500_0090], 7, &[]);
 }
 
 /// G-021 on 07000014 (the airbase): 26 placements want 0x05000090 (×15) and 0x050000b1 (×11) [D].
+/// The substitution (`AnimObjectNew` 0x1be910:40-43 — GameState+0xC == 0x07000014 → 0x05000093)
+/// resolves every 0x05000090 placement from the own archive. 0x050000b1 resolves for NO fresh
+/// story session: it is carried ONLY by 07000015/16's archives [D scan], which the story loads
+/// AFTER 14; the session table (`AnimLoadFile` 0x1bdf40 first-wins, nothing frees — the only
+/// deletions are the hashtype-4 pack wipes 0x1d69e8 + 0x1ca520) lacks it, `hashtable_getitem`
+/// 0x1ca5b0 misses, `AnimObjectNew` 0x1be910:44-46 returns 0 and the placement draws no character
+/// (`NDrone2_DefaultInit` 0x14b300:563-565 discards the return) — the game's cited skinless
+/// exception. The captains are the only out (0x14b300:536-555 swaps kinds 6/7 to 0x05000093/
+/// 0x050000b2, both in the own archive — the sim's `captain_setup`). The old expectation here
+/// (the foreign merge resolving 0x050000b1) pinned the pre-session-gate port, not the game.
 #[test]
 fn g021_the_airbase_s_foreign_guards_resolve() {
-    assert_level_skins_complete("07000014.bin", &[0x0500_0090, 0x0500_00b1], 11);
+    let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
+    let scene = nf_view::load(&iso, "07000014.bin", false).expect("load");
+    // 0x05000090: the substitute entry (0x05000093's data) builds the characters.
+    assert_level_skins_complete("07000014.bin", &[0x0500_0090], 7, &[0x0500_00b1]);
+    // 0x050000b1: on NO container the session has loaded — the loaded table must NOT hold it and
+    // no character may draw for it (the game's hashtable miss renders these skinless).
+    assert!(!scene.sim.as_ref().unwrap().skins.contains_key(&0x0500_00b1),
+        "0x050000b1 resolved on 07000014 — it is carried only by 07000015/16 [D], which the story loads after 14; the game's hashtable_getitem 0x1ca5b0 misses (AnimObjectNew 0x1be910:44-46)");
+    assert_eq!(scene.characters.iter().filter(|c| c.skin.hashcode == 0x0500_00b1).count(), 0,
+        "a character drew for 0x050000b1 on 07000014 — the game draws these placements skinless");
 }
 
 /// The gameplay guard: the G-021 merge adds no sequence to any skeleton the level's own 07F already
@@ -233,19 +261,24 @@ fn golden_every_story_level_s_placed_skins_resolve() {
         assert_eq!(placed, want, "{archive}: the placed skin set drifted");
         assert_eq!(level.skins.len(), archive_skins, "{archive}: the archive's skin count drifted");
         for sk in placed {
-            // 0x050000b1 on 07000014 resolves only through the load's session-table merge (the
-            // post-load pass below); everything else must be in the archive (or substituted, but
-            // the substitution keeps the placement hash out of the raw table only for 0x05000090).
+            // 0x050000b1 on 07000014 resolves for NO fresh story session (carried only by
+            // 07000015/16 [D] — the session gate; see the airbase test) — the raw-archive pass
+            // skips it; everything else must be in the archive (or substituted, but the
+            // substitution keeps the placement hash out of the raw table only for 0x05000090).
             if id == 0x0700_0014 && sk == 0x0500_00b1 { continue; }
             assert!(level.skins.contains_key(&sk) || sk == 0x0500_0090,
                 "{archive}: placed skin {sk:08x} unresolved");
         }
     }
-    // the post-load check through the port: the substituted/merged levels resolve everything.
+    // the post-load check through the port: the substituted levels resolve the substitute entry;
+    // 0x050000b1 stays UNRESOLVED on 07000014 (the game's hashtable miss — the session gate).
     for id in [0x0700_000cu32, 0x0700_0014] {
         let scene = nf_view::load(&iso, &format!("{id:08x}.bin"), false).expect("load");
         let sim = scene.sim.as_ref().unwrap();
         assert!(sim.skins.contains_key(&0x0500_0090), "{id:08x}: 0x05000090 did not resolve after the load");
-        if id == 0x0700_0014 { assert!(sim.skins.contains_key(&0x0500_00b1), "0x050000b1 did not resolve after the load"); }
+        if id == 0x0700_0014 {
+            assert!(!sim.skins.contains_key(&0x0500_00b1),
+                "0x050000b1 resolved on 07000014 — carried only by 07000015/16 [D]; the game's hashtable_getitem 0x1ca5b0 misses (AnimObjectNew 0x1be910:44-46, AnimLoadFile 0x1bdf40 session accumulation)");
+        }
     }
 }
