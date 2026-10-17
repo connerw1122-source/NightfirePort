@@ -28,6 +28,14 @@ fn announced(sim: &nf_view::scene::Sim) -> bool {
 /// "Breach the castle walls" (0x04000000 [L USATxt.dat]) has enable channel 0x45 and condition
 /// channel 0x46 [L ee_start_05.bin 0x2a3e28]: no notice until 0x45 fires, then the NEW OBJECTIVE
 /// notice, then OBJECTIVE COMPLETE when 0x46 fires [M 0x1827d8 cases 1/3].
+/// The enable fires ON THE BOOT TICK: the reveal plate (#36, TouchOnce out 0x45, mask 8) sits under
+/// the cold start and the game's fresh-boot snapshot already carries switch_channels[0x45] = 1 with
+/// the record still hidden (state 1 — the monitor's first tick has not run) [L ee_start_05.bin
+/// @0x26fc90 = {0x45}, @0x2a3e28+0x14 = 1]. So the game announces the objective at level start, and
+/// the port must too: the plate fires through the real player-toucher path (reach measured from
+/// live play, level-05-complete), the monitor announces on the next tick [M 0x1827d8 case 1].
+/// Sister built in: on the old pos−0.4 toucher the plate never fires, ch 0x45 stays off, and the
+/// announce assertion fails.
 #[test]
 fn objective_announces_on_its_enable_channel_and_completes_on_its_condition() {
     let Some(iso) = iso() else { eprintln!("NF_ISO not set — skipping"); return };
@@ -35,12 +43,11 @@ fn objective_announces_on_its_enable_channel_and_completes_on_its_condition() {
     let sim = scene.sim.as_mut().unwrap();
     tick_idle(sim, 10);
     assert_eq!(sim.drones.mission.status(), 1, "Mission_SetStatus(1) at init [M 0x182270:28]");
-    // Sister: with the enable channel still off, nothing is announced (the game's state-1 wait).
-    assert!(!announced(sim), "no objective notice before the enable channel 0x45 fires");
-    // The game's enable (a disc write on 07000005; the mission layer's contract is the channel).
-    sim.drones.set_channel(0x45);
-    tick_idle(sim, 3);
-    assert!(announced(sim), "the enable channel announces the objective [M 0x1827d8 case 1]");
+    // The boot tick fired the reveal plate through the real path: ch 0x45 is on WITHOUT the test
+    // setting it [L ee_start_05.bin @0x26fc90 = {0x45}].
+    assert!(sim.drones.channels.on(0x45), "the spawn reveal plate fires ch 0x45 on the boot tick");
+    // The monitor's first tick turned the enable into the announce [M 0x1827d8 case 1].
+    assert!(announced(sim), "the boot-tick enable announces the objective, as the game's boot does");
     let msg = sim.hud.objective_msgs.front().expect("the notice is queued");
     assert_eq!(msg.text, "Breach the castle walls", "the bound 0x04000000 text [L USATxt.dat]");
     assert_eq!(msg.status, 0x0200_0051, "NEW OBJECTIVE while the objective is pending [M 0x19c310:134]");

@@ -1655,7 +1655,8 @@ impl Drone {
     fn update_patrol_route(&mut self, d: &Data, _rng: &mut Rng, frame: u32) {
         let feet = self.feet();
         let Some(route) = self.route.as_mut() else { self.request_anim(d, anim_state::STAND_IDLE); return };
-        let (code, reached) = route.follow(d.nav, feet);
+        let ppos = self.player_pos;
+        let (code, reached) = route.follow(d.nav, feet, &|p| Drone::ppos_near(ppos, p));
         let target = route.target;
         if let Some(node) = reached {
             let flags = d.nav.paths[route.path].nodes[node as usize].flags;
@@ -1736,10 +1737,20 @@ impl Drone {
     /// `CallAnim(0x1e)` = RUN on code 0/2), look-around/stand when the creep is blocked (the game's route creep byte
     /// 9/0xc — the port's BLOCKED code), and `true` once the route ARRIVED (the caller clears prop 0x1D and falls to
     /// Civilian).
+
+    /// `NDrone2_DroneNearPos` 0x143e68's player tier: the player within 0.55 2D (`SqDist2D <
+    /// 0.3025`) and 2.0 in y of the position → "a drone is near". The list-walk tier (a counting
+    /// class drone within the caller's radius) is not modelled — the class bits live behind the
+    /// dropped float argument and the +0x4f8 word mapping [S unverified].
+    fn ppos_near(pp: V3, p: V3) -> bool {
+        let dx = pp[0] - p[0]; let dz = pp[2] - p[2];
+        dx * dx + dz * dz < 0.3025 && (pp[1] - p[1]).abs() < 2.0
+    }
     fn update_mission_route(&mut self, d: &Data, _rng: &mut Rng, _frame: u32, moving_anim: u16) -> bool {
         let feet = self.feet();
         let Some(route) = self.route.as_mut() else { self.request_anim(d, anim_state::STAND_IDLE); return false };
-        let (code, reached) = route.follow(d.nav, feet);
+        let ppos = self.player_pos;
+        let (code, reached) = route.follow(d.nav, feet, &|p| Drone::ppos_near(ppos, p));
         let target = route.target;
         // `NDrone2_ReachedDestNode` (0x153358, via `LinkCreep_Handler` 0x15a2c8): a reached door node
         // parks the drone in `DSTATE_OpenDoor` (fix-npc-doors-escort); the kick/action/fiddle nodes
@@ -3855,7 +3866,8 @@ impl Drone {
             let route = self.croute.as_mut().unwrap();
             route.remaining = route.distance(d.nav, feet);
             if route.remaining < 2.0 { return 3; }
-            let r = route.follow(d.nav, feet);
+            let ppos = self.player_pos;
+            let r = route.follow(d.nav, feet, &|p| Drone::ppos_near(ppos, p));
             // `LinkCreep_Handler` (0x15a2c8) runs `ReachedDestNode` for EVERY followed route — the
             // repositioning drives through door/kick/action nodes like any other (fix-nav-remainder).
             // The successor node is the one AFTER the reached node in the route's node list (the
@@ -7023,7 +7035,8 @@ impl Drone {
         route.remaining = route.distance(d.nav, feet);
         if route.remaining < 2.0 { return 3; }
         if !follow { return 0; }
-        let (mut code, reached) = route.follow(d.nav, feet);
+        let ppos = self.player_pos;
+        let (mut code, reached) = route.follow(d.nav, feet, &|p| Drone::ppos_near(ppos, p));
         // `LinkCreep_Handler` (0x15a2c8) dispatches `NDrone2_ReachedDestNode` for the combat route
         // too: `NDrone2_MoveToObject` 0x151618:65 → `NDrone2_FollowRoute` 0x155be0:43 →
         // `AINetwork_FollowRoute` 0x15b110:21 → `LinkCreep_Handler` — a chasing guard reaching a
@@ -10681,10 +10694,20 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         //   game path, trigger-port-check #11) AND the standing ride touched the ch-0x70 park plate
         //   the game only fires crouched (fix-truck's trace) — the fix_truck_live sister caught it.
         // - the union of both capsules also let the standing ride touch the park plate.
-        // The stand-in's known misses (documented): floor plates within 0.53 of the floor
-        // (07000005's ch-0x45 reveal plate at feet+0.47; 07000002's bunker plate 0x80 below the
-        // floor — the stealth route). Revisit when object touchers land.
-        let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher { contain: !player.hanging, ..crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.4, player.pos[2]]) })
+        // level-05-complete: the reach is measured from live play, not chosen: the game's Bond
+        // (BLData translation, the port's `player.pos` reference) touches 07000005's ch-0x45 spawn
+        // reveal plate 0.557 BELOW that reference on the boot tick [L ee_start_05.bin
+        // glb_players→+0xc4 = 24.9633 vs the plate's 24.4065 — the fresh-boot snapshot carries
+        // switch_channels[0x45] = 1], while the ch-0x70 park plate (0.575 below the game's standing
+        // BLData on the bed: 37.28 floor + 1.035 hip) stays untouched until the crouch drops Bond
+        // 0.46 [D fix-truck's trace]. So the true reach lives in [0.557, 0.575] below the reference;
+        // the port's geometry (its bed stand is +0.075 vs the game's hip math) gives the standing
+        // ride a measured miss boundary at 0.65 (zz probe: standing pos 38.39 − plate 37.74), so
+        // `pos − 0.6` reproduces both live behaviours with margin on both sides. The old −0.4
+        // stand-in's remaining known miss (07000002's bunker plate 0x80 below the floor) is
+        // unchanged in kind — floor plates between 0.4 and 0.557 below the reference now fire, as
+        // the game's do.
+        let touchers: Vec<crate::triggers::Toucher> = std::iter::once(crate::triggers::Toucher { contain: !player.hanging, ..crate::triggers::Toucher::player([player.pos[0], player.pos[1] - 0.6, player.pos[2]]) })
             .chain(self.list.iter().filter(|x| x.enabled).map(|x| crate::triggers::Toucher { a: [x.pos[0], x.pos[1] - 1.0, x.pos[2]], b: x.head(), r: 0.4, drone: true, skin: x.skin, contain: true }))
             .collect();
         drop(prof_pre);
