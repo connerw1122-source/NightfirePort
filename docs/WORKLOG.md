@@ -18367,3 +18367,13 @@ Work Log:
   models_sweep_07000006_live (2 — 5940 materials / 447 textures / 0 white fallback; all drone
   skins present). The one unported interactive KIND on this level: Hurt volumes (0xE4, the well
   shaft's #373 type-6 1000-damage kill volume [M Hurt_Create 0x17e870]).
+- 2026-10-17 s/level-06-complete (task 706b): "play 07000006 (Mayhew B: the castle interior to the
+  party) from start to finish". Plan: (1) a live walk test (walkreal_07000006_live.rs, un-ignored)
+  that plays the level through the real input path and completes EVERY objective — the optional
+  ones too — and exits the way the game does; every cut-scene plays (skipped only with the game's
+  own skip action), every scripted event fires. (2) fix every blocker the walk hits (collision,
+  doors, triggers, scripts, AI, missing channel writers), each with a focused test + sister that
+  fails on the old code. (3) the report: objective list with how each completes [M]/[D], the
+  route, anything the walk still cannot do + the exact reason. Known open items: Rook stuck in
+  the doorway (×2), the alarm panel, the Drake cut-scene lag/artifacts. Branch from origin/master
+  0603094e; the level-06-interactables census (706a) is already on master.
