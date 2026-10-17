@@ -24,6 +24,7 @@ pub const GAIN: f32 = 145.0 / 128.0;
 const SHADER: &str = r#"
 override AREF: f32 = 0.0;
 override AGREATER: f32 = 0.0;
+override VMZ: f32 = 0.0;
 override FOG: f32 = 0.0;
 override FAR: f32 = 0.0;
 override NOTEX: f32 = 0.0;  // debug: 1.0 = ignore the texture sample (treat as solid white) to isolate vertex colour
@@ -112,6 +113,9 @@ fn morph_pos(p0: vec3<f32>, mtb: i32, mwb: u32, cnt: u32, tend: u32) -> vec3<f32
     o.p = u.vp * vec4<f32>(p, 1.0);
     o.d = o.p.w;
     if (FAR > 0.5) { o.p.z = o.p.w; }
+    // view-model-last: the list-2 gun after `psiClearZ` — its depth squashed toward the eye so it covers
+    // the world and the effects drawn before it, while its own parts still depth-sort.
+    if (VMZ > 0.5) { o.p.z = o.p.z * 0.001; }
     o.uv = uv;
     o.c = c * (255.0 / 128.0);
     return o;
@@ -376,7 +380,7 @@ impl Renderer {
             };
             // As >= 1 (TEST 0x5001B) -> a >= 1/128; As > 0x7F (0x507FD) -> a > 127/128.
             let (aref, greater) = match d.atest { 1 => (1.0 / 128.0, 0.0), 2 => (127.0 / 128.0, 1.0), _ => (0.0, 0.0) };
-            let constants = [("AREF", aref), ("AGREATER", greater), ("FOG", d.fog as f64), ("FAR", if d.pass == 4 { 1.0 } else { 0.0 }),
+            let constants = [("AREF", aref), ("AGREATER", greater), ("FOG", d.fog as f64), ("FAR", if d.pass == 4 { 1.0 } else { 0.0 }), ("VMZ", if d.pass == 7 { 1.0 } else { 0.0 }),
                 ("NOTEX", if notex { 1.0 } else { 0.0 }), ("NOFOG", if nofog { 1.0 } else { 0.0 })];
             device.create_render_pipeline(&wgpu::RenderPipelineDescriptor {
                 label: Some("nf-view"),

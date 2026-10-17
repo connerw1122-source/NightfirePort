@@ -4949,6 +4949,12 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
         // DroneScan (0x02000832, flags 0x2128 [D]) takes it here; the other 0x2000 effect meshes are unverified.
         Layer::Effect => if obj.hashcode == DRONE_SCAN && obj.flags & 0x2000 != 0 { (6, 0) } else { (5, 0) },
     };
+    // view-model-last: the first-person gun and its flash are `Game_Draw` 0x1e6f50:162-175's list 2, drawn
+    // after `psiClearZ` — over everything the world and its effects drew [M]. Pass 7 draws after every
+    // other pass with its depth squashed toward the eye (gpu.rs `VMZ`), the port's stand-in for the clear:
+    // the gun still sorts its own parts, and a rocket spawned between the eye and the tube no longer
+    // paints over it (PCSX2 08 side by side, 2026-10-17).
+    let pass = if node == VIEW_MODEL_NODE && matches!(layer, Layer::Character | Layer::Effect) { 7 } else { pass };
     // The object's world centre (glist sphere centre through the instance matrix) for the draw-order sort; world layers
     // keep each object apart. The world-space bounding-sphere radius (glist radius × the instance matrix's max axis
     // scale) feeds the CPU-side frustum cull (A-11e) — `transform` uses row-vector convention, so the columns of the
@@ -5185,7 +5191,13 @@ fn z_basis(dir: [f32; 3], pos: [f32; 3]) -> [[f32; 4]; 4] {
 /// INVISIBLE (the user's "if you throw enough of them, you stop seeing them flying in the air"); the slot
 /// mapping below is therefore newest-first, so an overflow drops the oldest exactly like the ring.
 const GRENADE_SLOTS: usize = 512;
-const PLAYER_BULLET_SLOTS: usize = 8;
+/// Bond's live projectiles drawn at once (rapid fire keeps 100+ rockets in the air; the game draws
+/// every bullet object — the old 8 hid the rest).
+const PLAYER_BULLET_SLOTS: usize = 32;
+/// rocket-swoosh: the ribbon segments drawn at once per swoosh mesh (0x2000918 / 0x2000481). The slot
+/// index rides `Attachment::projectile` at `SWOOSH_SLOT_BASE + k`.
+const SWOOSH_SLOTS: usize = 128;
+const SWOOSH_SLOT_BASE: u16 = 0x8000;
 /// fix-impacts-render: the impact-effect draw pools. Decals: the game's 200-node FIFO
 /// (`Effect_InitLists` 0x1cf268: `DList_Init(0x3496e0, 0x60, 200)` [M]). Casings: the 32-object
 /// round-robin pool (`Bullet_InitCasingLists` 0x12fd48 [M]). Debris: unbounded in the game (a
@@ -5816,6 +5828,24 @@ impl Scene {
             for slot in 1..proj_slots {
                 pool_replay(&mut groups, &rec, Some(attachments.len() as u32));
                 attachments.push(Attachment { character: 0, bone: 0, local: pident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((slot as u16, mesh)), script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
+            }
+        }
+        // rocket-swoosh: the ribbon segments (`Swoosh_Create` 0x18d8e8 sets the object's gfx from the hash —
+        // 0x2000918 `SwooshStart` / 0x2000481 `Swoosh`, a 0.15-wide tube along local −z [D 07000008 bounds]).
+        // One pool per mesh the level resolves; `frame_state` poses the k-th live segment of that mesh.
+        if drones.is_some() {
+            for mesh in [0x0200_0918u32, 0x0200_0481] {
+                let Some(&(smap, sobject)) = level.by_hash.get(&mesh) else { continue };
+                let pident = anim::quat_trans_to_mat([0.0, 0.0, 0.0, 1.0], [0.0; 3]);
+                let sinst = Instance { map: smap, object: sobject, matrix: pident, placement: pslot_placement.clone() };
+                let before = pool_snapshot(&groups);
+                add_instance(level, &sinst, Layer::Effect, Some((0, Some(attachments.len() as u32))), &mut groups, None, None, None, None, [1.0; 3], &room_cels, u32::MAX, u32::MAX);
+                let rec = pool_record(&groups, &before);
+                attachments.push(Attachment { character: 0, bone: 0, local: pident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((SWOOSH_SLOT_BASE, mesh)), script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
+                for k in 1..SWOOSH_SLOTS {
+                    pool_replay(&mut groups, &rec, Some(attachments.len() as u32));
+                    attachments.push(Attachment { character: 0, bone: 0, local: pident, flash: None, tracer: None, dropped: false, aims_light: None, projectile: Some((SWOOSH_SLOT_BASE + k as u16, mesh)), script: None, gas: None, effect: None, silencer: false, quiver_bolt: None });
+                }
             }
         }
         crate::phase_mark("b5c projectile pools", t); t = std::time::Instant::now();
@@ -6870,6 +6900,24 @@ impl Scene {
                 // ee_start_05.bin @0x2d6210/0x2d6220); the per-tick tail moves `obj+0x30..0x38` only.
                 let far = [[0.0; 4], [0.0; 4], [0.0; 4], [0.0, -10000.0, 0.0, 1.0]];
                 let Some(s) = self.sim.as_ref() else { return far };
+                if slot >= SWOOSH_SLOT_BASE {
+                    // rocket-swoosh: `Swoosh_Update` 0x18d200:64-80 — at the tail, `Mat_Align2Dir(tail − head,
+                    // up = viewer − tail)` (the ribbon turns its face to the camera), then `Mat_Scale3f
+                    // (life/max, 1, |tail − head|)`: the width narrows with the life, the length spans the
+                    // segment. The viewer is the eye (the script camera while one runs) [S: glb_viewer+0xc0].
+                    let k = (slot - SWOOSH_SLOT_BASE) as usize;
+                    let Some(sw) = s.drones.swooshes.iter().flatten().filter(|w| w.mesh == mesh).nth(k) else { return far };
+                    let d = [sw.tail[0] - sw.head[0], sw.tail[1] - sw.head[1], sw.tail[2] - sw.head[2]];
+                    let len = (d[0] * d[0] + d[1] * d[1] + d[2] * d[2]).sqrt();
+                    if len < 1e-5 { return far; }
+                    let eye = s.script_camera().map_or(s.bond.head(), |c| c.0);
+                    let up = [eye[0] - sw.tail[0], eye[1] - sw.tail[1], eye[2] - sw.tail[2]];
+                    let mut m = nf_game::searchlight::align2dir([d[0] / len, d[1] / len, d[2] / len], up, up);
+                    let wsc = sw.life as f32 / sw.max.max(1) as f32;
+                    for c in 0..3 { m[0][c] *= wsc; m[2][c] *= len; }
+                    m[3] = [sw.tail[0], sw.tail[1], sw.tail[2], 1.0];
+                    return m;
+                }
                 let norm = |v: [f32; 3]| { let l = (v[0] * v[0] + v[1] * v[1] + v[2] * v[2]).sqrt(); if l > 1e-9 { [v[0] / l, v[1] / l, v[2] / l] } else { [0.0, 1.0, 0.0] } };
                 let (pos, dir, live_mesh): ([f32; 3], [f32; 3], u32) = if (slot as usize) < GRENADE_SLOTS {
                     // fix-hat-details: newest-first slot mapping — the game's draw ring keeps the NEWEST
@@ -7623,6 +7671,17 @@ impl Scene {
                 }
             }
         }
+        // rocket-swoosh: the segment's alpha byte `obj+0x106 = life·128/max` [M Swoosh_Update 0x18d200:49-51],
+        // the Tweak's alpha factor (byte/255) [M View_SetupRenderModes_Tweak 0x1e5888:47-49].
+        if let Some(s) = self.sim.as_ref() {
+            for (a, att) in self.attachments.iter().enumerate() {
+                let Some((slot, mesh)) = att.projectile else { continue };
+                if slot < SWOOSH_SLOT_BASE { continue; }
+                let k = (slot - SWOOSH_SLOT_BASE) as usize;
+                let Some(sw) = s.drones.swooshes.iter().flatten().filter(|w| w.mesh == mesh).nth(k) else { continue };
+                if let Some(c) = cols.get_mut((l.col_att + a as u32) as usize) { c[3] = (sw.life as f32 * 128.0 / sw.max.max(1) as f32) / 255.0; }
+            }
+        }
         // Bond's muzzle flash alpha: `Draw_MuzzleFlash` writes the object's alpha byte (`obj+0x106`) on
         // every drawn tick as `wd[+0x51] + Rand_FRand(wd[+0x52] − wd[+0x51])` [M 0x1a3fe0:141-144], which
         // `View_SetupRenderModes_Tweak` 0x1e5888:47-49 hands to `psiSetTweakARGB` as the draw's alpha
@@ -7712,6 +7771,15 @@ impl Scene {
                     attach_mult.entry(ai).or_insert_with(|| {
                         let Some(a) = self.attachments.get(ai as usize) else { return one() };
                         if a.flash.is_some() || a.tracer.is_some() { return one(); }
+                        // rocket-swoosh: a swoosh's tint bytes stay at control_init_object's 0xFF
+                        // [M 0x134630:18-21; Swoosh_Create/Update never write obj+0x103..0x105], so its
+                        // tweak RGB is 1.0 — no cel-ambient dim (the dim made the grey ribbon vanish).
+                        if a.projectile.is_some_and(|(slot, _)| slot >= SWOOSH_SLOT_BASE) { return one(); }
+                        // rocket-flare: the flying bullet objects (drone and player slots) keep the 0xFF tint
+                        // too — `Bullet_init`/`Bullet_update` never write obj+0x103..0x105 [M 0x12c5a0,
+                        // 0x12e7b0] — so the rocket's own orange light saturates it to the PS2's white flare
+                        // (the cel-ambient dim left the blue low: a yellow star). Grenade slots unchanged.
+                        if a.projectile.is_some_and(|(slot, _)| (slot as usize) >= GRENADE_SLOTS) { return one(); }
                         if a.dropped {
                             // The dropped gun is a pickup object (`DroneWeap_DropWeapon` → `Pickup_Create`
                             // 0x18dda0, the same forced 0x840): the ambient dim at its drop matrix.
