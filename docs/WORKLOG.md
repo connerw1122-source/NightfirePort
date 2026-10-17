@@ -16021,6 +16021,39 @@ INERT-GUARDS-02 SUITE (15:05 UTC): the fast-runner total on this branch `1835 pa
 07000005 pylon task's GPU probes), no regressions; the +30 vs the earlier runs are the branch's
 and other merged tasks' new tests. The 2 new live tests are green in the totals.
 
+## mp-bots-in-match (2026-10-16, branch s/mp-bots-in-match) — start
+- Task 704: a local MP Quick Game loads its arena with 3 bots (the menu repair, 2026-10-15) —
+  prove the bots PLAY. Headless from the menus' mp_match_settings through load_mp_carry, tick
+  3600 frames of the arena and check each bot: route movement, acquisition + fire at the human
+  and other bots, damage + death, respawn per the game's rules, scores going up. Use the MP core
+  (nf_game::mp, the bots module) and the game's bot AI [M BOT_update and friends]. Fix anything
+  inert. Sister: with bots disabled only the human is in the match.
+- Started: branch created from origin/master (3bb7be9a). Setup in progress (sandbox was reset —
+  full re-clone + downloads); suite starts as soon as the game files are in.
+- mp-bots-in-match close-out (BLOCKED — the window): sandbox was reset at 17:00 (full re-setup:
+  clone, work-slim + ISO, cargo, the alsa prefix — ~30 min of the 2 h gone before any code). The
+  wiring landed: `MpMatch::create_bots` (MP_Start 0x183a50:134-160's bot half — slots 4..4+count,
+  the record team byte into MPSettings+slot·0x30+0x20, a spawn pick per bot, `BotBrain::bot_init`),
+  `Sim::step_mp_bots` (the BOT_update 0x126448 driver: the 8-slot others table per
+  BOT_setOtherPlayerInfo 0x125390, the brain step per tick, the shot→damage/frag/death/respawn
+  bookkeeping) + the observation API. bots.rs's `#[cfg(any(test, feature = "mp-bots"))]` gates
+  lifted (18 sites — the machinery is now the sim's). VERIFIED: the bots exist in the loaded
+  Quick Game (3/3), the sister (bot_count 0 → only the human) green, net_match_live lockstep
+  still 1/1, mp_menu_flow 9/9, nf-game lib mp:: 12/12. THE GAP: the brains tick but stay in
+  BotIdle (state 0xF9) — pick_goal finds nothing: ctx.pickups is empty (the arena's MP pickup
+  placements are not lifted into BotPickup rows) and find_opponent never acquires (its inputs —
+  dist2/cel data — are unfilled stand-ins). The 3600-tick proof test is committed RED under
+  #[ignore] with the reason; the report has the per-bot table (all inert values) and the exact
+  next steps. The full fast suite never ran (the setup + wiring consumed the window; only the
+  touched-crate runs above stand) — flagged in the report.
+
+## mp-host-match-logic (2026-10-16, branch s/mp-host-match-logic) — start
+- Task 729 (audit gap 4): in a live match the host never runs the match logic — update_objects,
+  player_killed and respawn are only exercised by tests. Wire them into the running match loop
+  (local and online host) the way MP_Update drives them [M]. Branch based on s/mp-bots-in-match
+  (704) per the task note, so the bot wiring is inherited, not redone. Tests: a local deathmatch
+  in the real app path — a kill scores, the victim respawns at the policy's point, the frag
+  limit ends the match into the debriefing. Reading docs/systems/uncited-audit.md gap 4 first.
 SAVE-PROGRESS-ROUNDTRIP (started 17:14 UTC): goal — progress survives a restart, by the real path:
 create a codename, complete two missions (results commit + save prompt Yes, 635's card flow), drop the
 FrontEnd entirely, build a fresh FrontEnd on the same profile dir and load the codename; assert unlocked
@@ -17018,3 +17051,18 @@ transitions over a scripted fight. Deadline 22:26 UTC for new work.
   runner was started per the driver but this sandbox kills background processes between tool
   calls (both attempts died in the build phase, suite.out 0 bytes) — no window left to run it in
   the foreground; report: docs/reports/ninja-melee.md.
+
+- mp-host-match-logic close-out: the live host now RUNS the match logic — create_mode_objects
+  at MP_Start (the game's draw order, before the humans' spawn picks), update_objects every
+  frame (MP_ObjectUpdate 0x18b198; the lockstep rig's order, on_hill false — no hill box
+  parsed), the humans' slot positions refreshed per tick, player_killed on the death's start
+  tick (Player_CheckForDeath 0x190810:91's site; the killer from the last-shooter word +0x20),
+  the bots' frags + human-damage gate through the real rules (player_killed /
+  register_bullet_hit 0x1857c0), the 5 s respawn (Player_HandleDeath 0x190bb0:41-54 → the new
+  MpMatch::mp_respawn = MP_ReSpawn 0x185368: gates → policy pick → apply, health
+  armor_bonus+100, the body moves), and the request_debriefing → open_mp_debriefing handover
+  (the fe re-created, the sim freezes behind the page). Tests: mp_host_match_live 2/2 — the
+  local deathmatch (kill scores → 300-tick respawn at the policy's point → frag limit → the
+  debriefing board) and the audit's CTF live-vs-headless parity. mp_match_rules 10/10,
+  mp_debriefing 14/14, net_match_live 3/3, mp_bots_live/mp_core_live/mp_menu_flow/
+  mp_debriefing_flow/mp_net_lobby/menus_e2e_mp all green on the merged tree.
