@@ -7492,8 +7492,11 @@ impl Scene {
                 // The door slot space also holds the SimpleScripts (map-tower2): indices past the doors
                 // list index `drones.sss.list`.
                 if let Some(d) = s.drones.doors.list.get(dr as usize) { return transform(&d.matrix, v.pos); }
-                let Some(q) = s.drones.sss.list.get(dr as usize - s.drones.doors.list.len()) else { return [0.0, -10000.0, 0.0]; };
-                return transform(&q.matrix, v.pos);
+                if let Some(q) = s.drones.sss.list.get(dr as usize - s.drones.doors.list.len()) { return transform(&q.matrix, v.pos); }
+                // Past the SSs: the breakables (`Breaks::create` order) — gone once `Break_Kill` 0x12b970 ran.
+                let bi = dr as usize - s.drones.doors.list.len() - s.drones.sss.list.len();
+                let Some(b) = s.drones.breaks.list.get(bi).filter(|b| !b.dead) else { return [0.0, -10000.0, 0.0]; };
+                return transform(&b.matrix, v.pos);
             }
             if let Some(a) = v.attachment { return transform(&attach[a as usize], v.pos); }
             let c = &self.characters[v.character as usize];
