@@ -210,6 +210,10 @@ pub struct PendingPickup {
     pub rounds: i16,
     pub switch_ch: u16,
     pub sound: u32,
+    /// Param 5 — `record+0x40`, the respawn word `Pickup_Create` receives [M 0x1d8bfc
+    /// `lhu $v0, 0x40($v1)` → `sw $v0, 0x10($sp)`]. pickups-g029: the fresh-spawn arm used to
+    /// drop it (respawn 0 deletes the pickup on take; the reserved arm already carried it).
+    pub respawn: u16,
     /// The stream's posed matrix at the creation tick (the game's scratch VECTOR 0x2d6200).
     pub matrix: Mat4,
 }
@@ -639,6 +643,8 @@ impl Script {
                     script: self.nis.hashcode, stream: i as u8, hash,
                     kind: p(0) as u16, id: p(1) as u16, rounds: p(2) as u16 as i16,
                     switch_ch: p(3) as u16, sound: p(4), matrix: *matrix,
+                    // pickups-g029: param 5 rides like the reserved arm's [M 0x1d8bfc].
+                    respawn: p(5) as u16,
                 });
             }
         }

@@ -6571,6 +6571,12 @@ pub struct Drones {
     /// `Player_IsBetterWeapon` → `anim+0x63 = id`]. The view applies it to the draw machine
     /// (gun.switch_request).
     pub weapon_switch_request: Option<u16>,
+    /// The per-player auto-switch option itself — `PlayerSetting+0xA`, read as
+    /// `(&DAT_002a38d2)[player·0x158]` [M Player_EquipWeapon 0x1a8a58:76 gates the IsBetterWeapon
+    /// request on it]. `Input_Init` 0x17edd8 defaults it to 1 (live 1 [L ee_start_05 0x2a38d2]);
+    /// the options save carries it (LS_MakePlrSettings 0x1cd418 bit; the port's persisted
+    /// `PlayerOptions::auto_equip_best`, profile.rs). The port's runtime default is the game's.
+    pub auto_switch: bool,
     /// The grapple points (placement 0x3A, `Grapple_Create` 0x198298; fix-gadgets).
     pub grapple_points: Vec<crate::gadget::GrapplePoint>,
     /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
@@ -6747,6 +6753,9 @@ impl Drones {
             // fix-pickups-remainder: the pickup auto-switch request (fields on their own lines —
             // merge lesson 4).
             weapon_switch_request: None,
+            // pickups-g029: the option gate, the game's default (Input_Init 0x17edd8 writes 1;
+            // live 1 [L ee_start_05 0x2a38d2]). Fields on their own lines — merge lesson 4.
+            auto_switch: true,
             worldobjs: Default::default(),
             // fix-world-fx: the presentation FX (fields on their own lines — merge lesson 4).
             fx: Default::default(),
@@ -8045,8 +8054,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     // `Player_EquipWeapon`'s tail [M 0x1a8a58]: on a WEAPON equip (not the ammo path —
                     // `Player_EquipAmmo` has no switch), the per-player auto-switch flag (live 1 [L]) ∧
                     // `Player_IsBetterWeapon` writes `anim+0x63 = the upgraded id`. The port's `bond_weapon`
-                    // is the view's held weapon (one tick stale at most).
-                    if matches!(t, crate::pickup::Taken::Weapon { .. }) {
+                    // is the view's held weapon (one tick stale at most). pickups-g029: the flag is
+                    // now READ — `(&DAT_002a38d2)[idx·0x158] != 0` [M 0x1a8a58:76] — instead of
+                    // standing in as always-on.
+                    if self.auto_switch && matches!(t, crate::pickup::Taken::Weapon { .. }) {
                         let id = crate::pickup::Inventory::upgrade_weapon(p.weapon, 0, clock);
                         if crate::pickup::Inventory::is_better_weapon(d.weapons, self.bond_weapon, id) {
                             self.weapon_switch_request = Some(id);
@@ -9377,8 +9388,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 vel: [0.0; 3], state: 1, lifetime: 0, switch_channel: sp.switch_ch,
                 sound: if sp.sound == 0 || sp.sound == 0xFFFF { None } else { Some(sp.sound) },
                 hidden: false, gone: false, from: None, obj: None,
-                respawn: 0, respawn_ticks: 0, spin: sp.kind == crate::pickup::kind::BOND_BONUS,
-                label: 0, // PendingPickup carries the entity's params 0-4 only; no script-spawned pickup on the disc labels non-zero
+                // pickups-g029: the script arm's respawn word rides [M 0x1d8bfc `lhu $v0, 0x40($v1)`
+                // → `sw $v0, 0x10($sp)`] — 0 kept deleting the pickup on take even when the script
+                // asked for a respawn.
+                respawn: sp.respawn, respawn_ticks: 0, spin: sp.kind == crate::pickup::kind::BOND_BONUS,
+                label: 0, // [M 0x1d8c1c delay slot] the script arm always passes label 0 (params 0-5 ride; record+0x44 is not read)
             });
         }
         { let _p = crate::prof::scope("drones: set_dynamic"); d.world.set_dynamic(&script_parts(self, d)); }

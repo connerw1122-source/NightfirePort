@@ -16940,3 +16940,31 @@ the air collision branch) + nf-view live 3/3 green on the real levels (the WAIT_
 jump → Attack → combat chain). Ran: nf-game lib 243 passed, nf-view abseil_elevator_live 3 passed.
 The full background suite could not complete inside the sandbox window (started 20:15 on the
 pre-task tree, killed; the final tree ran the touched crates only) — see the report.
+
+## pickups-g029 (2026-10-16, branch s/pickups-g029) — start 20:29 UTC
+
+Task 724 (GAPS G-029 open half): pickups — auto-switch to a better weapon on pickup (the game's
+rule and its option gate), level-placed vs script-spawned pickup differences, respawning pickups
+(multiplayer and any single-player cases) [M Pickup_Create 0x18dda0, Pickup_Update 0x18e148 and
+the take path]. Tests for each rule on a real level. Update GAPS.md with what is closed.
+Plan: read the decompile take path + auto-switch logic, find the port's pickup code, compare rule
+by rule, pin each rule with a test on a real level, fix divergences. Branch created from
+origin/master 170bcf01.
+- 2026-10-16 s/pickups-g029 (task 724): the G-029 open half closed. (1) The auto-switch OPTION
+  GATE is now read: `Player_EquipWeapon` 0x1a8a58:76 gates the IsBetterWeapon request on
+  `(&DAT_002a38d2)[player·0x158]` [M]; `BestWeapon` 0x2bede0 = 18 u16 ids [M ELF bytes, matches
+  the port's BEST_WEAPON]; the drain consults the new `Drones::auto_switch` (default 1 =
+  Input_Init 0x17edd8 / [L ee_start_05 0x2a38d2]; the persisted `PlayerOptions::auto_equip_best`
+  is the same bit). (2) Placed vs script: the call-site disassembly (0x1d05ac parsemap case 0xf0,
+  0x1d8be0-0x1d8c20 Script_CreateEntity case 0xf0 — N32 ABI, stack args recovered) shows the SAME
+  record fields (+0x2c type, +0x30 id, +0x34 rounds, +0x38 switch, +0x3c sound, +0x40 respawn),
+  rest = 1, lifetime 0; differences: the script arm passes label 0 (delay slot `sw $zero,
+  0x20($sp)`) — the reservation's `label = p(6)` fixed to 0 — and the fresh-spawn arm now carries
+  the respawn word (`PendingPickup.respawn` = param 5 [M 0x1d8bfc]). (3) Respawn pinned
+  end-to-end on the census's real material: 07000004 places weapon 0x12 with respawn 2 (3x) —
+  take → hidden/state 2 for 60·2·10 = 1200 ticks → returns → retakeable; 07000008's safe script
+  0600004c reserves the rocket + ammo with respawn 0xFFFF (stays forever), label 0. Tests:
+  crates/nf-view/tests/pickups_g029_live.rs (census, gate off/on, respawn cycle, placed-vs-script)
+  + fix_auto_switch_live/fix_safe08_live/pickups08_live green; nf-game lib 241, nf-view lib 17.
+  The full suite did not fit the window (the background runner died as a background job; the
+  foreground touched-crate runs are listed in the report).

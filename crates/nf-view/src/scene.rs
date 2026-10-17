@@ -4704,7 +4704,9 @@ fn script_pickup_reservations(level: &Level, weapons: &nf_formats::weapon::Weapo
                 nf_game::pickup::Pickup::create_rounds_override(level_id, p(1) as u16, p(2) as u16 as i16),
                 p(3) as u16, p(4) as u16, p(5) as u16, 0, obj_.hashcode,
                 nf_game::pickup::Model { centre: obj_.centre, radius: obj_.radius }, weapons, models) else { continue };
-            pk.label = p(6); // the kind-4 label word (`Pickup_Create` param_13 → +0x34)
+            pk.label = 0; // [M 0x1d8c1c delay slot `sw $zero, 0x20($sp)`]: the SCRIPT arm passes label 0 —
+                          // unlike the placements, Script_CreateEntity never reads record+0x44 (param 6).
+                          // pickups-g029: the old p(6) stood in for the placement rule.
             pk.gone = true; // reserved: inert until the script spawns it
             pk.obj = Some((om, oi));
             slots.push(((hash, si as u8), out.len()));
