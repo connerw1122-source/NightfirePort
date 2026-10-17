@@ -24,8 +24,6 @@ const PANEL: [f32; 3] = [-18.079, -368.227, 25.015];
 const LIFT_MOUTH: [f32; 3] = [-3.9, -368.5, 14.9];
 /// Inside the shaft, in the TOUCH_ONCE #67 box (z 10.33..12.49 [D]).
 const IN_CAB: [f32; 3] = [-3.9, -368.6, 11.5];
-/// The BodyArmourHeavy pickup's placement [D placements].
-const ARMOUR: [f32; 3] = [-22.6, -368.5, 24.9];
 
 /// The elevator activation's reach, pinned: SP #70 (SCRIPTPLAYER_Elevators, mask 4, out 0x39) is
 /// E-activated through its class-0 script ENTITY — `Player_Activate` 0x1a5170:121-122 dispatches
