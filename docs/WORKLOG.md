@@ -18442,3 +18442,30 @@ model/texture sweep (every placement's mesh resolves, no white fallbacks). Worki
   plate vs the toucher stand-in. Run: nf-game 61/61 binaries, nf-formats/nf-audio, the nf-view
   touched neighbourhood + walk slices; the full remaining nf-view sweep did not fit (suite.py
   background-killed in this sandbox). Report: docs/reports/level-05-interactables.md.
+- 2026-10-17 s/level-05-interactables-2 (task 705d): DONE. The HELD 05 work (705a, 41f5ae1) merged
+  onto master 0083ce97 and the three breaks fixed. (1) searchlight spot ray: the own-housing skip
+  slab-tested the head's LOCAL-space gfx box against WORLD ray coordinates — the ray from the head at
+  (−57.03, 37.84, −59.97) crossed the ±0.27 origin-anchored box 57 units out, the skip pushed the
+  start past the real hit (fraction 0.228) and the re-lit dark head's spot stayed at −10000. The skip
+  now transforms into the part's local space (the bullet stand-in's own convention) and keeps the
+  100-unit ray's parametrization (skip as a ray fraction, ≤ 4 world units; the sub-segment's t
+  rebased), [M Collide_PickObj 0x1eae80:57-59]. (2) hurt.rs rebuilt as the ONE system on Sim.hurts:
+  the held param map (0 type, 1 damage, 2 gate, 3 sound, 4 who, 5 one-shot [M Hurt_Create 0x17e870])
+  + the tris contact + the restored Hurt_Update 0x17e5d0 state machine (the live every-tick 0x20 gate
+  law [M :26-37], the gated volume's channel-VALUE mask [M :97-99], the ungated who law — who 1
+  collects nothing [M :57-95], the one-shot retire [M :129-132]); the Drones.hurts copy the held
+  branch added is gone; 7 nf-game unit tests cover the law (incl. #309's gated-who-1 shape). (3) the
+  07000016 finale: the divergence is the disc's own exhaust order — SP #272's 0x0600090a stream 6
+  pulses ch 0xf3 (243) at script ticks 1611→2170 [D event-0xd scriptlog], BEFORE the ch-0xf0 spawner
+  write at 2180 [D]; #309 (gate 0xf3, 1000 [D]) is live in between, the pack cinema's snap leaves
+  Bond inside it on the silo floor, and Mission_Update 0x182c60's ch-0x62 fail arm
+  (Player_SetHealth(0), MissionState 3, LevelToEndTo 0x7000048 [M :21-43]) outranks the ch-100
+  completion — the tests' parked-in-the-pit Bond contradicted the game's leave-the-pit-during-the-
+  launch route (they passed on master only because master's #309 read damage from param 4 = 1.0 into
+  an origin-anchored box); both tests re-seat Bond on the upper floor once the cinema hands control
+  back. Damage stays 1000. Run: nf-game 536/0 (all binaries, --test-threads=2), nf-view slices —
+  the three fixed binaries (searchlight_live 3, fix_finale_live 2, spurious_complete_16_live 2), the
+  searchlight neighbours 10, hurt_02_live 1, interact_07000005_live 11, interact_07000006_live 9,
+  walk_07000005 2, walkreal_07000005 2, mayhew_handover 2, level_carry 8, fix_truck 2, wire 1,
+  casings16 2, fix_mission 4, levels_sweep 3, walk_07000008 4, walk_0700000a 3, mission_unlock_flow 3
+  — 0 failures. Report: docs/reports/level-05-interactables-2.md.
