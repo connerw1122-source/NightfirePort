@@ -16727,3 +16727,13 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+## ladder-underwater-02
+
+Task 750a: the underwater ladder(s) on 07000002 softlock the game (user, 2026-10-16, third report).
+Plan: read the three merged ladder reports (109i, 109i2 fix-ladder-water2, 691 ladder-02) for coverage
+gaps; find the 07000002 ladder volumes that reach into or start under water (docs/levels/07000002.md);
+reproduce the softlock headless through the real input path (swim to ladder, climb up out of water,
+climb down into it, release mid-water); port the ladder/water interplay from the decompile (Player_Ladder*,
+swim state, grab/release tests) with [M] citations; fix; the test must assert Bond regains control and
+reaches the bank. Branch s/ladder-underwater-02 from origin/master (bee8c129).
