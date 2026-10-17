@@ -36,7 +36,11 @@ pub enum Obj {
     /// 0x2d6200 [L ACTION.ELF: (0,0,0)]): the kind byte b2 (the call's `b2 == 1` argument) and the
     /// stream's parent pair (b0/b1 → +0x25). Deleted by `Script_KillStream` case 6 unless the script
     /// keeps its objects (flag 0x10) [M 0x1d9860:104-113].
-    Light { kind: u8, src: (u32, u8) },
+    /// `Script_Interp` case 6 keys it every frame [M 0x1d9a08:235-279]: the light's +0x10 position = the
+    /// interpolated matrix's translation (parent chain, then the script base), +0x3C radius = the key scale ×
+    /// SCRIPTINFO+0x94, +0x44..46 rgb = the keys' +0x24..26 colour bytes lerped (`Script_GetInterp` 0x1da158
+    /// case 6). `live` = keyed at least once. Intensity stays the create's 1.0 (census site 14).
+    Light { kind: u8, src: (u32, u8), pos: [f32; 3], radius: f32, rgb: [u8; 3], live: bool },
 }
 
 /// A request the script made this tick for the caller to carry out.
@@ -545,7 +549,7 @@ impl Script {
                         let (Some(&b0), Some(&b1), Some(&b2)) = (cmds.get(pc + 1), cmds.get(pc + 2), cmds.get(pc + 3)) else { self.streams[i].pc = None; return };
                         self.streams[i].parent = if b0 == 0 { -1 } else { b1 as i8 };
                         if self.streams[i].obj.is_none() {
-                            objs.list.push(Some(Obj::Light { kind: b2, src: (self.nis.hashcode, i as u8) }));
+                            objs.list.push(Some(Obj::Light { kind: b2, src: (self.nis.hashcode, i as u8), pos: [0.0; 3], radius: 255.0, rgb: [255, 2, 3], live: false }));
                             self.streams[i].obj = Some(objs.list.len() - 1);
                         }
                         self.streams[i].kind = 6;
@@ -913,8 +917,53 @@ impl Script {
                     }
                 }
             }
+            6 => {
+                // `Script_Interp` case 6 [M 0x1d9a08:235-279] (see `Obj::Light`): the keys' matrix with the
+                // parent chain and the script base (case 1's composition), its translation the position;
+                // radius = key scale × the script's scale; the colour bytes from the keys.
+                let Some(o) = self.streams[i].obj else { return };
+                let Some((mut m, scale, _)) = self.keys(i) else { return };
+                let mut p = self.streams[i].parent;
+                let mut n = 0;
+                while p >= 0 && (p as usize) < self.streams.len() && n < self.streams.len() {
+                    if let Some(pm) = self.stream_matrix(p as usize, objs, w) { m = mul(&m, &pm); }
+                    p = self.streams[p as usize].parent;
+                    n += 1;
+                }
+                m = mul(&m, &self.matrix);
+                let rgb = self.key_rgb(i);
+                let r = scale * self.scale;
+                if let Some(Some(Obj::Light { pos, radius, rgb: c, live, .. })) = objs.list.get_mut(o) {
+                    *pos = [m[3][0], m[3][1], m[3][2]];
+                    *radius = r;
+                    if let Some(rgb) = rgb { *c = rgb; }
+                    *live = true;
+                }
+            }
             _ => {}
         }
+    }
+
+    /// `Script_GetInterp` case 6's colour [M 0x1da158:133-170]: the keys' +0x24..26 bytes lerped by the
+    /// stream's weight and clamped not to overshoot the next key's byte.
+    fn key_rgb(&self, i: usize) -> Option<[u8; 3]> {
+        let s = &self.streams[i];
+        let (a, b) = (s.first_key as usize, s.last_key as usize);
+        if b < a || b >= self.nis.keys.len() { return None; }
+        let k = &self.nis.keys[a..=b];
+        let n = k.len() - 1;
+        let c = s.clock.floor();
+        let idx = k.iter().take_while(|x| x.time <= c + 0.001).count() as isize - 1;
+        let (i0, i1, t) = if idx < 0 { (0, 0, 0.0) } else if (idx as usize) < n {
+            let i0 = idx as usize;
+            (i0, i0 + 1, (c - k[i0].time) / (k[i0 + 1].time - k[i0].time))
+        } else { (n, n, 0.0) };
+        Some([0, 1, 2].map(|j| {
+            let (x, y) = (k[i0].w24[j] as f32, k[i1].w24[j] as f32);
+            let v = x + (y - x) * t;
+            let v = if y >= x { v.min(y) } else { v.max(y) };
+            v as u8
+        }))
     }
 
     /// A parent stream's matrix (`Script_GetInterp` without the script matrix): its keys, or for an animation its
@@ -1314,6 +1363,14 @@ impl Scripts {
     /// `spawn_once` with the script scale: `Explode_Create` (0x17cbd0:106) plays the explosion script
     /// with scale = radius·0.06666667 — the port's `Player.scale` multiplies the key translations and
     /// key scales [M nis.rs keys/interp], the same object field the game's script player carries.
+    /// The keyed script lights this frame: (position, radius, rgb, kind byte).
+    pub fn lights(&self) -> Vec<([f32; 3], f32, [u8; 3], u8)> {
+        self.objects.list.iter().filter_map(|o| match o {
+            Some(Obj::Light { pos, radius, rgb, kind, live: true, .. }) => Some((*pos, *radius, *rgb, *kind)),
+            _ => None,
+        }).collect()
+    }
+
     pub fn spawn_once_scaled(&mut self, placement: usize, script: u32, matrix: Mat4, scale: f32) {
         self.players.push(Player {
             placement, scripts: [script, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0,

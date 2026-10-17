@@ -81,6 +81,10 @@ pub struct Light {
 #[derive(Default, Clone, Debug)]
 pub struct LightList {
     pub lights: Vec<Light>,
+    /// The script lights (`Script_LightStart` 0x1db1b0 → `Light_Create`, keyed per frame by `Script_Interp`
+    /// case 6 [M 0x1d9a08:235-279]) — rebuilt from the scripts' light objects every tick, after `lights`
+    /// in the selection order. Their create's RNG draw is not replayed per tick (the list is a view).
+    pub script: Vec<Light>,
 }
 
 impl LightList {
@@ -187,7 +191,7 @@ impl LightList {
     /// 0x1cb2e0:41-44, store 0x1cb400] — carried separately in `ResolvedLight::track_pos`.
     pub fn resolve(&self, track_pos: &dyn Fn(u32) -> [f32; 3]) -> ResolvedLights {
         ResolvedLights {
-            lights: self.lights.iter().map(|l| {
+            lights: self.lights.iter().chain(self.script.iter()).map(|l| {
                 let live = if l.kind == 2 { track_pos(l.track.unwrap_or(u32::MAX)) } else { l.pos };
                 ResolvedLight {
                     pos: [l.pos[0], l.pos[1], l.pos[2], 1.0],

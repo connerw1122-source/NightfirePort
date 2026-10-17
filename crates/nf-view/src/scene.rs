@@ -1899,6 +1899,12 @@ impl Sim {
             let channels = &self.drones.channels;
             let rng = &mut self.drones.rng;
             self.drones.lights.update(&|c| channels.on(c as u32), frame, rng);
+            // The script lights (blast scripts, NIS lights) as keyed this frame — intensity 1.0, the
+            // create's kind byte (`b2 == 1`) [census site 14].
+            self.drones.lights.script = self.drones.scripts.lights().into_iter().map(|(pos, radius, rgb, kind)| nf_game::light::Light {
+                pos, life: 0, channel: 0, flicker_period: 0, flicker_base: 0, flicker_count: 0, flicker_mask: 0, sound: 0,
+                track: None, radius, intensity: 1.0, falloff: 0.0, rgb, kind: (kind == 1) as u8, active: true,
+            }).collect();
         }
         self.shot_tick = false;
         // fix-weapon-fire-modes: the guided-missile camera ride. While it is up, Bond's own arms do
