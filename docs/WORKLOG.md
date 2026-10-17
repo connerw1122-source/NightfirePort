@@ -18627,3 +18627,21 @@ census_07000008.rs). The Hurt kind (0xE4) implemented (hurt.rs + the sim tick; 0
 562 textures / 0 white fallbacks, all placed drones skinned. Finding: the plunge death NIS
 holds the falling body forever (no post-death-NIS mission fail) — blocks the kill-floor fall
 end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interactables.md.
+- 2026-10-17 s/level-08-interactables-2 (task 708c): DONE. The re-land: ONE hurt
+  system on master's Sim.hurts — the drone victims added via Hurt::update_touch
+  (class 3 → who bit 8 [M 0x17e5d0:57-95]; the trigger-walk drone capsule r 0.4;
+  the explosion path's flat-subtract delivery; a one-shot retires for all
+  victims), Hurt.hits = the port's mechanism witness; 708a's Drones::hurts
+  variant retired; the 08 tests moved onto sim.hurts; the system doc's
+  merged-port section + the 705d ShuttleLaunch live check. The four master tests
+  the held branch broke all pass unchanged (fix_finale 4/0, spurious_complete_16
+  2/0 — #309 stays disabled through the fight, hurt_02 1/0, interact_07000006
+  9/0 — #373 inert). Ran (foreground; background jobs die in this sandbox):
+  nf-game lib 279/0 + integration 0 FAIL; hurt_07000008_live 2/0, census_07000008
+  2/0, models_sweep_07000008_live 2/0, interact_07000005_live 11/0, the
+  interact/walk families green (01 10/0 incl. the escort, 03/04/06/07, walks
+  01/08/16/03-real), ~66 more nf-view binaries 0 FAIL; nf-formats green but the
+  3 expected slim-ISO disc_golden failures; nf-audio 15/0. Left: the death-NIS
+  terminal fail (708a's finding) still blocks the kill-floor landing pin; the
+  drone-side delivery needs the live check. Report:
+  docs/reports/level-08-interactables-2.md.
