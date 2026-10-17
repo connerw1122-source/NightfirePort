@@ -3506,7 +3506,20 @@ impl Sim {
             // `fire_anim_len == 0` spawn on the press tick (latched there) [M 0x1a5460:688-693]. Before this,
             // the port spawned every round on the press tick — a grenade pull fired a hitscan bullet instead
             // of winding up and throwing, and the 900-tick refire interval stayed armed afterwards.
-            let release = if fire_anim_len == 0 { fired } else { self.gun.release_frame_reached(self.view_time, fire_anim_len) };
+            // fix-frag-throw-timing: the release-family weapons (`+0x6C & 0x400` with a `+0xB4` script — the
+            // hand grenades) run the view machine through 0xb/0xc [M 0x1a5460:676-685], and case 9's check
+            // never fires for them — the state leaves 9 inside the fire tick itself. Their release check is
+            // case 0xc's [M 0x1a2e38:505-519, disasm 0x1a3268-0x1a32c4], reached only after the fire script
+            // ENDED (case 0xb's `AnimScriptIsStopped` gate → the +0xB4 script queued) — so the playhead it
+            // compares against `+0x44` is the +0xB4 script's, which starts at 1.0 [M AnimScriptInit
+            // 0x1c1600:37] and advances 1.0/tick [M AnimScriptTick 0x1c2630 mode 0]. The port ran case 9's
+            // check during the fire script itself: the frag (fire 70 frames at 1.5×, +0x44 = 26) released at
+            // press+17, mid-wind-up — the playtest's "flying out way too soon, they don't let the animation
+            // finish". The gate below (the view is on the +0xB4 script) is the case-0xb → case-0xc phase.
+            let release_family = rd(0x6c) & 0x400 != 0 && rd(0xb4) != 0;
+            let release = if fire_anim_len == 0 { fired }
+                else if release_family { self.view_script == rd(0xb4) && self.gun.release_frame_reached(self.view_time, fire_anim_len) }
+                else { self.gun.release_frame_reached(self.view_time, fire_anim_len) };
             if release && !fired { self.gun.latch = true; }
             // The gun scripts' sound commands (`AnimProcessScriptCmds` op 1: `Sound_Play3D(cmd[2], …)` when the
             // script's frame crosses cmd[1]): the shot (0x403 at frame 1 of the P2K's fire scripts) and the reload's
