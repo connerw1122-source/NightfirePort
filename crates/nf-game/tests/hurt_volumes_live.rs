@@ -49,7 +49,7 @@ impl L {
         let skeletons = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&data, e)).ok().map(|s| (s.id as u8, s))).collect();
         let m = level.main_map().unwrap();
         let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap(), &world, id);
-        let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
+        let covers = nf_game::cover::build(&level, &nav, &world);
         let volumes = nf_game::aivolume::build(&level, id);
         Some(L {
             tables: drone::DroneAnimData::from_action_elf(&elf).unwrap(),
@@ -67,7 +67,7 @@ impl L {
     pub fn data(&self) -> Data<'_> {
         Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.id,
             sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning,
-            hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: None, voices: None, difficulty: 1 }
+            hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: None, voices: None, difficulty: 1, ai_points: &[] }
     }
 
     /// The full roster through `level_drones` (the game's order); a fresh `Drones` rng with the
