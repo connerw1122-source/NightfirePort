@@ -24,6 +24,8 @@ use nf_formats::iso9660::IsoImage;
 use nf_formats::mpeg2::picture_counts;
 use nf_formats::pss::{demux, Audio};
 use nf_formats::sha1::hex;
+#[cfg(feature = "movies")]
+use nf_formats::sha1::Sha1;
 
 /// The movies image: `NF_MOVIE_ISO` if set, else `NF_ISO`. None → skip.
 fn iso() -> Option<IsoImage> {

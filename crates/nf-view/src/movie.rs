@@ -124,6 +124,11 @@ pub enum StartError {
 #[cfg(feature = "movies")]
 struct PcmOut {
     _stream: cpal::Stream,
+    /// The track position the device has played to, in source sample frames (an f64's bits) —
+    /// the movie's master clock (`audio_clock`).
+    played: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    /// The track length in source sample frames.
+    frames: usize,
 }
 
 /// A playing movie, the port's `psiStartBackgroundMovie` (0x001081a8). fix-menu-movies2: this is
@@ -225,6 +230,10 @@ impl Player {
     pub fn present(&mut self) -> Option<(u32, u32, &[u8])> {
         let now = std::time::Instant::now();
         let start = *self.started.get_or_insert(now);
+        #[cfg(feature = "movies")]
+        if let Some(t) = self.audio_clock() {
+            return self.present_on_audio(now, t);
+        }
         let mut due = ((now - start).as_secs_f64() * 30.0) as u32 + 1;
         // Never faster than real time: when the decoder falls behind (its warm-up on the first
         // frames, a slow GOP) the clock slips instead of the picture racing to catch up — the old
@@ -262,6 +271,47 @@ impl Player {
         self.last.as_ref().map(|(w, h, rgba)| (*w, *h, rgba.as_slice()))
     }
 
+    /// The audio device's play position in seconds while the movie's track is playing — the
+    /// master clock for a once-through movie, as on the PS2, where the IOP streams the audio
+    /// continuously and the picture skips frames to keep up [M audioDecSendToIOP 0x107100;
+    /// PS2FramesToSkip]. None for a looping backdrop (the track wraps), with no device, or once
+    /// the track has ended (the picture then finishes on the wall clock).
+    #[cfg(feature = "movies")]
+    fn audio_clock(&self) -> Option<f64> {
+        let out = self._pcm.as_ref()?;
+        if self.looping { return None; }
+        let pos = f64::from_bits(out.played.load(std::sync::atomic::Ordering::Relaxed));
+        if pos >= out.frames as f64 - 1.0 { return None; }
+        Some(pos / self.rate)
+    }
+
+    /// `present` against the audio clock: the picture due at `t` seconds of audio is shown; when
+    /// the decoder fell behind, the pictures in between are dropped (decoded, never converted or
+    /// shown) so the picture lands back on the sound instead of slipping behind it. Ahead of the
+    /// audio, the current picture holds.
+    #[cfg(feature = "movies")]
+    fn present_on_audio(&mut self, now: std::time::Instant, t: f64) -> Option<(u32, u32, &[u8])> {
+        let due = (t * 30.0) as u32 + 1;
+        let mut latest = None;
+        if let Some(s) = self.stream.as_mut() {
+            while self.tick < due {
+                if !s.advance() {
+                    if s.finished { self.ended = true; }
+                    break;
+                }
+                self.tick = self.tick.wrapping_add(1);
+                latest = s.frame().cloned();
+            }
+        }
+        if let Some(f) = latest {
+            let rgba = nf_formats::mpeg2::yuv420_to_rgb8(&f);
+            self.last = Some((f.width as u32, f.height as u32, rgba));
+        }
+        // Keep the wall clock aligned for the hand-over when the track ends first.
+        self.started = Some(now - std::time::Duration::from_secs_f64(self.tick as f64 / 30.0));
+        self.last.as_ref().map(|(w, h, rgba)| (*w, *h, rgba.as_slice()))
+    }
+
     /// `psiStopBackgroundMovie__Fv` 0x00108328 — stops the decoder worker and the audio stream
     /// (both drop with the player).
     pub fn stop(self) {}
@@ -291,6 +341,8 @@ fn open_pcm_out(src: std::sync::Arc<Vec<i16>>, rate: f64, looping: bool) -> Opti
     let frames = src.len() / 2;
     let step = rate / dev_rate;
     let mut pos = 0.0f64;
+    let played = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0f64.to_bits()));
+    let played2 = played.clone();
     let err = |e: cpal::Error| eprintln!("movie audio: {e}");
     let stream = match cfg.sample_format() {
         cpal::SampleFormat::F32 => device.build_output_stream(cpal::StreamConfig::from(cfg.config()), move |d: &mut [f32], _| {
@@ -306,11 +358,12 @@ fn open_pcm_out(src: std::sync::Arc<Vec<i16>>, rate: f64, looping: bool) -> Opti
                 for (k, out) in frame.iter_mut().enumerate() { *out = if k % 2 == 0 { l } else { r }; }
                 pos += step;
             }
+            played2.store(pos.to_bits(), std::sync::atomic::Ordering::Relaxed);
         }, err, None).ok(),
         _ => { eprintln!("movie audio: unsupported sample format; running silent"); None }
     };
     if let Some(s) = &stream { if let Err(e) = s.play() { eprintln!("movie audio: {e}"); } }
-    stream.map(|s| PcmOut { _stream: s })
+    stream.map(|s| PcmOut { _stream: s, played, frames })
 }
 
 #[cfg(all(test, feature = "movies"))]
@@ -386,13 +439,23 @@ mod tests {
 #[cfg(feature = "movies")]
 pub const STREAM_AHEAD: usize = 60;
 
+/// Movie decode threads. One thread decodes these 512x448 MPEG-2 movies at ~34 fps on an idle
+/// 24-thread desktop, and the heaviest GOPs of the 07300004 briefing run at 108 ms a picture —
+/// a third of real time [L probe 2026-10-16]; the 2 s lead drained on those GOPs and the
+/// picture stalled (playtest 1016: "starting and ending movies of missions are lagging"). The GOP
+/// units are independent decodes (a closed GOP alone, an open one with its predecessor in front),
+/// so they decode in parallel, round-robin, and come back out in order.
+pub const DECODE_THREADS: usize = 4;
+
 #[cfg(feature = "movies")]
 pub struct MovieStream {
-    /// Display-ordered frames ready to show, or the worker's end marker.
-    rx: std::sync::mpsc::Receiver<WorkerMsg>,
+    /// One channel per decode thread: unit k's pictures arrive on `rx[k % DECODE_THREADS]`,
+    /// followed by a `UnitEnd`; `next` is the channel whose turn it is.
+    rx: Vec<std::sync::mpsc::Receiver<WorkerMsg>>,
+    next: usize,
     /// The newest frame `advance` handed out (kept so the caller can re-take it between ticks).
     current: Option<nf_formats::mpeg2::VideoFrame>,
-    handle: Option<std::thread::JoinHandle<()>>,
+    handles: Vec<std::thread::JoinHandle<()>>,
     stop: std::sync::Arc<std::sync::atomic::AtomicBool>,
     /// The movie this stream plays (the host keys restarts on the code, like
     /// `Manager_SendMessage` 0x21c858:338 compares M_PAGE+0xC4 against the playing one).
@@ -408,6 +471,8 @@ pub struct MovieStream {
 #[cfg(feature = "movies")]
 enum WorkerMsg {
     Frame(nf_formats::mpeg2::VideoFrame),
+    /// The end of one GOP unit's pictures: the next unit is on the next thread's channel.
+    UnitEnd,
     Done,
 }
 
@@ -508,32 +573,44 @@ impl MovieStream {
         // of playback — a briefing started during the map-load fade (decode-ahead) piled every
         // picture in RAM (~350 KB each, thousands of them): freeze, then crash at the briefing's
         // end (playtest 1016). ~2 s of pictures is plenty of lead.
-        let (tx, rx) = std::sync::mpsc::sync_channel::<WorkerMsg>(STREAM_AHEAD);
+        // The lead is split over the decode threads' channels.
         let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-        let stop2 = stop.clone();
         let pictures = nf_formats::mpeg2::picture_counts(&movie.demuxed.video).0;
         let code = movie.code;
-        let handle = std::thread::Builder::new().name(format!("movie-{code:08x}")).spawn(move || {
-            'movie: loop {
-                for &(prefix, a, b, keep) in &chunks {
-                    if stop2.load(std::sync::atomic::Ordering::Relaxed) { break 'movie; }
+        let (chunks, head, es) = (std::sync::Arc::new(chunks), std::sync::Arc::new(head), std::sync::Arc::new(es));
+        let mut rxs = Vec::new();
+        let mut handles = Vec::new();
+        for w in 0..DECODE_THREADS {
+            let (tx, rx) = std::sync::mpsc::sync_channel::<WorkerMsg>((STREAM_AHEAD / DECODE_THREADS).max(1));
+            rxs.push(rx);
+            let (stop2, chunks, head, es) = (stop.clone(), chunks.clone(), head.clone(), es.clone());
+            handles.push(std::thread::Builder::new().name(format!("movie-{code:08x}-{w}")).spawn(move || {
+                // Thread w decodes the units at global positions w, w+N, w+2N, … (a looping movie
+                // keeps counting past the end, so the round-robin order holds across the wrap).
+                let n = chunks.len();
+                let mut g = w;
+                loop {
+                    if !looping && g >= n { break; }
+                    if stop2.load(std::sync::atomic::Ordering::Relaxed) { return; }
+                    let (prefix, a, b, keep) = chunks[g % n];
                     // The unit's own sequence header + its GOP (an open GOP with its predecessor in
                     // front as the reference); only the unit's own pictures go out.
-                    let mut part = head.clone();
+                    let mut part = (*head).clone();
                     if let Some((pa, pb)) = prefix { part.extend_from_slice(&strip_leading_b(&es[pa..pb])); }
                     part.extend_from_slice(&es[a..b]);
-                    let Ok(mut frames) = nf_formats::mpeg2::decode_video(&part) else { break 'movie };
+                    let mut frames = nf_formats::mpeg2::decode_video(&part).unwrap_or_default();
                     if frames.len() > keep { frames.drain(..frames.len() - keep); }
                     for f in frames {
-                        if stop2.load(std::sync::atomic::Ordering::Relaxed) { break 'movie; }
-                        if tx.send(WorkerMsg::Frame(f)).is_err() { break 'movie; }
+                        if stop2.load(std::sync::atomic::Ordering::Relaxed) { return; }
+                        if tx.send(WorkerMsg::Frame(f)).is_err() { return; }
                     }
+                    if tx.send(WorkerMsg::UnitEnd).is_err() { return; }
+                    g += DECODE_THREADS;
                 }
-                if !looping { break; }
-            }
-            let _ = tx.send(WorkerMsg::Done);
-        })?;
-        Ok(MovieStream { rx, current: None, handle: Some(handle), stop, code, looping, pictures, finished: false })
+                let _ = tx.send(WorkerMsg::Done);
+            })?);
+        }
+        Ok(MovieStream { rx: rxs, next: 0, current: None, handles, stop, code, looping, pictures, finished: false })
     }
 
     /// Pops the next decoded frame into `current` (the display advance — the game decodes one frame
@@ -541,11 +618,18 @@ impl MovieStream {
     /// false while the decoder is behind (the caller keeps the previous frame, like a skipped IPU
     /// frame [M PS2FramesToSkip]) or the stream ended.
     pub fn advance(&mut self) -> bool {
-        match self.rx.try_recv() {
-            Ok(WorkerMsg::Frame(f)) => { self.current = Some(f); true }
-            Ok(WorkerMsg::Done) => { self.finished = true; false }
-            Err(_) => false,
+        if self.finished { return false; }
+        // At most one full round of empty units (a GOP that decoded to nothing) per call.
+        for _ in 0..=DECODE_THREADS {
+            match self.rx[self.next].try_recv() {
+                Ok(WorkerMsg::Frame(f)) => { self.current = Some(f); return true }
+                Ok(WorkerMsg::UnitEnd) => { self.next = (self.next + 1) % self.rx.len(); }
+                // The thread whose turn it is has no units left: the movie is over.
+                Ok(WorkerMsg::Done) => { self.finished = true; return false }
+                Err(_) => return false,
+            }
         }
+        false
     }
 
     /// The frame to display now.
@@ -554,15 +638,13 @@ impl MovieStream {
     /// Stops the worker (page change / movie stop — `psiStopBackgroundMovie` frees instantly [M 0x00108328]).
     pub fn stop(&mut self) {
         self.stop.store(true, std::sync::atomic::Ordering::Relaxed);
-        if let Some(h) = self.handle.take() {
-            // The worker may sit in a full channel's send; drain until it sees the flag and exits
-            // (a bare join here would deadlock against the bounded channel).
-            while !h.is_finished() {
-                while self.rx.try_recv().is_ok() {}
-                std::thread::sleep(std::time::Duration::from_millis(1));
-            }
-            let _ = h.join();
+        // A worker may sit in a full channel's send; drain until each sees the flag and exits
+        // (a bare join here would deadlock against the bounded channels).
+        while self.handles.iter().any(|h| !h.is_finished()) {
+            for rx in &self.rx { while rx.try_recv().is_ok() {} }
+            std::thread::sleep(std::time::Duration::from_millis(1));
         }
+        for h in self.handles.drain(..) { let _ = h.join(); }
         self.current = None;
     }
 }
@@ -642,4 +724,90 @@ pub fn briefing_subtitles(iso_path: &str, movie_code: u32, enabled: bool) -> Res
         }
     }
     bail!("script {script:08x} not in 07000500.bin")
+}
+
+
+/// playtest 1016: "starting and ending movies of missions are lagging … it throws the audio out of
+/// sync". [L probe 2026-10-16: one decode thread ran the 07300004 briefing at ~34 fps on an idle
+/// desktop, its heaviest GOPs at 108 ms a picture.] [S port engineering: decode throughput and the
+/// A/V clock; the game's own rule is that the audio streams on and the picture skips frames to keep
+/// up — PS2FramesToSkip, audioDecSendToIOP 0x107100.]
+#[cfg(all(test, feature = "movies"))]
+mod lag_tests {
+    use super::*;
+
+    fn iso() -> Option<String> { std::env::var("NF_ISO").ok() }
+
+    /// The stream must outrun real time with margin across the briefing's heavy stretch, so a
+    /// busy machine still keeps the 2 s lead. One thread managed ~34 fps here — the sister.
+    #[test]
+    fn the_briefing_decodes_well_ahead_of_real_time() {
+        let Some(path) = iso() else { return };
+        let iso = nf_formats::iso9660::IsoImage::open(&path).unwrap();
+        let Ok(m) = Movie::load(&iso, "07300004") else { return };
+        let mut s = MovieStream::start(&m, false).unwrap();
+        let t0 = std::time::Instant::now();
+        let mut n = 0usize;
+        while n < 900 && t0.elapsed().as_secs() < 60 {
+            if s.advance() { n += 1 } else if s.finished { break } else { std::thread::yield_now() }
+        }
+        let fps = n as f64 / t0.elapsed().as_secs_f64();
+        eprintln!("07300004: {n} pictures at {fps:.1} fps with {DECODE_THREADS} threads");
+        assert_eq!(n, 900, "the stream stalled or ended early");
+        assert!(fps >= 50.0, "{fps:.1} fps — the decoder must run well ahead of the movie's 30");
+    }
+
+    /// The units come back in display order: the parallel stream's pictures match a plain
+    /// in-order decode of the same GOPs, across several thread hand-overs.
+    #[test]
+    fn the_parallel_stream_keeps_the_picture_order() {
+        let Some(path) = iso() else { return };
+        let iso = nf_formats::iso9660::IsoImage::open(&path).unwrap();
+        let Ok(m) = Movie::load(&iso, "07380048") else { return };
+        let (units, head_end) = gop_units(&m.demuxed.video);
+        let es = &m.demuxed.video;
+        let mut want = Vec::new();
+        for &(prefix, a, b, keep) in units.iter().take(DECODE_THREADS * 2 + 1) {
+            let mut part = es[..head_end].to_vec();
+            if let Some((pa, pb)) = prefix { part.extend_from_slice(&strip_leading_b(&es[pa..pb])); }
+            part.extend_from_slice(&es[a..b]);
+            let mut f = nf_formats::mpeg2::decode_video(&part).unwrap();
+            if f.len() > keep { f.drain(..f.len() - keep); }
+            want.extend(f.into_iter().map(|f| nf_formats::sha1::hex(&nf_formats::sha1::sha1(&f.y))));
+        }
+        let mut s = MovieStream::start(&m, false).unwrap();
+        let mut got = Vec::new();
+        let t0 = std::time::Instant::now();
+        while got.len() < want.len() && t0.elapsed().as_secs() < 60 {
+            if s.advance() { got.push(nf_formats::sha1::hex(&nf_formats::sha1::sha1(&s.frame().unwrap().y))) } else { std::thread::yield_now() }
+        }
+        assert_eq!(got.len(), want.len());
+        assert!(got == want, "the parallel stream reordered pictures");
+        // Sister: the comparison can fail (neighbouring pictures differ).
+        assert!(want.windows(2).any(|w| w[0] != w[1]));
+    }
+
+    /// When the picture is late against the audio clock, it jumps to the picture the sound is
+    /// at (dropping the ones in between) instead of playing them late and drifting behind.
+    #[test]
+    fn a_late_picture_catches_up_to_the_audio_clock() {
+        let Some(path) = iso() else { return };
+        let Ok(mut p) = Player::start(&path, 0x0730_0004) else { return };
+        // Let the decoder build its lead, as during the map-load fade.
+        std::thread::sleep(std::time::Duration::from_secs(2));
+        let now = std::time::Instant::now();
+        assert!(p.present_on_audio(now, 0.0).is_some(), "the first picture shows at audio 0");
+        assert_eq!(p.tick, 1);
+        // The audio is 1.5 s in (45 pictures): one present must land on picture 46.
+        let mut ok = false;
+        for _ in 0..200 {
+            p.present_on_audio(std::time::Instant::now(), 1.5);
+            if p.tick == 46 { ok = true; break }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(ok, "the picture stopped at {} instead of catching up to 46", p.tick);
+        // Sister: with the audio clock standing still the picture holds (never runs ahead).
+        for _ in 0..10 { p.present_on_audio(std::time::Instant::now(), 1.5); }
+        assert_eq!(p.tick, 46, "the picture ran ahead of the audio");
+    }
 }

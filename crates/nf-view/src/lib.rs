@@ -4294,10 +4294,14 @@ pub fn mission_movie_glue(fe: &mut menu::FrontEnd, slot: &mut Option<movie::Play
                 eprintln!("movie: stopped {code:08x} (a briefing is pending)");
             }
         }
-        if slot.is_none() && fe.flow.get_state() == menu::ST_MAPLOAD {
+        if slot.is_none() {
             // Early start: the decoder works through the fade and the rest of the menu so
             // state 6 opens on the first frame instead of a black screen (the game's IPU
-            // starts streaming instantly [M 0x1081a8]).
+            // starts streaming instantly [M 0x1081a8]). Any state: since gameflow-state-stack
+            // the 84-frame fade hold [M 0x20ba50] runs before ST_MAPLOAD, and one redraw's 8
+            // front-end ticks could carry the flow from the fade through phase 0's state-6 push
+            // to its pop before this ever saw ST_MAPLOAD — the briefing skipped again
+            // (`briefing_plays_live`, bisected to the a2cdd771 merge).
             let code = fe.flow.level_to_load;
             if matches!((code >> 20) & 0xff, 0x71 | 0x73) {
                 match movie::Player::start(iso, code) {
