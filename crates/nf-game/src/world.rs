@@ -56,6 +56,18 @@ impl Geo {
     fn push(&mut self, tris: impl IntoIterator<Item = ([V3; 3], u8)>) { self.push_flags(tris, false) }
 
     fn push_flags(&mut self, tris: impl IntoIterator<Item = ([V3; 3], u8)>, node_pass: bool) {
+        if self.push_kept(tris, node_pass) { return; }
+        self.objects.pop();
+    }
+
+    /// `push_flags` that always adds the object — an empty collision mesh too (an empty tri range
+    /// with inverted bounds, which no box test meets and `chunk` turns into no runs). The scoped
+    /// static build needs one object per pushed instance: `chunk`'s `owners` key IS the object
+    /// index, and `build_scoped`'s per-instance cel list counts every instance with collision —
+    /// dropping an empty one shifted every later owner by one (G-052: 07000009's security-room
+    /// floor and ceiling were bucketed under the next-lower room cel, so the eye-cel tie-break
+    /// rays missed the room and the lobby cel won). Returns whether any triangle was added.
+    fn push_kept(&mut self, tris: impl IntoIterator<Item = ([V3; 3], u8)>, node_pass: bool) -> bool {
         let start = self.tris.len();
         let (mut lo, mut hi) = ([f32::INFINITY; 3], [f32::NEG_INFINITY; 3]);
         for (w, m) in tris {
@@ -64,7 +76,8 @@ impl Geo {
             self.mats.push(m);
             self.pass.push(node_pass);
         }
-        if self.tris.len() > start { self.objects.push(Object { lo, hi, tris: start..self.tris.len() }); }
+        self.objects.push(Object { lo, hi, tris: start..self.tris.len() });
+        self.tris.len() > start
     }
 
     /// Whether a hit on triangle `k` carries the game's bullet-pass bit (`HITDATA+0x51` bit 1):
@@ -299,7 +312,7 @@ impl CollisionWorld {
             if graph.is_some() {
                 obj_cell.push(Some(obj_cell.len() as u32));
             }
-            stat.push_flags(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)), node_pass);
+            stat.push_kept(c.triangles_with_material().into_iter().map(|(t, m)| (t.map(|p| transform(&inst.matrix, p)), m)), node_pass);
         }
         // Index collision shapes by hashcode, AND by (map,object) packed into a synthetic key for objects whose
         // hashcode is u32::MAX (anonymous objects — e.g. 4/5 doors on 07000001 have hashcode=MAX, so the hashcode
