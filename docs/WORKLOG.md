@@ -17391,3 +17391,11 @@ through the real input path + a sister, run the touched crates + the full suite.
   (fail-first compile) + the 1b/05 probe; ran nf-game music 5/5, nf-view pause/menu-audio
   binaries 22/22; the full suite died 4x in this sandbox (PATH, disk-full, background reaping) —
   the foreground runs stand in. Report: docs/reports/pause-music-1b.md.
+- 2026-10-17 s/zoe-gondola-08 (task 750d): user: "zoe shoots at you when you get to the
+  gondola" — Zoe is an ally (07000007/08; the gondola is on 07000008) and an ally must
+  never target Bond. Plan: reproduce on the real path (walk to the gondola, log Zoe's
+  team +0x44, target, state and shots), find why she targets Bond (her team/kind setup
+  at spawn or by script, the target selection's team filter Check_Targ/the opponent
+  pick), port the game's rule with [M] citations. Test: she never fires at Bond through
+  the gondola sequence; sister: she still fires at enemies if the game has her fight
+  there. Branch created from origin/master 31dd6161.
