@@ -16852,3 +16852,28 @@ reassignment → FirstAttack +0x5a4=0x89) and 0700000a (9 panels, 10 ch-0x61 swi
 all 20 guards); the disc's alarm channels are 0x61 (0a) and 0x37 (09), and DroneTypeSettings row 14
 = start/alt 0x89 is reached via DroneModeSettings row 18 (AlarmRaiser) or GetDTYPENEW block 3 +
 prop 0x56.
+
+## drone-investigate — STARTED 2026-10-16 19:16 UTC (sandbox ~21:12 UTC)
+- Branch s/drone-investigate cut from origin/master c8186aa1. Suite started in background at 19:14 UTC (suite.out).
+- Task: NDrone2 Investigate state (DSTATE_Investigate 0x7E, 0x168070). Initial reads: handler decomp in hand;
+  task-710 audit claims it is dead on retail (no SetState 0x7E caller) — verifying independently before changing code.
+- Plan: (1) trace dispatch + all entry sites [M]; (2) trace the heard-sound-below-alert-threshold path the game
+  actually takes; (3) compare with nf-game master on 07000005; pin with tests (guard investigates origin + returns;
+  sister hears nothing stays put).
+- Investigate audit done: DSTATE_Investigate 0x7E (0x168070) is reachable ONLY under the Blind Drones cheat —
+  the sole entry in all of ACTION.ELF is CombatOutOfRange 0x164690:30 storing 0x7e to +0x5a2, gated on
+  switch_BLIND_DRONES (written only by the cheat handler C_CHCHBLIND 0x215d60:9); no SetState(0x7e) literal
+  anywhere. The task-710 audit's "no +0x5A2 store" is wrong on that one point (corrected here); its conclusion
+  (dead in normal play) stands. The game's below-threshold sound path is the HeardNoise family 0xa2-0xa5, all
+  already ported on master (drone.rs:4003-4087).
+- Pinning test added: ai_live::two_sounds_send_the_idle_guard_to_investigate_and_back_to_his_post (Level05,
+  guard 9, seed 1): sound share 0.27 → HeardNoise→Aware f101 (no Attack — AlertSound 0x177800); louder sound
+  (0.48 > 0.1) while drawn → Suspect+AlertToPosition f109 [0x16af20:67-75, 0x16b0e0:28-40]; walks 12 units to
+  the origin, SearchArea f535 (span 265 >= the game's 180 [0x165bf0:25]); GoToGoal home f800; Idle back at his
+  post f889, alert 0.000. Sisters: guard 8 (62 units away) stays Idle at his exact post; WaitSwitch waiter 302
+  never moves. ai_live 36/36 green.
+- Report written: docs/reports/drone-investigate.md (finding: 0x7E cheat-only via CombatOutOfRange 0x164690:30
+  + C_CHCHBLIND 0x215d60 — audit's "no +0x5A2 store" corrected; the live below-threshold path is the already-
+  ported HeardNoise family; full [M] chain table; pinning test; per-crate suite totals 754 passed / 5 failed
+  [3 allowed disc_golden slim-ISO + 2 headless-GPU pylon probes, master baseline] / 11 ignored; 2 live checks;
+  Usage: not visible to me). No lib code changed (master already behaves like the game — pinned, per the task).
