@@ -17885,3 +17885,11 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   disabled bots). Full nf-game+nf-view foreground: 94 binaries, 622 passed, 0 failed
   (suite.py background-killed as in prior sandboxes; the foreground run stands in).
   Report: docs/reports/mp-screens.md.
+
+---
+Task ID: 703b
+Agent: level-03-complete
+Task: play 07000003 (Alpine Escape, Castle C) start to finish through the real input path; every objective (incl. optional); every blocker fixed; report.
+
+Work Log:
+- (started)
