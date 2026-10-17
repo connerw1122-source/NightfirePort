@@ -18787,3 +18787,8 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   headless-runnable. The full suite.py did not fit the window (the sandbox kills background
   processes between tool calls; foreground 10-min tool windows cover ~77 of 522 binaries) — the
   foreground runs above are the verification. Report: docs/reports/level-0a-interactables.md.
+- 2026-10-17 s/level-0a-complete (task 710b): STARTED. Tower B (0700000a) end-to-end play task:
+  the live walk test must complete EVERY objective (optional included) and exit the way the
+  game does. Branch created from origin/master (f53df46b) and merged s/level-0a-interactables
+  (the census, the un-ignored walkreal, the 7 kind tests, the level doc) — work continues from
+  there.
