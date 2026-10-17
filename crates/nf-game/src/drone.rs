@@ -8515,6 +8515,8 @@ impl Drones {
                 tick_damage: 0.0,
                 // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
                 hidden: false,
+                // The fusebox wire SP: no placement model of its own.
+                model: 0,
             });
         }
         // laser-scripts: `Switch_Create` 0x1adcc0:44-45 ends with `SP_Create(pos, rot, param 1,
@@ -8564,6 +8566,8 @@ impl Drones {
                 damage: 0.0,
                 tick_damage: 0.0,
                 hidden: false,
+                // The laser switch's player: no placement model of its own.
+                model: 0,
             });
             // The ext+0x0C link [M 0x1adcc0:46]: Switch_Update's unpause arm and Switch_Activate's
             // idle gate reach the player through it (crate::useobj).
@@ -9733,8 +9737,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // `Player_Activate`'s remaining classes the Tower levels need (map-tower): the mask-4
         // ScriptPlayers (`SP_Activate` 0x1dc338 — the elevator, the security keyboard), the
         // switches (0x29, `Switch_Activate` 0x1b02a8) and the Q-Worm PCs (0x35,
-        // `PCQWorm_Activate` 0x1b0840) — crate::useobj.
-        self.useobjs.player_activate(&mut self.scripts, &mut self.channels, head, look, frame);
+        // `PCQWorm_Activate` 0x1b0840) — crate::useobj. The SP reach is the class-0 ENTITY path
+        // [M 0x1a5170:121-122]: `w` supplies the glist spheres (elevator-buttons-09).
+        self.useobjs.player_activate(&mut self.scripts, &mut self.channels, head, look, frame, d);
         // `Player_Activate`'s class-0x38 monitor path (`Monitor_Activate` 0x1b0058): the use
         // sphere's nearest monitor within reach activates (or, while viewing, the same 0xE edge
         // cycles/exits). Reach: the door rule (head+look sphere 1.0 vs the object's sphere) —

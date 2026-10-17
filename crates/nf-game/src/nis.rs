@@ -1121,6 +1121,13 @@ pub struct Player {
     /// game's one level-load-hidden SP is 07000005's 0x16ddb40 looping pair (+0x36 = 1 [L]; setter
     /// unknown, a live check) — the port keys that stand-in on the SP's own identity below.
     pub hidden: bool,
+    /// The placement's model hash (`Placement::hashcode` when `by_hash()`, else 0) — the SP's own
+    /// art. `SCRIPTPLAYER_Elevators`' panel model is baked absolute in it (gfx bounds
+    /// [−18.38,−368.53,24.83]..[−17.78,−367.92,25.20] [D placements dump]). Use-target FALLBACK
+    /// only [S]: the game's use pick hits the class-0 script ENTITIES (`entity_use_targets`) —
+    /// the class-0x1B SP body is inert to it [M 0x1a5170:121-122] — so this stands in only when
+    /// no entity sphere resolves (elevator-buttons-09).
+    pub model: u32,
 }
 
 impl Player {
@@ -1141,6 +1148,7 @@ impl Player {
             tick_damage: 0.0,
             // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
             hidden: false,
+            model: if p.by_hash() { p.hashcode } else { 0 },
         })
     }
 
@@ -1164,6 +1172,36 @@ impl Player {
         gate.health_ok
             && (gate.mission == 0 || gate.mission == 1)
             && !(self.scripts[self.cur] == 0x0600_0994 && gate.music2 != 0)
+    }
+
+    /// The SP's live entity use targets — the class-0, `obj+0xE4`-carrying script entities of the
+    /// CURRENT SCRIPTINFO. `Player_Activate` 0x1a5170:121-122 dispatches `SP_Activate` only on a
+    /// hit object with `obj+0xE4 != 0 && obj+0xFF == 0`; `obj+0xE4` is the owner-SP handle
+    /// `Script_EntityStart` 0x1d8d78:108-110 stores on every script-created entity. Each target is
+    /// the entity's world sphere: `World::glist_sphere(hash)` (the model's local bounding sphere)
+    /// transformed by the stream matrix — `Control_BuildWorldSph` 0x133070's inputs, the same math
+    /// `Scripts::held_hit_targets` uses for the bullet pass. `SCRIPTPLAYER_Elevators` (07000009
+    /// #70) is reachable exactly this way: its mode-64 preload runs the t=0 Entity op, so entity
+    /// 0x020005EA exists at the panel from level load (docs/systems/elevator-button.md).
+    pub fn entity_use_targets(&self, objects: &Objects, w: &dyn World) -> Vec<([f32; 3], f32)> {
+        let mut out = Vec::new();
+        if self.deleted { return out; }
+        let Some(s) = self.info[self.cur].as_ref() else { return out };
+        for st in &s.streams {
+            if st.kind != 1 { continue; }
+            let Some(o) = st.obj else { continue };
+            let Some(Some(Obj::Entity { hash, matrix, .. })) = objects.list.get(o) else { continue };
+            let Some((c, r)) = w.glist_sphere(*hash) else { continue };
+            out.push((
+                [
+                    matrix[0][0] * c[0] + matrix[1][0] * c[1] + matrix[2][0] * c[2] + matrix[3][0],
+                    matrix[0][1] * c[0] + matrix[1][1] * c[1] + matrix[2][1] * c[2] + matrix[3][1],
+                    matrix[0][2] * c[0] + matrix[1][2] * c[1] + matrix[2][2] * c[2] + matrix[3][2],
+                ],
+                r,
+            ));
+        }
+        out
     }
 
     /// `SP_CreateScriptPlayer@0x1db9a8:81-86`'s load beat: mode A ∉ {0, 1} loads the script immediately and
@@ -1477,6 +1515,8 @@ impl Scripts {
                 tick_damage: 0.0,
                 // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
                 hidden: false,
+                // Scripts::new's synthetic copter player has no placement model.
+                model: 0,
             });
         }
         Scripts { lib, players, objects: Objects::default(), requests: Vec::new(), primed: false, skip_request: false }
@@ -1573,6 +1613,8 @@ impl Scripts {
             tick_damage: 0.0,
             // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
             hidden: false,
+            // The runtime spawn has no placement model.
+            model: 0,
         });
     }
 
@@ -1817,6 +1859,7 @@ mod tests {
             tick_damage: 0.0,
             // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
             hidden: false,
+            model: 0,
         };
         let mut lib = HashMap::new();
         lib.insert(0x0600_0421u32, nis);
@@ -1859,6 +1902,7 @@ mod tests {
             tick_damage: 0.0,
             // +0x36: nothing hides a placed/fusebox/useobj SP at create [M 0x1db9a8].
             hidden: false,
+            model: 0,
         };
         let mut objs2 = Objects::default();
         p2.load(&lib, &mut objs2, &mut ch, &world, 0, &mut out);
@@ -1903,7 +1947,7 @@ mod tests {
         let world = TestWorld;
         let mut out = Vec::new();
         let mut p = Player { placement: 0, scripts: [0x0600_0832, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
-            live_matrix: IDENT, subs: Vec::new(), hit_points: 0.0, damage: 0.0, tick_damage: 0.0, hidden: false };
+            live_matrix: IDENT, subs: Vec::new(), hit_points: 0.0, damage: 0.0, tick_damage: 0.0, hidden: false, model: 0 };
         p.load(&lib, &mut objs, &mut ch, &world, 0, &mut out);
         {
             let s = p.info[0].as_ref().unwrap();
@@ -1935,7 +1979,7 @@ mod tests {
         }));
         let mut objs2 = Objects::default();
         let mut p2 = Player { placement: 0, scripts: [0x0600_0833, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
-            live_matrix: IDENT, subs: Vec::new(), hit_points: 0.0, damage: 0.0, tick_damage: 0.0, hidden: false };
+            live_matrix: IDENT, subs: Vec::new(), hit_points: 0.0, damage: 0.0, tick_damage: 0.0, hidden: false, model: 0 };
         p2.load(&lib, &mut objs2, &mut ch, &world, 0, &mut out);
         {
             let s = p2.info[0].as_ref().unwrap();
