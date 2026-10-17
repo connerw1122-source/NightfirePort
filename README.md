@@ -35,11 +35,11 @@ Everything below is on top of the game as it shipped. The game's own controller 
 
 **Keyboard and mouse menus.** Menu rows are hit-tested where they are drawn.
 
-**Dev tools in a separate window.** With `--dev`, a native "Nightfire dev" window opens beside the game and the game keeps running: weapon and gadget lists, grenades, ammo and health, NPC spawning, teleport, level selection, toggles and screenshots. In the game window, F1 is an AI overlay and F2 a dev menu (god mode, infinite ammo, time scale). There are nine named test scenarios (`--scenario grenade-throw`, `sniper-cover`, `ambush`, `searchlight-tracks-bond`, ...), and input can be recorded and replayed (`--record` / `--replay`).
+**Dev tools in a separate window.** With `--dev`, a native "Nightfire dev" window opens beside the game and the game keeps running: weapon and gadget lists, grenades, ammo and health, NPC spawning, teleport, level selection, toggles and screenshots. In the game window, F1 is an AI overlay and F2 a dev menu (god mode, infinite ammo, time scale).
 
 ![The game window beside the port's separate native dev window, listing weapons](docs/readme/img/devwindow.png)
 
-**Rapid fire.** `--rapid-fire` (or the dev window's Toggles page) makes every weapon fire one round per 60 Hz tick from a full clip, to show what the engine carries: 120 rockets in two seconds, 109 in the air at once. It is off by default, the game's own fire rates apply, and it never applies to an online match.
+**Rapid fire.**
 
 ![Rapid fire at the castle gate on level 07000005: a stream of rockets and the explosions along the gate](docs/readme/img/rapidfire05.gif)
 
