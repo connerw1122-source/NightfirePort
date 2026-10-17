@@ -4,7 +4,14 @@ User: "elevator buttons in the garage still dont work" (07000009's underground c
 elevator-buttons-09 task fixed). docs/levels/07000009.md lists liftswitch_off/on and liftsymbols FuseBox art (0x31, no
 params) in the car park. First establish on the REAL path what the game does there [M/D, plus the main agent's PCSX2 check]:
 are those buttons interactive (which placement/class takes the use, what channel/script they drive — a lift call, a door,
-a prompt) or set dressing? Then port exactly that, real-path test (walk to the button, E) with a sister. If the game's
+a prompt) or set dressing? Then port exactly that, real-path test (walk to the button, E) with a sister. **Live result [L, 2026-10-17, fresh-boot PCSX2]:** the car-park buttons ARE callable. Bond at (−4.70, −375.0, 15.6) facing
+the liftswitch on the wall (yaw π), Action pressed with the crosshair on it → the button's indicator lights up (dim → bright
+white), no "Press Action" prompt beforehand, no alarm, ch 0x39 unchanged. The user confirms the button at that spot can be
+called. The doors are LIFTDOORSBOTH_FAKE(GARAGE) and the symbols liftsymbol_shutdown — find what the call drives (the
+SCRIPT_liftSCRIPTPLAYER players #21/#22, scripts 0x0600007E/0x0600007D, mode 8, mask 4 — the same SP_Activate class-0 entity
+path as the lobby panel [M 0x1a5170:121-122]) and port it: the light, any lift/door/symbol response, the sound.
+
+If the game's
 buttons do nothing, write that down with the evidence and say so — don't invent behaviour. Rebase on origin/master's
 channel-persistence fix (699) first.
 
