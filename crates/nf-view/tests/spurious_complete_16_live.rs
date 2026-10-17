@@ -96,8 +96,21 @@ fn the_real_end_condition_posts_the_mission_complete_banner() {
     }
     let chaser = {
         let mut found = None;
+        // The launch exhaust gate: 0x0600090a stream 6 raises ch 0xf3 (243) at script tick 1611 and
+        // drops it at 2170 [D scriptlog], BEFORE the spawner writes (ch 0xf0 at 2180 [D]) — the
+        // #309 HurtPoly (gate 0xf3, 1000 [D]) is live in between, and the cinema's snap leaves Bond
+        // inside it on the silo floor. The mission only completes from a live Bond (Mission_Update
+        // 0x182c60 case 1: the ch-0x62 fail arm — Player_SetHealth(0), MissionState 3
+        // [M 0x182c60:21-43] — outranks the ch-100 completion arm), so the game's player leaves the
+        // pit during the launch; the test re-seats her on the upper floor once the cinema hands
+        // control back, the same route the descent came up.
+        let mut re_seated = false;
         for _ in 0..4000u32 {
             scene.sim.as_mut().unwrap().step_bond(Input::default(), false, false, false);
+            if !re_seated && !scene.sim.as_ref().unwrap().disabled {
+                re_seated = true;
+                scene.sim.as_mut().unwrap().bond.pos = [2.5, 1.2, -153.9];
+            }
             let sim = scene.sim.as_ref().unwrap();
             if !sim.hud.mission_msgs.is_empty() { banner_before_end += 1; }
             if let Some(i) = sim.drones.list.iter().position(|d| d.present && !d.corpse && d.skin & 0xffff == 0x1e && d.dtype == 0xf && d.death_channel == 0x90) {

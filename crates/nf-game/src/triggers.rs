@@ -198,6 +198,17 @@ fn segment_segment(p1: V3, q1: V3, p2: V3, q2: V3) -> f32 {
     dot(sub(c1, c2), sub(c1, c2)).sqrt()
 }
 
+/// The capsule-vs-mesh contact the trigger `contains` uses, shared with the hurt volumes
+/// (the game's object collision picks a class-0x27 hurt volume's glist cels with the player's
+/// capsule [M Player_DealWithObjHit 0x194458:95-103; the exact BL pick rule is the port's
+/// trigger-contact approximation]).
+pub fn capsule_hits_tris(a: V3, b: V3, r: f32, tris: &[[V3; 3]]) -> bool {
+    tris.iter().any(|t| {
+        segment_hits_triangle(a, b, t) || point_triangle(a, t) <= r || point_triangle(b, t) <= r
+            || (0..3).any(|k| segment_segment(a, b, t[k], t[(k + 1) % 3]) <= r)
+    })
+}
+
 /// Whether the segment a–b crosses triangle t.
 fn segment_hits_triangle(a: V3, b: V3, t: &[V3; 3]) -> bool {
     let d = sub(b, a);
@@ -305,10 +316,7 @@ impl Trigger {
             && (0..3).all(|k| c.b[k] >= self.lo[k] && c.b[k] <= self.hi[k]) {
             return true;
         }
-        self.tris.iter().any(|t| {
-            segment_hits_triangle(c.a, c.b, t) || point_triangle(c.a, t) <= c.r || point_triangle(c.b, t) <= c.r
-                || (0..3).any(|k| segment_segment(c.a, c.b, t[k], t[(k + 1) % 3]) <= c.r)
-        })
+        capsule_hits_tris(c.a, c.b, c.r, &self.tris)
     }
 
     /// `Trigger_Hit` (0x1B1FC8) for a Touch / TouchOnce trigger. The 0x18 branch is an AND-chain [M 0x1b1fc8:56-123]:

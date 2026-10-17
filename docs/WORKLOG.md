@@ -18541,3 +18541,62 @@ fix_truck 2, level_carry 8, mayhew_handover 2, nf-game units 276. The full suite
   3/3, nf-game 534/0, the ally siblings 14/0 (escort_follow/fix_actors/mayhew_handover/
   mayhew_end_transition/fix_npcs; suite.py background-killed by the sandbox as before).
   Report: docs/reports/level-08-complete.md.
+- 2026-10-17 s/level-05-interactables-2 (task 705d): started. Task: finish the HELD 05
+  interactables (705a, 41f5ae1) — merge it onto master and fix the three breaks:
+  searchlight_live::channels_and_tracking_behave (the own-housing skip pushes the spot ray
+  start past its end; dir_unit assumes a 100-unit ray), and the two 07000016 finale tests
+  (the hurt param map made #309 HurtPoly-ShuttleLaunch deal 1000 through the chaser fight —
+  the held hurt.rs lost Hurt_Update 0x17e5d0's who-mask/gate state machine; ch 243's writer
+  timing to be checked against [M 0x182c60]). Single hurt system on Sim.hurts; damage stays
+  1000. In progress.
+
+## level-05-interactables (2026-10-17)
+
+Branch `s/level-05-interactables` off master d628f01f. Task: 07000005 (Mayhew A, the castle
+approach) — the census of every interactive thing (buttons, doors, triggers, pickups, wires,
+ladders, vehicles...) with params + channel wiring + [M] behaviour + port status into
+docs/levels/07000005.md; then one real-input-path live test per KIND with a sister; then the
+model/texture sweep (every placement's mesh resolves, no white fallbacks). Working notes as I go.
+- 2026-10-17 s/level-05-interactables (task 705a): level 07000005 "Mayhew A (the castle approach)" —
+  the interactables census (363 placements, dispatcher 0x1d04f0's creator per kind, params + channel
+  wiring + [M] behaviour + port status) into docs/levels/07000005.md §7; two corrections: TouchOnce
+  #36 IS the ch-0x45 reveal writer (out 69), and the searchlight roles are param 0 = 1 head /
+  2 psiLight. The hurt volumes 0xE4 ported (class-0x27 capsule damage [M 0x194458:95-103] through
+  pain_generic's type-1..7 no-armour switch [M 0x1902c8:84-104]); the searchlight spot ray skips the
+  head's own gfx box ([M 0x1eae80:57-59] the own-cel exclusion — the ray used to hit the platform at
+  t≈0 and no head could arm). One live test per KIND through the real input path (11/11, sisters):
+  plates+OR mux, doors (locked refuse), ladder, pickups (armour/bonus), searchlight sweep + the [L]
+  orphan light, SC3 plate → copter gate, ledge plate → sound trigger, ch 0x22 → spawner, grapple
+  aim, the valley hurt fall; the census test asserts 0 unresolved meshes + 0 white-fallback
+  materials of 3576. Repairs: nf-extract ai_sim + 19 nf-game tests' stale attach_level calls. Left:
+  the walkreal west anchors + the jump-grab (020-fix-wire), the window-ledge plunge catch, the #36
+  plate vs the toucher stand-in. Run: nf-game 61/61 binaries, nf-formats/nf-audio, the nf-view
+  touched neighbourhood + walk slices; the full remaining nf-view sweep did not fit (suite.py
+  background-killed in this sandbox). Report: docs/reports/level-05-interactables.md.
+- 2026-10-17 s/level-05-interactables-2 (task 705d): DONE. The HELD 05 work (705a, 41f5ae1) merged
+  onto master 0083ce97 and the three breaks fixed. (1) searchlight spot ray: the own-housing skip
+  slab-tested the head's LOCAL-space gfx box against WORLD ray coordinates — the ray from the head at
+  (−57.03, 37.84, −59.97) crossed the ±0.27 origin-anchored box 57 units out, the skip pushed the
+  start past the real hit (fraction 0.228) and the re-lit dark head's spot stayed at −10000. The skip
+  now transforms into the part's local space (the bullet stand-in's own convention) and keeps the
+  100-unit ray's parametrization (skip as a ray fraction, ≤ 4 world units; the sub-segment's t
+  rebased), [M Collide_PickObj 0x1eae80:57-59]. (2) hurt.rs rebuilt as the ONE system on Sim.hurts:
+  the held param map (0 type, 1 damage, 2 gate, 3 sound, 4 who, 5 one-shot [M Hurt_Create 0x17e870])
+  + the tris contact + the restored Hurt_Update 0x17e5d0 state machine (the live every-tick 0x20 gate
+  law [M :26-37], the gated volume's channel-VALUE mask [M :97-99], the ungated who law — who 1
+  collects nothing [M :57-95], the one-shot retire [M :129-132]); the Drones.hurts copy the held
+  branch added is gone; 7 nf-game unit tests cover the law (incl. #309's gated-who-1 shape). (3) the
+  07000016 finale: the divergence is the disc's own exhaust order — SP #272's 0x0600090a stream 6
+  pulses ch 0xf3 (243) at script ticks 1611→2170 [D event-0xd scriptlog], BEFORE the ch-0xf0 spawner
+  write at 2180 [D]; #309 (gate 0xf3, 1000 [D]) is live in between, the pack cinema's snap leaves
+  Bond inside it on the silo floor, and Mission_Update 0x182c60's ch-0x62 fail arm
+  (Player_SetHealth(0), MissionState 3, LevelToEndTo 0x7000048 [M :21-43]) outranks the ch-100
+  completion — the tests' parked-in-the-pit Bond contradicted the game's leave-the-pit-during-the-
+  launch route (they passed on master only because master's #309 read damage from param 4 = 1.0 into
+  an origin-anchored box); both tests re-seat Bond on the upper floor once the cinema hands control
+  back. Damage stays 1000. Run: nf-game 536/0 (all binaries, --test-threads=2), nf-view slices —
+  the three fixed binaries (searchlight_live 3, fix_finale_live 2, spurious_complete_16_live 2), the
+  searchlight neighbours 10, hurt_02_live 1, interact_07000005_live 11, interact_07000006_live 9,
+  walk_07000005 2, walkreal_07000005 2, mayhew_handover 2, level_carry 8, fix_truck 2, wire 1,
+  casings16 2, fix_mission 4, levels_sweep 3, walk_07000008 4, walk_0700000a 3, mission_unlock_flow 3
+  — 0 failures. Report: docs/reports/level-05-interactables-2.md.
