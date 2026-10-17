@@ -17731,3 +17731,39 @@ Start: rebuilt the held content by reverting the revert 6445bd0f on top of origi
 50d51ae7 (batch 1016c) — origin/s/zoe-gondola-08's commits are already ancestors of master but
 their content was reverted there. Branch s/zoe-gondola-08b pushed with this entry before any
 analysis. Next: reproduce the three failures, then scope the fix.
+---
+
+## zoe-gondola-08b (2026-10-17, branch s/zoe-gondola-08b) — worked 04:40–06:20 UTC
+Rebuilt the held content (revert of the revert 6445bd0f on origin/master 50d51ae7) and reproduced
+all three held failures on the branch (cover_nodes a_06, npc_doors escort, rocket_origin).
+
+Root cause 1 (cover_nodes a_06): the held task's look_for_opponent gate is the game's own
+[M 0x177ed0:12-14 — `SMI+4 == 3 && 1.0 <= Drone+0x50c` → return 0], but the port's only exit from
+a fully-alert PLAY_SCRIPT was the msg-3 look (master's ungated approximation) — the gate closed it
+and the a_06 guard sat in his script forever. The game's real exit is the sound messages:
+`NDrone2_DSTATE_PlayScript` 0x15ba68 cases 0x11/0x12/0x14/0x15/0x16/0x1e all run
+`DroneVision_EnemyAlerts` 0x177c18 and SetState(result) — the port had NO PLAY_SCRIPT sound arm.
+Added (PLAY_SCRIPT, msg::SOUND) → enemy_alerts and (PLAY_SCRIPT, msg::ALARM) → the same route the
+IDLE/ALERT/PATROL arm takes. a_06 passes again through the game's own path; fix_actors 4/4
+(including the escort-cower test) stay green.
+
+Root cause 2 (rocket_origin): not an aim bug — the shared-RNG order. Zoe (team 2, 07000008) burned
+hit-roll/wobble draws in her phantom combat chain under master's code; the team-2 gates [M
+0x142e0c — FindOpponent never stores Bond for team 2] removed those draws, the player rocket's
+spread roll changed, and the test's magic 4.0 (tighter than the record's own cone) landed at 4.28.
+The sister assertion now pins the record's own spread envelope: offset ≤ record+0x24 · 0.0014
+[M Bullet_init 0x12c5a0's cone, the port's bullet::spread] → bound = 256·s·0.0014 + slop. PASS.
+
+LEFT (escort): npc_doors_live the_escort_opens_his_door_without_bonds_help still fails on the
+branch (passes with master's drone.rs — bisected, deterministic). The escort cowers (LEAD_HIDE) at
+spawn on an armed_peer_dist 7.2 and the harness cannot clear it. Bisected to the PLAY_SCRIPT look
+gate: with it disabled (team-2 gates kept) the escort test passes in 30 s — the courtyard guards
+(PLAY_SCRIPT, placement alertness 1) leave their scripts on sight under master's ungated msg-3 look
+and are gone by +9000; with the gate they stay parked and cower the escort. Tried and REVERTED
+(unproven, did not fix): NearArmedDrone 0x177420's candidate gates ported into the armed_peer scan
+(health > 0, weapon record present, requester-sees-peer line_of_sight, requester prop 0x50 flag=1
+[M 0x15e698 case 3 passes flag 1]). The game-true un-parker is still unresolved — the remaining
+decode is NearArmedDrone's `(Drone+0x4f8 & 0x600) == 0 && (Drone+0x4f8 & 0x100) != 0` candidate
+mask (bit 0x100 gates Drone_GetOpponentInfo 0x138f68:16 too; its writer is unfound) and the
+msg-3 `+0xcdc` flag [M 0x15ba68 case 3 — the look runs only when it is non-zero; the 07000001
+scripts 0x6000168/0x6000169 set it to 0]. Report has the live-check list.
