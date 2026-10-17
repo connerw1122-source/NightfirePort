@@ -1822,6 +1822,9 @@ struct App {
     audio_paused: bool,
     /// The loading screens' pictures (07000500.bin, crate::loading), read on the first level change.
     loading_art: Option<std::collections::HashMap<u32, (u32, u32, Vec<u8>)>>,
+    /// The loading screen's hint, picked ONCE per load (level, label) — `ResetMap_GenLoadScreen`
+    /// 0x1d5de0 builds the screen a single time per load [M]; cleared by `start_async_load`.
+    loading_hint: loading::HintPick,
     /// The pointer in the menu's 640×480 space (PC mouse support).
     menu_pointer: Option<(f32, f32)>,
     /// async-level-load: the level load running on a worker thread — `Some` from the frame the
@@ -2097,8 +2100,13 @@ impl App {
         let picture = self.loading_art.as_ref().and_then(|a| a.get(&loading::image_for(level)));
         let lang = self.scene.sim.as_ref().and_then(|s| s.lang.as_ref()).or(self.lang.as_ref());
         let aspect = g.config.width as f32 / g.config.height.max(1) as f32;
+        // One pick per load (the game builds the load screen once [M ResetMap_GenLoadScreen 0x1d5de0]):
+        // the port re-picked every redraw with a clock seed, so the hint line flickered through the
+        // pool many times a second (the user's "loading hints run 10000 mph").
+        // One pick per load (`loading::HintPick` [M ResetMap_GenLoadScreen 0x1d5de0]): the port re-picked
+        // every redraw with a clock seed, so the hint line flickered through the pool (playtest 1016).
         let mut seed = std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map(|d| d.subsec_nanos()).unwrap_or(1) | 1;
-        let hint = loading::hint_for(level, || { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; seed >> 8 });
+        let hint = self.loading_hint.get(level, || { seed ^= seed << 13; seed ^= seed >> 17; seed ^= seed << 5; seed >> 8 });
         let hud = match self.scene.hud.as_ref() {
             Some(t) => menu::loading_overlay(&t.font, lang, &self.scene.hud_textures, aspect, level, hint, dots),
             None => gpu::HudFrame::default(),
@@ -2120,6 +2128,7 @@ impl App {
     /// The level transition's first half (async-level-load): capture the carry-over exactly as
     /// the synchronous path did, draw the screen's first frame and hand the build to a worker.
     fn start_async_load(&mut self, next: u32) {
+        self.loading_hint.reset(); // a new load picks its own hint
         // `Trigger_Activate`'s exit order: the success/fallback channel write (already applied in
         // the sim), then `Player_RamSave` [M 0x1b2318:97-116] — capture the old sim now, before
         // the scene swap drops it (fix-level2 F2). The old sim stays in `self.scene` until the
@@ -4036,7 +4045,7 @@ pub fn run() -> Result<()> {
     let force_channel = if dev { args.iter().position(|a| a == "--set-channel").and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u8>().ok()) } else { None };
     let mut app = App { sound, scene, cam, gfx: None, keys: HashSet::new(), grabbed: false, trigger: false, aiming: false, last: std::time::Instant::now(), choice, anim_time: time, paused: false, opts, noclip: false, just: HashSet::new(), turn: 0.0, look: 0.0, weapon_cycle: 0, gadget_cycle: 0, weapon_switch_to: None, zoom: false, dev: dev.then(|| Box::new(dev::Dev { infinite_ammo: true, ..Default::default() })), notex, nofog, iso, pending_level: None, pending_weapon_assets: None, entry_save: None, all, recorder: None, replay: None, replay_idx: 0, prev_lock_ch: false, ticked: false, frame_ticks: 0, menu_clock: 0.0, fe_clock: 0.0, selected_difficulty: 2, zoom_cycle: 0, pending_mission_end: false, pending_mp_debrief: None, force_channel, cam_prev: None, cam_cur: None, pal_prev: None, pal_cur: None, fps_cap, frame_start: std::time::Instant::now(), panel: None, panel_level: 0, panel_frames: 0, fe: None, level_code: 0, fe_music_page: None, menu_handle: 0, lang: None, #[cfg(feature = "gamepad")] pad: pad_backend,
         movie: None, devwin: None,
-        audio_paused: false, loading_art: None, menu_pointer: None,
+        audio_paused: false, loading_art: None, loading_hint: Default::default(), menu_pointer: None,
         net: None, net_lobby: None, net_local_slot: 0, net_tick: 0, pending_mp_settings: None, net_armed: None,
         async_load: None,
         music_bank_flip: false,

@@ -102,6 +102,22 @@ pub fn art(archive: &[u8]) -> std::collections::HashMap<u32, (u32, u32, Vec<u8>)
     out
 }
 
+/// The loading screen's hint, picked once per load: `ResetMap_GenLoadScreen` 0x1d5de0 builds the screen a
+/// single time per load [M], so the line must not change while the dots animate. `get` re-picks only for a
+/// new level or after `reset` (the next load).
+#[derive(Default, Clone, Debug)]
+pub struct HintPick { picked: Option<(u32, Option<u32>)> }
+
+impl HintPick {
+    pub fn get(&mut self, level: u32, rand: impl FnMut() -> u32) -> Option<u32> {
+        match self.picked {
+            Some((l, h)) if l == level => h,
+            _ => { let h = hint_for(level, rand); self.picked = Some((level, h)); h }
+        }
+    }
+    pub fn reset(&mut self) { self.picked = None; }
+}
+
 /// The hint strings start with "HINT "; the game skips through the first space [M 0x1d5de0].
 pub fn strip_hint(s: &str) -> &str { s.split_once(' ').map_or(s, |(_, rest)| rest) }
 
@@ -127,5 +143,20 @@ mod tests {
         assert_eq!(general_pool().len(), 43);
         assert_eq!((0..14).map(|s| dots_lit(s * 11)).collect::<Vec<_>>(), [0, 1, 2, 3, 4, 5, 6, 5, 4, 3, 2, 1, 0, 1]);
         assert_eq!(strip_hint("HINT If you"), "If you");
+    }
+
+    /// Playtest 1016: "loading hints run 10000 mph" — the port re-picked every redraw. One pick per load:
+    /// the same level keeps its hint across redraws whatever the random source says; a reset re-picks.
+    #[test]
+    fn the_loading_hint_is_picked_once_per_load() {
+        let mut pick = HintPick::default();
+        let mut n = 0u32;
+        let first = pick.get(0x0700_000c, || { n += 7; n });
+        for _ in 0..50 { assert_eq!(pick.get(0x0700_000c, || { n += 7; n }), first, "the hint changed mid-load"); }
+        // Sister: the random source really varies the pick (the pin can fail) — over many fresh loads more
+        // than one hint shows up.
+        let mut seen = std::collections::HashSet::new();
+        for k in 0..40u32 { pick.reset(); let mut m = k * 2654435761; seen.insert(pick.get(0x0700_000c, || { m = m.wrapping_mul(1103515245).wrapping_add(12345); m >> 8 })); }
+        assert!(seen.len() > 1, "the pick never varied across loads");
     }
 }
