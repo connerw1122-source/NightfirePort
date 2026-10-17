@@ -9625,6 +9625,10 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
     }
 
     fn tick_inner(&mut self, d: &Data, player: &Player) {
+        // The breakable drone-contact arm (`Break_Update` 0x12bfd8:23-34): snapshot the drones'
+        // positions; at the tick's tail every mover tests its squared step against the level's
+        // glass (only on GameState+0x12 == 0x0700001, only kind 2 — crate::breakable).
+        let drone_from: Vec<V3> = self.list.iter().map(|d| d.pos).collect();
         let _prof_all = crate::prof::scope("drones.tick (total)");
         let prof_pre = crate::prof::scope("drones: shared passes");
         self.frame += 1;
@@ -11617,6 +11621,16 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         // mission's pulses are this tick's EventList) [M]. The audio layer feeds `iop_section`.
         self.prev_event2 = self.music.events[2];
         self.music.update(self.iop_section);
+        // The drone-contact pass ([M Break_Update 0x12bfd8:23-34]: class-2 contacts damage kind-2
+        // breakables by the squared step × 20, on 07000001 only). The kills join the view queue.
+        let level_01 = d.level == 0x0700_0001;
+        for (dr, from) in self.list.iter().zip(drone_from) {
+            if !dr.present || dr.corpse { continue; }
+            let kills = self.breaks.drone_step(from, dr.pos, level_01);
+            if !kills.is_empty() {
+                self.break_kills.extend(kills.into_iter().map(|k| (k.placement, k.kind, k.sound)));
+            }
+        }
     }
 }
 

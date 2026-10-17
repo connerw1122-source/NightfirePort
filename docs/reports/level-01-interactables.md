@@ -31,7 +31,8 @@ from the disc (`nf-extract placements 07000001.bin` per kind [D]) with the creat
   sound 0x2E, else debris + 0x5F3 — the 41 % 0x5F2 variant is `// [S] unverified`, kept out of
   pass/fail because it needs the game's Rand draw-order context; no channel is ever written).
   The level-01 drone-smashes-glass arm (`Vec_SqDist3D · 20` [M 0x12bfd8:23-34]) is implemented and
-  unit-tested but **not yet wired into the drone move** (the API is `Breaks::drone_step`).
+  the guards-smash-glass arm runs from `tick_inner`'s tail (a position snapshot → per-mover
+  `drone_step`).
   Wired into `Drones::update_player_bullets` next to the props pass; kills queue as
   `Drones::break_kills` for the view's shatter/sound presentation.
 - **Rotor (0x71, 2 fans)** — new `Rotor` in worldobj.rs [M rotor_init 0x18f4b8, rotor_update
@@ -90,8 +91,10 @@ needs a `cargo run -p nf-view` session and belongs to the main agent's render pa
 3. **Lightning (0x2C, 11) / the sky tick** — the creator is unported (the sky.rs per-slot machine
    exists but is only driven by headless tests); wiring `Sky::tick_group` into the live Sim is the
    remaining piece.
-4. **`Breaks::drone_step` wiring** — the guards-smash-glass arm needs the per-drone move hook in
-   `Drones::tick`.
+4. ~~`Breaks::drone_step` wiring~~ — done after the first push: `tick_inner` snapshots the drone
+   positions and at the tick's tail runs the per-mover glass test (`drone_step`, kills join
+   `break_kills`) [M Break_Update 0x12bfd8:23-34]; nf-game lib 267 ✓, interact 10/10 ✓, the two
+   walk tests (incl. the bit-exact walkreal) ✓ after the change.
 5. **The escort route and its doors** — the walk tests cover the route green (walkreal is
    bit-exact); no new door defect surfaced this pass. The 0xDB secretdoor pair (#224/#225, group
    10, keep-open) is ported but has no dedicated live test yet (one placement test per KIND was

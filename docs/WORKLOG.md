@@ -17914,3 +17914,7 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   door_portal_live, pickups_g029_live, music_triggers_live all green. G-050 (the black door is
   0xDB #14) is render-side, untouched — main-agent render needed. RB 0xD8 dynamics and the
   0x2C lightning creator remain unported (documented in the census).
+- level-01-interactables (follow-up, same session): wired the guards-smash-glass arm — tick_inner
+  snapshots the drone positions and at the tail runs Breaks::drone_step per mover (kills join
+  break_kills for the view). nf-game lib 267 ✓, interact_07000001_live 10/10 ✓, walk_07000001_live
+  + walkreal (bit-exact) ✓ after the change.
