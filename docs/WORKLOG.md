@@ -17719,3 +17719,12 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+
+## unproven-tests-menus (2026-10-17, branch s/unproven-tests-menus) — started 05:40 UTC
+
+Task 754: settle the front end's unproven assertions (16 rows across menus_flow, menu_movies,
+menu_sp_e2e, menus_mouse_parity, menus_e2e_mp, mp_menu_flow, mp_debriefing_flow, front_end_chain_live,
+unlock_popups, pause_results_flows_live, menu_audio_flows). For each row: find the evidence
+(decompile address [M], disc bytes [D], or a fresh-boot PCSX2 note) and tag it, or mark
+// [S] unverified and take it out of pass/fail; fix tests that contradict the decompile.
+In progress.
