@@ -7975,14 +7975,21 @@ impl Drones {
 
     /// Loads the level's trigger objects and gives each drone its placement index (matched by position among the
     /// main map's drone placements), which orders the per-frame object updates.
-    pub fn attach_level(&mut self, level: &nf_formats::level::Level) {
+    pub fn attach_level(&mut self, level: &nf_formats::level::Level, level_hash: u32) {
         self.triggers = crate::triggers::build(level);
         // The AI points (`Drone_AIPoint` 0x137550; `parsemap_create_dynamic_objects` case 0xE9): type =
         // placement parameter 0 (the same word `Switch_Create` reads as the channel), position = the
         // placement translation, yaw = rotation y (AIPoint+0x44, the panel facing [M-dis 0x1530c8]),
         // radius = placement param 1's raw word as int→float (AIPoint+0x14 [M-dis 0x1375d4-88]), param =
         // placement param 2 (AIPoint+0xC, the cel-match word in `ClosestAIPoint` 0x151b18:153).
-        self.ai_points = level.maps.iter().flat_map(|map| map.placements.iter())
+        // level-04-interactables: the game creates the dynamic objects from ONE map block per
+        // archive — `parsemap_parsemap` 0x1d1cf0 defers them to its state-2 epilogue, which processes
+        // `DynamicPtr` = the LAST block-0x1a (`parsemap_handle_block_id` 0x1d1020 case 0x1a), and the
+        // type-1 main map is the last map-type entry of all 35 level archives [D bin-list] — so the
+        // template maps (every castle archive shares one: map 1's "Placement - Switch", map 7's
+        // "AI_Point", all parked at the origin) are NEVER created. The old cross-map sweep spawned a
+        // phantom AI point at (0,0,0) on every castle level.
+        self.ai_points = level.maps[level.main_map().unwrap_or(0)].placements.iter()
             .filter(|p| p.flags & 0xff == 0xe9)
             .map(|p| AiPoint {
                 kind: p.params.iter().find(|(j, _)| *j == 0).map_or(0, |&(_, v)| v as u16),
@@ -7994,7 +8001,9 @@ impl Drones {
         // Stamp the AI points and the switch list onto every drone (the states read them off `self`;
         // the game reads the global `AIPoints` array 0x28ee10 and walks the SwitchList 0x2bf0f8).
         let points: Vec<(u16, V3, f32)> = self.ai_points.iter().map(|p| (p.kind, p.pos, p.yaw)).collect();
-        let switches: Vec<(V3, u8)> = level.maps.iter().flat_map(|map| map.placements.iter())
+        // Same parsemap-epilogue rule: the main map's 0x29 placements only (the template maps'
+        // "Placement - Switch"/"alarmswitchplayer" pair at the origin never exists in game).
+        let switches: Vec<(V3, u8)> = level.maps[level.main_map().unwrap_or(0)].placements.iter()
             .filter(|p| p.flags & 0xff == 0x29)
             .map(|p| (p.translation, p.params.iter().find(|(j, _)| *j == 0).map_or(0, |&(_, v)| v) as u8))
             .collect();
@@ -8154,7 +8163,7 @@ impl Drones {
         }
         // The presentation FX (0x21/0xe3/0xd4/0x4a/0xf2 placements, fix-world-fx): the same
         // placement-order walk `parsemap_create_dynamic_objects` 0x1d04f0 runs.
-        self.fx = crate::world_fx::WorldFx::attach_level(level);
+        self.fx = crate::world_fx::WorldFx::attach_level(level, level_hash);
         // The SpaceMissiles (0700001b): the kind-0x39 placements, the same placement walk
         // `parsemap_create_dynamic_objects` 0x1d04f0 runs for the dynamic creators [M 0x1d1b68].
         self.space_missiles.clear();
