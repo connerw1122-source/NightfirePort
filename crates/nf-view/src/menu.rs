@@ -5997,8 +5997,11 @@ impl FrontEnd {
         }).collect();
         // The bots' columns: a free-for-all fills the blue column only (the 0x4c's arm — the
         // `if (+0x420 & 0x20000000) == 0` jump straight to 0x10000233); a team game splits by
-        // the bot's team byte [M :337-352].
-        let bots: Vec<bool> = self.mp_bots.iter().map(|b| b.enabled && (!team_game || b.team_mi6)).collect();
+        // the bot's team byte [M :337-352]. Only ENABLED bots show.
+        let (bots_blue_n, bots_red_n) = self.mp_bots.iter().fold((0u32, 0u32), |(bl, rd), b| {
+            if !b.enabled { return (bl, rd); }
+            if !team_game || b.team_mi6 { (bl + 1, rd) } else { (bl, rd + 1) }
+        });
         let weapon_label = MP_CONFIRM_WEAPON_LABELS[self.mp_weapon_set.min(10) as usize];
         let time_row = if self.mp_time_limit != -1 {
             if self.mp_scenario == 0x10 { format!("{}: {}", bind(0x3d7), self.mp_time_limit) }
@@ -6019,8 +6022,8 @@ impl FrontEnd {
             team_game,
             header_label: if team_game { 0x1c8 } else { 0x295 },
             humans,
-            bots_blue: bots.iter().filter(|&&b| b).count() as u32,
-            bots_red: bots.iter().filter(|&&b| !b).count() as u32,
+            bots_blue: bots_blue_n,
+            bots_red: bots_red_n,
             rows: MpConfirmRows {
                 map_label: 0x3d4, map_name_label: map_name,
                 scenario_label: 0x3d5, scenario_name_label: scenario_name,
