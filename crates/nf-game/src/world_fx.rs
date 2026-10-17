@@ -418,10 +418,15 @@ impl WorldFx {
                         speed = def.speed_base + def.speed_var * jitter(e.counter, 3);
                         life = def.life_base + def.life_var * jitter(e.counter, 4);
                     }
-                    // The spherical direction: sin(pitch+π/2)=cos(pitch), sin(yaw+π/2)=cos(yaw) —
-                    // PS2Sinf2 0x11f968 returns TWO sines; the RotMatrixX caller proves the idiom.
-                    let (cp, sp, cy, sy) = ((pitch + std::f32::consts::FRAC_PI_2).sin(), pitch.sin(), (yaw + std::f32::consts::FRAC_PI_2).sin(), yaw.sin());
-                    let dir = [cp * cy * speed, sp * speed, cp * sy * speed];
+                    // G-046: the game's cone is two PS2Sinf2 pairs [M Emitter_Update 0x17b080, disasm
+                    // 0x17b504-0x17b53c]: PS2Sinf2(pitch + 1.5707964, pitch) → (cos p, sin p) and
+                    // PS2Sinf2(yaw + 1.5707964, yaw) → (cos t, sin t); the stored dir vector is
+                    // (sin p·cos t, cos p, sin p·sin t) — polar p from +Y, azimuth t from +X about +Y
+                    // — then Vec_MulR32(speed). The port's old form (elevation p, azimuth from +Z)
+                    // pointed the cone differently.
+                    let (cp, sp) = (crate::trig::cosf(pitch), crate::trig::sinf(pitch));
+                    let (ct, st) = (crate::trig::cosf(yaw), crate::trig::sinf(yaw));
+                    let dir = [sp * ct * speed, cp * speed, sp * st * speed];
                     // The object basis (obj+0x90): the impact emitters carry the Mat_SetDir/
                     // SetNorm/SetUp rows built from the hit normal; the placements the euler matrix.
                     let m = e.basis.unwrap_or_else(|| nf_formats::placement::object_matrix(e.rotation, [0.0; 3]));

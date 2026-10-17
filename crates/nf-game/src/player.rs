@@ -439,7 +439,7 @@ impl Bond {
     pub fn sphere_centre(&self) -> V3 {
         // [L] M_CONTROL+0x80 (ee_start_05.bin, player 0 standing).
         const LOCAL: V3 = [-0.1347, -0.1267, 0.2402];
-        let (s, c) = self.yaw.sin_cos();
+        let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw)); // G-046: the matrix rows are PS2Sinf-built [M 0x133070]
         // The object matrix rows [cos,0,−sin / 0,1,0 / sin,0,cos] (+ translation = pos), as read live
         // [L 0x16cefe0+0x90..0xc8] and matching `Bond::look`'s convention.
         [self.pos[0] + LOCAL[0] * c + LOCAL[2] * s, self.pos[1] + LOCAL[1], self.pos[2] - LOCAL[0] * s + LOCAL[2] * c]
@@ -452,8 +452,13 @@ impl Bond {
         if self.zero_g_active {
             return self.zero_g_rot[2];
         }
-        let p = self.pitch * std::f32::consts::FRAC_PI_2;
-        [p.cos() * self.yaw.sin(), p.sin(), p.cos() * self.yaw.cos()]
+        // G-046: the game's dir is RotMatrixX(view pitch) · Mat_GetDir — PS2Sinf2 lanes, EE products
+        // [M RotMatrixX 0x1e46a0:16-24; the pitch arg `BL+0x8a8·π/2` a mul.s].
+        let p = nf_formats::ps2float::mul(self.pitch, crate::trig::HALF_PI);
+        let (sp, cp) = (crate::trig::sinf(p), crate::trig::cosf(p));
+        let (sy, cy) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw));
+        let mul = nf_formats::ps2float::mul;
+        [mul(cp, sy), sp, mul(cp, cy)]
     }
 
     /// The capsule ends (top A, bottom B) for the current stance, off the dynamic root height `cc`
@@ -617,9 +622,13 @@ impl Bond {
             self.climb_bottom = bottom;
             self.pos[1] = self.pos[1].max(bottom + 0.02);
             if !(bottom < self.pos[1] && self.pos[1] < top) { continue; }
-            let (s, c) = lad.yaw.sin_cos();
-            self.pos[0] = lad.centre[0] + s * 0.5;
-            self.pos[2] = lad.centre[2] + c * 0.5;
+            // G-046: Player_CollLadder 0x196118:31-38 [M]: a = lad.yaw + 3.1415927 (add.s); x = centre −
+            // PS2Sinf(a)·0.5, z = centre − PS2Sinf(a + 1.5707964)·0.5 (EE mul.s/sub.s) — the game's own
+            // sine arguments, not sin/cos of the raw yaw.
+            let a = crate::trig::ee_add(lad.yaw, crate::trig::PI);
+            let mul = nf_formats::ps2float::mul;
+            self.pos[0] = crate::trig::ee_sub(lad.centre[0], mul(crate::trig::sinf(a), 0.5));
+            self.pos[2] = crate::trig::ee_sub(lad.centre[2], mul(crate::trig::sinf(crate::trig::ee_add(a, crate::trig::HALF_PI)), 0.5));
             self.vel[0] = 0.0;
             self.vel[2] = 0.0;
             self.mode = 1;
@@ -869,10 +878,17 @@ impl Bond {
     /// `±0.0542·(cos yaw, −sin yaw)` [M the PS2Sinf2(−yaw+π/2, −yaw) pairs; the per-add signs follow
     /// the decompile's tree]) and sets `oldhash`/time/rate.
     fn wire_anim_add(&mut self, hash: u32, rate: f32, sway_sign: f32, closest: V3, hang: f32) {
-        let (sin, cos) = self.yaw.sin_cos();
-        self.pos[0] = closest[0] + sway_sign * 0.0542 * cos;
+        // G-046: the sway's two sines are the game's own lanes — PS2Sinf2(−yaw + 1.5707964, −yaw) [M
+        // Player_Wire 0x197658:194-204, Player_CollWire 0x197130:228] — then `pos −= lane·(−sway_sign·0.0542)`
+        // (EE mul.s/sub.s; the per-add immediate ±0.0542 follows the decompile's tree).
+        let ny = -self.yaw;
+        let lane1 = crate::trig::sinf(crate::trig::ee_add(ny, crate::trig::HALF_PI));
+        let lane2 = crate::trig::sinf(ny);
+        let mul = nf_formats::ps2float::mul;
+        let c = -sway_sign * 0.0542;
+        self.pos[0] = crate::trig::ee_sub(closest[0], mul(lane1, c));
         self.pos[1] = closest[1] - hang;
-        self.pos[2] = closest[2] - sway_sign * 0.0542 * sin;
+        self.pos[2] = crate::trig::ee_sub(closest[2], mul(lane2, c));
         self.wire_anim = hash;
         self.wire_anim_time = 1.0;
         self.wire_anim_rate = rate;
@@ -1023,11 +1039,16 @@ impl Bond {
     fn creep_tick(&mut self, world: &CollisionWorld, ctx: &LadderCtx, input: &Input) {
         let Some(wi) = self.creep else { self.substate = SS_WALK; return };
         let Some(w) = ctx.creepwalls.get(wi) else { self.substate = SS_WALK; self.creep = None; return };
-        let crawl_yaw = w.yaw + std::f32::consts::PI;
+        let crawl_yaw = crate::trig::ee_add(w.yaw, crate::trig::PI); // [M 0x1969d0:118 add.s, stored to obj+0x54]
         self.yaw = crawl_yaw;
         let closest = w.closest_point(self.pos);
-        let (s, c) = crawl_yaw.sin_cos();
-        self.pos = [closest[0] + s * 0.275, self.pos[1], closest[2] + c * 0.275];
+        // G-046: pos = closest + PS2Sinf(yaw)·0.275 / PS2Sinf(yaw + 1.5707964)·0.275 [M 0x1969d0:120-125].
+        let mul = nf_formats::ps2float::mul;
+        self.pos = [
+            crate::trig::ee_add(closest[0], mul(crate::trig::sinf(crawl_yaw), 0.275)),
+            self.pos[1],
+            crate::trig::ee_add(closest[2], mul(crate::trig::sinf(crate::trig::ee_add(crawl_yaw, crate::trig::HALF_PI)), 0.275)),
+        ];
         // The ends: A = pos + fwd(yaw+π/2)·len, B = pos − fwd(yaw+π/2)·len [M 0x1969d0:91-105].
         let (a, b) = w.endpoints();
         let d2 = |p: V3, q: V3| (p[0] - q[0]) * (p[0] - q[0]) + (p[2] - q[2]) * (p[2] - q[2]);
@@ -1328,7 +1349,7 @@ impl Bond {
         } else {
         self.yaw += turn;
         self.pitch = (self.pitch + input.look).clamp(-1.0, 1.0);
-        let (s, c) = (self.yaw.sin(), self.yaw.cos());
+        let (s, c) = (crate::trig::sinf(self.yaw), crate::trig::cosf(self.yaw)); // G-046: View_RotTransMatrix 0x1e5168:33-36 / RotMatrixX 0x1e46a0 PS2Sinf2 lanes [M]
         if swimming {
             // `Player_Move` 0x191dd0:149-165 [M]: in swim the forward speed rides the LOOK direction
             // (`RotMatrixX(obj+0x50 − BL+0x8a8·π/2)` + `Mat_GetDir`, obj+0x50 zeroed on entry — the

@@ -282,8 +282,9 @@ fn the_unported_start_states_behave_like_the_game() {
         let sim = scene.sim.as_mut().unwrap();
         assert!(free(sim, 1800), "Bond is free");
         let ninja = sim.drones.list.iter().find(|d| d.present && d.dtype == 0xf).expect("the assassin exists [D]");
-        assert!(matches!(ninja.state,
-                kiko_states::NINJA_ATTACK | kiko_states::NINJA_LONG_RANGE | kiko_states::NINJA_MID_RANGE | kiko_states::NINJA_SHORT_RANGE | kiko_states::NINJA_STAND_FIRE),
+        // ninja-melee: the full melee chain is ported — the fight may sit in any of its states
+        // (kiko.rs documents the addresses; the set is the StateFuncs table [L 0x29b300]).
+        assert!(kiko_states::NINJA_FIGHT_STATES.contains(&ninja.state),
             "the assassin runs the ninja chain [M 0x16bb50], state {:#x}", ninja.state);
         assert!((ninja.alert - 1.0).abs() < 1e-4, "NinjaAttack sets alert 1.0 [M 0x16bb50]");
     }

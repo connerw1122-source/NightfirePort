@@ -280,8 +280,19 @@ pub struct GameFlow {
     /// Set while a fade (state 8/0xe) is in flight; the game waits on the fade camera's flag
     /// DAT_002d88c8+0x235 [M 0x1c98c8 cases 8/0xe]. Headless port: a frame countdown.
     pub fade_frames: u32,
+    /// The fade camera's busy pair DAT_002d88c8+0x234/+0x235 [M 0x1bbdd8's guard]: a 7/0xd push
+    /// runs `Camera_SetFade(6, duration, 1)` first and is ABORTED while a fade is already in
+    /// flight [M 0x1c9f88/0x1c9fa8 `beqz $v0` → return with no push]. The flag's lifecycle is
+    /// UpdateGlbVars' 1 running → 2 finished → 0 idle [M 0x1bada0:31-47]; the port sets it when a
+    /// 7/0xd push converts and clears it when the hold pops.
+    pub fade_active: bool,
     /// The state-0xc frame wait [M 0x1c9f38 stores the arg at DAT_002d88c8+0x22c; 0x1c98c8 case 0xc counts down].
     pub wait_frames: u32,
+    /// SkipCodeFrame [M 0x1c98c8 case 0xe + LAB_001c9e28]: state 0xe sets it while its fade-in is
+    /// running and the Main tail skips `Game_Run` for that frame — the sim freezes under a
+    /// fade-in (SP_Update 0x1dbfd8 pushes 20.0f/0xd after a stream-zone load). Per-frame like the
+    /// game's: every main_tick recomputes it.
+    pub skip_code: bool,
     /// The state-6 movie countdown (the port can't decode the zeroed PSS files; headless model).
     pub movie_frames: u32,
     /// `BGFMVPlaying` [L 0x30c69c]: the host sets this while a real movie decodes; state 6 holds
@@ -310,15 +321,36 @@ impl GameFlow {
     /// [M 0x1c9e80]
     pub fn get_state(&self) -> u8 { *self.stack.last().unwrap_or(&0) }
 
-    /// [M 0x1c9f38] — 7 becomes 8 (a fade hold), 0xb becomes 0xc (a frame wait).
-    pub fn push_state(&mut self, s: u8) {
-        self.skip_draw = Self::draw_skip_for(s);
-        self.stack.push(match s {
-            7 => { self.fade_frames = 8; ST_FADE_HOLD }
-            0xb => { self.wait_frames = 8; ST_WAIT }
-            0xd => { self.fade_frames = 8; ST_FADE_IN }
+    /// The game's `GameFlow_PushState(float duration, uint state, uint colour)` [M 0x1c9f38 — the
+    /// decomp's arg mapping is scrambled; the disasm at the Mission_Update site 0x183054-60 shows
+    /// the real ABI: f12 = the duration (60.0f), a0 = the state (7), a1 = the fade colour].
+    /// 7/0xd become 8/0xe and run `Camera_SetFade(6, duration, 1)` first — the push is ABORTED
+    /// while a fade is already in flight [M 0x1c9f88/0x1c9fa8 `beqz $v0` → return, no push;
+    /// SetFade 0x1bbdd8 refuses when its +0x234/+0x235 pair is up]. 0xb becomes 0xc with the
+    /// duration stored straight into the fade object's +0x22c counter — no fade, no abort
+    /// [M 0x1c9fbc `swc1 $f12, 0x22c($v1)`]. Callers push 60.0 (Mission_Update 0x183054,
+    /// MP_Update 0x184ea8), 84.0 (the menu handlers' 0x42a00000 — C_GCPAUSE 0x205cec,
+    /// C_SBNFMAP 0x20ba50, P_MPCONFIRM, P_ENDMISSION, C_MPDBG, P_NFMAP; Menu_RunMiniMission),
+    /// 30.0/300.0 (the trigger movies 0x1b1a78/0x1b24dc) and 20.0 (SP_Update 0x1dbfd8).
+    pub fn push_state(&mut self, s: u8, frames: u32) {
+        let pushed = match s {
+            7 => {
+                if self.fade_active { return; }   // [M 0x1c9f88: SetFade returned 0 — no push]
+                self.fade_frames = frames;
+                self.fade_active = true;
+                ST_FADE_HOLD
+            }
+            0xd => {
+                if self.fade_active { return; }   // [M 0x1c9fa8]
+                self.fade_frames = frames;
+                self.fade_active = true;
+                ST_FADE_IN
+            }
+            0xb => { self.wait_frames = frames; ST_WAIT }
             other => other,
-        });
+        };
+        self.skip_draw = Self::draw_skip_for(pushed);
+        self.stack.push(pushed);
     }
 
     /// [M 0x1c9eb0]
@@ -336,12 +368,13 @@ impl GameFlow {
     /// through [`GameFlow::load_tick`] (headless tests finish loads instantly).
     pub fn main_tick(&mut self) {
         self.ticks = self.ticks.wrapping_add(1);
+        self.skip_code = false;   // SkipCodeFrame is per-frame [M 0x1c98c8 LAB_001c9e28]
         match self.get_state() {
             // Boot: Mem_Init, bootup (pushes 2), Boot_LoadPTPData, Reset_MapLoadSettings → the boot
             // load of the front-end map [M case 1 + 0x1d6958].
-            ST_BOOT => { self.push_state(ST_RUNNER); self.reset_map_level_to_load(self.level_to_load, false, false); }
+            ST_BOOT => { self.push_state(ST_RUNNER, 0); self.reset_map_level_to_load(self.level_to_load, false, false); }
             // Runner: when a load was requested (GameState+0x18 [M case 2]), push the loader.
-            ST_RUNNER if self.load_pending != 0 => { self.load_pending = 0; self.push_state(ST_MAPLOAD); }
+            ST_RUNNER if self.load_pending != 0 => { self.load_pending = 0; self.push_state(ST_MAPLOAD, 0); }
             // Movie: pops when the movie finishes or the skip action fires [M case 6,
             // Input_Action(-1, 0x19, 1)]. With a real movie playing (BGFMVPlaying != 0) the state
             // holds — psiMovieFinished is BGFMVPlaying == 0 [M 0x1082e8], and the host clears
@@ -353,8 +386,23 @@ impl GameFlow {
                 self.movie_frames = self.movie_frames.saturating_sub(1);
                 if self.movie_frames == 0 { self.pop_state(); }
             }
-            // Fade holds pop when the fade finishes [M cases 8/0xe; headless countdown].
-            ST_FADE_HOLD | ST_FADE_IN => { if self.fade_frames > 0 { self.fade_frames -= 1; } else { self.pop_state(); } }
+            // Fade holds pop when the fade finishes [M cases 8/0xe — the fade camera's +0x235
+            // leaves 1 through UpdateGlbVars' 1→2→0 lifecycle 0x1bada0:31-47; headless countdown,
+            // with the pop one tick after the countdown like the game's finished frame]. The pop
+            // frees the fade slot so a later 7/0xd push can start again [M 0x1bbdd8's guard].
+            ST_FADE_HOLD => {
+                if self.fade_frames > 0 { self.fade_frames -= 1; }
+                else { self.fade_active = false; self.pop_state(); }
+            }
+            // 0xe also freezes the sim: SkipCodeFrame = 1 while the fade runs and the Main tail
+            // skips Game_Run for that frame [M case 0xe: `Camera_UpdateAll; SkipCodeFrame = 1`].
+            ST_FADE_IN => {
+                if self.fade_frames > 0 {
+                    self.fade_frames -= 1;
+                    self.skip_code = true;
+                }
+                else { self.fade_active = false; self.pop_state(); }
+            }
             ST_WAIT => { if self.wait_frames > 0 { self.wait_frames -= 1; } else { self.pop_state(); } }
             _ => {}
         }
@@ -393,13 +441,13 @@ impl GameFlow {
         // still carries the 0x71/0x73 prefix"]. The driving codes 0x09xxxxxx load directly.
         if matches!((level >> 20) & 0xff, 0x71 | 0x73) {
             self.movie_code = level;
-            self.push_state(ST_MOVIE);
+            self.push_state(ST_MOVIE, 0);
             return false;
         }
         self.current_level = level;      // [M phase 2: GameState+0xc]
         // Phase 3 done: pop 3, push 4 (Locks_Init pops itself) [M 0x1d6360 tail].
         self.pop_state();
-        self.push_state(ST_LOCKS);
+        self.push_state(ST_LOCKS, 0);
         self.pop_state();
         true
     }
@@ -418,7 +466,7 @@ impl GameFlow {
         // The driving branch comes FIRST — the game's 0x71 wrap switch is inside the on-foot arm
         // only [M 0x1d3800:104-108: PushState(9) + GameState+8 = the hash, nothing else].
         if nf_game::ptp::is_driving_level(level) {
-            self.push_state(ST_LAUNCH_DRIVING);
+            self.push_state(ST_LAUNCH_DRIVING, 0);
             self.level_to_load = level;   // GameState+8 [M :108]
             return;
         }
@@ -438,7 +486,7 @@ impl GameFlow {
         // (code >> 20) & 0xff byte — 0x07300004 >> 20 = 0x73 — the same test load_tick phase 0
         // makes.)
         self.movie_pending = matches!((code >> 20) & 0xff, 0x71 | 0x73);
-        self.push_state(ST_MAPLOAD);
+        self.push_state(ST_MAPLOAD, 0);
     }
 
     /// GameFlow_Main case 6's skip arm: the skip action (0x19, newly pressed) ends the movie
@@ -453,7 +501,7 @@ impl GameFlow {
     /// front-end intro run no longer uses this — P_INTRO/P_ESTHERO play menu background movies with
     /// GameFlow in its runner state [M 0x209e88:62-63, 0x20a060:24-25]; see `FrontEnd::intro_tick`.
     pub fn play_movie(&mut self, frames: u32) {
-        self.push_state(ST_MOVIE);
+        self.push_state(ST_MOVIE, 0);
         self.movie_frames = frames;
     }
 }
@@ -1608,6 +1656,11 @@ impl Default for CardFlow {
 }
 
 /// The front end: which page is up, the cursor, and the flow machine it drives.
+/// Playtest convenience (the user, 2026-10-16: "unlock all the levels"): the window sets this at start
+/// (on by default, `--locked` keeps the game's progression) and every `FrontEnd` it creates — the boot,
+/// the pause, the quit, the MP debriefing — opens every mission. Tests never set it [S port choice].
+pub static UNLOCK_ALL: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub struct FrontEnd {
     pub flow: GameFlow,
     pub page: Page,
@@ -2030,7 +2083,7 @@ impl FrontEnd {
         // post-unlock session and read 1 everywhere].
         unlocked[0] = true;
         unlocked[1] = true;
-        let mut fe = FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, requested_difficulty: None, confirming_quit: false, confirming_default_profile: false, unlock_all: false, unlocked, closed: false, intro_playing: false, intro_index: 0, intro_list: &INTRO_MOVIES, intro_end: Page::Start, intro_ticks: 0,
+        let mut fe = FrontEnd { flow, page, cursor: 0, mission: 0, difficulty: 0, no_input_frames: 0, press_start_on: true, outcome: Outcome::Failed, stats: Stats::default(), requested_level: None, requested_difficulty: None, confirming_quit: false, confirming_default_profile: false, unlock_all: UNLOCK_ALL.load(std::sync::atomic::Ordering::Relaxed), unlocked, closed: false, intro_playing: false, intro_index: 0, intro_list: &INTRO_MOVIES, intro_end: Page::Start, intro_ticks: 0,
             backdrop_live: false,
             // fix-pause-menu: the pause page's own state (each on its line [WORKLOG lesson 4]).
             confirming_restart: false,
@@ -3189,8 +3242,9 @@ impl FrontEnd {
         let end_to = outro_for(self.flow.current_level);
         self.requested_level = Some(end_to);
         self.flow.reset_map_level_to_load(end_to, false, false);
-        // The game's order [M 0x182c60:73-74]: the load first, THEN the fade push on top.
-        self.flow.push_state(ST_FADE_HOLD);
+        // The game's order [M 0x182c60:73-74]: the load first, THEN the fade push on top —
+        // `GameFlow_PushState(60.0, 7, ...)` [M disasm 0x183054-60: f12 = 0x42700000 = 60.0f, a0 = 7].
+        self.flow.push_state(7, 60);
         self.enter_page(Page::Results);
         self.cursor = 0;
     }
@@ -4504,7 +4558,7 @@ impl FrontEnd {
                     // Locked rows can't be chosen [M C_SBNFMAP 0x20b8d8:21-23 `if
                     // (!menu_unlock_everything && !sp_level[i*0x18+0x10]) return`]. Starting:
                     // GameState+8 = sp_level[i]+0xc, then the split [M :29-40] — an on-foot hash
-                    // runs ResetMap_LevelToLoad + the 60-frame fade push (0x42a00000 = 60.0f) and
+                    // runs ResetMap_LevelToLoad + the 84-frame fade push (0x42a00000 = 84.0f) and
                     // deletes the menu manager; a DRIVING hash only sets level_chosen (P_NFMAP
                     // 0x20b608 walks the iris first — the port runs it at once) and lands in
                     // GameFlow state 9, the DRIVING.ELF handover the port does not model: the flow
@@ -4535,6 +4589,10 @@ impl FrontEnd {
                             nf_game::ptp::driving_index(level)
                         );
                     } else {
+                        // C_SBNFMAP pushes the 84-frame fade AFTER the load request (disasm
+                        // 0x20ba50-5c: f12 = 0x42a00000 = 84.0f, a0 = 7) — the loader sits under
+                        // the fade hold and runs when it pops [M 0x1c98c8: state 3 is below 8].
+                        self.flow.push_state(7, 84);
                         self.requested_level = Some(level);
                         // The game DELETES the menu manager at the pick (C_SBNFMAP case 0x4b's
                         // load hand-over [M 0x20b8d8]), so the pair dies here — the port's manager
@@ -4654,6 +4712,9 @@ impl FrontEnd {
                                 let level = CAMPAIGN[self.mission].3;
                                 self.requested_level = Some(level);
                                 self.flow.reset_map_level_to_load(level, false, true);
+                                // The shared tail pushes the 84-frame fade for BOTH arms [M
+                                // 0x204408:151 — 0x42a00000 = 84.0f, disasm 0x205cec-f8].
+                                self.flow.push_state(7, 84);
                                 // The page closes and play resumes on the reloaded map (the menu manager is deleted
                                 // with the restart [M 0x204408:139-141]); leaving Page::Main up kept the main menu
                                 // over the reloaded level.
@@ -4666,6 +4727,8 @@ impl FrontEnd {
                             self.flow.page = PAGE_RESULTS_QUIT_TARGET;
                             self.requested_level = Some(FRONTEND_LEVEL);
                             self.flow.reset_map_level_to_load(FRONTEND_LEVEL, false, true);
+                            // The shared tail's 84-frame fade [M 0x204408:151].
+                            self.flow.push_state(7, 84);
                             // fe-audit: the front end reopens on +0x1c's page, the mission list —
                             // P_NFMAP's 0x4c [M 0x204408:141-152 sets 0x4000001c then
                             // MenuManager_Delete; 0x20b608:31-64]. The port's old Main was wrong.
@@ -4906,8 +4969,9 @@ impl FrontEnd {
                     Action::Confirm => {
                         match self.cursor.min(2) {
                             // Local: the game's own couch flow, from the top [M the pre-port
-                            // route C_GOMULTIPLAYER 0x216a78 → 0x40000019].
-                            0 => { self.page = Page::MpJoin; self.cursor = 0; return true; }
+                            // route C_GOMULTIPLAYER 0x216a78 → 0x40000019]. The page enter is
+                            // P_MPJOIN's 0x4c: fresh records every time.
+                            0 => { self.enter_mp_join(); return true; }
                             1 => { self.mp_net_state = MpNetState::Idle; self.mp_net_error = None; self.page = Page::MpHost; self.cursor = 0; return true; }
                             _ => { self.mp_net_state = MpNetState::Idle; self.mp_net_error = None; self.page = Page::MpNetJoin; self.cursor = 0; return true; }
                         }
@@ -5292,7 +5356,9 @@ impl FrontEnd {
                     // re-requests the arena and leaves `mp_match_settings` in place for the host.
                     self.requested_level = Some(self.mp_level);
                     self.flow.reset_map_level_to_load(self.mp_level, false, false);
-                    self.flow.push_state(ST_FADE_HOLD);
+                    // C_MPDBG 0x217860:15 pushes the 84-frame fade (0x42a00000 = 84.0f [M disasm
+                    // 0x217860's site]) after the load request, like every menu exit.
+                    self.flow.push_state(7, 84);
                     return true;
                 }
             }
@@ -5733,6 +5799,27 @@ impl FrontEnd {
         self.cursor = 0;
     }
 
+    /// The Join Game page's enter [M P_MPJOIN 0x20ca00's 0x4c — `memset(&mpjoin, 0, 0x40)`
+    /// runs on EVERY 0x4c (the gate reads DAT_002e1b09, just set to 2), then the per-agent
+    /// states at mp_stuff+0x360 zero and the defaults re-seat: the skins 0/1/2/3
+    /// (DAT_002dee70/80/90/a0) and the teams MI6/Phoenix/MI6/Phoenix (DAT_002dee6c/7c/8c/9c)].
+    /// A re-entered join page is always a FRESH join — the stale ready panel a back-out left
+    /// must not survive it (playtest 1015-2231's walk: back out of a half-done setup to Main,
+    /// forward again).
+    fn enter_mp_join(&mut self) {
+        self.mp_join = std::array::from_fn(|slot| MpJoinAgent {
+            state: 0,
+            joined: false,
+            ready: false,
+            team: if slot % 2 == 0 { 1 } else { 0 },
+            skin: slot as u32,
+            codename_row: 0,
+            codename: String::new(),
+        });
+        self.enter_page(Page::MpJoin);
+        self.cursor = 0;
+    }
+
     /// The confirm page's Confirm — P_MPCONFIRM 0x20ec00:53-94: `Menu_StoreMPSettings` (the port
     /// has no MP card — the backup/restore pair is the debriefing's own [S]); the joined players'
     /// records compact; `+0x1A0 != -1 → ×60` (minutes → seconds); `+0x1D4 &= 1`; `+0x180 = 1`;
@@ -5749,6 +5836,12 @@ impl FrontEnd {
         // the port keeps the pick in mp_setup_sel, so the row cursor is 0]. Without the reset
         // the map wheel's cursor rode in and the walk's cursor<rows() check tripped.
         self.cursor = 0;
+        // The enter clears EVERY agent's ready byte [M P_MPSETUP 0x20d7a8's 0x4c loop —
+        // `pcVar5[1] = '\0'` per slot over the 4 records]: a back-out (the hub's △ re-runs this
+        // enter) un-readies everyone and the picks must be walked again.
+        for slot in self.mp_join.iter_mut() {
+            slot.ready = false;
+        }
         if self.mp_scenario & 0x2000_0000 != 0 {
             self.mp_setup_state = 2;
             self.mp_setup_sel = self.mp_join[0].team as usize;
@@ -5806,7 +5899,8 @@ impl FrontEnd {
         self.menu_movie = false;
         self.remove_pair();
         self.flow.reset_map_level_to_load(self.mp_level, false, false);
-        self.flow.push_state(ST_FADE_HOLD);
+        // P_MPCONFIRM 0x20ec00 pushes 0x42a00000 = 84.0f [M its PushState site] after the load.
+        self.flow.push_state(7, 84);
         true
     }
 
@@ -6186,7 +6280,8 @@ impl FrontEnd {
         self.mp_match_settings = Some(s.clone());
         self.requested_level = Some(s.level_code);
         self.flow.reset_map_level_to_load(s.level_code, false, false);
-        self.flow.push_state(ST_FADE_HOLD);
+        // P_MPCONFIRM's 84-frame fade [M 0x20ec00's PushState site — 0x42a00000 = 84.0f].
+        self.flow.push_state(7, 84);
         self.mp_net_state = MpNetState::Idle;
         self.mp_hosting = false;
     }

@@ -81,6 +81,10 @@ pub struct Light {
 #[derive(Default, Clone, Debug)]
 pub struct LightList {
     pub lights: Vec<Light>,
+    /// The script lights (`Script_LightStart` 0x1db1b0 → `Light_Create`, keyed per frame by `Script_Interp`
+    /// case 6 [M 0x1d9a08:235-279]) — rebuilt from the scripts' light objects every tick, after `lights`
+    /// in the selection order. Their create's RNG draw is not replayed per tick (the list is a view).
+    pub script: Vec<Light>,
 }
 
 impl LightList {
@@ -187,7 +191,7 @@ impl LightList {
     /// 0x1cb2e0:41-44, store 0x1cb400] — carried separately in `ResolvedLight::track_pos`.
     pub fn resolve(&self, track_pos: &dyn Fn(u32) -> [f32; 3]) -> ResolvedLights {
         ResolvedLights {
-            lights: self.lights.iter().map(|l| {
+            lights: self.lights.iter().chain(self.script.iter()).map(|l| {
                 let live = if l.kind == 2 { track_pos(l.track.unwrap_or(u32::MAX)) } else { l.pos };
                 ResolvedLight {
                     pos: [l.pos[0], l.pos[1], l.pos[2], 1.0],
@@ -335,8 +339,10 @@ fn dot(a: [f32; 3], b: [f32; 3]) -> f32 { a[0] * b[0] + a[1] * b[1] + a[2] * b[2
 
 /// The muzzle smoke puff: `Gas_Init` 0x1aacc8 (the shot's `Rand_FRand(2π)` draw rides the shared
 /// RNG in the game's order) + `gases_smoke` 0x1ab2d0. The game's params for the shot: start scale
-/// 0.05, end scale 0.1, start ARGB 0x48/0x40/0x30/0x80, life 1 [M 0x1a4458 call]. The drift/growth
-/// model below is [S]: the exact `gases_smoke` velocity integration is not read.
+/// 0.05, end scale 0.1, start ARGB 0x48/0x40/0x30/0x80, packed END rgba 1 — bytes (0,0,0,1) [M
+/// 0x1a4298:100-102, 0x1a4440], the decomp-dropped stack life 0x80 = 128 ticks [M 0x1a43f8/0x1a442c,
+/// rocket-trail-gas]. The live spawn runs through `GasPool::init_ex` (scene.rs, the muzzle-flash
+/// tick); this struct is the older models-misc stand-in kept for the render slot type.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Smoke {
     pub pos: [f32; 3],
@@ -392,7 +398,13 @@ pub fn placement_light(level: &nf_formats::level::Level, map: usize, index: usiz
     if p.flags & 0xff != 0x4e || p.flags & 0xa000 != 0 { return; }
     let e = |k: usize| p.extra.get(k).copied().unwrap_or(0);
     let b = |k: usize| (e(k) & 0xff) as u8;
-    lights.create_full(f32::from_bits(e(2)), 1.0, p.translation,
+    // The game converts the radius as an UNSIGNED INT, not float bits: `parsemap_create_dynamic_objects`
+    // 0x1d0b8c `lw $v0, 44($s1)` → `mtc1` → `cvt.s.w $f12, $f12`, with the `bltz` arm
+    // (0x1d0bb4: `srl v1, v0, 1` / `or v0, v0 & 1, v1` / cvt / `add.s f12, f12, f12`) the standard
+    // uint→float expansion for values ≥ 2^31 — the compiler's `(float)(unsigned)placement->radius`
+    // [M 0x1d0b8c-0x1d0bd0]. The old `f32::from_bits` made every 0x4E radius ~1e-44, so `1/radius²`
+    // overflowed and the light could never contribute (atten = max(0, 1/d² − 1/r²) stayed 0).
+    lights.create_full(e(2) as f32, 1.0, p.translation,
         [b(3), b(4), b(5)], (e(6) & 0xffff) as u16, -1, 0,
         (e(7) & 0xffff) as u16, (e(8) & 0xffff) as u16, (e(9) & 0xffff) as u16, rng);
 }

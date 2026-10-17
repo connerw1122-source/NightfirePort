@@ -415,6 +415,75 @@ fn shot_sends_a_guard_through_the_noise_chain() {
     assert!(far.iter().all(|&(f, _)| f < 100), "sister: Bond far away {far:x?}");
 }
 
+/// The below-threshold investigation walk (drone-investigate). From Idle, one sound with share > 0.2 (sfx 1, weight 75,
+/// 14.7 units in front of the guard: share 0.27) returns HeardNoise, never Attack [M `DroneVision_AlertSound`
+/// 0x177800:73-78: from any state outside 9/0x12-0x16 the answer is 0xa2 unless share ≤ 0.2 && alert ≤ 0.66; the 0x56
+/// Attack return needs alert > 0.7 from inside the 9/0x12-0x16 block 0x177800:52-64]. While he does the Aware look
+/// (Bond behind-right at (108, 104) keeps him drawn, so the danim plays out), a louder sound (sfx 4 at 12.0 units,
+/// share 0.48 > 0.1) arrives and Aware escalates to Suspect [M `HeardNoiseAware` 0x16af20:67-75]. Suspect homes the
+/// goal onto the loudest sound (`SetSoundAlertRoute` 0x154aa8, radius 2.0), and — guard 9 has property 0x21, the
+/// walk prop, and +0x34 turned already set by the Aware look — goes straight to AlertToPosition [M 0x16b0e0:28-40].
+/// AlertToPosition walks the sound (anim 0xf, 300-tick timer) and on arrival SetStates +0x5a2 = SearchArea
+/// [M 0x165270:25-62]; SearchArea looks around for 180 ticks (tick + FRAME_RATE_INT·3 [M 0x165bf0:25]), then the
+/// done msg clears alertness and +0x5a2 = +0x5a0 (the resume state), and walks home to +0x5b0 through
+/// GoToGoalPosition, whose arrival SetStates +0x5a2 [M 0x165bf0:113-124, 0x165640]. `HandleSoundAlerts` 0x148a30
+/// re-pings a sound only after 60 ticks or when the peak rose, so the second sound must be the louder one.
+/// Sisters: a guard out of earshot (placement 8, 62 units from the sound) stays at his post; the WaitSwitch waiter
+/// 302 never moves either.
+#[test]
+fn two_sounds_send_the_idle_guard_to_investigate_and_back_to_his_post() {
+    use nf_game::drone::state;
+    let Some(l) = Level05::load() else { eprintln!("skip: NF_ISO not set"); return };
+    let d = l.data();
+    // [D the level's SFX hearing table on our disc: sfx 1 = inner 2, outer 30, weight 75]
+    assert_eq!(l.sfx.get(1), nf_formats::sfx::SfxHearing { id: 1, inner: 2.0, outer: 30.0, weight: 75.0, looped: false, cull: l.sfx.get(1).cull });
+    let (drones, gi, rng) = l.drones(None, 99.686);
+    let mut sim = l.sim(drones, rng);
+    let bond = bond_at([108.0, 16.775, 104.0]);
+    for _ in 0..100 { sim.tick(&d, &bond); }
+    // [S port engineering] setup precondition: the looks play out only while drawn
+    assert!(sim.list[gi].drawn, "Bond sees the guard over his shoulder, so the looks play out");
+    let home = sim.list[gi].pos;
+    sim.play_sound([79.7, 16.775, 101.6], l.sfx.get(1));   // share 0.27 at 14.7 units
+    for _ in 0..8 { sim.tick(&d, &bond); }
+    sim.play_sound([87.7, 16.775, 101.6], l.sfx.get(4));   // share 0.48 at 12.0 units — the louder origin
+    // The origin and the post, as the guard reaches each stage.
+    let (origin, mut left, mut there) = ([87.7f32, 16.775, 101.6], [0.0; 3], [0.0; 3]);
+    for _ in 0..1500 {
+        sim.tick(&d, &bond);
+        let g = &sim.list[gi];
+        if g.state == state::ALERT_TO_POSITION && left == [0.0; 3] { left = g.pos; }
+        if g.state == state::SEARCH_AREA && there == [0.0; 3] { there = g.pos; }
+    }
+    let log = &sim.list[gi].log;
+    let heard: Vec<(u32, u8)> = log.iter().copied().filter(|&(f, _)| f >= 100).collect();
+    // [M 0x177800:73-78 â†’ 0x16af20:67-75 â†’ 0x16b0e0:28-40 â†’ 0x165270:25-62 â†’ 0x165bf0:25,113-124 â†’ 0x165640] the state chain; the tick numbers are the port's own run (not PCSX2-traced)
+    assert_eq!(heard, [(101, state::HEARD_NOISE), (101, state::HEARD_NOISE_AWARE), (109, state::HEARD_NOISE_SUSPECT),
+        (109, state::ALERT_TO_POSITION), (535, state::SEARCH_AREA), (800, state::GO_TO_GOAL), (889, state::IDLE)], "log {log:x?}");
+    // [M 0x177800:52-64] Attack needs alert > 0.7 inside the 9/0x12-0x16 block
+    assert!(heard.iter().all(|&(_, s)| s != state::ATTACK), "below the alert threshold: no Attack {heard:x?}");
+    let dist = |a: [f32; 3], b: [f32; 3]| ((a[0] - b[0]).powi(2) + (a[2] - b[2]).powi(2)).sqrt();
+    // [M 0x16b0e0:28-40; SetSoundAlertRoute 0x154aa8 radius 2.0; 0x165bf0:113-124 home to +0x5b0] the walk out, the search at the origin, the walk home; distances are this scenario's geometry
+    assert!(dist(left, home) < 2.0, "he leaves from his post {left:?} {home:?}");
+    assert!(dist(there, origin) <= 2.5, "he searched the sound's origin {there:?}");
+    assert!(dist(there, home) >= 10.0, "the origin is a real walk away {there:?} {home:?}");
+    let g = &sim.list[gi];
+    // [M 0x165640] GoToGoalPosition's arrival SetStates +0x5a2 (the resume state, Idle)
+    assert_eq!(g.state, state::IDLE);
+    // [M 0x165bf0:113-124] the done msg clears alertness, back home through GoToGoalPosition
+    assert_eq!(g.alert, 0.0, "the search done msg cleared his alertness");
+    assert!(dist(g.pos, home) < 0.75, "back at his post {:?} vs {home:?}", g.pos);
+    // Sisters: out of earshot nothing moves.
+    // [S port engineering] sisters: out-of-earshot guard 8 and the WaitSwitch waiter 302 stay put (the comparison can fail)
+    let far = sim.list.iter().find(|x| x.placement == 8).unwrap();
+    assert_eq!(far.state, state::IDLE);
+    assert!(dist(far.pos, [150.216, 16.752, 100.810]) < 0.01, "sister: guard 8 never heard the sound {:?}", far.pos);
+    let waiter = sim.list.iter().find(|x| x.placement == 302).unwrap();
+    // [S port engineering] sister: the WaitSwitch waiter 302 never moves
+    assert_eq!(waiter.state, state::WAIT_SWITCH);
+    assert!(dist(waiter.pos, [32.435, 37.0, 49.859]) < 0.01, "sister: the WaitSwitch waiter never moved {:?}", waiter.pos);
+}
+
 /// Bond's P2K against guards (docs/systems/drone-damage.md; from the decomp, not yet checked live): 3.5 per torso hit ×
 /// Easy 1.5 = 5.25, so two hits kill a 10-health guard. The ledge sniper (placement 267, death channel 0x0A) goes to
 /// Attack on the first hit, dies on the second and raises 0x0A when its death anim ends; the gate guard (placement 5) lies
