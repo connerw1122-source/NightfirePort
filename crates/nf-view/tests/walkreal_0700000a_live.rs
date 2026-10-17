@@ -149,8 +149,13 @@ fn walk_office_floor_qworm_keyboard_hatch() {
     assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(0x48),
         "ch 0x48 (objective 4) driven at the documented blocker");
 
-    // The security keyboard: SP #60's activation writer is the documented placement-transform
-    // blocker (docs/levels/0700000a.md) — drive ch 0x3A there as the doc's walkthrough does.
+    // The security keyboard: the REAL E activation is proven by keyboard_0700000a_live — the
+    // mode-64 preload's keyboard entity (0x020005E1, baked-absolute at (−1.54, 1.33, 8.48) r 0.66
+    // [M 0x1db9a8's load beat + 0x133070]) is E-able from the corridor wedge at (−3.00, 9.68) and
+    // the activation writes ch 0x3A [M SP_Activate 0x1dc338 + SP_Update 0x1dbda8 state 1]. The
+    // walk keeps the direct channel drive because the SP-write → AND-mux #741 (0x49) follow did
+    // not fire in the session's probe within 6 ticks (the same write via set_channel does fire
+    // it — the open item in docs/reports/level-0a-complete.md); the route shape is unchanged.
     assert!(w.follow_nav_route([-6.0, 1.3, 14.0], "to the security centre"), "no nav route to the keyboard");
     w.scene.sim.as_mut().unwrap().drones.set_channel(0x3a);
     w.wait(6);
