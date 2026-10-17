@@ -7256,8 +7256,9 @@ fn pause_page(h: &mut Hud, fe: &FrontEnd, font: &nf_formats::hud::Font, lang: Op
         // filled exactly as the game's msg-0x4e case-3 arm does [M 0x204408:447-498]: the
         // Category/Current/Target header (0x1000204/0x10001e1/0x10001e2), then Bond Moves, the
         // indented Opponents trio, Accuracy Rating, Health Remaining, Time, 007 Bonus. Current =
-        // the port's tracked stats (time, accuracy); the other counters are the port's zeros
-        // (reported). Targets = SCORE_TARGETS for the level's campaign row.
+        // the port's tracked stats (time, accuracy) + bonus-007's live progress counters (Bond
+        // Moves, Dispatched, Subdued, Surrendered, 007 Bonus — host-synced `pause_stats`);
+        // shots/accuracy/time still fill 0 (reported). Targets = SCORE_TARGETS for the campaign row.
         3 => {
             // The d1=8 list (98,147,445×190): two right-aligned value columns [M 0x204408:447-498 — msg 0x59 (1,2) and
             // (2,2) right-align columns 1 and 2]. PCSX2 07000005 (2026-10-15): the Current column ends at x 421, the

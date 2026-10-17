@@ -173,7 +173,7 @@ player path reads: +0x184 (HandleDeath gate), +0x1A4, +0x244 (night-sight on). +
 | +0x942 | u16 | the saved substate (the dispatch case 10's restore target) | [M* w 0x196310:60-94, 0x197f50:58, 0x197658:153, 0x1969d0:137, 0x12c5a0:251, 0x132f00:18, 0x181740:17; r 0x193600:254, 0x191dd0:89] | 0xFFFF | `Bond::saved_sub` ✓ |
 | +0x944 | s16 | the missile-cam/scan-mode return countdown (case 10 decrements → restores +0x942) | [M1 w 0x12c5a0:253, 0x12e660:28; rw 0x193600:243-249] | 0 | gap (substate 10 unported) |
 | +0x946 | u16 | the pause-menu handle (0xFFFF init) | [M1 0x193600:76, 0x1910f8:141] | 0xFFFF | gap |
-| +0x948 | s16 | the bond-moment health-cross pulse (200 on `PlrStat_DoneBondMoment`; sine 100..200; −1/t) | [M* w 0x199448:25; rw 0x19b9c8:232-259] | 0 | gap |
+| +0x948 | s16 | the bond-moment health-cross pulse (200 on `PlrStat_DoneBondMoment`; sine 100..200; −1/t) | [M* w 0x199448:25; rw 0x19b9c8:232-259] | 0 | `PlayerHealth.bond_moment_flash` (bullet.rs), −1/t (bonus-007) |
 | +0x94A | u8 | **the freeze gate**: 0 frozen (`Player_Disable` 0x195f70:16), 1 run, >1 countdown (`Player_Update` 0x193600:80-87; `Player_Enable` writes 2) | [M*] | 1 | gap (the port freezes via `Sim::disabled` out-of-band) |
 | +0x94B | u8 | the cine/script lock (skips the substate dispatch, 0x193600:170) | [M1 w 0x195f70:13; =0 0x195498, 0x1910f8:151] | 0 | gap |
 | +0x94C | u8 | the jump state: 0 ground, 1 rising, 2 bumped/falling | [M* w HandleJump 0x1916b0:69,181,193; r 0x1916b0:64, 0x1949a8:169, 0x194df0:120] | 0 | `Bond::jump` ✓ |

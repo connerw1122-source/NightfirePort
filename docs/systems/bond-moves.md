@@ -16,9 +16,11 @@ Moves row and the 007 Bonus score) are awarded per level for specific actions. E
 - **`PlrStat_LogBondBonus` 0x1999e0** [M]: `PlrMissionStats+0x24 += 1` (the 007 Bonus pickups,
   `Pickup_Handler` case 6 0x18e650:235) — a separate counter, not the moments.
 - **The HUD flash**: `HUD_UpdateHealthPane` 0x19b9c8:232-260 [M] counts `BL+0x948` down by
-  `FRAME_RATE_MUL` (2 at 60 Hz) per pane update and animates the health pane's 007 icon only
-  while the timer is ≥ 101 (below 100 the sprite alpha is 0; the sin-bounce runs 200→101,
-  ~0.83 s). Nothing else reads or writes +0x948.
+  `FRAME_RATE_MUL` (1.0 at the port's fixed 60 Hz — GS_SetRefreshRate 0x17d2b8:15 = 60/FRAME_RATE;
+  [L 0x30d0d8] = 1.0 in both EE snapshots) per pane update. While the timer is up the icon sprite
+  is drawn (its +0x38 draw layer = 0 — the sin-bounce scale runs 200→101, a static ~last scale
+  below 101; docs/fields/sprite.md:30 — +0x38 is the draw layer, 0xFF = not drawn, set only at
+  timer < 1). Nothing else reads or writes +0x948.
 - **The chime is level data, not code**: a **SoundTrigger** placement (type 0xF9,
   `SoundTrigger_Create` 0x1b2628 / `SoundTrigger_Update` 0x1b2790 [M]) whose ON channel is the
   bond channel plays the level's sting the tick the channel rises.
@@ -30,14 +32,14 @@ Moves row and the 007 Bonus score) are awarded per level for specific actions. E
 Port side: `crates/nf-game/src/progress.rs` (`PlrMissionStats.done_bond_moment`, `Progress`),
 the per-tick award fold `crates/nf-game/src/drone.rs` (`Trigger_Calc`'s scan + the +0x948 write),
 `crates/nf-game/src/sound.rs` `SoundTriggers` (0xF9 placements), and `crates/nf-game/src/bullet.rs`
-`PlayerHealth.bond_moment_flash` (BL+0x948, decayed 2/tick next to the pane's other timers).
+`PlayerHealth.bond_moment_flash` (BL+0x948, decayed 1/tick next to the pane's other timers).
 
 ## The sound ids (the chime family)
 
 ACTION.ELF name→id table [D, the `{name*, 0, id, 0}` entries ~0x249c48]:
 `SFX_BOND_MOMENT_SHORT_01` = 0x1dc (476), `MEDIUM_01` = 0xfd (253), `LONG_01` = 0x116 (278),
 `LONG_02` = 0x115 (277), `BM_TENSE` = 0x117 (279), `BM_CAS_BEAM` = 0x14b (331), `BM_CAS_TRUCK` =
-0x14c (332), `BM_CAS_WALL` = 0x14d (333), `BM_CAS_ZIP` = 0x14e (334), `BM_STAB3` = 0x14f (335).
+0x14c (332), `BM_CAS_WALL` = 0x14d (333), `BM_CAS_ZIP` = 0x14e (334), `BM_STAB3` = 0x14a (330).
 The SoundTriggers placed on bond channels use the CAS_* family on the early levels and 65535
 (no object) where a level awards silently.
 
@@ -80,7 +82,7 @@ gate on the mission status; DoneBondMoment's MP arm exists but the MP UI is out 
 
 1. On 07000005 (the truck ride or any award), `gdbwatch` on `BondMoments` 0x2bcde0 (expect the
    awarding id's halfword 1) and `PlrMissionStats+0x20` 0x2bcc40 (expect +1), and on Bond's
-   BLData+0x948 (expect 200 at the award tick, then −2 per frame).
+   BLData+0x948 (expect 200 at the award tick, then −1 per frame).
 2. The award moment on PCSX2 should flash the 007 icon by the health pane and play the CAS
    family sting; the port's draw for the icon is NOT ported (no drawing in worker tasks) — the
    state (`PlayerHealth.bond_moment_flash`) and its countdown are.

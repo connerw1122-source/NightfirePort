@@ -4,8 +4,10 @@
 //! and calls `PlrStat_DoneBondMoment(0, ch)` 0x199448 per risen channel — behind the mission gate
 //! and the `BondMoments[id−0x65] == 0` new-moment gate it sets the flag, bumps PlrMissionStats+0x20
 //! (the Mission Stats' Bond Moves row) and writes `glb_blokes[0]+0x948 = 200` — the HUD's 007-icon
-//! flash timer, counted down by FRAME_RATE_MUL (2 at 60 Hz) per `HUD_UpdateHealthPane` 0x19b9c8:232-260
-//! pane update (the icon animates only ≥ 101). The chime is level data: a SoundTrigger placement
+//! flash timer, counted down by FRAME_RATE_MUL (1.0 at 60 Hz — GS_SetRefreshRate 0x17d2b8:15,
+//! [L 0x30d0d8] = 1.0 in the EE snapshots) per `HUD_UpdateHealthPane` 0x19b9c8:232-260 pane update
+//! (the icon sprite's +0x38 draw layer is 0 while the timer is up, 0xFF = not drawn only at timer < 1).
+//! The chime is level data: a SoundTrigger placement
 //! (type 0xF9, `SoundTrigger_Create` 0x1b2628 / `SoundTrigger_Update` 0x1b2790) whose ON channel is
 //! the bond channel plays the level's sting — on 07000005 placement 82 (gate 0x65) plays id 331
 //! (0x14B `SFX_BOND_MOMENT_BM_CAS_BEAM` [D placement + the ELF name→id table]) and placement 81
@@ -85,7 +87,7 @@ fn truck_ride_awards_bond_move_101_with_flash_and_chime() {
         if sim.drones.level_exit.is_some() { break; }
     }
     let sim = w.scene.sim.as_ref().unwrap();
-    let award_tick = award_tick.expect("the truck ride must award bond move 101 (mux #316 AND(0x70,0x71,0x72) → 0x65)");
+    let award_tick = award_tick.expect("the truck ride must award bond move 101 (placement #316, the AND(0x70,0x71,0x72) mux, → 0x65)");
     eprintln!("[bonus] award at tick {award_tick} flash {:?} ch 0x65 {t65:?} chime 331 {chime_tick:?} exit {:?}", flash_at_award, sim.drones.level_exit);
 
     // THE COUNT: exactly one bond move, moment 101 done, in the progress layer.
@@ -98,20 +100,20 @@ fn truck_ride_awards_bond_move_101_with_flash_and_chime() {
     let t65 = t65.expect("ch 0x65 must rise (the AND completes)");
     assert!((award_tick as i32 - t65 as i32).abs() <= 1, "the award tick {award_tick} rides with ch 0x65 {t65}");
 
-    // THE HUD FLAG: 200 at the award tick, then the pane's countdown −FRAME_RATE_MUL = 2/tick
-    // [M 0x199448:25; 0x19b9c8:258-260 — the (short)(timer − FRAME_RATE_MUL) float step].
+    // THE HUD FLAG: 200 at the award tick, then the pane's countdown −FRAME_RATE_MUL = 1/tick
+    // [M 0x199448:25; 0x19b9c8:258-260; FRAME_RATE_MUL = 1.0 at the port's 60 Hz — GS_SetRefreshRate
+    // 0x17d2b8:15, [L 0x30d0d8] = 1.0 in the EE snapshots; the sibling +0x968 decay is −1.0 too].
     assert_eq!(flash_at_award, Some(200), "the award writes BL+0x948 = 200");
-    assert_eq!(flash_next, Some(198), "the next pane update subtracts 2");
+    assert_eq!(flash_next, Some(199), "the next pane update subtracts 1");
     let decay = sim.drones.health.bond_moment_flash;
-    assert_eq!(decay % 2, 0, "the countdown steps by FRAME_RATE_MUL = 2");
-    assert!(decay < 198, "the flash keeps decaying after the award tick (now {decay})");
+    assert!(decay < 199, "the flash keeps decaying after the award tick (now {decay})");
     // THE CHIME: the level's SoundTrigger (placement 82, gate 0x65 → id 331) played.
     let chime_tick = chime_tick.expect("the gate-0x65 SoundTrigger must play id 331 on the award");
     assert!(chime_tick >= award_tick.saturating_sub(1) && chime_tick <= award_tick + 5,
         "the chime rides the award (chime {chime_tick} vs award {award_tick})");
 
-    // The sister inside the run: bond move 105's channel (0x69) never rose on this ride.
-    assert!(t69.is_none(), "the courtyard-plates mux (0x69) must not fire on the truck ride");
+    // The sister inside the run: bond move 105's channel (0x69) never rose on this ride (the courtyard-plates AND, placement #80).
+    assert!(t69.is_none(), "the courtyard-plates AND mux (0x69, placement #80) must not fire on the truck ride");
     assert_eq!(sim.drones.progress.bond_moments[4], 0, "moment 105 stays unawarded");
     assert!(!sim.drones.sound_triggers.playing(332), "the 0x69 chime (332) never plays");
 }

@@ -10970,9 +10970,11 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
         }
         self.health.flash = (self.health.flash - 1.0).max(0.0);
         // bonus-007: the 007-bonus flash timer `BL+0x948` — `HUD_UpdateHealthPane` 0x19b9c8:258-260
-        // subtracts FRAME_RATE_MUL (2 at the port's 60 Hz) from it every pane update (the same
-        // per-tick place the port already decays the pane's `flash`).
-        self.health.bond_moment_flash = self.health.bond_moment_flash.saturating_sub(2);
+        // subtracts FRAME_RATE_MUL from it every pane update; the port's fixed 60 Hz runs the game's
+        // fast path where FRAME_RATE_MUL = 1.0 (GS_SetRefreshRate 0x17d2b8:15 = 60/FRAME_RATE at the
+        // port's FRAME_RATE; [L 0x30d0d8] = 1.0 in both EE snapshots) — the same −1/tick the sibling
+        // +0x968 flash decay uses (the line above).
+        self.health.bond_moment_flash = self.health.bond_moment_flash.saturating_sub(1);
         // fix-grenade-types: the flashbang whiteout counts down ONE tick per tick (the game decrements
         // BL+0x91C per tick and fades at the half point — `Player_Update` 0x193600:328-336; the amount
         // was set to FRAME_RATE·f·10 = 600·f ticks [M 0x196040 + 0x12e0b8]). The old self-fraction

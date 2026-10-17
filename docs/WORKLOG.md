@@ -17412,3 +17412,11 @@ through the real input path + a sister, run the touched crates + the full suite.
   ride on 07000005 awards moment 101 exactly at the ch-0x65 tick (count 1, flash 200 → −2/tick,
   chime 331 the same tick; sisters: no 0x69/332 on the ride, 600 ticks of idling award nothing)
   — 2/2 pass in 9 s. Report: docs/reports/bonus-007.md.
+- bonus-007 correction (audit): the flash decay was modelled −2/tick but FRAME_RATE_MUL is
+  **1.0** at the port's fixed 60 Hz (GS_SetRefreshRate 0x17d2b8:15; [L 0x30d0d8] = 1.0 in both
+  EE snapshots) — now −1/tick, the live test pins 200→199. The "hidden below 101" description
+  misread sprite+0x38 (the draw layer, 0xFF = not drawn — docs/fields/sprite.md:30; the icon
+  stays drawn below 101 at the last scale, hidden only at timer < 1). BM_STAB3 is id 0x14a
+  (330), not 0x14f (bond-moves.md fixed). bldata.md's +0x948 port column updated; the census
+  examples committed. Independent audit: award-gate equivalence, the counter mapping, merge
+  discipline and census rows all verified.

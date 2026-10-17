@@ -162,9 +162,12 @@ pub flash_alpha: f32,
 pub hit_push: f32,
 /// `BL+0x948`: the 007-bonus flash timer. `PlrStat_DoneBondMoment` 0x199448:25 writes 200 on the
 /// award (only on the award — `BondMoments[id−0x65] == 0` branch); `HUD_UpdateHealthPane`
-/// 0x19b9c8:232-260 counts it down by FRAME_RATE_MUL (2 at the port's 60 Hz) per pane update and
-/// animates the health pane's 007 icon only while it is ≥ 101 (below 100 the sprite's alpha is 0 —
-/// the sin-bounce runs 200→101, ~0.83 s). Data the draw code reads; nothing draws here. bonus-007.
+/// 0x19b9c8:232-260 counts it down by FRAME_RATE_MUL (1.0 at the port's fixed 60 Hz —
+/// GS_SetRefreshRate 0x17d2b8:15; [L 0x30d0d8] = 1.0 in the EE snapshots) per pane update. While
+/// the timer is up the health pane's 007 icon sprite is drawn (its +0x38 layer byte = 0 — the
+/// sin-bounce scale animation runs 200→101, a static ~last scale below 101) and at timer < 1 the
+/// pane sets the layer 0xFF = not drawn (docs/fields/sprite.md:30 — +0x38 is the draw layer, not
+/// alpha). Data the draw code reads; nothing draws here. bonus-007.
 pub bond_moment_flash: u16 }
 
 impl Default for PlayerHealth {
