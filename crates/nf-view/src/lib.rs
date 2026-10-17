@@ -2586,7 +2586,7 @@ impl App {
                 let wrong = match &self.movie { Some(p) => p.code() != code || p.is_looping(), None => true };
                 if wrong {
                     if let Some(p) = self.movie.take() { p.stop(); }
-                    match movie::Player::start(&movie_iso, code) {
+                    match movie::Player::start(&movie_iso, code, movie_sfx_volume(fe)) {
                         Ok(p) => {
                             self.movie = Some(p); eprintln!("movie: playing {code:08x} (intro)");
                             // frontend-music: the page's movie start removed the pair (menu_movie
@@ -2625,7 +2625,7 @@ impl App {
             let wrong = match &self.movie { Some(p) => p.code() != code || p.is_looping(), None => true };
             if wrong {
                 if let Some(p) = self.movie.take() { p.stop(); }
-                match movie::Player::start(&movie_iso, code) {
+                match movie::Player::start(&movie_iso, code, movie_sfx_volume(fe)) {
                     Ok(p) => {
                         self.movie = Some(p); eprintln!("movie: playing {code:08x} (attract)");
                         // frontend-music: P_ATTRACT's 0x4c removes the menu-music pair before the
@@ -2671,7 +2671,7 @@ impl App {
                     eprintln!("movie: stopped {code:08x}");
                 }
                 if aux != 0 {
-                    match movie::Player::start_looping(&movie_iso, aux) {
+                    match movie::Player::start_looping(&movie_iso, aux, movie_sfx_volume(fe)) {
                         Ok(p) => { self.movie = Some(p); eprintln!("movie: looping {aux:08x} (page backdrop)"); }
                         Err(e) => eprintln!("movie: {aux:08x} not started: {e:?} — the dark plate stands in"),
                     }
@@ -3966,6 +3966,22 @@ pub fn apply_av_volumes(fe: &mut menu::FrontEnd, driver: Option<&mut nf_audio::s
     }
 }
 
+/// The movie start sites' `SFXGetVolume()` [M 0x116e18: the `SfxMasterVolume` static, 100 at boot
+/// [L 0x30c95c]]. Every `psiStartBackgroundMovie` caller passes it as the volume arg [M
+/// Menu_PlayMovie 0x215990:18-19, P_INTRO 0x209e88:45+62, P_ATTRACT 0x20a1f0:23+36, P_FMVPLAYER
+/// 0x20ad30:25-26, P_TRAILER 0x214f10:19-20, ResetMap_Load 0x1d6360]. The front end's SFX option
+/// IS the port's `SfxMasterVolume`: the game's options page multiplies its 0..0x14 slider by 5
+/// into the static [M P_CNAVOPTIONS 0x214818:74 `SFXSetVolume(iVar2 * 5)`, the commit :73-74, the
+/// cancel restore :80-81, the enter snapshot :22-23] and the persisted settings load straight
+/// into it [M LS_LoadGlobalSettings 0x1cdbc8:70 `SFXSetVolume(loaded)`], the same raw 0..100 the
+/// port's map stores. A missing key boots the default 100 [L 0x30c95c; `default_opts` and
+/// `settings::load_default` both fill it]. (The game's `SFXGetVolume` returns 1 while
+/// `switch_CONFIG_SOUND` == 0 [M 0x116e18]; the port carries no sound-off option, so the master
+/// branch is the only reachable one.)
+pub fn movie_sfx_volume(fe: &menu::FrontEnd) -> u32 {
+    fe.opts.get(&0x1000_0134).copied().unwrap_or(100).max(0) as u32
+}
+
 pub fn run() -> Result<()> {
     // A panic also goes to nf-view-crash.log (message, place, backtrace): a crash in a window without a console
     // leaves a trace.
@@ -4464,7 +4480,7 @@ pub fn mission_movie_glue(fe: &mut menu::FrontEnd, slot: &mut Option<movie::Play
             None => {
                 let code = fe.flow.movie_code;
                 if code != 0 {
-                    match movie::Player::start(iso, code) {
+                    match movie::Player::start(iso, code, movie_sfx_volume(fe)) {
                         Ok(p) => {
                             eprintln!("movie: playing {code:08x} (state 6)");
                             fe.flow.movie_playing = true; // BGFMVPlaying = 1 [M 0x1081a8]
@@ -4502,7 +4518,7 @@ pub fn mission_movie_glue(fe: &mut menu::FrontEnd, slot: &mut Option<movie::Play
             // (`briefing_plays_live`, bisected to the a2cdd771 merge).
             let code = fe.flow.level_to_load;
             if matches!((code >> 20) & 0xff, 0x71 | 0x73) {
-                match movie::Player::start(iso, code) {
+                match movie::Player::start(iso, code, movie_sfx_volume(fe)) {
                     Ok(p) => {
                         *slot = Some(p);
                         // BGFMVPlaying = 1 from the start [M psiStartBackgroundMovie 0x1081a8]: state 6

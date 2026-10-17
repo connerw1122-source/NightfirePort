@@ -56,8 +56,42 @@ suppressed while a movie plays (`psiDrawFogPass` 0x0010b960: `BGFMVPlaying == 0`
 ## Audio
 
 One stream, decoded on the IOP: `audioCallback` (0x00108988) fills `AudioDec` (0x30dd40), `audioDecSendToIOP`
-per frame; 16-bit PCM 48 kHz stereo (docs/formats/pss.md). Volume: `MovieVolume` = `SFXGetVolume()` captured at
-every start site, applied as `changeInputVolume(MovieVolume * 100)` in `audioDecStart` (0x00107360).
+per frame; 16-bit PCM 48 kHz stereo (docs/formats/pss.md).
+
+### Volume (movie-volume-options)
+
+`psiStartBackgroundMovie` (0x001081a8) stores the volume arg into `MovieVolume` (0x30c6a8; the disassembly
+`sw $s2, -14680($at)` [M]; `LoopingMovie` is the byte at 0x30c6a1). Every caller passes `SFXGetVolume()`
+(0x116e18) [M Menu_PlayMovie 0x215990:18-19, P_INTRO 0x209e88:45+62, P_ATTRACT 0x20a1f0:23+36,
+P_FMVPLAYER 0x20ad30:25-26, P_TRAILER 0x214f10:19-20, ResetMap_Load 0x1d6360]. `SFXGetVolume` returns the
+`SfxMasterVolume` static (0x30c95c, **100 at boot** [L ee_start_05.bin @0x30c95c = 0x64]) unless
+`switch_CONFIG_SOUND` (0x30ceac) is 0, in which case it returns 1 [M 0x116e18 disassembly: the `==0` path
+falls into `li $v0, 1`] — a sound-off game plays movies at register 100, effectively silence.
+
+`audioDecStart` (0x00107360) calls `changeInputVolume(MovieVolume * 100)` [M disassembly: `lw $v0,
+-14680($v0)` then `li $a0, 100` + `mult`]. `changeInputVolume` (0x1078c8) sends `sceSdRemote(1, 0x8010, reg,
+value)` twice — registers **0xf80 and 0x1080** — the same RPC its `changeMasterVolume` (0x107860) uses for
+the master-volume pairs 0x980/0xa80 (+core in bit 0, and core 1 = 0x981/0xa81 [M]); the R channel sits at
+L+0x100, so 0xf80/0x1080 are **core 0's input-volume L/R pair** (both even → core 0). The game's voice and
+reverb writes map its 0..100 percentages onto 0..0x3fff (sound.md §5.4 [M]); the movie input volume instead
+receives the raw `MovieVolume*100` (0..10000).
+
+**Scale.** The SPU2 input-volume DSP behaviour is hardware, not in any decompile, so the register's full
+scale is the one [S] in the chain. The port uses the signed-16-bit register range 0x7fff (gain =
+`MovieVolume*100 / 32767`, boot ≈ 0.305) — consistent with playtest 1016's "the port's full scale was about
+3x too loud" (0x3fff would give only 1.6x). The 0x3fff game-voice convention is the alternative; a live
+check is listed in docs/reports/movie-volume-options.md.
+
+**Read-once.** `MovieVolume` has exactly two readers in the whole ACTION.ELF decompile: the store at
+0x1081a8 and `audioDecStart` 0x107360 — no mid-movie re-read, so an options change while a movie plays
+never reaches it [M]. Teardown: `CleanUpBGFMV` (0x108700) → `audioDecReset` (0x1073d8) →
+`changeInputVolume(0)` silences the input path [M].
+
+**Port** (`nf-view/src/movie.rs`): `Player::start(.., volume)` / `start_looping(.., volume)` take the
+options' SFX volume (`lib.rs::movie_sfx_volume` reads `fe.opts[0x1000_0134]`, the raw 0..100 scale the
+options page and the persisted settings already store; missing key = boot 100 [L 0x30c95c]); `movie_gain`
+= `movie_input_volume(v) / 0x7fff` applies in `open_pcm_out`'s callback, computed once per player. The
+boot default equals the pre-options fixed `MOVIE_GAIN`.
 
 ## Port status
 
