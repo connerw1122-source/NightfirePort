@@ -789,6 +789,7 @@ pub fn menu_items(dev: &Dev, scene: Option<&Scene>) -> Vec<MenuRow> {
             v.push(if dev.god_mode { ("god: ON".into(), "Bond takes no damage - toggle off to test death", MenuAction::ToggleGod) } else { ("god: OFF".into(), "Bond takes no damage when ON - toggle to test death", MenuAction::ToggleGod) });
             v.push(if dev.infinite_ammo { ("ammo: ON".into(), "clip refills each tick - toggle off to test reloads", MenuAction::ToggleAmmo) } else { ("ammo: OFF".into(), "clip refills each tick when ON - toggle to test reloads", MenuAction::ToggleAmmo) });
             v.push(if dev.no_reload { ("reload: OFF".into(), "the clip never empties (no reload needed) - toggle to test reloads", MenuAction::ToggleNoReload) } else { ("reload: ON".into(), "the clip never empties while OFF is shown - toggle to test reloads", MenuAction::ToggleNoReload) });
+            v.push(if crate::RAPID_FIRE.load(std::sync::atomic::Ordering::Relaxed) { ("rapid fire: ON".into(), "every weapon fires each tick from a full clip (port-only) - toggle off for the game's rates", MenuAction::ToggleRapidFire) } else { ("rapid fire: OFF".into(), "every weapon fires each tick from a full clip when ON (port-only)", MenuAction::ToggleRapidFire) });
             v.push(("noclip (N key)".into(), "walk through walls - N toggles, like this row", MenuAction::ToggleNoclip));
             v.push(if dev.overlay { ("AI overlay: ON (F1)".into(), "state/alert/health over each guard - toggle or F1", MenuAction::ToggleOverlay) } else { ("AI overlay: OFF (F1)".into(), "state/alert/health over each guard - toggle or F1", MenuAction::ToggleOverlay) });
             v.push(if dev.portal_cull { ("portal culling: ON".into(), "the game's visibility walk (0x1e86e8) - off draws every cel", MenuAction::TogglePortal) } else { ("portal culling: OFF".into(), "the game's visibility walk (0x1e86e8) - off draws every cel", MenuAction::TogglePortal) });
@@ -848,7 +849,7 @@ pub enum MenuAction {
     /// Teleport Bond to `TELEPORT_SPOTS[idx]`.
     TeleportTo(usize),
     // The original F2 tools (WORKLOG 0081), kept.
-    Spawn(SpawnPick), ForceGrenade, Impulse, SpecialDeath, ToggleGod, ToggleAmmo, ToggleNoReload,
+    Spawn(SpawnPick), ForceGrenade, Impulse, SpecialDeath, ToggleGod, ToggleAmmo, ToggleNoReload, ToggleRapidFire,
     SaveSpot, RestoreSpot, TimeScale(f32), Level(u32),
     // The Toggles/Screenshot pages.
     ToggleNoclip, ToggleOverlay, TogglePortal, ToggleInterp, ToggleFps, Screenshot,
@@ -979,6 +980,11 @@ pub fn apply_menu_action_to_scene(dev: &mut Dev, scene: &mut Scene, action: Menu
         }
         MenuAction::ToggleGod => { dev.god_mode = !dev.god_mode; out.status = format!("god mode: {}", if dev.god_mode { "ON" } else { "OFF" }); }
         MenuAction::ToggleAmmo => { dev.infinite_ammo = !dev.infinite_ammo; out.status = format!("infinite ammo: {}", if dev.infinite_ammo { "ON" } else { "OFF" }); }
+        MenuAction::ToggleRapidFire => {
+            let on = !crate::RAPID_FIRE.load(std::sync::atomic::Ordering::Relaxed);
+            crate::RAPID_FIRE.store(on, std::sync::atomic::Ordering::Relaxed);
+            out.status = format!("rapid fire: {}", if on { "ON" } else { "OFF" });
+        }
         MenuAction::ToggleNoReload => { dev.no_reload = !dev.no_reload; out.status = format!("no reload: {}", if dev.no_reload { "ON" } else { "OFF" }); }
         MenuAction::SaveSpot => {
             let p = scene.sim.as_ref().map_or([0.0; 3], |s| s.bond.pos);

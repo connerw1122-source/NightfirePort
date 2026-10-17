@@ -417,6 +417,12 @@ pub struct Sim {
     /// Set by the `Check_Target` block in `run` every 6th frame, read by the HUD [M 0x1a7810, 0x19e6d0].
     pub cross_state: u8,
     pub auto_aim: bool,
+    /// PC-port option "Rapid fire" [S port-only; off = the game]: while the trigger is held every
+    /// weapon fires one round per 60 Hz tick (the record's refire interval and shots-per-pull are
+    /// overridden, the round spawns on the press tick instead of the fire script's release frame) and
+    /// its clip stays full. A showcase of how many live projectiles the port's sim and renderer carry;
+    /// the game's own rules are untouched while it is off.
+    pub rapid_fire: bool,
     /// `BLData+0x8D0`: the current zoom factor (1.0 = no zoom, up to `weapon_data+0x88`). The FOV is divided
     /// by this. `Player_Zoom` (0x1a1a70) interpolates it toward `zoom_target` (`+0x8D4`).
     pub zoom: f32,
@@ -3155,7 +3161,19 @@ impl Sim {
         let can_fire = !switching;
         if let Some(w) = self.weapons.records.get(self.gun.weapon as usize) {
             let scripts = &self.scripts;
-            let params = nf_game::gun::GunParams::from_record(w, self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0) as usize, |h| scripts.get(&h).map(|s| s.length as u32));
+            let mut params = nf_game::gun::GunParams::from_record(w, self.drones.inventory.fire_mode.get(self.gun.weapon as usize).copied().unwrap_or(0) as usize, |h| scripts.get(&h).map(|s| s.length as u32));
+            if self.rapid_fire && params.ammo_type != 0 {
+                // The PC-port rapid fire (see the field): one round per tick for as long as the
+                // trigger is held, spawned on the press tick, from a clip that never empties.
+                params.interval = 1.0;
+                params.shots_per_pull = i32::MAX;
+                params.fire_anim_len = 0;
+                if params.clip > 0 {
+                    let slot = self.clip_slot(self.gun.weapon as usize);
+                    if let Some(c) = self.drones.inventory.clip.get_mut(slot) { *c = (*c).max(params.clip as i16); }
+                    self.gun.clip = self.gun.clip.max(params.clip);
+                }
+            }
             // Auto-aim (on by default in the game's options) scans only outside aim mode
             // (`Player_AutoAim` 0x1a7c98 gates the `Check_AutoAim` scan on the aiming bit, which the
             // game sets only after the aim-raise anim finishes — `Player_SetWeaponAnimObj` case 0xf).
@@ -3295,7 +3313,7 @@ impl Sim {
             let new_reload_state = self.gun.reload_tick(trigger, params);
             let rd = |o: usize| u32::from_le_bytes(w[o..o + 4].try_into().unwrap());
             let flags = rd(0x68);
-            let fire_anim_len = rd(0x44);
+            let fire_anim_len = if self.rapid_fire && params.ammo_type != 0 { 0 } else { rd(0x44) };
             if fired {
                 // `Player_SetFiringAnim` (0x1a3c70), via `Gun::firing_anim_script`: the last-round pick
                 // (flag 0x1000 / base 0x11), the fists' Rand(100) left/right alternation (flag 0x80000)
@@ -6545,7 +6563,7 @@ impl Scene {
             // The difficulty was set before the creates above (the game's GameState+0x28 pick);
             // the old direct-load hardcode `= 1` moved into the build parameter so replay loads
             // pass 1 and the front-end path passes the menu's pick.
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, ai_points, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, ai_points, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, rapid_fire: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
             mp_bonds: [None, None, None, None],
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, laser_charge: 100.0, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,

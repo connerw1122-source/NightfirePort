@@ -3426,6 +3426,9 @@ impl ApplicationHandler for App {
                             }
                             // B-5 record: capture the exact input passed to step_bond, before the call.
                             if let Some(r) = &mut self.recorder { r.push(replay::TickInput::from_parts(&input, trigger, reload, use_key)); }
+                            // The PC-port rapid fire (`--rapid-fire` / the dev Toggles page): local play only —
+                            // an online match keeps every machine on the game's rules (lockstep).
+                            sim.rapid_fire = RAPID_FIRE.load(std::sync::atomic::Ordering::Relaxed) && self.net.is_none();
                             sim.step_bond(input, trigger, reload, use_key);
                             // weapon-matrix: the "Test weapon" run watches the tick's result (the
                             // phase machine in dev.rs; `sim` and `self.dev` are disjoint fields).
@@ -3805,6 +3808,7 @@ pub fn run() -> Result<()> {
         default_hook(info);
     }));
     let args: Vec<String> = std::env::args().skip(1).collect();
+    if args.iter().any(|a| a == "--rapid-fire") { RAPID_FIRE.store(true, std::sync::atomic::Ordering::Relaxed); }
     const USAGE: &str = "usage: nf-view [<iso>] <level> [--all] [--seq K] [--frame F] [--fire] [--reinforcements] [--dev [--panel]] [--scenario <name>] [--record <file>] [--replay <file>] [--no-fog] [--no-tex] [--shot out.png [--cam x y z yaw pitch] [--dev-page <name>]]\n\
         <level> is a FILES.BIN name such as 07000005 (\".bin\" optional); without <iso> the image path comes from NF_ISO\n\
         --dev --scenario <name>: place Bond for a feature test (weapon-switch, sg5-pickup, wire-music, autoaim)\n\
@@ -3984,6 +3988,7 @@ pub fn run() -> Result<()> {
                 }
                 if let Some(id) = first { sim.gun.switch_request = id; }
             }
+            sim.rapid_fire = RAPID_FIRE.load(std::sync::atomic::Ordering::Relaxed);
             for t in 1..=time as u32 {
                 if skip_cuts && sim.disabled { sim.drones.scripts.skip_request = true; }
                 // `--mode 70,90`: the fire-mode press (the B key) on those ticks.
@@ -4248,6 +4253,11 @@ fn pause_objective_rows(sim: &scene::Sim) -> Vec<menu::PauseObjective> {
 /// per redraw from `App::movie_tick` — a free function so the live tests drive the SAME code the
 /// window runs (playtest 1016: the briefing never showed, and no test ran this path). Returns false
 /// when no mission movie is due (the caller runs the page's aux loop instead).
+/// The PC-port "Rapid fire" option (`--rapid-fire`, or the dev window's Toggles page): every held
+/// weapon fires one round per tick from a full clip ([S] port-only — `Sim::rapid_fire`). Read into
+/// the sim before each local tick; never applied to an online match.
+pub static RAPID_FIRE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 pub fn mission_movie_glue(fe: &mut menu::FrontEnd, slot: &mut Option<movie::Player>, iso: &str) -> bool {
     if fe.flow.get_state() == menu::ST_MOVIE {
         // psiStartBackgroundMovie replaces whatever the one BGFMV slot holds [M 0x1081a8] —
