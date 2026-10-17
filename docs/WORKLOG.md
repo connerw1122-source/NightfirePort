@@ -17719,3 +17719,12 @@ expires and bonus decays below the pin. Observation: the intro leaves `nis_playi
 and the game's `!nis_playing` gate defers the alarm arm — the test drives the NIS end's
 `Music_Event(0xC)` the script system writes [M music.rs event-12 note]. Census handled sets
 56 → 57 (0xFB moved); `WeaponData` derives Default for the headless test tick. Suite running.
+
+## start-slot-0x2d (2026-10-17, branch s/start-slot-0x2d) — started 04:45 UTC
+
+Task 751: the second start-position set (type 0x2D, 51 placements, one per level including every
+MP map) — `Player_AddNewStartPos(..., 0)` 0x195c00. The port registers only the 0x24 starts
+(nf-view lib.rs `level_starts`), so on levels that ship both (07000007 has 5 of type 0x2D) Bond
+may spawn at the wrong start. Porting the registration and `Player_Start`'s pick across both sets
+[M 0x190fd0]; test on real levels through the real path with a sister assertion; update the
+script census handled sets. In progress.
