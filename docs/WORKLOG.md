@@ -17892,3 +17892,15 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   operate each; make the activation chain reach ch 0x39, the LIFTDOORS open, the cab ride script
   0x0600059B, TOUCH_ONCE #67, and the LOAD_LEVEL #63 into 0700000a with objective 2 done. Live
   walk test + sister (no operate => doors stay shut). Branch from origin/master d628f01f.
+- elevator-buttons-09 (branch s/elevator-buttons-09, finished 2026-10-17): the 09 elevator button
+  is SP #70's class-0 script ENTITY at the lobby panel (art baked absolute, gfx 0x020005EA/EB +
+  0x020005E2, all at (−18.08,−368.23,25.02) r 0.434 [D]); `Player_Activate` 0x1a5170:121-122 fires
+  `SP_Activate` only on obj+0xE4≠0 ∧ class 0 (Script_EntityStart 0x1d8d78:108-110) — the port now
+  tests the SP's live entity spheres (nis::Player::entity_use_targets), then its own model sphere,
+  then the placement matrix; plus SP_Activate's +0x9C=0 restart (0x1dc338:84-86) — without it
+  0x0600059B's event-3 hold kept the FX dead. Live walk (elevator_buttons_09_live.rs): spawn →
+  stairwell → lobby → aimed E on the panel → ch 0x39/0x46, entity B, doors posed open → the cab →
+  0700000a, objective 2 complete, no alarm; sister holds (doors shut, solid, nothing fires). The
+  old walkreal blocker pin was fixed (it contradicted the decompile). Suite baseline 2068 passed /
+  6 failed (3 disc_golden slim-ISO + 3 pylon render probes, pre-existing); final-tree libs +
+  16 integration binaries all green. Report: docs/reports/elevator-buttons-09.md.
