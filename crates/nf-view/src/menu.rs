@@ -2073,6 +2073,50 @@ pub struct FrontEnd {
     pub intro_skippable: bool,
 }
 
+/// The codename session the window carries across front-end creates
+/// (docs/systems/profile-session.md): the game keeps it in plain globals OUTSIDE every menu
+/// manager — the save slot `DAT_002e1ae0` and the working codename buffer `DAT_002e1ae8`,
+/// written by the ✓ [M C_KEYBOARD 0x213a98:53-57] and read by the results' save gate
+/// `1 < DAT_002e1ae0` and the medal line's sprintf [M P_NFRESULTS 0x208e78:30/145-152/194] —
+/// plus the card the port stores them on (the `.profile` files' directory, the port's
+/// memory-card stand-in [S settings::config_dir; the task's %APPDATA%\NightfirePort]). The
+/// port models one manager as a `FrontEnd`, so the session rides the window across every
+/// create/drop (boot, the gameplay pause's `get_or_insert_with`, the results/debriefing
+/// handovers) the same way the music statics do (menu-audio-state).
+#[derive(Clone, Default)]
+pub struct ProfileSession {
+    /// The card's directory (the enumeration source; `None` = no card wired).
+    pub dir: Option<std::path::PathBuf>,
+    /// The codename in play — the game's `DAT_002e1ae8` (`None` = the boot state).
+    pub name: Option<String>,
+    /// The loaded chain the save writes — the game's `InBufData` blocks around the session
+    /// [M LS_Load 0x1cdfc0 / LS_Save 0x1cd698's buffers].
+    pub profile: Option<nf_game::profile::Profile>,
+}
+
+impl ProfileSession {
+    /// The stash side — the manager delete: the session the window carries while this front
+    /// end is dropped [M the globals stand; P_NFRESULTS reads them after the handover built
+    /// a fresh manager].
+    pub fn from_fe(fe: &FrontEnd) -> Self {
+        Self {
+            dir: fe.profile_dir.clone(),
+            name: fe.active_profile.clone(),
+            profile: fe.profile.clone(),
+        }
+    }
+
+    /// The create side — seeds a front end: the card dir + its enumeration (the boot's and
+    /// the card flows' Menu_EnumSaves 0x1f7b78 walk [M]), then the codename in play.
+    pub fn apply_to(&self, fe: &mut FrontEnd) {
+        if let Some(dir) = self.dir.clone() {
+            fe.set_profile_dir(dir);
+        }
+        fe.active_profile = self.name.clone();
+        fe.profile = self.profile.clone();
+    }
+}
+
 impl FrontEnd {
     pub fn new() -> Self {
         let flow = GameFlow::boot();
@@ -3422,6 +3466,7 @@ impl FrontEnd {
             .map(|d| nf_game::profile::Profile::list_dir(d))
             .unwrap_or_default();
     }
+
 
     /// The "New Codename" save [M the game's flow: the keyboard page validates through
     /// Menu_IsValidCodename 0x1f9930, Menu_MapDefaultCodename 0x1f7fa8 maps the default
@@ -8125,6 +8170,61 @@ pub fn key_action(key: winit::keyboard::KeyCode) -> Option<Action> {
 /// MenuManager_Update 0x21c3d8:78-105]. The LEFT button is the row hit-test (`mouse_click`), not
 /// an Action; releases do nothing.
 pub const MOUSE_RIGHT_ACTION: Action = Action::Back;
+
+/// create-save: the name page's typed-key → grid-cell mapping — the window's CnName branch.
+/// The game's own path sends every key through the grid control's msg 0x4b [M C_KEYBOARD
+/// 0x213a98:15-85]: a letter/digit cell types the first byte of its own text [M :79-85], so
+/// the typed key maps to the CELL ID (the byte) and goes through the same `cn_press` —
+/// `del_when_keypressed`'s first-press clear (the proposal "BOND" clears, the pressed letter
+/// appends; only the space CELL is swallowed [M :18-27]) and the 8-char cap [M :75-77] stay
+/// in one place. Uppercase: the grid's cells are uppercase, and the buffer is what the draw
+/// code shows. The port's PC stand-in [S]; the grid stays the reference
+/// (docs/systems/codename-entry.md). `None` keeps the key on `key_action` — the space bar
+/// stays Confirm (the game's X presses the focused cell), and Backspace maps to the ← cell
+/// 1000 by the caller [M :39-42, the erase].
+pub fn cnname_char_key(key: winit::keyboard::KeyCode) -> Option<u32> {
+    use winit::keyboard::KeyCode;
+    let c = match key {
+        KeyCode::KeyA => 'A',
+        KeyCode::KeyB => 'B',
+        KeyCode::KeyC => 'C',
+        KeyCode::KeyD => 'D',
+        KeyCode::KeyE => 'E',
+        KeyCode::KeyF => 'F',
+        KeyCode::KeyG => 'G',
+        KeyCode::KeyH => 'H',
+        KeyCode::KeyI => 'I',
+        KeyCode::KeyJ => 'J',
+        KeyCode::KeyK => 'K',
+        KeyCode::KeyL => 'L',
+        KeyCode::KeyM => 'M',
+        KeyCode::KeyN => 'N',
+        KeyCode::KeyO => 'O',
+        KeyCode::KeyP => 'P',
+        KeyCode::KeyQ => 'Q',
+        KeyCode::KeyR => 'R',
+        KeyCode::KeyS => 'S',
+        KeyCode::KeyT => 'T',
+        KeyCode::KeyU => 'U',
+        KeyCode::KeyV => 'V',
+        KeyCode::KeyW => 'W',
+        KeyCode::KeyX => 'X',
+        KeyCode::KeyY => 'Y',
+        KeyCode::KeyZ => 'Z',
+        KeyCode::Digit0 | KeyCode::Numpad0 => '0',
+        KeyCode::Digit1 | KeyCode::Numpad1 => '1',
+        KeyCode::Digit2 | KeyCode::Numpad2 => '2',
+        KeyCode::Digit3 | KeyCode::Numpad3 => '3',
+        KeyCode::Digit4 | KeyCode::Numpad4 => '4',
+        KeyCode::Digit5 | KeyCode::Numpad5 => '5',
+        KeyCode::Digit6 | KeyCode::Numpad6 => '6',
+        KeyCode::Digit7 | KeyCode::Numpad7 => '7',
+        KeyCode::Digit8 | KeyCode::Numpad8 => '8',
+        KeyCode::Digit9 | KeyCode::Numpad9 => '9',
+        _ => return None,
+    };
+    Some(c as u32)
+}
 
 /// menu-mouse-parity: the scroll wheel's notch → Action — up = Up (previous row), down = Down,
 /// the same Actions the d-pad sends [M lib.rs's `DeviceEvent::MouseWheel` arm; the weapon-cycle

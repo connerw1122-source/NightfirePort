@@ -17788,3 +17788,47 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   state family like the taser's 0x4A-0x4C, timers and recovery) and port what is missing.
   Reproduce on master through the real input path (equip it on a level that carries it, fire at
   a guard) fail-first, then fix; same test passes. Branch created from origin/master 31dd6161.
+- 2026-10-17 s/create-save (task 750j): The user cannot create a save (playtest
+  1016): Select Codename -> New Codename should open the name entry (P_CNNAME
+  0x40000020, the C_KEYBOARD 0x213a98 grid), confirm with the check mark, save the
+  codename (the port's stand-in: the settings/save files under %APPDATA%/NightfirePort)
+  and list/select it on the next boot; finishing a mission under it saves progress.
+  Plan: walk the real window input path (arrows/Enter/Esc/Tab + typed letters, lib.rs's
+  name-page key handling) on a fresh profile, find the failure, fix to the game's flow
+  with [M] citations, pin create "BOND" -> saved to disk -> offered next boot. Branch
+  created from origin/master 31dd6161.
+- create-save: root cause found — the WINDOW layer never wired the card (every
+  set_profile_dir call in the tree was in a test): the name page's ✓ refused silently
+  (request_create without a dir returns false — no box, no save), Select Codename listed
+  nothing, and the results handover's fresh fe dropped the session. Reproduced through the
+  real action path (create_save_live: boot fe, Main -> Codename -> row 0 -> the ✓ returned
+  false on master). Fixes (docs/systems/profile-session.md): menu::ProfileSession (the game's
+  session globals 0x2e1ae0/0x2e1ae8 [M C_KEYBOARD 0x213a98:53-57; P_NFRESULTS 0x208e78:30/145/
+  194] + the card dir) stashed on the App at every fe drop and inherited at every create (the
+  music statics' pattern); the boot seeds the card from settings::config_dir() + cn_reserved
+  from the lang binds (0x29b/0x211); menu::cnname_char_key + the window's CnName typing
+  branch (letters/digits -> the grid cell press [M 0x213a98 msg 0x4b], Backspace -> 1000);
+  demo_results inherits the session + sync_profile_progress (the game writes its MSSN from
+  the live state the results read). 4/4 create_save_live pass.
+- create-save: fixed + pinned. menu::ProfileSession (the session globals 0x2e1ae0/0x2e1ae8
+  [M C_KEYBOARD 0x213a98:53-57; P_NFRESULTS 0x208e78:30/145-152/194] + the card dir)
+  stashed on the App at every fe drop (menu_after, the pause resume, close_front_end, the
+  mission-load drop, the results/debriefing handovers) and inherited at every create (boot,
+  pause, debriefing, mp_results, demo_results, net_fail) — the music statics' pattern. The
+  boot seeds the card from settings::config_dir() + cn_reserved from the lang binds
+  (0x29b/0x211 [M 0x1f9930; D USATxt.dat]); menu::cnname_char_key maps typed letters/digits
+  to the grid's cell press [M 0x213a98 msg 0x4b] (Backspace = cell 1000), wired into the
+  window's key handler before key_action; demo_results inherits the session and runs
+  sync_profile_progress after results_enter (the game writes its MSSN from the live state
+  the results read). Profile: +Clone. Tests create_save_live 4/4 (the create through the
+  real action path, the typed letters, the next-boot offer + load, the mission-end save
+  through the handover — ASK_OVERWRITE then the disk nightfire_status 0b111). Regressions:
+  codename_entry 14, memcard_save_flow 7, save_progress_roundtrip 2, options_persist 3,
+  menus_flow 42, front_end_chain 2, pause_results_flows 4, fix_save_profile_live 2,
+  menu_graph_walk 2, menus_e2e/menu_sp_e2e/menu_movies/menus_backout 20, nf-game profile
+  lib 6, nf-formats 79 + nf-audio 79 lib — all pass. Full suite (all 4 crates, resumable
+  per-binary batches, every binary ran): 2012 passed, 6 failed, 73 ignored — the 6 are the
+  3 disc_golden (allowed on the slim ISO) + fix_0c_pylon_live 2 / probe_pylon_render 1
+  (wgpu request_adapter NotFound, active_backends 0x0 — no GPU in this sandbox; the tests
+  never construct a FrontEnd, unrelated to this task). Report:
+  docs/reports/create-save.md.
