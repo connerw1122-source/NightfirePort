@@ -139,12 +139,14 @@ fn the_throw_release_frame_and_the_re_throw_interval_match_the_game() {
     let (t1, s1) = pull_after(&mut scene, 100, 0);
     let s1 = s1.expect("the first mine never spawned");
     let press_to_spawn = s1 - t1;
-    // [M 0x1a2e38:416-420 + the record +0x44 = 26 [L]]: the fire script's anim time reaches 26.
-    // The anim clock runs at the game's script rate — the port's measured release is 17 ticks
-    // (26 script frames / 1.5 ≈ 17.3; the same clock the grenade family 0x35/0x36 plays at —
-    // their +0x44 is 0x1a too [L]). The game-side tick count is the report's live check L-1.
-    assert!((16..=19).contains(&press_to_spawn),
-        "the press→spawn delay must be the fire script's +0x44 = 26-frame release at the script clock, got {press_to_spawn}");
+    // fix-frag-throw-timing [M 0x1a5460:676-685 + 0x1a2e38 cases 0xb/0xc]: the mine's fire script
+    // 0x06000728 (40 frames [D]) plays out at 1.5× (ceil(39/1.5) = 26 ticks), then the +0xB4
+    // 0x06000729's playhead (1 + k) reaches +0x44 = 26 after 25 more [M AnimScriptInit 0x1c1600:37,
+    // AnimScriptTick 0x1c2630] → the release at press+51. The old window (+17..19) was the case-9
+    // gate against the fire script's playhead — the family's state leaves 9 inside the fire tick
+    // [M 0x1a5460:676-685], and the live check is case 0xc's [M 0x1a2e38:505-519].
+    assert!((50..=52).contains(&press_to_spawn),
+        "the press→spawn delay must be the +0xB4 playhead reaching +0x44 = 26 (press+51), got {press_to_spawn}");
 
     // The re-throw: the release arm re-armed +0x92C to max(+0x40, 1.0) [M 0x1a5460:661-663] — in
     // 60 Hz frames (−FRAME_RATE_MUL per update, :630). Press again on the FIRST tick it allows.
