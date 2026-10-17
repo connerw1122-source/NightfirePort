@@ -5,6 +5,7 @@
 // GoToGoalPosition (0x63) arms to the ally's 0x28, freezing guards on their way to a goal, and only this lint saw it.
 #![deny(unreachable_patterns)]
 
+pub mod aipoint;
 pub mod aivolume;
 pub mod prof;
 pub mod ally;

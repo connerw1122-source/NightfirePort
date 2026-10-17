@@ -17513,3 +17513,32 @@ and re-applying (3/3 pass): the two spawn tests + `a_06_guard_under_fire_takes_a
 UnderCoverIdle 0x94 within 1.5 of the in-cover point [M]). Census handled sets updated
 (HANDLED_PLACEMENT_TYPES 56 → 58; 0xE5/0xE6 were still listed unhandled since cover.rs landed in
 232f5392 — the pin was stale); both census docs updated.
+
+## ai-points (2026-10-17, branch s/ai-points) — started 01:10 UTC
+
+Task 747: port the `Drone_AIPoint` script entity (0xE9, `Drone_AIPoint` 0x137550 [M], 162
+placements) and wire it into the guards' route/patrol logic the way the game uses it. Test on
+07000007 (34 points). Plan: read the script-census entry, port the record from the decompile,
+write a test that fails without the fix, update script_census.rs handled sets, run the touched
+crates + the suite. Branch created from origin/master bee8c129.
+
+- ai-points: ported the 0xE9 AI-point record (`Drone_AIPoint` 0x137550 → crates/nf-game/src/aipoint.rs):
+  group = param 0 (u16, rec+0x2c), accuracy = param 1 (rec+0x30 — cvt.s.w ≥ 0, the srl/andi/or ×2 form for
+  negatives [M disasm 0x1375d4-614]), owner = param 2 (rec+0x34, matched against Drone+0x144 = placement
+  param 0x11 [M DefaultInit 0x14b300:472]), pos = +0x20 (the placement translation), the level_tag→param
+  mapping pinned off the ported `Drone_AIVolume_Create` 0x1376c0 (`+0x2c+4k` ↔ param k). The emitter binds
+  `NavPathForPosition` at creation [M 0x15b1e8] and `Drone_PostLoad_Init` 0x136938:78-86 emits the per-node
+  Dijkstra bytes — the port builds both at load (`aipoint::build`, the cover-node pattern). Wired:
+  `NDrone2_ClosestAIPoint` 0x151b18 (group filter, path match vs Drone+0x954 — now set at load per
+  `NDrone2_PostLoad_Init` 0x14d890:18-22, cost byte at the drone's nearest node, min-cost/first-tie, the
+  owner-match blocking [M 0x151b18:128-181]); `NDrone2_FindRunToPoint` 0x153168 (groups: prop 0x56→8,
+  0x4e→1, class 1→0/2→9/3→2); `DSTATE_EnemyRunToPoint` 0x168910 (prop 0x56 → 0x89; found → +0x5A0=+0x5A2,
+  class 1 → GoToGoalPosition 0x63, else HostageGoToGoalPosition 0x64 — newly ported 0x165a68);
+  `DSTATE_CivilianScared` 0x15d3a0's mode-7 arm (the +0xC6=7 marker, `scared_run` — the game sets it in
+  `DroneFunc_HandleImpact` 0x1469b8 on 07000009/0A only [M gate]). Tests (nf-game/tests/ai_points_live.rs,
+  NF_ISO): 07000007's 33 main-map records (group 2 / accuracy 1 / owner 0 [D]; the level's 34th is the
+  empty-params map-1 record), the selection rules, and the scared-guest run through the real router to the
+  closest point then CivilianHiding. script_census: 0xE9 handled (57 sim types). Left: the alarm-side wiring
+  (`FindAlarmPoint` 0x153008 found-arm → `DSTATE_PressAlarm` 0x168ea8/0x8A, `AssignAIPath`'s group-8 store
+  0x154190:55-66), the route-accuracy float (route+0x8c), the `+0xC6=7` msg attribution is [S] (all four
+  HandleImpact sites carry the same 09/0A level gate).

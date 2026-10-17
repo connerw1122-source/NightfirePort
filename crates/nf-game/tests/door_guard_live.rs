@@ -59,7 +59,7 @@ impl L {
         let world = nf_game::world::CollisionWorld::build(&level, &level.instances(true).0);
         let m = level.main_map().unwrap();
         let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap(), &world, 0x0700_0007);
-        let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
+        let covers = nf_game::cover::build(&level, &nav, &world);
         let volumes = nf_game::aivolume::build(&level, 0x0700_0007);
         let scripts = lb.entries.iter().filter(|e| e.kind == 5).filter_map(|e| nf_formats::anim::Script::parse(lb.data(&raw, e)).ok()).map(|s| (s.hashcode, s)).collect();
         let skeletons = lb.entries.iter().filter(|e| e.kind == 6).filter_map(|e| nf_formats::character::parse_skeleton(lb.data(&raw, e)).ok().map(|s| (s.id as u8, s))).collect();
@@ -80,7 +80,7 @@ impl L {
         Data {
             tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: 0x0700_0007,
             sequences: &self.sequences, skins: &self.level.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning,
-            hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: None, models: &self.models, surfaces: None, voices: None, difficulty: 1,
+            hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: None, models: &self.models, surfaces: None, voices: None, difficulty: 1, ai_points: &[],
         }
     }
 

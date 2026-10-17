@@ -1861,7 +1861,7 @@ mod tests {
         let world = TestWorld;
         let mut out = Vec::new();
         let mut p = Player { placement: 0, scripts: [0x0600_0832, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
-            live_matrix: IDENT, subs: Vec::new(), hit_points: 0.0, damage: 0.0, tick_damage: 0.0 };
+            live_matrix: IDENT, subs: Vec::new(), hit_points: 0.0, damage: 0.0, tick_damage: 0.0, hidden: false };
         p.load(&lib, &mut objs, &mut ch, &world, 0, &mut out);
         {
             let s = p.info[0].as_ref().unwrap();
@@ -1893,7 +1893,7 @@ mod tests {
         }));
         let mut objs2 = Objects::default();
         let mut p2 = Player { placement: 0, scripts: [0x0600_0833, 0], modes: [1, 0], stay: false, mask: 0, out: 0, gate: 0, scale: 1.0, matrix: IDENT, cur: 0, state: 7, activated: false, countdown: 0, info: [None, None], deleted: false,
-            live_matrix: IDENT, subs: Vec::new(), hit_points: 0.0, damage: 0.0, tick_damage: 0.0 };
+            live_matrix: IDENT, subs: Vec::new(), hit_points: 0.0, damage: 0.0, tick_damage: 0.0, hidden: false };
         p2.load(&lib, &mut objs2, &mut ch, &world, 0, &mut out);
         {
             let s = p2.info[0].as_ref().unwrap();

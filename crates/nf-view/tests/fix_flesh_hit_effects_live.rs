@@ -70,6 +70,7 @@ fn a_guard_hit_spawns_the_blood_puff_and_the_mesh_has_draw_slots() {
             skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
             hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
             surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
+            ai_points: &sim.ai_points,
         };
         let boxes = sim.drones.list[gi].hit_boxes(&data);
         let torso = boxes.iter().find(|b| b.part == 4).expect("the torso box");

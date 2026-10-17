@@ -15,11 +15,12 @@ const HANDLED_NIS_OPS: usize = 20;
 const HANDLED_EVENT_KINDS: usize = 15;
 /// The trigger action codes nf-game/src/triggers.rs `kind` module handles (game dispatches 8).
 const HANDLED_TRIGGER_ACTIONS: usize = 7;
-/// Placement types with any handling: 50 simulated + 8 draw-only (game: 73 spawn cases).
+/// Placement types with any handling: 51 simulated + 8 draw-only (game: 73 spawn cases).
 /// cover-nodes: 0xE5/0xE6 joined the simulated set (nf-game/src/cover.rs `from_placement` +
 /// `build` — the port spawns the game's `Drone_CoverCornerNode` 0x136ff0 / `Drone_CoverLowNode`
 /// 0x137340 nodes from every map entry [M 0x1d4880 case 0/1/2/0xb → 0x1d04f0 case 0xe5/0xe6]).
-const HANDLED_PLACEMENT_TYPES: usize = 58;
+/// ai-points: 0xE9 joined it (nf-game/src/aipoint.rs, `Drone_AIPoint` 0x137550).
+const HANDLED_PLACEMENT_TYPES: usize = 59;
 
 fn census() -> Option<&'static Census> {
     static C: OnceLock<Option<Census>> = OnceLock::new();
@@ -188,21 +189,22 @@ fn trigger_action_census_matches_the_doc() {
 fn placement_type_census_matches_the_doc() {
     let Some(c) = census() else { eprintln!("skip: NF_ISO not set"); return };
     assert_eq!(c.placements, 7372, "dynamic-eligible placement records (flags bit 0xa000 clear)");
-    // The 16 unhandled-or-ignored types, most-occurring first (docs/systems/script-census.md).
+    // The 15 unhandled-or-ignored types, most-occurring first (docs/systems/script-census.md).
     // cover-nodes: 0xE5 (584) / 0xE6 (384) moved out of this list — the old pin contradicted the
     // code since cover.rs landed (232f5392); the kinds were still counted "unhandled" here.
-    let want: &[(u8, u64)] = &[(0xe9, 162), (0xe4, 64), (0x28, 62), (0x2d, 51),
+    // ai-points: 0xE9 (162) moved out too (aipoint.rs).
+    let want: &[(u8, u64)] = &[(0xe4, 64), (0x28, 62), (0x2d, 51),
         (0xff, 39), (0x27, 41), (0xdd, 33), (0xf6, 33), (0xf7, 33), (0xfb, 15), (0x2c, 15), (0x39, 8),
         (0xf3, 8), (0x2b, 3), (0x38, 1), (0xf4, 1)];
     for (t, n) in want { assert_eq!(c.placement_types.get(t), Some(n), "type 0x{t:02x}"); }
     let unhandled: u64 = want.iter().map(|(_, n)| n).sum();
-    assert_eq!(unhandled, 569, "records on unhandled types (1399 game-handled + 138 neither side touches)");
+    assert_eq!(unhandled, 407, "records on unhandled types (269 game-handled + 138 neither side touches)");
     // The cover-node kinds the port now acts on (still game-handled too): every 0xE5/0xE6 placement
     // of every map entry becomes a CoverNode (nf-game/src/cover.rs `build`).
     assert_eq!(*c.placement_types.get(&0xe5).unwrap(), 584, "cover corner placements");
     assert_eq!(*c.placement_types.get(&0xe6).unwrap(), 384, "cover low placements");
     assert_eq!(c.placement_types.values().sum::<u64>(), 7372, "type histogram covers every record");
-    assert_eq!(HANDLED_PLACEMENT_TYPES, 56, "48 sim + 8 draw-only (game: 73 spawn cases)");
+    assert_eq!(HANDLED_PLACEMENT_TYPES, 59, "51 sim + 8 draw-only (game: 73 spawn cases)");
 }
 
 #[test]

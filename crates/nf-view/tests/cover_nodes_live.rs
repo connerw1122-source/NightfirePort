@@ -79,7 +79,7 @@ fn a_06_guard_under_fire_takes_a_game_cover_node() {
             world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins,
             skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
             hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
-            surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
+            surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty, ai_points: &sim.ai_points,
         };
         let mut best: Option<(usize, [f32; 3])> = None;
         let mut best_score = f32::INFINITY;
@@ -163,7 +163,7 @@ fn a_06_guard_under_fire_takes_a_game_cover_node() {
                 world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins,
                 skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
                 hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
-                surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
+                surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty, ai_points: &sim.ai_points,
             };
             let mut states: Vec<String> = Vec::new();
             for (k, &li) in sim.drones.llist.iter().enumerate() {

@@ -43,6 +43,9 @@ pub mod state {
     pub const NO_OPPONENT: u8 = 0x60;
     pub const DRONE_STUCK: u8 = 0x7f;
     pub const GO_TO_GOAL: u8 = 0x63;
+    /// `NDrone2_DSTATE_HostageGoToGoalPosition` 0x165a68 (state 100): the hostages'/scared civilians'
+    /// goal run — `Drone+0x6F0`'s point, the run/walk anims, arrive → `+0x5A2`.
+    pub const HOSTAGE_GO_TO_GOAL: u8 = 0x64;
     /// Hit and death (docs/systems/drone-damage.md).
     pub const DEATH_ANIM: u8 = 0x44;
     pub const SPECIAL_DEATH: u8 = 0x46;
@@ -393,6 +396,9 @@ pub struct Data<'a> {
     /// (`C_SBNFDFCTY_Handler` 0x216dc4); the scored member at +0x40 (0x2a37a8) stays 0 in play
     /// [L ee_start_05.bin] (mirrored from `Drones::difficulty` in the view's `data()`).
     pub difficulty: u32,
+    /// AI points (placements 0xE9, `Drone_AIPoint` 0x137550): the run-to points of
+    /// `NDrone2_ClosestAIPoint` (0x151b18).
+    pub ai_points: &'a [crate::aipoint::AiPoint],
 }
 
 /// A bullet that hit a drone (HITDATA): the part (bone id), the ray (`+0x30`), the point, damage (`+0x08`), weapon.
@@ -1002,6 +1008,10 @@ pub struct Drone {
     /// 0x163c68 case 5). Drained by `Drones::tick` straight into `drones.audio`. Own line (merge
     /// lesson 4).
     pub sfx_reqs: Vec<(u32, V3)>,
+    /// `Drone+0xC6` = 7 (the scared-run mode `DroneFunc_HandleImpact` sets for civilians on
+    /// 07000009/0A [M 0x1469b8:103-127, level-gated `GameState+0xf8fffff7 < 2`]):
+    /// `DSTATE_CivilianScared` 0x15d3a0 then runs `NDrone2_FindRunToPoint`.
+    pub scared_run: bool,
     /// `comm+0x73c`'s stand-in for `BOT_handlePain` (0x125ed8): the handle of the currently playing
     /// pain grunt, stopped before the next pool play (`Sound_Stop_Ref` 0x1de370) [M 0x126168-0x1261a0].
     pub pain_grunt: Option<u32>,
@@ -1287,6 +1297,8 @@ impl Drone {
             // fix-room-sound: the foley one-shot outbox + the pain-grunt handle (own lines — merge lesson 4).
             foley_reqs: Vec::new(), pain_grunt: None,
             sfx_reqs: Vec::new(),
+            // ai-points: the scared-run mode marker +0xC6 (own line — merge lesson 4).
+            scared_run: false,
             // fix-facial3: the blink driver state + the facial script slots (own line — merge lesson 4).
             facial_state: 0, facial_timer: 0, facial_reappend: false, facial_idle: None, facial_blink: None, last_tick: 0,
             alert_block: alert_props.map_or(0.0, |w| nf_formats::drone::ALERTNESS_LEVELS[d.props.get(0x20, &w) as usize & 3]),
@@ -1479,9 +1491,9 @@ impl Drone {
 
     /// `NDrone2_AssignAIPath(mask)`: the nearest node (2D, < 0.3) of a path with `kind & mask` → `InitAIPath`.
     /// *Deviation*: "in the drone's cel" is replaced by "within 2 units of the feet in height".
-    /// `NDrone2_ClosestAIPoint` (0x151b18) — the port has no typed AI-point registry, so any
-    /// "route to the closest point of type k" ask (e.g. `NDrone2_FindAlarmPoint` 0x153008's
-    /// type-8 alarm search) degrades to this generic path assignment [S deviation].
+    /// `NDrone2_ClosestAIPoint` (0x151b18) — the typed registry lives in `aipoint` now; the
+    /// AssignAIPath alarm-point store and `NDrone2_FindAlarmPoint` (0x153008) still degrade to
+    /// this generic path assignment [S deviation — 07000007 has no group-8 points or kind-8 paths].
     fn assign_path(&mut self, d: &Data, mask: u32) -> bool {
         let feet = self.feet();
         let mut best: Option<(f32, usize, u16)> = None;
@@ -3441,19 +3453,22 @@ impl Drone {
         true
     }
 
-    /// `NDrone2_FindRunToPoint` (0x153168): the point kind by behaviour — prop 0x56 → 8 (the alarm
-    /// panels), prop 0x4e → 1, else by team (1 → 0, 2 → 9, 3 → 2 with a type-1 fallback) [M :14-33];
-    /// found iff the move code lands 0..3 [M-dis jump table 0x2f6450].
+    /// `NDrone2_FindRunToPoint` (0x153168): the point group by behaviour — prop 0x56 → 8 (the alarm
+    /// panels), prop 0x4e → 1, else by team (1 → 0, 2 → 9, 3 → 2 with a group-1 fallback) [M :14-33]
+    /// (`aipoint::run_to_point_group`); `NDrone2_ClosestAIPoint` 0x151b18 over the level's AI points
+    /// (`aipoint::closest`: the nav-path match, the emitter cost at the drone's node, the owner rule
+    /// [M 0x151b18:128-181]); a hit sets the goal to the point's position (+0x20) —
+    /// `SetupGoalPosition` + `MoveToGoalPosition` [M 0x153168:32-44] — and is found iff the move code
+    /// lands 0..3 [M-dis jump table 0x2f6450]. Merge batch-1016c: s/ai-points' [M] selection replaces
+    /// drone-press-alarm's route-probe stand-in ([S]); master's fallback and move-code gate are kept.
     fn find_run_to_point(&mut self, d: &Data) -> bool {
-        let kind = if self.prop(d, 0x56) { 8 } else if self.prop(d, 0x4e) { 1 }
-            else { match self.team { 1 => 0, 2 => 9, 3 => 2, _ => return false } };
-        let Some((_, pos)) = self.closest_ai_point(kind) else {
-            if kind != 2 { return false; }
-            let Some((_, pos)) = self.closest_ai_point(1) else { return false };
-            self.goal = Some(pos);
-            return matches!(self.move_to_goal(d), 0..=3);
-        };
-        self.goal = Some(pos);
+        let Some(group) = crate::aipoint::run_to_point_group(self.prop(d, 0x56), self.prop(d, 0x4e), self.team) else { return false };
+        let owner = d.props.get(0x11, &self.props) as i32; // Drone+0x144 = placement parameter 0x11 [M DefaultInit 0x14b300:472]
+        let path = self.nav_path.flatten();
+        let hit = crate::aipoint::closest(d.ai_points, d.nav, d.world, path, self.pos, group, owner)
+            .or_else(|| if group == 2 { crate::aipoint::closest(d.ai_points, d.nav, d.world, path, self.pos, 1, owner) } else { None });
+        let Some(pi) = hit else { return false };
+        self.goal = Some(d.ai_points[pi].pos);
         matches!(self.move_to_goal(d), 0..=3)
     }
 
@@ -5316,12 +5331,18 @@ impl Drone {
             (CIVILIAN, msg::BULLET) => self.on_bullet_resume(d, rng, frame, CIVILIAN_SCARED, false),
             (CIVILIAN, msg::SOUND | msg::ALARM) => { if let Some(n) = self.enemy_alerts(d, s) { self.set_state(n); } true }
             (CIVILIAN, msg::FORCED_ATTACK) => { self.set_state(ATTACK); true }
-            // CivilianScared (0x15d3a0) ENTER: vision on, alert 2 (`Drone_AlertStatusSet(2)`), the scared talk, then
-            // CivilianHiding (0x13) — the game's alt-mode 7 run-to-point (0x64) has no node data in the port.
+            // CivilianScared (0x15d3a0) ENTER: vision on, alert 2 (`Drone_AlertStatusSet(2)`), the scared talk;
+            // with the scared-run mode (+0xC6 == 7) `FindRunToPoint` first — found → return state 0x13 and
+            // HostageGoToGoalPosition 0x64, none → CivilianHiding [M 0x15d3a0:34-52].
             (CIVILIAN_SCARED, msg::ENTER) => {
                 self.vision_on = true;
                 self.alert = 1.0;
                 self.pain_talk(d); // the closest port line: the hurt/scared voice of the set
+                if self.scared_run && self.find_run_to_point(d) {
+                    self.return_state = CIVILIAN_HIDING;
+                    self.set_state(HOSTAGE_GO_TO_GOAL);
+                    return true;
+                }
                 self.set_state(CIVILIAN_HIDING);
                 true
             }
@@ -5996,17 +6017,24 @@ impl Drone {
                 true
             }
             // EnemyRunToPoint 0x85 (`NDrone2_DSTATE_EnemyRunToPoint` 0x168910): the alarm-raiser gate
-            // first — prop 0x56 set → RunToAlarm 0x89 [M :17-27]; then the return state 0x56, on
-            // 11/12/13/41 with the player not yet seen → 4/5; FindRunToPoint's none-found arm (the
-            // sweep levels' mode-7 drones provably stand [M 0x168910:32-36]).
+            // first — prop 0x56 set → RunToAlarm 0x89 [M :17-27]; then the return state +0x5A2 (0x56, on
+            // 11/12/13/41 with the player never seen 4/5 [M 0x168910:34-43]), then `FindRunToPoint`:
+            // none → the return state; found → +0x5A0 = +0x5A2 and class 1 → GoToGoalPosition 0x63, else
+            // HostageGoToGoalPosition 0x64 [M 0x168910:44-56] (s/ai-points).
             (crate::kiko::ENEMY_RUN_TO_POINT, msg::ENTER) => {
-                if self.prop(d, 0x56) { self.vision_on = true; self.set_state(crate::kiko::RUN_TO_ALARM); return true; }
                 self.vision_on = true;
+                if self.prop(d, 0x56) { self.set_state(crate::kiko::RUN_TO_ALARM); return true; }
                 let mut ret = ATTACK;
                 if matches!(d.level, 0x0700_0011 | 0x0700_0012 | 0x0700_0013 | 0x0700_0041) && !self.ever_seen {
                     ret = if self.alert < 0.66 { IDLE } else { ALERT };
                 }
-                self.set_state(ret);
+                self.return_state = ret;
+                if self.find_run_to_point(d) {
+                    self.alt_state = ret;
+                    self.set_state(if self.team == 1 { GO_TO_GOAL } else { HOSTAGE_GO_TO_GOAL });
+                } else {
+                    self.set_state(ret);
+                }
                 true
             }
             // DeleteMe 0xb4 (0x173f00): the soft removal (NDrone2_Enable(0) + obj+0xfe |= 1).
@@ -7079,6 +7107,10 @@ pub fn level_drones(d: &Data, level: &nf_formats::level::Level, rng: &mut Rng, l
         let floor = d.world.floor_below(p.translation, 3.0).unwrap_or(p.translation[1] - 1.0);
         let mut dr = Drone::new(d, [p.translation[0], floor + 1.0, p.translation[2]], p.rotation[1], param, rng);
         dr.placement = i;
+        // `NDrone2_PostLoad_Init` 0x14d890:18-22: every drone's nav path (+0x954) is
+        // `AINetwork_NavPathForPosition(drone pos)` at level load — the path `ClosestAIPoint`
+        // matches the AI points against [M 0x151b18:130].
+        dr.nav_path = Some(d.nav.nav_path_for(dr.pos));
         Some(dr)
     }).collect()
 }
@@ -11215,6 +11247,8 @@ mod tests {
             // fix-room-sound: the foley one-shot outbox + the pain-grunt handle (own lines — merge lesson 4).
             foley_reqs: Vec::new(), pain_grunt: None,
             sfx_reqs: Vec::new(),
+            // ai-points: the scared-run mode marker +0xC6 (own line — merge lesson 4).
+            scared_run: false,
             // fix-anim-events: the EventFunc outboxes (own lines — merge lesson 4).
             weapon_swap: 0, pending_melee: None, pending_weapon_swap: false, recoil_weapon: false,
             // fix-facial3: the blink driver state + the facial script slots (own line — merge lesson 4).
