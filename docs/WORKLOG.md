@@ -16727,3 +16727,9 @@ difficulty table read from ACTION.ELF .data 0x2df4c0: rows 0x14d/0x14e/0x14f, +0
 unlocked [D] — the labels normalised (1 = Operative). Side effect found: the 5 %-loss net e2e
 lost the one-shot match-start DATA once the lobby's packet count shifted; mpnet now repeats the
 start payload for 120 polls (the client keeps the first). Gaps left: G-048.
+
+## hurt-volumes (2026-10-17, branch s/hurt-volumes) — started 00:52 UTC
+
+Task: hurt volumes (script op 0xE4), Hurt_Create 0x17e870 and its update — 64 placements.
+Damage kind and rate from the params. Test: standing in one damages Bond at the game's rate
+and type; outside, nothing. Sister assertion on real levels, script census handled-sets update.
