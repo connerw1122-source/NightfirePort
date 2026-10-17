@@ -156,7 +156,7 @@ fn cross(a: V3, b: V3) -> V3 { [a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * 
 fn lerp(a: V3, b: V3, t: f32) -> V3 { [a[0] + (b[0] - a[0]) * t, a[1] + (b[1] - a[1]) * t, a[2] + (b[2] - a[2]) * t] }
 
 /// Closest distance between point p and triangle t.
-fn point_triangle(p: V3, t: &[V3; 3]) -> f32 {
+pub(crate) fn point_triangle(p: V3, t: &[V3; 3]) -> f32 {
     let (e0, e1) = (sub(t[1], t[0]), sub(t[2], t[0]));
     let n = cross(e0, e1);
     let nn = dot(n, n);
@@ -170,7 +170,7 @@ fn point_triangle(p: V3, t: &[V3; 3]) -> f32 {
 }
 
 /// Closest distance between segments p1–q1 and p2–q2.
-fn segment_segment(p1: V3, q1: V3, p2: V3, q2: V3) -> f32 {
+pub(crate) fn segment_segment(p1: V3, q1: V3, p2: V3, q2: V3) -> f32 {
     let (d1, d2, r) = (sub(q1, p1), sub(q2, p2), sub(p1, p2));
     let (a, e, f) = (dot(d1, d1), dot(d2, d2), dot(d2, r));
     let (s, t) = if a <= 1e-12 && e <= 1e-12 { (0.0, 0.0) } else if a <= 1e-12 { (0.0, (f / e).clamp(0.0, 1.0)) } else {
@@ -189,7 +189,7 @@ fn segment_segment(p1: V3, q1: V3, p2: V3, q2: V3) -> f32 {
 }
 
 /// Whether the segment a–b crosses triangle t.
-fn segment_hits_triangle(a: V3, b: V3, t: &[V3; 3]) -> bool {
+pub(crate) fn segment_hits_triangle(a: V3, b: V3, t: &[V3; 3]) -> bool {
     let d = sub(b, a);
     let (e1, e2) = (sub(t[1], t[0]), sub(t[2], t[0]));
     let p = cross(d, e2);
