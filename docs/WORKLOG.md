@@ -18410,3 +18410,8 @@ directly. Report: docs/reports/level-07-interactables.md.
   ticks, no falls. Ran: walkreal_07000007_live 2/2, nf-game 509/0, the six sibling 07 binaries
   34/0 (suite.py background-killed by the sandbox as before; the foreground runs stand in).
   Report: docs/reports/level-07-complete.md.
+- 2026-10-17 s/level-03-interactables-2 (task 703c): started. Task: re-land
+  s/level-03-interactables on the newest master — keep ONE breakables system
+  (master's Breaks, extended with the level-03 version's bullet reject mask,
+  glass pierce, per-kind sounds, census), move the level-03 tests and fixes
+  onto it, keep both branches' tests green. In progress.
