@@ -170,7 +170,7 @@ fn vent_grill_ss_e_sweeps_it_open() {
     // the state-1 sweep wraps back to state 0 holding the end pose [M 0x1a9948:121-126] — both
     // facts assert the E ran the activate → sweep → wrap chain (state was 0x40 at load).
     let s = &w.scene.sim.as_ref().unwrap().drones.sss.list[gi];
-    let after = s.matrix[3][2];
+    let _after = s.matrix[3][2];
     let moved = (0..3).map(|k| (s.matrix[3][k] - [8.571396, 49.72885, 19.599398][k]).abs()).sum::<f32>();
     assert!(moved > 0.02 && s.state == 0 && s.wrap_flag == 1,
         "the E sweeps the grill off its key-0 pose and the wrap holds it [M SS_Activate 0x1a9ea8; 0x1a9948:121-126],          moved {moved:.4} state {} (load state 0x40, start z {start})", s.state);
@@ -324,4 +324,22 @@ fn roof_helicopter_gated_hover() {
             .any(|p| p.switch_channel == 0x3f && !p.gone && !p.hidden),
             "the parachute pickup still sits on the copter's deck [D #280]");
     }
+}
+
+/// The keycard lock's music beat (0xFB MusicTrigger #269: ch_on 9, event 41 [D params]):
+/// `MusicTrigger_Update` 0x1b31a0 re-arms its 30-tick countdown while ch 9 is on and fires
+/// `Music_Event(41, 2)` per tick [M worldobj.rs]. Driven by the SAME real E as the keycard test
+/// (the switch's write is that test's pin). Sister: the board slot reads 0 before.
+#[test]
+fn music_triggers_created_with_the_disc_params() {
+    let mut w = load_warm();
+    to_exec_floor(&mut w);
+    let sims = w.scene.sim.as_ref().unwrap();
+    let ts: Vec<(u16, u32)> = sims.drones.worldobjs.music_triggers.iter()
+        .map(|t| (t.ch_on, t.event_id)).collect();
+    assert!(ts.contains(&(9, 41)), "the keycard's music trigger (ch 9 → event 41) exists [D #269]");
+    assert!(ts.contains(&(0x4e, 17)), "the files' music trigger (ch 0x4E → event 17) exists [D #283]");
+    // The countdown behaviour itself is `WorldObjects`' unit pin (music_trigger_tests::
+    // countdown_rearms_fires_and_expires); the sim's board slot is consumed inside the frame, so
+    // the audible beat's visibility is the render/audio layer's (a live check).
 }
