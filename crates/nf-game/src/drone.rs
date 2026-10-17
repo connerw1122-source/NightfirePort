@@ -7217,6 +7217,14 @@ pub struct Drones {
     /// The pending level-exit request: when a `LOAD_LEVEL` (0xE8) trigger fires, the next level's hashcode
     /// (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad` 0x1d3800). The main loop reads this to reload [M].
     pub level_exit: Option<u32>,
+    /// mayhew-end-transition: the exit hold — `Trigger_Activate`'s `GS_PauseGame(1)` +
+    /// `GameFlow_PushState(300.0f, 7, 0xff)` [M 0x1b2318:90-92]. While it stands the world is
+    /// frozen (the game's clock stops while paused [M 0x1c98c8:44-47]) and the loader waits
+    /// under the fade (state 8 pops onto state 3 = `ResetMap_Load` only when the fade ends
+    /// [M 0x1c9f38:18-24, 0x1c98c8:173-189]); the host defers the `level_exit` drain until it
+    /// clears. Set by BOTH `Trigger_Activate` arms (the auto-fire and the use key); NOT by the
+    /// script event-0x12 loadmap [M 0x1d94c0:194-199]. See docs/systems/exit-hold.md.
+    pub exit_hold: Option<ExitHold>,
     /// The mission's own end (`Mission_Update` 0x182c60 case 4's `ResetMap_LevelToLoad(LevelToEndTo)`
     /// to the front end or an outro/interlude code, not the next 0x0700 level): the host runs the
     /// game's end sequence (the outro movie when the level has one, then the results page).
@@ -7493,6 +7501,20 @@ impl Data<'_> {
     }
 }
 
+/// mayhew-end-transition: one active exit hold (docs/systems/exit-hold.md). `total` = the fade
+/// duration `GameFlow_PushState` was given (300 frames from `Trigger_Activate` [M 0x1b2318:92,
+/// 0x43960000 = 300.0f]); `fade_frames` counts it down on the fixed tick (the game advances the
+/// fade on the render-side `Camera_UpdateAll` [M 0x1c9790 tail] — same 300-frame length).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ExitHold {
+    /// The level `Trigger_Activate` passed to `ResetMap_LevelToLoad` (ext+0x20) [M 0x1b2318:91].
+    pub next: u32,
+    /// The fade frames left; the overlay alpha is `1 − left/total` (linear [M 0x1bbdd8:11-33]).
+    pub fade_frames: u32,
+    /// The duration the push carried (300 on every trigger exit today).
+    pub total: u32,
+}
+
 impl Drones {
     pub fn new(mut list: Vec<Drone>, rng: Rng) -> Drones {
         // `Drone_SM_InitObject` numbers state machines in creation order (the base is not known: 0 here).
@@ -7561,8 +7583,29 @@ impl Drones {
             driving_stats: Default::default(),
             driving_result: crate::ptp::DriveResult::Success,
             driving_return: None,
+            // mayhew-end-transition: no hold at build (own line — merge lesson 4).
+            exit_hold: None,
     };
         drones
+    }
+
+    /// mayhew-end-transition: one tick of the exit hold — the fade counts down (the game advances
+    /// it on the every-frame `Camera_UpdateAll` [M 0x1c9790 tail]) while the world stays frozen;
+    /// returns true while the WORLD must skip this tick. The expiry tick stays frozen too: the
+    /// game's state 8 pops straight onto state 3 (`ResetMap_Load`) [M 0x1c98c8:173-189] — the
+    /// host drains `level_exit` that frame and the load replaces the scene before the next tick.
+    pub fn tick_exit_hold(&mut self) -> bool {
+        let Some(h) = self.exit_hold.as_mut() else { return false };
+        h.fade_frames = h.fade_frames.saturating_sub(1);
+        if h.fade_frames == 0 { self.exit_hold = None; }
+        true
+    }
+
+    /// The draw code's fade read: `(frames_left, total)` while the exit fade runs — the black
+    /// overlay's alpha is `1 − left/total` (linear, the rate `Camera_SetFade` stored
+    /// [M 0x1bbdd8:11-33]). `None` = no hold (the scene draws normally).
+    pub fn exit_fade(&self) -> Option<(u32, u32)> {
+        self.exit_hold.as_ref().map(|h| (h.fade_frames, h.total))
     }
 
     /// `GameState+0x28`'s setter (C_SBNFDFCTY_Handler 0x216ca8 stores the difficulty page's
@@ -8786,6 +8829,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                     self.level_exit = Some(next);
                     self.music.event(3, 1);
                     self.triggers[i].gone = true;
+                    // mayhew-end-transition: the use-key arm runs the SAME `Trigger_Activate`
+                    // tail [M 0x1b2318:89-96 via `Player_Activate` 0x1a5170:100-108] — the hold
+                    // goes here too (docs/systems/exit-hold.md).
+                    if self.exit_hold.is_none() {
+                        self.exit_hold = Some(ExitHold { next, fade_frames: 300, total: 300 });
+                    }
                 }
             } else if !sets.is_empty() {
                 // TouchOnce: latch gone so it doesn't fire again.
@@ -9713,10 +9762,18 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                 // `LOAD_LEVEL` (0xE8): when the exit trigger fires, carry the next level's hashcode for the main loop
                 // to reload (`Trigger_Activate` 0x1b2318 → `ResetMap_LevelToLoad`). Also post `Music_Event(3, 1)`
                 // (the end-sting) and `GS_PauseGame(1)` (the pause during transition) [M 0x1b2318:108-110].
+                // mayhew-end-transition: `GS_PauseGame(1)` is now MODELLED, not just cited — the exit
+                // hold freezes the world for the 300 frames of the push that follows
+                // `GameFlow_PushState(300.0f, 7, 0xff)` [M 0x1b2318:90-92]; the host defers the
+                // `level_exit` drain until it clears (docs/systems/exit-hold.md).
                 if self.triggers[index].kind == crate::triggers::kind::LOAD_LEVEL && self.triggers[index].gone && self.triggers[index].next_level != 0 {
                     if self.level_exit.is_none() {
                         self.level_exit = Some(self.triggers[index].next_level);
                         self.music.event(3, 1);
+                        // [M 0x1b2318:90-92] GS_PauseGame(1) + PushState(300.0f, 7) — the hold.
+                        if self.exit_hold.is_none() {
+                            self.exit_hold = Some(ExitHold { next: self.triggers[index].next_level, fade_frames: 300, total: 300 });
+                        }
                     }
                 }
                 // NF_LEVELLOG=1: once per second, log each LOAD_LEVEL trigger's gate channel, whether the gate

@@ -3492,10 +3492,20 @@ impl ApplicationHandler for App {
                             }
                         }
                         if let Some(next) = sim.drones.level_exit.take() {
-                            let resolved = nf_game::triggers::resolve_exit_code(next);
-                            if resolved != next { eprintln!("level: exit {next:08x} resolves to {resolved:08x} [M 0x1d3560]"); }
-                            eprintln!("level: exit trigger fired → loading {resolved:08x}");
-                            self.pending_level = Some(resolved);
+                            // mayhew-end-transition: the exit hold — `Trigger_Activate` pushed
+                            // `GameFlow_PushState(300.0f, 7, 0xff)` AFTER `ResetMap_LevelToLoad`
+                            // [M 0x1b2318:90-92]: the loader (state 3) sits UNDER the fade (state
+                            // 8), which pops only when the 300-frame fade ends [M 0x1c9f38:18-24,
+                            // 0x1c98c8:173-189]. Defer the drain while the hold runs; the load
+                            // starts the frame after it clears (docs/systems/exit-hold.md).
+                            if sim.drones.exit_hold.is_some() {
+                                sim.drones.level_exit = Some(next);
+                            } else {
+                                let resolved = nf_game::triggers::resolve_exit_code(next);
+                                if resolved != next { eprintln!("level: exit {next:08x} resolves to {resolved:08x} [M 0x1d3560]"); }
+                                eprintln!("level: exit trigger fired → loading {resolved:08x}");
+                                self.pending_level = Some(resolved);
+                            }
                         }
                         if !self.noclip {
                             let h = sim.bond.head();
