@@ -16760,3 +16760,8 @@ start payload for 120 polls (the client keeps the first). Gaps left: G-048.
   before running `release_frame_reached`. Test: frag_throw_timing_live (press+71, not the
   playhead-26 crossing, the fire script still playing at tick ≤20, one grenade per press, the
   record speed); the sister pins the fire script uninterrupted past the old crossing.
+- The three tests that pinned the old gate (fix_grenade_release_live's release + launch-position,
+  remote_mine_detonate's release frame) contradicted the decompile — fixed per the task rule, with
+  the addresses in the assertions: the release is the +0xB4 playhead reaching +0x44 (case 0xc
+  [M 0x1a2e38:505-519]), the frag at press+71, the mine (fire 40 frames at 1.5× = 26 ticks) at
+  press+51. All four grenade-family test files green on the fixed tree.
