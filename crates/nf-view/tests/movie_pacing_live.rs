@@ -16,7 +16,7 @@ fn the_intro_never_plays_faster_than_30_fps() {
     };
     // 0x07370048 is the first intro movie (the 007 logo) [the intro pair, menu::INTRO_MOVIES].
     let code = nf_view::menu::INTRO_MOVIES[0];
-    let mut p = match nf_view::movie::Player::start(path.to_string_lossy().as_ref(), code) {
+    let mut p = match nf_view::movie::Player::start(path.to_string_lossy().as_ref(), code, 100) {
         Ok(p) => p,
         Err(e) => { eprintln!("skip: {code:08x} not startable here: {e:?}"); return; }
     };

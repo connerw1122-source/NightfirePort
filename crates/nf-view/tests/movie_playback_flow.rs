@@ -192,14 +192,16 @@ fn a_failed_mission_returns_to_the_map_without_a_movie() {
 
 /// The `UsingMovie` whitelist [M 0x107eb8]: an unlisted code never starts (the game's
 /// psiStartBackgroundMovie returns before opening anything, so state 6 exits on frame 1), whatever
-/// image is mounted. The check runs before any file IO, so this needs no ISO.
+/// image is mounted. The check runs before any file IO, so this needs no ISO. The volume arg is
+/// the boot `SfxMasterVolume` 100 [L 0x30c95c] — irrelevant to the gate, which runs first [M
+/// 0x1081a8: the whitelist check precedes the MovieVolume store].
 #[test]
 fn unwhitelisted_codes_never_start_a_movie() {
-    assert!(matches!(movie::Player::start("/nonexistent/no.iso", 0x0710_0002), Err(StartError::NotWhitelisted)),
+    assert!(matches!(movie::Player::start("/nonexistent/no.iso", 0x0710_0002, 100), Err(StartError::NotWhitelisted)),
         "0x7100002 is not in UsingMovie [M 0x107eb8]");
-    assert!(matches!(movie::Player::start("/nonexistent/no.iso", 0x0730_000f), Err(StartError::NotWhitelisted)),
+    assert!(matches!(movie::Player::start("/nonexistent/no.iso", 0x0730_000f, 100), Err(StartError::NotWhitelisted)),
         "0x730000f is not whitelisted — level 0x0f's silent outro [M]");
-    assert!(matches!(movie::Player::start("/nonexistent/no.iso", 0x0710_0005), Err(StartError::NoMovieData(_))),
+    assert!(matches!(movie::Player::start("/nonexistent/no.iso", 0x0710_0005, 100), Err(StartError::NoMovieData(_))),
         "a whitelisted code passes the gate and reaches the file open [M 0x1081a8]");
 }
 
@@ -211,7 +213,7 @@ fn unwhitelisted_codes_never_start_a_movie() {
 fn the_briefing_movie_plays_from_the_retail_image() {
     let Some(path) = std::env::var_os("NF_MOVIE_ISO") else { eprintln!("skip: NF_MOVIE_ISO (a retail image with movie data) is not set"); return };
     let iso = nf_formats::iso9660::IsoImage::open(&path).unwrap();
-    let mut p = match movie::Player::start(path.to_string_lossy().as_ref(), 0x0710_0001) {
+    let mut p = match movie::Player::start(path.to_string_lossy().as_ref(), 0x0710_0001, 100) {
         Ok(p) => p,
         Err(StartError::NoMovieData(_)) => { eprintln!("skip: this image has no movie data"); return; }
         Err(e) => panic!("start failed: {e:?}"),
@@ -243,7 +245,7 @@ fn the_stubbed_image_declines_real_playback() {
     let iso = nf_formats::iso9660::IsoImage::open(&path).unwrap();
     let probe = iso.find("/MOVIES/30_FPS/07100005.PSS");
     match probe.map(|e| e.size) {
-        Some(0) => assert!(matches!(movie::Player::start(path.to_string_lossy().as_ref(), 0x0710_0005), Err(StartError::NoMovieData(_))),
+        Some(0) => assert!(matches!(movie::Player::start(path.to_string_lossy().as_ref(), 0x0710_0005, 100), Err(StartError::NoMovieData(_))),
             "the 0-byte stub is refused (the game would hang in strFileOpen [M 0x108cc0])"),
         Some(_) => { let _ = iso; eprintln!("this image has movie data — nothing to assert here"); }
         None => eprintln!("no movie directory on this image"),
