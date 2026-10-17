@@ -17891,3 +17891,22 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   with its per-level substitutions [M]), port the missing sources. Tests: per-level skinless
   counts drop to the game's (0 or cited exceptions), with the skin hash each placement resolves
   to; ISO-gated, numbers/ids only; no drawing. Branch from origin/master 3456a72f.
+- drone-skins-g021: G-021 settled by tracing the whole skin path [M LoaderLoad 0x1d4a00 →
+  LoaderProcess 0x1d4880 case 3 → AnimLoadFile 0x1bdf40 first-wins → hashtable_getitem 0x1ca5b0
+  → AnimObjectNew 0x1be910; nothing frees skins — the only deletions are the hashtype-4 pack
+  wipes 0x1d69e8/0x1d6ab0 + 0x1ca520 and Script_FreeFromHashTable 0x1daec0] and scanning all 99
+  FILES.BIN containers' type-3 sub-files [D]: 0x05000090 lives in 07000049/0d/15/16, 0x050000b1
+  ONLY in 07000015/16 — both after 07000014 in story order, so the 11 b1 placements resolve for
+  no fresh story session and the game renders them skinless (AnimObjectNew 0x1be910:44-46 miss,
+  NDrone2_DefaultInit 0x14b300:563-565 discards the return) except captains (0x14b300:536-555
+  swaps kinds 6/7 → 0x05000093/0x050000b2, both in 14's own archive). The 22 0x05000090
+  placements resolve via the substitution. Port: the G-021 merge is session-gated (front-end
+  07000048 + story-earlier containers only), the draw resolves drone placements through the
+  post-captain-swap hash (pure `captain_skin` shared with `captain_setup`, which now reads
+  `captain_skin_of_kind`), 07000002's two kind-1 captains now draw 0x05000038 like the game.
+  The two old models-characters G-021 tests re-pinned to the game (the foreign-merge
+  expectation pinned the pre-gate port, not the game) — addresses in the test headers. Census
+  drone_skins_all_levels_live green (per-level resolved hashes, the skinless b1 set, the
+  substitution content equality, the sleeve rule). Affected suites green: models_characters 6,
+  cutscene_models 4, models_misc 10, models_weapons 4, models_world 3, gpu_skin 3,
+  weapon_assets 5, nf-formats lib 79, the 02/14/15/16 walkers 10. docs/systems/drone-skins.md.
