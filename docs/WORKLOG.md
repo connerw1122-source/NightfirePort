@@ -18763,3 +18763,27 @@ end-to-end; pinned by hurt_07000008_live. Report: docs/reports/level-08-interact
   nf-game lib 278/0. The full suite.py did not fit: the sandbox kills background processes
   between tool calls (two starts died in the build phase); the foreground runs above are the
   verification. Report: docs/reports/level-09-interactables-2.md.
+- 2026-10-17 s/level-0a-interactables (task 710a): DONE. Tower B (0700000a). (1) The census —
+  every main-map placement type with its parsemap creator [M 0x1d04f0], params, channel wiring
+  and port status in docs/levels/0700000a.md (0x24/1, 0xEA/19, 0xE8/1, 0x35/3, 0xD9/5, 0x29/9,
+  0xEB/30, 0x20/45, 0xF0/5, 0xDB/19, 0xE2/3, 0xE4/5, 0x22/1, 0x27/6, 0x30/1, 0x71/1, 0xFB/1,
+  0xFA/1 + the AI infra; no safes/keypads/terminals/searchlights/fuseboxes/vents/wires/grapple/
+  vehicles on this level [D]). (2) The two known open items RESOLVED without code changes: the
+  cab-mouth SS lift doors (524/525) were never missing a writer — their state param 0 = 1
+  (armed [D]) sweeps them open at create and the wrap holds the pose [M SS_Update 0x1a9948 +
+  grates-02]; the walkreal is UN-IGNORED and walks the full route spawn → Q-Worm PC → keyboard →
+  hatch → 0700000b. The keyboard-lasers switch (#643) is provably INERT on fresh-boot data: gate
+  ch 0x3C has no writer in the triggers/switches/scripts [D], the load snapshot carries ch 0x47
+  only [L ee_start_0700000a.bin @0x26fc90], and Switch_Activate 0x1b02a8's gate check refuses
+  the toggle [M] — asserted end-to-end. (3) Seven per-kind live tests (interactables_0700000a_live):
+  the SS create sweep, the armour walk-over (50.0 [M 0x18e650 case 3]), the vending glass under
+  fire (Break_Kill), the laser-web crossing (ch 0x1F; the lock = disable-while-on [M]), the alarm
+  switch's class-3 refusal (E does nothing to ch 0x61 [M 0x1b02a8]) + the door-E control arm,
+  the vent ladder climb (grab + ascend [M 0x196118/0x196310]), the shaft hurt kill (1000 damage
+  [D #745-749]). All 7 + the walkreal + walk_0700000a_live 3 + walkreal_07000009_live 3 +
+  nf-game lib 279 + textures_live (every texture resolves) green on the final tree (merged with
+  origin/master batch 1017z). (4) Models: the loader census "0 unresolved", 0 untextured
+  materials (no white-fallback print), textures_live green; the GPU NF_TEX_TRACE sweep is not
+  headless-runnable. The full suite.py did not fit the window (the sandbox kills background
+  processes between tool calls; foreground 10-min tool windows cover ~77 of 522 binaries) — the
+  foreground runs above are the verification. Report: docs/reports/level-0a-interactables.md.
