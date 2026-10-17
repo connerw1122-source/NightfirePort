@@ -17994,3 +17994,32 @@ reading) + the ISO-gated transcription comparison — **zero differences** on ev
 control; 52/56 PAGE records register, 830 controls. Report:
 docs/reports/menu-def-runtime.md. nf-view/nf-game/nf-audio untouched; their suite run did not
 fit the session window (ALSA prefix + runtime) — flagged in the report.
+
+## cutscene-guard-models (2026-10-17, branch s/cutscene-guard-models) — started 04:40 UTC
+
+Task 750q: the user's "cutscenes not matching guard models" (screenshot nf-shots/002-07000001.png — an
+07000001 cut-scene with guards). For each cut-scene actor the game picks a skin: the script's actor
+entries, the hashtable substitutions per level, drone-backed actors using the placed guard's own skin.
+Plan: decompile the actor create path for script anims (Script_AnimStart / the skin lookup), list for
+07000001 and two other levels' cut-scenes each actor's skin hash in the port vs the game's resolution,
+fix the port's choice [M]. Deliverable is data + getters (no drawing) for the main agent's render-check,
+docs first (docs/systems/<name>.md), tests with numbers/ids only. In progress.
+
+## cutscene-guard-models (2026-10-17, branch s/cutscene-guard-models) — done 06:20 UTC
+
+Task 750q ("cutscenes not matching guard models", nf-shots/002-07000001.png). Decompiled the whole
+actor-skin path into docs/systems/cutscene-actor-skins.md: Script_AnimStart 0x1d8f40 → AnimObjectNew
+0x1be910 (the 0x05000090 per-level substitution [M disasm 0x1be958-0x1be9ac, level id at GameState+0xC
+0x2a3774], the loaded-file hashtable, and the requested-hash write-back at 0x1becd8 that makes fresh-boot
+EE snapshots a record of the game's skin requests). [L ee_start_07000001.bin]: the game requested exactly
+0x05000009/17/2b/4f (intro 0x06000087's actors), 36/39/3a/4f (placed drones) + ONE 0x05000038 — the
+CAPTAIN (NDrone2_DefaultInit 0x14b300 kind→skin table; the port's captain_setup already matches, verified
+live: 15 present drones 36×6 39×4 3a×3 4f×1 + the 0x05000038 captain). The intro's port actors match the
+game's skins AND stream pairings exactly (3 new NF_ISO tests, all pass). The guards' cut-scene 0x06000086
+is unreachable in the shipped game (ch 0x33 has NO writer on any map or script; its SP waits in state 0
+[L 0x018fbfc0]) — dead content in both. Cut-scene drone hiding (event 5 → obj+0xF0 |= 0x10) is already
+ported (Request::DroneEnable; the old "unported" note was stale). Open port bug found: a foreign
+switch-channel write is cleared within one tick by some port system (game channels persist) — reported,
+not fixed. Suite (background): build ok, the 3 allowed disc_golden failures + pre-existing master
+probe_pylon_render failure; foreground: cutscene_guard_models_live 3/3. Report:
+docs/reports/cutscene-guard-models.md.
