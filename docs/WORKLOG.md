@@ -17894,3 +17894,23 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   failing sister; every placement's mesh/skin resolves (no missing hash, no white fallback);
   key-gated route + cable car pieces are the known open items. Suite: tools/test/suite.py in the
   background from the first minutes.
+- 2026-10-17 s/level-04-complete (task 704b): level 07000004 played START TO FINISH through the
+  real input path. `walkreal_07000004_live` (3 tests, green): the settle (intro+story scripts, the
+  game's own skip) → the StormUzi #7 + BodyArmourHeavy #9 takes → the assassin killed by the
+  walk's own fire → obj0 folds through the REAL Mission_MonitorObjectives (state 4) → the #46
+  "MultiplexOut" mirrors ch 0x54 into ch 100 → Mission_Update case 6 banner → case 7 hold →
+  case 4 → the viewer's `mission_end = Some(0x0730004)` (the next arc's driving interlude) — the
+  level's own exit, no 0xE8 trigger exists [D]. Correction [M 0x1b1a78 Trigger_Update case
+  5:147-160]: the OUT kind is a pure channel mux (every tick, NO touch/hit check — `Trigger_Hit`
+  is not consulted; the placement has no collision mesh) — the census's "while Bond stands
+  inside" was wrong; docs/levels/07000004.md + the interact test corrected. The route's only
+  walk-blocker was test-side (the unbounded-bbox walk target NaN); no port bug on the route. The
+  interactables branch's `attach_level(level, hash)` signature left ~26 one-arg callers behind
+  (every nf-game test binary failed to build) — all fixed with each fixture's own level hash;
+  nf-game: 510 passed / 0 failed. Suite (this sandbox kills background jobs, so the runner ran in
+  foreground windows): nf-formats+nf-audio green but the 3 allowed disc_golden; the level-flow
+  family (walk/walkreal/interact/campaign/save/mission, 49 binaries) 211/0/8; the fix_*/menu_*
+  bulk 206 binaries 809/2/17 — the 2 are fix_0c_pylon_live's wgpu surface creation
+  (no_adapter: this sandbox has no GPU; the file is untouched on this branch). ~141 nf-view
+  binaries (alphabetical tail) did not fit the window — listed in the report.
+  Report: docs/reports/level-04-complete.md.
