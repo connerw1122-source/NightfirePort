@@ -6101,6 +6101,10 @@ pub struct Drones {
     /// The animated SimpleScripts (`SS_Create` 0x1a9c58 / `SS_Update` 0x1a9948; map-tower2): the
     /// 07000012 lift screens, shutters and lift doors swap on their switch channels.
     pub sss: crate::ss::SsList,
+    /// The sensors (placement 0x28, `Sensor_Create` 0x1af010 / `Sensor_Update` 0x1af618;
+    /// crate::sensor): the security-camera cone detectors that write their out switch channel
+    /// after 2 s of sight (fields on their own lines — merge lesson 4).
+    pub sensors: crate::sensor::Sensors,
     /// The sound triggers (placement 0xF9, `SoundTrigger_Create` 0x1b2628 / `SoundTrigger_Update`
     /// 0x1b2790; fix-06-alarm): the level's channel-gated emitters — 07000006's courtyard alarm
     /// siren (placement 702: ch 55 → the looped 2-D klaxon 329) lives here.
@@ -6293,6 +6297,8 @@ impl Drones {
             // fix-sg5-casings: the caller's view-model gun bone for the next shot's eject (own line).
             eject_gun: None,
             eject_bone_now: None,
+            // sensor-volumes: the 0x28 security cameras (fields on their own lines — merge lesson 4).
+            sensors: Default::default(),
             // drive-ptp: the PTP handover state (fields on their own lines — merge lesson 4).
             driving_stats: Default::default(),
             driving_result: crate::ptp::DriveResult::Success,
@@ -6388,6 +6394,9 @@ impl Drones {
                 else { level.maps[m].objects.get(p.index as usize) };
             obj.map(|o| if o.hashcode == u32::MAX { 0x8000_0000 | ((m as u32) << 16) | p.index as u32 } else { o.hashcode }).unwrap_or(0)
         });
+        // Sensors (`Sensor_Create` 0x1af010, placement 0x28; crate::sensor — placement order, no
+        // RNG draw): the security-camera cone detectors; keys from the same 0x19 blocks.
+        self.sensors = crate::sensor::Sensors::create(&level.maps[m].placements, &path_blocks);
         // The helicopter (`Copter_Create` 0x17d340, placement 0x2F) and the locks (`Lock_Create`
         // 0x1ae1f8, placement 0x2E) (fix-objects2). Neither draws RNG at create.
         self.copters = crate::copter::Copter::create(&level.maps[m].placements, self.difficulty);
@@ -8164,6 +8173,9 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
             // The script players (fix-script-start-tick): `SP_Update` among the control funcs, in the
             // same newest-first list order [M 0x1336f8:54-68 — `control_funcs[obj+0xFF]` per object].
             .chain(self.scripts.players.iter().enumerate().filter(|(_, p)| !p.deleted).map(|(j, p)| (p.placement, 5, j)))
+            // The sensors (sensor-volumes): `Sensor_Update` among the control funcs — class 0x37
+            // sits in the same `control_funcs` table the walk dispatches [M 0x26f890 + 0x37·12].
+            .chain(self.sensors.list.iter().enumerate().map(|(j, s)| (s.placement, 6, j)))
             .collect();
         order.sort_by(|a, b| b.0.cmp(&a.0).then(a.1.cmp(&b.1)));
         // Pickups are created at run time, so they head the control list: `Pickup_Update` before the placed objects.
@@ -8280,6 +8292,12 @@ fn segment_hits_sphere(a: V3, b: V3, c: V3, r: f32) -> bool {
                         }
                     }
                 }
+                continue;
+            }
+            if what == 6 { let _pw = crate::prof::scope("ctl: kind 6");
+                // `Sensor_Update` 0x1af618 (crate::sensor): the sweep/trip state machine — clears
+                // its out channel while sweeping, writes 1 after 2 s of continuous sight.
+                self.sensors.update(index, d.world, player, &mut self.channels, frame);
                 continue;
             }
             if what == 2 { let _pw = crate::prof::scope("ctl: kind 2");
