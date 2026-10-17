@@ -16820,3 +16820,34 @@ start payload for 120 polls (the client keeps the first). Gaps left: G-048.
   head-only, matching 0x1b11d8 (the same fix objective_msgs got earlier). Tests
   (hint_bar_timing_live): the 180-tick life, 60 Hz vs 240 rendered fps independence, the time·17
   fade, the head-ticks-alone sequencing (fails 180→60 on the old code).
+## astronaut-guards-1b (2026-10-16, branch s/astronaut-guards-1b) — start 21:20 UTC
+
+Task 730: zero-G astronaut guards on 0700001b (uncited-audit gap 7) — port the whole actor
+class: skin kind 0x18 forces mode 0x1D + start state AstronautLaunch 0xBD [M 0x14b300:722-727],
+states DSTATE_AstronautCombat 0xC0 (0x174458) / AstronautCombatMove 0xC1 (0x174550) /
+AstronautHit 0xBE (0x174690) / AstronautDeath 0xBF (0x1747b8), float movement
+DroneMove_AstronautCombat 0x154618, bob/float anim DroneMove_AstronautAnim 0x155ea0.
+Acceptance: headless 0700001b load — astronauts drift (no floor snap), float anim runs,
+hit/death variants fire. Branch from origin/master 170bcf01.
+- astronaut-guards-1b (task 730, 2026-10-16): the zero-G astronaut guards on 0700001b (uncited
+  audit gap 7) ported — kind 0x18 forces mode 0x1D + start 0xBD [M 0x14b300:722-727], row 29's
+  start flows through start_state; the five states 0xBD-0xC1 (Launch/Combat/CombatMove/Hit/Death
+  [M 0x16dd28/0x174458/0x174550/0x174690/0x1747b8]); flying physics = no gravity, no floor snap,
+  vel integration + ×0.98 damping while +0x4F8 & 0x40 (DeathMove clears it [M 0x140968:139-141,
+  0x156008:45]); strafe pick 3×FRand(2)−1 · (FRand(10)+10) into a kind-3 AI volume, re-arm
+  60+Rand(150) [M 0x154618]; death routes mode 0x1D → 0xBF (bullet 0x1461c8 + explosive 0x146480);
+  health = weapon_data[0x33]+0xc × difficulty (×3 Drake). Found on the way: on_bullet_resume's
+  0x55 wrapper clobbered an at-once-completed flinch call's queued resume (CallFullyComplete,
+  0x13ab58) — fixed. 4/4 live tests green (astronaut_guards_live.rs). NOT done in the window: the
+  full suite run (the background runner died twice — cargo PATH, then alsa env; restarted too late
+  for the 23:20 sandbox), the Launch AIPath/FollowRoute route walking (the port treats the
+  spawn-hold as the completed route — the game's AssignAIPath nodes sit within 0.3 of the posts
+  [M 00154190:68-96]), and the HitMove bump-source branch (+0x470 has no port field).
+- astronaut-guards-1b suite + regression fix: the fast suite on the merged tree (origin/master
+  f09f3c6c) ran 1946 passed / 7 failed / 72 ignored in 48 min — 3 disc_golden + 3 pylon probes
+  allowed, 1 fix_actors flake (passes 4/4 twice with the suite's own invocation; master passes
+  the same binary). The suite caught the real Drake-defeat regression (the blast kill's bare
+  set_state was clobbered by the next UPDATE's strafe re-assert before it could apply): the kill
+  now routes through msg 9 in one delivery [M 0x146480:103-104], the pick guards health ≤ 0, and
+  AstronautDeath ENTER sets the port's corpse model (the game's 0x200 rides SetAsDead, uncalled
+  by 0xBF [M]). fix_finale 4/4 + astronaut 5/5 + fix_actors 4/4×2 green after the fix.
