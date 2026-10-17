@@ -26,3 +26,8 @@ addresses + live checks).
 ---
 ## Report (done, 2026-10-17T00:58Z)
 
+
+---
+## Report (done, 2026-10-17T01:20Z)
+
+Closed by the driver session: the report is on `s/mp-map-objects` (docs/reports/mp-map-objects.md, 18:57); the driver crashed (~18:55) before moving it to done/.
