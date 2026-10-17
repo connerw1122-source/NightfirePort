@@ -336,6 +336,9 @@ pub enum CodenameError {
 
 /// A codename profile: the options blocks around the progress layer's data. The MC file name is
 /// the codename [M Menu_UpdateMessageBox 0x1f7de8:19/28]; the port stores `<dir>/<codename>.profile`.
+/// Clone for the window's session stash (profile-session: the chain the game keeps in globals
+/// outlives every menu manager, so the port's fe handovers copy it).
+#[derive(Clone)]
 pub struct Profile {
     /// The codename (the file stem, uppercased like the game's validator [M 0x1f9930 strupr]).
     pub name: String,

@@ -17400,3 +17400,16 @@ through the real input path + a sister, run the touched crates + the full suite.
   name-page key handling) on a fresh profile, find the failure, fix to the game's flow
   with [M] citations, pin create "BOND" -> saved to disk -> offered next boot. Branch
   created from origin/master 31dd6161.
+- create-save: root cause found — the WINDOW layer never wired the card (every
+  set_profile_dir call in the tree was in a test): the name page's ✓ refused silently
+  (request_create without a dir returns false — no box, no save), Select Codename listed
+  nothing, and the results handover's fresh fe dropped the session. Reproduced through the
+  real action path (create_save_live: boot fe, Main -> Codename -> row 0 -> the ✓ returned
+  false on master). Fixes (docs/systems/profile-session.md): menu::ProfileSession (the game's
+  session globals 0x2e1ae0/0x2e1ae8 [M C_KEYBOARD 0x213a98:53-57; P_NFRESULTS 0x208e78:30/145/
+  194] + the card dir) stashed on the App at every fe drop and inherited at every create (the
+  music statics' pattern); the boot seeds the card from settings::config_dir() + cn_reserved
+  from the lang binds (0x29b/0x211); menu::cnname_char_key + the window's CnName typing
+  branch (letters/digits -> the grid cell press [M 0x213a98 msg 0x4b], Backspace -> 1000);
+  demo_results inherits the session + sync_profile_progress (the game writes its MSSN from
+  the live state the results read). 4/4 create_save_live pass.
