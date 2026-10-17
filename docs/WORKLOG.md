@@ -16968,3 +16968,26 @@ origin/master 170bcf01.
   + fix_auto_switch_live/fix_safe08_live/pickups08_live green; nf-game lib 241, nf-view lib 17.
   The full suite did not fit the window (the background runner died as a background job; the
   foreground touched-crate runs are listed in the report).
+
+- 2026-10-16 s/ps2sinf-remaining (task 726, GAPS G-046): the remaining sim call
+  sites still use the host's sin/cos/atan where the game uses its own PS2Sinf /
+  trig (bit-exact proven, 40/40 [verify ledger]). Plan: list every remaining
+  f32::sin/cos/tan/atan2 in nf-game and nf-view's sim side that stands in for a
+  game trig call, find the game's function at each site [M], swap to the port's
+  bit-exact version. Keep walk*/walkreal* and the AI traces green; report every
+  site that changed a trace with before/after; update GAPS.md.
+  Branch created from origin/master 170bcf01.
+- ps2sinf-remaining: the census found every remaining GAME_EXACT host-trig stand-in and
+  swapped it (G-046 closed): bullet spread rebuilt to Vec_Spherical_2_Cartesian 0x1e3948's
+  lanes (the port's old cone had θ/φ swapped — y = r·sinφ biased up in the game, cosφ in the
+  port); movement axes/look/ladder snap/creep/wire sway/world spheres/pickup spin all on
+  PS2Sinf lanes with EE ops; searchlight steer + root_yaw on atan2f_libm; NEW
+  trig::acosf_libm = __ieee754_acosf 0x233228 (fdlibm e_acosf, constants [L 0x30b4b0-4dc])
+  feeding the anim/door slerp weights (Spline_Interp 0x1e1858's recip-mul order) and the
+  drone head-track measurement; world_fx emitter cone rebuilt to the game's stored dir
+  (sin p·cos t, cos p, sin p·sin t) [M 0x17b504-0x17b53c]. walkreal/ai_traces/ai_live(35)/
+  drone_portcheck(5)/fix_portonly_review(3)/doors/searchlight/pickup/grenade/explode/wire/
+  ladder/facial/anim_events/rng/impact_remainder + nf-game lib (242, incl. the new acosf
+  test) green before AND after — no pinned trace changed state. nf-view's remaining host
+  trig is presentation-side (camera/HUD/fx); DRIVING.ELF's tan/atan2 sites have no trig
+  decomp files (left, documented).

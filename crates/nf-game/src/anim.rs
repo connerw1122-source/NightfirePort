@@ -19,10 +19,13 @@ pub fn slerp(a: [f32; 4], b: [f32; 4], t: f32) -> [f32; 4] {
     let neg = d < 0.0;
     if neg { d = -d; }
     let (s0, s1) = if 0.01 < 1.0 - d {
-        let w = d.acos();
-        let wt = w * t;
-        let inv = 1.0 / crate::trig::sinf(w);
-        (crate::trig::sinf(w - wt) * inv, crate::trig::sinf(wt) * inv)
+        // G-046: the game's slerp weights are Spline_Interp 0x1e1858:285-300 [M]: acosf (0x232c48 →
+        // __ieee754_acosf 0x233228), wt = angle·t (mul.s), and the weights are PS2Sinf(wt)·(1/PS2Sinf(angle))
+        // — a div.s reciprocal then mul.s, not a per-weight division.
+        let w = crate::trig::acosf_libm(d);
+        let wt = nf_formats::ps2float::mul(w, t);
+        let inv = nf_formats::ps2float::div(1.0, crate::trig::sinf(w));
+        (crate::trig::sinf(crate::trig::ee_sub(w, wt)) * inv, crate::trig::sinf(wt) * inv)
     } else {
         (1.0 - t, t)
     };
@@ -403,12 +406,18 @@ impl Outgoing {
 pub fn root_yaw(q: [f32; 4]) -> f32 {
     let [x, y, z, w] = q;
     let f = [2.0 * (x * z + w * y), 1.0 - 2.0 * (x * x + y * y)];
-    f[0].atan2(f[1])
+    // G-046: Vec_DirToRot 0x1e3218:8 is the PS2 libm atan2f [M], not host atan2.
+    crate::trig::atan2f_libm(f[0], f[1])
 }
 
 /// Removes `yaw` about +Y from a root rotation (pre-multiplies by the inverse turn).
 pub fn unyaw(q: [f32; 4], yaw: f32) -> [f32; 4] {
-    let (s, c) = ((-yaw * 0.5).sin(), (-yaw * 0.5).cos());
+    // G-046: the inverse-turn quat is the game's AA2Q idiom — w = PS2Sinf(θ/2 + 1.5707964), y =
+    // PS2Sinf(θ/2) [M Quat_AxisAngleToQuat 0x1e3f20's PS2Sinf2 lanes; the θ = −yaw mapping [S] — the
+    // game counterpart of this helper is otherwise unresolved (G-046's UNCLEAR note)].
+    let ha = -yaw * 0.5;
+    let s = crate::trig::sinf(ha);
+    let c = crate::trig::sinf(crate::trig::ee_add(ha, crate::trig::HALF_PI));
     let r = [0.0, s, 0.0, c];
     // r ⊗ q
     [r[3] * q[0] + r[0] * q[3] + r[1] * q[2] - r[2] * q[1],

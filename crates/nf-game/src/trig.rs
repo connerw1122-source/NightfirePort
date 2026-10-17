@@ -202,6 +202,85 @@ pub fn atan2f_libm(y: f32, x: f32) -> f32 {
     if y < 0.0 { f32::from_bits(0xbfc9_0fdb) } else { f32::from_bits(0x3fc9_0fdb) }
 }
 
+/// The PS2 libm's `acosf` (`__ieee754_acosf` 0x233228, fdlibm e_acosf — `acosf` 0x232c48 is its errno
+/// wrapper), ported operation for operation on the EE FPU from the decompile: |x| = 1 → 0 / π (0x40490fda,
+/// fdlibm's pi [L ee_snapshot 0x2841b4]); |x| > 1 → (x−x)/(x−x); |x| < 2⁻²⁴ → π/2 (0x3fc90fdb); |x| < 0.5 →
+/// π/2_hi 0x3fc90fda − (x − (π/2_lo 0x33a22168 − x·P/Q)) [L the coefficient table 0x30b4b8-0x30b4dc: pS0
+/// 0x3e2aaaab, pS1 0xbea6b090, pS2 0x3e4e0aa8, pS3 0xbd241146, pS4 0x3a4f7f04, pS5 0x3811ef08, qS1
+/// 0xc019d139, qS2 0x4001572d, qS3 0xbf303361, qS4 0x3d9dc62e; π/2_hi/lo at 0x30b4b0/0x30b4b4]; x < −0.5 →
+/// π − (s + (r·s − π/2_lo) + (s + (r·s − π/2_lo))) with s = √((x+1)/2); x > 0.5 → 2·(df + r·s + (z − df²)/(s +
+/// df)) with z = (1−x)/2, s = √z, df = s with its low 12 mantissa bits cleared [M the decompile's compiled
+/// Horner order: P = t·(t·(t·(t·(t·(t·pS5 + pS4) + pS3) + pS2) + pS1) + pS0), Q = (t·(t·(t·(t·qS4 + qS3) + qS2)
+/// + qS1)) + 1.0, every mul an EE product and every sum guard-less].
+pub fn acosf_libm(x: f32) -> f32 {
+    use nf_formats::ps2float::{div as ee_div, mul, sqrt};
+    const PIO2: f32 = f32::from_bits(0x3fc9_0fdb);
+    const PIO2_HI: f32 = f32::from_bits(0x3fc9_0fda);
+    const PIO2_LO: f32 = f32::from_bits(0x33a2_2168);
+    const PI: f32 = f32::from_bits(0x4049_0fda);
+    const PS: [f32; 6] = [
+        f32::from_bits(0x3e2a_aaab),
+        f32::from_bits(0xbea6_b090),
+        f32::from_bits(0x3e4e_0aa8),
+        f32::from_bits(0xbd24_1146),
+        f32::from_bits(0x3a4f_7f04),
+        f32::from_bits(0x3811_ef08),
+    ];
+    const QS: [f32; 4] = [
+        f32::from_bits(0xc019_d139),
+        f32::from_bits(0x4001_572d),
+        f32::from_bits(0xbf30_3361),
+        f32::from_bits(0x3d9d_c62e),
+    ];
+    // P/Q at t (the game's compiled Horner order, [M 0x233228]).
+    let pq = |t: f32| -> (f32, f32) {
+        let mut p = mul(t, PS[5]);
+        p = add(p, PS[4]); p = mul(t, p);
+        p = add(p, PS[3]); p = mul(t, p);
+        p = add(p, PS[2]); p = mul(t, p);
+        p = add(p, PS[1]); p = mul(t, p);
+        p = add(p, PS[0]); p = mul(t, p);
+        let mut q = mul(t, QS[3]);
+        q = add(q, QS[2]); q = mul(t, q);
+        q = add(q, QS[1]); q = mul(t, q);
+        q = add(q, QS[0]); q = mul(t, q);
+        q = add(q, 1.0);
+        (p, q)
+    };
+    let ax = f32::from_bits(x.to_bits() & 0x7fff_ffff);
+    if ax == 1.0 {
+        // [M 0x233228]: acos(−1) = π — the decompile's folded `pi + 2·pio2_lo` (0x40490fda + 1.5e-7
+        // rounds up) = 0x40490fdb.
+        return if x < 0.0 { f32::from_bits(0x4049_0fdb) } else { 0.0 };
+    }
+    if ax.to_bits() >= 0x3f80_0001 {
+        return ee_div(sub(x, x), sub(x, x));
+    }
+    if ax.to_bits() < 0x3f00_0000 {
+        if ax.to_bits() < 0x2300_0001 {
+            return PIO2;
+        }
+        let t = mul(x, x);
+        let (p, q) = pq(t);
+        let r = ee_div(p, q);
+        return sub(PIO2_HI, sub(x, sub(PIO2_LO, mul(x, r))));
+    }
+    if x < 0.0 {
+        let z = mul(add(x, 1.0), 0.5);
+        let s = sqrt(z);
+        let (p, q) = pq(z);
+        let sw = add(s, sub(mul(ee_div(p, q), s), PIO2_LO));
+        return sub(PI, add(sw, sw));
+    }
+    let z = mul(sub(1.0, x), 0.5);
+    let s = sqrt(z);
+    let df = f32::from_bits(s.to_bits() & 0xffff_f000);
+    let (p, q) = pq(z);
+    let w = add(mul(ee_div(p, q), s), ee_div(sub(z, mul(df, df)), add(s, df)));
+    let dw = add(df, w);
+    add(dw, dw)
+}
+
 /// `Vec_AngleDifference(a, b)` (0x1e2b78): b − a wrapped to (−π, π], both first normalised to [0, 2π).
 pub fn angle_difference(a: f32, b: f32) -> f32 {
     // Only values outside [0, 2π) go through `fmodf` (libm, exact like Rust's `%`); the adds are EE FPU adds.
@@ -305,6 +384,24 @@ mod tests {
             r
         };
         assert!(LIVE_ATAN.iter().any(|&(a, b, g)| chopped(f32::from_bits(a), f32::from_bits(b)).to_bits() != g), "sister");
+    }
+
+    #[test]
+    fn acosf_libm_tracks_host_libm_and_differs_from_it() {
+        // G-046 ps2sinf-remaining: the fdlibm float core (0x233228) stays within ~2 ulp of Rust's
+        // correctly-rounded acos; the port's sites (Spline_Interp's slerp weights, the head-track
+        // measurement) need the game's own value, so the test also asserts real divergence exists.
+        let mut differs = 0;
+        let mut state = 0x9e37_79b9u32;
+        let mut next = || { state ^= state << 13; state ^= state >> 17; state ^= state << 5; (state >> 8) as f32 / (1 << 24) as f32 };
+        for _ in 0..2000 {
+            let x = next() * 1.999 - 0.9995;
+            let g = acosf_libm(x);
+            let h = x.acos();
+            assert!((g - h).abs() <= 2.0 * (h.abs() + 1e-30) * f32::EPSILON + 1e-6, "acosf {x}: {g} vs {h}");
+            if g.to_bits() != h.to_bits() { differs += 1; }
+        }
+        assert!(differs > 0, "acosf_libm must differ from host somewhere (it is fdlibm, not correctly rounded)");
     }
 
     #[test]
