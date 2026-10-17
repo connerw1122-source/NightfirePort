@@ -1,12 +1,12 @@
 //! walkreal-b: 07000009 "Night of the Agent" (Tower A) walked with the player's own movement — no
 //! teleports after the spawn. Route (docs/levels/07000009.md): the car-park start #68
-//! (3.59, −377.08, 36.76) → the stairwell doors (21.5, −377.08, 40.9) / (9.1, −377.08, 95.8) /
-//! (−2.1, −377.08, 99.1) up one floor to the lobby (y ≈ −368.5) → the lift
-//! (shaft x −4.5..−2, z 10..15) → the elevator SP #70's cab (SCRIPTPLAYER_Elevators, mask 4 →
-//! E-activatable [M SP_Activate 0x1dc338]) → ch 0x39 → AND mux #274 → ch 0x46 (objective 2) →
-//! the LIFTDOORS_*_ENDLEVELDOORS SimpleScripts open on ch 0x39 → walk into the cab → TOUCH_ONCE
-//! #67 → ch 0x32 → LOAD_LEVEL #63 → 0700000a. The alarm switches are never touched (obj 1's
-//! inverted channel).
+//! (3.59, −377.08, 36.76) → the stair base → the AI graph's stairs up one floor to the lobby
+//! (y ≈ −368.5) → the lift (shaft x −4.5..−2, z 10..15) → ch 0x39 → AND mux #274 → ch 0x46
+//! (objective 2) → the LIFTDOORS_*_ENDLEVELDOORS SimpleScripts open on ch 0x39 → walk into the cab
+//! → TOUCH_ONCE #67 → ch 0x32 → LOAD_LEVEL #63 → 0700000a. The alarm switches are never touched
+//! (obj 1's inverted channel). The activation itself through the REAL E press lives in
+//! elevator_buttons_09_live.rs (the panel is 15 units from the lift, by the armour); this test
+//! exercises the downstream chain from the channel.
 
 #[path = "common/walker_b2.rs"]
 mod walker;
@@ -15,18 +15,16 @@ use walker::{Act, Walker, Wp};
 
 fn iso() -> String { std::env::var("NF_ISO").expect("NF_ISO") }
 
-/// The elevator-activation blocker, pinned: SP #70 (SCRIPTPLAYER_Elevators, mask 4, out 0x39)
-/// cannot be reached by the game's own E path — Player_Activate 0x1a5170:127-172 has NO class-0x39
-/// (switch) case, the SP object never moves (its script 0x0600059B only creates transient type-0x1F
-/// entities [D stream 0], so obj+0x90 stays at the placement origin), the lift-door SSs carry mask 1
-/// (SS_Activate 0x1a9ea8 needs mask & 4; SS_Operate 0x1a9df8's toucher arm needs mask & {2,8,0x10}),
-/// and the loadable pack 07800009's script 0x060004F8 writes no channel [probed]. docs/levels/
-/// 07000009.md flags the writer as the level's one unfaithful spot; the walk test below drives ch
-/// 0x39 there exactly as the map task's walkthrough does. Live check for the main agent: gdbwatch
-/// `switch_channels[57]` (0x26fc90+57) on a real PCSX2 run through the lobby — the writer
-/// instruction names the object the port is missing.
+/// The elevator activation's reach, pinned: SP #70 (SCRIPTPLAYER_Elevators, mask 4, out 0x39) is
+/// E-activated through its class-0 script ENTITY — `Player_Activate` 0x1a5170:121-122 dispatches
+/// `SP_Activate` only on a hit object with `obj+0xE4 != 0 && class == 0`, and
+/// `Script_EntityStart` 0x1d8d78:108-110 stores the owner SP there (elevator-buttons-09; the old
+/// "no writer on the level / the E path cannot reach #70" reading was wrong — it fired on the
+/// SP's entities, whose mode-64 preload creates entity 0x020005EA at t=0 [D script stream 0,
+/// M 0x1dbc08:41-56]). The SP object itself never moves (its live matrix stays at the placement
+/// origin), and the lift-door SSs carry mask 1 (no E arm [M SS_Activate 0x1a9ea8]).
 #[test]
-fn the_elevator_activation_writer_is_a_documented_blocker() {
+fn the_elevator_activation_writer_pinned() {
     let iso = iso();
     let mut w = Walker::new(nf_view::load(&iso, "07000009.bin", false).expect("load 07000009"));
     w.wait(10);
@@ -36,6 +34,10 @@ fn the_elevator_activation_writer_is_a_documented_blocker() {
     let t = sp.live_matrix[3];
     assert!(t[0].abs() < 0.5 && t[1].abs() < 0.5 && t[2].abs() < 0.5,
         "the SP object sits at its placement origin (no key stream moves it) [M 0600059b stream 0], got {t:?}");
+    // The preload created the panel entity (the E target) [D script stream 0 t=0; M 0x1d8d78:108-110].
+    assert!(sim.drones.scripts.objects.list.iter()
+        .any(|o| matches!(o, Some(nf_game::nis::Obj::Entity { hash: 0x0200_05EA, .. }))),
+        "entity 0x020005EA (the panel art, obj+0xE4 = SP#70) exists from the level load");
     // The two lift-door SSs wait on ch 0x39 at the lift mouth, mask 1 — no E, no toucher write [M].
     let doors: Vec<_> = sim.drones.sss.list.iter().filter(|s| s.channel == 0x39).collect();
     assert_eq!(doors.len(), 2, "the LIFTDOORS_*_ENDLEVELDOORS pair waits on ch 0x39 [D]");
@@ -71,9 +73,9 @@ fn walk_car_park_to_the_main_lift() {
             "the walk must not raise the alarm (the switches are never touched)");
     }
 
-    // The elevator activation: the writer is the level's documented blocker (the probe test pins
-    // every dead end) — drive ch 0x39 here exactly as docs/levels/07000009.md's walkthrough does,
-    // then walk the rest with input only.
+    // The elevator activation: the downstream chain from ch 0x39 (the REAL E-press walk lives in
+    // elevator_buttons_09_live.rs::walk_operate_the_button_and_ride_to_0700000a — the panel is 15
+    // units west of the lift). Drive the channel here, then walk the rest with input only.
     let before = w.total_ticks;
     w.scene.sim.as_mut().unwrap().drones.set_channel(0x39);
     w.wait(6);
