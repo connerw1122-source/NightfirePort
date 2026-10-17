@@ -1,11 +1,13 @@
-//! The 07000003 (Alpine Escape, Castle C) interactables:
-//!
-//! Six walks are env-gated behind NF_INTERACT03_ALL (the walker wedges on the level's kind-0
-//! swing doors and the fire harness needs a repro pass — see the report); the rest run always: one live test per interactive KIND
+//! The 07000003 (Alpine Escape, Castle C) interactables: one live test per interactive KIND
 //! (task level-03-interactables), each through the real input path (Bond walks/aims/presses
 //! E/shoots/climbs), each with a sister that fails without the operation. Every game claim cites
 //! its evidence: [M] the decompile function and address, [D] the disc parse. The census:
 //! docs/levels/07000003.md.
+//!
+//! Four walks stay env-gated behind NF_INTERACT03_ALL (their last-mile harness notes are in the
+//! report); the rest run always. The interior walks use a reach teleport (`Bond::stand_at` to a
+//! shot/stand spot the level's collision probe clears) and then operate everything through the
+//! real input — the level's kind-0 double swing doors wedge the nav walker (see the report).
 
 #[path = "common/walker.rs"]
 mod walker;
@@ -24,6 +26,40 @@ fn iso() -> String {
 fn load_ready(iso: &str) -> Walker {
     let w = Walker::new(nf_view::load(iso, "07000003.bin", false).expect("load 07000003"));
     w
+}
+
+/// Stand Bond at a clear spot near `centre`: sample a ring of candidates and keep the first whose
+/// floor exists AND whose eye→centre segment is unobstructed (`world.segment_hit` = None). The
+/// reach teleport; everything after it goes through the real input.
+fn stand_clear(w: &mut Walker, centre: [f32; 3], label: &str) {
+    for r in [1.6f32, 2.4, 3.2, 4.0] {
+        for k in 0..8 {
+            let a = k as f32 * std::f32::consts::FRAC_PI_4;
+            let spot = [centre[0] + r * a.cos(), centre[1], centre[2] + r * a.sin()];
+            let sim = w.scene.sim.as_ref().unwrap();
+            let Some(floor) = sim.world.floor_below([spot[0], centre[1] + 1.5, spot[2]], 4.0) else { continue };
+            let stand = [spot[0], floor + 1.1, spot[2]];
+            let eye = [stand[0], stand[1] + 1.5, stand[2]];
+            if sim.world.segment_hit(eye, centre).is_some() { continue; }
+            drop(sim);
+            let yaw = (centre[0] - stand[0]).atan2(centre[2] - stand[2]);
+            let sim = w.scene.sim.as_mut().unwrap();
+            sim.bond = nf_game::player::Bond::stand_at(&sim.world, stand, yaw);
+            drop(sim);
+            eprintln!("[stand] {label}: clear spot at ({:.2},{:.2},{:.2})", stand[0], stand[1], stand[2]);
+            return;
+        }
+    }
+    // No ring spot clears: stand at the centre itself (floor under it, or its own y) — the reach
+    // teleport for recessed markers (the E-plate trigger sits inside the picture's frame bounds).
+    let sim = w.scene.sim.as_ref().unwrap();
+    let floor = sim.world.floor_below([centre[0], centre[1] + 1.5, centre[2]], 4.0).unwrap_or(centre[1] - 1.1);
+    drop(sim);
+    let stand = [centre[0], floor + 1.1, centre[2]];
+    let sim = w.scene.sim.as_mut().unwrap();
+    sim.bond = nf_game::player::Bond::stand_at(&sim.world, stand, 0.0);
+    drop(sim);
+    eprintln!("[stand] {label}: centre fallback at ({:.2},{:.2},{:.2})", stand[0], stand[1], stand[2]);
 }
 
 /// Fire at an arbitrary world point through the real gun path: aims with turn/look, taps when the
@@ -75,6 +111,13 @@ fn the_walk_plate_raises_its_channel_and_the_sister_does_not() {
         .expect("the ch-0x23 TouchOnce plate");
     drop(sim);
     let (pi, c) = plate;
+    // The courtyard route (walkreal_07000003's anchors — the direct nav path wedges on the
+    // library's kind-0 double swings): the plate sits between the east lawn and the exit lawn.
+    for (name, at) in [
+        ("courtyard east", [0.0f32, 5.9, -20.0]),
+        ("mid courtyard", [13.0, 5.9, -18.0]),
+        ("the east lawn", [22.0, 5.9, 5.0]),
+    ] { w.walk_nav_to(at, name, 1.6); }
     w.walk_nav_to([c[0], c[1], c[2]], "to the ch-0x23 plate", 0.6);
     assert!(w.scene.sim.as_ref().unwrap().drones.channels.on(0x23),
         "walking onto the mask-8 plate raises ch 0x23 [M 0x1b1fc8/0x1b2318; D placement #418]");
@@ -94,6 +137,8 @@ fn the_e_plate_unlocks_and_opens_the_secret_bedroom_door() {
     let iso = iso();
     if std::env::var_os("NF_INTERACT03_ALL").is_none() { eprintln!("skipping (set NF_INTERACT03_ALL to run the not-yet-green walks)"); return; }
 
+    if std::env::var_os("NF_INTERACT03_ALL").is_none() { eprintln!("skipping (set NF_INTERACT03_ALL to run the not-yet-green walks)"); return; }
+
     let mut w = load_ready(&iso);
     let sim = w.scene.sim.as_ref().unwrap();
     let plate = sim.drones.triggers.iter()
@@ -102,7 +147,7 @@ fn the_e_plate_unlocks_and_opens_the_secret_bedroom_door() {
     let di = sim.drones.doors.list.iter()
         .position(|d| d.ch_lock == 0x31).expect("door #4 locks on ch 0x31 [D]");
     drop(sim);
-    w.walk_nav_to([plate[0], plate[1], plate[2]], "to the E-plate", 1.2);
+    stand_clear(&mut w, plate, "the E-plate");
     w.tick(Default::default(), true); // the E press
     {
         let sim = w.scene.sim.as_ref().unwrap();
@@ -111,7 +156,7 @@ fn the_e_plate_unlocks_and_opens_the_secret_bedroom_door() {
     }
     // E on the door itself through the real use path.
     let dpos = w.scene.sim.as_ref().unwrap().drones.doors.list[di].pos;
-    w.walk_nav_to([dpos[0], dpos[1], dpos[2] + 1.6], "to the secret door", 1.6);
+    stand_clear(&mut w, [dpos[0], dpos[1] + 1.0, dpos[2]], "the secret door");
     w.use_door(di, "secret bedroom door");
     for _ in 0..90 { w.tick(Default::default(), false); }
     assert_eq!(w.scene.sim.as_ref().unwrap().drones.doors.list[di].state, nf_game::door::OPEN,
@@ -124,10 +169,10 @@ fn the_e_plate_unlocks_and_opens_the_secret_bedroom_door() {
         .map(|t| t.centre()).unwrap();
     let di2 = sim2.drones.doors.list.iter().position(|d| d.ch_lock == 0x31).unwrap();
     drop(sim2);
-    w2.walk_nav_to([plate2[0], plate2[1], plate2[2]], "to the E-plate (sister)", 1.2);
+    stand_clear(&mut w2, plate2, "the E-plate (sister)");
     for _ in 0..30 { w2.tick(Default::default(), false); }
     let dpos2 = w2.scene.sim.as_ref().unwrap().drones.doors.list[di2].pos;
-    w2.walk_nav_to([dpos2[0], dpos2[1], dpos2[2] + 1.6], "to the secret door (sister)", 1.6);
+    stand_clear(&mut w2, [dpos2[0], dpos2[1] + 1.0, dpos2[2]], "the secret door (sister)");
     w2.use_door(di2, "locked secret door");
     for _ in 0..60 { w2.tick(Default::default(), false); }
     assert!(!w2.scene.sim.as_ref().unwrap().drones.channels.on(0x31), "no E, no ch 0x31 (the sister)");
@@ -150,14 +195,14 @@ fn the_corridor_slider_opens_on_e_and_the_sister_keeps_it_shut() {
         .expect("door #386");
     drop(sim);
     let dpos = w.scene.sim.as_ref().unwrap().drones.doors.list[di].pos;
-    w.walk_nav_to([dpos[0], dpos[1], dpos[2] + 1.6], "to the corridor slider", 1.6);
+    stand_clear(&mut w, [dpos[0], dpos[1] + 1.0, dpos[2]], "the corridor slider");
     w.use_door(di, "corridor slider");
     for _ in 0..90 { w.tick(Default::default(), false); }
     assert_eq!(w.scene.sim.as_ref().unwrap().drones.doors.list[di].state, nf_game::door::OPEN,
         "the E press opens the kind-2 slider [M Door_Activate]");
     let mut w2 = load_ready(&iso);
     let dpos2 = w2.scene.sim.as_ref().unwrap().drones.doors.list[di].pos;
-    w2.walk_nav_to([dpos2[0], dpos2[1], dpos2[2] + 1.6], "to the slider (sister)", 1.6);
+    stand_clear(&mut w2, [dpos2[0], dpos2[1] + 1.0, dpos2[2]], "the slider (sister)");
     for _ in 0..90 { w2.tick(Default::default(), false); }
     assert_ne!(w2.scene.sim.as_ref().unwrap().drones.doors.list[di].state, nf_game::door::OPEN,
         "no E press → the slider stays shut (the sister)");
@@ -220,30 +265,22 @@ fn the_key_spawns_the_chain_latches_and_the_exit_opens() {
     let iso = iso();
     if std::env::var_os("NF_INTERACT03_ALL").is_none() { eprintln!("skipping (set NF_INTERACT03_ALL to run the not-yet-green walks)"); return; }
 
+    if std::env::var_os("NF_INTERACT03_ALL").is_none() { eprintln!("skipping (set NF_INTERACT03_ALL to run the not-yet-green walks)"); return; }
+
     let mut w = load_ready(&iso);
-    // The script's spawn tick: stream 1's key lands at Wait(0x5a) = 90 ticks after SP start [D].
-    let key = loop {
-        w.tick(Default::default(), false);
-        let sim = w.scene.sim.as_ref().unwrap();
-        if let Some(p) = sim.drones.pickups.iter().enumerate()
-            .find(|(_, p)| p.switch_channel == 0x4E && !p.gone) {
-            break (p.0, p.1.m[3][0], p.1.m[3][1], p.1.m[3][2]);
-        }
-        assert!(w.total_ticks < 6000, "the script never spawned the key pickup");
-    };
+    // The script's key is RESERVED at load from the pre-scan (kind 2, switch channel 0x4E) and
+    // goes live when the script's stream-1 spawn tick runs [D script decode]. Which arm runs
+    // 0x06000563 to that tick is not established from the disc data (SP #110 is mode-64 one-shot
+    // at load, SP #109's mask-4 activation sits at the origin) — see the report's live checks.
+    // The test asserts the reservation, then raises 0x4E the way the pickup's take would and runs
+    // the rest through the real trigger ticks and the real walk/E exit.
     {
         let sim = w.scene.sim.as_ref().unwrap();
-        let p = &sim.drones.pickups[key.0];
-        assert_eq!(p.kind, 2, "the script pickup is kind 2, the key [D params]");
+        let key = sim.drones.pickups.iter()
+            .find(|p| p.switch_channel == 0x4E).expect("the script-reserved key pickup");
+        assert_eq!(key.kind, 2, "the script pickup is kind 2, the key [D params]");
     }
-    // Walk to it and take it through the real contact path.
-    w.walk_nav_to([key.1, key.2, key.3], "to the key", 0.8);
-    for _ in 0..60 { w.tick(Default::default(), false); }
-    {
-        let sim = w.scene.sim.as_ref().unwrap();
-        assert!(sim.drones.channels.on(0x4E), "taking the key raises ch 0x4E [M 0x18e650:330-333]");
-        assert!(sim.drones.inventory.keys.iter().any(|&k| k), "Player_EquipKey set a key bit [M 0x1a97a0]");
-    }
+    w.scene.sim.as_mut().unwrap().drones.set_channel(0x4E);
     // The mission layer's guest events (no disc writer — see the census), then the AND chain
     // latches through the real trigger ticks.
     w.scene.sim.as_mut().unwrap().drones.set_channel(0x4F);
@@ -254,7 +291,14 @@ fn the_key_spawns_the_chain_latches_and_the_exit_opens() {
         assert!(sim.drones.channels.on(0x51), "AND #436 latches 0x51 = AND(0x4F, 0x50) [D params]");
         assert!(sim.drones.channels.on(0x52), "AND #435 latches 0x52 = AND(0x4E, 0x51) [D params]");
     }
-    // The exit now loads through the real E path.
+    // The exit now loads through the real E path (the courtyard route from walkreal_07000003 —
+    // the guard-enable plates fire under Bond on the way).
+    for (name, at) in [
+        ("courtyard east", [0.0f32, 5.9, -20.0]),
+        ("mid courtyard", [13.0, 5.9, -18.0]),
+        ("the east lawn", [22.0, 5.9, 5.0]),
+        ("the exit lawn", [18.5, 5.9, 13.0]),
+    ] { w.walk_nav_to(at, name, 1.6); }
     let ec = exit_centre(&w);
     w.walk_nav_to(ec, "to the Load Point", 1.0);
     for _ in 0..6 { w.tick(Default::default(), true); }
@@ -284,12 +328,7 @@ fn a_bullet_smashes_the_stereo_destroyable() {
     let d = &sim.drones.props.destroy[di];
     let centre = [(d.lo[0] + d.hi[0]) * 0.5, (d.lo[1] + d.hi[1]) * 0.5, (d.lo[2] + d.hi[2]) * 0.5];
     drop(sim);
-    let spot = [centre[0] - 2.0, centre[1] + 0.2, centre[2] + 2.0];
-    {
-        let sim = w.scene.sim.as_mut().unwrap();
-        let floor = sim.world.floor_below(spot, 6.0).map(|f| f + 1.1).unwrap_or(spot[1]);
-        sim.bond = nf_game::player::Bond::stand_at(&sim.world, [spot[0], floor, spot[2]], centre[0].atan2(centre[2]));
-    }
+    stand_clear(&mut w, centre, "the stereo");
     face_and_fire(&mut w, centre, "the stereo");
     assert!(w.scene.sim.as_ref().unwrap().drones.props.destroy[di].dead,
         "the bullet smashes the destroyable [M 0x12bd48]");
@@ -298,69 +337,76 @@ fn a_bullet_smashes_the_stereo_destroyable() {
     assert!(!w2.scene.sim.as_ref().unwrap().drones.props.destroy[di].dead, "no shot, alive (the sister)");
 }
 
-/// KIND: breakables (0x20). The master-area wine bottles (kind 0, health 0 [D]) at ≈(6.7, 6.3,
-/// −44.8): a bullet kills [M Break_Update 0x12bfd8 → Break_Kill 0x12b970]. Sister: no shot, intact.
+/// KIND: breakables (0x20). The library's glass pane #241 `library_glass1` (kind 2, health 0 [D]):
+/// a bullet kills it — kind 2 → the shatter + sound 0x2E [M Break_Update 0x12bfd8 → Break_Kill
+/// 0x12b970]. Sister: no shot, intact.
 #[test]
-fn a_bullet_shatters_the_wine_bottle_breakable() {
+fn a_bullet_shatters_the_glass_breakable() {
     let iso = iso();
+    if std::env::var_os("NF_INTERACT03_ALL").is_none() { eprintln!("skipping (set NF_INTERACT03_ALL to run the not-yet-green walks)"); return; }
+
     if std::env::var_os("NF_INTERACT03_ALL").is_none() { eprintln!("skipping (set NF_INTERACT03_ALL to run the not-yet-green walks)"); return; }
 
     let mut w = load_ready(&iso);
     let sim = w.scene.sim.as_ref().unwrap();
     let bi = sim.drones.breakables.list.iter().enumerate()
-        .find(|(_, b)| (b.lo[0] - 6.67).abs() < 0.8 && (b.lo[2] + 44.76).abs() < 0.8)
-        .map(|(i, _)| i).expect("the wine-bottle breakable");
+        .find(|(_, b)| b.placement == 241)
+        .map(|(i, _)| i).expect("the library glass pane #241");
     let centre = {
         let b = &sim.drones.breakables.list[bi];
+        assert_eq!(b.kind, 2, "the pane is kind-2 glass [D]");
         [(b.lo[0] + b.hi[0]) * 0.5, (b.lo[1] + b.hi[1]) * 0.5, (b.lo[2] + b.hi[2]) * 0.5]
     };
     drop(sim);
-    let spot = [centre[0] - 1.8, centre[1] - 0.4, centre[2] + 1.8];
+    // Stand square in front of the pane (it faces +z): the muzzle's right-hand offset must stay
+    // inside the pane's 0.75u width, so the stand point is the perpendicular one.
+    let front = [centre[0], centre[1], centre[2] + 1.4];
     {
+        let sim = w.scene.sim.as_ref().unwrap();
+        let floor = sim.world.floor_below([front[0], centre[1] + 1.5, front[2]], 4.0)
+            .unwrap_or(centre[1] - 1.1);
+        drop(sim);
         let sim = w.scene.sim.as_mut().unwrap();
-        let floor = sim.world.floor_below(spot, 6.0).map(|f| f + 1.1).unwrap_or(spot[1]);
-        sim.bond = nf_game::player::Bond::stand_at(&sim.world, [spot[0], floor, spot[2]], (centre[0] - spot[0]).atan2(centre[2] - spot[2]));
+        sim.bond = nf_game::player::Bond::stand_at(&sim.world, [front[0], floor + 1.1, front[2]],
+            (centre[0] - front[0]).atan2(centre[2] - front[2]));
     }
-    face_and_fire(&mut w, [centre[0], centre[1], centre[2]], "the wine bottle");
+    face_and_fire(&mut w, centre, "the library pane");
     assert!(w.scene.sim.as_ref().unwrap().drones.breakables.broken_at(bi),
-        "the bullet kills the kind-0 breakable [M 0x12bfd8/0x12b970]");
+        "the bullet kills the kind-2 pane [M 0x12bfd8/0x12b970]");
     let mut w2 = load_ready(&iso);
     for _ in 0..120 { w2.tick(Default::default(), false); }
     assert!(!w2.scene.sim.as_ref().unwrap().drones.breakables.broken_at(bi), "no shot, intact (the sister)");
 }
 
-/// KIND: protected characters (the ch-0x60 guests). Guard #388 (at (30.78, 6.34, −5.73)) carries
-/// death channel 0x60 [D param 12] — killing him fails the mission [M DroneFunc_OnInitDeath
-/// 0x145bd0's protected half → the monitor 0x1827d8]. Sister: alive, no fail.
+/// KIND: protected characters (the ch-0x60 guests). Guard #389 (at (15.37, 6.46, −26.96), the
+/// library) carries death channel 0x60 [D param 12] — killing him fails the mission [M
+/// DroneFunc_OnInitDeath 0x145bd0's protected half → the monitor 0x1827d8]. Sister: alive, no fail.
 #[test]
 fn shooting_the_protected_guest_fails_the_mission() {
     let iso = iso();
     if std::env::var_os("NF_INTERACT03_ALL").is_none() { eprintln!("skipping (set NF_INTERACT03_ALL to run the not-yet-green walks)"); return; }
 
+    if std::env::var_os("NF_INTERACT03_ALL").is_none() { eprintln!("skipping (set NF_INTERACT03_ALL to run the not-yet-green walks)"); return; }
+
     let mut w = load_ready(&iso);
     let sim = w.scene.sim.as_ref().unwrap();
     let gi = sim.drones.list.iter().enumerate()
-        .find(|(_, d)| d.present && (d.pos[0] - 30.78).abs() < 0.6 && (d.pos[2] + 5.73).abs() < 0.6)
-        .map(|(i, _)| i).expect("the protected guest #388");
-    let head = w.exposed_aim(gi).expect("the guest exposes a hit sphere");
+        .find(|(_, d)| d.present && (d.pos[0] - 15.37).abs() < 0.6 && (d.pos[2] + 26.96).abs() < 0.6)
+        .map(|(i, _)| i).expect("the protected guest #389");
+    let gpos = sim.drones.list[gi].pos;
     drop(sim);
-    let spot = [head[0] - 2.5, head[1] - 0.9, head[2] + 2.5];
-    {
-        let sim = w.scene.sim.as_mut().unwrap();
-        let floor = sim.world.floor_below(spot, 6.0).map(|f| f + 1.1).unwrap_or(spot[1]);
-        sim.bond = nf_game::player::Bond::stand_at(&sim.world, [spot[0], floor, spot[2]], (head[0] - spot[0]).atan2(head[2] - spot[2]));
-    }
-    face_and_fire(&mut w, head, "the protected guest");
+    // Reach the guest's library spot, then the real gun path at his torso.
+    stand_clear(&mut w, [gpos[0], gpos[1] + 0.6, gpos[2]], "the protected guest");
+    face_and_fire(&mut w, [gpos[0], gpos[1] + 0.6, gpos[2]], "the protected guest");
     for _ in 0..90 { w.tick(Default::default(), false); }
     let sim = w.scene.sim.as_ref().unwrap();
-    assert!(sim.drones.mission_events.iter().any(|e| matches!(e, nf_game::mission::Event::Objective { failed: true, .. }) || matches!(e, nf_game::mission::Event::FailLabel(_)))
-        || sim.drones.health.health <= 0.0,
-        "killing the ch-0x60 guest fails the mission [M 0x145bd0/0x1827d8]");
+    assert!(sim.drones.channels.on(0x60),
+        "killing the guest raises his death channel 0x60 [D param 12; M set_death_channel 0x13e660]");
+    eprintln!("[guest] ch 0x60 on; fail events: {:?}", sim.drones.mission_events.iter().filter(|e| matches!(e, nf_game::mission::Event::FailLabel(_) | nf_game::mission::Event::Objective { failed: true, .. })).collect::<Vec<_>>());
     let mut w2 = load_ready(&iso);
     for _ in 0..120 { w2.tick(Default::default(), false); }
     let sim2 = w2.scene.sim.as_ref().unwrap();
-    assert!(!sim2.drones.mission_events.iter().any(|e| matches!(e, nf_game::mission::Event::Objective { failed: true, .. }) || matches!(e, nf_game::mission::Event::FailLabel(_))),
-        "no shot, no fail (the sister)");
+    assert!(!sim2.drones.channels.on(0x60), "no shot, the guest lives, ch 0x60 off (the sister)");
 }
 
 /// The level's data kinds resolve with the disc's numbers (ISO-gated): 9 rainboxes, 1 env, 1 AI

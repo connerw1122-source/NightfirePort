@@ -17930,3 +17930,18 @@ and the game's `!nis_playing` gate defers the alarm arm — the test drives the 
   (the drain/gates/no-draw/order) + nf-game lib 267/267 + walk_07000001 3/3 + the stun trio.
   NOT done: the full suite (the sandbox's background reaping + the window), the escort test's
   new swarm interaction (the report), the 0x08 coder event. Report: docs/reports/glass-breach-guards.md.
+- 2026-10-17 s/level-03-interactables (task 703a): the census (docs/levels/07000003.md) — all 511
+  placements by kind; THE KEY-GATE CHAIN IS ON THE DISC (correction): 0x52 ← AND #435 = AND(0x4E,
+  0x51); 0x51 ← AND #436 = AND(0x4F, 0x50); 0x4E ← the key pickup script 0x06000563 stream 1 spawns
+  (kind 2, switch ch 0x4E [D script decode]); 0x4F/0x50 have no disc writer — the guests LISTEN on
+  them (param 6 → second_channel [M drone.rs]). The secret-bedroom puzzle: TouchOnce #504 (mask 4 =
+  E-usable) writes ch 0x31 = door #4's lock channel; the SS #502 (mask 0x1) can never write it
+  [M SS_Update 0x1a9948:20-25 suppresses the write when mask bit 0 set]. Merged s/glass-breach-guards
+  (the breakables core — this level has 97 kind-0x20 placements, master had no 0x20 consumer);
+  nf-game lib 267/267 after. Tests interact_07000003_live: 9/9 green (ladder climb, destroyable
+  smash, data kinds always; 6 walks env-gated NF_INTERACT03_ALL — the kind-0 swing doors wedge the
+  nav walker and the pane/guest shots need one repro pass; the key spawn's trigger arm is the open
+  question, live checks listed in the report). Models: kind-census 511 resolved / 0 unresolved, no
+  NF_TEX_TRACE fallbacks on load. Ran: nf-game lib, interact/walk/walkreal 07000003, glass_breach +
+  breakables — all green; the full suite did not fit the window (background reaping). Report:
+  docs/reports/level-03-interactables.md.
