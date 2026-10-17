@@ -106,6 +106,7 @@ fn probe_sniper_boxes_and_los() {
         skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
         hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
         surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
+        ai_points: &sim.ai_points,
     };
     for di in [17usize, 0, 1] {
         let d = &sim.drones.list[di];
@@ -158,6 +159,7 @@ fn probe_sniper_direct_bullet() {
             skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
             hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
             surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
+            ai_points: &sim.ai_points,
         };
         let boxes = sim.drones.list[si].hit_boxes(&data);
         let torso = boxes.iter().find(|b| b.part == 4).expect("the torso box");
@@ -185,6 +187,7 @@ fn probe_sniper_direct_bullet() {
             skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
             hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
             surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
+            ai_points: &sim.ai_points,
         };
         let nboxes = dr.hit_boxes(&data);
         eprintln!("[direct] t{t}: sniper hp {hp:.2} state {:#x} danim {} script {:?} boxes {} enabled {} npc_enabled {}",
@@ -436,6 +439,7 @@ fn the_06_guard_driven_through_a_door_pair_opens_it_and_crosses() {
             skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
             hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
             surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: drones.difficulty,
+            ai_points: &sim.ai_points,
         };
         let dr = &mut drones.list[gi];
         dr.goal = Some(beyond);

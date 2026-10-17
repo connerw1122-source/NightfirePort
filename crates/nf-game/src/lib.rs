@@ -5,11 +5,13 @@
 // GoToGoalPosition (0x63) arms to the ally's 0x28, freezing guards on their way to a goal, and only this lint saw it.
 #![deny(unreachable_patterns)]
 
+pub mod aipoint;
 pub mod aivolume;
 pub mod prof;
 pub mod ally;
 pub mod anim;
 pub mod bullet;
+pub mod car;
 pub mod corona;
 pub mod cover;
 pub mod creepwall;
@@ -33,6 +35,7 @@ pub mod casing;
 pub mod effect;
 pub mod lock;
 pub mod ss;
+pub mod sensor;
 pub mod mission;
 pub mod ptp;
 pub mod driving;
@@ -53,6 +56,7 @@ pub mod searchlight;
 pub mod sky;
 pub mod sound;
 pub mod spawners;
+pub mod space_missile;
 pub mod trig;
 pub mod triggers;
 pub mod tuning;

@@ -238,7 +238,7 @@ pub fn alpha_shaped(rgba: &[u8]) -> bool {
 
 /// One indexed draw: its layer, pass, pipeline, texture bind group, index range and the object's world centre + radius.
 #[derive(Clone, Copy)]
-struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32, node: u32, lflags: u16 }
+struct DrawCall { layer: crate::scene::Layer, pass: u8, pipeline: usize, tex: usize, first: u32, count: u32, centre: [f32; 3], radius: f32, cel: Option<u16>, chain: u32, node: u32, lflags: u16, skin: Option<(u32, Option<u32>)> }
 
 pub struct Renderer {
     hud_pipeline: wgpu::RenderPipeline,
@@ -274,6 +274,9 @@ pub struct Renderer {
     pal_buf: wgpu::Buffer,
     col_buf: wgpu::Buffer,
     pub skin_layout: crate::scene::SkinLayout,
+    /// The last uploaded palette's translations — a skinned draw's live world position for its light
+    /// pick (`DrawCall::skin`; the game's obj+0x80 sphere follows the object [M 0x1e69a0:73-81]).
+    skin_pos: std::cell::RefCell<Vec<[f32; 3]>>,
     /// fix-gpu-facial-morphs: the per-character facial-weight blocks (per frame) and the static
     /// morph-target buffer.
     wts_buf: wgpu::Buffer,
@@ -546,7 +549,7 @@ impl Renderer {
         // entries front-to-back. `Material::chain` carries the room's build-time parse-rank fallback, `node` its
         // per-frame chain cel (u32::MAX = a distance-keyed entry).
         let draws: Vec<DrawCall> = scene.materials.iter().zip(&material_tex)
-            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain, node: m.node, lflags: m.lflags }).collect();
+            .map(|(m, &tex)| DrawCall { layer: m.layer, pass: m.draw.pass, pipeline: pipelines.iter().position(|(d, _)| *d == m.draw).unwrap(), tex, first: m.first_index, count: m.index_count, centre: m.centre, radius: m.radius, cel: m.cel, chain: m.chain, node: m.node, lflags: m.lflags, skin: m.skin }).collect();
         let fog = scene.fog;
         let snow_pipeline = make_pipeline(Draw { pass: 5, blend: 1, zwrite: false, atest: 0, fog: 0 });
         let snow_vbuf = device.create_buffer(&wgpu::BufferDescriptor { label: None, size: (SNOW_MAX * std::mem::size_of::<crate::scene::Vertex>()) as u64, usage: wgpu::BufferUsages::VERTEX | wgpu::BufferUsages::COPY_DST, mapped_at_creation: false });
@@ -573,7 +576,7 @@ impl Renderer {
         // movies.md §Presentation], so the quad draws BEFORE the HUD runs (under the page
         // controls); state 6 suppresses the overlay while its movie plays, so the draw position
         // is equivalent there.
-        Renderer { woman_tex, snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, wts_buf, mtg_buf, skin_layout, lights: Default::default(), screen_aspect: 0.0, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
+        Renderer { woman_tex, snow_pipeline, snow_vbuf, snow_bg, hud_pipeline, hud_add_pipeline, hud_sub_pipeline, hud_vbuf, hud_bgs, pipelines, fog, notex, nofog, uniform, uniform_bg, uniform_rot, uniform_rot_bg, vbuf, skin_buf, snow_skin, pal_buf, col_buf, wts_buf, mtg_buf, skin_layout, skin_pos: Default::default(), lights: Default::default(), screen_aspect: 0.0, ibuf, tex_bgs, tex_frames, draws, order: Vec::with_capacity(order_cap), cel_boxes, cel_graph, viewer_cel: Default::default(), last_vis: None, last_cell_vis: None, movie_tex: None, movie_bg: None, movie_size: None, movie_vbuf, hud_tbgl: tbgl, hud_sampler: sampler }
     }
 
     /// The game's depth-0 pyramid for the walk [M `Vision_Calculate_View_Fustrum` 0x1e7df8,
@@ -646,6 +649,7 @@ impl Renderer {
     pub fn update_skin(&self, queue: &wgpu::Queue, scene: &Scene, choice: Option<usize>, time: f32, opts: crate::scene::ViewOpts, vis: Option<&[bool]>) {
         let (pal, cols) = scene.skin_palette(&self.skin_layout, choice, time, opts, vis);
         if !pal.is_empty() { queue.write_buffer(&self.pal_buf, 0, bytemuck::cast_slice(&pal)); }
+        *self.skin_pos.borrow_mut() = pal.iter().map(|m| [m[3][0], m[3][1], m[3][2]]).collect();
         queue.write_buffer(&self.col_buf, 0, bytemuck::cast_slice(&cols));
         self.upload_morph_weights(queue, scene);
     }
@@ -660,6 +664,7 @@ impl Renderer {
     /// Upload an already-built (possibly interpolated) palette and colour table.
     pub fn upload_skin(&self, queue: &wgpu::Queue, pal: &[nf_formats::anim::Mat4], cols: &[[f32; 4]]) {
         if !pal.is_empty() { queue.write_buffer(&self.pal_buf, 0, bytemuck::cast_slice(pal)); }
+        *self.skin_pos.borrow_mut() = pal.iter().map(|m| [m[3][0], m[3][1], m[3][2]]).collect();
         if !cols.is_empty() { queue.write_buffer(&self.col_buf, 0, bytemuck::cast_slice(cols)); }
     }
 
@@ -725,7 +730,21 @@ impl Renderer {
             }
             // The view model takes no point lights (the list-2 pass after the zeroing; `VIEW_MODEL_NODE`).
             if dc.node == crate::scene::VIEW_MODEL_NODE && dc.layer != crate::scene::Layer::World { continue; }
-            let (lp, lc) = self.lights.pick2([dc.centre[0], dc.centre[1], dc.centre[2], dc.radius], dc.lflags as u32);
+            // A skinned draw picks its lights at its owner's LIVE root (the palette slot the GPU skins
+            // with) — the game's per-object obj+0x80 sphere [M 0x1e69a0:73-81]; a hidden owner (the FAR
+            // collapse) picks none. Static draws keep their build centre.
+            let centre = match dc.skin {
+                Some((ci, att)) => {
+                    let idx = match att { None => self.skin_layout.char_base.get(ci as usize).copied(), Some(a) => Some(self.skin_layout.attach_base + a) };
+                    match idx.and_then(|i| self.skin_pos.borrow().get(i as usize).copied()) {
+                        Some(p) if p[1] > -9000.0 => p,
+                        Some(_) => continue,
+                        None => dc.centre,
+                    }
+                }
+                None => dc.centre,
+            };
+            let (lp, lc) = self.lights.pick2([centre[0], centre[1], centre[2], dc.radius], dc.lflags as u32);
             for (i, v) in lp.iter().chain(lc.iter()).enumerate() { s[24 + i * 4..28 + i * 4].copy_from_slice(v); }
         }
         for (m, vp) in [(&self.uniform, view_proj), (&self.uniform_rot, view_proj_rot)] {

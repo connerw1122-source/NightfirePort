@@ -193,11 +193,34 @@ impl ThirdCam {
 /// The four families, created from the main map's placements in placement order (the game creates
 /// in `parsemap_block_map_data_dynamic` 0x1d1b68's walk order; no RNG in any of the four creates).
 #[derive(Clone, Debug, Default)]
+/// MusicTrigger (placement 0xfb → `MusicTrigger_Create` 0x1b30e0, class 0xc): while switch
+/// channel `ch_on` (p0) is on it re-arms a 30-tick countdown; every tick the countdown runs fires
+/// `Music_Event(event_id, 2)` [M 0x1b31a0:19-27] — so the event keeps firing for up to 30 ticks
+/// after the channel clears. `ch_flag` (p1) is an optional second channel and `flag_byte` (p3) a
+/// byte that also set the game's obj+0xfe bit 0 (`playing` here — no port-side reader found;
+/// [M 0x1b31a0:15,26-27] for the writers).
+pub struct MusicTrigger {
+    /// p2 — the `Music_Event` board slot ([D] 07000001: 2, 07000002: 31/32, 07000007: 13 …).
+    pub event_id: u32,
+    /// p0 — the switch channel that re-arms the countdown (create skips the object when 0).
+    pub ch_on: u16,
+    /// p1 — optional second channel driving `playing`.
+    pub ch_flag: u16,
+    /// p3.
+    pub flag_byte: u8,
+    /// The game's countdown short at inst+8 (`0x1e` armed, drained per tick).
+    pub countdown: i16,
+    /// The game's obj+0xfe bit 0.
+    pub playing: bool,
+}
+
+#[derive(Clone, Default)]
 pub struct WorldObjects {
     pub inverters: Vec<Inverter>,
     pub shooters: Vec<Shooter>,
     pub dynobjs: Vec<DynObject>,
     pub thirdcams: Vec<ThirdCam>,
+    pub music_triggers: Vec<MusicTrigger>,
 }
 
 impl WorldObjects {
@@ -259,6 +282,22 @@ impl WorldObjects {
                     let keys = path_blocks.get(index).map(|b| crate::door::parse_keys(b)).unwrap_or_default();
                     w.thirdcams.push(ThirdCam { cam_id: param(0) as u16, keys, key_count: count, flag: param(1) as u8 });
                 }
+                0xfb => {
+                    // MusicTrigger_Create 0x1b30e0:12-16: p2 == 0xff or p0 == 0 → no object
+                    // (07000011's placement, params (18, 0, 255, 0), is inert by this gate
+                    // [D placement bytes]).
+                    let (id, ch) = (param(2), param(0));
+                    if id != 0xff && ch != 0 {
+                        w.music_triggers.push(MusicTrigger {
+                            event_id: id,
+                            ch_on: ch as u16,
+                            ch_flag: param(1) as u16,
+                            flag_byte: param(3) as u8,
+                            countdown: 0,
+                            playing: false,
+                        });
+                    }
+                }
                 _ => {}
             }
         }
@@ -276,6 +315,7 @@ impl WorldObjects {
         rng: &mut crate::drone::Rng,
         bullets: &mut Vec<crate::bullet::Bullet>,
         frame: u32,
+        music: &mut crate::music::Music,
     ) {
         for inv in &self.inverters {
             inv.tick(channels, frame);
@@ -287,5 +327,83 @@ impl WorldObjects {
             ob.tick(viewer, channels);
         }
         self.dynobjs.retain(|ob| !ob.dead);
+        // MusicTrigger_Update 0x1b31a0, in its order: the p1 flag arm, the p0 re-arm
+        // (`countdown = 0x1e`), then the drain (`countdown != 0` → decrement, `Music_Event(id, 2)`,
+        // the p3 flag) — the event board slot reads 2 while the countdown runs and stops 30 ticks
+        // after the channel clears.
+        for t in &mut self.music_triggers {
+            if t.ch_flag != 0 && channels.on(t.ch_flag as u32) { t.playing = true; }
+            if t.ch_on != 0 && channels.on(t.ch_on as u32) { t.countdown = 30; }
+            if t.countdown != 0 {
+                t.countdown -= 1;
+                music.event(t.event_id as usize, 2);
+                if t.flag_byte != 0 { t.playing = true; }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod music_trigger_tests {
+    use super::*;
+    use crate::triggers::Channels;
+
+    fn place(flags: u32, params: &[(u32, u32)]) -> nf_formats::placement::Placement {
+        nf_formats::placement::Placement { index: 0, hashcode: u32::MAX, flags, translation: [0.0; 3], rotation: [0.0; 3], params: params.to_vec(), extra: [0; 9] }
+    }
+
+    /// The create gates [M 0x1b30e0:12-16]: p2 == 0xff or p0 == 0 → no object. 07000001's real
+    /// record is params (13, 0, 2, 1) and 07000011's is (18, 0, 255, 0) [D placement bytes].
+    #[test]
+    fn create_gates_and_param_map() {
+        let w = WorldObjects::create(&[place(0xfb, &[(0, 13), (1, 0), (2, 2), (3, 1)])], &[], |_| (0, [0.0; 3]));
+        assert_eq!(w.music_triggers.len(), 1);
+        let t = &w.music_triggers[0];
+        assert_eq!((t.event_id, t.ch_on, t.ch_flag, t.flag_byte), (2, 13, 0, 1));
+        assert_eq!(t.countdown, 0);
+        assert!(WorldObjects::create(&[place(0xfb, &[(0, 18), (1, 0), (2, 255), (3, 0)])], &[], |_| (0, [0.0; 3])).music_triggers.is_empty(), "p2 == 0xff → no object");
+        assert!(WorldObjects::create(&[place(0xfb, &[(0, 0), (1, 0), (2, 5), (3, 0)])], &[], |_| (0, [0.0; 3])).music_triggers.is_empty(), "p0 == 0 → no object");
+    }
+
+    /// `MusicTrigger_Update` 0x1b31a0: the channel re-arms 0x1e; each tick the countdown runs fires
+    /// `Music_Event(id, 2)`; after the channel clears the event keeps for the remaining countdown
+    /// (≤ 30 ticks) and then stops.
+    #[test]
+    fn countdown_rearms_fires_and_expires() {
+        let mut w = WorldObjects::create(&[place(0xfb, &[(0, 13), (1, 0), (2, 2), (3, 1)])], &[], |_| (0, [0.0; 3]));
+        let mut ch = Channels::default();
+        let mut music = crate::music::Music::default();
+        let mut rng = crate::drone::Rng::new(1);
+        let (mut weapons, mut bullets) = (nf_formats::weapon::WeaponData::default(), Vec::new());
+        // One frame: the control-object pass writes the board, then `UpdateMusicalEvents` consumes
+        // and clears it (music.rs's update — the game's EventList is per-frame).
+        let mut tick = |w: &mut WorldObjects, ch: &mut Channels, music: &mut crate::music::Music, rng: &mut crate::drone::Rng, bullets: &mut Vec<crate::bullet::Bullet>, f: u32| {
+            w.tick(ch, [0.0; 3], &weapons, rng, bullets, f, music);
+        };
+        let mut consume = |music: &mut crate::music::Music| music.update(0);
+        // Channel off: no countdown, no event.
+        tick(&mut w, &mut ch, &mut music, &mut rng, &mut bullets, 1);
+        assert_eq!(music.events[2], 0);
+        consume(&mut music);
+        // Channel on: the countdown re-arms every tick; the event fires.
+        ch.set(13, 1, 2);
+        for f in 2..6 {
+            tick(&mut w, &mut ch, &mut music, &mut rng, &mut bullets, f);
+            assert_eq!(music.events[2], 2, "the event fires while the channel holds");
+            consume(&mut music);
+        }
+        assert!(w.music_triggers[0].countdown > 0 && w.music_triggers[0].countdown < 30);
+        assert!(w.music_triggers[0].playing, "p3 = 1 sets the game's obj+0xfe bit 0");
+        // Channel off: the countdown drains and the event fires until it hits 0 (the armed 0x1e
+        // [M 0x1b31a0:20] — the last fire is the tick the countdown reaches 0).
+        ch.set(13, 0, 6);
+        let mut last_fire = 0u32;
+        for f in 6..50 {
+            tick(&mut w, &mut ch, &mut music, &mut rng, &mut bullets, f);
+            if music.events[2] == 2 { last_fire = f; }
+            consume(&mut music);
+        }
+        assert_eq!(w.music_triggers[0].countdown, 0, "the countdown expired at the game's tick");
+        assert_eq!(last_fire, 6 + 28, "the event stops 0x1e ticks after the re-arm stops");
     }
 }

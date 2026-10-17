@@ -48,6 +48,7 @@ fn data_of(sim: &nf_view::scene::Sim) -> nf_game::drone::Data {
         skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
         hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
         surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
+        ai_points: &sim.ai_points,
     }
 }
 
@@ -449,6 +450,7 @@ fn the_01_escort_driven_through_the_shoji_opens_it_and_crosses() {
             skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
             hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
             surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty,
+            ai_points: &sim.ai_points,
         };
         let drones = &mut sim.drones;
         let dr = &mut drones.list[mi];
@@ -533,6 +535,7 @@ fn a_locked_door_stays_shut_for_drones() {
             skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
             hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
             surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty,
+            ai_points: &sim.ai_points,
         };
         let drones = &mut sim.drones;
         let dr = &mut drones.list[6];

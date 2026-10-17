@@ -203,6 +203,10 @@ pub struct Material {
     /// data has almost no 0x80/0x100 on world cels, 0x8a0/0x28a0 on character/weapon skins, 0x100 on
     /// effect objects [D probe in lighting_live.rs].
     pub lflags: u16,
+    /// The skinned owner of a Character/Effect draw: (character index, attachment slot) — the renderer
+    /// re-centres the draw's light pick on the owner's live palette root every frame (the game's
+    /// obj+0x80 world sphere follows the object). `None` = a static draw (its `centre` stands).
+    pub skin: Option<(u32, Option<u32>)>,
     pub first_index: u32,
     pub index_count: u32,
 }
@@ -324,6 +328,8 @@ pub struct Sim {
     pub skeletons: HashMap<u8, Skeleton>,
     pub nav: nf_game::nav::Network,
     pub covers: Vec<nf_game::cover::CoverNode>,
+    /// AI points (placements 0xE9): the guards'/guests' run-to points (`Drone_AIPoint` 0x137550).
+    pub ai_points: Vec<nf_game::aipoint::AiPoint>,
     pub tuning: nf_formats::tuning::Tuning,
     /// mp-core: the MP match core (`nf_game::mp`) when `--mp` runs an arena — `MP_Update` 0x184bd0
     /// runs per frame in gameplay [M]; `None` on every campaign level.
@@ -2415,6 +2421,10 @@ impl Sim {
             let was_on_wire = matches!(self.bond.substate, nf_game::player::SS_WIRE | nf_game::player::SS_ZIPLINE);
             let was_climbing = self.bond.substate == nf_game::player::SS_CLIMB;
             input.fire = trigger;
+            // The zero-g auto-stabiliser reads the game's action 0xe — the same pad button the
+            // keyboard path splits into the use key (E) and reload (R) [M Player_ZeroG 0x192ab0:
+            // 163-166]. OR both edges in; the field is only read in the zero-g substates.
+            input.stabilise = input.stabilise || use_key || reload;
             // The queries' start cel (obj+0x20 — fix-safe08b): the game's per-tick relink is the STATEFUL
             // `control_handle_cel_change` 0x133288 (supersedes fix-08-collision2's FindCel-at-pos root —
             // the same `build_FindCel` 0x1c8cb0 two-ray tie-break that fix kept, but as
@@ -2865,7 +2875,8 @@ impl Sim {
         };
         let player = nf_game::drone::Player { pos, target: [camera[0], camera[1] - 0.45, camera[2]], eye: camera, aim: look, sph, hanging, capsule,
             cel: self.cel_at(self.bond.pos).and_then(|room| self.room_cell.get(room).copied().flatten()) };
-        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref(), difficulty: self.drones.difficulty };
+        let d = nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models, surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref(), difficulty: self.drones.difficulty,
+            ai_points: &self.ai_points };
         // `Player_WeaponFiring` → `Player_WeaponInitBullet` from the eye along the view (*deviation*: no auto-aim and
         // no aim-point ray yet); the first-person fire script's sound 0x403 feeds the drones' hearing.
         // The gun's clip and spare rounds live in Bond's inventory (BLData `+0x1B8`, `+0x170`), which pickups fill.
@@ -4466,7 +4477,9 @@ impl Sim {
     }
     /// The game data the simulation consults, borrowed from this Sim.
     pub fn data(&self) -> nf_game::drone::Data<'_> {
-        nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models , surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref(), difficulty: self.drones.difficulty }
+        nf_game::drone::Data { tables: &self.tables, props: &self.props, scripts: &self.scripts, weapons: &self.weapons, world: &self.world, level: self.level, sequences: &self.seqs, skins: &self.skins, skeletons: &self.skeletons, nav: &self.nav, covers: &self.covers, tuning: &self.tuning, hitboxes: &self.hitboxes, volumes: &self.volumes, sfx: self.sfx.as_ref(), models: &self.models , surfaces: self.surfaces.as_ref(), voices: self.voices.as_deref(), difficulty: self.drones.difficulty,
+            ai_points: &[],
+        }
     }
 
     /// (sequence index, frame) the first-person gun's script shows.
@@ -4793,6 +4806,8 @@ pub fn fog_for(level: u32) -> Option<([u8; 3], f32)> {
 /// Grouped by layer, then (world layers) the object — the game sorts cels per object (`View_AddCels`) — then texture
 /// and draw state. The value keeps the object's world centre and scaled radius for the per-frame sort + frustum cull.
 pub type GroupKey = (Layer, [u32; 3], u32, u32, Option<(usize, u32)>, Draw, u16);
+/// The group key's slot-2 tag for a per-character group (see `add_instance`'s `ikey`).
+const SKIN_TAG: u32 = 0x5c1d_0000;
 type Groups = BTreeMap<GroupKey, (Vec<Vertex>, Vec<u32>, Vec<CharVertex>, [f32; 3], f32, Option<u16>, u32)>;
 
 /// ── Pool-slot replay (level-load-time) ───────────────────────────────────────────────────────────
@@ -4940,7 +4955,19 @@ fn add_instance(level: &Level, inst: &Instance, layer: Layer, character: Option<
     // 0x1e6538 / `View_SetupRenderModes` 0x1e78b0 (the anim-object path) pass its u16 to
     // `Lights_CalcClosestLights`. `MapObject.flags` is that word [D level.rs ENTITY_PARAMS +4].
     let lflags = (obj.flags & 0xffff) as u16;
-    let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) } else { [0; 3] };
+    // World layers key each object apart (centre). Characters and their attachments key per character
+    // (and per attachment slot): the game picks the ≤2 lights PER OBJECT at the object's own world sphere
+    // [M View_DrawObjList 0x1e69a0:73-81 → Lights_CalcClosestLights(obj+0x80, obj+0xF0)]; the shared
+    // `[0; 3]` key merged every character with the same texture into ONE draw lit at ONE centre (the
+    // last instance's — the bind-time origin for script actors), so cut-scene faces got no point lights
+    // (the user, 2026-10-16: "work on character lighting. especially in cutscenes"). The tag SKIN_TAG in
+    // slot 2 lets the material build recover the (character, attachment) pair.
+    let ikey = if matches!(layer, Layer::World) { centre.map(f32::to_bits) }
+        // Keyed per CHARACTER only: an attachment (the held gun) lights with its owner, and the pools that
+        // share a character index across many slots (projectiles/debris) keep merging — keying per slot
+        // multiplied the draw count (07000002: 4540 → 5927 materials) for no lighting gain.
+        else if let (Layer::Character, Some((ci, _))) = (layer, character) { [ci, 0, SKIN_TAG] }
+        else { [0; 3] };
     // GS state: each leaf's `DIRECT` writes, inherited by the leaves that send none. The GS applies each DIRECT
     // write immediately at its position in the packet, so a write between batch 2 and batch 3 affects batch 3
     // onward — we apply the writes per-batch, not per-leaf (the old per-leaf approach made the sniper's gun body
@@ -6238,7 +6265,8 @@ impl Scene {
         }
         crate::phase_mark("b5 characters + attachments + pools", t); t = std::time::Instant::now();
         let mut char_vertex_start = None;
-        for ((layer, _, _, chain, key, draw, lflags), (vs, is, cv, centre, mut radius, cel, node)) in groups {
+        for ((layer, ikey, _, chain, key, draw, lflags), (vs, is, cv, centre, mut radius, cel, node)) in groups {
+            let skin = (ikey[2] == SKIN_TAG).then(|| (ikey[0], ikey[1].checked_sub(1)));
             if is.is_empty() { continue; }
             // fix-render-artifacts: the cull sphere must contain the group's DRAWN geometry — the glist
             // radius can undershoot it (0700000c's floor decal: glist r 0.6 vs a 0.87 half-diagonal box),
@@ -6259,7 +6287,7 @@ impl Scene {
             }
             if matches!(layer, Layer::Character | Layer::Effect) && char_vertex_start.is_none() { char_vertex_start = Some(vertices.len()); }
             let base = vertices.len() as u32;
-            materials.push(Material { layer, draw, centre, radius, cel, chain, node, key, lflags, first_index: indices.len() as u32, index_count: is.len() as u32 });
+            materials.push(Material { layer, draw, centre, radius, cel, chain, node, key, lflags, skin, first_index: indices.len() as u32, index_count: is.len() as u32 });
             indices.extend(is.iter().map(|i| i + base));
             vertices.extend(vs);
             char_verts.extend(cv);
@@ -6373,7 +6401,8 @@ impl Scene {
             }
             crate::phase_mark("b9a collision world + scope", t); let mut t9 = std::time::Instant::now();
             let nav = nf_game::nav::Network::build(level.maps[m].ai_network.as_ref().unwrap_or(&Default::default()), &world, d.level_id);
-            let covers = nf_game::cover::build(&level.maps[m].placements, &nav, &world);
+            let covers = nf_game::cover::build(level, &nav, &world);
+            let ai_points = nf_game::aipoint::build(&level.maps[level.main_map().unwrap()].placements, &nav, &world);
             let hitboxes = d.hitboxes.clone()?;
             let volumes = nf_game::aivolume::build(level, d.level_id);
             let models = nf_game::pickup::models(level);
@@ -6388,7 +6417,8 @@ impl Scene {
             // so `load_with_carry_difficulty(3)` must create the full roster here (the hard-coded 1
             // starved the 00-Agent load to the Operative roster). The direct loads keep 1 — the
             // documented replay parity (the recorded sessions ran at difficulty 1).
-            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref(), difficulty };
+            let data = nf_game::drone::Data { tables: &d.tables, props: &props, scripts: &d.scripts, weapons: &weapons, world: &world, level: d.level_id, sequences: &seqs, skins: &level.skins, skeletons, nav: &nav, covers: &covers, tuning: &d.tuning, hitboxes: &hitboxes, volumes: &volumes, sfx: d.sfx.as_ref(), models: &models, surfaces: d.surfaces.as_ref(), voices: d.voices.as_deref(), difficulty,
+            ai_points: &ai_points };
             // net-match-host: an online match builds from the host's seed (equal on every machine — the
             // settings blob carries it); local play keeps the pre-net constant.
             let mut rng = nf_game::drone::Rng::new(if d.mp_seed == 0 { 0x1234_5678 } else { d.mp_seed });
@@ -6526,7 +6556,7 @@ impl Scene {
             // The difficulty was set before the creates above (the game's GameState+0x28 pick);
             // the old direct-load hardcode `= 1` moved into the build parameter so replay loads
             // pass 1 and the front-end path passes the menu's pick.
-            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
+            Some(Sim { drones, tables: d.tables.clone(), props, scripts: d.scripts.clone(), weapons, world, level: d.level_id, char_drone, char_script, char_script_skin, seq_index, seqs, skins: level.skins.clone(), skeletons: skeletons.clone(), nav, covers, ai_points, tuning: d.tuning.clone(), hitboxes, sfx: d.sfx.clone(), volumes, glist_bounds, models, gun: nf_game::gun::Gun::new(2, 7, 41), bond, cursor: [0.0; 2], cross: [0.0; 2], view_script: 0, first_person: false, last_shot: None, shot_tick: false, view_time: 0.0, view_speed: 1.0, bob: [0.0; 2], aiming: false, free_aim: false, auto_aim: false, zoom: 1.0, zoom_target: 1.0, disabled: false, surfaces: d.surfaces.clone(), voices: d.voices.clone(), step_dist: 0.0, wires, creepwalls, creeping: false, wire_anims, wire_channel: 0, ladders, icons, view_model_ids: std::collections::HashSet::new(), cross_state: 2, cels: sim_cels, char_ambient, view_model_chars: Vec::new(), ambient_lookups: std::cell::Cell::new(0), lang: None, hud: Default::default(), smoke: Vec::new(), room_cell: cel_graph.room_to_cell.clone(), prev_trigger: false,
             mp_bonds: [None, None, None, None],
                 wire_cels, cel_graph: cel_graph.clone(), icon_cels, laser_beam: None, stunner_target: None, laser_charge: 100.0, missile_cam: None,
                 hints, hint_cels, hint_fired, icon_msg_timers,

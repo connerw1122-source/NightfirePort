@@ -134,6 +134,7 @@ fn the_guards_wake_from_their_zone_pads_and_take_damage() {
             skeletons: &sim.skeletons, nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning,
             hitboxes: &sim.hitboxes, volumes: &sim.volumes, sfx: sim.sfx.as_ref(), models: &sim.models,
             surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: sim.drones.difficulty,
+            ai_points: &sim.ai_points,
         };
         let boxes = sim.drones.list[si].hit_boxes(&data);
         let torso = boxes.iter().find(|b| b.part == 4).expect("the torso box");

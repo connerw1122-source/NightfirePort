@@ -126,13 +126,28 @@ impl CoverNode {
     }
 }
 
-/// Every cover node of the level's main map, with its emitter (navigation path for its position, distance bytes).
-pub fn build(placements: &[Placement], nav: &Network, world: &CollisionWorld) -> Vec<CoverNode> {
-    placements.iter().filter_map(CoverNode::from_placement).map(|mut n| {
-        n.path = nav.nav_path_for(n.pos);
-        if let Some(p) = n.path { n.dist = nav.emit(world, p, n.pos); }
-        n
-    }).collect()
+/// Every cover node of the level's MAIN map, with its emitter (navigation path for its position,
+/// distance bytes).
+///
+/// s/cover-nodes (task 746) proposed creating the nodes from EVERY map entry (the loader
+/// dispatches each type-0/1/2/11 entry to `parsemap_parsemap` 0x1d4880, whose dynamic-object walk
+/// reaches `Drone_CoverCornerNode` 0x136ff0 / `Drone_CoverLowNode` 0x137340 [M]) — on the disc that
+/// adds the shared sub-map 010000f3's template pair ("Cover Corner/Low Node", translation (0,0,0),
+/// no params) to every mission level. Merge batch-1016c dropped that scan: the extra pair broke
+/// three live-backed tests (guard_reaction_live's sighting chain, escort_follow_07000001_live,
+/// npc_doors_live's escort door) and shifted the chase trace's node index (ai_live /
+/// cover_selection_live pin node 1 of the main map's list [L work/chase_trace.tsv]). Whether the
+/// game really instantiates 010000f3's templates as live nodes (and where in the list) is
+/// [S] unverified — docs/UNKNOWNS.md material for a PCSX2 check of the AI cover array.
+pub fn build(level: &nf_formats::level::Level, nav: &Network, world: &CollisionWorld) -> Vec<CoverNode> {
+    level.main_map().into_iter()
+        .flat_map(|i| level.maps[i].placements.iter())
+        .filter_map(CoverNode::from_placement)
+        .map(|mut n| {
+            n.path = nav.nav_path_for(n.pos);
+            if let Some(p) = n.path { n.dist = nav.emit(world, p, n.pos); }
+            n
+        }).collect()
 }
 
 /// Cover types (`Drone+0xBBB`).

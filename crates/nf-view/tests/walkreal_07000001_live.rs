@@ -150,6 +150,7 @@ fn walk_from_the_spawn_to_the_exit_with_the_contact() {
                     world: &sim.world, level: sim.level, sequences: &sim.seqs, skins: &sim.skins, skeletons: &sim.skeletons,
                     nav: &sim.nav, covers: &sim.covers, tuning: &sim.tuning, hitboxes: &sim.hitboxes, volumes: &sim.volumes,
                     sfx: sim.sfx.as_ref(), models: &sim.models, surfaces: sim.surfaces.as_ref(), voices: sim.voices.as_deref(), difficulty: 1,
+                    ai_points: &sim.ai_points,
                 };
                 let boxes = d.hit_boxes(&data);
                 for b in boxes.iter().take(8) {

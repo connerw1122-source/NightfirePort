@@ -32,6 +32,7 @@ fn a_state_change_clears_both_message_timers() {
         skeletons: &s.skeletons, nav: &s.nav, covers: &s.covers, tuning: &s.tuning,
         hitboxes: &s.hitboxes, volumes: &s.volumes, sfx: s.sfx.as_ref(),
         models: &s.models, surfaces: s.surfaces.as_ref(), voices: s.voices.as_deref(), difficulty: 1,
+        ai_points: &s.ai_points,
     };
     let i = drones.list.iter().position(|x| x.present && !x.corpse).expect("a live guard exists");
     let dr = &mut drones.list[i];

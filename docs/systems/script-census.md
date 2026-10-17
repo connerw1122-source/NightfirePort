@@ -113,7 +113,7 @@ trigger placements (the 0xE8/0xEA-0xEF/0xF4 families plus raw 0xDC).
 | 07A00016.bin | 07000016 | 1 | 16 |
 
 
-Placement types the port handles (56 values: 48 simulated + 8 draw-only) and the game handles
+Placement types the port handles (57 values: 49 simulated + 8 draw-only) and the game handles
 (73 values, `parsemap_create_dynamic_objects` 0x1d04f0 — 72 spawn cases plus the 0xDC trigger
 raw-action form) overlap except for the rows below: 14 types the game handles and the port
 does not act on, plus 4 one-per-level marker types neither side touches. (The game's
@@ -121,10 +121,17 @@ does not act on, plus 4 one-per-level marker types neither side touches. (The ga
 
 ### Placement types on the disc that the port does not act on
 
+(0xE5 cover corner 584 and 0xE6 cover low 384 were listed here by the original census; the port
+has spawned them since — `nf-game/src/cover.rs` `from_placement`/`build`, `Drone_CoverCornerNode`
+0x136ff0 / `Drone_CoverLowNode` 0x137340, from EVERY map entry per the loader dispatch
+[task cover-nodes, 2026-10-17].)
+(0xFB music trigger 15 was listed here by the original census; the port now creates the trigger
+and runs its update — `nf-game/src/worldobj.rs` `MusicTrigger`, `MusicTrigger_Create` 0x1b30e0 /
+`MusicTrigger_Update` 0x1b31a0 [task music-triggers, 2026-10-17].)
+
 | type | count | port | game spawn fn |
 |---|---|---|---|
 | 0x27 | 41 | — | GT_Create 0x17ffa0 |
-| 0x28 | 62 | — | Sensor_Create 0x1af010 |
 | 0x2b | 3 | — | LeafGen_Create 0x1acbd0 |
 | 0x2c | 15 | — | Lightning_Create 0x18cde8 |
 | 0x2d | 51 | — | Player_AddNewStartPos(,0) 0x195c00 |
@@ -132,14 +139,11 @@ does not act on, plus 4 one-per-level marker types neither side touches. (The ga
 | 0x39 | 8 | — | Create_SpaceMissile 0x1a9ef0 |
 | 0xdd | 33 | — | — none (game ignores) |
 | 0xe4 | 64 | — | Hurt_Create 0x17e870 |
-| 0xe5 | 584 | — | Drone_CoverCornerNode 0x136ff0 |
-| 0xe6 | 384 | — | Drone_CoverLowNode 0x137340 |
 | 0xe9 | 162 | — | Drone_AIPoint 0x137550 |
 | 0xf3 | 8 | — | Env_Tree_Create 0x17c200 |
 | 0xf4 | 1 | — | Trigger_MoviePlayer 0x1b2a08 |
 | 0xf6 | 33 | — | — none (game ignores) |
 | 0xf7 | 33 | — | — none (game ignores) |
-| 0xfb | 15 | — | MusicTrigger_Create 0x1b30e0 |
 | 0xff | 39 | — | — none (game ignores) |
 
 ### NIS command opcodes (all 20 that occur are handled)
@@ -294,7 +298,7 @@ player scripts, so its real gameplay reach is narrower than its 12,947 count.
 | 3 | placement 0xE6 cover low | 384 | `Drone_CoverLowNode` 0x137340 | guards crouch behind low cover |
 | 4 | placement 0xE9 AI point | 162 | `Drone_AIPoint` 0x137550 | patrol/waypoint graph points |
 | 5 | placement 0xE4 hurt volume | 64 | `Hurt_Create` 0x17e870 | damage volumes (hazards) |
-| 6 | placement 0x28 sensor | 62 | `Sensor_Create` 0x1af010 | channel trip volumes drive world logic |
+| — | placement 0x28 sensor | 62 | PORTED (sensor.rs, 2026-10-17): `Sensor_Create` 0x1af010 | security cameras; out channel after 2 s of player sight |
 | 7 | placement 0x2D start-pos slot 0 | 51 | `Player_AddNewStartPos(...,0)` 0x195c00 | second start-position set |
 | 8 | placement 0x27 GT | 41 | `GT_Create` 0x17ffa0 (+ Update/Activate/TakeControl) | controllable special object |
 | 9 | placement 0xFB music trigger | 15 | `MusicTrigger_Create` 0x1b30e0 / `_Update` 0x1b31a0 | `Music_Event(id,2)` countdown music |
@@ -318,23 +322,34 @@ records (165), NIS op none, anim ops 2/3 (0), event kinds 0x0e/0x10/0x13 (0), en
 
 ## Top 10 ready-to-queue tasks
 
-1. **AI cover nodes (0xE5 + 0xE6, 968 placements, every mission level).** Port
-   `Drone_CoverCornerNode` 0x136ff0 and `Drone_CoverLowNode` 0x137340 into the drone AI: nodes
-   bind to the cover graph guards query when engaging. Verify: guard in 07000006 (81+35 nodes)
-   retreats to a corner node when fired on instead of standing in the open. Highest occurrence
-   count of any placement family the game spawns for.
+1. **AI cover nodes (0xE5 + 0xE6, 968 placements, every mission level).** ~~Port~~ **DONE
+   (task cover-nodes, 2026-10-17):** the nodes spawn from every map entry (`cover.rs` `build`),
+   07000006 pins 81+35, and a guard under fire takes a game cover node (`cover_nodes_live.rs`).
+   The original task text: port `Drone_CoverCornerNode` 0x136ff0 and `Drone_CoverLowNode`
+   0x137340 into the drone AI: nodes bind to the cover graph guards query when engaging.
 2. **AI waypoints (0xE9, 162).** `Drone_AIPoint` 0x137550: patrol graph points. Port the record
    (params unknown — check `Drone_AIPoint` reads) and wire into patrol pathing. Verify: 07000007
    has 34; guards patrol through them.
 3. **Hurt volumes (0xE4, 64).** `Hurt_Create` 0x17e870: damage volumes (params carry damage
    kind/rate — read the decomp). Verify: standing in one drains Bond's armour/health; 07000005
    has 13 (the Alpine incursion? verify level name at render time).
-4. **Sensor volumes (0x28, 62).** `Sensor_Create` 0x1af010: trip-by-anything volumes writing
-   switch channels (not player-only like 0xEA/0xEB). Verify: a drone walking through sets the
-   sensor's out channel; drives doors/alarm logic the port currently needs touch triggers for.
+4. ~~**Sensor volumes (0x28, 62).**~~ PORTED 2026-10-17 (branch s/sensor-volumes, crate::sensor).
+   Correction to the plan text: `Sensor_Update` 0x1af618 detects **glb_players[0] only**
+   (disasm 0x1af644 loads 0x2d88e0; both `Sensor_InCone` calls 0x1af97c/0x1afae0 pass it; no
+   switch_channels writer is NPC-driven) — a cone detector with range + `Intersect_ConeSphere`
+   0x1ee100 + LOS, alert after 32 in-cone ticks, out channel 1 after 2 s of continuous sight
+   (0x1af618:154-157), disable channel (param 4) parks it in state 3. Not "trip-by-anything".
 5. **Music triggers (0xFB, 15).** `MusicTrigger_Create` 0x1b30e0 + `MusicTrigger_Update`
    0x1b31a0: `Music_Event(id, 2)` while its countdown runs. Verify: entering the volume starts
    the combat music stinger; leaving lets it expire.
+4. **Sensor volumes (0x28, 62).** `Sensor_Create` 0x1af010: trip-by-anything volumes writing
+   switch channels (not player-only like 0xEA/0xEB). Verify: a drone walking through sets the
+   sensor's out channel; drives doors/alarm logic the port currently needs touch triggers for.
+5. **Music triggers (0xFB, 15).** ~~Port~~ **DONE (task music-triggers, 2026-10-17):** the
+   trigger is created with the game's gates and its update runs each control-object pass
+   (`worldobj.rs` `MusicTrigger`); 07000001 pins the real path — channel 13 on fires
+   `Music_Event(2, 2)` into the alarm hysteresis, clearing it lets the 0x1e countdown expire.
+   The original task text: `MusicTrigger_Create` 0x1b30e0 + `MusicTrigger_Update` 0x1b31a0.
 6. **Lightning (0x2C, 15; 07000001 ×11, 07000041 ×4).** `Lightning_Create` 0x18cde8: storm
    flashes. Visual — needs the main agent's render pass to confirm the flash/timing model.
 7. **NIS event kinds 0x08/0x09/0x0a (script 0600005b, 07000001).** Three single-line handlers:

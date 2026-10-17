@@ -133,6 +133,10 @@ pub fn to_player_input(i: &nf_net::Input) -> player::Input {
         zoom: i.zoom,
         scope: i.scope,
         fire: i.fire,
+        // Zero-g's lift/stabilise lanes are local view state (the `zoom_cycle` precedent): the
+        // net wire format is unchanged and remotes never tick the zero-g substates today.
+        lift: 0.0,
+        stabilise: false,
         mode_switch: i.mode_switch,
         weapon_cycle: i.weapon_cycle,
         gadget_cycle: i.gadget_cycle,

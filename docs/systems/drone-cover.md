@@ -10,6 +10,16 @@ the code or bytes, [S] = inferred. Two decompiler artefacts: `DroneAnim_CallAnim
 Placements with flags word 0xE5 (`Drone_CoverCornerNode`) and 0xE6 (`Drone_CoverLowNode`), created at level load
 into `CoverNodes` (0x283E10, 256 × 0xB0). Position = placement translation, yaw = rotation y.
 
+Every map entry of the level archive contributes: the loader dispatches each type-0/1/2/11 entry to
+`parsemap_parsemap` (0x1d4880 case 0/1/2/0xb — docs/formats/level-bin.md), whose block walk runs
+`parsemap_block_map_data_dynamic` 0x1d1b68 per placement and `parsemap_create_dynamic_objects` 0x1d04f0 case
+0xe5/0xe6 — in directory order, so the array's node order is maps in entry order × placements in record order.
+On the disc every mission level's shared sub-map 010000f3 adds one corner + one low template pair ("Cover Corner/
+Low Node", at the origin, no params — flags 0x1EC, angle 45°, idle 0x11/aim 0xA through the default arms
+[M 0x136ff0:44-101, 0x137340:65-87]); 07000004/09/0a/1b/23/25/26/27/28/4a have NO main-map nodes, so the pair is
+those levels' whole cover graph (66 sub-map nodes disc-wide, 902 main-map). Port: `cover::build` walks
+`level.maps` in order (task cover-nodes, 2026-10-17; it previously built the main map only).
+
 | Field | Corner (type 0) | Low (type 1) |
 |---|---|---|
 | +1 / +2 | switch channel that must be on / off (p4 / p5; 0 = none) | same |
